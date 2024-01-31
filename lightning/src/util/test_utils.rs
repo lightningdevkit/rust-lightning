@@ -7,10 +7,9 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::blinded_path::BlindedPath;
 use crate::blinded_path::payment::ReceiveTlvs;
+use crate::blinded_path::BlindedPath;
 use crate::chain;
-use crate::chain::WatchedOutput;
 use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
@@ -19,63 +18,71 @@ use crate::chain::chainmonitor::{MonitorUpdateId, UpdateOrigin};
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
-use crate::routing::router::{CandidateRouteHop, FirstHopCandidate, PublicHopCandidate, PrivateHopCandidate};
-use crate::sign;
+use crate::chain::WatchedOutput;
 use crate::events;
-use crate::events::bump_transaction::{WalletSource, Utxo};
-use crate::ln::ChannelId;
-use crate::ln::channelmanager::{ChannelDetails, self};
+use crate::events::bump_transaction::{Utxo, WalletSource};
 use crate::ln::chan_utils::CommitmentTransaction;
+use crate::ln::channelmanager::{self, ChannelDetails};
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
-use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
+use crate::ln::ChannelId;
+use crate::ln::{msgs, wire};
 use crate::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
-use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
+use crate::onion_message::messenger::{
+	DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath,
+};
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
+use crate::routing::router::{
+	CandidateRouteHop, FirstHopCandidate, PrivateHopCandidate, PublicHopCandidate,
+};
+use crate::routing::router::{
+	DefaultRouter, InFlightHtlcs, Path, Route, RouteHintHop, RouteParameters, Router,
+	ScorerAccountingForInFlightHtlcs,
+};
+use crate::routing::scoring::{ChannelUsage, ScoreLookUp, ScoreUpdate};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
-use crate::routing::router::{DefaultRouter, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};
-use crate::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
+use crate::sign;
 use crate::sync::RwLock;
 use crate::util::config::UserConfig;
-use crate::util::test_channel_signer::{TestChannelSigner, EnforcementState};
-use crate::util::logger::{Logger, Level, Record};
-use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
+use crate::util::logger::{Level, Logger, Record};
 use crate::util::persist::KVStore;
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
-use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::{Builder, Script, ScriptBuf};
-use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::Block;
-use bitcoin::network::constants::Network;
+use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::script::{Builder, Script, ScriptBuf};
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::sighash::{SighashCache, EcdsaSighashType};
+use bitcoin::network::constants::Network;
+use bitcoin::sighash::{EcdsaSighashType, SighashCache};
 
-use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, self};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
+use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 #[cfg(any(test, feature = "_test_utils"))]
 use regex;
 
 use crate::io;
 use crate::prelude::*;
-use core::cell::RefCell;
-use core::time::Duration;
-use crate::sync::{Mutex, Arc};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use core::mem;
+use crate::sign::{EntropySource, InMemorySigner, NodeSigner, Recipient, SignerProvider};
+use crate::sync::{Arc, Mutex};
 use bitcoin::bech32::u5;
-use crate::sign::{InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
+use core::cell::RefCell;
+use core::mem;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::time::Duration;
 
-#[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
 use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::Sequence;
+#[cfg(feature = "std")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn pubkey(byte: u8) -> PublicKey {
 	let secp_ctx = Secp256k1::new();
@@ -119,7 +126,7 @@ pub struct TestRouter<'a> {
 impl<'a> TestRouter<'a> {
 	pub fn new(
 		network_graph: Arc<NetworkGraph<&'a TestLogger>>, logger: &'a TestLogger,
-		scorer: &'a RwLock<TestScorer>
+		scorer: &'a RwLock<TestScorer>,
 	) -> Self {
 		Self {
 			router: DefaultRouter::new(network_graph.clone(), logger, [42u8; 32], scorer, ()),
@@ -138,9 +145,11 @@ impl<'a> TestRouter<'a> {
 impl<'a> Router for TestRouter<'a> {
 	fn find_route(
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
-		inflight_htlcs: InFlightHtlcs
+		inflight_htlcs: InFlightHtlcs,
 	) -> Result<Route, msgs::LightningError> {
-		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
+		if let Some((find_route_query, find_route_res)) =
+			self.next_routes.lock().unwrap().pop_front()
+		{
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
 				assert_eq!(route.route_params, Some(find_route_query));
@@ -159,12 +168,15 @@ impl<'a> Router for TestRouter<'a> {
 
 						if idx == path.hops.len() - 1 {
 							if let Some(first_hops) = first_hops {
-								if let Some(idx) = first_hops.iter().position(|h| h.get_outbound_payment_scid() == Some(hop.short_channel_id)) {
+								if let Some(idx) = first_hops.iter().position(|h| {
+									h.get_outbound_payment_scid() == Some(hop.short_channel_id)
+								}) {
 									let node_id = NodeId::from_pubkey(payer);
-									let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
-										details: first_hops[idx],
-										payer_node_id: &node_id,
-									});
+									let candidate =
+										CandidateRouteHop::FirstHop(FirstHopCandidate {
+											details: first_hops[idx],
+											payer_node_id: &node_id,
+										});
 									scorer.channel_penalty_msat(&candidate, usage, &());
 									continue;
 								}
@@ -172,7 +184,8 @@ impl<'a> Router for TestRouter<'a> {
 						}
 						let network_graph = self.network_graph.read_only();
 						if let Some(channel) = network_graph.channel(hop.short_channel_id) {
-							let (directed, _) = channel.as_directed_to(&NodeId::from_pubkey(&hop.pubkey)).unwrap();
+							let (directed, _) =
+								channel.as_directed_to(&NodeId::from_pubkey(&hop.pubkey)).unwrap();
 							let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
 								info: directed,
 								short_channel_id: hop.short_channel_id,
@@ -205,29 +218,36 @@ impl<'a> Router for TestRouter<'a> {
 	}
 
 	fn create_blinded_payment_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		ES: EntropySource + ?Sized,
+		T: secp256k1::Signing + secp256k1::Verification,
 	>(
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: u64, entropy_source: &ES, secp_ctx: &Secp256k1<T>
+		amount_msats: u64, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		self.router.create_blinded_payment_paths(
-			recipient, first_hops, tlvs, amount_msats, entropy_source, secp_ctx
+			recipient,
+			first_hops,
+			tlvs,
+			amount_msats,
+			entropy_source,
+			secp_ctx,
 		)
 	}
 }
 
 impl<'a> MessageRouter for TestRouter<'a> {
 	fn find_path(
-		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination,
 	) -> Result<OnionMessagePath, ()> {
 		self.router.find_path(sender, peers, destination)
 	}
 
 	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		ES: EntropySource + ?Sized,
+		T: secp256k1::Signing + secp256k1::Verification,
 	>(
 		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
-		secp_ctx: &Secp256k1<T>
+		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		self.router.create_blinded_paths(recipient, peers, entropy_source, secp_ctx)
 	}
@@ -235,7 +255,8 @@ impl<'a> MessageRouter for TestRouter<'a> {
 
 impl<'a> Drop for TestRouter<'a> {
 	fn drop(&mut self) {
-		#[cfg(feature = "std")] {
+		#[cfg(feature = "std")]
+		{
 			if std::thread::panicking() {
 				return;
 			}
@@ -256,16 +277,17 @@ impl<'a> TestMessageRouter<'a> {
 
 impl<'a> MessageRouter for TestMessageRouter<'a> {
 	fn find_path(
-		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination,
 	) -> Result<OnionMessagePath, ()> {
 		self.inner.find_path(sender, peers, destination)
 	}
 
 	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		ES: EntropySource + ?Sized,
+		T: secp256k1::Signing + secp256k1::Verification,
 	>(
 		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
-		secp_ctx: &Secp256k1<T>
+		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		self.inner.create_blinded_paths(recipient, peers, entropy_source, secp_ctx)
 	}
@@ -274,37 +296,55 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 pub struct OnlyReadsKeysInterface {}
 
 impl EntropySource for OnlyReadsKeysInterface {
-	fn get_secure_random_bytes(&self) -> [u8; 32] { [0; 32] }}
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		[0; 32]
+	}
+}
 
 impl SignerProvider for OnlyReadsKeysInterface {
 	type EcdsaSigner = TestChannelSigner;
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!(); }
+	fn generate_channel_keys_id(
+		&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
+	) -> [u8; 32] {
+		unreachable!();
+	}
 
-	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner { unreachable!(); }
+	fn derive_channel_signer(
+		&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32],
+	) -> Self::EcdsaSigner {
+		unreachable!();
+	}
 
 	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
-		Ok(TestChannelSigner::new_with_revoked(
-			inner,
-			state,
-			false
-		))
+		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
-	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { Err(()) }
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { Err(()) }
+	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+		Err(())
+	}
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+		Err(())
+	}
 }
 
 pub struct TestChainMonitor<'a> {
 	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<TestChannelSigner>)>>,
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<channelmonitor::ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (OutPoint, u64, MonitorUpdateId)>>,
-	pub chain_monitor: chainmonitor::ChainMonitor<TestChannelSigner, &'a TestChainSource, &'a dyn chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a dyn chainmonitor::Persist<TestChannelSigner>>,
+	pub chain_monitor: chainmonitor::ChainMonitor<
+		TestChannelSigner,
+		&'a TestChainSource,
+		&'a dyn chaininterface::BroadcasterInterface,
+		&'a TestFeeEstimator,
+		&'a TestLogger,
+		&'a dyn chainmonitor::Persist<TestChannelSigner>,
+	>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
 	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
@@ -315,12 +355,24 @@ pub struct TestChainMonitor<'a> {
 	pub expect_monitor_round_trip_fail: Mutex<Option<ChannelId>>,
 }
 impl<'a> TestChainMonitor<'a> {
-	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a dyn chainmonitor::Persist<TestChannelSigner>, keys_manager: &'a TestKeysInterface) -> Self {
+	pub fn new(
+		chain_source: Option<&'a TestChainSource>,
+		broadcaster: &'a dyn chaininterface::BroadcasterInterface, logger: &'a TestLogger,
+		fee_estimator: &'a TestFeeEstimator,
+		persister: &'a dyn chainmonitor::Persist<TestChannelSigner>,
+		keys_manager: &'a TestKeysInterface,
+	) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
 			monitor_updates: Mutex::new(HashMap::new()),
 			latest_monitor_update_id: Mutex::new(HashMap::new()),
-			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
+			chain_monitor: chainmonitor::ChainMonitor::new(
+				chain_source,
+				broadcaster,
+				logger,
+				fee_estimator,
+				persister,
+			),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
 			expect_monitor_round_trip_fail: Mutex::new(None),
@@ -328,45 +380,75 @@ impl<'a> TestChainMonitor<'a> {
 	}
 
 	pub fn complete_sole_pending_chan_update(&self, channel_id: &ChannelId) {
-		let (outpoint, _, latest_update) = self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
+		let (outpoint, _, latest_update) =
+			self.latest_monitor_update_id.lock().unwrap().get(channel_id).unwrap().clone();
 		self.chain_monitor.channel_monitor_updated(outpoint, latest_update).unwrap();
 	}
 }
 impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
+	fn watch_channel(
+		&self, funding_txo: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>,
+	) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
 		let mut w = TestVecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
-			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
+			&mut io::Cursor::new(&w.0),
+			(self.keys_manager, self.keys_manager),
+		)
+		.unwrap()
+		.1;
 		assert!(new_monitor == monitor);
-		self.latest_monitor_update_id.lock().unwrap().insert(monitor.channel_id(),
-			(funding_txo, monitor.get_latest_update_id(), MonitorUpdateId::from_new_monitor(&monitor)));
+		self.latest_monitor_update_id.lock().unwrap().insert(
+			monitor.channel_id(),
+			(
+				funding_txo,
+				monitor.get_latest_update_id(),
+				MonitorUpdateId::from_new_monitor(&monitor),
+			),
+		);
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
 		self.chain_monitor.watch_channel(funding_txo, new_monitor)
 	}
 
-	fn update_channel(&self, funding_txo: OutPoint, update: &channelmonitor::ChannelMonitorUpdate) -> chain::ChannelMonitorUpdateStatus {
+	fn update_channel(
+		&self, funding_txo: OutPoint, update: &channelmonitor::ChannelMonitorUpdate,
+	) -> chain::ChannelMonitorUpdateStatus {
 		// Every monitor update should survive roundtrip
 		let mut w = TestVecWriter(Vec::new());
 		update.write(&mut w).unwrap();
-		assert!(channelmonitor::ChannelMonitorUpdate::read(
-				&mut io::Cursor::new(&w.0)).unwrap() == *update);
-		let channel_id = update.channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(funding_txo));
+		assert!(
+			channelmonitor::ChannelMonitorUpdate::read(&mut io::Cursor::new(&w.0)).unwrap()
+				== *update
+		);
+		let channel_id =
+			update.channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(funding_txo));
 
-		self.monitor_updates.lock().unwrap().entry(channel_id).or_insert(Vec::new()).push(update.clone());
+		self.monitor_updates
+			.lock()
+			.unwrap()
+			.entry(channel_id)
+			.or_insert(Vec::new())
+			.push(update.clone());
 
 		if let Some(exp) = self.expect_channel_force_closed.lock().unwrap().take() {
 			assert_eq!(channel_id, exp.0);
 			assert_eq!(update.updates.len(), 1);
-			if let channelmonitor::ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
+			if let channelmonitor::ChannelMonitorUpdateStep::ChannelForceClosed {
+				should_broadcast,
+			} = update.updates[0]
+			{
 				assert_eq!(should_broadcast, exp.1);
-			} else { panic!(); }
+			} else {
+				panic!();
+			}
 		}
 
-		self.latest_monitor_update_id.lock().unwrap().insert(channel_id,
-			(funding_txo, update.update_id, MonitorUpdateId::from_monitor_update(update)));
+		self.latest_monitor_update_id.lock().unwrap().insert(
+			channel_id,
+			(funding_txo, update.update_id, MonitorUpdateId::from_monitor_update(update)),
+		);
 		let update_res = self.chain_monitor.update_channel(funding_txo, update);
 		// At every point where we get a monitor update, we should be able to send a useful monitor
 		// to a watchtower and disk...
@@ -374,7 +456,11 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		w.0.clear();
 		monitor.write(&mut w).unwrap();
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
-			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
+			&mut io::Cursor::new(&w.0),
+			(self.keys_manager, self.keys_manager),
+		)
+		.unwrap()
+		.1;
 		if let Some(chan_id) = self.expect_monitor_round_trip_fail.lock().unwrap().take() {
 			assert_eq!(chan_id, channel_id);
 			assert!(new_monitor != *monitor);
@@ -385,7 +471,9 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		update_res
 	}
 
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
+	fn release_pending_monitor_events(
+		&self,
+	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
 }
@@ -421,41 +509,68 @@ impl WatchtowerPersister {
 	}
 
 	#[cfg(test)]
-	pub(crate) fn justice_tx(&self, funding_txo: OutPoint, commitment_txid: &Txid)
-	-> Option<Transaction> {
-		self.watchtower_state.lock().unwrap().get(&funding_txo).unwrap().get(commitment_txid).cloned()
+	pub(crate) fn justice_tx(
+		&self, funding_txo: OutPoint, commitment_txid: &Txid,
+	) -> Option<Transaction> {
+		self.watchtower_state
+			.lock()
+			.unwrap()
+			.get(&funding_txo)
+			.unwrap()
+			.get(commitment_txid)
+			.cloned()
 	}
 
-	fn form_justice_data_from_commitment(&self, counterparty_commitment_tx: &CommitmentTransaction)
-	-> Option<JusticeTxData> {
+	fn form_justice_data_from_commitment(
+		&self, counterparty_commitment_tx: &CommitmentTransaction,
+	) -> Option<JusticeTxData> {
 		let trusted_tx = counterparty_commitment_tx.trust();
 		let output_idx = trusted_tx.revokeable_output_index()?;
 		let built_tx = trusted_tx.built_transaction();
 		let value = built_tx.transaction.output[output_idx as usize].value;
-		let justice_tx = trusted_tx.build_to_local_justice_tx(
-			FEERATE_FLOOR_SATS_PER_KW as u64, self.destination_script.clone()).ok()?;
+		let justice_tx = trusted_tx
+			.build_to_local_justice_tx(
+				FEERATE_FLOOR_SATS_PER_KW as u64,
+				self.destination_script.clone(),
+			)
+			.ok()?;
 		let commitment_number = counterparty_commitment_tx.commitment_number();
 		Some(JusticeTxData { justice_tx, value, commitment_number })
 	}
 }
 
-impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
-	fn persist_new_channel(&self, funding_txo: OutPoint,
-		data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId
+impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer>
+	for WatchtowerPersister
+{
+	fn persist_new_channel(
+		&self, funding_txo: OutPoint, data: &channelmonitor::ChannelMonitor<Signer>,
+		id: MonitorUpdateId,
 	) -> chain::ChannelMonitorUpdateStatus {
 		let res = self.persister.persist_new_channel(funding_txo, data, id);
 
-		assert!(self.unsigned_justice_tx_data.lock().unwrap()
-			.insert(funding_txo, VecDeque::new()).is_none());
-		assert!(self.watchtower_state.lock().unwrap()
-			.insert(funding_txo, HashMap::new()).is_none());
+		assert!(self
+			.unsigned_justice_tx_data
+			.lock()
+			.unwrap()
+			.insert(funding_txo, VecDeque::new())
+			.is_none());
+		assert!(self
+			.watchtower_state
+			.lock()
+			.unwrap()
+			.insert(funding_txo, HashMap::new())
+			.is_none());
 
-		let initial_counterparty_commitment_tx = data.initial_counterparty_commitment_tx()
-			.expect("First and only call expects Some");
-		if let Some(justice_data)
-			= self.form_justice_data_from_commitment(&initial_counterparty_commitment_tx) {
-			self.unsigned_justice_tx_data.lock().unwrap()
-				.get_mut(&funding_txo).unwrap()
+		let initial_counterparty_commitment_tx =
+			data.initial_counterparty_commitment_tx().expect("First and only call expects Some");
+		if let Some(justice_data) =
+			self.form_justice_data_from_commitment(&initial_counterparty_commitment_tx)
+		{
+			self.unsigned_justice_tx_data
+				.lock()
+				.unwrap()
+				.get_mut(&funding_txo)
+				.unwrap()
 				.push_back(justice_data);
 		}
 		res
@@ -463,25 +578,37 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 
 	fn update_persisted_channel(
 		&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>,
-		data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId
+		data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId,
 	) -> chain::ChannelMonitorUpdateStatus {
 		let res = self.persister.update_persisted_channel(funding_txo, update, data, update_id);
 
 		if let Some(update) = update {
 			let commitment_txs = data.counterparty_commitment_txs_from_update(update);
-			let justice_datas = commitment_txs.into_iter()
+			let justice_datas = commitment_txs
+				.into_iter()
 				.filter_map(|commitment_tx| self.form_justice_data_from_commitment(&commitment_tx));
 			let mut channels_justice_txs = self.unsigned_justice_tx_data.lock().unwrap();
 			let channel_state = channels_justice_txs.get_mut(&funding_txo).unwrap();
 			channel_state.extend(justice_datas);
 
-			while let Some(JusticeTxData { justice_tx, value, commitment_number }) = channel_state.front() {
+			while let Some(JusticeTxData { justice_tx, value, commitment_number }) =
+				channel_state.front()
+			{
 				let input_idx = 0;
 				let commitment_txid = justice_tx.input[input_idx].previous_output.txid;
-				match data.sign_to_local_justice_tx(justice_tx.clone(), input_idx, *value, *commitment_number) {
+				match data.sign_to_local_justice_tx(
+					justice_tx.clone(),
+					input_idx,
+					*value,
+					*commitment_number,
+				) {
 					Ok(signed_justice_tx) => {
-						let dup = self.watchtower_state.lock().unwrap()
-							.get_mut(&funding_txo).unwrap()
+						let dup = self
+							.watchtower_state
+							.lock()
+							.unwrap()
+							.get_mut(&funding_txo)
+							.unwrap()
 							.insert(commitment_txid, signed_justice_tx);
 						assert!(dup.is_none());
 						channel_state.pop_front();
@@ -519,24 +646,43 @@ impl TestPersister {
 		self.update_rets.lock().unwrap().push_back(next_ret);
 	}
 }
-impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for TestPersister {
-	fn persist_new_channel(&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>, _id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer>
+	for TestPersister
+{
+	fn persist_new_channel(
+		&self, _funding_txo: OutPoint, _data: &channelmonitor::ChannelMonitor<Signer>,
+		_id: MonitorUpdateId,
+	) -> chain::ChannelMonitorUpdateStatus {
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
-			return update_ret
+			return update_ret;
 		}
 		chain::ChannelMonitorUpdateStatus::Completed
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+	fn update_persisted_channel(
+		&self, funding_txo: OutPoint, _update: Option<&channelmonitor::ChannelMonitorUpdate>,
+		_data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId,
+	) -> chain::ChannelMonitorUpdateStatus {
 		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			ret = update_ret;
 		}
-		let is_chain_sync = if let UpdateOrigin::ChainSync(_) = update_id.contents { true } else { false };
+		let is_chain_sync =
+			if let UpdateOrigin::ChainSync(_) = update_id.contents { true } else { false };
 		if is_chain_sync {
-			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
+			self.chain_sync_monitor_persistences
+				.lock()
+				.unwrap()
+				.entry(funding_txo)
+				.or_insert(HashSet::new())
+				.insert(update_id);
 		} else {
-			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
+			self.offchain_monitor_updates
+				.lock()
+				.unwrap()
+				.entry(funding_txo)
+				.or_insert(HashSet::new())
+				.insert(update_id);
 		}
 		ret
 	}
@@ -555,7 +701,9 @@ impl TestStore {
 }
 
 impl KVStore for TestStore {
-	fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> {
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> io::Result<Vec<u8>> {
 		let persisted_lock = self.persisted_bytes.lock().unwrap();
 		let prefixed = if secondary_namespace.is_empty() {
 			primary_namespace.to_string()
@@ -575,7 +723,9 @@ impl KVStore for TestStore {
 		}
 	}
 
-	fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> {
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> io::Result<()> {
 		if self.read_only {
 			return Err(io::Error::new(
 				io::ErrorKind::PermissionDenied,
@@ -596,7 +746,9 @@ impl KVStore for TestStore {
 		Ok(())
 	}
 
-	fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, _lazy: bool) -> io::Result<()> {
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, _lazy: bool,
+	) -> io::Result<()> {
 		if self.read_only {
 			return Err(io::Error::new(
 				io::ErrorKind::PermissionDenied,
@@ -612,7 +764,7 @@ impl KVStore for TestStore {
 			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
 		if let Some(outer_ref) = persisted_lock.get_mut(&prefixed) {
-				outer_ref.remove(&key.to_string());
+			outer_ref.remove(&key.to_string());
 		}
 
 		Ok(())
@@ -667,10 +819,15 @@ impl chaininterface::BroadcasterInterface for TestBroadcaster {
 		for tx in txs {
 			let lock_time = tx.lock_time.to_consensus_u32();
 			assert!(lock_time < 1_500_000_000);
-			if tx.lock_time.is_block_height() && lock_time > self.blocks.lock().unwrap().last().unwrap().1 {
+			if tx.lock_time.is_block_height()
+				&& lock_time > self.blocks.lock().unwrap().last().unwrap().1
+			{
 				for inp in tx.input.iter() {
 					if inp.sequence != Sequence::MAX {
-						panic!("We should never broadcast a transaction before its locktime ({})!", tx.lock_time);
+						panic!(
+							"We should never broadcast a transaction before its locktime ({})!",
+							tx.lock_time
+						);
 					}
 				}
 			}
@@ -702,14 +859,21 @@ impl TestChannelMessageHandler {
 	#[cfg(test)]
 	pub(crate) fn expect_receive_msg(&self, ev: wire::Message<()>) {
 		let mut expected_msgs = self.expected_recv_msgs.lock().unwrap();
-		if expected_msgs.is_none() { *expected_msgs = Some(Vec::new()); }
+		if expected_msgs.is_none() {
+			*expected_msgs = Some(Vec::new());
+		}
 		expected_msgs.as_mut().unwrap().push(ev);
 	}
 
 	fn received_msg(&self, _ev: wire::Message<()>) {
 		let mut msgs = self.expected_recv_msgs.lock().unwrap();
-		if msgs.is_none() { return; }
-		assert!(!msgs.as_ref().unwrap().is_empty(), "Received message when we weren't expecting one");
+		if msgs.is_none() {
+			return;
+		}
+		assert!(
+			!msgs.as_ref().unwrap().is_empty(),
+			"Received message when we weren't expecting one"
+		);
 		#[cfg(test)]
 		assert_eq!(msgs.as_ref().unwrap()[0], _ev);
 		msgs.as_mut().unwrap().remove(0);
@@ -765,13 +929,17 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
 		self.received_msg(wire::Message::UpdateAddHTLC(msg.clone()));
 	}
-	fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
+	fn handle_update_fulfill_htlc(
+		&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC,
+	) {
 		self.received_msg(wire::Message::UpdateFulfillHTLC(msg.clone()));
 	}
 	fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) {
 		self.received_msg(wire::Message::UpdateFailHTLC(msg.clone()));
 	}
-	fn handle_update_fail_malformed_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
+	fn handle_update_fail_malformed_htlc(
+		&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC,
+	) {
 		self.received_msg(wire::Message::UpdateFailMalformedHTLC(msg.clone()));
 	}
 	fn handle_commitment_signed(&self, _their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {
@@ -786,16 +954,22 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {
 		// Don't call `received_msg` here as `TestRoutingMessageHandler` generates these sometimes
 	}
-	fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
+	fn handle_announcement_signatures(
+		&self, _their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures,
+	) {
 		self.received_msg(wire::Message::AnnouncementSignatures(msg.clone()));
 	}
-	fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
+	fn handle_channel_reestablish(
+		&self, _their_node_id: &PublicKey, msg: &msgs::ChannelReestablish,
+	) {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
 	fn peer_disconnected(&self, their_node_id: &PublicKey) {
 		assert!(self.connected_peers.lock().unwrap().remove(their_node_id));
 	}
-	fn peer_connected(&self, their_node_id: &PublicKey, _msg: &msgs::Init, _inbound: bool) -> Result<(), ()> {
+	fn peer_connected(
+		&self, their_node_id: &PublicKey, _msg: &msgs::Init, _inbound: bool,
+	) -> Result<(), ()> {
 		assert!(self.connected_peers.lock().unwrap().insert(their_node_id.clone()));
 		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
 		// bother re-generating the expected Init message in all tests.
@@ -916,7 +1090,7 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			excess_data: vec![],
-		}
+		},
 	}
 }
 
@@ -938,18 +1112,27 @@ impl TestRoutingMessageHandler {
 	}
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
-	fn handle_node_announcement(&self, _msg: &msgs::NodeAnnouncement) -> Result<bool, msgs::LightningError> {
+	fn handle_node_announcement(
+		&self, _msg: &msgs::NodeAnnouncement,
+	) -> Result<bool, msgs::LightningError> {
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
-	fn handle_channel_announcement(&self, _msg: &msgs::ChannelAnnouncement) -> Result<bool, msgs::LightningError> {
+	fn handle_channel_announcement(
+		&self, _msg: &msgs::ChannelAnnouncement,
+	) -> Result<bool, msgs::LightningError> {
 		self.chan_anns_recvd.fetch_add(1, Ordering::AcqRel);
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
-	fn handle_channel_update(&self, _msg: &msgs::ChannelUpdate) -> Result<bool, msgs::LightningError> {
+	fn handle_channel_update(
+		&self, _msg: &msgs::ChannelUpdate,
+	) -> Result<bool, msgs::LightningError> {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
-	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
+	fn get_next_channel_announcement(
+		&self, starting_point: u64,
+	) -> Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)>
+	{
 		let chan_upd_1 = get_dummy_channel_update(starting_point);
 		let chan_upd_2 = get_dummy_channel_update(starting_point);
 		let chan_ann = get_dummy_channel_announcement(starting_point);
@@ -957,11 +1140,15 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Some((chan_ann, Some(chan_upd_1), Some(chan_upd_2)))
 	}
 
-	fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<msgs::NodeAnnouncement> {
+	fn get_next_node_announcement(
+		&self, _starting_point: Option<&NodeId>,
+	) -> Option<msgs::NodeAnnouncement> {
 		None
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init, _inbound: bool) -> Result<(), ()> {
+	fn peer_connected(
+		&self, their_node_id: &PublicKey, init_msg: &msgs::Init, _inbound: bool,
+	) -> Result<(), ()> {
 		if !init_msg.features.supports_gossip_queries() {
 			return Ok(());
 		}
@@ -970,7 +1157,10 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		let mut gossip_start_time = 0;
 		#[cfg(feature = "std")]
 		{
-			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
+			gossip_start_time = SystemTime::now()
+				.duration_since(UNIX_EPOCH)
+				.expect("Time must be > 1970")
+				.as_secs();
 			if self.request_full_sync.load(Ordering::Acquire) {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
 			} else {
@@ -990,19 +1180,27 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Ok(())
 	}
 
-	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), msgs::LightningError> {
+	fn handle_reply_channel_range(
+		&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange,
+	) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
 
-	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), msgs::LightningError> {
+	fn handle_reply_short_channel_ids_end(
+		&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd,
+	) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
 
-	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), msgs::LightningError> {
+	fn handle_query_channel_range(
+		&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange,
+	) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
 
-	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), msgs::LightningError> {
+	fn handle_query_short_channel_ids(
+		&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds,
+	) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
 
@@ -1018,7 +1216,9 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		features
 	}
 
-	fn processing_queue_high(&self) -> bool { false }
+	fn processing_queue_high(&self) -> bool {
+		false
+	}
 }
 
 impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
@@ -1063,9 +1263,11 @@ impl TestLogger {
 	/// And asserts if the number of occurrences is the same with the given `count`
 	pub fn assert_log_contains(&self, module: &str, line: &str, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
-		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
-			*m == module && l.contains(line)
-		}).map(|(_, c) | { c }).sum();
+		let l: usize = log_entries
+			.iter()
+			.filter(|&(&(ref m, ref l), _c)| *m == module && l.contains(line))
+			.map(|(_, c)| c)
+			.sum();
 		assert_eq!(l, count)
 	}
 
@@ -1076,14 +1278,17 @@ impl TestLogger {
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn assert_log_regex(&self, module: &str, pattern: regex::Regex, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
-		let l: usize = log_entries.iter().filter(|&(&(ref m, ref l), _c)| {
-			*m == module && pattern.is_match(&l)
-		}).map(|(_, c) | { c }).sum();
+		let l: usize = log_entries
+			.iter()
+			.filter(|&(&(ref m, ref l), _c)| *m == module && pattern.is_match(&l))
+			.map(|(_, c)| c)
+			.sum();
 		assert_eq!(l, count)
 	}
 
 	pub fn assert_log_context_contains(
-		&self, module: &str, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>, count: usize
+		&self, module: &str, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
+		count: usize,
 	) {
 		let context_entries = self.context.lock().unwrap();
 		let l = context_entries.get(&(module, peer_id, channel_id)).unwrap();
@@ -1093,11 +1298,28 @@ impl TestLogger {
 
 impl Logger for TestLogger {
 	fn log(&self, record: Record) {
-		*self.lines.lock().unwrap().entry((record.module_path, format!("{}", record.args))).or_insert(0) += 1;
-		*self.context.lock().unwrap().entry((record.module_path, record.peer_id, record.channel_id)).or_insert(0) += 1;
+		*self
+			.lines
+			.lock()
+			.unwrap()
+			.entry((record.module_path, format!("{}", record.args)))
+			.or_insert(0) += 1;
+		*self
+			.context
+			.lock()
+			.unwrap()
+			.entry((record.module_path, record.peer_id, record.channel_id))
+			.or_insert(0) += 1;
 		if record.level >= self.level {
-			#[cfg(all(not(ldk_bench), feature = "std"))] {
-				let pfx = format!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line);
+			#[cfg(all(not(ldk_bench), feature = "std"))]
+			{
+				let pfx = format!(
+					"{} {} [{}:{}]",
+					self.id,
+					record.level.to_string(),
+					record.module_path,
+					record.line
+				);
 				println!("{:<55}{}", pfx, record.args);
 			}
 		}
@@ -1122,15 +1344,18 @@ impl NodeSigner for TestNodeSigner {
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		let node_secret = match recipient {
 			Recipient::Node => Ok(&self.node_secret),
-			Recipient::PhantomNode => Err(())
+			Recipient::PhantomNode => Err(()),
 		}?;
 		Ok(PublicKey::from_secret_key(&Secp256k1::signing_only(), node_secret))
 	}
 
-	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&bitcoin::secp256k1::Scalar>) -> Result<SharedSecret, ()> {
+	fn ecdh(
+		&self, recipient: Recipient, other_key: &PublicKey,
+		tweak: Option<&bitcoin::secp256k1::Scalar>,
+	) -> Result<SharedSecret, ()> {
 		let mut node_secret = match recipient {
 			Recipient::Node => Ok(self.node_secret.clone()),
-			Recipient::PhantomNode => Err(())
+			Recipient::PhantomNode => Err(()),
 		}?;
 		if let Some(tweak) = tweak {
 			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
@@ -1138,12 +1363,14 @@ impl NodeSigner for TestNodeSigner {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn sign_invoice(&self, _: &[u8], _: &[bitcoin::bech32::u5], _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
+	fn sign_invoice(
+		&self, _: &[u8], _: &[bitcoin::bech32::u5], _: Recipient,
+	) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
 		unreachable!()
 	}
 
 	fn sign_bolt12_invoice_request(
-		&self, _invoice_request: &UnsignedInvoiceRequest
+		&self, _invoice_request: &UnsignedInvoiceRequest,
 	) -> Result<schnorr::Signature, ()> {
 		unreachable!()
 	}
@@ -1163,7 +1390,7 @@ pub struct TestKeysInterface {
 	pub backing: sign::PhantomKeysManager,
 	pub override_random_bytes: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
-	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
+	enforcement_states: Mutex<HashMap<[u8; 32], Arc<Mutex<EnforcementState>>>>,
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 }
 
@@ -1182,7 +1409,9 @@ impl NodeSigner for TestKeysInterface {
 		self.backing.get_node_id(recipient)
 	}
 
-	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
+	fn ecdh(
+		&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>,
+	) -> Result<SharedSecret, ()> {
 		self.backing.ecdh(recipient, other_key, tweak)
 	}
 
@@ -1190,12 +1419,14 @@ impl NodeSigner for TestKeysInterface {
 		self.backing.get_inbound_payment_key_material()
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(
+		&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient,
+	) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
 	}
 
 	fn sign_bolt12_invoice_request(
-		&self, invoice_request: &UnsignedInvoiceRequest
+		&self, invoice_request: &UnsignedInvoiceRequest,
 	) -> Result<schnorr::Signature, ()> {
 		self.backing.sign_bolt12_invoice_request(invoice_request)
 	}
@@ -1216,11 +1447,15 @@ impl SignerProvider for TestKeysInterface {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
+	fn generate_channel_keys_id(
+		&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128,
+	) -> [u8; 32] {
 		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
 	}
 
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> TestChannelSigner {
+	fn derive_channel_signer(
+		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+	) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
 		TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
@@ -1232,14 +1467,12 @@ impl SignerProvider for TestKeysInterface {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
-		Ok(TestChannelSigner::new_with_revoked(
-			inner,
-			state,
-			self.disable_revocation_policy_check
-		))
+		Ok(TestChannelSigner::new_with_revoked(inner, state, self.disable_revocation_policy_check))
 	}
 
-	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { self.backing.get_destination_script(channel_keys_id) }
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+		self.backing.get_destination_script(channel_keys_id)
+	}
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		match &mut *self.expectations.lock().unwrap() {
@@ -1267,19 +1500,25 @@ impl TestKeysInterface {
 	/// Sets an expectation that [`sign::SignerProvider::get_shutdown_scriptpubkey`] is
 	/// called.
 	pub fn expect(&self, expectation: OnGetShutdownScriptpubkey) -> &Self {
-		self.expectations.lock().unwrap()
+		self.expectations
+			.lock()
+			.unwrap()
 			.get_or_insert_with(|| VecDeque::new())
 			.push_back(expectation);
 		self
 	}
 
-	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> TestChannelSigner {
+	pub fn derive_channel_keys(
+		&self, channel_value_satoshis: u64, id: &[u8; 32],
+	) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_keys(channel_value_satoshis, id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
 		TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
 	}
 
-	fn make_enforcement_state_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<EnforcementState>> {
+	fn make_enforcement_state_cell(
+		&self, commitment_seed: [u8; 32],
+	) -> Arc<Mutex<EnforcementState>> {
 		let mut states = self.enforcement_states.lock().unwrap();
 		if !states.contains_key(&commitment_seed) {
 			let state = EnforcementState::new();
@@ -1338,7 +1577,10 @@ impl TestChainSource {
 		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		Self {
 			chain_hash: ChainHash::using_genesis_block(network),
-			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut { value: u64::max_value(), script_pubkey }))),
+			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut {
+				value: u64::max_value(),
+				script_pubkey,
+			}))),
 			get_utxo_call_count: AtomicUsize::new(0),
 			watched_txn: Mutex::new(HashSet::new()),
 			watched_outputs: Mutex::new(HashSet::new()),
@@ -1382,25 +1624,29 @@ pub struct TestScorer {
 
 impl TestScorer {
 	pub fn new() -> Self {
-		Self {
-			scorer_expectations: RefCell::new(None),
-		}
+		Self { scorer_expectations: RefCell::new(None) }
 	}
 
 	pub fn expect_usage(&self, scid: u64, expectation: ChannelUsage) {
-		self.scorer_expectations.borrow_mut().get_or_insert_with(|| VecDeque::new()).push_back((scid, expectation));
+		self.scorer_expectations
+			.borrow_mut()
+			.get_or_insert_with(|| VecDeque::new())
+			.push_back((scid, expectation));
 	}
 }
 
 #[cfg(c_bindings)]
 impl crate::util::ser::Writeable for TestScorer {
-	fn write<W: crate::util::ser::Writer>(&self, _: &mut W) -> Result<(), crate::io::Error> { unreachable!(); }
+	fn write<W: crate::util::ser::Writer>(&self, _: &mut W) -> Result<(), crate::io::Error> {
+		unreachable!();
+	}
 }
 
 impl ScoreLookUp for TestScorer {
 	type ScoreParams = ();
 	fn channel_penalty_msat(
-		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, _score_params: &Self::ScoreParams
+		&self, candidate: &CandidateRouteHop, usage: ChannelUsage,
+		_score_params: &Self::ScoreParams,
 	) -> u64 {
 		let short_channel_id = match candidate.globally_unique_short_channel_id() {
 			Some(scid) => scid,
@@ -1420,7 +1666,11 @@ impl ScoreLookUp for TestScorer {
 }
 
 impl ScoreUpdate for TestScorer {
-	fn payment_path_failed(&mut self, _actual_path: &Path, _actual_short_channel_id: u64, _duration_since_epoch: Duration) {}
+	fn payment_path_failed(
+		&mut self, _actual_path: &Path, _actual_short_channel_id: u64,
+		_duration_since_epoch: Duration,
+	) {
+	}
 
 	fn payment_path_successful(&mut self, _actual_path: &Path, _duration_since_epoch: Duration) {}
 
@@ -1436,7 +1686,8 @@ impl crate::routing::scoring::Score for TestScorer {}
 
 impl Drop for TestScorer {
 	fn drop(&mut self) {
-		#[cfg(feature = "std")] {
+		#[cfg(feature = "std")]
+		{
 			if std::thread::panicking() {
 				return;
 			}
@@ -1458,11 +1709,7 @@ pub struct TestWalletSource {
 
 impl TestWalletSource {
 	pub fn new(secret_key: SecretKey) -> Self {
-		Self {
-			secret_key,
-			utxos: RefCell::new(Vec::new()),
-			secp: Secp256k1::new(),
-		}
+		Self { secret_key, utxos: RefCell::new(Vec::new()), secp: Secp256k1::new() }
 	}
 
 	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: u64) -> TxOut {
@@ -1497,9 +1744,15 @@ impl WalletSource for TestWalletSource {
 		let mut tx = psbt.extract_tx();
 		let utxos = self.utxos.borrow();
 		for i in 0..tx.input.len() {
-			if let Some(utxo) = utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output) {
+			if let Some(utxo) =
+				utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output)
+			{
 				let sighash = SighashCache::new(&tx)
-					.legacy_signature_hash(i, &utxo.output.script_pubkey, EcdsaSighashType::All as u32)
+					.legacy_signature_hash(
+						i,
+						&utxo.output.script_pubkey,
+						EcdsaSighashType::All as u32,
+					)
 					.map_err(|_| ())?;
 				let sig = self.secp.sign_ecdsa(&(*sighash.as_raw_hash()).into(), &self.secret_key);
 				let bitcoin_sig = bitcoin::ecdsa::Signature { sig, hash_ty: EcdsaSighashType::All };

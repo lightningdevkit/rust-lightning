@@ -34,7 +34,9 @@ impl Debug for GraphSyncError {
 	fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
 		match self {
 			GraphSyncError::DecodeError(e) => f.write_fmt(format_args!("DecodeError: {:?}", e)),
-			GraphSyncError::LightningError(e) => f.write_fmt(format_args!("LightningError: {:?}", e))
+			GraphSyncError::LightningError(e) => {
+				f.write_fmt(format_args!("LightningError: {:?}", e))
+			},
 		}
 	}
 }

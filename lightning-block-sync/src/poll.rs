@@ -1,6 +1,9 @@
 //! Adapters that make one or more [`BlockSource`]s simpler to poll for new chain tip transitions.
 
-use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult};
+use crate::{
+	AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError,
+	BlockSourceResult,
+};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::constants::Network;
@@ -17,16 +20,19 @@ use std::ops::Deref;
 /// [`ChainPoller`]: ../struct.ChainPoller.html
 pub trait Poll {
 	/// Returns a chain tip in terms of its relationship to the provided chain tip.
-	fn poll_chain_tip<'a>(&'a self, best_known_chain_tip: ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ChainTip>;
+	fn poll_chain_tip<'a>(
+		&'a self, best_known_chain_tip: ValidatedBlockHeader,
+	) -> AsyncBlockSourceResult<'a, ChainTip>;
 
 	/// Returns the header that preceded the given header in the chain.
-	fn look_up_previous_header<'a>(&'a self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlockHeader>;
+	fn look_up_previous_header<'a>(
+		&'a self, header: &'a ValidatedBlockHeader,
+	) -> AsyncBlockSourceResult<'a, ValidatedBlockHeader>;
 
 	/// Returns the block associated with the given header.
-	fn fetch_block<'a>(&'a self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlock>;
+	fn fetch_block<'a>(
+		&'a self, header: &'a ValidatedBlockHeader,
+	) -> AsyncBlockSourceResult<'a, ValidatedBlock>;
 }
 
 /// A chain tip relative to another chain tip in terms of block hash and chainwork.
@@ -59,9 +65,8 @@ impl Validate for BlockHeaderData {
 	type T = ValidatedBlockHeader;
 
 	fn validate(self, block_hash: BlockHash) -> BlockSourceResult<Self::T> {
-		let pow_valid_block_hash = self.header
-			.validate_pow(self.header.target())
-			.map_err(BlockSourceError::persistent)?;
+		let pow_valid_block_hash =
+			self.header.validate_pow(self.header.target()).map_err(BlockSourceError::persistent)?;
 
 		if pow_valid_block_hash != block_hash {
 			return Err(BlockSourceError::persistent("invalid block hash"));
@@ -80,9 +85,8 @@ impl Validate for BlockData {
 			BlockData::HeaderOnly(header) => header,
 		};
 
-		let pow_valid_block_hash = header
-			.validate_pow(header.target())
-			.map_err(BlockSourceError::persistent)?;
+		let pow_valid_block_hash =
+			header.validate_pow(header.target()).map_err(BlockSourceError::persistent)?;
 
 		if pow_valid_block_hash != block_hash {
 			return Err(BlockSourceError::persistent("invalid block hash"));
@@ -120,7 +124,9 @@ impl std::ops::Deref for ValidatedBlockHeader {
 impl ValidatedBlockHeader {
 	/// Checks that the header correctly builds on previous_header: the claimed work differential
 	/// matches the actual PoW and the difficulty transition is possible, i.e., within 4x.
-	fn check_builds_on(&self, previous_header: &ValidatedBlockHeader, network: Network) -> BlockSourceResult<()> {
+	fn check_builds_on(
+		&self, previous_header: &ValidatedBlockHeader, network: Network,
+	) -> BlockSourceResult<()> {
 		if self.header.prev_blockhash != previous_header.block_hash {
 			return Err(BlockSourceError::persistent("invalid previous block hash"));
 		}
@@ -141,28 +147,28 @@ impl ValidatedBlockHeader {
 				let min_target = previous_target.min_difficulty_transition_threshold();
 				let max_target = previous_target.max_difficulty_transition_threshold();
 				if target > max_target || target < min_target {
-					return Err(BlockSourceError::persistent("invalid difficulty transition"))
+					return Err(BlockSourceError::persistent("invalid difficulty transition"));
 				}
 			} else if self.header.bits != previous_header.header.bits {
-				return Err(BlockSourceError::persistent("invalid difficulty"))
+				return Err(BlockSourceError::persistent("invalid difficulty"));
 			}
 		}
 
 		Ok(())
 	}
 
-    /// Returns the [`BestBlock`] corresponding to this validated block header, which can be passed
-    /// into [`ChannelManager::new`] as part of its [`ChainParameters`]. Useful for ensuring that
-    /// the [`SpvClient`] and [`ChannelManager`] are initialized to the same block during a fresh
-    /// start.
-    ///
-    /// [`SpvClient`]: crate::SpvClient
-    /// [`ChainParameters`]: lightning::ln::channelmanager::ChainParameters
-    /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
-    /// [`ChannelManager::new`]: lightning::ln::channelmanager::ChannelManager::new
-    pub fn to_best_block(&self) -> BestBlock {
-        BestBlock::new(self.block_hash, self.inner.height)
-    }
+	/// Returns the [`BestBlock`] corresponding to this validated block header, which can be passed
+	/// into [`ChannelManager::new`] as part of its [`ChainParameters`]. Useful for ensuring that
+	/// the [`SpvClient`] and [`ChannelManager`] are initialized to the same block during a fresh
+	/// start.
+	///
+	/// [`SpvClient`]: crate::SpvClient
+	/// [`ChainParameters`]: lightning::ln::channelmanager::ChainParameters
+	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::new`]: lightning::ln::channelmanager::ChannelManager::new
+	pub fn to_best_block(&self) -> BestBlock {
+		BestBlock::new(self.block_hash, self.inner.height)
+	}
 }
 
 /// A block with validated data against its transaction list and corresponding block hash.
@@ -191,12 +197,12 @@ mod sealed {
 ///
 /// Other `Poll` implementations should be built using `ChainPoller` as it provides the simplest way
 /// of validating chain data and checking consistency.
-pub struct ChainPoller<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> {
+pub struct ChainPoller<B: Deref<Target = T> + Sized + Send + Sync, T: BlockSource + ?Sized> {
 	block_source: B,
 	network: Network,
 }
 
-impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> ChainPoller<B, T> {
+impl<B: Deref<Target = T> + Sized + Send + Sync, T: BlockSource + ?Sized> ChainPoller<B, T> {
 	/// Creates a new poller for the given block source.
 	///
 	/// If the `network` parameter is mainnet, then the difficulty between blocks is checked for
@@ -206,19 +212,20 @@ impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> ChainPol
 	}
 }
 
-impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll for ChainPoller<B, T> {
-	fn poll_chain_tip<'a>(&'a self, best_known_chain_tip: ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ChainTip>
-	{
+impl<B: Deref<Target = T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll
+	for ChainPoller<B, T>
+{
+	fn poll_chain_tip<'a>(
+		&'a self, best_known_chain_tip: ValidatedBlockHeader,
+	) -> AsyncBlockSourceResult<'a, ChainTip> {
 		Box::pin(async move {
 			let (block_hash, height) = self.block_source.get_best_block().await?;
 			if block_hash == best_known_chain_tip.header.block_hash() {
 				return Ok(ChainTip::Common);
 			}
 
-			let chain_tip = self.block_source
-				.get_header(&block_hash, height).await?
-				.validate(block_hash)?;
+			let chain_tip =
+				self.block_source.get_header(&block_hash, height).await?.validate(block_hash)?;
 			if chain_tip.chainwork > best_known_chain_tip.chainwork {
 				Ok(ChainTip::Better(chain_tip))
 			} else {
@@ -227,9 +234,9 @@ impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll for
 		})
 	}
 
-	fn look_up_previous_header<'a>(&'a self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlockHeader>
-	{
+	fn look_up_previous_header<'a>(
+		&'a self, header: &'a ValidatedBlockHeader,
+	) -> AsyncBlockSourceResult<'a, ValidatedBlockHeader> {
 		Box::pin(async move {
 			if header.height == 0 {
 				return Err(BlockSourceError::persistent("genesis block reached"));
@@ -237,8 +244,10 @@ impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll for
 
 			let previous_hash = &header.header.prev_blockhash;
 			let height = header.height - 1;
-			let previous_header = self.block_source
-				.get_header(previous_hash, Some(height)).await?
+			let previous_header = self
+				.block_source
+				.get_header(previous_hash, Some(height))
+				.await?
 				.validate(*previous_hash)?;
 			header.check_builds_on(&previous_header, self.network)?;
 
@@ -246,22 +255,20 @@ impl<B: Deref<Target=T> + Sized + Send + Sync, T: BlockSource + ?Sized> Poll for
 		})
 	}
 
-	fn fetch_block<'a>(&'a self, header: &'a ValidatedBlockHeader) ->
-		AsyncBlockSourceResult<'a, ValidatedBlock>
-	{
+	fn fetch_block<'a>(
+		&'a self, header: &'a ValidatedBlockHeader,
+	) -> AsyncBlockSourceResult<'a, ValidatedBlock> {
 		Box::pin(async move {
-			self.block_source
-				.get_block(&header.block_hash).await?
-				.validate(header.block_hash)
+			self.block_source.get_block(&header.block_hash).await?.validate(header.block_hash)
 		})
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use crate::*;
-	use crate::test_utils::Blockchain;
 	use super::*;
+	use crate::test_utils::Blockchain;
+	use crate::*;
 
 	#[tokio::test]
 	async fn poll_empty_chain() {
@@ -307,7 +314,10 @@ mod tests {
 		match poller.poll_chain_tip(best_known_chain_tip).await {
 			Err(e) => {
 				assert_eq!(e.kind(), BlockSourceErrorKind::Persistent);
-				assert_eq!(e.into_inner().as_ref().to_string(), "block target correct but not attained");
+				assert_eq!(
+					e.into_inner().as_ref().to_string(),
+					"block target correct but not attained"
+				);
 			},
 			Ok(_) => panic!("Expected error"),
 		}

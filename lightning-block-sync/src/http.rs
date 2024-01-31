@@ -50,11 +50,7 @@ pub struct HttpEndpoint {
 impl HttpEndpoint {
 	/// Creates an endpoint for the given host and default HTTP port.
 	pub fn for_host(host: String) -> Self {
-		Self {
-			host,
-			port: None,
-			path: String::from("/"),
-		}
+		Self { host, port: None, path: String::from("/") }
 	}
 
 	/// Specifies a port to use with the endpoint.
@@ -107,7 +103,10 @@ impl HttpClient {
 	pub fn connect<E: ToSocketAddrs>(endpoint: E) -> std::io::Result<Self> {
 		let address = match endpoint.to_socket_addrs()?.next() {
 			None => {
-				return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "could not resolve to any addresses"));
+				return Err(std::io::Error::new(
+					std::io::ErrorKind::InvalidInput,
+					"could not resolve to any addresses",
+				));
 			},
 			Some(address) => address,
 		};
@@ -129,12 +128,16 @@ impl HttpClient {
 	/// Returns the response body in `F` format.
 	#[allow(dead_code)]
 	pub async fn get<F>(&mut self, uri: &str, host: &str) -> std::io::Result<F>
-	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
+	where
+		F: TryFrom<Vec<u8>, Error = std::io::Error>,
+	{
 		let request = format!(
 			"GET {} HTTP/1.1\r\n\
 			 Host: {}\r\n\
 			 Connection: keep-alive\r\n\
-			 \r\n", uri, host);
+			 \r\n",
+			uri, host
+		);
 		let response_body = self.send_request_with_retry(&request).await?;
 		F::try_from(response_body)
 	}
@@ -145,8 +148,12 @@ impl HttpClient {
 	/// The request body consists of the provided JSON `content`. Returns the response body in `F`
 	/// format.
 	#[allow(dead_code)]
-	pub async fn post<F>(&mut self, uri: &str, host: &str, auth: &str, content: serde_json::Value) -> std::io::Result<F>
-	where F: TryFrom<Vec<u8>, Error = std::io::Error> {
+	pub async fn post<F>(
+		&mut self, uri: &str, host: &str, auth: &str, content: serde_json::Value,
+	) -> std::io::Result<F>
+	where
+		F: TryFrom<Vec<u8>, Error = std::io::Error>,
+	{
 		let content = content.to_string();
 		let request = format!(
 			"POST {} HTTP/1.1\r\n\
@@ -156,7 +163,13 @@ impl HttpClient {
 			 Content-Type: application/json\r\n\
 			 Content-Length: {}\r\n\
 			 \r\n\
-			 {}", uri, host, auth, content.len(), content);
+			 {}",
+			uri,
+			host,
+			auth,
+			content.len(),
+			content
+		);
 		let response_body = self.send_request_with_retry(&request).await?;
 		F::try_from(response_body)
 	}
@@ -218,8 +231,10 @@ impl HttpClient {
 		let mut reader = std::io::BufReader::new(limited_stream);
 
 		macro_rules! read_line {
-			() => { read_line!(0) };
-			($retry_count: expr) => { {
+			() => {
+				read_line!(0)
+			};
+			($retry_count: expr) => {{
 				let mut line = String::new();
 				let mut timeout_count: u64 = 0;
 				let bytes_read = loop {
@@ -236,7 +251,7 @@ impl HttpClient {
 							} else {
 								continue;
 							}
-						}
+						},
 						Err(e) => return Err(e),
 					}
 				};
@@ -245,17 +260,23 @@ impl HttpClient {
 					0 => None,
 					_ => {
 						// Remove trailing CRLF
-						if line.ends_with('\n') { line.pop(); if line.ends_with('\r') { line.pop(); } }
+						if line.ends_with('\n') {
+							line.pop();
+							if line.ends_with('\r') {
+								line.pop();
+							}
+						}
 						Some(line)
 					},
 				}
-			} }
+			}};
 		}
 
 		// Read and parse status line
 		// Note that we allow retrying a few times to reach TCP_STREAM_RESPONSE_TIMEOUT.
-		let status_line = read_line!(TCP_STREAM_RESPONSE_TIMEOUT.as_secs() / TCP_STREAM_TIMEOUT.as_secs())
-			.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "no status line"))?;
+		let status_line =
+			read_line!(TCP_STREAM_RESPONSE_TIMEOUT.as_secs() / TCP_STREAM_TIMEOUT.as_secs())
+				.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "no status line"))?;
 		let status = HttpStatus::parse(&status_line)?;
 
 		// Read and parse relevant headers
@@ -263,11 +284,15 @@ impl HttpClient {
 		loop {
 			let line = read_line!()
 				.ok_or(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "no headers"))?;
-			if line.is_empty() { break; }
+			if line.is_empty() {
+				break;
+			}
 
 			let header = HttpHeader::parse(&line)?;
 			if header.has_name("Content-Length") {
-				let length = header.value.parse()
+				let length = header
+					.value
+					.parse()
 					.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 				if let HttpMessageLength::Empty = message_length {
 					message_length = HttpMessageLength::ContentLength(length);
@@ -285,10 +310,13 @@ impl HttpClient {
 		let read_limit = MAX_HTTP_MESSAGE_BODY_SIZE - reader.buffer().len();
 		reader.get_mut().set_limit(read_limit as u64);
 		let contents = match message_length {
-			HttpMessageLength::Empty => { Vec::new() },
+			HttpMessageLength::Empty => Vec::new(),
 			HttpMessageLength::ContentLength(length) => {
 				if length == 0 || length > MAX_HTTP_MESSAGE_BODY_SIZE {
-					return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("invalid response length: {} bytes", length)));
+					return Err(std::io::Error::new(
+						std::io::ErrorKind::InvalidData,
+						format!("invalid response length: {} bytes", length),
+					));
 				} else {
 					let mut content = vec![0; length];
 					#[cfg(feature = "tokio")]
@@ -301,7 +329,9 @@ impl HttpClient {
 			HttpMessageLength::TransferEncoding(coding) => {
 				if !coding.eq_ignore_ascii_case("chunked") {
 					return Err(std::io::Error::new(
-						std::io::ErrorKind::InvalidInput, "unsupported transfer coding"))
+						std::io::ErrorKind::InvalidInput,
+						"unsupported transfer coding",
+					));
 				} else {
 					let mut content = Vec::new();
 					#[cfg(feature = "tokio")]
@@ -323,7 +353,8 @@ impl HttpClient {
 
 							// Decode the chunk header to obtain the chunk size.
 							let mut buffer = Vec::new();
-							let mut decoder = chunked_transfer::Decoder::new(chunk_header.as_bytes());
+							let mut decoder =
+								chunked_transfer::Decoder::new(chunk_header.as_bytes());
 							decoder.read_to_end(&mut buffer)?;
 
 							// Read the chunk body.
@@ -350,10 +381,7 @@ impl HttpClient {
 
 		if !status.is_ok() {
 			// TODO: Handle 3xx redirection responses.
-			let error = HttpError {
-				status_code: status.code.to_string(),
-				contents,
-			};
+			let error = HttpError { status_code: status.code.to_string(), contents };
 			return Err(std::io::Error::new(std::io::ErrorKind::Other, error));
 		}
 
@@ -391,20 +419,30 @@ impl<'a> HttpStatus<'a> {
 	fn parse(line: &'a String) -> std::io::Result<HttpStatus<'a>> {
 		let mut tokens = line.splitn(3, ' ');
 
-		let http_version = tokens.next()
+		let http_version = tokens
+			.next()
 			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no HTTP-Version"))?;
-		if !http_version.eq_ignore_ascii_case("HTTP/1.1") &&
-			!http_version.eq_ignore_ascii_case("HTTP/1.0") {
-			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid HTTP-Version"));
+		if !http_version.eq_ignore_ascii_case("HTTP/1.1")
+			&& !http_version.eq_ignore_ascii_case("HTTP/1.0")
+		{
+			return Err(std::io::Error::new(
+				std::io::ErrorKind::InvalidData,
+				"invalid HTTP-Version",
+			));
 		}
 
-		let code = tokens.next()
+		let code = tokens
+			.next()
 			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no Status-Code"))?;
 		if code.len() != 3 || !code.chars().all(|c| c.is_ascii_digit()) {
-			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid Status-Code"));
+			return Err(std::io::Error::new(
+				std::io::ErrorKind::InvalidData,
+				"invalid Status-Code",
+			));
 		}
 
-		let _reason = tokens.next()
+		let _reason = tokens
+			.next()
 			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no Reason-Phrase"))?;
 
 		Ok(Self { code })
@@ -430,9 +468,11 @@ impl<'a> HttpHeader<'a> {
 	/// [RFC 7230]: https://tools.ietf.org/html/rfc7230#section-3.2
 	fn parse(line: &'a String) -> std::io::Result<HttpHeader<'a>> {
 		let mut tokens = line.splitn(2, ':');
-		let name = tokens.next()
+		let name = tokens
+			.next()
 			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no header name"))?;
-		let value = tokens.next()
+		let value = tokens
+			.next()
 			.ok_or(std::io::Error::new(std::io::ErrorKind::InvalidData, "no header value"))?
 			.trim_start();
 		Ok(Self { name, value })
@@ -524,7 +564,7 @@ mod endpoint_tests {
 					assert_eq!(addr, std_addrs.next().unwrap());
 				}
 				assert!(std_addrs.next().is_none());
-			}
+			},
 		}
 	}
 }
@@ -559,7 +599,11 @@ pub(crate) mod client_tests {
 						"{}\r\n\
 						 Content-Length: {}\r\n\
 						 \r\n\
-						 {}", status, body.len(), body)
+						 {}",
+						status,
+						body.len(),
+						body
+					)
 				},
 				MessageBody::ChunkedContent(body) => {
 					let mut chuncked_body = Vec::new();
@@ -572,7 +616,10 @@ pub(crate) mod client_tests {
 						"{}\r\n\
 						 Transfer-Encoding: chunked\r\n\
 						 \r\n\
-						 {}", status, String::from_utf8(chuncked_body).unwrap())
+						 {}",
+						status,
+						String::from_utf8(chuncked_body).unwrap()
+					)
 				},
 			};
 			HttpServer::responding_with(response)
@@ -606,14 +653,20 @@ pub(crate) mod client_tests {
 						.lines()
 						.take_while(|line| !line.as_ref().unwrap().is_empty())
 						.count();
-					if lines_read == 0 { continue; }
+					if lines_read == 0 {
+						continue;
+					}
 
 					for chunk in response.as_bytes().chunks(16) {
 						if shutdown_signaled.load(std::sync::atomic::Ordering::SeqCst) {
 							return;
 						} else {
-							if let Err(_) = stream.write(chunk) { break; }
-							if let Err(_) = stream.flush() { break; }
+							if let Err(_) = stream.write(chunk) {
+								break;
+							}
+							if let Err(_) = stream.flush() {
+								break;
+							}
 						}
 					}
 				}
@@ -636,8 +689,12 @@ pub(crate) mod client_tests {
 	fn connect_to_unresolvable_host() {
 		match HttpClient::connect(("example.invalid", 80)) {
 			Err(e) => {
-				assert!(e.to_string().contains("failed to lookup address information") ||
-					e.to_string().contains("No such host"), "{:?}", e);
+				assert!(
+					e.to_string().contains("failed to lookup address information")
+						|| e.to_string().contains("No such host"),
+					"{:?}",
+					e
+				);
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -705,7 +762,9 @@ pub(crate) mod client_tests {
 		let response = format!(
 			"HTTP/1.1 302 Found\r\n\
 			 Location: {}\r\n\
-			 \r\n", "Z".repeat(MAX_HTTP_MESSAGE_HEADER_SIZE));
+			 \r\n",
+			"Z".repeat(MAX_HTTP_MESSAGE_HEADER_SIZE)
+		);
 		let server = HttpServer::responding_with(response);
 
 		let mut client = HttpClient::connect(&server.endpoint()).unwrap();
@@ -727,7 +786,10 @@ pub(crate) mod client_tests {
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid response length: 8032001 bytes");
+				assert_eq!(
+					e.get_ref().unwrap().to_string(),
+					"invalid response length: 8032001 bytes"
+				);
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -740,7 +802,8 @@ pub(crate) mod client_tests {
 			"HTTP/1.1 200 OK\r\n\
 			 Transfer-Encoding: gzip\r\n\
 			 \r\n\
-			 foobar");
+			 foobar",
+		);
 		let server = HttpServer::responding_with(response);
 
 		let mut client = HttpClient::connect(&server.endpoint()).unwrap();

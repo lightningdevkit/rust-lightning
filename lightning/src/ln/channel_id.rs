@@ -49,7 +49,9 @@ impl ChannelId {
 
 	/// Create a _temporary_ channel ID randomly, based on an entropy source.
 	pub fn temporary_from_entropy_source<ES: Deref>(entropy_source: &ES) -> Self
-	where ES::Target: EntropySource {
+	where
+		ES::Target: EntropySource,
+	{
 		Self(entropy_source.get_secure_random_bytes())
 	}
 
@@ -93,16 +95,19 @@ impl fmt::Display for ChannelId {
 mod tests {
 	use hex::DisplayHex;
 
+	use crate::io;
 	use crate::ln::ChannelId;
+	use crate::prelude::*;
 	use crate::util::ser::{Readable, Writeable};
 	use crate::util::test_utils;
-	use crate::prelude::*;
-	use crate::io;
 
 	#[test]
 	fn test_channel_id_v1_from_funding_txid() {
 		let channel_id = ChannelId::v1_from_funding_txid(&[2; 32], 1);
-		assert_eq!(channel_id.0.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020203");
+		assert_eq!(
+			channel_id.0.as_hex().to_string(),
+			"0202020202020202020202020202020202020202020202020202020202020203"
+		);
 	}
 
 	#[test]
@@ -137,6 +142,9 @@ mod tests {
 	#[test]
 	fn test_channel_id_display() {
 		let channel_id = ChannelId::v1_from_funding_txid(&[2; 32], 1);
-		assert_eq!(format!("{}", &channel_id), "0202020202020202020202020202020202020202020202020202020202020203");
+		assert_eq!(
+			format!("{}", &channel_id),
+			"0202020202020202020202020202020202020202020202020202020202020203"
+		);
 	}
 }

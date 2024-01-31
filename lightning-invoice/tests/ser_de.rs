@@ -1,22 +1,22 @@
 extern crate bech32;
+extern crate hex;
 extern crate lightning;
 extern crate lightning_invoice;
 extern crate secp256k1;
-extern crate hex;
 
 use bitcoin::address::WitnessVersion;
-use bitcoin::{PubkeyHash, ScriptHash};
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::hashes::{sha256, Hash};
+use bitcoin::{PubkeyHash, ScriptHash};
 use lightning::ln::PaymentSecret;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
 use lightning_invoice::*;
-use secp256k1::PublicKey;
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+use secp256k1::PublicKey;
 use std::collections::HashSet;
-use std::time::Duration;
 use std::str::FromStr;
+use std::time::Duration;
 
 fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 	vec![
@@ -386,7 +386,8 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 
 #[test]
 fn invoice_deserialize() {
-	for (serialized, deserialized, ignore_feature_diff, ignore_unknown_fields) in get_test_tuples() {
+	for (serialized, deserialized, ignore_feature_diff, ignore_unknown_fields) in get_test_tuples()
+	{
 		eprintln!("Testing invoice {}...", serialized);
 		let parsed = serialized.parse::<SignedRawBolt11Invoice>().unwrap();
 
@@ -397,17 +398,33 @@ fn invoice_deserialize() {
 		assert_eq!(deserialized_invoice.hrp, parsed_invoice.hrp);
 		assert_eq!(deserialized_invoice.data.timestamp, parsed_invoice.data.timestamp);
 
-		let mut deserialized_hunks: HashSet<_> = deserialized_invoice.data.tagged_fields.iter().collect();
+		let mut deserialized_hunks: HashSet<_> =
+			deserialized_invoice.data.tagged_fields.iter().collect();
 		let mut parsed_hunks: HashSet<_> = parsed_invoice.data.tagged_fields.iter().collect();
 		if ignore_feature_diff {
-			deserialized_hunks.retain(|h|
-				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h { false } else { true });
-			parsed_hunks.retain(|h|
-				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h { false } else { true });
+			deserialized_hunks.retain(|h| {
+				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h {
+					false
+				} else {
+					true
+				}
+			});
+			parsed_hunks.retain(|h| {
+				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h {
+					false
+				} else {
+					true
+				}
+			});
 		}
 		if ignore_unknown_fields {
-			parsed_hunks.retain(|h|
-				if let RawTaggedField::UnknownSemantics(_) = h { false } else { true });
+			parsed_hunks.retain(|h| {
+				if let RawTaggedField::UnknownSemantics(_) = h {
+					false
+				} else {
+					true
+				}
+			});
 		}
 		assert_eq!(deserialized_hunks, parsed_hunks);
 

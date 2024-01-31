@@ -9,12 +9,12 @@
 
 //! Tagged hashes for use in signature calculation and verification.
 
-use bitcoin::hashes::{Hash, HashEngine, sha256};
-use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
-use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::AsRef;
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
+use bitcoin::hashes::{sha256, Hash, HashEngine};
+use bitcoin::secp256k1::schnorr::Signature;
+use bitcoin::secp256k1::{self, Message, PublicKey, Secp256k1};
+use core::convert::AsRef;
 
 use crate::prelude::*;
 
@@ -44,12 +44,9 @@ impl TaggedHash {
 	pub(super) fn new(tag: &'static str, tlv_stream: &[u8]) -> Self {
 		let tag_hash = sha256::Hash::hash(tag.as_bytes());
 		let merkle_root = root_hash(tlv_stream);
-		let digest = Message::from_slice(tagged_hash(tag_hash, merkle_root).as_byte_array()).unwrap();
-		Self {
-			tag,
-			merkle_root,
-			digest,
-		}
+		let digest =
+			Message::from_slice(tagged_hash(tag_hash, merkle_root).as_byte_array()).unwrap();
+		Self { tag, merkle_root, digest }
 	}
 
 	/// Returns the digest to sign.
@@ -198,9 +195,7 @@ pub(super) struct TlvStream<'a> {
 
 impl<'a> TlvStream<'a> {
 	pub fn new(data: &'a [u8]) -> Self {
-		Self {
-			data: io::Cursor::new(data),
-		}
+		Self { data: io::Cursor::new(data) }
 	}
 
 	pub fn range<T>(self, types: T) -> impl core::iter::Iterator<Item = TlvRecord<'a>>
@@ -270,36 +265,62 @@ impl<'a> Writeable for WithoutSignatures<'a> {
 
 #[cfg(test)]
 mod tests {
-	use super::{SIGNATURE_TYPES, TlvStream, WithoutSignatures};
+	use super::{TlvStream, WithoutSignatures, SIGNATURE_TYPES};
 
-	use bitcoin::hashes::{Hash, sha256};
-	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
-	use bitcoin::secp256k1::schnorr::Signature;
-	use core::convert::Infallible;
-	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::invoice_request::InvoiceRequest;
+	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::parse::Bech32Encode;
 	use crate::offers::test_utils::{payer_pubkey, recipient_pubkey};
 	use crate::util::ser::Writeable;
+	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hashes::{sha256, Hash};
+	use bitcoin::secp256k1::schnorr::Signature;
+	use bitcoin::secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
+	use core::convert::Infallible;
 
 	#[test]
 	fn calculates_merkle_root_hash() {
 		// BOLT 12 test vectors
-		macro_rules! tlv1 { () => { "010203e8" } }
-		macro_rules! tlv2 { () => { "02080000010000020003" } }
+		macro_rules! tlv1 {
+			() => {
+				"010203e8"
+			};
+		}
+		macro_rules! tlv2 {
+			() => {
+				"02080000010000020003"
+			};
+		}
 		macro_rules! tlv3 { () => { "03310266e4598d1d3c415f572a8488830b60f7e744ed9235eb0b1ba93283b315c0351800000000000000010000000000000002" } }
 		assert_eq!(
 			super::root_hash(&<Vec<u8>>::from_hex(tlv1!()).unwrap()),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("b013756c8fee86503a0b4abdab4cddeb1af5d344ca6fc2fa8b6c08938caa6f93").unwrap()).unwrap(),
+			sha256::Hash::from_slice(
+				&<Vec<u8>>::from_hex(
+					"b013756c8fee86503a0b4abdab4cddeb1af5d344ca6fc2fa8b6c08938caa6f93"
+				)
+				.unwrap()
+			)
+			.unwrap(),
 		);
 		assert_eq!(
 			super::root_hash(&<Vec<u8>>::from_hex(concat!(tlv1!(), tlv2!())).unwrap()),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("c3774abbf4815aa54ccaa026bff6581f01f3be5fe814c620a252534f434bc0d1").unwrap()).unwrap(),
+			sha256::Hash::from_slice(
+				&<Vec<u8>>::from_hex(
+					"c3774abbf4815aa54ccaa026bff6581f01f3be5fe814c620a252534f434bc0d1"
+				)
+				.unwrap()
+			)
+			.unwrap(),
 		);
 		assert_eq!(
 			super::root_hash(&<Vec<u8>>::from_hex(concat!(tlv1!(), tlv2!(), tlv3!())).unwrap()),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d").unwrap()).unwrap(),
+			sha256::Hash::from_slice(
+				&<Vec<u8>>::from_hex(
+					"ab2e79b1283b0b31e0b035258de23782df6b89a38cfa7237bde69aed1a658c5d"
+				)
+				.unwrap()
+			)
+			.unwrap(),
 		);
 	}
 
@@ -307,11 +328,23 @@ mod tests {
 	fn calculates_merkle_root_hash_from_invoice_request() {
 		let secp_ctx = Secp256k1::new();
 		let recipient_pubkey = {
-			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4141414141414141414141414141414141414141414141414141414141414141").unwrap()).unwrap();
+			let secret_key = SecretKey::from_slice(
+				&<Vec<u8>>::from_hex(
+					"4141414141414141414141414141414141414141414141414141414141414141",
+				)
+				.unwrap(),
+			)
+			.unwrap();
 			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 		let payer_keys = {
-			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4242424242424242424242424242424242424242424242424242424242424242").unwrap()).unwrap();
+			let secret_key = SecretKey::from_slice(
+				&<Vec<u8>>::from_hex(
+					"4242424242424242424242424242424242424242424242424242424242424242",
+				)
+				.unwrap(),
+			)
+			.unwrap();
 			KeyPair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
@@ -319,11 +352,12 @@ mod tests {
 		let invoice_request = OfferBuilder::new("A Mathematical Treatise".into(), recipient_pubkey)
 			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 100 })
 			.build_unchecked()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
+			.request_invoice(vec![0; 8], payer_keys.public_key())
+			.unwrap()
 			.build_unchecked()
-			.sign::<_, Infallible>(
-				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			)
+			.sign::<_, Infallible>(|message| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
+			})
 			.unwrap();
 		assert_eq!(
 			invoice_request.to_string(),
@@ -331,7 +365,13 @@ mod tests {
 		);
 		assert_eq!(
 			super::root_hash(&invoice_request.bytes[..]),
-			sha256::Hash::from_slice(&<Vec<u8>>::from_hex("608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624").unwrap()).unwrap(),
+			sha256::Hash::from_slice(
+				&<Vec<u8>>::from_hex(
+					"608407c18ad9a94d9ea2bcdbe170b6c20c462a7833a197621c916f78cf18e624"
+				)
+				.unwrap()
+			)
+			.unwrap(),
 		);
 		assert_eq!(
 			invoice_request.signature(),
@@ -339,24 +379,28 @@ mod tests {
 		);
 	}
 
-        #[test]
-        fn compute_tagged_hash() {
-                let unsigned_invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
-                        .amount_msats(1000)
-                        .build().unwrap()
-                        .request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-                        .payer_note("bar".into())
-                        .build().unwrap();
+	#[test]
+	fn compute_tagged_hash() {
+		let unsigned_invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.amount_msats(1000)
+			.build()
+			.unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey())
+			.unwrap()
+			.payer_note("bar".into())
+			.build()
+			.unwrap();
 
-                // Simply test that we can grab the tag and merkle root exposed by the accessor
-                // functions, then use them to succesfully compute a tagged hash.
-                let tagged_hash = unsigned_invoice_request.as_ref();
-                let expected_digest = unsigned_invoice_request.as_ref().as_digest();
-                let tag = sha256::Hash::hash(tagged_hash.tag().as_bytes());
-                let actual_digest = Message::from_slice(super::tagged_hash(tag, tagged_hash.merkle_root()).as_byte_array())
-                        .unwrap();
-                assert_eq!(*expected_digest, actual_digest);
-        }
+		// Simply test that we can grab the tag and merkle root exposed by the accessor
+		// functions, then use them to succesfully compute a tagged hash.
+		let tagged_hash = unsigned_invoice_request.as_ref();
+		let expected_digest = unsigned_invoice_request.as_ref().as_digest();
+		let tag = sha256::Hash::hash(tagged_hash.tag().as_bytes());
+		let actual_digest =
+			Message::from_slice(super::tagged_hash(tag, tagged_hash.merkle_root()).as_byte_array())
+				.unwrap();
+		assert_eq!(*expected_digest, actual_digest);
+	}
 
 	#[test]
 	fn skips_encoding_signature_tlv_records() {
@@ -373,11 +417,12 @@ mod tests {
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
+			.request_invoice(vec![0; 8], payer_keys.public_key())
+			.unwrap()
 			.build_unchecked()
-			.sign::<_, Infallible>(
-				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			)
+			.sign::<_, Infallible>(|message| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
+			})
 			.unwrap();
 
 		let mut bytes_without_signature = Vec::new();
@@ -405,14 +450,16 @@ mod tests {
 		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
+			.request_invoice(vec![0; 8], payer_keys.public_key())
+			.unwrap()
 			.build_unchecked()
-			.sign::<_, Infallible>(
-				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			)
+			.sign::<_, Infallible>(|message| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
+			})
 			.unwrap();
 
-		let tlv_stream = TlvStream::new(&invoice_request.bytes).range(0..1)
+		let tlv_stream = TlvStream::new(&invoice_request.bytes)
+			.range(0..1)
 			.chain(TlvStream::new(&invoice_request.bytes).range(1..80))
 			.chain(TlvStream::new(&invoice_request.bytes).range(80..160))
 			.chain(TlvStream::new(&invoice_request.bytes).range(160..240))

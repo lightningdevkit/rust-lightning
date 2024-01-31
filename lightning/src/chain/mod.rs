@@ -17,18 +17,18 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
+use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::ChannelId;
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
-use crate::chain::transaction::{OutPoint, TransactionData};
 
 use crate::prelude::*;
 
 pub mod chaininterface;
 pub mod chainmonitor;
 pub mod channelmonitor;
-pub mod transaction;
 pub(crate) mod onchaintx;
 pub(crate) mod package;
+pub mod transaction;
 
 /// The best known block as identified by its hash and height.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,10 +41,7 @@ impl BestBlock {
 	/// Constructs a `BestBlock` that represents the genesis block at height 0 of the given
 	/// network.
 	pub fn from_network(network: Network) -> Self {
-		BestBlock {
-			block_hash: genesis_block(network).header.block_hash(),
-			height: 0,
-		}
+		BestBlock { block_hash: genesis_block(network).header.block_hash(), height: 0 }
 	}
 
 	/// Returns a `BestBlock` as identified by the given block hash and height.
@@ -53,12 +50,15 @@ impl BestBlock {
 	}
 
 	/// Returns the best block hash.
-	pub fn block_hash(&self) -> BlockHash { self.block_hash }
+	pub fn block_hash(&self) -> BlockHash {
+		self.block_hash
+	}
 
 	/// Returns the best block height.
-	pub fn height(&self) -> u32 { self.height }
+	pub fn height(&self) -> u32 {
+		self.height
+	}
 }
-
 
 /// The `Listen` trait is used to notify when blocks have been connected or disconnected from the
 /// chain.
@@ -270,7 +270,9 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// [`get_outputs_to_watch`]: channelmonitor::ChannelMonitor::get_outputs_to_watch
 	/// [`block_connected`]: channelmonitor::ChannelMonitor::block_connected
 	/// [`block_disconnected`]: channelmonitor::ChannelMonitor::block_disconnected
-	fn watch_channel(&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()>;
+	fn watch_channel(
+		&self, funding_txo: OutPoint, monitor: ChannelMonitor<ChannelSigner>,
+	) -> Result<ChannelMonitorUpdateStatus, ()>;
 
 	/// Updates a channel identified by `funding_txo` by applying `update` to its monitor.
 	///
@@ -287,7 +289,9 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// [`ChannelMonitorUpdateStatus::UnrecoverableError`], see its documentation for more info.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn update_channel(&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate) -> ChannelMonitorUpdateStatus;
+	fn update_channel(
+		&self, funding_txo: OutPoint, update: &ChannelMonitorUpdate,
+	) -> ChannelMonitorUpdateStatus;
 
 	/// Returns any monitor events since the last call. Subsequent calls must only return new
 	/// events.
@@ -298,7 +302,9 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)>;
+	fn release_pending_monitor_events(
+		&self,
+	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)>;
 }
 
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to

@@ -49,7 +49,9 @@ pub fn vout_from_scid(short_channel_id: &u64) -> u16 {
 
 /// Constructs a `short_channel_id` using the components pieces. Results in an error
 /// if the block height, tx index, or vout index overflow the maximum sizes.
-pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64, ShortChannelIdError> {
+pub fn scid_from_parts(
+	block: u64, tx_index: u64, vout_index: u64,
+) -> Result<u64, ShortChannelIdError> {
 	if block > MAX_SCID_BLOCK {
 		return Err(ShortChannelIdError::BlockOverflow);
 	}
@@ -71,11 +73,11 @@ pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64
 /// 3) payments intended to be intercepted will route using a fake scid (this is typically used so
 ///    the forwarding node can open a JIT channel to the next hop)
 pub(crate) mod fake_scid {
+	use crate::crypto::chacha20::ChaCha20;
+	use crate::sign::EntropySource;
+	use crate::util::scid_utils;
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
-	use crate::sign::EntropySource;
-	use crate::crypto::chacha20::ChaCha20;
-	use crate::util::scid_utils;
 
 	use core::convert::TryInto;
 	use core::ops::Deref;
@@ -89,7 +91,6 @@ pub(crate) mod fake_scid {
 	const BLOCKS_PER_MONTH: u32 = 144 /* blocks per day */ * 30 /* days per month */;
 	pub(crate) const MAX_SCID_BLOCKS_FROM_NOW: u32 = BLOCKS_PER_MONTH;
 
-
 	/// Fake scids are divided into namespaces, with each namespace having its own identifier between
 	/// [0..7]. This allows us to identify what namespace a fake scid corresponds to upon HTLC
 	/// receipt, and handle the HTLC accordingly. The namespace identifier is encrypted when encoded
@@ -101,7 +102,7 @@ pub(crate) mod fake_scid {
 		/// SCID aliases for outbound private channels
 		OutboundAlias,
 		/// Payment interception namespace
-		Intercept
+		Intercept,
 	}
 
 	impl Namespace {
@@ -109,8 +110,12 @@ pub(crate) mod fake_scid {
 		/// between segwit activation and the current best known height, and the tx index and output
 		/// index are also selected from a "reasonable" range. We add this logic because it makes it
 		/// non-obvious at a glance that the scid is fake, e.g. if it appears in invoice route hints.
-		pub(crate) fn get_fake_scid<ES: Deref>(&self, highest_seen_blockheight: u32, chain_hash: &ChainHash, fake_scid_rand_bytes: &[u8; 32], entropy_source: &ES) -> u64
-			where ES::Target: EntropySource,
+		pub(crate) fn get_fake_scid<ES: Deref>(
+			&self, highest_seen_blockheight: u32, chain_hash: &ChainHash,
+			fake_scid_rand_bytes: &[u8; 32], entropy_source: &ES,
+		) -> u64
+		where
+			ES::Target: EntropySource,
 		{
 			// Ensure we haven't created a namespace that doesn't fit into the 3 bits we've allocated for
 			// namespaces.
@@ -118,27 +123,38 @@ pub(crate) mod fake_scid {
 			let rand_bytes = entropy_source.get_secure_random_bytes();
 
 			let segwit_activation_height = segwit_activation_height(chain_hash);
-			let mut blocks_since_segwit_activation = highest_seen_blockheight.saturating_sub(segwit_activation_height);
+			let mut blocks_since_segwit_activation =
+				highest_seen_blockheight.saturating_sub(segwit_activation_height);
 
 			// We want to ensure that this fake channel won't conflict with any transactions we haven't
 			// seen yet, in case `highest_seen_blockheight` is updated before we get full information
 			// about transactions confirmed in the given block.
-			blocks_since_segwit_activation = blocks_since_segwit_activation.saturating_sub(MAX_SCID_BLOCKS_FROM_NOW);
+			blocks_since_segwit_activation =
+				blocks_since_segwit_activation.saturating_sub(MAX_SCID_BLOCKS_FROM_NOW);
 
 			let rand_for_height = u32::from_be_bytes(rand_bytes[..4].try_into().unwrap());
-			let fake_scid_height = segwit_activation_height + rand_for_height % (blocks_since_segwit_activation + 1);
+			let fake_scid_height =
+				segwit_activation_height + rand_for_height % (blocks_since_segwit_activation + 1);
 
 			let rand_for_tx_index = u32::from_be_bytes(rand_bytes[4..8].try_into().unwrap());
 			let fake_scid_tx_index = rand_for_tx_index % MAX_TX_INDEX;
 
 			// Put the scid in the given namespace.
-			let fake_scid_vout = self.get_encrypted_vout(fake_scid_height, fake_scid_tx_index, fake_scid_rand_bytes);
-			scid_utils::scid_from_parts(fake_scid_height as u64, fake_scid_tx_index as u64, fake_scid_vout as u64).unwrap()
+			let fake_scid_vout =
+				self.get_encrypted_vout(fake_scid_height, fake_scid_tx_index, fake_scid_rand_bytes);
+			scid_utils::scid_from_parts(
+				fake_scid_height as u64,
+				fake_scid_tx_index as u64,
+				fake_scid_vout as u64,
+			)
+			.unwrap()
 		}
 
 		/// We want to ensure that a 3rd party can't identify a payment as belong to a given
 		/// `Namespace`. Therefore, we encrypt it using a random bytes provided by `ChannelManager`.
-		fn get_encrypted_vout(&self, block_height: u32, tx_index: u32, fake_scid_rand_bytes: &[u8; 32]) -> u8 {
+		fn get_encrypted_vout(
+			&self, block_height: u32, tx_index: u32, fake_scid_rand_bytes: &[u8; 32],
+		) -> u8 {
 			let mut salt = [0 as u8; 8];
 			let block_height_bytes = block_height.to_be_bytes();
 			salt[0..4].copy_from_slice(&block_height_bytes);
@@ -161,7 +177,9 @@ pub(crate) mod fake_scid {
 	}
 
 	/// Returns whether the given fake scid falls into the phantom namespace.
-	pub fn is_valid_phantom(fake_scid_rand_bytes: &[u8; 32], scid: u64, chain_hash: &ChainHash) -> bool {
+	pub fn is_valid_phantom(
+		fake_scid_rand_bytes: &[u8; 32], scid: u64, chain_hash: &ChainHash,
+	) -> bool {
 		let block_height = scid_utils::block_from_scid(&scid);
 		let tx_index = scid_utils::tx_index_from_scid(&scid);
 		let namespace = Namespace::Phantom;
@@ -171,7 +189,9 @@ pub(crate) mod fake_scid {
 	}
 
 	/// Returns whether the given fake scid falls into the intercept namespace.
-	pub fn is_valid_intercept(fake_scid_rand_bytes: &[u8; 32], scid: u64, chain_hash: &ChainHash) -> bool {
+	pub fn is_valid_intercept(
+		fake_scid_rand_bytes: &[u8; 32], scid: u64, chain_hash: &ChainHash,
+	) -> bool {
 		let block_height = scid_utils::block_from_scid(&scid);
 		let tx_index = scid_utils::tx_index_from_scid(&scid);
 		let namespace = Namespace::Intercept;
@@ -182,12 +202,16 @@ pub(crate) mod fake_scid {
 
 	#[cfg(test)]
 	mod tests {
+		use crate::sync::Arc;
+		use crate::util::scid_utils;
+		use crate::util::scid_utils::fake_scid::{
+			is_valid_intercept, is_valid_phantom, segwit_activation_height, Namespace,
+			MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_NAMESPACES, MAX_TX_INDEX, NAMESPACE_ID_BITMASK,
+			TEST_SEGWIT_ACTIVATION_HEIGHT,
+		};
+		use crate::util::test_utils;
 		use bitcoin::blockdata::constants::ChainHash;
 		use bitcoin::network::constants::Network;
-		use crate::util::scid_utils::fake_scid::{is_valid_intercept, is_valid_phantom, MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_TX_INDEX, MAX_NAMESPACES, Namespace, NAMESPACE_ID_BITMASK, segwit_activation_height, TEST_SEGWIT_ACTIVATION_HEIGHT};
-		use crate::util::scid_utils;
-		use crate::util::test_utils;
-		use crate::sync::Arc;
 
 		#[test]
 		fn namespace_identifier_is_within_range() {
@@ -203,7 +227,10 @@ pub(crate) mod fake_scid {
 		#[test]
 		fn test_segwit_activation_height() {
 			let mainnet_genesis = ChainHash::using_genesis_block(Network::Bitcoin);
-			assert_eq!(segwit_activation_height(&mainnet_genesis), MAINNET_SEGWIT_ACTIVATION_HEIGHT);
+			assert_eq!(
+				segwit_activation_height(&mainnet_genesis),
+				MAINNET_SEGWIT_ACTIVATION_HEIGHT
+			);
 
 			let testnet_genesis = ChainHash::using_genesis_block(Network::Testnet);
 			assert_eq!(segwit_activation_height(&testnet_genesis), TEST_SEGWIT_ACTIVATION_HEIGHT);
@@ -221,7 +248,8 @@ pub(crate) mod fake_scid {
 			let fake_scid_rand_bytes = [0; 32];
 			let testnet_genesis = ChainHash::using_genesis_block(Network::Testnet);
 			let valid_encrypted_vout = namespace.get_encrypted_vout(0, 0, &fake_scid_rand_bytes);
-			let valid_fake_scid = scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
+			let valid_fake_scid =
+				scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
 			assert!(is_valid_phantom(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));
 			let invalid_fake_scid = scid_utils::scid_from_parts(1, 0, 12).unwrap();
 			assert!(!is_valid_phantom(&fake_scid_rand_bytes, invalid_fake_scid, &testnet_genesis));
@@ -233,10 +261,15 @@ pub(crate) mod fake_scid {
 			let fake_scid_rand_bytes = [0; 32];
 			let testnet_genesis = ChainHash::using_genesis_block(Network::Testnet);
 			let valid_encrypted_vout = namespace.get_encrypted_vout(0, 0, &fake_scid_rand_bytes);
-			let valid_fake_scid = scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
+			let valid_fake_scid =
+				scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64).unwrap();
 			assert!(is_valid_intercept(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));
 			let invalid_fake_scid = scid_utils::scid_from_parts(1, 0, 12).unwrap();
-			assert!(!is_valid_intercept(&fake_scid_rand_bytes, invalid_fake_scid, &testnet_genesis));
+			assert!(!is_valid_intercept(
+				&fake_scid_rand_bytes,
+				invalid_fake_scid,
+				&testnet_genesis
+			));
 		}
 
 		#[test]
@@ -244,9 +277,15 @@ pub(crate) mod fake_scid {
 			let mainnet_genesis = ChainHash::using_genesis_block(Network::Bitcoin);
 			let seed = [0; 32];
 			let fake_scid_rand_bytes = [1; 32];
-			let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
+			let keys_manager =
+				Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
 			let namespace = Namespace::Phantom;
-			let fake_scid = namespace.get_fake_scid(500_000, &mainnet_genesis, &fake_scid_rand_bytes, &keys_manager);
+			let fake_scid = namespace.get_fake_scid(
+				500_000,
+				&mainnet_genesis,
+				&fake_scid_rand_bytes,
+				&keys_manager,
+			);
 
 			let fake_height = scid_utils::block_from_scid(&fake_scid);
 			assert!(fake_height >= MAINNET_SEGWIT_ACTIVATION_HEIGHT);
@@ -298,8 +337,17 @@ mod tests {
 		assert_eq!(scid_from_parts(0x00000001, 0x00000002, 0x0003).unwrap(), 0x000001_000002_0003);
 		assert_eq!(scid_from_parts(0x00111111, 0x00222222, 0x3333).unwrap(), 0x111111_222222_3333);
 		assert_eq!(scid_from_parts(0x00ffffff, 0x00ffffff, 0xffff).unwrap(), 0xffffff_ffffff_ffff);
-		assert_eq!(scid_from_parts(0x01ffffff, 0x00000000, 0x0000).err().unwrap(), ShortChannelIdError::BlockOverflow);
-		assert_eq!(scid_from_parts(0x00000000, 0x01ffffff, 0x0000).err().unwrap(), ShortChannelIdError::TxIndexOverflow);
-		assert_eq!(scid_from_parts(0x00000000, 0x00000000, 0x010000).err().unwrap(), ShortChannelIdError::VoutIndexOverflow);
+		assert_eq!(
+			scid_from_parts(0x01ffffff, 0x00000000, 0x0000).err().unwrap(),
+			ShortChannelIdError::BlockOverflow
+		);
+		assert_eq!(
+			scid_from_parts(0x00000000, 0x01ffffff, 0x0000).err().unwrap(),
+			ShortChannelIdError::TxIndexOverflow
+		);
+		assert_eq!(
+			scid_from_parts(0x00000000, 0x00000000, 0x010000).err().unwrap(),
+			ShortChannelIdError::VoutIndexOverflow
+		);
 	}
 }

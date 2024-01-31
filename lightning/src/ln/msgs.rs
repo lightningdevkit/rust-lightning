@@ -25,38 +25,42 @@
 //! track the network on the less-secure system.
 
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::secp256k1::PublicKey;
-use bitcoin::secp256k1::ecdsa::Signature;
-use bitcoin::{secp256k1, Witness};
 use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
+use bitcoin::secp256k1::ecdsa::Signature;
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::{secp256k1, Witness};
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
-use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use crate::ln::onion_utils;
+use crate::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::onion_message;
 use crate::sign::{NodeSigner, Recipient};
 
+use crate::io::{self, Cursor, Read};
+use crate::io_extras::read_to_end;
 use crate::prelude::*;
 #[cfg(feature = "std")]
 use core::convert::TryFrom;
 use core::fmt;
 use core::fmt::Debug;
+use core::fmt::Display;
 use core::ops::Deref;
 #[cfg(feature = "std")]
 use core::str::FromStr;
 #[cfg(feature = "std")]
 use std::net::SocketAddr;
-use core::fmt::Display;
-use crate::io::{self, Cursor, Read};
-use crate::io_extras::read_to_end;
 
-use crate::events::{EventsProvider, MessageSendEventsProvider};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
-use crate::util::logger;
-use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
+use crate::events::{EventsProvider, MessageSendEventsProvider};
 use crate::util::base32;
+use crate::util::logger;
+use crate::util::ser::{
+	BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthReadable,
+	LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited, WithoutLength, Writeable,
+	Writer,
+};
 
 use crate::routing::gossip::{NodeAlias, NodeId};
 
@@ -66,7 +70,10 @@ pub(crate) const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 #[cfg(taproot)]
 /// A partial signature that also contains the Musig2 nonce its signer used
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct PartialSignatureWithNonce(pub musig2::types::PartialSignature, pub musig2::types::PublicNonce);
+pub struct PartialSignatureWithNonce(
+	pub musig2::types::PartialSignature,
+	pub musig2::types::PublicNonce,
+);
 
 /// An error in decoding a message or struct.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -406,7 +413,7 @@ pub struct FundingCreated {
 	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
 	#[cfg(taproot)]
 	/// Next nonce the channel acceptor should use to finalize the funding output signature
-	pub next_local_nonce: Option<musig2::types::PublicNonce>
+	pub next_local_nonce: Option<musig2::types::PublicNonce>,
 }
 
 /// A [`funding_signed`] message to be sent to or received from a peer.
@@ -687,9 +694,9 @@ pub struct UpdateAddHTLC {
 	pub blinding_point: Option<PublicKey>,
 }
 
- /// An onion message to be sent to or received from a peer.
- ///
- // TODO: update with link to OM when they are merged into the BOLTs
+/// An onion message to be sent to or received from a peer.
+///
+// TODO: update with link to OM when they are merged into the BOLTs
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct OnionMessage {
 	/// Used in decrypting the onion packet's payload.
@@ -766,7 +773,7 @@ pub struct RevokeAndACK {
 	pub next_per_commitment_point: PublicKey,
 	#[cfg(taproot)]
 	/// Musig nonce the recipient should use in their next commitment signature message
-	pub next_local_nonce: Option<musig2::types::PublicNonce>
+	pub next_local_nonce: Option<musig2::types::PublicNonce>,
 }
 
 /// An [`update_fee`] message to be sent to or received from a peer
@@ -864,23 +871,23 @@ impl SocketAddress {
 	/// by this.
 	pub(crate) fn get_id(&self) -> u8 {
 		match self {
-			&SocketAddress::TcpIpV4 {..} => { 1 },
-			&SocketAddress::TcpIpV6 {..} => { 2 },
-			&SocketAddress::OnionV2(_) => { 3 },
-			&SocketAddress::OnionV3 {..} => { 4 },
-			&SocketAddress::Hostname {..} => { 5 },
+			&SocketAddress::TcpIpV4 { .. } => 1,
+			&SocketAddress::TcpIpV6 { .. } => 2,
+			&SocketAddress::OnionV2(_) => 3,
+			&SocketAddress::OnionV3 { .. } => 4,
+			&SocketAddress::Hostname { .. } => 5,
 		}
 	}
 
 	/// Strict byte-length of address descriptor, 1-byte type not recorded
 	fn len(&self) -> u16 {
 		match self {
-			&SocketAddress::TcpIpV4 { .. } => { 6 },
-			&SocketAddress::TcpIpV6 { .. } => { 18 },
-			&SocketAddress::OnionV2(_) => { 12 },
-			&SocketAddress::OnionV3 { .. } => { 37 },
+			&SocketAddress::TcpIpV4 { .. } => 6,
+			&SocketAddress::TcpIpV6 { .. } => 18,
+			&SocketAddress::OnionV2(_) => 12,
+			&SocketAddress::OnionV3 { .. } => 37,
 			// Consists of 1-byte hostname length, hostname bytes, and 2-byte port.
-			&SocketAddress::Hostname { ref hostname, .. } => { u16::from(hostname.len()) + 3 },
+			&SocketAddress::Hostname { ref hostname, .. } => u16::from(hostname.len()) + 3,
 		}
 	}
 
@@ -928,33 +935,25 @@ impl Readable for Result<SocketAddress, u8> {
 	fn read<R: Read>(reader: &mut R) -> Result<Result<SocketAddress, u8>, DecodeError> {
 		let byte = <u8 as Readable>::read(reader)?;
 		match byte {
-			1 => {
-				Ok(Ok(SocketAddress::TcpIpV4 {
-					addr: Readable::read(reader)?,
-					port: Readable::read(reader)?,
-				}))
-			},
-			2 => {
-				Ok(Ok(SocketAddress::TcpIpV6 {
-					addr: Readable::read(reader)?,
-					port: Readable::read(reader)?,
-				}))
-			},
+			1 => Ok(Ok(SocketAddress::TcpIpV4 {
+				addr: Readable::read(reader)?,
+				port: Readable::read(reader)?,
+			})),
+			2 => Ok(Ok(SocketAddress::TcpIpV6 {
+				addr: Readable::read(reader)?,
+				port: Readable::read(reader)?,
+			})),
 			3 => Ok(Ok(SocketAddress::OnionV2(Readable::read(reader)?))),
-			4 => {
-				Ok(Ok(SocketAddress::OnionV3 {
-					ed25519_pubkey: Readable::read(reader)?,
-					checksum: Readable::read(reader)?,
-					version: Readable::read(reader)?,
-					port: Readable::read(reader)?,
-				}))
-			},
-			5 => {
-				Ok(Ok(SocketAddress::Hostname {
-					hostname: Readable::read(reader)?,
-					port: Readable::read(reader)?,
-				}))
-			},
+			4 => Ok(Ok(SocketAddress::OnionV3 {
+				ed25519_pubkey: Readable::read(reader)?,
+				checksum: Readable::read(reader)?,
+				version: Readable::read(reader)?,
+				port: Readable::read(reader)?,
+			})),
+			5 => Ok(Ok(SocketAddress::Hostname {
+				hostname: Readable::read(reader)?,
+				port: Readable::read(reader)?,
+			})),
 			_ => return Ok(Err(byte)),
 		}
 	}
@@ -997,26 +996,26 @@ impl fmt::Display for SocketAddressParseError {
 
 #[cfg(feature = "std")]
 impl From<std::net::SocketAddrV4> for SocketAddress {
-		fn from(addr: std::net::SocketAddrV4) -> Self {
-			SocketAddress::TcpIpV4 { addr: addr.ip().octets(), port: addr.port() }
-		}
+	fn from(addr: std::net::SocketAddrV4) -> Self {
+		SocketAddress::TcpIpV4 { addr: addr.ip().octets(), port: addr.port() }
+	}
 }
 
 #[cfg(feature = "std")]
 impl From<std::net::SocketAddrV6> for SocketAddress {
-		fn from(addr: std::net::SocketAddrV6) -> Self {
-			SocketAddress::TcpIpV6 { addr: addr.ip().octets(), port: addr.port() }
-		}
+	fn from(addr: std::net::SocketAddrV6) -> Self {
+		SocketAddress::TcpIpV6 { addr: addr.ip().octets(), port: addr.port() }
+	}
 }
 
 #[cfg(feature = "std")]
 impl From<std::net::SocketAddr> for SocketAddress {
-		fn from(addr: std::net::SocketAddr) -> Self {
-			match addr {
-				std::net::SocketAddr::V4(addr) => addr.into(),
-				std::net::SocketAddr::V6(addr) => addr.into(),
-			}
+	fn from(addr: std::net::SocketAddr) -> Self {
+		match addr {
+			std::net::SocketAddr::V4(addr) => addr.into(),
+			std::net::SocketAddr::V6(addr) => addr.into(),
 		}
+	}
 }
 
 #[cfg(feature = "std")]
@@ -1029,23 +1028,25 @@ impl std::net::ToSocketAddrs for SocketAddress {
 				let ip_addr = std::net::Ipv4Addr::from(*addr);
 				let socket_addr = SocketAddr::new(ip_addr.into(), *port);
 				Ok(vec![socket_addr].into_iter())
-			}
+			},
 			SocketAddress::TcpIpV6 { addr, port } => {
 				let ip_addr = std::net::Ipv6Addr::from(*addr);
 				let socket_addr = SocketAddr::new(ip_addr.into(), *port);
 				Ok(vec![socket_addr].into_iter())
-			}
+			},
 			SocketAddress::Hostname { ref hostname, port } => {
 				(hostname.as_str(), *port).to_socket_addrs()
-			}
-			SocketAddress::OnionV2(..) => {
-				Err(std::io::Error::new(std::io::ErrorKind::Other, "Resolution of OnionV2 \
-				addresses is currently unsupported."))
-			}
-			SocketAddress::OnionV3 { .. } => {
-				Err(std::io::Error::new(std::io::ErrorKind::Other, "Resolution of OnionV3 \
-				addresses is currently unsupported."))
-			}
+			},
+			SocketAddress::OnionV2(..) => Err(std::io::Error::new(
+				std::io::ErrorKind::Other,
+				"Resolution of OnionV2 \
+				addresses is currently unsupported.",
+			)),
+			SocketAddress::OnionV3 { .. } => Err(std::io::Error::new(
+				std::io::ErrorKind::Other,
+				"Resolution of OnionV3 \
+				addresses is currently unsupported.",
+			)),
 		}
 	}
 }
@@ -1053,13 +1054,17 @@ impl std::net::ToSocketAddrs for SocketAddress {
 /// Parses an OnionV3 host and port into a [`SocketAddress::OnionV3`].
 ///
 /// The host part must end with ".onion".
-pub fn parse_onion_address(host: &str, port: u16) -> Result<SocketAddress, SocketAddressParseError> {
+pub fn parse_onion_address(
+	host: &str, port: u16,
+) -> Result<SocketAddress, SocketAddressParseError> {
 	if host.ends_with(".onion") {
 		let domain = &host[..host.len() - ".onion".len()];
 		if domain.len() != 56 {
 			return Err(SocketAddressParseError::InvalidOnionV3);
 		}
-		let onion =  base32::Alphabet::RFC4648 { padding: false }.decode(&domain).map_err(|_| SocketAddressParseError::InvalidOnionV3)?;
+		let onion = base32::Alphabet::RFC4648 { padding: false }
+			.decode(&domain)
+			.map_err(|_| SocketAddressParseError::InvalidOnionV3)?;
 		if onion.len() != 35 {
 			return Err(SocketAddressParseError::InvalidOnionV3);
 		}
@@ -1070,7 +1075,6 @@ pub fn parse_onion_address(host: &str, port: u16) -> Result<SocketAddress, Socke
 		ed25519_pubkey.copy_from_slice(&onion[3..35]);
 		let checksum = u16::from_be_bytes([first_checksum_flag, second_checksum_flag]);
 		return Ok(SocketAddress::OnionV3 { ed25519_pubkey, checksum, version, port });
-
 	} else {
 		return Err(SocketAddressParseError::InvalidInput);
 	}
@@ -1118,14 +1122,16 @@ impl FromStr for SocketAddress {
 					None => return Err(SocketAddressParseError::InvalidInput),
 				};
 				let host = &s[..trimmed_input];
-				let port: u16 = s[trimmed_input + 1..].parse().map_err(|_| SocketAddressParseError::InvalidPort)?;
+				let port: u16 = s[trimmed_input + 1..]
+					.parse()
+					.map_err(|_| SocketAddressParseError::InvalidPort)?;
 				if host.ends_with(".onion") {
 					return parse_onion_address(host, port);
 				};
 				if let Ok(hostname) = Hostname::try_from(s[..trimmed_input].to_string()) {
 					return Ok(SocketAddress::Hostname { hostname, port });
 				};
-				return Err(SocketAddressParseError::SocketAddrParse)
+				return Err(SocketAddressParseError::SocketAddrParse);
 			},
 		}
 	}
@@ -1138,7 +1144,7 @@ pub enum UnsignedGossipMessage<'a> {
 	/// An unsigned channel update.
 	ChannelUpdate(&'a UnsignedChannelUpdate),
 	/// An unsigned node announcement.
-	NodeAnnouncement(&'a UnsignedNodeAnnouncement)
+	NodeAnnouncement(&'a UnsignedNodeAnnouncement),
 }
 
 impl<'a> Writeable for UnsignedGossipMessage<'a> {
@@ -1380,7 +1386,7 @@ pub enum ErrorAction {
 	/// The peer took some action which made us think they were useless. Disconnect them.
 	DisconnectPeer {
 		/// An error message which we should make an effort to send before we disconnect.
-		msg: Option<ErrorMessage>
+		msg: Option<ErrorMessage>,
 	},
 	/// The peer did something incorrect. Tell them without closing any channels and disconnect them.
 	DisconnectPeerWithWarning {
@@ -1444,7 +1450,7 @@ pub struct CommitmentUpdate {
 ///
 /// Messages MAY be called in parallel when they originate from different `their_node_ids`, however
 /// they MUST NOT be called in parallel when the two calls have the same `their_node_id`.
-pub trait ChannelMessageHandler : MessageSendEventsProvider {
+pub trait ChannelMessageHandler: MessageSendEventsProvider {
 	// Channel init:
 	/// Handle an incoming `open_channel` message from the given peer.
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel);
@@ -1507,7 +1513,9 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming `update_fail_htlc` message from the given peer.
 	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC);
 	/// Handle an incoming `update_fail_malformed_htlc` message from the given peer.
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC);
+	fn handle_update_fail_malformed_htlc(
+		&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC,
+	);
 	/// Handle an incoming `commitment_signed` message from the given peer.
 	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned);
 	/// Handle an incoming `revoke_and_ack` message from the given peer.
@@ -1518,7 +1526,9 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 
 	// Channel-to-announce:
 	/// Handle an incoming `announcement_signatures` message from the given peer.
-	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures);
+	fn handle_announcement_signatures(
+		&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures,
+	);
 
 	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost.
@@ -1529,7 +1539,9 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init, inbound: bool) -> Result<(), ()>;
+	fn peer_connected(
+		&self, their_node_id: &PublicKey, msg: &Init, inbound: bool,
+	) -> Result<(), ()>;
 	/// Handle an incoming `channel_reestablish` message from the given peer.
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
 
@@ -1567,25 +1579,31 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 /// For messages enabled with the `gossip_queries` feature there are potential DoS vectors when
 /// handling inbound queries. Implementors using an on-disk network graph should be aware of
 /// repeated disk I/O for queries accessing different parts of the network graph.
-pub trait RoutingMessageHandler : MessageSendEventsProvider {
+pub trait RoutingMessageHandler: MessageSendEventsProvider {
 	/// Handle an incoming `node_announcement` message, returning `true` if it should be forwarded on,
 	/// `false` or returning an `Err` otherwise.
 	fn handle_node_announcement(&self, msg: &NodeAnnouncement) -> Result<bool, LightningError>;
 	/// Handle a `channel_announcement` message, returning `true` if it should be forwarded on, `false`
 	/// or returning an `Err` otherwise.
-	fn handle_channel_announcement(&self, msg: &ChannelAnnouncement) -> Result<bool, LightningError>;
+	fn handle_channel_announcement(
+		&self, msg: &ChannelAnnouncement,
+	) -> Result<bool, LightningError>;
 	/// Handle an incoming `channel_update` message, returning true if it should be forwarded on,
 	/// `false` or returning an `Err` otherwise.
 	fn handle_channel_update(&self, msg: &ChannelUpdate) -> Result<bool, LightningError>;
 	/// Gets channel announcements and updates required to dump our routing table to a remote node,
 	/// starting at the `short_channel_id` indicated by `starting_point` and including announcements
 	/// for a single channel.
-	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)>;
+	fn get_next_channel_announcement(
+		&self, starting_point: u64,
+	) -> Option<(ChannelAnnouncement, Option<ChannelUpdate>, Option<ChannelUpdate>)>;
 	/// Gets a node announcement required to dump our routing table to a remote node, starting at
 	/// the node *after* the provided pubkey and including up to one announcement immediately
 	/// higher (as defined by `<PublicKey as Ord>::cmp`) than `starting_point`.
 	/// If `None` is provided for `starting_point`, we start at the first node.
-	fn get_next_node_announcement(&self, starting_point: Option<&NodeId>) -> Option<NodeAnnouncement>;
+	fn get_next_node_announcement(
+		&self, starting_point: Option<&NodeId>,
+	) -> Option<NodeAnnouncement>;
 	/// Called when a connection is established with a peer. This can be used to
 	/// perform routing table synchronization using a strategy defined by the
 	/// implementor.
@@ -1593,22 +1611,32 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
+	fn peer_connected(
+		&self, their_node_id: &PublicKey, init: &Init, inbound: bool,
+	) -> Result<(), ()>;
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.
-	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: ReplyChannelRange) -> Result<(), LightningError>;
+	fn handle_reply_channel_range(
+		&self, their_node_id: &PublicKey, msg: ReplyChannelRange,
+	) -> Result<(), LightningError>;
 	/// Handles the reply of a query we initiated asking for routing gossip
 	/// messages for a list of channels. We should receive this message when
 	/// a node has completed its best effort to send us the pertaining routing
 	/// gossip messages.
-	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError>;
+	fn handle_reply_short_channel_ids_end(
+		&self, their_node_id: &PublicKey, msg: ReplyShortChannelIdsEnd,
+	) -> Result<(), LightningError>;
 	/// Handles when a peer asks us to send a list of `short_channel_id`s
 	/// for the requested range of blocks.
-	fn handle_query_channel_range(&self, their_node_id: &PublicKey, msg: QueryChannelRange) -> Result<(), LightningError>;
+	fn handle_query_channel_range(
+		&self, their_node_id: &PublicKey, msg: QueryChannelRange,
+	) -> Result<(), LightningError>;
 	/// Handles when a peer asks us to send routing gossip messages for a
 	/// list of `short_channel_id`s.
-	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
+	fn handle_query_short_channel_ids(
+		&self, their_node_id: &PublicKey, msg: QueryShortChannelIds,
+	) -> Result<(), LightningError>;
 
 	// Handler queueing status:
 	/// Indicates that there are a large number of [`ChannelAnnouncement`] (or other) messages
@@ -1644,7 +1672,9 @@ pub trait OnionMessageHandler: EventsProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
+	fn peer_connected(
+		&self, their_node_id: &PublicKey, init: &Init, inbound: bool,
+	) -> Result<(), ()>;
 
 	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
 	/// drop and refuse to forward onion messages to this peer.
@@ -1684,12 +1714,12 @@ pub struct FinalOnionHopData {
 }
 
 mod fuzzy_internal_msgs {
-	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
-	use crate::prelude::*;
-	use crate::ln::{PaymentPreimage, PaymentSecret};
-	use crate::ln::features::BlindedHopFeatures;
 	use super::FinalOnionHopData;
+	use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
+	use crate::ln::features::BlindedHopFeatures;
+	use crate::ln::{PaymentPreimage, PaymentSecret};
+	use crate::prelude::*;
+	use bitcoin::secp256k1::PublicKey;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1723,7 +1753,7 @@ mod fuzzy_internal_msgs {
 			payment_secret: PaymentSecret,
 			payment_constraints: PaymentConstraints,
 			intro_node_blinding_point: Option<PublicKey>,
-		}
+		},
 	}
 
 	pub(crate) enum OutboundOnionPayload {
@@ -1751,7 +1781,7 @@ mod fuzzy_internal_msgs {
 			cltv_expiry_height: u32,
 			encrypted_tlvs: Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
-		}
+		},
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -1777,7 +1807,7 @@ pub struct OnionPacket {
 	/// like.
 	pub public_key: Result<PublicKey, secp256k1::Error>,
 	/// 1300 bytes encrypted payload for the next hop.
-	pub hop_data: [u8; 20*65],
+	pub hop_data: [u8; 20 * 65],
 	/// HMAC to verify the integrity of hop_data.
 	pub hmac: [u8; 32],
 }
@@ -1785,18 +1815,17 @@ pub struct OnionPacket {
 impl onion_utils::Packet for OnionPacket {
 	type Data = onion_utils::FixedSizeOnionPacket;
 	fn new(pubkey: PublicKey, hop_data: onion_utils::FixedSizeOnionPacket, hmac: [u8; 32]) -> Self {
-		Self {
-			version: 0,
-			public_key: Ok(pubkey),
-			hop_data: hop_data.0,
-			hmac,
-		}
+		Self { version: 0, public_key: Ok(pubkey), hop_data: hop_data.0, hmac }
 	}
 }
 
 impl fmt::Debug for OnionPacket {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		f.write_fmt(format_args!("OnionPacket version {} with hmac {:?}", self.version, &self.hmac[..]))
+		f.write_fmt(format_args!(
+			"OnionPacket version {} with hmac {:?}",
+			self.version,
+			&self.hmac[..]
+		))
 	}
 }
 
@@ -1811,12 +1840,20 @@ impl fmt::Display for DecodeError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
 			DecodeError::UnknownVersion => f.write_str("Unknown realm byte in Onion packet"),
-			DecodeError::UnknownRequiredFeature => f.write_str("Unknown required feature preventing decode"),
-			DecodeError::InvalidValue => f.write_str("Nonsense bytes didn't map to the type they were interpreted as"),
+			DecodeError::UnknownRequiredFeature => {
+				f.write_str("Unknown required feature preventing decode")
+			},
+			DecodeError::InvalidValue => {
+				f.write_str("Nonsense bytes didn't map to the type they were interpreted as")
+			},
 			DecodeError::ShortRead => f.write_str("Packet extended beyond the provided bytes"),
-			DecodeError::BadLengthDescriptor => f.write_str("A length descriptor in the packet didn't describe the later data correctly"),
+			DecodeError::BadLengthDescriptor => f.write_str(
+				"A length descriptor in the packet didn't describe the later data correctly",
+			),
 			DecodeError::Io(ref e) => fmt::Debug::fmt(e, f),
-			DecodeError::UnsupportedCompression => f.write_str("We don't support receiving messages with zlib-compressed fields"),
+			DecodeError::UnsupportedCompression => {
+				f.write_str("We don't support receiving messages with zlib-compressed fields")
+			},
 		}
 	}
 }
@@ -2193,9 +2230,7 @@ impl_writeable_msg!(UpdateFulfillHTLC, {
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
 // serialization format in a way which assumes we know the total serialized length/message end
 // position.
-impl_writeable!(OnionErrorPacket, {
-	data
-});
+impl_writeable!(OnionErrorPacket, { data });
 
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
 // serialization format in a way which assumes we know the total serialized length/message end
@@ -2205,7 +2240,7 @@ impl Writeable for OnionPacket {
 		self.version.write(w)?;
 		match self.public_key {
 			Ok(pubkey) => pubkey.write(w)?,
-			Err(_) => [0u8;33].write(w)?,
+			Err(_) => [0u8; 33].write(w)?,
 		}
 		w.write_all(&self.hop_data)?;
 		self.hmac.write(w)?;
@@ -2218,7 +2253,7 @@ impl Readable for OnionPacket {
 		Ok(OnionPacket {
 			version: Readable::read(r)?,
 			public_key: {
-				let mut buf = [0u8;33];
+				let mut buf = [0u8; 33];
 				r.read_exact(&mut buf)?;
 				PublicKey::from_slice(&buf)
 			},
@@ -2247,10 +2282,7 @@ impl Readable for OnionMessage {
 		let mut packet_reader = FixedLengthReader::new(r, len as u64);
 		let onion_routing_packet: onion_message::packet::Packet =
 			<onion_message::packet::Packet as LengthReadable>::read(&mut packet_reader)?;
-		Ok(Self {
-			blinding_point,
-			onion_routing_packet,
-		})
+		Ok(Self { blinding_point, onion_routing_packet })
 	}
 }
 
@@ -2290,14 +2322,19 @@ impl Writeable for OutboundOnionPayload {
 				});
 			},
 			Self::Receive {
-				ref payment_data, ref payment_metadata, ref keysend_preimage, sender_intended_htlc_amt_msat,
-				cltv_expiry_height, ref custom_tlvs,
+				ref payment_data,
+				ref payment_metadata,
+				ref keysend_preimage,
+				sender_intended_htlc_amt_msat,
+				cltv_expiry_height,
+				ref custom_tlvs,
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
 				// standardized.
 				let keysend_tlv = keysend_preimage.map(|preimage| (5482373484, preimage.encode()));
-				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
+				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> =
+					custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
 				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
@@ -2313,7 +2350,10 @@ impl Writeable for OutboundOnionPayload {
 				});
 			},
 			Self::BlindedReceive {
-				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
+				sender_intended_htlc_amt_msat,
+				total_msat,
+				cltv_expiry_height,
+				encrypted_tlvs,
 				intro_node_blinding_point,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
@@ -2329,7 +2369,10 @@ impl Writeable for OutboundOnionPayload {
 	}
 }
 
-impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload where NS::Target: NodeSigner {
+impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload
+where
+	NS::Target: NodeSigner,
+{
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, &NS)) -> Result<Self, DecodeError> {
 		let (update_add_blinding_point, node_signer) = args;
 
@@ -2365,29 +2408,40 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 			Ok(true)
 		});
 
-		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+		if amt.unwrap_or(0) > MAX_VALUE_MSAT {
+			return Err(DecodeError::InvalidValue);
+		}
 		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
-			return Err(DecodeError::InvalidValue)
+			return Err(DecodeError::InvalidValue);
 		}
 
 		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
-			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() ||
-				keysend_preimage.is_some()
+			if short_id.is_some()
+				|| payment_data.is_some()
+				|| payment_metadata.is_some()
+				|| keysend_preimage.is_some()
 			{
-				return Err(DecodeError::InvalidValue)
+				return Err(DecodeError::InvalidValue);
 			}
 			let enc_tlvs = encrypted_tlvs_opt.ok_or(DecodeError::InvalidValue)?.0;
-			let enc_tlvs_ss = node_signer.ecdh(Recipient::Node, &blinding_point, None)
+			let enc_tlvs_ss = node_signer
+				.ecdh(Recipient::Node, &blinding_point, None)
 				.map_err(|_| DecodeError::InvalidValue)?;
 			let rho = onion_utils::gen_rho_from_shared_secret(&enc_tlvs_ss.secret_bytes());
 			let mut s = Cursor::new(&enc_tlvs);
 			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
 			match ChaChaPolyReadAdapter::read(&mut reader, rho)? {
-				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
-					short_channel_id, payment_relay, payment_constraints, features
-				})} => {
+				ChaChaPolyReadAdapter {
+					readable:
+						BlindedPaymentTlvs::Forward(ForwardTlvs {
+							short_channel_id,
+							payment_relay,
+							payment_constraints,
+							features,
+						}),
+				} => {
 					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() {
-						return Err(DecodeError::InvalidValue)
+						return Err(DecodeError::InvalidValue);
 					}
 					Ok(Self::BlindedForward {
 						short_channel_id,
@@ -2397,10 +2451,13 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						intro_node_blinding_point,
 					})
 				},
-				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
-					payment_secret, payment_constraints
-				})} => {
-					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+				ChaChaPolyReadAdapter {
+					readable:
+						BlindedPaymentTlvs::Receive(ReceiveTlvs { payment_secret, payment_constraints }),
+				} => {
+					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT {
+						return Err(DecodeError::InvalidValue);
+					}
 					Ok(Self::BlindedReceive {
 						sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
 						total_msat: total_msat.ok_or(DecodeError::InvalidValue)?,
@@ -2412,9 +2469,13 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 				},
 			}
 		} else if let Some(short_channel_id) = short_id {
-			if payment_data.is_some() || payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
-				total_msat.is_some()
-			{ return Err(DecodeError::InvalidValue) }
+			if payment_data.is_some()
+				|| payment_metadata.is_some()
+				|| encrypted_tlvs_opt.is_some()
+				|| total_msat.is_some()
+			{
+				return Err(DecodeError::InvalidValue);
+			}
 			Ok(Self::Forward {
 				short_channel_id,
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
@@ -2422,7 +2483,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 			})
 		} else {
 			if encrypted_tlvs_opt.is_some() || total_msat.is_some() {
-				return Err(DecodeError::InvalidValue)
+				return Err(DecodeError::InvalidValue);
 			}
 			if let Some(data) = &payment_data {
 				if data.total_msat > MAX_VALUE_MSAT {
@@ -2457,7 +2518,7 @@ impl Readable for Ping {
 				let byteslen = Readable::read(r)?;
 				r.read_exact(&mut vec![0u8; byteslen as usize][..])?;
 				byteslen
-			}
+			},
 		})
 	}
 }
@@ -2476,7 +2537,7 @@ impl Readable for Pong {
 				let byteslen = Readable::read(r)?;
 				r.read_exact(&mut vec![0u8; byteslen as usize][..])?;
 				byteslen
-			}
+			},
 		})
 	}
 }
@@ -2585,7 +2646,7 @@ impl Readable for ErrorMessage {
 					Ok(s) => s,
 					Err(_) => return Err(DecodeError::InvalidValue),
 				}
-			}
+			},
 		})
 	}
 }
@@ -2612,7 +2673,7 @@ impl Readable for WarningMessage {
 					Ok(s) => s,
 					Err(_) => return Err(DecodeError::InvalidValue),
 				}
-			}
+			},
 		})
 	}
 }
@@ -2654,7 +2715,9 @@ impl Readable for UnsignedNodeAnnouncement {
 		let mut excess = false;
 		let mut excess_byte = 0;
 		loop {
-			if addr_len <= addr_readpos { break; }
+			if addr_len <= addr_readpos {
+				break;
+			}
 			match Readable::read(r) {
 				Ok(Ok(addr)) => {
 					if addr_len < addr_readpos + 1 + addr.len() {
@@ -2727,16 +2790,13 @@ impl Readable for QueryShortChannelIds {
 
 		// Read short_channel_ids (8-bytes each), for the u16 encoding_len
 		// less the 1-byte encoding_type
-		let short_channel_id_count: u16 = (encoding_len - 1)/8;
+		let short_channel_id_count: u16 = (encoding_len - 1) / 8;
 		let mut short_channel_ids = Vec::with_capacity(short_channel_id_count as usize);
 		for _ in 0..short_channel_id_count {
 			short_channel_ids.push(Readable::read(r)?);
 		}
 
-		Ok(QueryShortChannelIds {
-			chain_hash,
-			short_channel_ids,
-		})
+		Ok(QueryShortChannelIds { chain_hash, short_channel_ids })
 	}
 }
 
@@ -2806,7 +2866,7 @@ impl Readable for ReplyChannelRange {
 
 		// Read short_channel_ids (8-bytes each), for the u16 encoding_len
 		// less the 1-byte encoding_type
-		let short_channel_id_count: u16 = (encoding_len - 1)/8;
+		let short_channel_id_count: u16 = (encoding_len - 1) / 8;
 		let mut short_channel_ids = Vec::with_capacity(short_channel_id_count as usize);
 		for _ in 0..short_channel_id_count {
 			short_channel_ids.push(Readable::read(r)?);
@@ -2817,7 +2877,7 @@ impl Readable for ReplyChannelRange {
 			first_blocknum,
 			number_of_blocks,
 			sync_complete,
-			short_channel_ids
+			short_channel_ids,
 		})
 	}
 }
@@ -2848,52 +2908,64 @@ impl_writeable_msg!(GossipTimestampFilter, {
 
 #[cfg(test)]
 mod tests {
-	use std::convert::TryFrom;
-	use bitcoin::{Transaction, TxIn, ScriptBuf, Sequence, Witness, TxOut};
-	use hex::DisplayHex;
-	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket};
 	use crate::ln::msgs::SocketAddress;
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket};
+	use crate::ln::ChannelId;
+	use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{Writeable, Readable, ReadableArgs, Hostname, TransactionU16LenLimited};
+	use crate::util::ser::{Hostname, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
+	use bitcoin::{ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness};
+	use hex::DisplayHex;
+	use std::convert::TryFrom;
 
-	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::address::Address;
-	use bitcoin::network::constants::Network;
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
+	use bitcoin::blockdata::script::Builder;
 	use bitcoin::hash_types::Txid;
+	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::locktime::absolute::LockTime;
+	use bitcoin::network::constants::Network;
 
-	use bitcoin::secp256k1::{PublicKey,SecretKey};
-	use bitcoin::secp256k1::{Secp256k1, Message};
+	use bitcoin::secp256k1::{Message, Secp256k1};
+	use bitcoin::secp256k1::{PublicKey, SecretKey};
 
+	use crate::chain::transaction::OutPoint;
 	use crate::io::{self, Cursor};
 	use crate::prelude::*;
 	use core::str::FromStr;
-	use crate::chain::transaction::OutPoint;
 
 	#[cfg(feature = "std")]
-	use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
-	#[cfg(feature = "std")]
 	use crate::ln::msgs::SocketAddressParseError;
+	#[cfg(feature = "std")]
+	use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
 
 	#[test]
 	fn encoding_channel_reestablish() {
 		let public_key = {
 			let secp_ctx = Secp256k1::new();
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
+			PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(
+					&<Vec<u8>>::from_hex(
+						"0101010101010101010101010101010101010101010101010101010101010101",
+					)
+					.unwrap()[..],
+				)
+				.unwrap(),
+			)
 		};
 
 		let cr = msgs::ChannelReestablish {
-			channel_id: ChannelId::from_bytes([4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]),
+			channel_id: ChannelId::from_bytes([
+				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0,
+				0, 0, 0, 0,
+			]),
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			your_last_per_commitment_secret: [9;32],
+			your_last_per_commitment_secret: [9; 32],
 			my_current_per_commitment_point: public_key,
 			next_funding_txid: None,
 		};
@@ -2902,11 +2974,15 @@ mod tests {
 		assert_eq!(
 			encoded_value,
 			vec![
-				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, // channel_id
+				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0,
+				0, 0, 0, 0, // channel_id
 				0, 0, 0, 0, 0, 0, 0, 3, // next_local_commitment_number
 				0, 0, 0, 0, 0, 0, 0, 4, // next_remote_commitment_number
-				9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, // your_last_per_commitment_secret
-				3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143, // my_current_per_commitment_point
+				9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+				9, 9, 9, 9, // your_last_per_commitment_secret
+				3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30,
+				24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7,
+				143, // my_current_per_commitment_point
 			]
 		);
 	}
@@ -2915,63 +2991,88 @@ mod tests {
 	fn encoding_channel_reestablish_with_next_funding_txid() {
 		let public_key = {
 			let secp_ctx = Secp256k1::new();
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap())
+			PublicKey::from_secret_key(
+				&secp_ctx,
+				&SecretKey::from_slice(
+					&<Vec<u8>>::from_hex(
+						"0101010101010101010101010101010101010101010101010101010101010101",
+					)
+					.unwrap()[..],
+				)
+				.unwrap(),
+			)
 		};
 
 		let cr = msgs::ChannelReestablish {
-			channel_id: ChannelId::from_bytes([4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]),
+			channel_id: ChannelId::from_bytes([
+				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0,
+				0, 0, 0, 0,
+			]),
 			next_local_commitment_number: 3,
 			next_remote_commitment_number: 4,
-			your_last_per_commitment_secret: [9;32],
+			your_last_per_commitment_secret: [9; 32],
 			my_current_per_commitment_point: public_key,
-			next_funding_txid: Some(Txid::from_raw_hash(bitcoin::hashes::Hash::from_slice(&[
-				48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124,
-			]).unwrap())),
+			next_funding_txid: Some(Txid::from_raw_hash(
+				bitcoin::hashes::Hash::from_slice(&[
+					48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80,
+					4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124,
+				])
+				.unwrap(),
+			)),
 		};
 
 		let encoded_value = cr.encode();
 		assert_eq!(
 			encoded_value,
 			vec![
-				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, // channel_id
+				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0,
+				0, 0, 0, 0, // channel_id
 				0, 0, 0, 0, 0, 0, 0, 3, // next_local_commitment_number
 				0, 0, 0, 0, 0, 0, 0, 4, // next_remote_commitment_number
-				9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, // your_last_per_commitment_secret
-				3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143, // my_current_per_commitment_point
-				0, // Type (next_funding_txid)
-				32, // Length
-				48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4, 12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124, // Value
+				9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9,
+				9, 9, 9, 9, // your_last_per_commitment_secret
+				3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30,
+				24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7,
+				143, // my_current_per_commitment_point
+				0,   // Type (next_funding_txid)
+				32,  // Length
+				48, 167, 250, 69, 152, 48, 103, 172, 164, 99, 59, 19, 23, 11, 92, 84, 15, 80, 4,
+				12, 98, 82, 75, 31, 201, 11, 91, 23, 98, 23, 53, 124, // Value
 			]
 		);
 	}
 
 	macro_rules! get_keys_from {
-		($slice: expr, $secp_ctx: expr) => {
-			{
-				let privkey = SecretKey::from_slice(&<Vec<u8>>::from_hex($slice).unwrap()[..]).unwrap();
-				let pubkey = PublicKey::from_secret_key(&$secp_ctx, &privkey);
-				(privkey, pubkey)
-			}
-		}
+		($slice: expr, $secp_ctx: expr) => {{
+			let privkey = SecretKey::from_slice(&<Vec<u8>>::from_hex($slice).unwrap()[..]).unwrap();
+			let pubkey = PublicKey::from_secret_key(&$secp_ctx, &privkey);
+			(privkey, pubkey)
+		}};
 	}
 
 	macro_rules! get_sig_on {
-		($privkey: expr, $ctx: expr, $string: expr) => {
-			{
-				let sighash = Message::from_slice(&$string.into_bytes()[..]).unwrap();
-				$ctx.sign_ecdsa(&sighash, &$privkey)
-			}
-		}
+		($privkey: expr, $ctx: expr, $string: expr) => {{
+			let sighash = Message::from_slice(&$string.into_bytes()[..]).unwrap();
+			$ctx.sign_ecdsa(&sighash, &$privkey)
+		}};
 	}
 
 	#[test]
 	fn encoding_announcement_signatures() {
 		let secp_ctx = Secp256k1::new();
-		let (privkey, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let sig_1 = get_sig_on!(privkey, secp_ctx, String::from("01010101010101010101010101010101"));
-		let sig_2 = get_sig_on!(privkey, secp_ctx, String::from("02020202020202020202020202020202"));
+		let (privkey, _) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let sig_1 =
+			get_sig_on!(privkey, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_2 =
+			get_sig_on!(privkey, secp_ctx, String::from("02020202020202020202020202020202"));
 		let announcement_signatures = msgs::AnnouncementSignatures {
-			channel_id: ChannelId::from_bytes([4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]),
+			channel_id: ChannelId::from_bytes([
+				4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0,
+				0, 0, 0, 0,
+			]),
 			short_channel_id: 2316138423780173,
 			node_signature: sig_1,
 			bitcoin_signature: sig_2,
@@ -2983,14 +3084,30 @@ mod tests {
 
 	fn do_encoding_channel_announcement(unknown_features_bits: bool, excess_data: bool) {
 		let secp_ctx = Secp256k1::new();
-		let (privkey_1, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let (privkey_2, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
-		let (privkey_3, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
-		let (privkey_4, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
-		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
-		let sig_2 = get_sig_on!(privkey_2, secp_ctx, String::from("01010101010101010101010101010101"));
-		let sig_3 = get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
-		let sig_4 = get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
+		let (privkey_1, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let (privkey_2, pubkey_2) = get_keys_from!(
+			"0202020202020202020202020202020202020202020202020202020202020202",
+			secp_ctx
+		);
+		let (privkey_3, pubkey_3) = get_keys_from!(
+			"0303030303030303030303030303030303030303030303030303030303030303",
+			secp_ctx
+		);
+		let (privkey_4, pubkey_4) = get_keys_from!(
+			"0404040404040404040404040404040404040404040404040404040404040404",
+			secp_ctx
+		);
+		let sig_1 =
+			get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_2 =
+			get_sig_on!(privkey_2, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_3 =
+			get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_4 =
+			get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
 		let mut features = ChannelFeatures::empty();
 		if unknown_features_bits {
 			features = ChannelFeatures::from_le_bytes(vec![0xFF, 0xFF]);
@@ -3003,7 +3120,11 @@ mod tests {
 			node_id_2: NodeId::from_pubkey(&pubkey_2),
 			bitcoin_key_1: NodeId::from_pubkey(&pubkey_3),
 			bitcoin_key_2: NodeId::from_pubkey(&pubkey_4),
-			excess_data: if excess_data { vec![10, 0, 0, 20, 0, 0, 30, 0, 0, 40] } else { Vec::new() },
+			excess_data: if excess_data {
+				vec![10, 0, 0, 20, 0, 0, 30, 0, 0, 40]
+			} else {
+				Vec::new()
+			},
 		};
 		let channel_announcement = msgs::ChannelAnnouncement {
 			node_signature_1: sig_1,
@@ -3019,7 +3140,12 @@ mod tests {
 		} else {
 			target_value.append(&mut <Vec<u8>>::from_hex("0000").unwrap());
 		}
-		target_value.append(&mut <Vec<u8>>::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+			)
+			.unwrap(),
+		);
 		target_value.append(&mut <Vec<u8>>::from_hex("00083a840000034d031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
 		if excess_data {
 			target_value.append(&mut <Vec<u8>>::from_hex("0a00001400001e000028").unwrap());
@@ -3035,10 +3161,17 @@ mod tests {
 		do_encoding_channel_announcement(true, true);
 	}
 
-	fn do_encoding_node_announcement(unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool, hostname: bool, excess_address_data: bool, excess_data: bool) {
+	fn do_encoding_node_announcement(
+		unknown_features_bits: bool, ipv4: bool, ipv6: bool, onionv2: bool, onionv3: bool,
+		hostname: bool, excess_address_data: bool, excess_data: bool,
+	) {
 		let secp_ctx = Secp256k1::new();
-		let (privkey_1, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let (privkey_1, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let sig_1 =
+			get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let features = if unknown_features_bits {
 			NodeFeatures::from_le_bytes(vec![0xFF, 0xFF])
 		} else {
@@ -3047,28 +3180,30 @@ mod tests {
 		};
 		let mut addresses = Vec::new();
 		if ipv4 {
-			addresses.push(SocketAddress::TcpIpV4 {
-				addr: [255, 254, 253, 252],
-				port: 9735
-			});
+			addresses.push(SocketAddress::TcpIpV4 { addr: [255, 254, 253, 252], port: 9735 });
 		}
 		if ipv6 {
 			addresses.push(SocketAddress::TcpIpV6 {
-				addr: [255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240],
-				port: 9735
+				addr: [
+					255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240,
+				],
+				port: 9735,
 			});
 		}
 		if onionv2 {
-			addresses.push(msgs::SocketAddress::OnionV2(
-				[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 38, 7]
-			));
+			addresses.push(msgs::SocketAddress::OnionV2([
+				255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 38, 7,
+			]));
 		}
 		if onionv3 {
 			addresses.push(msgs::SocketAddress::OnionV3 {
-				ed25519_pubkey:	[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240, 239, 238, 237, 236, 235, 234, 233, 232, 231, 230, 229, 228, 227, 226, 225, 224],
+				ed25519_pubkey: [
+					255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240,
+					239, 238, 237, 236, 235, 234, 233, 232, 231, 230, 229, 228, 227, 226, 225, 224,
+				],
 				checksum: 32,
 				version: 16,
-				port: 9735
+				port: 9735,
 			});
 		}
 		if hostname {
@@ -3086,16 +3221,32 @@ mod tests {
 			timestamp: 20190119,
 			node_id: NodeId::from_pubkey(&pubkey_1),
 			rgb: [32; 3],
-			alias: NodeAlias([16;32]),
+			alias: NodeAlias([16; 32]),
 			addresses,
-			excess_address_data: if excess_address_data { vec![33, 108, 40, 11, 83, 149, 162, 84, 110, 126, 75, 38, 99, 224, 79, 129, 22, 34, 241, 90, 79, 146, 232, 58, 162, 233, 43, 162, 165, 115, 193, 57, 20, 44, 84, 174, 99, 7, 42, 30, 193, 238, 125, 192, 192, 75, 222, 92, 132, 120, 6, 23, 42, 160, 92, 146, 194, 42, 232, 227, 8, 209, 210, 105] } else { Vec::new() },
-			excess_data: if excess_data { vec![59, 18, 204, 25, 92, 224, 162, 209, 189, 166, 168, 139, 239, 161, 159, 160, 127, 81, 202, 167, 92, 232, 56, 55, 242, 137, 101, 96, 11, 138, 172, 171, 8, 85, 255, 176, 231, 65, 236, 95, 124, 65, 66, 30, 152, 41, 169, 212, 134, 17, 200, 200, 49, 247, 27, 229, 234, 115, 230, 101, 148, 151, 127, 253] } else { Vec::new() },
+			excess_address_data: if excess_address_data {
+				vec![
+					33, 108, 40, 11, 83, 149, 162, 84, 110, 126, 75, 38, 99, 224, 79, 129, 22, 34,
+					241, 90, 79, 146, 232, 58, 162, 233, 43, 162, 165, 115, 193, 57, 20, 44, 84,
+					174, 99, 7, 42, 30, 193, 238, 125, 192, 192, 75, 222, 92, 132, 120, 6, 23, 42,
+					160, 92, 146, 194, 42, 232, 227, 8, 209, 210, 105,
+				]
+			} else {
+				Vec::new()
+			},
+			excess_data: if excess_data {
+				vec![
+					59, 18, 204, 25, 92, 224, 162, 209, 189, 166, 168, 139, 239, 161, 159, 160,
+					127, 81, 202, 167, 92, 232, 56, 55, 242, 137, 101, 96, 11, 138, 172, 171, 8,
+					85, 255, 176, 231, 65, 236, 95, 124, 65, 66, 30, 152, 41, 169, 212, 134, 17,
+					200, 200, 49, 247, 27, 229, 234, 115, 230, 101, 148, 151, 127, 253,
+				]
+			} else {
+				Vec::new()
+			},
 		};
 		addr_len += unsigned_node_announcement.excess_address_data.len() as u16;
-		let node_announcement = msgs::NodeAnnouncement {
-			signature: sig_1,
-			contents: unsigned_node_announcement,
-		};
+		let node_announcement =
+			msgs::NodeAnnouncement { signature: sig_1, contents: unsigned_node_announcement };
 		let encoded_value = node_announcement.encode();
 		let mut target_value = <Vec<u8>>::from_hex("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		if unknown_features_bits {
@@ -3109,13 +3260,20 @@ mod tests {
 			target_value.append(&mut <Vec<u8>>::from_hex("01fffefdfc2607").unwrap());
 		}
 		if ipv6 {
-			target_value.append(&mut <Vec<u8>>::from_hex("02fffefdfcfbfaf9f8f7f6f5f4f3f2f1f02607").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("02fffefdfcfbfaf9f8f7f6f5f4f3f2f1f02607").unwrap(),
+			);
 		}
 		if onionv2 {
 			target_value.append(&mut <Vec<u8>>::from_hex("03fffefdfcfbfaf9f8f7f62607").unwrap());
 		}
 		if onionv3 {
-			target_value.append(&mut <Vec<u8>>::from_hex("04fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e00020102607").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex(
+					"04fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0efeeedecebeae9e8e7e6e5e4e3e2e1e00020102607",
+				)
+				.unwrap(),
+			);
 		}
 		if hostname {
 			target_value.append(&mut <Vec<u8>>::from_hex("0504686f73742607").unwrap());
@@ -3145,8 +3303,12 @@ mod tests {
 
 	fn do_encoding_channel_update(direction: bool, disable: bool, excess_data: bool) {
 		let secp_ctx = Secp256k1::new();
-		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let (privkey_1, _) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let sig_1 =
+			get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let unsigned_channel_update = msgs::UnsignedChannelUpdate {
 			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 			short_channel_id: 2316138423780173,
@@ -3157,15 +3319,18 @@ mod tests {
 			htlc_maximum_msat: 131355275467161,
 			fee_base_msat: 10000,
 			fee_proportional_millionths: 20,
-			excess_data: if excess_data { vec![0, 0, 0, 0, 59, 154, 202, 0] } else { Vec::new() }
+			excess_data: if excess_data { vec![0, 0, 0, 0, 59, 154, 202, 0] } else { Vec::new() },
 		};
-		let channel_update = msgs::ChannelUpdate {
-			signature: sig_1,
-			contents: unsigned_channel_update
-		};
+		let channel_update =
+			msgs::ChannelUpdate { signature: sig_1, contents: unsigned_channel_update };
 		let encoded_value = channel_update.encode();
 		let mut target_value = <Vec<u8>>::from_hex("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
-		target_value.append(&mut <Vec<u8>>::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+			)
+			.unwrap(),
+		);
 		target_value.append(&mut <Vec<u8>>::from_hex("00083a840000034d013413a7").unwrap());
 		target_value.append(&mut <Vec<u8>>::from_hex("01").unwrap());
 		target_value.append(&mut <Vec<u8>>::from_hex("00").unwrap());
@@ -3177,7 +3342,8 @@ mod tests {
 			let flag = target_value.last_mut().unwrap();
 			*flag = *flag | 1 << 1;
 		}
-		target_value.append(&mut <Vec<u8>>::from_hex("009000000000000f42400000271000000014").unwrap());
+		target_value
+			.append(&mut <Vec<u8>>::from_hex("009000000000000f42400000271000000014").unwrap());
 		target_value.append(&mut <Vec<u8>>::from_hex("0000777788889999").unwrap());
 		if excess_data {
 			target_value.append(&mut <Vec<u8>>::from_hex("000000003b9aca00").unwrap());
@@ -3199,12 +3365,30 @@ mod tests {
 
 	fn do_encoding_open_channel(random_bit: bool, shutdown: bool, incl_chan_type: bool) {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
-		let (_, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
-		let (_, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
-		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
-		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let (_, pubkey_2) = get_keys_from!(
+			"0202020202020202020202020202020202020202020202020202020202020202",
+			secp_ctx
+		);
+		let (_, pubkey_3) = get_keys_from!(
+			"0303030303030303030303030303030303030303030303030303030303030303",
+			secp_ctx
+		);
+		let (_, pubkey_4) = get_keys_from!(
+			"0404040404040404040404040404040404040404040404040404040404040404",
+			secp_ctx
+		);
+		let (_, pubkey_5) = get_keys_from!(
+			"0505050505050505050505050505050505050505050505050505050505050505",
+			secp_ctx
+		);
+		let (_, pubkey_6) = get_keys_from!(
+			"0606060606060606060606060606060606060606060606060606060606060606",
+			secp_ctx
+		);
 		let open_channel = msgs::OpenChannel {
 			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 			temporary_channel_id: ChannelId::from_bytes([2; 32]),
@@ -3224,12 +3408,27 @@ mod tests {
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
 			channel_flags: if random_bit { 1 << 5 } else { 0 },
-			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+			shutdown_scriptpubkey: if shutdown {
+				Some(
+					Address::p2pkh(
+						&::bitcoin::PublicKey { compressed: true, inner: pubkey_1 },
+						Network::Testnet,
+					)
+					.script_pubkey(),
+				)
+			} else {
+				None
+			},
 			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
 		};
 		let encoded_value = open_channel.encode();
 		let mut target_value = Vec::new();
-		target_value.append(&mut <Vec<u8>>::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+			)
+			.unwrap(),
+		);
 		target_value.append(&mut <Vec<u8>>::from_hex("02020202020202020202020202020202020202020202020202020202020202021234567890123456233403289122369832144668701144767633030896203198784335490624111800083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
 		if random_bit {
 			target_value.append(&mut <Vec<u8>>::from_hex("20").unwrap());
@@ -3237,7 +3436,10 @@ mod tests {
 			target_value.append(&mut <Vec<u8>>::from_hex("00").unwrap());
 		}
 		if shutdown {
-			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac")
+					.unwrap(),
+			);
 		}
 		if incl_chan_type {
 			target_value.append(&mut <Vec<u8>>::from_hex("0100").unwrap());
@@ -3257,15 +3459,38 @@ mod tests {
 		do_encoding_open_channel(true, true, true);
 	}
 
-	fn do_encoding_open_channelv2(random_bit: bool, shutdown: bool, incl_chan_type: bool, require_confirmed_inputs: bool) {
+	fn do_encoding_open_channelv2(
+		random_bit: bool, shutdown: bool, incl_chan_type: bool, require_confirmed_inputs: bool,
+	) {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
-		let (_, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
-		let (_, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
-		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
-		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
-		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let (_, pubkey_2) = get_keys_from!(
+			"0202020202020202020202020202020202020202020202020202020202020202",
+			secp_ctx
+		);
+		let (_, pubkey_3) = get_keys_from!(
+			"0303030303030303030303030303030303030303030303030303030303030303",
+			secp_ctx
+		);
+		let (_, pubkey_4) = get_keys_from!(
+			"0404040404040404040404040404040404040404040404040404040404040404",
+			secp_ctx
+		);
+		let (_, pubkey_5) = get_keys_from!(
+			"0505050505050505050505050505050505050505050505050505050505050505",
+			secp_ctx
+		);
+		let (_, pubkey_6) = get_keys_from!(
+			"0606060606060606060606060606060606060606060606060606060606060606",
+			secp_ctx
+		);
+		let (_, pubkey_7) = get_keys_from!(
+			"0707070707070707070707070707070707070707070707070707070707070707",
+			secp_ctx
+		);
 		let open_channelv2 = msgs::OpenChannelV2 {
 			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 			temporary_channel_id: ChannelId::from_bytes([2; 32]),
@@ -3286,14 +3511,34 @@ mod tests {
 			first_per_commitment_point: pubkey_6,
 			second_per_commitment_point: pubkey_7,
 			channel_flags: if random_bit { 1 << 5 } else { 0 },
-			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+			shutdown_scriptpubkey: if shutdown {
+				Some(
+					Address::p2pkh(
+						&::bitcoin::PublicKey { compressed: true, inner: pubkey_1 },
+						Network::Testnet,
+					)
+					.script_pubkey(),
+				)
+			} else {
+				None
+			},
 			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
 			require_confirmed_inputs: if require_confirmed_inputs { Some(()) } else { None },
 		};
 		let encoded_value = open_channelv2.encode();
 		let mut target_value = Vec::new();
-		target_value.append(&mut <Vec<u8>>::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
-		target_value.append(&mut <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap());
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+			)
+			.unwrap(),
+		);
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"0202020202020202020202020202020202020202020202020202020202020202",
+			)
+			.unwrap(),
+		);
 		target_value.append(&mut <Vec<u8>>::from_hex("000c89d4").unwrap());
 		target_value.append(&mut <Vec<u8>>::from_hex("000c89d4").unwrap());
 		target_value.append(&mut <Vec<u8>>::from_hex("1234567890123456").unwrap());
@@ -3303,13 +3548,48 @@ mod tests {
 		target_value.append(&mut <Vec<u8>>::from_hex("c0bc").unwrap());
 		target_value.append(&mut <Vec<u8>>::from_hex("c0bc").unwrap());
 		target_value.append(&mut <Vec<u8>>::from_hex("12345678").unwrap());
-		target_value.append(&mut <Vec<u8>>::from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap());
-		target_value.append(&mut <Vec<u8>>::from_hex("024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766").unwrap());
-		target_value.append(&mut <Vec<u8>>::from_hex("02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337").unwrap());
-		target_value.append(&mut <Vec<u8>>::from_hex("03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap());
-		target_value.append(&mut <Vec<u8>>::from_hex("0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7").unwrap());
-		target_value.append(&mut <Vec<u8>>::from_hex("03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap());
-		target_value.append(&mut <Vec<u8>>::from_hex("02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f").unwrap());
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+			)
+			.unwrap(),
+		);
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+			)
+			.unwrap(),
+		);
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+			)
+			.unwrap(),
+		);
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b",
+			)
+			.unwrap(),
+		);
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7",
+			)
+			.unwrap(),
+		);
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a",
+			)
+			.unwrap(),
+		);
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f",
+			)
+			.unwrap(),
+		);
 
 		if random_bit {
 			target_value.append(&mut <Vec<u8>>::from_hex("20").unwrap());
@@ -3318,7 +3598,10 @@ mod tests {
 		}
 		if shutdown {
 			target_value.append(&mut <Vec<u8>>::from_hex("001b").unwrap()); // Type 0 + Length 27
-			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac")
+					.unwrap(),
+			);
 		}
 		if incl_chan_type {
 			target_value.append(&mut <Vec<u8>>::from_hex("0100").unwrap());
@@ -3351,12 +3634,30 @@ mod tests {
 
 	fn do_encoding_accept_channel(shutdown: bool) {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
-		let (_, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
-		let (_, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
-		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
-		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let (_, pubkey_2) = get_keys_from!(
+			"0202020202020202020202020202020202020202020202020202020202020202",
+			secp_ctx
+		);
+		let (_, pubkey_3) = get_keys_from!(
+			"0303030303030303030303030303030303030303030303030303030303030303",
+			secp_ctx
+		);
+		let (_, pubkey_4) = get_keys_from!(
+			"0404040404040404040404040404040404040404040404040404040404040404",
+			secp_ctx
+		);
+		let (_, pubkey_5) = get_keys_from!(
+			"0505050505050505050505050505050505050505050505050505050505050505",
+			secp_ctx
+		);
+		let (_, pubkey_6) = get_keys_from!(
+			"0606060606060606060606060606060606060606060606060606060606060606",
+			secp_ctx
+		);
 		let accept_channel = msgs::AcceptChannel {
 			temporary_channel_id: ChannelId::from_bytes([2; 32]),
 			dust_limit_satoshis: 1311768467284833366,
@@ -3372,7 +3673,17 @@ mod tests {
 			delayed_payment_basepoint: pubkey_4,
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
-			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+			shutdown_scriptpubkey: if shutdown {
+				Some(
+					Address::p2pkh(
+						&::bitcoin::PublicKey { compressed: true, inner: pubkey_1 },
+						Network::Testnet,
+					)
+					.script_pubkey(),
+				)
+			} else {
+				None
+			},
 			channel_type: None,
 			#[cfg(taproot)]
 			next_local_nonce: None,
@@ -3380,7 +3691,10 @@ mod tests {
 		let encoded_value = accept_channel.encode();
 		let mut target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020212345678901234562334032891223698321446687011447600083a840000034d000c89d4c0bcc0bc031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d076602531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe33703462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f703f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap();
 		if shutdown {
-			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac")
+					.unwrap(),
+			);
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3393,13 +3707,34 @@ mod tests {
 
 	fn do_encoding_accept_channelv2(shutdown: bool) {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let (_, pubkey_2) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
-		let (_, pubkey_3) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
-		let (_, pubkey_4) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
-		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
-		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
-		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let (_, pubkey_2) = get_keys_from!(
+			"0202020202020202020202020202020202020202020202020202020202020202",
+			secp_ctx
+		);
+		let (_, pubkey_3) = get_keys_from!(
+			"0303030303030303030303030303030303030303030303030303030303030303",
+			secp_ctx
+		);
+		let (_, pubkey_4) = get_keys_from!(
+			"0404040404040404040404040404040404040404040404040404040404040404",
+			secp_ctx
+		);
+		let (_, pubkey_5) = get_keys_from!(
+			"0505050505050505050505050505050505050505050505050505050505050505",
+			secp_ctx
+		);
+		let (_, pubkey_6) = get_keys_from!(
+			"0606060606060606060606060606060606060606060606060606060606060606",
+			secp_ctx
+		);
+		let (_, pubkey_7) = get_keys_from!(
+			"0707070707070707070707070707070707070707070707070707070707070707",
+			secp_ctx
+		);
 		let accept_channelv2 = msgs::AcceptChannelV2 {
 			temporary_channel_id: ChannelId::from_bytes([2; 32]),
 			funding_satoshis: 1311768467284833366,
@@ -3416,12 +3751,24 @@ mod tests {
 			htlc_basepoint: pubkey_5,
 			first_per_commitment_point: pubkey_6,
 			second_per_commitment_point: pubkey_7,
-			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+			shutdown_scriptpubkey: if shutdown {
+				Some(
+					Address::p2pkh(
+						&::bitcoin::PublicKey { compressed: true, inner: pubkey_1 },
+						Network::Testnet,
+					)
+					.script_pubkey(),
+				)
+			} else {
+				None
+			},
 			channel_type: None,
 			require_confirmed_inputs: None,
 		};
 		let encoded_value = accept_channelv2.encode();
-		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // temporary_channel_id
+		let mut target_value =
+			<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202")
+				.unwrap(); // temporary_channel_id
 		target_value.append(&mut <Vec<u8>>::from_hex("1234567890123456").unwrap()); // funding_satoshis
 		target_value.append(&mut <Vec<u8>>::from_hex("1234567890123456").unwrap()); // dust_limit_satoshis
 		target_value.append(&mut <Vec<u8>>::from_hex("2334032891223698").unwrap()); // max_htlc_value_in_flight_msat
@@ -3429,16 +3776,54 @@ mod tests {
 		target_value.append(&mut <Vec<u8>>::from_hex("000c89d4").unwrap()); //  minimum_depth
 		target_value.append(&mut <Vec<u8>>::from_hex("c0bc").unwrap()); // to_self_delay
 		target_value.append(&mut <Vec<u8>>::from_hex("c0bc").unwrap()); // max_accepted_htlcs
-		target_value.append(&mut <Vec<u8>>::from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f").unwrap()); // funding_pubkey
-		target_value.append(&mut <Vec<u8>>::from_hex("024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766").unwrap()); // revocation_basepoint
-		target_value.append(&mut <Vec<u8>>::from_hex("02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337").unwrap()); // payment_basepoint
-		target_value.append(&mut <Vec<u8>>::from_hex("03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b").unwrap()); // delayed_payment_basepoint
-		target_value.append(&mut <Vec<u8>>::from_hex("0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7").unwrap()); // htlc_basepoint
-		target_value.append(&mut <Vec<u8>>::from_hex("03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap()); // first_per_commitment_point
-		target_value.append(&mut <Vec<u8>>::from_hex("02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f").unwrap()); // second_per_commitment_point
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+			)
+			.unwrap(),
+		); // funding_pubkey
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"024d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766",
+			)
+			.unwrap(),
+		); // revocation_basepoint
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"02531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
+			)
+			.unwrap(),
+		); // payment_basepoint
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"03462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b",
+			)
+			.unwrap(),
+		); // delayed_payment_basepoint
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"0362c0a046dacce86ddd0343c6d3c7c79c2208ba0d9c9cf24a6d046d21d21f90f7",
+			)
+			.unwrap(),
+		); // htlc_basepoint
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a",
+			)
+			.unwrap(),
+		); // first_per_commitment_point
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f",
+			)
+			.unwrap(),
+		); // second_per_commitment_point
 		if shutdown {
 			target_value.append(&mut <Vec<u8>>::from_hex("001b").unwrap()); // Type 0 + Length 27
-			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac")
+					.unwrap(),
+			);
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3452,11 +3837,18 @@ mod tests {
 	#[test]
 	fn encoding_funding_created() {
 		let secp_ctx = Secp256k1::new();
-		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let (privkey_1, _) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let sig_1 =
+			get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let funding_created = msgs::FundingCreated {
 			temporary_channel_id: ChannelId::from_bytes([2; 32]),
-			funding_txid: Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
+			funding_txid: Txid::from_str(
+				"c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e",
+			)
+			.unwrap(),
 			funding_output_index: 255,
 			signature: sig_1,
 			#[cfg(taproot)]
@@ -3472,8 +3864,12 @@ mod tests {
 	#[test]
 	fn encoding_funding_signed() {
 		let secp_ctx = Secp256k1::new();
-		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let (privkey_1, _) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let sig_1 =
+			get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let funding_signed = msgs::FundingSigned {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			signature: sig_1,
@@ -3488,7 +3884,10 @@ mod tests {
 	#[test]
 	fn encoding_channel_ready() {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
 		let channel_ready = msgs::ChannelReady {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			next_per_commitment_point: pubkey_1,
@@ -3502,9 +3901,15 @@ mod tests {
 	#[test]
 	fn encoding_splice() {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
 		let splice = msgs::Splice {
-			chain_hash: ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			chain_hash: ChainHash::from_hex(
+				"6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+			)
+			.unwrap(),
 			channel_id: ChannelId::from_bytes([2; 32]),
 			relative_satoshis: 123456,
 			funding_feerate_perkw: 2000,
@@ -3517,20 +3922,26 @@ mod tests {
 
 	#[test]
 	fn encoding_stfu() {
-		let stfu = msgs::Stfu {
-			channel_id: ChannelId::from_bytes([2; 32]),
-			initiator: 1,
-		};
+		let stfu = msgs::Stfu { channel_id: ChannelId::from_bytes([2; 32]), initiator: 1 };
 		let encoded_value = stfu.encode();
-		assert_eq!(encoded_value.as_hex().to_string(), "020202020202020202020202020202020202020202020202020202020202020201");
+		assert_eq!(
+			encoded_value.as_hex().to_string(),
+			"020202020202020202020202020202020202020202020202020202020202020201"
+		);
 	}
 
 	#[test]
 	fn encoding_splice_ack() {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
 		let splice = msgs::SpliceAck {
-			chain_hash: ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+			chain_hash: ChainHash::from_hex(
+				"6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
+			)
+			.unwrap(),
 			channel_id: ChannelId::from_bytes([2; 32]),
 			relative_satoshis: 123456,
 			funding_pubkey: pubkey_1,
@@ -3541,11 +3952,12 @@ mod tests {
 
 	#[test]
 	fn encoding_splice_locked() {
-		let splice = msgs::SpliceLocked {
-			channel_id: ChannelId::from_bytes([2; 32]),
-		};
+		let splice = msgs::SpliceLocked { channel_id: ChannelId::from_bytes([2; 32]) };
 		let encoded_value = splice.encode();
-		assert_eq!(encoded_value.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020202");
+		assert_eq!(
+			encoded_value.as_hex().to_string(),
+			"0202020202020202020202020202020202020202020202020202020202020202"
+		);
 	}
 
 	#[test]
@@ -3589,7 +4001,10 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 			sats: 4886718345,
-			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().payload.script_pubkey(),
+			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z")
+				.unwrap()
+				.payload
+				.script_pubkey(),
 		};
 		let encoded_value = tx_add_output.encode();
 		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202000000012345678900000001234567890016001436ec78d514df462da95e6a00c24daa8915362d42").unwrap();
@@ -3603,7 +4018,10 @@ mod tests {
 			serial_id: 4886718345,
 		};
 		let encoded_value = tx_remove_input.encode();
-		let target_value = <Vec<u8>>::from_hex("02020202020202020202020202020202020202020202020202020202020202020000000123456789").unwrap();
+		let target_value = <Vec<u8>>::from_hex(
+			"02020202020202020202020202020202020202020202020202020202020202020000000123456789",
+		)
+		.unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3614,17 +4032,20 @@ mod tests {
 			serial_id: 4886718345,
 		};
 		let encoded_value = tx_remove_output.encode();
-		let target_value = <Vec<u8>>::from_hex("02020202020202020202020202020202020202020202020202020202020202020000000123456789").unwrap();
+		let target_value = <Vec<u8>>::from_hex(
+			"02020202020202020202020202020202020202020202020202020202020202020000000123456789",
+		)
+		.unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
 	#[test]
 	fn encoding_tx_complete() {
-		let tx_complete = msgs::TxComplete {
-			channel_id: ChannelId::from_bytes([2; 32]),
-		};
+		let tx_complete = msgs::TxComplete { channel_id: ChannelId::from_bytes([2; 32]) };
 		let encoded_value = tx_complete.encode();
-		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		let target_value =
+			<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202")
+				.unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3643,23 +4064,40 @@ mod tests {
 			],
 		};
 		let encoded_value = tx_signatures.encode();
-		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
-		target_value.append(&mut <Vec<u8>>::from_hex("6e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2").unwrap()); // tx_hash (sha256) (big endian byte order)
+		let mut target_value =
+			<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202")
+				.unwrap(); // channel_id
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"6e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2",
+			)
+			.unwrap(),
+		); // tx_hash (sha256) (big endian byte order)
 		target_value.append(&mut <Vec<u8>>::from_hex("0002").unwrap()); // num_witnesses (u16)
-		// Witness 1
+																// Witness 1
 		target_value.append(&mut <Vec<u8>>::from_hex("006b").unwrap()); // len of witness_data
 		target_value.append(&mut <Vec<u8>>::from_hex("02").unwrap()); // num_witness_elements (VarInt)
 		target_value.append(&mut <Vec<u8>>::from_hex("47").unwrap()); // len of witness element data (VarInt)
 		target_value.append(&mut <Vec<u8>>::from_hex("304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701").unwrap());
 		target_value.append(&mut <Vec<u8>>::from_hex("21").unwrap()); // len of witness element data (VarInt)
-		target_value.append(&mut <Vec<u8>>::from_hex("0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944").unwrap());
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"0301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944",
+			)
+			.unwrap(),
+		);
 		// Witness 2
 		target_value.append(&mut <Vec<u8>>::from_hex("006c").unwrap()); // len of witness_data
 		target_value.append(&mut <Vec<u8>>::from_hex("02").unwrap()); // num_witness_elements (VarInt)
 		target_value.append(&mut <Vec<u8>>::from_hex("48").unwrap()); // len of witness element data (VarInt)
 		target_value.append(&mut <Vec<u8>>::from_hex("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap());
 		target_value.append(&mut <Vec<u8>>::from_hex("21").unwrap()); // len of witness element data (VarInt)
-		target_value.append(&mut <Vec<u8>>::from_hex("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap());
+		target_value.append(
+			&mut <Vec<u8>>::from_hex(
+				"028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5",
+			)
+			.unwrap(),
+		);
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3668,10 +4106,16 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			locktime: 305419896,
 			feerate_sat_per_1000_weight: 20190119,
-			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
+			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target {
+				Some(value)
+			} else {
+				None
+			},
 		};
 		let encoded_value = tx_init_rbf.encode();
-		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
+		let mut target_value =
+			<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202")
+				.unwrap(); // channel_id
 		target_value.append(&mut <Vec<u8>>::from_hex("12345678").unwrap()); // locktime
 		target_value.append(&mut <Vec<u8>>::from_hex("013413a7").unwrap()); // feerate_sat_per_1000_weight
 		if let Some((_, target)) = funding_value_with_hex_target {
@@ -3692,10 +4136,16 @@ mod tests {
 	fn do_encoding_tx_ack_rbf(funding_value_with_hex_target: Option<(i64, &str)>) {
 		let tx_ack_rbf = msgs::TxAckRbf {
 			channel_id: ChannelId::from_bytes([2; 32]),
-			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target { Some(value) } else { None },
+			funding_output_contribution: if let Some((value, _)) = funding_value_with_hex_target {
+				Some(value)
+			} else {
+				None
+			},
 		};
 		let encoded_value = tx_ack_rbf.encode();
-		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		let mut target_value =
+			<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202")
+				.unwrap();
 		if let Some((_, target)) = funding_value_with_hex_target {
 			target_value.push(0x00); // Type
 			target_value.push(target.len() as u8 / 2); // Length
@@ -3724,26 +4174,58 @@ mod tests {
 
 	fn do_encoding_shutdown(script_type: u8) {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
 		let script = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		let shutdown = msgs::Shutdown {
 			channel_id: ChannelId::from_bytes([2; 32]),
-			scriptpubkey:
-				if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey() }
-				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).unwrap().script_pubkey() }
-				else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).unwrap().script_pubkey() }
-				else { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
+			scriptpubkey: if script_type == 1 {
+				Address::p2pkh(
+					&::bitcoin::PublicKey { compressed: true, inner: pubkey_1 },
+					Network::Testnet,
+				)
+				.script_pubkey()
+			} else if script_type == 2 {
+				Address::p2sh(&script, Network::Testnet).unwrap().script_pubkey()
+			} else if script_type == 3 {
+				Address::p2wpkh(
+					&::bitcoin::PublicKey { compressed: true, inner: pubkey_1 },
+					Network::Testnet,
+				)
+				.unwrap()
+				.script_pubkey()
+			} else {
+				Address::p2wsh(&script, Network::Testnet).script_pubkey()
+			},
 		};
 		let encoded_value = shutdown.encode();
-		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap();
+		let mut target_value =
+			<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202")
+				.unwrap();
 		if script_type == 1 {
-			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac")
+					.unwrap(),
+			);
 		} else if script_type == 2 {
-			target_value.append(&mut <Vec<u8>>::from_hex("0017a914da1745e9b549bd0bfa1a569971c77eba30cd5a4b87").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("0017a914da1745e9b549bd0bfa1a569971c77eba30cd5a4b87")
+					.unwrap(),
+			);
 		} else if script_type == 3 {
-			target_value.append(&mut <Vec<u8>>::from_hex("0016001479b000887626b294a914501a4cd226b58b235983").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("0016001479b000887626b294a914501a4cd226b58b235983")
+					.unwrap(),
+			);
 		} else if script_type == 4 {
-			target_value.append(&mut <Vec<u8>>::from_hex("002200204ae81572f06e1b88fd5ced7a1a000945432e83e1551e6f721ee9c00b8cc33260").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex(
+					"002200204ae81572f06e1b88fd5ced7a1a000945432e83e1551e6f721ee9c00b8cc33260",
+				)
+				.unwrap(),
+			);
 		}
 		assert_eq!(encoded_value, target_value);
 	}
@@ -3759,8 +4241,12 @@ mod tests {
 	#[test]
 	fn encoding_closing_signed() {
 		let secp_ctx = Secp256k1::new();
-		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let (privkey_1, _) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let sig_1 =
+			get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
 		let closing_signed = msgs::ClosingSigned {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			fee_satoshis: 2316138423780173,
@@ -3770,7 +4256,10 @@ mod tests {
 		let encoded_value = closing_signed.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
 		assert_eq!(encoded_value, target_value);
-		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value)).unwrap(), closing_signed);
+		assert_eq!(
+			msgs::ClosingSigned::read(&mut Cursor::new(&target_value)).unwrap(),
+			closing_signed
+		);
 
 		let closing_signed_with_range = msgs::ClosingSigned {
 			channel_id: ChannelId::from_bytes([2; 32]),
@@ -3784,19 +4273,24 @@ mod tests {
 		let encoded_value_with_range = closing_signed_with_range.encode();
 		let target_value_with_range = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034dd977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a011000000000deadbeef1badcafe01234567").unwrap();
 		assert_eq!(encoded_value_with_range, target_value_with_range);
-		assert_eq!(msgs::ClosingSigned::read(&mut Cursor::new(&target_value_with_range)).unwrap(),
-			closing_signed_with_range);
+		assert_eq!(
+			msgs::ClosingSigned::read(&mut Cursor::new(&target_value_with_range)).unwrap(),
+			closing_signed_with_range
+		);
 	}
 
 	#[test]
 	fn encoding_update_add_htlc() {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
 		let onion_routing_packet = msgs::OnionPacket {
 			version: 255,
 			public_key: Ok(pubkey_1),
-			hop_data: [1; 20*65],
-			hmac: [2; 32]
+			hop_data: [1; 20 * 65],
+			hmac: [2; 32],
 		};
 		let update_add_htlc = msgs::UpdateAddHTLC {
 			channel_id: ChannelId::from_bytes([2; 32]),
@@ -3827,13 +4321,11 @@ mod tests {
 
 	#[test]
 	fn encoding_update_fail_htlc() {
-		let reason = OnionErrorPacket {
-			data: [1; 32].to_vec(),
-		};
+		let reason = OnionErrorPacket { data: [1; 32].to_vec() };
 		let update_fail_htlc = msgs::UpdateFailHTLC {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
-			reason
+			reason,
 		};
 		let encoded_value = update_fail_htlc.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d00200101010101010101010101010101010101010101010101010101010101010101").unwrap();
@@ -3846,7 +4338,7 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			htlc_id: 2316138423780173,
 			sha256_of_onion: [1; 32],
-			failure_code: 255
+			failure_code: 255,
 		};
 		let encoded_value = update_fail_malformed_htlc.encode();
 		let target_value = <Vec<u8>>::from_hex("020202020202020202020202020202020202020202020202020202020202020200083a840000034d010101010101010101010101010101010101010101010101010101010101010100ff").unwrap();
@@ -3855,14 +4347,30 @@ mod tests {
 
 	fn do_encoding_commitment_signed(htlcs: bool) {
 		let secp_ctx = Secp256k1::new();
-		let (privkey_1, _) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let (privkey_2, _) = get_keys_from!("0202020202020202020202020202020202020202020202020202020202020202", secp_ctx);
-		let (privkey_3, _) = get_keys_from!("0303030303030303030303030303030303030303030303030303030303030303", secp_ctx);
-		let (privkey_4, _) = get_keys_from!("0404040404040404040404040404040404040404040404040404040404040404", secp_ctx);
-		let sig_1 = get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
-		let sig_2 = get_sig_on!(privkey_2, secp_ctx, String::from("01010101010101010101010101010101"));
-		let sig_3 = get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
-		let sig_4 = get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
+		let (privkey_1, _) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
+		let (privkey_2, _) = get_keys_from!(
+			"0202020202020202020202020202020202020202020202020202020202020202",
+			secp_ctx
+		);
+		let (privkey_3, _) = get_keys_from!(
+			"0303030303030303030303030303030303030303030303030303030303030303",
+			secp_ctx
+		);
+		let (privkey_4, _) = get_keys_from!(
+			"0404040404040404040404040404040404040404040404040404040404040404",
+			secp_ctx
+		);
+		let sig_1 =
+			get_sig_on!(privkey_1, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_2 =
+			get_sig_on!(privkey_2, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_3 =
+			get_sig_on!(privkey_3, secp_ctx, String::from("01010101010101010101010101010101"));
+		let sig_4 =
+			get_sig_on!(privkey_4, secp_ctx, String::from("01010101010101010101010101010101"));
 		let commitment_signed = msgs::CommitmentSigned {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			signature: sig_1,
@@ -3889,10 +4397,16 @@ mod tests {
 	#[test]
 	fn encoding_revoke_and_ack() {
 		let secp_ctx = Secp256k1::new();
-		let (_, pubkey_1) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+		let (_, pubkey_1) = get_keys_from!(
+			"0101010101010101010101010101010101010101010101010101010101010101",
+			secp_ctx
+		);
 		let raa = msgs::RevokeAndACK {
 			channel_id: ChannelId::from_bytes([2; 32]),
-			per_commitment_secret: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+			per_commitment_secret: [
+				1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+				1, 1, 1, 1,
+			],
 			next_per_commitment_point: pubkey_1,
 			#[cfg(taproot)]
 			next_local_nonce: None,
@@ -3909,7 +4423,10 @@ mod tests {
 			feerate_per_kw: 20190119,
 		};
 		let encoded_value = update_fee.encode();
-		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202013413a7").unwrap();
+		let target_value = <Vec<u8>>::from_hex(
+			"0202020202020202020202020202020202020202020202020202020202020202013413a7",
+		)
+		.unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
@@ -3921,22 +4438,34 @@ mod tests {
 			networks: Some(vec![mainnet_hash]),
 			remote_network_address: None,
 		}.encode(), <Vec<u8>>::from_hex("00023fff0003ffffff01206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
-		assert_eq!(msgs::Init {
-			features: InitFeatures::from_le_bytes(vec![0xFF]),
-			networks: None,
-			remote_network_address: None,
-		}.encode(), <Vec<u8>>::from_hex("0001ff0001ff").unwrap());
-		assert_eq!(msgs::Init {
-			features: InitFeatures::from_le_bytes(vec![]),
-			networks: Some(vec![mainnet_hash]),
-			remote_network_address: None,
-		}.encode(), <Vec<u8>>::from_hex("0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap());
+		assert_eq!(
+			msgs::Init {
+				features: InitFeatures::from_le_bytes(vec![0xFF]),
+				networks: None,
+				remote_network_address: None,
+			}
+			.encode(),
+			<Vec<u8>>::from_hex("0001ff0001ff").unwrap()
+		);
+		assert_eq!(
+			msgs::Init {
+				features: InitFeatures::from_le_bytes(vec![]),
+				networks: Some(vec![mainnet_hash]),
+				remote_network_address: None,
+			}
+			.encode(),
+			<Vec<u8>>::from_hex(
+				"0000000001206fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000"
+			)
+			.unwrap()
+		);
 		assert_eq!(msgs::Init {
 			features: InitFeatures::from_le_bytes(vec![]),
 			networks: Some(vec![ChainHash::from(&[1; 32]), ChainHash::from(&[2; 32])]),
 			remote_network_address: None,
 		}.encode(), <Vec<u8>>::from_hex("00000000014001010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020202020202020202").unwrap());
-		let init_msg = msgs::Init { features: InitFeatures::from_le_bytes(vec![]),
+		let init_msg = msgs::Init {
+			features: InitFeatures::from_le_bytes(vec![]),
 			networks: Some(vec![mainnet_hash]),
 			remote_network_address: Some(SocketAddress::TcpIpV4 {
 				addr: [127, 0, 0, 1],
@@ -3973,10 +4502,7 @@ mod tests {
 
 	#[test]
 	fn encoding_ping() {
-		let ping = msgs::Ping {
-			ponglen: 64,
-			byteslen: 64
-		};
+		let ping = msgs::Ping { ponglen: 64, byteslen: 64 };
 		let encoded_value = ping.encode();
 		let target_value = <Vec<u8>>::from_hex("0040004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
 		assert_eq!(encoded_value, target_value);
@@ -3984,9 +4510,7 @@ mod tests {
 
 	#[test]
 	fn encoding_pong() {
-		let pong = msgs::Pong {
-			byteslen: 64
-		};
+		let pong = msgs::Pong { byteslen: 64 };
 		let encoded_value = pong.encode();
 		let target_value = <Vec<u8>>::from_hex("004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
 		assert_eq!(encoded_value, target_value);
@@ -4000,18 +4524,25 @@ mod tests {
 			outgoing_cltv_value: 0xffffffff,
 		};
 		let encoded_value = outbound_msg.encode();
-		let target_value = <Vec<u8>>::from_hex("1a02080badf00d010203040404ffffffff0608deadbeef1bad1dea").unwrap();
+		let target_value =
+			<Vec<u8>>::from_hex("1a02080badf00d010203040404ffffffff0608deadbeef1bad1dea").unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg =
+			ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Forward {
-			short_channel_id, amt_to_forward, outgoing_cltv_value
-		} = inbound_msg {
+			short_channel_id,
+			amt_to_forward,
+			outgoing_cltv_value,
+		} = inbound_msg
+		{
 			assert_eq!(short_channel_id, 0xdeadbeef1bad1dea);
 			assert_eq!(amt_to_forward, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
@@ -4029,13 +4560,20 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg =
+			ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
-			payment_data: None, sender_intended_htlc_amt_msat, cltv_expiry_height, ..
-		} = inbound_msg {
+			payment_data: None,
+			sender_intended_htlc_amt_msat,
+			cltv_expiry_height,
+			..
+		} = inbound_msg
+		{
 			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(cltv_expiry_height, 0xffffffff);
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
@@ -4044,7 +4582,7 @@ mod tests {
 		let outbound_msg = msgs::OutboundOnionPayload::Receive {
 			payment_data: Some(FinalOnionHopData {
 				payment_secret: expected_payment_secret,
-				total_msat: 0x1badca1f
+				total_msat: 0x1badca1f,
 			}),
 			payment_metadata: None,
 			keysend_preimage: None,
@@ -4057,32 +4595,31 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg =
+			ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
-			payment_data: Some(FinalOnionHopData {
-				payment_secret,
-				total_msat: 0x1badca1f
-			}),
-			sender_intended_htlc_amt_msat, cltv_expiry_height,
+			payment_data: Some(FinalOnionHopData { payment_secret, total_msat: 0x1badca1f }),
+			sender_intended_htlc_amt_msat,
+			cltv_expiry_height,
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs,
-		} = inbound_msg  {
+		} = inbound_msg
+		{
 			assert_eq!(payment_secret, expected_payment_secret);
 			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(cltv_expiry_height, 0xffffffff);
 			assert_eq!(custom_tlvs, vec![]);
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
 	fn encoding_final_onion_hop_data_with_bad_custom_tlvs() {
 		// If custom TLVs have type number within the range reserved for protocol, treat them as if
 		// they're unknown
-		let bad_type_range_tlvs = vec![
-			((1 << 16) - 4, vec![42]),
-			((1 << 16) - 2, vec![42; 32]),
-		];
+		let bad_type_range_tlvs = vec![((1 << 16) - 4, vec![42]), ((1 << 16) - 2, vec![42; 32])];
 		let mut msg = msgs::OutboundOnionPayload::Receive {
 			payment_data: None,
 			payment_metadata: None,
@@ -4093,28 +4630,31 @@ mod tests {
 		};
 		let encoded_value = msg.encode();
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		assert!(msgs::InboundOnionPayload::read(&mut Cursor::new(&encoded_value[..]), (None, &&node_signer)).is_err());
-		let good_type_range_tlvs = vec![
-			((1 << 16) - 3, vec![42]),
-			((1 << 16) - 1, vec![42; 32]),
-		];
+		assert!(msgs::InboundOnionPayload::read(
+			&mut Cursor::new(&encoded_value[..]),
+			(None, &&node_signer)
+		)
+		.is_err());
+		let good_type_range_tlvs = vec![((1 << 16) - 3, vec![42]), ((1 << 16) - 1, vec![42; 32])];
 		if let msgs::OutboundOnionPayload::Receive { ref mut custom_tlvs, .. } = msg {
 			*custom_tlvs = good_type_range_tlvs.clone();
 		}
 		let encoded_value = msg.encode();
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&encoded_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg =
+			ReadableArgs::read(&mut Cursor::new(&encoded_value[..]), (None, &&node_signer))
+				.unwrap();
 		match inbound_msg {
-			msgs::InboundOnionPayload::Receive { custom_tlvs, .. } => assert!(custom_tlvs.is_empty()),
+			msgs::InboundOnionPayload::Receive { custom_tlvs, .. } => {
+				assert!(custom_tlvs.is_empty())
+			},
 			_ => panic!(),
 		}
 	}
 
 	#[test]
 	fn encoding_final_onion_hop_data_with_custom_tlvs() {
-		let expected_custom_tlvs = vec![
-			(5482373483, vec![0x12, 0x34]),
-			(5482373487, vec![0x42u8; 8]),
-		];
+		let expected_custom_tlvs =
+			vec![(5482373483, vec![0x12, 0x34]), (5482373487, vec![0x42u8; 8])];
 		let msg = msgs::OutboundOnionPayload::Receive {
 			payment_data: None,
 			payment_metadata: None,
@@ -4127,7 +4667,8 @@ mod tests {
 		let target_value = <Vec<u8>>::from_hex("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
 		assert_eq!(encoded_value, target_value);
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg: msgs::InboundOnionPayload = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg: msgs::InboundOnionPayload =
+			ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
 			payment_data: None,
 			payment_metadata: None,
@@ -4136,20 +4677,20 @@ mod tests {
 			sender_intended_htlc_amt_msat,
 			cltv_expiry_height: outgoing_cltv_value,
 			..
-		} = inbound_msg {
+		} = inbound_msg
+		{
 			assert_eq!(custom_tlvs, expected_custom_tlvs);
 			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
 	fn query_channel_range_end_blocknum() {
-		let tests: Vec<(u32, u32, u32)> = vec![
-			(10000, 1500, 11500),
-			(0, 0xffffffff, 0xffffffff),
-			(1, 0xffffffff, 0xffffffff),
-		];
+		let tests: Vec<(u32, u32, u32)> =
+			vec![(10000, 1500, 11500), (0, 0xffffffff, 0xffffffff), (1, 0xffffffff, 0xffffffff)];
 
 		for (first_blocknum, number_of_blocks, expected) in tests.into_iter() {
 			let sut = msgs::QueryChannelRange {
@@ -4169,7 +4710,10 @@ mod tests {
 			number_of_blocks: 1500,
 		};
 		let encoded_value = query_channel_range.encode();
-		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000186a0000005dc").unwrap();
+		let target_value = <Vec<u8>>::from_hex(
+			"06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000186a0000005dc",
+		)
+		.unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		query_channel_range = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
@@ -4184,7 +4728,10 @@ mod tests {
 	}
 
 	fn do_encoding_reply_channel_range(encoding_type: u8) {
-		let mut target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000b8a06000005dc01").unwrap();
+		let mut target_value = <Vec<u8>>::from_hex(
+			"06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f000b8a06000005dc01",
+		)
+		.unwrap();
 		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut reply_channel_range = msgs::ReplyChannelRange {
 			chain_hash: expected_chain_hash,
@@ -4195,7 +4742,10 @@ mod tests {
 		};
 
 		if encoding_type == 0 {
-			target_value.append(&mut <Vec<u8>>::from_hex("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("001900000000000000008e0000000000003c69000000000045a6c4")
+					.unwrap(),
+			);
 			let encoded_value = reply_channel_range.encode();
 			assert_eq!(encoded_value, target_value);
 
@@ -4208,8 +4758,12 @@ mod tests {
 			assert_eq!(reply_channel_range.short_channel_ids[1], 0x0000000000003c69);
 			assert_eq!(reply_channel_range.short_channel_ids[2], 0x000000000045a6c4);
 		} else {
-			target_value.append(&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a").unwrap());
-			let result: Result<msgs::ReplyChannelRange, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a")
+					.unwrap(),
+			);
+			let result: Result<msgs::ReplyChannelRange, msgs::DecodeError> =
+				Readable::read(&mut Cursor::new(&target_value[..]));
 			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
 		}
 	}
@@ -4221,7 +4775,9 @@ mod tests {
 	}
 
 	fn do_encoding_query_short_channel_ids(encoding_type: u8) {
-		let mut target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f").unwrap();
+		let mut target_value =
+			<Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f")
+				.unwrap();
 		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut query_short_channel_ids = msgs::QueryShortChannelIds {
 			chain_hash: expected_chain_hash,
@@ -4229,7 +4785,10 @@ mod tests {
 		};
 
 		if encoding_type == 0 {
-			target_value.append(&mut <Vec<u8>>::from_hex("001900000000000000008e0000000000003c69000000000045a6c4").unwrap());
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("001900000000000000008e0000000000003c69000000000045a6c4")
+					.unwrap(),
+			);
 			let encoded_value = query_short_channel_ids.encode();
 			assert_eq!(encoded_value, target_value);
 
@@ -4239,8 +4798,12 @@ mod tests {
 			assert_eq!(query_short_channel_ids.short_channel_ids[1], 0x0000000000003c69);
 			assert_eq!(query_short_channel_ids.short_channel_ids[2], 0x000000000045a6c4);
 		} else {
-			target_value.append(&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a").unwrap());
-			let result: Result<msgs::QueryShortChannelIds, msgs::DecodeError> = Readable::read(&mut Cursor::new(&target_value[..]));
+			target_value.append(
+				&mut <Vec<u8>>::from_hex("001601789c636000833e08659309a65878be010010a9023a")
+					.unwrap(),
+			);
+			let result: Result<msgs::QueryShortChannelIds, msgs::DecodeError> =
+				Readable::read(&mut Cursor::new(&target_value[..]));
 			assert!(result.is_err(), "Expected decode failure with unsupported zlib encoding");
 		}
 	}
@@ -4253,7 +4816,10 @@ mod tests {
 			full_information: true,
 		};
 		let encoded_value = reply_short_channel_ids_end.encode();
-		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f01").unwrap();
+		let target_value = <Vec<u8>>::from_hex(
+			"06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f01",
+		)
+		.unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		reply_short_channel_ids_end = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
@@ -4262,7 +4828,7 @@ mod tests {
 	}
 
 	#[test]
-	fn encoding_gossip_timestamp_filter(){
+	fn encoding_gossip_timestamp_filter() {
 		let expected_chain_hash = ChainHash::using_genesis_block(Network::Regtest);
 		let mut gossip_timestamp_filter = msgs::GossipTimestampFilter {
 			chain_hash: expected_chain_hash,
@@ -4270,7 +4836,10 @@ mod tests {
 			timestamp_range: 0xffff_ffff,
 		};
 		let encoded_value = gossip_timestamp_filter.encode();
-		let target_value = <Vec<u8>>::from_hex("06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f5ec57980ffffffff").unwrap();
+		let target_value = <Vec<u8>>::from_hex(
+			"06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f5ec57980ffffffff",
+		)
+		.unwrap();
 		assert_eq!(encoded_value, target_value);
 
 		gossip_timestamp_filter = Readable::read(&mut Cursor::new(&target_value[..])).unwrap();
@@ -4292,8 +4861,11 @@ mod tests {
 		let mut rd = Cursor::new(&big_payload[..]);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		<msgs::InboundOnionPayload as ReadableArgs<(Option<PublicKey>, &&test_utils::TestKeysInterface)>>
-			::read(&mut rd, (None, &&node_signer)).unwrap();
+		<msgs::InboundOnionPayload as ReadableArgs<(
+			Option<PublicKey>,
+			&&test_utils::TestKeysInterface,
+		)>>::read(&mut rd, (None, &&node_signer))
+		.unwrap();
 	}
 	// see above test, needs to be a separate method for use of the serialization macros.
 	fn encode_big_payload() -> Result<Vec<u8>, io::Error> {
@@ -4305,7 +4877,12 @@ mod tests {
 		};
 		let mut encoded_payload = Vec::new();
 		let test_bytes = vec![42u8; 1000];
-		if let msgs::OutboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } = payload {
+		if let msgs::OutboundOnionPayload::Forward {
+			short_channel_id,
+			amt_to_forward,
+			outgoing_cltv_value,
+		} = payload
+		{
 			_encode_varint_length_prefixed_tlv!(&mut encoded_payload, {
 				(1, test_bytes, required_vec),
 				(2, HighZeroBytesDroppedBigSize(amt_to_forward), required),
@@ -4319,10 +4896,8 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn test_socket_address_from_str() {
-		let tcpip_v4 = SocketAddress::TcpIpV4 {
-			addr: Ipv4Addr::new(127, 0, 0, 1).octets(),
-			port: 1234,
-		};
+		let tcpip_v4 =
+			SocketAddress::TcpIpV4 { addr: Ipv4Addr::new(127, 0, 0, 1).octets(), port: 1234 };
 		assert_eq!(tcpip_v4, SocketAddress::from_str("127.0.0.1:1234").unwrap());
 		assert_eq!(tcpip_v4, SocketAddress::from_str(&tcpip_v4.to_string()).unwrap());
 
@@ -4334,55 +4909,110 @@ mod tests {
 		assert_eq!(tcpip_v6, SocketAddress::from_str(&tcpip_v6.to_string()).unwrap());
 
 		let hostname = SocketAddress::Hostname {
-				hostname: Hostname::try_from("lightning-node.mydomain.com".to_string()).unwrap(),
-				port: 1234,
+			hostname: Hostname::try_from("lightning-node.mydomain.com".to_string()).unwrap(),
+			port: 1234,
 		};
 		assert_eq!(hostname, SocketAddress::from_str("lightning-node.mydomain.com:1234").unwrap());
 		assert_eq!(hostname, SocketAddress::from_str(&hostname.to_string()).unwrap());
 
-		let onion_v2 = SocketAddress::OnionV2 ([40, 4, 64, 185, 202, 19, 162, 75, 90, 200, 38, 7],);
-		assert_eq!("OnionV2([40, 4, 64, 185, 202, 19, 162, 75, 90, 200, 38, 7])", &onion_v2.to_string());
-		assert_eq!(Err(SocketAddressParseError::InvalidOnionV3), SocketAddress::from_str("FACEBOOKCOREWWWI.onion:9735"));
+		let onion_v2 = SocketAddress::OnionV2([40, 4, 64, 185, 202, 19, 162, 75, 90, 200, 38, 7]);
+		assert_eq!(
+			"OnionV2([40, 4, 64, 185, 202, 19, 162, 75, 90, 200, 38, 7])",
+			&onion_v2.to_string()
+		);
+		assert_eq!(
+			Err(SocketAddressParseError::InvalidOnionV3),
+			SocketAddress::from_str("FACEBOOKCOREWWWI.onion:9735")
+		);
 
 		let onion_v3 = SocketAddress::OnionV3 {
-			ed25519_pubkey: [37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85,
-			111, 177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3],
+			ed25519_pubkey: [
+				37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85, 111,
+				177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3,
+			],
 			checksum: 48326,
 			version: 121,
-			port: 1234
+			port: 1234,
 		};
-		assert_eq!(onion_v3, SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:1234").unwrap());
+		assert_eq!(
+			onion_v3,
+			SocketAddress::from_str(
+				"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:1234"
+			)
+			.unwrap()
+		);
 		assert_eq!(onion_v3, SocketAddress::from_str(&onion_v3.to_string()).unwrap());
 
-		assert_eq!(Err(SocketAddressParseError::InvalidOnionV3), SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6.onion:1234"));
-		assert_eq!(Err(SocketAddressParseError::InvalidInput), SocketAddress::from_str("127.0.0.1@1234"));
+		assert_eq!(
+			Err(SocketAddressParseError::InvalidOnionV3),
+			SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6.onion:1234")
+		);
+		assert_eq!(
+			Err(SocketAddressParseError::InvalidInput),
+			SocketAddress::from_str("127.0.0.1@1234")
+		);
 		assert_eq!(Err(SocketAddressParseError::InvalidInput), "".parse::<SocketAddress>());
-		assert!(SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:9735:94").is_err());
+		assert!(SocketAddress::from_str(
+			"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:9735:94"
+		)
+		.is_err());
 		assert!(SocketAddress::from_str("wrong$%#.com:1234").is_err());
-		assert_eq!(Err(SocketAddressParseError::InvalidPort), SocketAddress::from_str("example.com:wrong"));
+		assert_eq!(
+			Err(SocketAddressParseError::InvalidPort),
+			SocketAddress::from_str("example.com:wrong")
+		);
 		assert!("localhost".parse::<SocketAddress>().is_err());
 		assert!("localhost:invalid-port".parse::<SocketAddress>().is_err());
-		assert!( "invalid-onion-v3-hostname.onion:8080".parse::<SocketAddress>().is_err());
+		assert!("invalid-onion-v3-hostname.onion:8080".parse::<SocketAddress>().is_err());
 		assert!("b32.example.onion:invalid-port".parse::<SocketAddress>().is_err());
 		assert!("invalid-address".parse::<SocketAddress>().is_err());
-		assert!(SocketAddress::from_str("pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234").is_err());
+		assert!(SocketAddress::from_str(
+			"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234"
+		)
+		.is_err());
 	}
 
 	#[test]
 	#[cfg(feature = "std")]
 	fn test_socket_address_to_socket_addrs() {
-		assert_eq!(SocketAddress::TcpIpV4 {addr:[0u8; 4], port: 1337,}.to_socket_addrs().unwrap().next().unwrap(),
-				   SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0,0,0,0), 1337)));
-		assert_eq!(SocketAddress::TcpIpV6 {addr:[0u8; 16], port: 1337,}.to_socket_addrs().unwrap().next().unwrap(),
-				   SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::from([0u8; 16]), 1337, 0, 0)));
-		assert_eq!(SocketAddress::Hostname { hostname: Hostname::try_from("0.0.0.0".to_string()).unwrap(), port: 0 }
-					   .to_socket_addrs().unwrap().next().unwrap(), SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from([0u8; 4]),0)));
+		assert_eq!(
+			SocketAddress::TcpIpV4 { addr: [0u8; 4], port: 1337 }
+				.to_socket_addrs()
+				.unwrap()
+				.next()
+				.unwrap(),
+			SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 1337))
+		);
+		assert_eq!(
+			SocketAddress::TcpIpV6 { addr: [0u8; 16], port: 1337 }
+				.to_socket_addrs()
+				.unwrap()
+				.next()
+				.unwrap(),
+			SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::from([0u8; 16]), 1337, 0, 0))
+		);
+		assert_eq!(
+			SocketAddress::Hostname {
+				hostname: Hostname::try_from("0.0.0.0".to_string()).unwrap(),
+				port: 0
+			}
+			.to_socket_addrs()
+			.unwrap()
+			.next()
+			.unwrap(),
+			SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from([0u8; 4]), 0))
+		);
 		assert!(SocketAddress::OnionV2([0u8; 12]).to_socket_addrs().is_err());
-		assert!(SocketAddress::OnionV3{ ed25519_pubkey: [37, 24, 75, 5, 25, 73, 117, 194, 139, 102,
-			182, 107, 4, 105, 247, 246, 85, 111, 177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31,
-			33, 71, 3],
+		assert!(SocketAddress::OnionV3 {
+			ed25519_pubkey: [
+				37, 24, 75, 5, 25, 73, 117, 194, 139, 102, 182, 107, 4, 105, 247, 246, 85, 111,
+				177, 172, 49, 137, 167, 155, 64, 221, 163, 47, 31, 33, 71, 3
+			],
 			checksum: 48326,
 			version: 121,
-			port: 1234 }.to_socket_addrs().is_err());
+			port: 1234
+		}
+		.to_socket_addrs()
+		.is_err());
 	}
 }

@@ -7,31 +7,31 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::ln::{PaymentHash, PaymentPreimage};
+use crate::crypto::chacha20::ChaCha20;
+use crate::crypto::streams::ChaChaReader;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
 use crate::ln::wire::Encode;
+use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop};
 use crate::sign::NodeSigner;
-use crate::crypto::chacha20::ChaCha20;
-use crate::crypto::streams::ChaChaReader;
 use crate::util::errors::{self, APIError};
-use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, LengthCalculatingWriter};
 use crate::util::logger::Logger;
+use crate::util::ser::{LengthCalculatingWriter, Readable, ReadableArgs, Writeable, Writer};
 
-use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
 
-use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
-use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
+use bitcoin::secp256k1::ecdh::SharedSecret;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{PublicKey, Scalar, SecretKey};
 
-use crate::prelude::*;
 use crate::io::{Cursor, Read};
+use crate::prelude::*;
 use core::convert::{AsMut, TryInto};
 use core::ops::Deref;
 
@@ -56,16 +56,18 @@ pub(crate) fn gen_rho_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 #[inline]
 pub(crate) fn gen_rho_mu_from_shared_secret(shared_secret: &[u8]) -> ([u8; 32], [u8; 32]) {
 	assert_eq!(shared_secret.len(), 32);
-	({
-		let mut hmac = HmacEngine::<Sha256>::new(&[0x72, 0x68, 0x6f]); // rho
-		hmac.input(&shared_secret);
-		Hmac::from_engine(hmac).to_byte_array()
-	},
-	{
-		let mut hmac = HmacEngine::<Sha256>::new(&[0x6d, 0x75]); // mu
-		hmac.input(&shared_secret);
-		Hmac::from_engine(hmac).to_byte_array()
-	})
+	(
+		{
+			let mut hmac = HmacEngine::<Sha256>::new(&[0x72, 0x68, 0x6f]); // rho
+			hmac.input(&shared_secret);
+			Hmac::from_engine(hmac).to_byte_array()
+		},
+		{
+			let mut hmac = HmacEngine::<Sha256>::new(&[0x6d, 0x75]); // mu
+			hmac.input(&shared_secret);
+			Hmac::from_engine(hmac).to_byte_array()
+		},
+	)
 }
 
 #[inline]
@@ -95,7 +97,7 @@ pub(super) fn gen_pad_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 
 /// Calculates a pubkey for the next hop, such as the next hop's packet pubkey or blinding point.
 pub(crate) fn next_hop_pubkey<T: secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, curr_pubkey: PublicKey, shared_secret: &[u8]
+	secp_ctx: &Secp256k1<T>, curr_pubkey: PublicKey, shared_secret: &[u8],
 ) -> Result<PublicKey, secp256k1::Error> {
 	let blinding_factor = {
 		let mut sha = Sha256::engine();
@@ -110,18 +112,21 @@ pub(crate) fn next_hop_pubkey<T: secp256k1::Verification>(
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
 #[inline]
 pub(super) fn construct_onion_keys_callback<T, FType>(
-	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, mut callback: FType
+	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, mut callback: FType,
 ) -> Result<(), secp256k1::Error>
 where
 	T: secp256k1::Signing,
-	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&RouteHop>, usize)
+	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&RouteHop>, usize),
 {
 	let mut blinded_priv = session_priv.clone();
 	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
 
 	let unblinded_hops_iter = path.hops.iter().map(|h| (&h.pubkey, Some(h)));
-	let blinded_pks_iter = path.blinded_tail.as_ref()
-		.map(|t| t.hops.iter()).unwrap_or([].iter())
+	let blinded_pks_iter = path
+		.blinded_tail
+		.as_ref()
+		.map(|t| t.hops.iter())
+		.unwrap_or([].iter())
 		.skip(1) // Skip the intro node because it's included in the unblinded hops
 		.map(|h| (&h.blinded_node_id, None));
 	for (idx, (pubkey, route_hop_opt)) in unblinded_hops_iter.chain(blinded_pks_iter).enumerate() {
@@ -144,35 +149,43 @@ where
 }
 
 // can only fail if an intermediary hop has an invalid public key or session_priv is invalid
-pub(super) fn construct_onion_keys<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey) -> Result<Vec<OnionKeys>, secp256k1::Error> {
+pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey,
+) -> Result<Vec<OnionKeys>, secp256k1::Error> {
 	let mut res = Vec::with_capacity(path.hops.len());
 
-	construct_onion_keys_callback(secp_ctx, &path, session_priv,
-		|shared_secret, _blinding_factor, ephemeral_pubkey, _, _|
-	{
-		let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
+	construct_onion_keys_callback(
+		secp_ctx,
+		&path,
+		session_priv,
+		|shared_secret, _blinding_factor, ephemeral_pubkey, _, _| {
+			let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
 
-		res.push(OnionKeys {
-			#[cfg(test)]
-			shared_secret,
-			#[cfg(test)]
-			blinding_factor: _blinding_factor,
-			ephemeral_pubkey,
-			rho,
-			mu,
-		});
-	})?;
+			res.push(OnionKeys {
+				#[cfg(test)]
+				shared_secret,
+				#[cfg(test)]
+				blinding_factor: _blinding_factor,
+				ephemeral_pubkey,
+				rho,
+				mu,
+			});
+		},
+	)?;
 
 	Ok(res)
 }
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_onion: RecipientOnionFields, starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>) -> Result<(Vec<msgs::OutboundOnionPayload>, u64, u32), APIError> {
+pub(super) fn build_onion_payloads(
+	path: &Path, total_msat: u64, mut recipient_onion: RecipientOnionFields,
+	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
+) -> Result<(Vec<msgs::OutboundOnionPayload>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
 	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(
-		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len())
+		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
 	);
 
 	for (idx, hop) in path.hops.iter().rev().enumerate() {
@@ -180,11 +193,20 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
-		let cltv = if cur_cltv == starting_htlc_offset { hop.cltv_expiry_delta + starting_htlc_offset } else { cur_cltv };
+		let cltv = if cur_cltv == starting_htlc_offset {
+			hop.cltv_expiry_delta + starting_htlc_offset
+		} else {
+			cur_cltv
+		};
 		if idx == 0 {
 			if let Some(BlindedTail {
-				blinding_point, hops, final_value_msat, excess_final_cltv_expiry_delta, ..
-			}) = &path.blinded_tail {
+				blinding_point,
+				hops,
+				final_value_msat,
+				excess_final_cltv_expiry_delta,
+				..
+			}) = &path.blinded_tail
+			{
 				let mut blinding_point = Some(*blinding_point);
 				for (i, blinded_hop) in hops.iter().enumerate() {
 					if i == hops.len() - 1 {
@@ -206,11 +228,10 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 			} else {
 				res.push(msgs::OutboundOnionPayload::Receive {
 					payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
-						Some(msgs::FinalOnionHopData {
-							payment_secret: secret,
-							total_msat,
-						})
-					} else { None },
+						Some(msgs::FinalOnionHopData { payment_secret: secret, total_msat })
+					} else {
+						None
+					},
 					payment_metadata: recipient_onion.payment_metadata.take(),
 					keysend_preimage: *keysend_preimage,
 					custom_tlvs: recipient_onion.custom_tlvs.clone(),
@@ -219,19 +240,22 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 				});
 			}
 		} else {
-			res.insert(0, msgs::OutboundOnionPayload::Forward {
-				short_channel_id: last_short_channel_id,
-				amt_to_forward: value_msat,
-				outgoing_cltv_value: cltv,
-			});
+			res.insert(
+				0,
+				msgs::OutboundOnionPayload::Forward {
+					short_channel_id: last_short_channel_id,
+					amt_to_forward: value_msat,
+					outgoing_cltv_value: cltv,
+				},
+			);
 		}
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
-			return Err(APIError::InvalidRoute{err: "Channel fees overflowed?".to_owned()});
+			return Err(APIError::InvalidRoute { err: "Channel fees overflowed?".to_owned() });
 		}
 		cur_cltv += hop.cltv_expiry_delta as u32;
 		if cur_cltv >= 500000000 {
-			return Err(APIError::InvalidRoute{err: "Channel CLTV overflowed?".to_owned()});
+			return Err(APIError::InvalidRoute { err: "Channel CLTV overflowed?".to_owned() });
 		}
 		last_short_channel_id = hop.short_channel_id;
 	}
@@ -240,14 +264,14 @@ pub(super) fn build_onion_payloads(path: &Path, total_msat: u64, mut recipient_o
 
 /// Length of the onion data packet. Before TLV-based onions this was 20 65-byte hops, though now
 /// the hops can be of variable length.
-pub(crate) const ONION_DATA_LEN: usize = 20*65;
+pub(crate) const ONION_DATA_LEN: usize = 20 * 65;
 
 pub(super) const INVALID_ONION_BLINDING: u16 = 0x8000 | 0x4000 | 24;
 
 #[inline]
 fn shift_slice_right(arr: &mut [u8], amt: usize) {
 	for i in (amt..arr.len()).rev() {
-		arr[i] = arr[i-amt];
+		arr[i] = arr[i - amt];
 	}
 	for i in 0..amt {
 		arr[i] = 0;
@@ -256,7 +280,7 @@ fn shift_slice_right(arr: &mut [u8], amt: usize) {
 
 pub(super) fn construct_onion_packet(
 	payloads: Vec<msgs::OutboundOnionPayload>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32],
-	associated_data: &PaymentHash
+	associated_data: &PaymentHash,
 ) -> Result<msgs::OnionPacket, ()> {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
@@ -264,20 +288,31 @@ pub(super) fn construct_onion_packet(
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
 
 	construct_onion_packet_with_init_noise::<_, _>(
-		payloads, onion_keys, FixedSizeOnionPacket(packet_data), Some(associated_data))
+		payloads,
+		onion_keys,
+		FixedSizeOnionPacket(packet_data),
+		Some(associated_data),
+	)
 }
 
 #[cfg(test)]
 /// Used in testing to write bogus `BogusOnionHopData` as well as `RawOnionHopData`, which is
 /// otherwise not representable in `msgs::OnionHopData`.
-pub(super) fn construct_onion_packet_with_writable_hopdata<HD: Writeable>(payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], associated_data: &PaymentHash) -> Result<msgs::OnionPacket, ()> {
+pub(super) fn construct_onion_packet_with_writable_hopdata<HD: Writeable>(
+	payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32],
+	associated_data: &PaymentHash,
+) -> Result<msgs::OnionPacket, ()> {
 	let mut packet_data = [0; ONION_DATA_LEN];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
 	chacha.process(&[0; ONION_DATA_LEN], &mut packet_data);
 
 	construct_onion_packet_with_init_noise::<_, _>(
-		payloads, onion_keys, FixedSizeOnionPacket(packet_data), Some(associated_data))
+		payloads,
+		onion_keys,
+		FixedSizeOnionPacket(packet_data),
+		Some(associated_data),
+	)
 }
 
 /// Since onion message packets and onion payment packets have different lengths but are otherwise
@@ -303,8 +338,8 @@ pub(crate) fn payloads_serialized_length<HD: Writeable>(payloads: &Vec<HD>) -> u
 }
 
 pub(crate) fn construct_onion_message_packet<HD: Writeable, P: Packet<Data = Vec<u8>>>(
-	payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], packet_data_len: usize) -> Result<P, ()>
-{
+	payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32], packet_data_len: usize,
+) -> Result<P, ()> {
 	let mut packet_data = vec![0; packet_data_len];
 
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
@@ -314,8 +349,9 @@ pub(crate) fn construct_onion_message_packet<HD: Writeable, P: Packet<Data = Vec
 }
 
 fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
-	mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: P::Data, associated_data: Option<&PaymentHash>) -> Result<P, ()>
-{
+	mut payloads: Vec<HD>, onion_keys: Vec<OnionKeys>, mut packet_data: P::Data,
+	associated_data: Option<&PaymentHash>,
+) -> Result<P, ()> {
 	let filler = {
 		let packet_data = packet_data.as_mut();
 		const ONION_HOP_DATA_LEN: usize = 65; // We may decrease this eventually after TLV is common
@@ -324,7 +360,8 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 		let mut pos = 0;
 		for (i, (payload, keys)) in payloads.iter().zip(onion_keys.iter()).enumerate() {
 			let mut chacha = ChaCha20::new(&keys.rho, &[0u8; 8]);
-			for _ in 0..(packet_data.len() - pos) { // TODO: Batch this.
+			for _ in 0..(packet_data.len() - pos) {
+				// TODO: Batch this.
 				let mut dummy = [0; 1];
 				chacha.process_in_place(&mut dummy); // We don't have a seek function :(
 			}
@@ -336,7 +373,9 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 				return Err(());
 			}
 
-			if i == payloads.len() - 1 { break; }
+			if i == payloads.len() - 1 {
+				break;
+			}
 
 			res.resize(pos, 0u8);
 			chacha.process_in_place(&mut res);
@@ -376,19 +415,21 @@ fn construct_onion_packet_with_init_noise<HD: Writeable, P: Packet>(
 
 /// Encrypts a failure packet. raw_packet can either be a
 /// msgs::DecodedOnionErrorPacket.encode() result or a msgs::OnionErrorPacket.data element.
-pub(super) fn encrypt_failure_packet(shared_secret: &[u8], raw_packet: &[u8]) -> msgs::OnionErrorPacket {
+pub(super) fn encrypt_failure_packet(
+	shared_secret: &[u8], raw_packet: &[u8],
+) -> msgs::OnionErrorPacket {
 	let ammag = gen_ammag_from_shared_secret(&shared_secret);
 
 	let mut packet_crypted = Vec::with_capacity(raw_packet.len());
 	packet_crypted.resize(raw_packet.len(), 0);
 	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
 	chacha.process(&raw_packet, &mut packet_crypted[..]);
-	msgs::OnionErrorPacket {
-		data: packet_crypted,
-	}
+	msgs::OnionErrorPacket { data: packet_crypted }
 }
 
-pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::DecodedOnionErrorPacket {
+pub(super) fn build_failure_packet(
+	shared_secret: &[u8], failure_type: u16, failure_data: &[u8],
+) -> msgs::DecodedOnionErrorPacket {
 	assert_eq!(shared_secret.len(), 32);
 	assert!(failure_data.len() <= 256 - 2);
 
@@ -406,11 +447,7 @@ pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, fail
 		res.resize(256 - 2 - failure_data.len(), 0);
 		res
 	};
-	let mut packet = msgs::DecodedOnionErrorPacket {
-		hmac: [0; 32],
-		failuremsg,
-		pad,
-	};
+	let mut packet = msgs::DecodedOnionErrorPacket { hmac: [0; 32], failuremsg, pad };
 
 	let mut hmac = HmacEngine::<Sha256>::new(&um);
 	hmac.input(&packet.encode()[32..]);
@@ -420,7 +457,9 @@ pub(super) fn build_failure_packet(shared_secret: &[u8], failure_type: u16, fail
 }
 
 #[cfg(test)]
-pub(super) fn build_first_hop_failure_packet(shared_secret: &[u8], failure_type: u16, failure_data: &[u8]) -> msgs::OnionErrorPacket {
+pub(super) fn build_first_hop_failure_packet(
+	shared_secret: &[u8], failure_type: u16, failure_data: &[u8],
+) -> msgs::OnionErrorPacket {
 	let failure_packet = build_failure_packet(shared_secret, failure_type, failure_data);
 	encrypt_failure_packet(shared_secret, &failure_packet.encode()[..])
 }
@@ -439,7 +478,7 @@ pub(crate) struct DecodedOnionFailure {
 /// Note that we always decrypt `packet` in-place here even if the deserialization into
 /// [`msgs::DecodedOnionErrorPacket`] ultimately fails.
 fn decrypt_onion_error_packet(
-	packet: &mut Vec<u8>, shared_secret: SharedSecret
+	packet: &mut Vec<u8>, shared_secret: SharedSecret,
 ) -> Result<msgs::DecodedOnionErrorPacket, msgs::DecodeError> {
 	let ammag = gen_ammag_from_shared_secret(shared_secret.as_ref());
 	let mut chacha = ChaCha20::new(&ammag, &[0u8; 8]);
@@ -451,13 +490,22 @@ fn decrypt_onion_error_packet(
 /// OutboundRoute).
 #[inline]
 pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
-	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut encrypted_packet: Vec<u8>
-) -> DecodedOnionFailure where L::Target: Logger {
+	secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource, mut encrypted_packet: Vec<u8>,
+) -> DecodedOnionFailure
+where
+	L::Target: Logger,
+{
 	let (path, session_priv, first_hop_htlc_msat) = if let &HTLCSource::OutboundRoute {
-		ref path, ref session_priv, ref first_hop_htlc_msat, ..
-	} = htlc_source {
+		ref path,
+		ref session_priv,
+		ref first_hop_htlc_msat,
+		..
+	} = htlc_source
+	{
 		(path, session_priv, first_hop_htlc_msat)
-	} else { unreachable!() };
+	} else {
+		unreachable!()
+	};
 
 	// Learnings from the HTLC failure to inform future payment retries and scoring.
 	struct FailureLearnings {
@@ -723,25 +771,34 @@ pub(super) fn process_onion_failure<T: secp256k1::Signing, L: Deref>(
 		}
 	}).expect("Route that we sent via spontaneously grew invalid keys in the middle of it?");
 	if let Some(FailureLearnings {
-		network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path
-	}) = res {
+		network_update,
+		short_channel_id,
+		payment_failed_permanently,
+		failed_within_blinded_path,
+	}) = res
+	{
 		DecodedOnionFailure {
-			network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path,
+			network_update,
+			short_channel_id,
+			payment_failed_permanently,
+			failed_within_blinded_path,
 			#[cfg(test)]
 			onion_error_code: error_code_ret,
 			#[cfg(test)]
-			onion_error_data: error_packet_ret
+			onion_error_data: error_packet_ret,
 		}
 	} else {
 		// only not set either packet unparseable or hmac does not match with any
 		// payment not retryable only when garbage is from the final node
 		DecodedOnionFailure {
-			network_update: None, short_channel_id: None, payment_failed_permanently: is_from_final_node,
+			network_update: None,
+			short_channel_id: None,
+			payment_failed_permanently: is_from_final_node,
 			failed_within_blinded_path: false,
 			#[cfg(test)]
 			onion_error_code: None,
 			#[cfg(test)]
-			onion_error_data: None
+			onion_error_data: None,
 		}
 	}
 }
@@ -753,13 +810,8 @@ pub(super) struct HTLCFailReason(HTLCFailReasonRepr);
 #[derive(Clone)] // See Channel::revoke_and_ack for why, tl;dr: Rust bug
 #[cfg_attr(test, derive(PartialEq))]
 enum HTLCFailReasonRepr {
-	LightningError {
-		err: msgs::OnionErrorPacket,
-	},
-	Reason {
-		failure_code: u16,
-		data: Vec<u8>,
-	}
+	LightningError { err: msgs::OnionErrorPacket },
+	Reason { failure_code: u16, data: Vec<u8> },
 }
 
 impl core::fmt::Debug for HTLCFailReason {
@@ -770,7 +822,7 @@ impl core::fmt::Debug for HTLCFailReason {
 			},
 			HTLCFailReasonRepr::LightningError { .. } => {
 				write!(f, "pre-built LightningError")
-			}
+			},
 		}
 	}
 }
@@ -803,38 +855,73 @@ impl HTLCFailReason {
 		const NODE: u16 = 0x2000;
 		const UPDATE: u16 = 0x1000;
 
-		     if failure_code == 1  | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 2  | NODE { debug_assert!(data.is_empty()) }
-		else if failure_code == 2  | PERM | NODE { debug_assert!(data.is_empty()) }
-		else if failure_code == 3  | PERM | NODE { debug_assert!(data.is_empty()) }
-		else if failure_code == 4  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
-		else if failure_code == 5  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
-		else if failure_code == 6  | BADONION | PERM { debug_assert_eq!(data.len(), 32) }
-		else if failure_code == 7  | UPDATE {
-			debug_assert_eq!(data.len() - 2, u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize) }
-		else if failure_code == 8  | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 9  | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 10 | PERM { debug_assert!(data.is_empty()) }
-		else if failure_code == 11 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 8, u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize) }
-		else if failure_code == 12 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 8, u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize) }
-		else if failure_code == 13 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 4, u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize) }
-		else if failure_code == 14 | UPDATE {
-			debug_assert_eq!(data.len() - 2, u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize) }
-		else if failure_code == 15 | PERM { debug_assert_eq!(data.len(), 12) }
-		else if failure_code == 18 { debug_assert_eq!(data.len(), 4) }
-		else if failure_code == 19 { debug_assert_eq!(data.len(), 8) }
-		else if failure_code == 20 | UPDATE {
-			debug_assert_eq!(data.len() - 2 - 2, u16::from_be_bytes(data[2..4].try_into().unwrap()) as usize) }
-		else if failure_code == 21 { debug_assert!(data.is_empty()) }
-		else if failure_code == 22 | PERM { debug_assert!(data.len() <= 11) }
-		else if failure_code == 23 { debug_assert!(data.is_empty()) }
-		else if failure_code & BADONION != 0 {
+		if failure_code == 1 | PERM {
+			debug_assert!(data.is_empty())
+		} else if failure_code == 2 | NODE {
+			debug_assert!(data.is_empty())
+		} else if failure_code == 2 | PERM | NODE {
+			debug_assert!(data.is_empty())
+		} else if failure_code == 3 | PERM | NODE {
+			debug_assert!(data.is_empty())
+		} else if failure_code == 4 | BADONION | PERM {
+			debug_assert_eq!(data.len(), 32)
+		} else if failure_code == 5 | BADONION | PERM {
+			debug_assert_eq!(data.len(), 32)
+		} else if failure_code == 6 | BADONION | PERM {
+			debug_assert_eq!(data.len(), 32)
+		} else if failure_code == 7 | UPDATE {
+			debug_assert_eq!(
+				data.len() - 2,
+				u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
+			)
+		} else if failure_code == 8 | PERM {
+			debug_assert!(data.is_empty())
+		} else if failure_code == 9 | PERM {
+			debug_assert!(data.is_empty())
+		} else if failure_code == 10 | PERM {
+			debug_assert!(data.is_empty())
+		} else if failure_code == 11 | UPDATE {
+			debug_assert_eq!(
+				data.len() - 2 - 8,
+				u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize
+			)
+		} else if failure_code == 12 | UPDATE {
+			debug_assert_eq!(
+				data.len() - 2 - 8,
+				u16::from_be_bytes(data[8..10].try_into().unwrap()) as usize
+			)
+		} else if failure_code == 13 | UPDATE {
+			debug_assert_eq!(
+				data.len() - 2 - 4,
+				u16::from_be_bytes(data[4..6].try_into().unwrap()) as usize
+			)
+		} else if failure_code == 14 | UPDATE {
+			debug_assert_eq!(
+				data.len() - 2,
+				u16::from_be_bytes(data[0..2].try_into().unwrap()) as usize
+			)
+		} else if failure_code == 15 | PERM {
+			debug_assert_eq!(data.len(), 12)
+		} else if failure_code == 18 {
+			debug_assert_eq!(data.len(), 4)
+		} else if failure_code == 19 {
+			debug_assert_eq!(data.len(), 8)
+		} else if failure_code == 20 | UPDATE {
+			debug_assert_eq!(
+				data.len() - 2 - 2,
+				u16::from_be_bytes(data[2..4].try_into().unwrap()) as usize
+			)
+		} else if failure_code == 21 {
+			debug_assert!(data.is_empty())
+		} else if failure_code == 22 | PERM {
+			debug_assert!(data.len() <= 11)
+		} else if failure_code == 23 {
+			debug_assert!(data.is_empty())
+		} else if failure_code & BADONION != 0 {
 			// We set some bogus BADONION failure codes in test, so ignore unknown ones.
+		} else {
+			debug_assert!(false, "Unknown failure code: {}", failure_code)
 		}
-		else { debug_assert!(false, "Unknown failure code: {}", failure_code) }
 
 		Self(HTLCFailReasonRepr::Reason { failure_code, data })
 	}
@@ -847,28 +934,42 @@ impl HTLCFailReason {
 		Self(HTLCFailReasonRepr::LightningError { err: msg.reason.clone() })
 	}
 
-	pub(super) fn get_encrypted_failure_packet(&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>)
-	-> msgs::OnionErrorPacket {
+	pub(super) fn get_encrypted_failure_packet(
+		&self, incoming_packet_shared_secret: &[u8; 32], phantom_shared_secret: &Option<[u8; 32]>,
+	) -> msgs::OnionErrorPacket {
 		match self.0 {
 			HTLCFailReasonRepr::Reason { ref failure_code, ref data } => {
 				if let Some(phantom_ss) = phantom_shared_secret {
-					let phantom_packet = build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
-					let encrypted_phantom_packet = encrypt_failure_packet(phantom_ss, &phantom_packet);
-					encrypt_failure_packet(incoming_packet_shared_secret, &encrypted_phantom_packet.data[..])
+					let phantom_packet =
+						build_failure_packet(phantom_ss, *failure_code, &data[..]).encode();
+					let encrypted_phantom_packet =
+						encrypt_failure_packet(phantom_ss, &phantom_packet);
+					encrypt_failure_packet(
+						incoming_packet_shared_secret,
+						&encrypted_phantom_packet.data[..],
+					)
 				} else {
-					let packet = build_failure_packet(incoming_packet_shared_secret, *failure_code, &data[..]).encode();
+					let packet = build_failure_packet(
+						incoming_packet_shared_secret,
+						*failure_code,
+						&data[..],
+					)
+					.encode();
 					encrypt_failure_packet(incoming_packet_shared_secret, &packet)
 				}
 			},
 			HTLCFailReasonRepr::LightningError { ref err } => {
 				encrypt_failure_packet(incoming_packet_shared_secret, &err.data)
-			}
+			},
 		}
 	}
 
 	pub(super) fn decode_onion_failure<T: secp256k1::Signing, L: Deref>(
-		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource
-	) -> DecodedOnionFailure where L::Target: Logger {
+		&self, secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
+	) -> DecodedOnionFailure
+	where
+		L::Target: Logger,
+	{
 		match self.0 {
 			HTLCFailReasonRepr::LightningError { ref err } => {
 				process_onion_failure(secp_ctx, logger, &htlc_source, err.data.clone())
@@ -891,8 +992,10 @@ impl HTLCFailReason {
 						#[cfg(test)]
 						onion_error_data: Some(data.clone()),
 					}
-				} else { unreachable!(); }
-			}
+				} else {
+					unreachable!();
+				}
+			},
 		}
 	}
 }
@@ -904,7 +1007,7 @@ pub(crate) trait NextPacketBytes: AsMut<[u8]> {
 }
 
 impl NextPacketBytes for FixedSizeOnionPacket {
-	fn new(_len: usize) -> Self  {
+	fn new(_len: usize) -> Self {
 		Self([0 as u8; ONION_DATA_LEN])
 	}
 }
@@ -935,31 +1038,28 @@ pub(crate) enum Hop {
 #[derive(Debug)]
 pub(crate) enum OnionDecodeErr {
 	/// The HMAC of the onion packet did not match the hop data.
-	Malformed {
-		err_msg: &'static str,
-		err_code: u16,
-	},
+	Malformed { err_msg: &'static str, err_code: u16 },
 	/// We failed to decode the onion payload.
-	Relay {
-		err_msg: &'static str,
-		err_code: u16,
-	},
+	Relay { err_msg: &'static str, err_code: u16 },
 }
 
 pub(crate) fn decode_next_payment_hop<NS: Deref>(
 	shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash,
 	blinding_point: Option<PublicKey>, node_signer: &NS,
-) -> Result<Hop, OnionDecodeErr> where NS::Target: NodeSigner {
+) -> Result<Hop, OnionDecodeErr>
+where
+	NS::Target: NodeSigner,
+{
 	match decode_next_hop(
-		shared_secret, hop_data, hmac_bytes, Some(payment_hash), (blinding_point, node_signer)
+		shared_secret,
+		hop_data,
+		hmac_bytes,
+		Some(payment_hash),
+		(blinding_point, node_signer),
 	) {
 		Ok((next_hop_data, None)) => Ok(Hop::Receive(next_hop_data)),
 		Ok((next_hop_data, Some((next_hop_hmac, FixedSizeOnionPacket(new_packet_bytes))))) => {
-			Ok(Hop::Forward {
-				next_hop_data,
-				next_hop_hmac,
-				new_packet_bytes
-			})
+			Ok(Hop::Forward { next_hop_data, next_hop_hmac, new_packet_bytes })
 		},
 		Err(e) => Err(e),
 	}
@@ -970,27 +1070,35 @@ pub(crate) fn decode_next_payment_hop<NS: Deref>(
 pub fn create_payment_onion<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, total_msat: u64,
 	recipient_onion: RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
-	keysend_preimage: &Option<PaymentPreimage>, prng_seed: [u8; 32]
+	keysend_preimage: &Option<PaymentPreimage>, prng_seed: [u8; 32],
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
-	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv)
-		.map_err(|_| APIError::InvalidRoute{
-			err: "Pubkey along hop was maliciously selected".to_owned()
-		})?;
+	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv).map_err(|_| {
+		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
+	})?;
 	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
-		&path, total_msat, recipient_onion, cur_block_height, keysend_preimage
+		&path,
+		total_msat,
+		recipient_onion,
+		cur_block_height,
+		keysend_preimage,
 	)?;
 	let onion_packet = construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)
-		.map_err(|_| APIError::InvalidRoute{
-			err: "Route size too large considering onion data".to_owned()
+		.map_err(|_| APIError::InvalidRoute {
+			err: "Route size too large considering onion data".to_owned(),
 		})?;
 	Ok((onion_packet, htlc_msat, htlc_cltv))
 }
 
-pub(crate) fn decode_next_untagged_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], read_args: T) -> Result<(R, Option<([u8; 32], N)>), OnionDecodeErr> {
+pub(crate) fn decode_next_untagged_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
+	shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], read_args: T,
+) -> Result<(R, Option<([u8; 32], N)>), OnionDecodeErr> {
 	decode_next_hop(shared_secret, hop_data, hmac_bytes, None, read_args)
 }
 
-fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: Option<PaymentHash>, read_args: T) -> Result<(R, Option<([u8; 32], N)>), OnionDecodeErr> {
+fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
+	shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32],
+	payment_hash: Option<PaymentHash>, read_args: T,
+) -> Result<(R, Option<([u8; 32], N)>), OnionDecodeErr> {
 	let (rho, mu) = gen_rho_mu_from_shared_secret(&shared_secret);
 	let mut hmac = HmacEngine::<Sha256>::new(&mu);
 	hmac.input(hop_data);
@@ -1010,10 +1118,10 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 		Err(err) => {
 			let error_code = match err {
 				msgs::DecodeError::UnknownVersion => 0x4000 | 1, // unknown realm byte
-				msgs::DecodeError::UnknownRequiredFeature|
-				msgs::DecodeError::InvalidValue|
-				msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
-				_ => 0x2000 | 2, // Should never happen
+				msgs::DecodeError::UnknownRequiredFeature
+				| msgs::DecodeError::InvalidValue
+				| msgs::DecodeError::ShortRead => 0x4000 | 22, // invalid_onion_payload
+				_ => 0x2000 | 2,                                 // Should never happen
 			};
 			return Err(OnionDecodeErr::Relay {
 				err_msg: "Unable to decode our hop data",
@@ -1063,7 +1171,7 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 				// Once we've emptied the set of bytes our peer gave us, encrypt 0 bytes until we
 				// fill the onion hop data we'll forward to our next-hop peer.
 				chacha_stream.chacha.process_in_place(&mut new_packet_bytes.as_mut()[read_pos..]);
-				return Ok((msg, Some((hmac, new_packet_bytes)))) // This packet needs forwarding
+				return Ok((msg, Some((hmac, new_packet_bytes)))); // This packet needs forwarding
 			}
 		},
 	}
@@ -1072,21 +1180,27 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(shared_secret: [u8
 #[cfg(test)]
 mod tests {
 	use crate::io;
-	use crate::prelude::*;
-	use crate::ln::PaymentHash;
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
-	use crate::routing::router::{Path, Route, RouteHop};
 	use crate::ln::msgs;
-	use crate::util::ser::{Writeable, Writer, VecWriter};
+	use crate::ln::PaymentHash;
+	use crate::prelude::*;
+	use crate::routing::router::{Path, Route, RouteHop};
+	use crate::util::ser::{VecWriter, Writeable, Writer};
 
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::Secp256k1;
-	use bitcoin::secp256k1::{PublicKey,SecretKey};
+	use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 	use super::OnionKeys;
 
 	fn get_test_session_key() -> SecretKey {
-		SecretKey::from_slice(&<Vec<u8>>::from_hex("4141414141414141414141414141414141414141414141414141414141414141").unwrap()[..]).unwrap()
+		SecretKey::from_slice(
+			&<Vec<u8>>::from_hex(
+				"4141414141414141414141414141414141414141414141414141414141414141",
+			)
+			.unwrap()[..],
+		)
+		.unwrap()
 	}
 
 	fn build_test_onion_keys() -> Vec<OnionKeys> {
@@ -1124,7 +1238,9 @@ mod tests {
 			route_params: None,
 		};
 
-		let onion_keys = super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key()).unwrap();
+		let onion_keys =
+			super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key())
+				.unwrap();
 		assert_eq!(onion_keys.len(), route.paths[0].hops.len());
 		onion_keys
 	}
@@ -1135,35 +1251,145 @@ mod tests {
 
 		// Test generation of ephemeral keys and secrets. These values used to be part of the BOLT4
 		// test vectors, but have since been removed. We keep them as they provide test coverage.
-		assert_eq!(onion_keys[0].shared_secret.secret_bytes(), <Vec<u8>>::from_hex("53eb63ea8a3fec3b3cd433b85cd62a4b145e1dda09391b348c4e1cd36a03ea66").unwrap()[..]);
-		assert_eq!(onion_keys[0].blinding_factor[..], <Vec<u8>>::from_hex("2ec2e5da605776054187180343287683aa6a51b4b1c04d6dd49c45d8cffb3c36").unwrap()[..]);
-		assert_eq!(onion_keys[0].ephemeral_pubkey.serialize()[..], <Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]);
-		assert_eq!(onion_keys[0].rho, <Vec<u8>>::from_hex("ce496ec94def95aadd4bec15cdb41a740c9f2b62347c4917325fcc6fb0453986").unwrap()[..]);
-		assert_eq!(onion_keys[0].mu, <Vec<u8>>::from_hex("b57061dc6d0a2b9f261ac410c8b26d64ac5506cbba30267a649c28c179400eba").unwrap()[..]);
+		assert_eq!(
+			onion_keys[0].shared_secret.secret_bytes(),
+			<Vec<u8>>::from_hex("53eb63ea8a3fec3b3cd433b85cd62a4b145e1dda09391b348c4e1cd36a03ea66")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[0].blinding_factor[..],
+			<Vec<u8>>::from_hex("2ec2e5da605776054187180343287683aa6a51b4b1c04d6dd49c45d8cffb3c36")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[0].ephemeral_pubkey.serialize()[..],
+			<Vec<u8>>::from_hex(
+				"02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619"
+			)
+			.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[0].rho,
+			<Vec<u8>>::from_hex("ce496ec94def95aadd4bec15cdb41a740c9f2b62347c4917325fcc6fb0453986")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[0].mu,
+			<Vec<u8>>::from_hex("b57061dc6d0a2b9f261ac410c8b26d64ac5506cbba30267a649c28c179400eba")
+				.unwrap()[..]
+		);
 
-		assert_eq!(onion_keys[1].shared_secret.secret_bytes(), <Vec<u8>>::from_hex("a6519e98832a0b179f62123b3567c106db99ee37bef036e783263602f3488fae").unwrap()[..]);
-		assert_eq!(onion_keys[1].blinding_factor[..], <Vec<u8>>::from_hex("bf66c28bc22e598cfd574a1931a2bafbca09163df2261e6d0056b2610dab938f").unwrap()[..]);
-		assert_eq!(onion_keys[1].ephemeral_pubkey.serialize()[..], <Vec<u8>>::from_hex("028f9438bfbf7feac2e108d677e3a82da596be706cc1cf342b75c7b7e22bf4e6e2").unwrap()[..]);
-		assert_eq!(onion_keys[1].rho, <Vec<u8>>::from_hex("450ffcabc6449094918ebe13d4f03e433d20a3d28a768203337bc40b6e4b2c59").unwrap()[..]);
-		assert_eq!(onion_keys[1].mu, <Vec<u8>>::from_hex("05ed2b4a3fb023c2ff5dd6ed4b9b6ea7383f5cfe9d59c11d121ec2c81ca2eea9").unwrap()[..]);
+		assert_eq!(
+			onion_keys[1].shared_secret.secret_bytes(),
+			<Vec<u8>>::from_hex("a6519e98832a0b179f62123b3567c106db99ee37bef036e783263602f3488fae")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[1].blinding_factor[..],
+			<Vec<u8>>::from_hex("bf66c28bc22e598cfd574a1931a2bafbca09163df2261e6d0056b2610dab938f")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[1].ephemeral_pubkey.serialize()[..],
+			<Vec<u8>>::from_hex(
+				"028f9438bfbf7feac2e108d677e3a82da596be706cc1cf342b75c7b7e22bf4e6e2"
+			)
+			.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[1].rho,
+			<Vec<u8>>::from_hex("450ffcabc6449094918ebe13d4f03e433d20a3d28a768203337bc40b6e4b2c59")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[1].mu,
+			<Vec<u8>>::from_hex("05ed2b4a3fb023c2ff5dd6ed4b9b6ea7383f5cfe9d59c11d121ec2c81ca2eea9")
+				.unwrap()[..]
+		);
 
-		assert_eq!(onion_keys[2].shared_secret.secret_bytes(), <Vec<u8>>::from_hex("3a6b412548762f0dbccce5c7ae7bb8147d1caf9b5471c34120b30bc9c04891cc").unwrap()[..]);
-		assert_eq!(onion_keys[2].blinding_factor[..], <Vec<u8>>::from_hex("a1f2dadd184eb1627049673f18c6325814384facdee5bfd935d9cb031a1698a5").unwrap()[..]);
-		assert_eq!(onion_keys[2].ephemeral_pubkey.serialize()[..], <Vec<u8>>::from_hex("03bfd8225241ea71cd0843db7709f4c222f62ff2d4516fd38b39914ab6b83e0da0").unwrap()[..]);
-		assert_eq!(onion_keys[2].rho, <Vec<u8>>::from_hex("11bf5c4f960239cb37833936aa3d02cea82c0f39fd35f566109c41f9eac8deea").unwrap()[..]);
-		assert_eq!(onion_keys[2].mu, <Vec<u8>>::from_hex("caafe2820fa00eb2eeb78695ae452eba38f5a53ed6d53518c5c6edf76f3f5b78").unwrap()[..]);
+		assert_eq!(
+			onion_keys[2].shared_secret.secret_bytes(),
+			<Vec<u8>>::from_hex("3a6b412548762f0dbccce5c7ae7bb8147d1caf9b5471c34120b30bc9c04891cc")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[2].blinding_factor[..],
+			<Vec<u8>>::from_hex("a1f2dadd184eb1627049673f18c6325814384facdee5bfd935d9cb031a1698a5")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[2].ephemeral_pubkey.serialize()[..],
+			<Vec<u8>>::from_hex(
+				"03bfd8225241ea71cd0843db7709f4c222f62ff2d4516fd38b39914ab6b83e0da0"
+			)
+			.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[2].rho,
+			<Vec<u8>>::from_hex("11bf5c4f960239cb37833936aa3d02cea82c0f39fd35f566109c41f9eac8deea")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[2].mu,
+			<Vec<u8>>::from_hex("caafe2820fa00eb2eeb78695ae452eba38f5a53ed6d53518c5c6edf76f3f5b78")
+				.unwrap()[..]
+		);
 
-		assert_eq!(onion_keys[3].shared_secret.secret_bytes(), <Vec<u8>>::from_hex("21e13c2d7cfe7e18836df50872466117a295783ab8aab0e7ecc8c725503ad02d").unwrap()[..]);
-		assert_eq!(onion_keys[3].blinding_factor[..], <Vec<u8>>::from_hex("7cfe0b699f35525029ae0fa437c69d0f20f7ed4e3916133f9cacbb13c82ff262").unwrap()[..]);
-		assert_eq!(onion_keys[3].ephemeral_pubkey.serialize()[..], <Vec<u8>>::from_hex("031dde6926381289671300239ea8e57ffaf9bebd05b9a5b95beaf07af05cd43595").unwrap()[..]);
-		assert_eq!(onion_keys[3].rho, <Vec<u8>>::from_hex("cbe784ab745c13ff5cffc2fbe3e84424aa0fd669b8ead4ee562901a4a4e89e9e").unwrap()[..]);
-		assert_eq!(onion_keys[3].mu, <Vec<u8>>::from_hex("5052aa1b3d9f0655a0932e50d42f0c9ba0705142c25d225515c45f47c0036ee9").unwrap()[..]);
+		assert_eq!(
+			onion_keys[3].shared_secret.secret_bytes(),
+			<Vec<u8>>::from_hex("21e13c2d7cfe7e18836df50872466117a295783ab8aab0e7ecc8c725503ad02d")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[3].blinding_factor[..],
+			<Vec<u8>>::from_hex("7cfe0b699f35525029ae0fa437c69d0f20f7ed4e3916133f9cacbb13c82ff262")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[3].ephemeral_pubkey.serialize()[..],
+			<Vec<u8>>::from_hex(
+				"031dde6926381289671300239ea8e57ffaf9bebd05b9a5b95beaf07af05cd43595"
+			)
+			.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[3].rho,
+			<Vec<u8>>::from_hex("cbe784ab745c13ff5cffc2fbe3e84424aa0fd669b8ead4ee562901a4a4e89e9e")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[3].mu,
+			<Vec<u8>>::from_hex("5052aa1b3d9f0655a0932e50d42f0c9ba0705142c25d225515c45f47c0036ee9")
+				.unwrap()[..]
+		);
 
-		assert_eq!(onion_keys[4].shared_secret.secret_bytes(), <Vec<u8>>::from_hex("b5756b9b542727dbafc6765a49488b023a725d631af688fc031217e90770c328").unwrap()[..]);
-		assert_eq!(onion_keys[4].blinding_factor[..], <Vec<u8>>::from_hex("c96e00dddaf57e7edcd4fb5954be5b65b09f17cb6d20651b4e90315be5779205").unwrap()[..]);
-		assert_eq!(onion_keys[4].ephemeral_pubkey.serialize()[..], <Vec<u8>>::from_hex("03a214ebd875aab6ddfd77f22c5e7311d7f77f17a169e599f157bbcdae8bf071f4").unwrap()[..]);
-		assert_eq!(onion_keys[4].rho, <Vec<u8>>::from_hex("034e18b8cc718e8af6339106e706c52d8df89e2b1f7e9142d996acf88df8799b").unwrap()[..]);
-		assert_eq!(onion_keys[4].mu, <Vec<u8>>::from_hex("8e45e5c61c2b24cb6382444db6698727afb063adecd72aada233d4bf273d975a").unwrap()[..]);
+		assert_eq!(
+			onion_keys[4].shared_secret.secret_bytes(),
+			<Vec<u8>>::from_hex("b5756b9b542727dbafc6765a49488b023a725d631af688fc031217e90770c328")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[4].blinding_factor[..],
+			<Vec<u8>>::from_hex("c96e00dddaf57e7edcd4fb5954be5b65b09f17cb6d20651b4e90315be5779205")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[4].ephemeral_pubkey.serialize()[..],
+			<Vec<u8>>::from_hex(
+				"03a214ebd875aab6ddfd77f22c5e7311d7f77f17a169e599f157bbcdae8bf071f4"
+			)
+			.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[4].rho,
+			<Vec<u8>>::from_hex("034e18b8cc718e8af6339106e706c52d8df89e2b1f7e9142d996acf88df8799b")
+				.unwrap()[..]
+		);
+		assert_eq!(
+			onion_keys[4].mu,
+			<Vec<u8>>::from_hex("8e45e5c61c2b24cb6382444db6698727afb063adecd72aada233d4bf273d975a")
+				.unwrap()[..]
+		);
 
 		// Packet creation test vectors from BOLT 4 (see
 		// https://github.com/lightning/bolts/blob/16973e2b857e853308cafd59e42fa830d75b1642/bolt04/onion-test.json).
@@ -1228,24 +1454,34 @@ mod tests {
 		let mut w = VecWriter(Vec::new());
 		payloads[0].write(&mut w).unwrap();
 		let hop_1_serialized_payload = w.0;
-		let expected_serialized_hop_1_payload = &<Vec<u8>>::from_hex("1202023a98040205dc06080000000000000001").unwrap()[..];
+		let expected_serialized_hop_1_payload =
+			&<Vec<u8>>::from_hex("1202023a98040205dc06080000000000000001").unwrap()[..];
 		assert_eq!(hop_1_serialized_payload, expected_serialized_hop_1_payload);
 
 		w = VecWriter(Vec::new());
 		payloads[2].write(&mut w).unwrap();
 		let hop_3_serialized_payload = w.0;
-		let expected_serialized_hop_3_payload = &<Vec<u8>>::from_hex("12020230d4040204e206080000000000000003").unwrap()[..];
+		let expected_serialized_hop_3_payload =
+			&<Vec<u8>>::from_hex("12020230d4040204e206080000000000000003").unwrap()[..];
 		assert_eq!(hop_3_serialized_payload, expected_serialized_hop_3_payload);
 
 		w = VecWriter(Vec::new());
 		payloads[3].write(&mut w).unwrap();
 		let hop_4_serialized_payload = w.0;
-		let expected_serialized_hop_4_payload = &<Vec<u8>>::from_hex("1202022710040203e806080000000000000004").unwrap()[..];
+		let expected_serialized_hop_4_payload =
+			&<Vec<u8>>::from_hex("1202022710040203e806080000000000000004").unwrap()[..];
 		assert_eq!(hop_4_serialized_payload, expected_serialized_hop_4_payload);
 
-		let pad_keytype_seed = super::gen_pad_from_shared_secret(&get_test_session_key().secret_bytes());
+		let pad_keytype_seed =
+			super::gen_pad_from_shared_secret(&get_test_session_key().secret_bytes());
 
-		let packet: msgs::OnionPacket = super::construct_onion_packet_with_writable_hopdata::<_>(payloads, onion_keys, pad_keytype_seed, &PaymentHash([0x42; 32])).unwrap();
+		let packet: msgs::OnionPacket = super::construct_onion_packet_with_writable_hopdata::<_>(
+			payloads,
+			onion_keys,
+			pad_keytype_seed,
+			&PaymentHash([0x42; 32]),
+		)
+		.unwrap();
 
 		assert_eq!(packet.encode(), <Vec<u8>>::from_hex("0002EEC7245D6B7D2CCB30380BFBE2A3648CD7A942653F5AA340EDCEA1F283686619F7F3416A5AA36DC7EEB3EC6D421E9615471AB870A33AC07FA5D5A51DF0A8823AABE3FEA3F90D387529D4F72837F9E687230371CCD8D263072206DBED0234F6505E21E282ABD8C0E4F5B9FF8042800BBAB065036EADD0149B37F27DDE664725A49866E052E809D2B0198AB9610FAA656BBF4EC516763A59F8F42C171B179166BA38958D4F51B39B3E98706E2D14A2DAFD6A5DF808093ABFCA5AEAACA16EDED5DB7D21FB0294DD1A163EDF0FB445D5C8D7D688D6DD9C541762BF5A5123BF9939D957FE648416E88F1B0928BFA034982B22548E1A4D922690EECF546275AFB233ACF4323974680779F1A964CFE687456035CC0FBA8A5428430B390F0057B6D1FE9A8875BFA89693EEB838CE59F09D207A503EE6F6299C92D6361BC335FCBF9B5CD44747AADCE2CE6069CFDC3D671DAEF9F8AE590CF93D957C9E873E9A1BC62D9640DC8FC39C14902D49A1C80239B6C5B7FD91D05878CBF5FFC7DB2569F47C43D6C0D27C438ABFF276E87364DEB8858A37E5A62C446AF95D8B786EAF0B5FCF78D98B41496794F8DCAAC4EEF34B2ACFB94C7E8C32A9E9866A8FA0B6F2A06F00A1CCDE569F97EEC05C803BA7500ACC96691D8898D73D8E6A47B8F43C3D5DE74458D20EDA61474C426359677001FBD75A74D7D5DB6CB4FEB83122F133206203E4E2D293F838BF8C8B3A29ACB321315100B87E80E0EDB272EE80FDA944E3FB6084ED4D7F7C7D21C69D9DA43D31A90B70693F9B0CC3EAC74C11AB8FF655905688916CFA4EF0BD04135F2E50B7C689A21D04E8E981E74C6058188B9B1F9DFC3EEC6838E9FFBCF22CE738D8A177C19318DFFEF090CEE67E12DE1A3E2A39F61247547BA5257489CBC11D7D91ED34617FCC42F7A9DA2E3CF31A94A210A1018143173913C38F60E62B24BF0D7518F38B5BAB3E6A1F8AEB35E31D6442C8ABB5178EFC892D2E787D79C6AD9E2FC271792983FA9955AC4D1D84A36C024071BC6E431B625519D556AF38185601F70E29035EA6A09C8B676C9D88CF7E05E0F17098B584C4168735940263F940033A220F40BE4C85344128B14BEB9E75696DB37014107801A59B13E89CD9D2258C169D523BE6D31552C44C82FF4BB18EC9F099F3BF0E5B1BB2BA9A87D7E26F98D294927B600B5529C47E04D98956677CBCEE8FA2B60F49776D8B8C367465B7C626DA53700684FB6C918EAD0EAB8360E4F60EDD25B4F43816A75ECF70F909301825B512469F8389D79402311D8AECB7B3EF8599E79485A4388D87744D899F7C47EE644361E17040A7958C8911BE6F463AB6A9B2AFACD688EC55EF517B38F1339EFC54487232798BB25522FF4572FF68567FE830F92F7B8113EFCE3E98C3FFFBAEDCE4FD8B50E41DA97C0C08E423A72689CC68E68F752A5E3A9003E64E35C957CA2E1C48BB6F64B05F56B70B575AD2F278D57850A7AD568C24A4D32A3D74B29F03DC125488BC7C637DA582357F40B0A52D16B3B40BB2C2315D03360BC24209E20972C200566BCF3BBE5C5B0AEDD83132A8A4D5B4242BA370B6D67D9B67EB01052D132C7866B9CB502E44796D9D356E4E3CB47CC527322CD24976FE7C9257A2864151A38E568EF7A79F10D6EF27CC04CE382347A2488B1F404FDBF407FE1CA1C9D0D5649E34800E25E18951C98CAE9F43555EEF65FEE1EA8F15828807366C3B612CD5753BF9FB8FCED08855F742CDDD6F765F74254F03186683D646E6F09AC2805586C7CF11998357CAFC5DF3F285329366F475130C928B2DCEBA4AA383758E7A9D20705C4BB9DB619E2992F608A1BA65DB254BB389468741D0502E2588AEB54390AC600C19AF5C8E61383FC1BEBE0029E4474051E4EF908828DB9CCA13277EF65DB3FD47CCC2179126AAEFB627719F421E20").unwrap());
 	}
@@ -1255,27 +1491,43 @@ mod tests {
 		// Returning Errors test vectors from BOLT 4
 
 		let onion_keys = build_test_onion_keys();
-		let onion_error = super::build_failure_packet(onion_keys[4].shared_secret.as_ref(), 0x2002, &[0; 0]);
+		let onion_error =
+			super::build_failure_packet(onion_keys[4].shared_secret.as_ref(), 0x2002, &[0; 0]);
 		assert_eq!(onion_error.encode(), <Vec<u8>>::from_hex("4c2fc8bc08510334b6833ad9c3e79cd1b52ae59dfe5c2a4b23ead50f09f7ee0b0002200200fe0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap());
 
-		let onion_packet_1 = super::encrypt_failure_packet(onion_keys[4].shared_secret.as_ref(), &onion_error.encode()[..]);
+		let onion_packet_1 = super::encrypt_failure_packet(
+			onion_keys[4].shared_secret.as_ref(),
+			&onion_error.encode()[..],
+		);
 		assert_eq!(onion_packet_1.data, <Vec<u8>>::from_hex("a5e6bd0c74cb347f10cce367f949098f2457d14c046fd8a22cb96efb30b0fdcda8cb9168b50f2fd45edd73c1b0c8b33002df376801ff58aaa94000bf8a86f92620f343baef38a580102395ae3abf9128d1047a0736ff9b83d456740ebbb4aeb3aa9737f18fb4afb4aa074fb26c4d702f42968888550a3bded8c05247e045b866baef0499f079fdaeef6538f31d44deafffdfd3afa2fb4ca9082b8f1c465371a9894dd8c243fb4847e004f5256b3e90e2edde4c9fb3082ddfe4d1e734cacd96ef0706bf63c9984e22dc98851bcccd1c3494351feb458c9c6af41c0044bea3c47552b1d992ae542b17a2d0bba1a096c78d169034ecb55b6e3a7263c26017f033031228833c1daefc0dedb8cf7c3e37c9c37ebfe42f3225c326e8bcfd338804c145b16e34e4").unwrap());
 
-		let onion_packet_2 = super::encrypt_failure_packet(onion_keys[3].shared_secret.as_ref(), &onion_packet_1.data[..]);
+		let onion_packet_2 = super::encrypt_failure_packet(
+			onion_keys[3].shared_secret.as_ref(),
+			&onion_packet_1.data[..],
+		);
 		assert_eq!(onion_packet_2.data, <Vec<u8>>::from_hex("c49a1ce81680f78f5f2000cda36268de34a3f0a0662f55b4e837c83a8773c22aa081bab1616a0011585323930fa5b9fae0c85770a2279ff59ec427ad1bbff9001c0cd1497004bd2a0f68b50704cf6d6a4bf3c8b6a0833399a24b3456961ba00736785112594f65b6b2d44d9f5ea4e49b5e1ec2af978cbe31c67114440ac51a62081df0ed46d4a3df295da0b0fe25c0115019f03f15ec86fabb4c852f83449e812f141a9395b3f70b766ebbd4ec2fae2b6955bd8f32684c15abfe8fd3a6261e52650e8807a92158d9f1463261a925e4bfba44bd20b166d532f0017185c3a6ac7957adefe45559e3072c8dc35abeba835a8cb01a71a15c736911126f27d46a36168ca5ef7dccd4e2886212602b181463e0dd30185c96348f9743a02aca8ec27c0b90dca270").unwrap());
 
-		let onion_packet_3 = super::encrypt_failure_packet(onion_keys[2].shared_secret.as_ref(), &onion_packet_2.data[..]);
+		let onion_packet_3 = super::encrypt_failure_packet(
+			onion_keys[2].shared_secret.as_ref(),
+			&onion_packet_2.data[..],
+		);
 		assert_eq!(onion_packet_3.data, <Vec<u8>>::from_hex("a5d3e8634cfe78b2307d87c6d90be6fe7855b4f2cc9b1dfb19e92e4b79103f61ff9ac25f412ddfb7466e74f81b3e545563cdd8f5524dae873de61d7bdfccd496af2584930d2b566b4f8d3881f8c043df92224f38cf094cfc09d92655989531524593ec6d6caec1863bdfaa79229b5020acc034cd6deeea1021c50586947b9b8e6faa83b81fbfa6133c0af5d6b07c017f7158fa94f0d206baf12dda6b68f785b773b360fd0497e16cc402d779c8d48d0fa6315536ef0660f3f4e1865f5b38ea49c7da4fd959de4e83ff3ab686f059a45c65ba2af4a6a79166aa0f496bf04d06987b6d2ea205bdb0d347718b9aeff5b61dfff344993a275b79717cd815b6ad4c0beb568c4ac9c36ff1c315ec1119a1993c4b61e6eaa0375e0aaf738ac691abd3263bf937e3").unwrap());
 
-		let onion_packet_4 = super::encrypt_failure_packet(onion_keys[1].shared_secret.as_ref(), &onion_packet_3.data[..]);
+		let onion_packet_4 = super::encrypt_failure_packet(
+			onion_keys[1].shared_secret.as_ref(),
+			&onion_packet_3.data[..],
+		);
 		assert_eq!(onion_packet_4.data, <Vec<u8>>::from_hex("aac3200c4968f56b21f53e5e374e3a2383ad2b1b6501bbcc45abc31e59b26881b7dfadbb56ec8dae8857add94e6702fb4c3a4de22e2e669e1ed926b04447fc73034bb730f4932acd62727b75348a648a1128744657ca6a4e713b9b646c3ca66cac02cdab44dd3439890ef3aaf61708714f7375349b8da541b2548d452d84de7084bb95b3ac2345201d624d31f4d52078aa0fa05a88b4e20202bd2b86ac5b52919ea305a8949de95e935eed0319cf3cf19ebea61d76ba92532497fcdc9411d06bcd4275094d0a4a3c5d3a945e43305a5a9256e333e1f64dbca5fcd4e03a39b9012d197506e06f29339dfee3331995b21615337ae060233d39befea925cc262873e0530408e6990f1cbd233a150ef7b004ff6166c70c68d9f8c853c1abca640b8660db2921").unwrap());
 
-		let onion_packet_5 = super::encrypt_failure_packet(onion_keys[0].shared_secret.as_ref(), &onion_packet_4.data[..]);
+		let onion_packet_5 = super::encrypt_failure_packet(
+			onion_keys[0].shared_secret.as_ref(),
+			&onion_packet_4.data[..],
+		);
 		assert_eq!(onion_packet_5.data, <Vec<u8>>::from_hex("9c5add3963fc7f6ed7f148623c84134b5647e1306419dbe2174e523fa9e2fbed3a06a19f899145610741c83ad40b7712aefaddec8c6baf7325d92ea4ca4d1df8bce517f7e54554608bf2bd8071a4f52a7a2f7ffbb1413edad81eeea5785aa9d990f2865dc23b4bc3c301a94eec4eabebca66be5cf638f693ec256aec514620cc28ee4a94bd9565bc4d4962b9d3641d4278fb319ed2b84de5b665f307a2db0f7fbb757366067d88c50f7e829138fde4f78d39b5b5802f1b92a8a820865af5cc79f9f30bc3f461c66af95d13e5e1f0381c184572a91dee1c849048a647a1158cf884064deddbf1b0b88dfe2f791428d0ba0f6fb2f04e14081f69165ae66d9297c118f0907705c9c4954a199bae0bb96fad763d690e7daa6cfda59ba7f2c8d11448b604d12d").unwrap());
 	}
 
 	struct RawOnionHopData {
-		data: Vec<u8>
+		data: Vec<u8>,
 	}
 	impl RawOnionHopData {
 		fn new(orig: msgs::OutboundOnionPayload) -> Self {

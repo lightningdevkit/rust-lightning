@@ -13,21 +13,21 @@
 //! channel matches a UTXO on-chain, requiring at least some marginal on-chain transacting in
 //! order to announce a channel. This module handles that checking.
 
-use bitcoin::TxOut;
 use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::TxOut;
 
 use hex::DisplayHex;
 
 use crate::events::MessageSendEvent;
 use crate::ln::chan_utils::make_funding_redeemscript_from_slices;
-use crate::ln::msgs::{self, LightningError, ErrorAction};
+use crate::ln::msgs::{self, ErrorAction, LightningError};
 use crate::routing::gossip::{NetworkGraph, NodeId, P2PGossipSync};
 use crate::util::logger::{Level, Logger};
 
 use crate::prelude::*;
 
+use crate::sync::{LockTestExt, Mutex};
 use alloc::sync::{Arc, Weak};
-use crate::sync::{Mutex, LockTestExt};
 use core::ops::Deref;
 
 /// An error when accessing the chain via [`UtxoLookup`].
@@ -136,14 +136,16 @@ impl UtxoLookup for UtxoResolver {
 impl UtxoFuture {
 	/// Builds a new future for later resolution.
 	pub fn new() -> Self {
-		Self { state: Arc::new(Mutex::new(UtxoMessages {
-			complete: None,
-			channel_announce: None,
-			latest_node_announce_a: None,
-			latest_node_announce_b: None,
-			latest_channel_update_a: None,
-			latest_channel_update_b: None,
-		}))}
+		Self {
+			state: Arc::new(Mutex::new(UtxoMessages {
+				complete: None,
+				channel_announce: None,
+				latest_node_announce_a: None,
+				latest_node_announce_b: None,
+				latest_channel_update_a: None,
+				latest_channel_update_b: None,
+			})),
+		}
 	}
 
 	/// Resolves this future against the given `graph` and with the given `result`.
@@ -157,9 +159,11 @@ impl UtxoFuture {
 	///
 	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
-	pub fn resolve_without_forwarding<L: Deref>(&self,
-		graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>)
-	where L::Target: Logger {
+	pub fn resolve_without_forwarding<L: Deref>(
+		&self, graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>,
+	) where
+		L::Target: Logger,
+	{
 		self.do_resolve(graph, result);
 	}
 
@@ -174,9 +178,17 @@ impl UtxoFuture {
 	///
 	/// [`processing_queue_high`]: crate::ln::msgs::RoutingMessageHandler::processing_queue_high
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
-	pub fn resolve<L: Deref, G: Deref<Target=NetworkGraph<L>>, U: Deref, GS: Deref<Target = P2PGossipSync<G, U, L>>>(&self,
-		graph: &NetworkGraph<L>, gossip: GS, result: Result<TxOut, UtxoLookupError>
-	) where L::Target: Logger, U::Target: UtxoLookup {
+	pub fn resolve<
+		L: Deref,
+		G: Deref<Target = NetworkGraph<L>>,
+		U: Deref,
+		GS: Deref<Target = P2PGossipSync<G, U, L>>,
+	>(
+		&self, graph: &NetworkGraph<L>, gossip: GS, result: Result<TxOut, UtxoLookupError>,
+	) where
+		L::Target: Logger,
+		U::Target: UtxoLookup,
+	{
 		let mut res = self.do_resolve(graph, result);
 		for msg_opt in res.iter_mut() {
 			if let Some(msg) = msg_opt.take() {
@@ -185,8 +197,12 @@ impl UtxoFuture {
 		}
 	}
 
-	fn do_resolve<L: Deref>(&self, graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>)
-	-> [Option<MessageSendEvent>; 5] where L::Target: Logger {
+	fn do_resolve<L: Deref>(
+		&self, graph: &NetworkGraph<L>, result: Result<TxOut, UtxoLookupError>,
+	) -> [Option<MessageSendEvent>; 5]
+	where
+		L::Target: Logger,
+	{
 		let (announcement, node_a, node_b, update_a, update_b) = {
 			let mut pending_checks = graph.pending_checks.internal.lock().unwrap();
 			let mut async_messages = self.state.lock().unwrap();
@@ -206,11 +222,13 @@ impl UtxoFuture {
 
 			pending_checks.lookup_completed(announcement_msg, &Arc::downgrade(&self.state));
 
-			(async_messages.channel_announce.take().unwrap(),
+			(
+				async_messages.channel_announce.take().unwrap(),
 				async_messages.latest_node_announce_a.take(),
 				async_messages.latest_node_announce_b.take(),
 				async_messages.latest_channel_update_a.take(),
-				async_messages.latest_channel_update_b.take())
+				async_messages.latest_channel_update_b.take(),
+			)
 		};
 
 		let mut res = [None, None, None, None, None];
@@ -225,7 +243,8 @@ impl UtxoFuture {
 			ChannelAnnouncement::Full(signed_msg) => {
 				if graph.update_channel_from_announcement(&signed_msg, &Some(&resolver)).is_ok() {
 					res[res_idx] = Some(MessageSendEvent::BroadcastChannelAnnouncement {
-						msg: signed_msg, update_msg: None,
+						msg: signed_msg,
+						update_msg: None,
 					});
 					res_idx += 1;
 				}
@@ -239,9 +258,8 @@ impl UtxoFuture {
 			match announce {
 				Some(NodeAnnouncement::Full(signed_msg)) => {
 					if graph.update_node_from_announcement(&signed_msg).is_ok() {
-						res[res_idx] = Some(MessageSendEvent::BroadcastNodeAnnouncement {
-							msg: signed_msg,
-						});
+						res[res_idx] =
+							Some(MessageSendEvent::BroadcastNodeAnnouncement { msg: signed_msg });
 						res_idx += 1;
 					}
 				},
@@ -256,9 +274,8 @@ impl UtxoFuture {
 			match update {
 				Some(ChannelUpdate::Full(signed_msg)) => {
 					if graph.update_channel(&signed_msg).is_ok() {
-						res[res_idx] = Some(MessageSendEvent::BroadcastChannelUpdate {
-							msg: signed_msg,
-						});
+						res[res_idx] =
+							Some(MessageSendEvent::BroadcastChannelUpdate { msg: signed_msg });
 						res_idx += 1;
 					}
 				},
@@ -279,8 +296,9 @@ struct PendingChecksContext {
 }
 
 impl PendingChecksContext {
-	fn lookup_completed(&mut self,
-		msg: &msgs::UnsignedChannelAnnouncement, completed_state: &Weak<Mutex<UtxoMessages>>
+	fn lookup_completed(
+		&mut self, msg: &msgs::UnsignedChannelAnnouncement,
+		completed_state: &Weak<Mutex<UtxoMessages>>,
 	) {
 		if let hash_map::Entry::Occupied(e) = self.channels.entry(msg.short_channel_id) {
 			if Weak::ptr_eq(e.get(), &completed_state) {
@@ -290,11 +308,15 @@ impl PendingChecksContext {
 
 		if let hash_map::Entry::Occupied(mut e) = self.nodes.entry(msg.node_id_1) {
 			e.get_mut().retain(|elem| !Weak::ptr_eq(&elem, &completed_state));
-			if e.get().is_empty() { e.remove(); }
+			if e.get().is_empty() {
+				e.remove();
+			}
 		}
 		if let hash_map::Entry::Occupied(mut e) = self.nodes.entry(msg.node_id_2) {
 			e.get_mut().retain(|elem| !Weak::ptr_eq(&elem, &completed_state));
-			if e.get().is_empty() { e.remove(); }
+			if e.get().is_empty() {
+				e.remove();
+			}
 		}
 	}
 }
@@ -306,15 +328,18 @@ pub(super) struct PendingChecks {
 
 impl PendingChecks {
 	pub(super) fn new() -> Self {
-		PendingChecks { internal: Mutex::new(PendingChecksContext {
-			channels: HashMap::new(), nodes: HashMap::new(),
-		}) }
+		PendingChecks {
+			internal: Mutex::new(PendingChecksContext {
+				channels: HashMap::new(),
+				nodes: HashMap::new(),
+			}),
+		}
 	}
 
 	/// Checks if there is a pending `channel_update` UTXO validation for the given channel,
 	/// and, if so, stores the channel message for handling later and returns an `Err`.
 	pub(super) fn check_hold_pending_channel_update(
-		&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>
+		&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>,
 	) -> Result<(), LightningError> {
 		let mut pending_checks = self.internal.lock().unwrap();
 		if let hash_map::Entry::Occupied(e) = pending_checks.channels.entry(msg.short_channel_id) {
@@ -323,25 +348,32 @@ impl PendingChecks {
 				Some(msgs_ref) => {
 					let mut messages = msgs_ref.lock().unwrap();
 					let latest_update = if is_from_a {
-							&mut messages.latest_channel_update_a
-						} else {
-							&mut messages.latest_channel_update_b
-						};
-					if latest_update.is_none() || latest_update.as_ref().unwrap().timestamp() < msg.timestamp {
+						&mut messages.latest_channel_update_a
+					} else {
+						&mut messages.latest_channel_update_b
+					};
+					if latest_update.is_none()
+						|| latest_update.as_ref().unwrap().timestamp() < msg.timestamp
+					{
 						// If the messages we got has a higher timestamp, just blindly assume the
 						// signatures on the new message are correct and drop the old message. This
 						// may cause us to end up dropping valid `channel_update`s if a peer is
 						// malicious, but we should get the correct ones when the node updates them.
-						*latest_update = Some(
-							if let Some(msg) = full_msg { ChannelUpdate::Full(msg.clone()) }
-							else { ChannelUpdate::Unsigned(msg.clone()) });
+						*latest_update = Some(if let Some(msg) = full_msg {
+							ChannelUpdate::Full(msg.clone())
+						} else {
+							ChannelUpdate::Unsigned(msg.clone())
+						});
 					}
 					return Err(LightningError {
-						err: "Awaiting channel_announcement validation to accept channel_update".to_owned(),
+						err: "Awaiting channel_announcement validation to accept channel_update"
+							.to_owned(),
 						action: ErrorAction::IgnoreAndLog(Level::Gossip),
 					});
 				},
-				None => { e.remove(); },
+				None => {
+					e.remove();
+				},
 			}
 		}
 		Ok(())
@@ -350,43 +382,48 @@ impl PendingChecks {
 	/// Checks if there is a pending `node_announcement` UTXO validation for a channel with the
 	/// given node and, if so, stores the channel message for handling later and returns an `Err`.
 	pub(super) fn check_hold_pending_node_announcement(
-		&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>
+		&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>,
 	) -> Result<(), LightningError> {
 		let mut pending_checks = self.internal.lock().unwrap();
 		if let hash_map::Entry::Occupied(mut e) = pending_checks.nodes.entry(msg.node_id) {
 			let mut found_at_least_one_chan = false;
-			e.get_mut().retain(|node_msgs| {
-				match Weak::upgrade(&node_msgs) {
-					Some(chan_mtx) => {
-						let mut chan_msgs = chan_mtx.lock().unwrap();
-						if let Some(chan_announce) = &chan_msgs.channel_announce {
-							let latest_announce =
-								if *chan_announce.node_id_1() == msg.node_id {
-									&mut chan_msgs.latest_node_announce_a
-								} else {
-									&mut chan_msgs.latest_node_announce_b
-								};
-							if latest_announce.is_none() ||
-								latest_announce.as_ref().unwrap().timestamp() < msg.timestamp
-							{
-								*latest_announce = Some(
-									if let Some(msg) = full_msg { NodeAnnouncement::Full(msg.clone()) }
-									else { NodeAnnouncement::Unsigned(msg.clone()) });
-							}
-							found_at_least_one_chan = true;
-							true
+			e.get_mut().retain(|node_msgs| match Weak::upgrade(&node_msgs) {
+				Some(chan_mtx) => {
+					let mut chan_msgs = chan_mtx.lock().unwrap();
+					if let Some(chan_announce) = &chan_msgs.channel_announce {
+						let latest_announce = if *chan_announce.node_id_1() == msg.node_id {
+							&mut chan_msgs.latest_node_announce_a
 						} else {
-							debug_assert!(false, "channel_announce is set before struct is added to node map");
-							false
+							&mut chan_msgs.latest_node_announce_b
+						};
+						if latest_announce.is_none()
+							|| latest_announce.as_ref().unwrap().timestamp() < msg.timestamp
+						{
+							*latest_announce = Some(if let Some(msg) = full_msg {
+								NodeAnnouncement::Full(msg.clone())
+							} else {
+								NodeAnnouncement::Unsigned(msg.clone())
+							});
 						}
-					},
-					None => false,
-				}
+						found_at_least_one_chan = true;
+						true
+					} else {
+						debug_assert!(
+							false,
+							"channel_announce is set before struct is added to node map"
+						);
+						false
+					}
+				},
+				None => false,
 			});
-			if e.get().is_empty() { e.remove(); }
+			if e.get().is_empty() {
+				e.remove();
+			}
 			if found_at_least_one_chan {
 				return Err(LightningError {
-					err: "Awaiting channel_announcement validation to accept node_announcement".to_owned(),
+					err: "Awaiting channel_announcement validation to accept node_announcement"
+						.to_owned(),
 					action: ErrorAction::IgnoreAndLog(Level::Gossip),
 				});
 			}
@@ -394,9 +431,10 @@ impl PendingChecks {
 		Ok(())
 	}
 
-	fn check_replace_previous_entry(msg: &msgs::UnsignedChannelAnnouncement,
-		full_msg: Option<&msgs::ChannelAnnouncement>, replacement: Option<Weak<Mutex<UtxoMessages>>>,
-		pending_channels: &mut HashMap<u64, Weak<Mutex<UtxoMessages>>>
+	fn check_replace_previous_entry(
+		msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>,
+		replacement: Option<Weak<Mutex<UtxoMessages>>>,
+		pending_channels: &mut HashMap<u64, Weak<Mutex<UtxoMessages>>>,
 	) -> Result<(), msgs::LightningError> {
 		match pending_channels.entry(msg.short_channel_id) {
 			hash_map::Entry::Occupied(mut e) => {
@@ -408,8 +446,13 @@ impl PendingChecks {
 						// This may be called with the mutex held on a different UtxoMessages
 						// struct, however in that case we have a global lockorder of new messages
 						// -> old messages, which makes this safe.
-						let pending_matches = match &pending_msgs.unsafe_well_ordered_double_lock_self().channel_announce {
-							Some(ChannelAnnouncement::Full(pending_msg)) => Some(pending_msg) == full_msg,
+						let pending_matches = match &pending_msgs
+							.unsafe_well_ordered_double_lock_self()
+							.channel_announce
+						{
+							Some(ChannelAnnouncement::Full(pending_msg)) => {
+								Some(pending_msg) == full_msg
+							},
 							Some(ChannelAnnouncement::Unsigned(pending_msg)) => pending_msg == msg,
 							None => {
 								// This shouldn't actually be reachable. We set the
@@ -441,53 +484,66 @@ impl PendingChecks {
 						// so just remove/replace it and move on.
 						if let Some(item) = replacement {
 							*e.get_mut() = item;
-						} else { e.remove(); }
+						} else {
+							e.remove();
+						}
 					},
 				}
 			},
 			hash_map::Entry::Vacant(v) => {
-				if let Some(item) = replacement { v.insert(item); }
+				if let Some(item) = replacement {
+					v.insert(item);
+				}
 			},
 		}
 		Ok(())
 	}
 
-	pub(super) fn check_channel_announcement<U: Deref>(&self,
-		utxo_lookup: &Option<U>, msg: &msgs::UnsignedChannelAnnouncement,
-		full_msg: Option<&msgs::ChannelAnnouncement>
-	) -> Result<Option<u64>, msgs::LightningError> where U::Target: UtxoLookup {
-		let handle_result = |res| {
-			match res {
-				Ok(TxOut { value, script_pubkey }) => {
-					let expected_script =
-						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_array(), msg.bitcoin_key_2.as_array()).to_v0_p2wsh();
-					if script_pubkey != expected_script {
-						return Err(LightningError{
-							err: format!("Channel announcement key ({}) didn't match on-chain script ({})",
-								expected_script.to_hex_string(), script_pubkey.to_hex_string()),
-							action: ErrorAction::IgnoreError
-						});
-					}
-					Ok(Some(value))
-				},
-				Err(UtxoLookupError::UnknownChain) => {
-					Err(LightningError {
-						err: format!("Channel announced on an unknown chain ({})",
-							msg.chain_hash.to_bytes().as_hex()),
-						action: ErrorAction::IgnoreError
-					})
-				},
-				Err(UtxoLookupError::UnknownTx) => {
-					Err(LightningError {
-						err: "Channel announced without corresponding UTXO entry".to_owned(),
-						action: ErrorAction::IgnoreError
-					})
-				},
-			}
+	pub(super) fn check_channel_announcement<U: Deref>(
+		&self, utxo_lookup: &Option<U>, msg: &msgs::UnsignedChannelAnnouncement,
+		full_msg: Option<&msgs::ChannelAnnouncement>,
+	) -> Result<Option<u64>, msgs::LightningError>
+	where
+		U::Target: UtxoLookup,
+	{
+		let handle_result = |res| match res {
+			Ok(TxOut { value, script_pubkey }) => {
+				let expected_script = make_funding_redeemscript_from_slices(
+					msg.bitcoin_key_1.as_array(),
+					msg.bitcoin_key_2.as_array(),
+				)
+				.to_v0_p2wsh();
+				if script_pubkey != expected_script {
+					return Err(LightningError {
+						err: format!(
+							"Channel announcement key ({}) didn't match on-chain script ({})",
+							expected_script.to_hex_string(),
+							script_pubkey.to_hex_string()
+						),
+						action: ErrorAction::IgnoreError,
+					});
+				}
+				Ok(Some(value))
+			},
+			Err(UtxoLookupError::UnknownChain) => Err(LightningError {
+				err: format!(
+					"Channel announced on an unknown chain ({})",
+					msg.chain_hash.to_bytes().as_hex()
+				),
+				action: ErrorAction::IgnoreError,
+			}),
+			Err(UtxoLookupError::UnknownTx) => Err(LightningError {
+				err: "Channel announced without corresponding UTXO entry".to_owned(),
+				action: ErrorAction::IgnoreError,
+			}),
 		};
 
-		Self::check_replace_previous_entry(msg, full_msg, None,
-			&mut self.internal.lock().unwrap().channels)?;
+		Self::check_replace_previous_entry(
+			msg,
+			full_msg,
+			None,
+			&mut self.internal.lock().unwrap().channels,
+		)?;
 
 		match utxo_lookup {
 			&None => {
@@ -505,15 +561,27 @@ impl PendingChecks {
 							// handle the result in-line.
 							handle_result(res)
 						} else {
-							Self::check_replace_previous_entry(msg, full_msg,
-								Some(Arc::downgrade(&future.state)), &mut pending_checks.channels)?;
-							async_messages.channel_announce = Some(
-								if let Some(msg) = full_msg { ChannelAnnouncement::Full(msg.clone()) }
-								else { ChannelAnnouncement::Unsigned(msg.clone()) });
-							pending_checks.nodes.entry(msg.node_id_1)
-								.or_insert(Vec::new()).push(Arc::downgrade(&future.state));
-							pending_checks.nodes.entry(msg.node_id_2)
-								.or_insert(Vec::new()).push(Arc::downgrade(&future.state));
+							Self::check_replace_previous_entry(
+								msg,
+								full_msg,
+								Some(Arc::downgrade(&future.state)),
+								&mut pending_checks.channels,
+							)?;
+							async_messages.channel_announce = Some(if let Some(msg) = full_msg {
+								ChannelAnnouncement::Full(msg.clone())
+							} else {
+								ChannelAnnouncement::Unsigned(msg.clone())
+							});
+							pending_checks
+								.nodes
+								.entry(msg.node_id_1)
+								.or_insert(Vec::new())
+								.push(Arc::downgrade(&future.state));
+							pending_checks
+								.nodes
+								.entry(msg.node_id_2)
+								.or_insert(Vec::new())
+								.push(Arc::downgrade(&future.state));
 							Err(LightningError {
 								err: "Channel being checked async".to_owned(),
 								action: ErrorAction::IgnoreAndLog(Level::Gossip),
@@ -521,7 +589,7 @@ impl PendingChecks {
 						}
 					},
 				}
-			}
+			},
 		}
 	}
 
@@ -544,9 +612,7 @@ impl PendingChecks {
 			// If we have many channel checks pending, ensure we don't have any dangling checks
 			// (i.e. checks where the user told us they'd call back but drop'd the `UtxoFuture`
 			// instead) before we commit to applying backpressure.
-			pending_checks.channels.retain(|_, chan| {
-				Weak::upgrade(&chan).is_some()
-			});
+			pending_checks.channels.retain(|_, chan| Weak::upgrade(&chan).is_some());
 			pending_checks.nodes.retain(|_, channels| {
 				channels.retain(|chan| Weak::upgrade(&chan).is_some());
 				!channels.is_empty()
@@ -561,9 +627,9 @@ impl PendingChecks {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::ln::msgs;
 	use crate::routing::gossip::tests::*;
 	use crate::util::test_utils::{TestChainSource, TestLogger};
-	use crate::ln::msgs;
 
 	use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
@@ -577,10 +643,17 @@ mod tests {
 		(chain_source, network_graph)
 	}
 
-	fn get_test_objects() -> (msgs::ChannelAnnouncement, TestChainSource,
-		NetworkGraph<Box<TestLogger>>, bitcoin::ScriptBuf, msgs::NodeAnnouncement,
-		msgs::NodeAnnouncement, msgs::ChannelUpdate, msgs::ChannelUpdate, msgs::ChannelUpdate)
-	{
+	fn get_test_objects() -> (
+		msgs::ChannelAnnouncement,
+		TestChainSource,
+		NetworkGraph<Box<TestLogger>>,
+		bitcoin::ScriptBuf,
+		msgs::NodeAnnouncement,
+		msgs::NodeAnnouncement,
+		msgs::ChannelUpdate,
+		msgs::ChannelUpdate,
+		msgs::ChannelUpdate,
+	) {
 		let secp_ctx = Secp256k1::new();
 
 		let (chain_source, network_graph) = get_network();
@@ -588,19 +661,37 @@ mod tests {
 		let good_script = get_channel_script(&secp_ctx);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+		let valid_announcement =
+			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 
 		let node_a_announce = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
 		let node_b_announce = get_signed_node_announcement(|_| {}, node_2_privkey, &secp_ctx);
 
 		// Note that we have to set the "direction" flag correctly on both messages
-		let chan_update_a = get_signed_channel_update(|msg| msg.flags = 0, node_1_privkey, &secp_ctx);
-		let chan_update_b = get_signed_channel_update(|msg| msg.flags = 1, node_2_privkey, &secp_ctx);
-		let chan_update_c = get_signed_channel_update(|msg| {
-			msg.flags = 1; msg.timestamp += 1; }, node_2_privkey, &secp_ctx);
+		let chan_update_a =
+			get_signed_channel_update(|msg| msg.flags = 0, node_1_privkey, &secp_ctx);
+		let chan_update_b =
+			get_signed_channel_update(|msg| msg.flags = 1, node_2_privkey, &secp_ctx);
+		let chan_update_c = get_signed_channel_update(
+			|msg| {
+				msg.flags = 1;
+				msg.timestamp += 1;
+			},
+			node_2_privkey,
+			&secp_ctx,
+		);
 
-		(valid_announcement, chain_source, network_graph, good_script, node_a_announce,
-			node_b_announce, chan_update_a, chan_update_b, chan_update_c)
+		(
+			valid_announcement,
+			chain_source,
+			network_graph,
+			good_script,
+			node_a_announce,
+			node_b_announce,
+			chan_update_a,
+			chan_update_b,
+			chan_update_c,
+		)
 	}
 
 	#[test]
@@ -610,41 +701,84 @@ mod tests {
 		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
 
 		let future = UtxoFuture::new();
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+		future.resolve_without_forwarding(
+			&network_graph,
+			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }),
+		);
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
-		network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap();
-		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_some());
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap();
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.is_some());
 	}
 
 	#[test]
 	fn test_async_lookup() {
 		// Test a simple async lookup
-		let (valid_announcement, chain_source, network_graph, good_script,
-			node_a_announce, node_b_announce, ..) = get_test_objects();
+		let (
+			valid_announcement,
+			chain_source,
+			network_graph,
+			good_script,
+			node_a_announce,
+			node_b_announce,
+			..,
+		) = get_test_objects();
 
 		let future = UtxoFuture::new();
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
-			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err().err,
-			"Channel being checked async");
-		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.is_none());
 
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 0, script_pubkey: good_script }));
-		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
-		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
+		future.resolve_without_forwarding(
+			&network_graph,
+			Ok(TxOut { value: 0, script_pubkey: good_script }),
+		);
+		network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.unwrap();
+		network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.unwrap();
 
-		assert!(network_graph.read_only().nodes().get(&valid_announcement.contents.node_id_1)
-			.unwrap().announcement_info.is_none());
+		assert!(network_graph
+			.read_only()
+			.nodes()
+			.get(&valid_announcement.contents.node_id_1)
+			.unwrap()
+			.announcement_info
+			.is_none());
 
 		network_graph.update_node_from_announcement(&node_a_announce).unwrap();
 		network_graph.update_node_from_announcement(&node_b_announce).unwrap();
 
-		assert!(network_graph.read_only().nodes().get(&valid_announcement.contents.node_id_1)
-			.unwrap().announcement_info.is_some());
+		assert!(network_graph
+			.read_only()
+			.nodes()
+			.get(&valid_announcement.contents.node_id_1)
+			.unwrap()
+			.announcement_info
+			.is_some());
 	}
 
 	#[test]
@@ -656,13 +790,27 @@ mod tests {
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
-			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err().err,
-			"Channel being checked async");
-		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.is_none());
 
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: bitcoin::ScriptBuf::new() }));
-		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
+		future.resolve_without_forwarding(
+			&network_graph,
+			Ok(TxOut { value: 1_000_000, script_pubkey: bitcoin::ScriptBuf::new() }),
+		);
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.is_none());
 	}
 
 	#[test]
@@ -674,88 +822,184 @@ mod tests {
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
-			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err().err,
-			"Channel being checked async");
-		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.is_none());
 
 		future.resolve_without_forwarding(&network_graph, Err(UtxoLookupError::UnknownTx));
-		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.is_none());
 	}
 
 	#[test]
 	fn test_updates_async_lookup() {
 		// Test async lookups will process pending channel_update/node_announcements once they
 		// complete.
-		let (valid_announcement, chain_source, network_graph, good_script, node_a_announce,
-			node_b_announce, chan_update_a, chan_update_b, ..) = get_test_objects();
+		let (
+			valid_announcement,
+			chain_source,
+			network_graph,
+			good_script,
+			node_a_announce,
+			node_b_announce,
+			chan_update_a,
+			chan_update_b,
+			..,
+		) = get_test_objects();
 
 		let future = UtxoFuture::new();
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
-			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err().err,
-			"Channel being checked async");
-		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.is_none());
 
 		assert_eq!(
 			network_graph.update_node_from_announcement(&node_a_announce).unwrap_err().err,
-			"Awaiting channel_announcement validation to accept node_announcement");
+			"Awaiting channel_announcement validation to accept node_announcement"
+		);
 		assert_eq!(
 			network_graph.update_node_from_announcement(&node_b_announce).unwrap_err().err,
-			"Awaiting channel_announcement validation to accept node_announcement");
+			"Awaiting channel_announcement validation to accept node_announcement"
+		);
 
-		assert_eq!(network_graph.update_channel(&chan_update_a).unwrap_err().err,
-			"Awaiting channel_announcement validation to accept channel_update");
-		assert_eq!(network_graph.update_channel(&chan_update_b).unwrap_err().err,
-			"Awaiting channel_announcement validation to accept channel_update");
+		assert_eq!(
+			network_graph.update_channel(&chan_update_a).unwrap_err().err,
+			"Awaiting channel_announcement validation to accept channel_update"
+		);
+		assert_eq!(
+			network_graph.update_channel(&chan_update_b).unwrap_err().err,
+			"Awaiting channel_announcement validation to accept channel_update"
+		);
 
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+		future.resolve_without_forwarding(
+			&network_graph,
+			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }),
+		);
 
-		assert!(network_graph.read_only().channels()
-			.get(&valid_announcement.contents.short_channel_id).unwrap().one_to_two.is_some());
-		assert!(network_graph.read_only().channels()
-			.get(&valid_announcement.contents.short_channel_id).unwrap().two_to_one.is_some());
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.unwrap()
+			.one_to_two
+			.is_some());
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.unwrap()
+			.two_to_one
+			.is_some());
 
-		assert!(network_graph.read_only().nodes().get(&valid_announcement.contents.node_id_1)
-			.unwrap().announcement_info.is_some());
-		assert!(network_graph.read_only().nodes().get(&valid_announcement.contents.node_id_2)
-			.unwrap().announcement_info.is_some());
+		assert!(network_graph
+			.read_only()
+			.nodes()
+			.get(&valid_announcement.contents.node_id_1)
+			.unwrap()
+			.announcement_info
+			.is_some());
+		assert!(network_graph
+			.read_only()
+			.nodes()
+			.get(&valid_announcement.contents.node_id_2)
+			.unwrap()
+			.announcement_info
+			.is_some());
 	}
 
 	#[test]
 	fn test_latest_update_async_lookup() {
 		// Test async lookups will process the latest channel_update if two are received while
 		// awaiting an async UTXO lookup.
-		let (valid_announcement, chain_source, network_graph, good_script, _,
-			_, chan_update_a, chan_update_b, chan_update_c, ..) = get_test_objects();
+		let (
+			valid_announcement,
+			chain_source,
+			network_graph,
+			good_script,
+			_,
+			_,
+			chan_update_a,
+			chan_update_b,
+			chan_update_c,
+			..,
+		) = get_test_objects();
 
 		let future = UtxoFuture::new();
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
-			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err().err,
-			"Channel being checked async");
-		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
+		assert!(network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.is_none());
 
-		assert_eq!(network_graph.update_channel(&chan_update_a).unwrap_err().err,
-			"Awaiting channel_announcement validation to accept channel_update");
-		assert_eq!(network_graph.update_channel(&chan_update_b).unwrap_err().err,
-			"Awaiting channel_announcement validation to accept channel_update");
-		assert_eq!(network_graph.update_channel(&chan_update_c).unwrap_err().err,
-			"Awaiting channel_announcement validation to accept channel_update");
+		assert_eq!(
+			network_graph.update_channel(&chan_update_a).unwrap_err().err,
+			"Awaiting channel_announcement validation to accept channel_update"
+		);
+		assert_eq!(
+			network_graph.update_channel(&chan_update_b).unwrap_err().err,
+			"Awaiting channel_announcement validation to accept channel_update"
+		);
+		assert_eq!(
+			network_graph.update_channel(&chan_update_c).unwrap_err().err,
+			"Awaiting channel_announcement validation to accept channel_update"
+		);
 
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+		future.resolve_without_forwarding(
+			&network_graph,
+			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }),
+		);
 
 		assert_eq!(chan_update_a.contents.timestamp, chan_update_b.contents.timestamp);
 		let graph_lock = network_graph.read_only();
-		assert!(graph_lock.channels()
-				.get(&valid_announcement.contents.short_channel_id).as_ref().unwrap()
-				.one_to_two.as_ref().unwrap().last_update !=
-			graph_lock.channels()
-				.get(&valid_announcement.contents.short_channel_id).as_ref().unwrap()
-				.two_to_one.as_ref().unwrap().last_update);
+		assert!(
+			graph_lock
+				.channels()
+				.get(&valid_announcement.contents.short_channel_id)
+				.as_ref()
+				.unwrap()
+				.one_to_two
+				.as_ref()
+				.unwrap()
+				.last_update != graph_lock
+				.channels()
+				.get(&valid_announcement.contents.short_channel_id)
+				.as_ref()
+				.unwrap()
+				.two_to_one
+				.as_ref()
+				.unwrap()
+				.last_update
+		);
 	}
 
 	#[test]
@@ -768,16 +1012,24 @@ mod tests {
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		assert_eq!(
-			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err().err,
-			"Channel being checked async");
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
 		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
 
 		// If we make a second request with the same message, the call count doesn't increase...
 		let future_b = UtxoFuture::new();
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future_b.clone());
 		assert_eq!(
-			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err().err,
-			"Channel announcement is already being checked");
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel announcement is already being checked"
+		);
 		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
 
 		// But if we make a third request with a tweaked message, we should get a second call
@@ -785,19 +1037,33 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let replacement_pk_1 = &SecretKey::from_slice(&[99; 32]).unwrap();
 		let replacement_pk_2 = &SecretKey::from_slice(&[98; 32]).unwrap();
-		let invalid_announcement = get_signed_channel_announcement(|_| {}, replacement_pk_1, replacement_pk_2, &secp_ctx);
+		let invalid_announcement =
+			get_signed_channel_announcement(|_| {}, replacement_pk_1, replacement_pk_2, &secp_ctx);
 		assert_eq!(
-			network_graph.update_channel_from_announcement(&invalid_announcement, &Some(&chain_source)).unwrap_err().err,
-			"Channel being checked async");
+			network_graph
+				.update_channel_from_announcement(&invalid_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
 		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 2);
 
 		// Still, if we resolve the original future, the original channel will be accepted.
-		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
-		assert!(!network_graph.read_only().channels()
-			.get(&valid_announcement.contents.short_channel_id).unwrap()
-			.announcement_message.as_ref().unwrap()
-			.contents.features.supports_unknown_test_feature());
+		future.resolve_without_forwarding(
+			&network_graph,
+			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }),
+		);
+		assert!(!network_graph
+			.read_only()
+			.channels()
+			.get(&valid_announcement.contents.short_channel_id)
+			.unwrap()
+			.announcement_message
+			.as_ref()
+			.unwrap()
+			.contents
+			.features
+			.supports_unknown_test_feature());
 	}
 
 	#[test]
@@ -816,14 +1082,22 @@ mod tests {
 
 		for i in 0..PendingChecks::MAX_PENDING_LOOKUPS {
 			let valid_announcement = get_signed_channel_announcement(
-				|msg| msg.short_channel_id += 1 + i as u64, node_1_privkey, node_2_privkey, &secp_ctx);
-			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err();
+				|msg| msg.short_channel_id += 1 + i as u64,
+				node_1_privkey,
+				node_2_privkey,
+				&secp_ctx,
+			);
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err();
 			assert!(!network_graph.pending_checks.too_many_checks_pending());
 		}
 
-		let valid_announcement = get_signed_channel_announcement(
-			|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-		network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err();
+		let valid_announcement =
+			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap_err();
 		assert!(network_graph.pending_checks.too_many_checks_pending());
 
 		// Once the future completes the "too many checks" flag should reset.
@@ -846,14 +1120,22 @@ mod tests {
 
 		for i in 0..PendingChecks::MAX_PENDING_LOOKUPS {
 			let valid_announcement = get_signed_channel_announcement(
-				|msg| msg.short_channel_id += 1 + i as u64, node_1_privkey, node_2_privkey, &secp_ctx);
-			network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err();
+				|msg| msg.short_channel_id += 1 + i as u64,
+				node_1_privkey,
+				node_2_privkey,
+				&secp_ctx,
+			);
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err();
 			assert!(!network_graph.pending_checks.too_many_checks_pending());
 		}
 
-		let valid_announcement = get_signed_channel_announcement(
-			|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-		network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap_err();
+		let valid_announcement =
+			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap_err();
 		assert!(network_graph.pending_checks.too_many_checks_pending());
 
 		// Once the future is drop'd (by resetting the `utxo_ret` value) the "too many checks" flag

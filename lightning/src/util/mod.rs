@@ -15,23 +15,23 @@ pub(crate) mod fuzz_wrappers;
 #[macro_use]
 pub mod ser_macros;
 
-pub mod errors;
-pub mod ser;
-pub mod message_signing;
-pub mod invoice;
-pub mod persist;
-pub mod scid_utils;
-pub mod string;
-pub mod wakers;
 #[cfg(fuzzing)]
 pub mod base32;
 #[cfg(not(fuzzing))]
 pub(crate) mod base32;
+pub mod errors;
+pub mod invoice;
+pub mod message_signing;
+pub mod persist;
+pub mod scid_utils;
+pub mod ser;
+pub mod string;
+pub mod wakers;
 
 pub(crate) mod atomic_counter;
 pub(crate) mod byte_utils;
-pub(crate) mod transaction_utils;
 pub(crate) mod time;
+pub(crate) mod transaction_utils;
 
 pub mod indexed_map;
 
@@ -40,8 +40,8 @@ pub mod indexed_map;
 pub(crate) mod macro_logger;
 
 // These have to come after macro_logger to build
-pub mod logger;
 pub mod config;
+pub mod logger;
 
 #[cfg(any(test, feature = "_test_utils"))]
 pub mod test_utils;
@@ -50,4 +50,3 @@ pub mod test_utils;
 /// machine errors and used in fuzz targets and tests.
 #[cfg(any(test, feature = "_test_utils"))]
 pub mod test_channel_signer;
-

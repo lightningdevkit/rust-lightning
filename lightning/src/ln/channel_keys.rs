@@ -10,19 +10,19 @@
 //! Keys used to generate commitment transactions.
 //! See: <https://github.com/lightning/bolts/blob/master/03-transactions.md#keys>
 
-use bitcoin::hashes::Hash;
-use bitcoin::hashes::HashEngine;
-use bitcoin::secp256k1::Scalar;
-use bitcoin::secp256k1::SecretKey;
-use bitcoin::secp256k1::Secp256k1;
-use bitcoin::secp256k1;
+use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::Readable;
-use crate::io;
-use crate::util::ser::Writer;
 use crate::util::ser::Writeable;
-use bitcoin::secp256k1::PublicKey;
+use crate::util::ser::Writer;
 use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::HashEngine;
+use bitcoin::secp256k1;
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::Scalar;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::SecretKey;
 
 macro_rules! doc_comment {
 	($x:expr, $($tt:tt)*) => {
@@ -44,8 +44,7 @@ macro_rules! basepoint_impl {
 				Self(value)
 			}
 		}
-
-	}
+	};
 }
 macro_rules! key_impl {
 	($BasepointT:ty, $KeyName:expr) => {
@@ -87,10 +86,8 @@ macro_rules! key_read_write {
 				Ok(Self(key))
 			}
 		}
-	}
+	};
 }
-
-
 
 /// Base key used in conjunction with a `per_commitment_point` to generate a [`DelayedPaymentKey`].
 ///
@@ -101,7 +98,6 @@ macro_rules! key_read_write {
 pub struct DelayedPaymentBasepoint(pub PublicKey);
 basepoint_impl!(DelayedPaymentBasepoint);
 key_read_write!(DelayedPaymentBasepoint);
-
 
 /// A derived key built from a [`DelayedPaymentBasepoint`] and `per_commitment_point`.
 ///
@@ -150,14 +146,19 @@ key_read_write!(HtlcKey);
 /// Derives a per-commitment-transaction public key (eg an htlc key or a delayed_payment key)
 /// from the base point and the per_commitment_key. This is the public equivalent of
 /// derive_private_key - using only public keys to derive a public key instead of private keys.
-fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey) -> PublicKey {
+fn derive_public_key<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, per_commitment_point: &PublicKey, base_point: &PublicKey,
+) -> PublicKey {
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
 	let res = Sha256::from_engine(sha).to_byte_array();
 
-	let hashkey = PublicKey::from_secret_key(&secp_ctx,
-		&SecretKey::from_slice(&res).expect("Hashes should always be valid keys unless SHA-256 is broken"));
+	let hashkey = PublicKey::from_secret_key(
+		&secp_ctx,
+		&SecretKey::from_slice(&res)
+			.expect("Hashes should always be valid keys unless SHA-256 is broken"),
+	);
 	base_point.combine(&hashkey)
 		.expect("Addition only fails if the tweak is the inverse of the key. This is not possible when the tweak contains the hash of the key.")
 }
@@ -168,7 +169,6 @@ fn derive_public_key<T: secp256k1::Signing>(secp_ctx: &Secp256k1<T>, per_commitm
 pub struct RevocationBasepoint(pub PublicKey);
 basepoint_impl!(RevocationBasepoint);
 key_read_write!(RevocationBasepoint);
-
 
 /// The revocation key is used to allow a channel party to revoke their state - giving their
 /// counterparty the required material to claim all of their funds if they broadcast that state.
@@ -192,8 +192,7 @@ impl RevocationKey {
 	///
 	/// [`chan_utils::derive_private_revocation_key`]: crate::ln::chan_utils::derive_private_revocation_key
 	pub fn from_basepoint<T: secp256k1::Verification>(
-		secp_ctx: &Secp256k1<T>,
-		countersignatory_basepoint: &RevocationBasepoint,
+		secp_ctx: &Secp256k1<T>, countersignatory_basepoint: &RevocationBasepoint,
 		per_commitment_point: &PublicKey,
 	) -> Self {
 		let rev_append_commit_hash_key = {
@@ -227,28 +226,56 @@ impl RevocationKey {
 }
 key_read_write!(RevocationKey);
 
-
 #[cfg(test)]
 mod test {
-	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
-	use bitcoin::hashes::hex::FromHex;
 	use super::derive_public_key;
+	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	#[test]
 	fn test_key_derivation() {
 		// Test vectors from BOLT 3 Appendix E:
 		let secp_ctx = Secp256k1::new();
 
-		let base_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap()[..]).unwrap();
-		let per_commitment_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100").unwrap()[..]).unwrap();
+		let base_secret = SecretKey::from_slice(
+			&<Vec<u8>>::from_hex(
+				"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+			)
+			.unwrap()[..],
+		)
+		.unwrap();
+		let per_commitment_secret = SecretKey::from_slice(
+			&<Vec<u8>>::from_hex(
+				"1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+			)
+			.unwrap()[..],
+		)
+		.unwrap();
 
 		let base_point = PublicKey::from_secret_key(&secp_ctx, &base_secret);
-		assert_eq!(base_point.serialize()[..], <Vec<u8>>::from_hex("036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2").unwrap()[..]);
+		assert_eq!(
+			base_point.serialize()[..],
+			<Vec<u8>>::from_hex(
+				"036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2"
+			)
+			.unwrap()[..]
+		);
 
 		let per_commitment_point = PublicKey::from_secret_key(&secp_ctx, &per_commitment_secret);
-		assert_eq!(per_commitment_point.serialize()[..], <Vec<u8>>::from_hex("025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486").unwrap()[..]);
+		assert_eq!(
+			per_commitment_point.serialize()[..],
+			<Vec<u8>>::from_hex(
+				"025f7117a78150fe2ef97db7cfc83bd57b2e2c0d0dd25eaf467a4a1c2a45ce1486"
+			)
+			.unwrap()[..]
+		);
 
-		assert_eq!(derive_public_key(&secp_ctx, &per_commitment_point, &base_point).serialize()[..],
-			<Vec<u8>>::from_hex("0235f2dbfaa89b57ec7b055afe29849ef7ddfeb1cefdb9ebdc43f5494984db29e5").unwrap()[..]);
+		assert_eq!(
+			derive_public_key(&secp_ctx, &per_commitment_point, &base_point).serialize()[..],
+			<Vec<u8>>::from_hex(
+				"0235f2dbfaa89b57ec7b055afe29849ef7ddfeb1cefdb9ebdc43f5494984db29e5"
+			)
+			.unwrap()[..]
+		);
 	}
 }

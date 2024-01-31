@@ -1,6 +1,5 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
-
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
 #![deny(non_upper_case_globals)]
@@ -63,15 +62,16 @@
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
-#[cfg(ldk_bench)] extern crate criterion;
+#[cfg(ldk_bench)]
+extern crate criterion;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(feature = "std")]
-use std::fs::File;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "std")]
+use std::fs::File;
 
 use lightning::io;
 use lightning::routing::gossip::NetworkGraph;
@@ -90,21 +90,22 @@ mod processing;
 /// See [crate-level documentation] for usage.
 ///
 /// [crate-level documentation]: crate
-pub struct RapidGossipSync<NG: Deref<Target=NetworkGraph<L>>, L: Deref>
-where L::Target: Logger {
+pub struct RapidGossipSync<NG: Deref<Target = NetworkGraph<L>>, L: Deref>
+where
+	L::Target: Logger,
+{
 	network_graph: NG,
 	logger: L,
-	is_initial_sync_complete: AtomicBool
+	is_initial_sync_complete: AtomicBool,
 }
 
-impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L::Target: Logger {
+impl<NG: Deref<Target = NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L>
+where
+	L::Target: Logger,
+{
 	/// Instantiate a new [`RapidGossipSync`] instance.
 	pub fn new(network_graph: NG, logger: L) -> Self {
-		Self {
-			network_graph,
-			logger,
-			is_initial_sync_complete: AtomicBool::new(false)
-		}
+		Self { network_graph, logger, is_initial_sync_complete: AtomicBool::new(false) }
 	}
 
 	/// Sync gossip data from a file.
@@ -116,8 +117,7 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 	///
 	#[cfg(feature = "std")]
 	pub fn sync_network_graph_with_file_path(
-		&self,
-		sync_path: &str,
+		&self, sync_path: &str,
 	) -> Result<u32, GraphSyncError> {
 		let mut file = File::open(sync_path)?;
 		self.update_network_graph_from_byte_stream(&mut file)
@@ -138,7 +138,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 	///
 	/// `update_data`: `&[u8]` binary stream that comprises the update data
 	/// `current_time_unix`: `Option<u64>` optional current timestamp to verify data age
-	pub fn update_network_graph_no_std(&self, update_data: &[u8], current_time_unix: Option<u64>) -> Result<u32, GraphSyncError> {
+	pub fn update_network_graph_no_std(
+		&self, update_data: &[u8], current_time_unix: Option<u64>,
+	) -> Result<u32, GraphSyncError> {
 		let mut read_cursor = io::Cursor::new(update_data);
 		self.update_network_graph_from_byte_stream_no_std(&mut read_cursor, current_time_unix)
 	}
@@ -164,10 +166,10 @@ mod tests {
 
 	use bitcoin::Network;
 
+	use crate::RapidGossipSync;
 	use lightning::ln::msgs::DecodeError;
 	use lightning::routing::gossip::NetworkGraph;
 	use lightning::util::test_utils::TestLogger;
-	use crate::RapidGossipSync;
 
 	#[test]
 	fn test_sync_from_file() {
@@ -263,9 +265,10 @@ mod tests {
 
 		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 		let start = std::time::Instant::now();
-		let sync_result = rapid_sync
-			.sync_network_graph_with_file_path("./res/full_graph.lngossip");
-		if let Err(crate::error::GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {
+		let sync_result = rapid_sync.sync_network_graph_with_file_path("./res/full_graph.lngossip");
+		if let Err(crate::error::GraphSyncError::DecodeError(DecodeError::Io(io_error))) =
+			&sync_result
+		{
 			let error_string = format!("Input file lightning-rapid-gossip-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-285cb27df79-2022-07-21.bin\n\n{:?}", io_error);
 			#[cfg(not(require_route_graph_test))]
 			{

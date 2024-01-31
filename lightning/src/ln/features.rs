@@ -76,21 +76,21 @@
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
-use crate::{io, io_extras};
 use crate::prelude::*;
-use core::{cmp, fmt};
+use crate::{io, io_extras};
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
+use core::{cmp, fmt};
 
-use bitcoin::bech32;
-use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, WithoutLength, Writeable, Writer};
+use bitcoin::bech32;
+use bitcoin::bech32::{u5, Base32Len, FromBase32, ToBase32, WriteBase32};
 
 mod sealed {
-	use crate::prelude::*;
 	use crate::ln::features::Features;
+	use crate::prelude::*;
 
 	/// The context in which [`Features`] are applicable. Defines which features are known to the
 	/// implementation, though specification of them as required or optional is up to the code
@@ -137,38 +137,44 @@ mod sealed {
 		};
 	}
 
-	define_context!(InitContext, [
-		// Byte 0
-		DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
-		// Byte 1
-		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
-		// Byte 2
-		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
-		// Byte 3
-		RouteBlinding | ShutdownAnySegwit | Taproot,
-		// Byte 4
-		OnionMessages,
-		// Byte 5
-		ChannelType | SCIDPrivacy,
-		// Byte 6
-		ZeroConf,
-	]);
-	define_context!(NodeContext, [
-		// Byte 0
-		DataLossProtect | UpfrontShutdownScript | GossipQueries,
-		// Byte 1
-		VariableLengthOnion | StaticRemoteKey | PaymentSecret,
-		// Byte 2
-		BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
-		// Byte 3
-		RouteBlinding | ShutdownAnySegwit | Taproot,
-		// Byte 4
-		OnionMessages,
-		// Byte 5
-		ChannelType | SCIDPrivacy,
-		// Byte 6
-		ZeroConf | Keysend,
-	]);
+	define_context!(
+		InitContext,
+		[
+			// Byte 0
+			DataLossProtect | InitialRoutingSync | UpfrontShutdownScript | GossipQueries,
+			// Byte 1
+			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
+			// Byte 2
+			BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
+			// Byte 3
+			RouteBlinding | ShutdownAnySegwit | Taproot,
+			// Byte 4
+			OnionMessages,
+			// Byte 5
+			ChannelType | SCIDPrivacy,
+			// Byte 6
+			ZeroConf,
+		]
+	);
+	define_context!(
+		NodeContext,
+		[
+			// Byte 0
+			DataLossProtect | UpfrontShutdownScript | GossipQueries,
+			// Byte 1
+			VariableLengthOnion | StaticRemoteKey | PaymentSecret,
+			// Byte 2
+			BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
+			// Byte 3
+			RouteBlinding | ShutdownAnySegwit | Taproot,
+			// Byte 4
+			OnionMessages,
+			// Byte 5
+			ChannelType | SCIDPrivacy,
+			// Byte 6
+			ZeroConf | Keysend,
+		]
+	);
 	define_context!(ChannelContext, []);
 	define_context!(Bolt11InvoiceContext, [
 		// Byte 0
@@ -357,76 +363,213 @@ mod sealed {
 		}
 	}
 
-	define_feature!(1, DataLossProtect, [InitContext, NodeContext],
-		"Feature flags for `option_data_loss_protect`.", set_data_loss_protect_optional,
-		set_data_loss_protect_required, supports_data_loss_protect, requires_data_loss_protect);
+	define_feature!(
+		1,
+		DataLossProtect,
+		[InitContext, NodeContext],
+		"Feature flags for `option_data_loss_protect`.",
+		set_data_loss_protect_optional,
+		set_data_loss_protect_required,
+		supports_data_loss_protect,
+		requires_data_loss_protect
+	);
 	// NOTE: Per Bolt #9, initial_routing_sync has no even bit.
-	define_feature!(3, InitialRoutingSync, [InitContext], "Feature flags for `initial_routing_sync`.",
-		set_initial_routing_sync_optional, set_initial_routing_sync_required,
-		initial_routing_sync);
-	define_feature!(5, UpfrontShutdownScript, [InitContext, NodeContext],
-		"Feature flags for `option_upfront_shutdown_script`.", set_upfront_shutdown_script_optional,
-		set_upfront_shutdown_script_required, supports_upfront_shutdown_script,
-		requires_upfront_shutdown_script);
-	define_feature!(7, GossipQueries, [InitContext, NodeContext],
-		"Feature flags for `gossip_queries`.", set_gossip_queries_optional, set_gossip_queries_required,
-		supports_gossip_queries, requires_gossip_queries);
-	define_feature!(9, VariableLengthOnion, [InitContext, NodeContext, Bolt11InvoiceContext],
-		"Feature flags for `var_onion_optin`.", set_variable_length_onion_optional,
-		set_variable_length_onion_required, supports_variable_length_onion,
-		requires_variable_length_onion);
-	define_feature!(13, StaticRemoteKey, [InitContext, NodeContext, ChannelTypeContext],
-		"Feature flags for `option_static_remotekey`.", set_static_remote_key_optional,
-		set_static_remote_key_required, supports_static_remote_key, requires_static_remote_key);
-	define_feature!(15, PaymentSecret, [InitContext, NodeContext, Bolt11InvoiceContext],
-		"Feature flags for `payment_secret`.", set_payment_secret_optional, set_payment_secret_required,
-		supports_payment_secret, requires_payment_secret);
-	define_feature!(17, BasicMPP, [InitContext, NodeContext, Bolt11InvoiceContext, Bolt12InvoiceContext],
-		"Feature flags for `basic_mpp`.", set_basic_mpp_optional, set_basic_mpp_required,
-		supports_basic_mpp, requires_basic_mpp);
-	define_feature!(19, Wumbo, [InitContext, NodeContext],
-		"Feature flags for `option_support_large_channel` (aka wumbo channels).", set_wumbo_optional, set_wumbo_required,
-		supports_wumbo, requires_wumbo);
-	define_feature!(21, AnchorsNonzeroFeeHtlcTx, [InitContext, NodeContext, ChannelTypeContext],
-		"Feature flags for `option_anchors_nonzero_fee_htlc_tx`.", set_anchors_nonzero_fee_htlc_tx_optional,
-		set_anchors_nonzero_fee_htlc_tx_required, supports_anchors_nonzero_fee_htlc_tx, requires_anchors_nonzero_fee_htlc_tx);
-	define_feature!(23, AnchorsZeroFeeHtlcTx, [InitContext, NodeContext, ChannelTypeContext],
-		"Feature flags for `option_anchors_zero_fee_htlc_tx`.", set_anchors_zero_fee_htlc_tx_optional,
-		set_anchors_zero_fee_htlc_tx_required, supports_anchors_zero_fee_htlc_tx, requires_anchors_zero_fee_htlc_tx);
-	define_feature!(25, RouteBlinding, [InitContext, NodeContext],
-		"Feature flags for `option_route_blinding`.", set_route_blinding_optional,
-		set_route_blinding_required, supports_route_blinding, requires_route_blinding);
-	define_feature!(27, ShutdownAnySegwit, [InitContext, NodeContext],
-		"Feature flags for `opt_shutdown_anysegwit`.", set_shutdown_any_segwit_optional,
-		set_shutdown_any_segwit_required, supports_shutdown_anysegwit, requires_shutdown_anysegwit);
-	define_feature!(31, Taproot, [InitContext, NodeContext, ChannelTypeContext],
-		"Feature flags for `option_taproot`.", set_taproot_optional,
-		set_taproot_required, supports_taproot, requires_taproot);
-	define_feature!(39, OnionMessages, [InitContext, NodeContext],
-		"Feature flags for `option_onion_messages`.", set_onion_messages_optional,
-		set_onion_messages_required, supports_onion_messages, requires_onion_messages);
-	define_feature!(45, ChannelType, [InitContext, NodeContext],
-		"Feature flags for `option_channel_type`.", set_channel_type_optional,
-		set_channel_type_required, supports_channel_type, requires_channel_type);
+	define_feature!(
+		3,
+		InitialRoutingSync,
+		[InitContext],
+		"Feature flags for `initial_routing_sync`.",
+		set_initial_routing_sync_optional,
+		set_initial_routing_sync_required,
+		initial_routing_sync
+	);
+	define_feature!(
+		5,
+		UpfrontShutdownScript,
+		[InitContext, NodeContext],
+		"Feature flags for `option_upfront_shutdown_script`.",
+		set_upfront_shutdown_script_optional,
+		set_upfront_shutdown_script_required,
+		supports_upfront_shutdown_script,
+		requires_upfront_shutdown_script
+	);
+	define_feature!(
+		7,
+		GossipQueries,
+		[InitContext, NodeContext],
+		"Feature flags for `gossip_queries`.",
+		set_gossip_queries_optional,
+		set_gossip_queries_required,
+		supports_gossip_queries,
+		requires_gossip_queries
+	);
+	define_feature!(
+		9,
+		VariableLengthOnion,
+		[InitContext, NodeContext, Bolt11InvoiceContext],
+		"Feature flags for `var_onion_optin`.",
+		set_variable_length_onion_optional,
+		set_variable_length_onion_required,
+		supports_variable_length_onion,
+		requires_variable_length_onion
+	);
+	define_feature!(
+		13,
+		StaticRemoteKey,
+		[InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_static_remotekey`.",
+		set_static_remote_key_optional,
+		set_static_remote_key_required,
+		supports_static_remote_key,
+		requires_static_remote_key
+	);
+	define_feature!(
+		15,
+		PaymentSecret,
+		[InitContext, NodeContext, Bolt11InvoiceContext],
+		"Feature flags for `payment_secret`.",
+		set_payment_secret_optional,
+		set_payment_secret_required,
+		supports_payment_secret,
+		requires_payment_secret
+	);
+	define_feature!(
+		17,
+		BasicMPP,
+		[InitContext, NodeContext, Bolt11InvoiceContext, Bolt12InvoiceContext],
+		"Feature flags for `basic_mpp`.",
+		set_basic_mpp_optional,
+		set_basic_mpp_required,
+		supports_basic_mpp,
+		requires_basic_mpp
+	);
+	define_feature!(
+		19,
+		Wumbo,
+		[InitContext, NodeContext],
+		"Feature flags for `option_support_large_channel` (aka wumbo channels).",
+		set_wumbo_optional,
+		set_wumbo_required,
+		supports_wumbo,
+		requires_wumbo
+	);
+	define_feature!(
+		21,
+		AnchorsNonzeroFeeHtlcTx,
+		[InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_anchors_nonzero_fee_htlc_tx`.",
+		set_anchors_nonzero_fee_htlc_tx_optional,
+		set_anchors_nonzero_fee_htlc_tx_required,
+		supports_anchors_nonzero_fee_htlc_tx,
+		requires_anchors_nonzero_fee_htlc_tx
+	);
+	define_feature!(
+		23,
+		AnchorsZeroFeeHtlcTx,
+		[InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_anchors_zero_fee_htlc_tx`.",
+		set_anchors_zero_fee_htlc_tx_optional,
+		set_anchors_zero_fee_htlc_tx_required,
+		supports_anchors_zero_fee_htlc_tx,
+		requires_anchors_zero_fee_htlc_tx
+	);
+	define_feature!(
+		25,
+		RouteBlinding,
+		[InitContext, NodeContext],
+		"Feature flags for `option_route_blinding`.",
+		set_route_blinding_optional,
+		set_route_blinding_required,
+		supports_route_blinding,
+		requires_route_blinding
+	);
+	define_feature!(
+		27,
+		ShutdownAnySegwit,
+		[InitContext, NodeContext],
+		"Feature flags for `opt_shutdown_anysegwit`.",
+		set_shutdown_any_segwit_optional,
+		set_shutdown_any_segwit_required,
+		supports_shutdown_anysegwit,
+		requires_shutdown_anysegwit
+	);
+	define_feature!(
+		31,
+		Taproot,
+		[InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for `option_taproot`.",
+		set_taproot_optional,
+		set_taproot_required,
+		supports_taproot,
+		requires_taproot
+	);
+	define_feature!(
+		39,
+		OnionMessages,
+		[InitContext, NodeContext],
+		"Feature flags for `option_onion_messages`.",
+		set_onion_messages_optional,
+		set_onion_messages_required,
+		supports_onion_messages,
+		requires_onion_messages
+	);
+	define_feature!(
+		45,
+		ChannelType,
+		[InitContext, NodeContext],
+		"Feature flags for `option_channel_type`.",
+		set_channel_type_optional,
+		set_channel_type_required,
+		supports_channel_type,
+		requires_channel_type
+	);
 	define_feature!(47, SCIDPrivacy, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for only forwarding with SCID aliasing. Called `option_scid_alias` in the BOLTs",
 		set_scid_privacy_optional, set_scid_privacy_required, supports_scid_privacy, requires_scid_privacy);
-	define_feature!(49, PaymentMetadata, [Bolt11InvoiceContext],
-		"Feature flags for payment metadata in invoices.", set_payment_metadata_optional,
-		set_payment_metadata_required, supports_payment_metadata, requires_payment_metadata);
+	define_feature!(
+		49,
+		PaymentMetadata,
+		[Bolt11InvoiceContext],
+		"Feature flags for payment metadata in invoices.",
+		set_payment_metadata_optional,
+		set_payment_metadata_required,
+		supports_payment_metadata,
+		requires_payment_metadata
+	);
 	define_feature!(51, ZeroConf, [InitContext, NodeContext, ChannelTypeContext],
 		"Feature flags for accepting channels with zero confirmations. Called `option_zeroconf` in the BOLTs",
 		set_zero_conf_optional, set_zero_conf_required, supports_zero_conf, requires_zero_conf);
-	define_feature!(55, Keysend, [NodeContext],
-		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
-		supports_keysend, requires_keysend);
+	define_feature!(
+		55,
+		Keysend,
+		[NodeContext],
+		"Feature flags for keysend payments.",
+		set_keysend_optional,
+		set_keysend_required,
+		supports_keysend,
+		requires_keysend
+	);
 	// Note: update the module-level docs when a new feature bit is added!
 
 	#[cfg(test)]
-	define_feature!(123456789, UnknownFeature,
-		[NodeContext, ChannelContext, Bolt11InvoiceContext, OfferContext, InvoiceRequestContext, Bolt12InvoiceContext, BlindedHopContext],
-		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
-		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
+	define_feature!(
+		123456789,
+		UnknownFeature,
+		[
+			NodeContext,
+			ChannelContext,
+			Bolt11InvoiceContext,
+			OfferContext,
+			InvoiceRequestContext,
+			Bolt12InvoiceContext,
+			BlindedHopContext
+		],
+		"Feature flags for an unknown feature used in testing.",
+		set_unknown_feature_optional,
+		set_unknown_feature_required,
+		supports_unknown_test_feature,
+		requires_unknown_test_feature
+	);
 }
 
 /// Tracks the set of features which a node implements, templated by the context in which it
@@ -461,10 +604,7 @@ impl<T: sealed::Context> core::ops::BitOr for Features<T> {
 
 impl<T: sealed::Context> Clone for Features<T> {
 	fn clone(&self) -> Self {
-		Self {
-			flags: self.flags.clone(),
-			mark: PhantomData,
-		}
+		Self { flags: self.flags.clone(), mark: PhantomData }
 	}
 }
 impl<T: sealed::Context> Hash for Features<T> {
@@ -482,8 +622,16 @@ impl<T: sealed::Context> PartialEq for Features<T> {
 		let mut self_iter = self.flags.iter();
 		loop {
 			match (o_iter.next(), self_iter.next()) {
-				(Some(o), Some(us)) => if o != us { return false },
-				(Some(b), None) | (None, Some(b)) => if *b != 0 { return false },
+				(Some(o), Some(us)) => {
+					if o != us {
+						return false;
+					}
+				},
+				(Some(b), None) | (None, Some(b)) => {
+					if *b != 0 {
+						return false;
+					}
+				},
 				(None, None) => return true,
 			}
 		}
@@ -619,7 +767,9 @@ impl ChannelTypeFeatures {
 	pub(crate) fn anchors_zero_htlc_fee_and_dependencies() -> Self {
 		let mut ret = Self::empty();
 		<sealed::ChannelTypeContext as sealed::StaticRemoteKey>::set_required_bit(&mut ret.flags);
-		<sealed::ChannelTypeContext as sealed::AnchorsZeroFeeHtlcTx>::set_required_bit(&mut ret.flags);
+		<sealed::ChannelTypeContext as sealed::AnchorsZeroFeeHtlcTx>::set_required_bit(
+			&mut ret.flags,
+		);
 		ret
 	}
 }
@@ -636,14 +786,19 @@ impl ToBase32 for Bolt11InvoiceFeatures {
 			let new_bit_pos = bit_pos_from_left_0_indexed % 5;
 			let shifted_chunk_u16 = (*byte as u16) << new_bit_pos;
 			let curr_u5_as_u8 = res_u5s[new_u5_idx].to_u8();
-			res_u5s[new_u5_idx] = u5::try_from_u8(curr_u5_as_u8 | ((shifted_chunk_u16 & 0x001f) as u8)).unwrap();
+			res_u5s[new_u5_idx] =
+				u5::try_from_u8(curr_u5_as_u8 | ((shifted_chunk_u16 & 0x001f) as u8)).unwrap();
 			if new_u5_idx > 0 {
 				let curr_u5_as_u8 = res_u5s[new_u5_idx - 1].to_u8();
-				res_u5s[new_u5_idx - 1] = u5::try_from_u8(curr_u5_as_u8 | (((shifted_chunk_u16 >> 5) & 0x001f) as u8)).unwrap();
+				res_u5s[new_u5_idx - 1] =
+					u5::try_from_u8(curr_u5_as_u8 | (((shifted_chunk_u16 >> 5) & 0x001f) as u8))
+						.unwrap();
 			}
 			if new_u5_idx > 1 {
 				let curr_u5_as_u8 = res_u5s[new_u5_idx - 2].to_u8();
-				res_u5s[new_u5_idx - 2] = u5::try_from_u8(curr_u5_as_u8 | (((shifted_chunk_u16 >> 10) & 0x001f) as u8)).unwrap();
+				res_u5s[new_u5_idx - 2] =
+					u5::try_from_u8(curr_u5_as_u8 | (((shifted_chunk_u16 >> 10) & 0x001f) as u8))
+						.unwrap();
 			}
 		}
 		// Trim the highest feature bits.
@@ -675,7 +830,7 @@ impl FromBase32 for Bolt11InvoiceFeatures {
 			let chunk_u16 = chunk.to_u8() as u16;
 			res_bytes[new_byte_idx] |= ((chunk_u16 << new_bit_pos) & 0xff) as u8;
 			if new_byte_idx != length_bytes - 1 {
-				res_bytes[new_byte_idx + 1] |= ((chunk_u16 >> (8-new_bit_pos)) & 0xff) as u8;
+				res_bytes[new_byte_idx + 1] |= ((chunk_u16 >> (8 - new_bit_pos)) & 0xff) as u8;
 			}
 		}
 		// Trim the highest feature bits.
@@ -689,10 +844,7 @@ impl FromBase32 for Bolt11InvoiceFeatures {
 impl<T: sealed::Context> Features<T> {
 	/// Create a blank Features with no features set
 	pub fn empty() -> Self {
-		Features {
-			flags: Vec::new(),
-			mark: PhantomData,
-		}
+		Features { flags: Vec::new(), mark: PhantomData }
 	}
 
 	/// Converts `Features<T>` to `Features<C>`. Only known `T` features relevant to context `C` are
@@ -708,7 +860,7 @@ impl<T: sealed::Context> Features<T> {
 				flags.push(byte & from_known_features & to_known_features);
 			}
 		}
-		Features::<C> { flags, mark: PhantomData, }
+		Features::<C> { flags, mark: PhantomData }
 	}
 
 	/// Create a Features given a set of flags, in little-endian. This is in reverse byte order from
@@ -716,10 +868,7 @@ impl<T: sealed::Context> Features<T> {
 	///
 	/// This is not exported to bindings users as we don't support export across multiple T
 	pub fn from_le_bytes(flags: Vec<u8>) -> Features<T> {
-		Features {
-			flags,
-			mark: PhantomData,
-		}
+		Features { flags, mark: PhantomData }
 	}
 
 	#[cfg(test)]
@@ -729,7 +878,8 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	fn write_be<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		for f in self.flags.iter().rev() { // Swap back to big-endian
+		for f in self.flags.iter().rev() {
+			// Swap back to big-endian
 			f.write(w)?;
 		}
 		Ok(())
@@ -741,10 +891,7 @@ impl<T: sealed::Context> Features<T> {
 	/// This is not exported to bindings users as we don't support export across multiple T
 	pub fn from_be_bytes(mut flags: Vec<u8>) -> Features<T> {
 		flags.reverse(); // Swap to little-endian
-		Self {
-			flags,
-			mark: PhantomData,
-		}
+		Self { flags, mark: PhantomData }
 	}
 
 	pub(crate) fn supports_any_optional_bits(&self) -> bool {
@@ -778,11 +925,8 @@ impl<T: sealed::Context> Features<T> {
 		let byte_count = T::KNOWN_FEATURE_MASK.len();
 		self.flags.iter().enumerate().any(|(i, &byte)| {
 			let required_features = 0b01_01_01_01;
-			let unknown_features = if i < byte_count {
-				!T::KNOWN_FEATURE_MASK[i]
-			} else {
-				0b11_11_11_11
-			};
+			let unknown_features =
+				if i < byte_count { !T::KNOWN_FEATURE_MASK[i] } else { 0b11_11_11_11 };
 			(byte & (required_features & unknown_features)) != 0
 		})
 	}
@@ -792,11 +936,8 @@ impl<T: sealed::Context> Features<T> {
 		// both required and optional unknown features.
 		let byte_count = T::KNOWN_FEATURE_MASK.len();
 		self.flags.iter().enumerate().any(|(i, &byte)| {
-			let unknown_features = if i < byte_count {
-				!T::KNOWN_FEATURE_MASK[i]
-			} else {
-				0b11_11_11_11
-			};
+			let unknown_features =
+				if i < byte_count { !T::KNOWN_FEATURE_MASK[i] } else { 0b11_11_11_11 };
 			(byte & unknown_features) != 0
 		})
 	}
@@ -961,7 +1102,7 @@ macro_rules! impl_feature_len_prefixed_write {
 				Ok(Self::from_be_bytes(Vec::<u8>::read(r)?))
 			}
 		}
-	}
+	};
 }
 impl_feature_len_prefixed_write!(InitFeatures);
 impl_feature_len_prefixed_write!(ChannelFeatures);
@@ -983,7 +1124,7 @@ macro_rules! impl_feature_tlv_write {
 				Ok(WithoutLength::<Self>::read(r)?.0)
 			}
 		}
-	}
+	};
 }
 
 impl_feature_tlv_write!(ChannelTypeFeatures);
@@ -1006,9 +1147,12 @@ impl<T: sealed::Context> Readable for WithoutLength<Features<T>> {
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, Bolt11InvoiceFeatures, NodeFeatures, OfferFeatures, sealed};
-	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
+	use super::{
+		sealed, Bolt11InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures,
+		NodeFeatures, OfferFeatures,
+	};
 	use crate::util::ser::{Readable, WithoutLength, Writeable};
+	use bitcoin::bech32::{u5, Base32Len, FromBase32, ToBase32};
 
 	#[test]
 	fn sanity_test_unknown_bits() {
@@ -1121,8 +1265,10 @@ mod tests {
 	#[test]
 	fn convert_to_context_with_unknown_flags() {
 		// Ensure the `from` context has fewer known feature bytes than the `to` context.
-		assert!(<sealed::ChannelContext as sealed::Context>::KNOWN_FEATURE_MASK.len() <
-			<sealed::Bolt11InvoiceContext as sealed::Context>::KNOWN_FEATURE_MASK.len());
+		assert!(
+			<sealed::ChannelContext as sealed::Context>::KNOWN_FEATURE_MASK.len()
+				< <sealed::Bolt11InvoiceContext as sealed::Context>::KNOWN_FEATURE_MASK.len()
+		);
 		let mut channel_features = ChannelFeatures::empty();
 		channel_features.set_unknown_feature_optional();
 		assert!(channel_features.supports_unknown_bits());

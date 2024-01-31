@@ -1,8 +1,8 @@
 //! Utilities to assist in the initial sync required to initialize or reload Rust-Lightning objects
 //! from disk.
 
-use crate::{BlockSource, BlockSourceResult, Cache, ChainNotifier};
 use crate::poll::{ChainPoller, Validate, ValidatedBlockHeader};
+use crate::{BlockSource, BlockSourceResult, Cache, ChainNotifier};
 
 use bitcoin::blockdata::block::Header;
 use bitcoin::hash_types::BlockHash;
@@ -18,12 +18,14 @@ use std::ops::Deref;
 /// start when there are no chain listeners to sync yet.
 ///
 /// [`SpvClient`]: crate::SpvClient
-pub async fn validate_best_block_header<B: Deref>(block_source: B) ->
-BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
+pub async fn validate_best_block_header<B: Deref>(
+	block_source: B,
+) -> BlockSourceResult<ValidatedBlockHeader>
+where
+	B::Target: BlockSource,
+{
 	let (best_block_hash, best_block_height) = block_source.get_best_block().await?;
-	block_source
-		.get_header(&best_block_hash, best_block_height).await?
-		.validate(best_block_hash)
+	block_source.get_header(&best_block_hash, best_block_height).await?.validate(best_block_hash)
 }
 
 /// Performs a one-time sync of chain listeners using a single *trusted* block source, bringing each
@@ -131,12 +133,17 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// [`SpvClient`]: crate::SpvClient
 /// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
-pub async fn synchronize_listeners<B: Deref + Sized + Send + Sync, C: Cache, L: chain::Listen + ?Sized>(
-	block_source: B,
-	network: Network,
-	header_cache: &mut C,
+pub async fn synchronize_listeners<
+	B: Deref + Sized + Send + Sync,
+	C: Cache,
+	L: chain::Listen + ?Sized,
+>(
+	block_source: B, network: Network, header_cache: &mut C,
 	mut chain_listeners: Vec<(BlockHash, &L)>,
-) -> BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
+) -> BlockSourceResult<ValidatedBlockHeader>
+where
+	B::Target: BlockSource,
+{
 	let best_header = validate_best_block_header(&*block_source).await?;
 
 	// Fetch the header for the block hash paired with each listener.
@@ -144,9 +151,9 @@ pub async fn synchronize_listeners<B: Deref + Sized + Send + Sync, C: Cache, L: 
 	for (old_block_hash, chain_listener) in chain_listeners.drain(..) {
 		let old_header = match header_cache.look_up(&old_block_hash) {
 			Some(header) => *header,
-			None => block_source
-				.get_header(&old_block_hash, None).await?
-				.validate(old_block_hash)?
+			None => {
+				block_source.get_header(&old_block_hash, None).await?.validate(old_block_hash)?
+			},
 		};
 		chain_listeners_with_old_headers.push((old_header, chain_listener))
 	}
@@ -180,8 +187,10 @@ pub async fn synchronize_listeners<B: Deref + Sized + Send + Sync, C: Cache, L: 
 	if let Some(common_ancestor) = most_common_ancestor {
 		let chain_listener = &ChainListenerSet(chain_listeners_at_height);
 		let mut chain_notifier = ChainNotifier { header_cache, chain_listener };
-		chain_notifier.connect_blocks(common_ancestor, most_connected_blocks, &mut chain_poller)
-			.await.map_err(|(e, _)| e)?;
+		chain_notifier
+			.connect_blocks(common_ancestor, most_connected_blocks, &mut chain_poller)
+			.await
+			.map_err(|(e, _)| e)?;
 	}
 
 	Ok(best_header)
@@ -211,7 +220,9 @@ impl<'a, C: Cache> Cache for ReadOnlyCache<'a, C> {
 struct DynamicChainListener<'a, L: chain::Listen + ?Sized>(&'a L);
 
 impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L> {
-	fn filtered_block_connected(&self, _header: &Header, _txdata: &chain::transaction::TransactionData, _height: u32) {
+	fn filtered_block_connected(
+		&self, _header: &Header, _txdata: &chain::transaction::TransactionData, _height: u32,
+	) {
 		unreachable!()
 	}
 
@@ -234,7 +245,9 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for ChainListenerSet<'a, L> {
 		}
 	}
 
-	fn filtered_block_connected(&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32) {
+	fn filtered_block_connected(
+		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
+	) {
 		for (starting_height, chain_listener) in self.0.iter() {
 			if height > *starting_height {
 				chain_listener.filtered_block_connected(header, txdata, height);
@@ -249,8 +262,8 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for ChainListenerSet<'a, L> {
 
 #[cfg(test)]
 mod tests {
-	use crate::test_utils::{Blockchain, MockChainListener};
 	use super::*;
+	use crate::test_utils::{Blockchain, MockChainListener};
 
 	use bitcoin::network::constants::Network;
 
@@ -265,8 +278,7 @@ mod tests {
 		let listener_2 = MockChainListener::new()
 			.expect_block_connected(*chain.at_height(3))
 			.expect_block_connected(*chain.at_height(4));
-		let listener_3 = MockChainListener::new()
-			.expect_block_connected(*chain.at_height(4));
+		let listener_3 = MockChainListener::new().expect_block_connected(*chain.at_height(4));
 
 		let listeners = vec![
 			(chain.at_height(1).block_hash, &listener_1 as &dyn chain::Listen),

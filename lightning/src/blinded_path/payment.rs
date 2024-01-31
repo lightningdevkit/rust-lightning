@@ -4,13 +4,13 @@
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
-use crate::blinded_path::BlindedHop;
 use crate::blinded_path::utils;
+use crate::blinded_path::BlindedHop;
 use crate::io;
-use crate::ln::PaymentSecret;
 use crate::ln::channelmanager::CounterpartyForwardingInfo;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
+use crate::ln::PaymentSecret;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::prelude::*;
 use crate::util::ser::{Readable, Writeable, Writer};
@@ -102,7 +102,9 @@ impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 
 	fn try_from(info: CounterpartyForwardingInfo) -> Result<Self, ()> {
 		let CounterpartyForwardingInfo {
-			fee_base_msat, fee_proportional_millionths, cltv_expiry_delta
+			fee_base_msat,
+			fee_proportional_millionths,
+			cltv_expiry_delta,
 		} = info;
 
 		// Avoid exposing esoteric CLTV expiry deltas
@@ -164,7 +166,9 @@ impl Readable for BlindedPaymentTlvs {
 		let _padding: Option<utils::Padding> = _padding;
 
 		if let Some(short_channel_id) = scid {
-			if payment_secret.is_some() { return Err(DecodeError::InvalidValue) }
+			if payment_secret.is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
 			Ok(BlindedPaymentTlvs::Forward(ForwardTlvs {
 				short_channel_id,
 				payment_relay: payment_relay.ok_or(DecodeError::InvalidValue)?,
@@ -172,7 +176,9 @@ impl Readable for BlindedPaymentTlvs {
 				features: features.ok_or(DecodeError::InvalidValue)?,
 			}))
 		} else {
-			if payment_relay.is_some() || features.is_some() { return Err(DecodeError::InvalidValue) }
+			if payment_relay.is_some() || features.is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
 			Ok(BlindedPaymentTlvs::Receive(ReceiveTlvs {
 				payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
 				payment_constraints: payment_constraints.0.unwrap(),
@@ -183,18 +189,22 @@ impl Readable for BlindedPaymentTlvs {
 
 /// Construct blinded payment hops for the given `intermediate_nodes` and payee info.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[ForwardNode],
-	payee_node_id: PublicKey, payee_tlvs: ReceiveTlvs, session_priv: &SecretKey
+	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[ForwardNode], payee_node_id: PublicKey,
+	payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
-	let pks = intermediate_nodes.iter().map(|node| &node.node_id)
-		.chain(core::iter::once(&payee_node_id));
-	let tlvs = intermediate_nodes.iter().map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
+	let pks =
+		intermediate_nodes.iter().map(|node| &node.node_id).chain(core::iter::once(&payee_node_id));
+	let tlvs = intermediate_nodes
+		.iter()
+		.map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
 		.chain(core::iter::once(BlindedPaymentTlvsRef::Receive(&payee_tlvs)));
 	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
 }
 
 /// `None` if underflow occurs.
-pub(crate) fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &PaymentRelay) -> Option<u64> {
+pub(crate) fn amt_to_forward_msat(
+	inbound_amt_msat: u64, payment_relay: &PaymentRelay,
+) -> Option<u64> {
 	let inbound_amt = inbound_amt_msat as u128;
 	let base = payment_relay.fee_base_msat as u128;
 	let prop = payment_relay.fee_proportional_millionths as u128;
@@ -215,7 +225,7 @@ pub(crate) fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &Payment
 }
 
 pub(super) fn compute_payinfo(
-	intermediate_nodes: &[ForwardNode], payee_tlvs: &ReceiveTlvs, payee_htlc_maximum_msat: u64
+	intermediate_nodes: &[ForwardNode], payee_tlvs: &ReceiveTlvs, payee_htlc_maximum_msat: u64,
 ) -> Result<BlindedPayInfo, ()> {
 	let mut curr_base_fee: u64 = 0;
 	let mut curr_prop_mil: u64 = 0;
@@ -223,26 +233,31 @@ pub(super) fn compute_payinfo(
 	for tlvs in intermediate_nodes.iter().rev().map(|n| &n.tlvs) {
 		// In the future, we'll want to take the intersection of all supported features for the
 		// `BlindedPayInfo`, but there are no features in that context right now.
-		if tlvs.features.requires_unknown_bits_from(&BlindedHopFeatures::empty()) { return Err(()) }
+		if tlvs.features.requires_unknown_bits_from(&BlindedHopFeatures::empty()) {
+			return Err(());
+		}
 
 		let next_base_fee = tlvs.payment_relay.fee_base_msat as u64;
 		let next_prop_mil = tlvs.payment_relay.fee_proportional_millionths as u64;
 		// Use integer arithmetic to compute `ceil(a/b)` as `(a+b-1)/b`
 		// ((curr_base_fee * (1_000_000 + next_prop_mil)) / 1_000_000) + next_base_fee
-		curr_base_fee = curr_base_fee.checked_mul(1_000_000 + next_prop_mil)
+		curr_base_fee = curr_base_fee
+			.checked_mul(1_000_000 + next_prop_mil)
 			.and_then(|f| f.checked_add(1_000_000 - 1))
 			.map(|f| f / 1_000_000)
 			.and_then(|f| f.checked_add(next_base_fee))
 			.ok_or(())?;
 		// ceil(((curr_prop_mil + 1_000_000) * (next_prop_mil + 1_000_000)) / 1_000_000) - 1_000_000
-		curr_prop_mil = curr_prop_mil.checked_add(1_000_000)
+		curr_prop_mil = curr_prop_mil
+			.checked_add(1_000_000)
 			.and_then(|f1| next_prop_mil.checked_add(1_000_000).and_then(|f2| f2.checked_mul(f1)))
 			.and_then(|f| f.checked_add(1_000_000 - 1))
 			.map(|f| f / 1_000_000)
 			.and_then(|f| f.checked_sub(1_000_000))
 			.ok_or(())?;
 
-		cltv_expiry_delta = cltv_expiry_delta.checked_add(tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
+		cltv_expiry_delta =
+			cltv_expiry_delta.checked_add(tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
 	}
 
 	let mut htlc_minimum_msat: u64 = 1;
@@ -253,18 +268,22 @@ pub(super) fn compute_payinfo(
 		// in the amount that this node receives and contribute towards reaching its min.
 		htlc_minimum_msat = amt_to_forward_msat(
 			core::cmp::max(node.tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat),
-			&node.tlvs.payment_relay
-		).unwrap_or(1); // If underflow occurs, we definitely reached this node's min
+			&node.tlvs.payment_relay,
+		)
+		.unwrap_or(1); // If underflow occurs, we definitely reached this node's min
 		htlc_maximum_msat = amt_to_forward_msat(
-			core::cmp::min(node.htlc_maximum_msat, htlc_maximum_msat), &node.tlvs.payment_relay
-		).ok_or(())?; // If underflow occurs, we cannot send to this hop without exceeding their max
+			core::cmp::min(node.htlc_maximum_msat, htlc_maximum_msat),
+			&node.tlvs.payment_relay,
+		)
+		.ok_or(())?; // If underflow occurs, we cannot send to this hop without exceeding their max
 	}
-	htlc_minimum_msat = core::cmp::max(
-		payee_tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat
-	);
+	htlc_minimum_msat =
+		core::cmp::max(payee_tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat);
 	htlc_maximum_msat = core::cmp::min(payee_htlc_maximum_msat, htlc_maximum_msat);
 
-	if htlc_maximum_msat < htlc_minimum_msat { return Err(()) }
+	if htlc_maximum_msat < htlc_minimum_msat {
+		return Err(());
+	}
 	Ok(BlindedPayInfo {
 		fee_base_msat: u32::try_from(curr_base_fee).map_err(|_| ())?,
 		fee_proportional_millionths: u32::try_from(curr_prop_mil).map_err(|_| ())?,
@@ -288,58 +307,61 @@ impl_writeable_msg!(PaymentConstraints, {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, ReceiveTlvs, PaymentConstraints, PaymentRelay};
-	use crate::ln::PaymentSecret;
+	use crate::blinded_path::payment::{
+		ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs,
+	};
 	use crate::ln::features::BlindedHopFeatures;
+	use crate::ln::PaymentSecret;
+	use bitcoin::secp256k1::PublicKey;
 
 	#[test]
 	fn compute_payinfo() {
 		// Taken from the spec example for aggregating blinded payment info. See
 		// https://github.com/lightning/bolts/blob/master/proposals/route-blinding.md#blinded-payments
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![ForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 144,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 100,
+		let intermediate_nodes = vec![
+			ForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 144,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 100,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 100,
+					},
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 100,
-				},
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value(),
-		}, ForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 144,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 100,
+			ForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 144,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 100,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 1_000,
+					},
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 1_000,
-				},
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value(),
-		}];
+		];
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 1,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 		};
 		let htlc_maximum_msat = 100_000;
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat).unwrap();
+		let blinded_payinfo =
+			super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat).unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 201);
 		assert_eq!(blinded_payinfo.fee_proportional_millionths, 1001);
 		assert_eq!(blinded_payinfo.cltv_expiry_delta, 288);
@@ -351,10 +373,7 @@ mod tests {
 	fn compute_payinfo_1_hop() {
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 1,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 		};
 		let blinded_payinfo = super::compute_payinfo(&[], &recv_tlvs, 4242).unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 0);
@@ -369,48 +388,49 @@ mod tests {
 		// If no hops charge fees, the htlc_minimum_msat should just be the maximum htlc_minimum_msat
 		// along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![ForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 0,
-					fee_base_msat: 0,
+		let intermediate_nodes = vec![
+			ForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 0,
+						fee_base_msat: 0,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 1,
+					},
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 1,
-				},
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value()
-		}, ForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 0,
-					fee_base_msat: 0,
+			ForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 0,
+						fee_base_msat: 0,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 2_000,
+					},
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 2_000,
-				},
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value()
-		}];
+		];
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 3,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 3 },
 		};
 		let htlc_maximum_msat = 100_000;
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat).unwrap();
+		let blinded_payinfo =
+			super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat).unwrap();
 		assert_eq!(blinded_payinfo.htlc_minimum_msat, 2_000);
 	}
 
@@ -419,51 +439,53 @@ mod tests {
 		// Create a path with varying fees and htlc_mins, and make sure htlc_minimum_msat ends up as the
 		// max (htlc_min - following_fees) along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![ForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 1_000,
+		let intermediate_nodes = vec![
+			ForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 1_000,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 5_000,
+					},
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 5_000,
-				},
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value()
-		}, ForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 200,
+			ForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 200,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 2_000,
+					},
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 2_000,
-				},
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: u64::max_value(),
 			},
-			htlc_maximum_msat: u64::max_value()
-		}];
+		];
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 1,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 		};
 		let htlc_minimum_msat = 3798;
-		assert!(super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_minimum_msat - 1).is_err());
+		assert!(super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_minimum_msat - 1)
+			.is_err());
 
 		let htlc_maximum_msat = htlc_minimum_msat + 1;
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat).unwrap();
+		let blinded_payinfo =
+			super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat).unwrap();
 		assert_eq!(blinded_payinfo.htlc_minimum_msat, htlc_minimum_msat);
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, htlc_maximum_msat);
 	}
@@ -473,48 +495,49 @@ mod tests {
 		// Create a path with varying fees and `htlc_maximum_msat`s, and make sure the aggregated max
 		// htlc ends up as the min (htlc_max - following_fees) along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![ForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 1_000,
+		let intermediate_nodes = vec![
+			ForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 1_000,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 1,
+					},
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 1,
-				},
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: 5_000,
 			},
-			htlc_maximum_msat: 5_000,
-		}, ForwardNode {
-			node_id: dummy_pk,
-			tlvs: ForwardTlvs {
-				short_channel_id: 0,
-				payment_relay: PaymentRelay {
-					cltv_expiry_delta: 0,
-					fee_proportional_millionths: 500,
-					fee_base_msat: 1,
+			ForwardNode {
+				node_id: dummy_pk,
+				tlvs: ForwardTlvs {
+					short_channel_id: 0,
+					payment_relay: PaymentRelay {
+						cltv_expiry_delta: 0,
+						fee_proportional_millionths: 500,
+						fee_base_msat: 1,
+					},
+					payment_constraints: PaymentConstraints {
+						max_cltv_expiry: 0,
+						htlc_minimum_msat: 1,
+					},
+					features: BlindedHopFeatures::empty(),
 				},
-				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: 0,
-					htlc_minimum_msat: 1,
-				},
-				features: BlindedHopFeatures::empty(),
+				htlc_maximum_msat: 10_000,
 			},
-			htlc_maximum_msat: 10_000
-		}];
+		];
 		let recv_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
-			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: 0,
-				htlc_minimum_msat: 1,
-			},
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 		};
 
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000).unwrap();
+		let blinded_payinfo =
+			super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000).unwrap();
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, 3997);
 	}
 }

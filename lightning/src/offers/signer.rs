@@ -9,17 +9,17 @@
 
 //! Utilities for signing offer messages and verifying metadata.
 
-use bitcoin::hashes::{Hash, HashEngine};
+use crate::ln::channelmanager::PaymentId;
+use crate::ln::inbound_payment::{ExpandedKey, Nonce, IV_LEN};
+use crate::offers::merkle::TlvRecord;
+use crate::util::ser::Writeable;
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey, self};
+use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::secp256k1::{self, KeyPair, PublicKey, Secp256k1, SecretKey};
 use core::convert::TryFrom;
 use core::fmt;
-use crate::ln::channelmanager::PaymentId;
-use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
-use crate::offers::merkle::TlvRecord;
-use crate::util::ser::Writeable;
 
 use crate::prelude::*;
 
@@ -102,7 +102,7 @@ impl Metadata {
 	}
 
 	pub fn derive_from<W: Writeable, T: secp256k1::Signing>(
-		self, tlv_stream: W, secp_ctx: Option<&Secp256k1<T>>
+		self, tlv_stream: W, secp_ctx: Option<&Secp256k1<T>>,
 	) -> (Self, Option<KeyPair>) {
 		match self {
 			Metadata::Bytes(_) => (self, None),
@@ -140,10 +140,12 @@ impl fmt::Debug for Metadata {
 impl PartialEq for Metadata {
 	fn eq(&self, other: &Self) -> bool {
 		match self {
-			Metadata::Bytes(bytes) => if let Metadata::Bytes(other_bytes) = other {
-				bytes == other_bytes
-			} else {
-				false
+			Metadata::Bytes(bytes) => {
+				if let Metadata::Bytes(other_bytes) = other {
+					bytes == other_bytes
+				} else {
+					false
+				}
 			},
 			Metadata::Derived(_) => false,
 			Metadata::DerivedSigningPubkey(_) => false,
@@ -163,18 +165,13 @@ pub(super) struct MetadataMaterial {
 impl MetadataMaterial {
 	pub fn new(
 		nonce: Nonce, expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
-		payment_id: Option<PaymentId>
+		payment_id: Option<PaymentId>,
 	) -> Self {
 		// Encrypt payment_id
-		let encrypted_payment_id = payment_id.map(|payment_id| {
-			expanded_key.crypt_for_offer(payment_id.0, nonce)
-		});
+		let encrypted_payment_id =
+			payment_id.map(|payment_id| expanded_key.crypt_for_offer(payment_id.0, nonce));
 
-		Self {
-			nonce,
-			hmac: expanded_key.hmac_for_offer(nonce, iv_bytes),
-			encrypted_payment_id,
-		}
+		Self { nonce, hmac: expanded_key.hmac_for_offer(nonce, iv_bytes), encrypted_payment_id }
 	}
 
 	fn derive_metadata(mut self) -> Vec<u8> {
@@ -188,7 +185,7 @@ impl MetadataMaterial {
 	}
 
 	fn derive_metadata_and_keys<T: secp256k1::Signing>(
-		mut self, secp_ctx: &Secp256k1<T>
+		mut self, secp_ctx: &Secp256k1<T>,
 	) -> (Vec<u8>, KeyPair) {
 		self.hmac.input(DERIVED_METADATA_AND_KEYS_HMAC_INPUT);
 		self.maybe_include_encrypted_payment_id();
@@ -234,7 +231,7 @@ pub(super) fn derive_keys(nonce: Nonce, expanded_key: &ExpandedKey) -> KeyPair {
 pub(super) fn verify_payer_metadata<'a, T: secp256k1::Signing>(
 	metadata: &[u8], expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
 	signing_pubkey: PublicKey, tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
-	secp_ctx: &Secp256k1<T>
+	secp_ctx: &Secp256k1<T>,
 ) -> Result<PaymentId, ()> {
 	if metadata.len() < PaymentId::LENGTH {
 		return Err(());
@@ -243,14 +240,16 @@ pub(super) fn verify_payer_metadata<'a, T: secp256k1::Signing>(
 	let mut encrypted_payment_id = [0u8; PaymentId::LENGTH];
 	encrypted_payment_id.copy_from_slice(&metadata[..PaymentId::LENGTH]);
 
-	let mut hmac = hmac_for_message(
-		&metadata[PaymentId::LENGTH..], expanded_key, iv_bytes, tlv_stream
-	)?;
+	let mut hmac =
+		hmac_for_message(&metadata[PaymentId::LENGTH..], expanded_key, iv_bytes, tlv_stream)?;
 	hmac.input(WITH_ENCRYPTED_PAYMENT_ID_HMAC_INPUT);
 	hmac.input(&encrypted_payment_id);
 
 	verify_metadata(
-		&metadata[PaymentId::LENGTH..], Hmac::from_engine(hmac), signing_pubkey, secp_ctx
+		&metadata[PaymentId::LENGTH..],
+		Hmac::from_engine(hmac),
+		signing_pubkey,
+		secp_ctx,
 	)?;
 
 	let nonce = Nonce::try_from(&metadata[PaymentId::LENGTH..][..Nonce::LENGTH]).unwrap();
@@ -270,7 +269,7 @@ pub(super) fn verify_payer_metadata<'a, T: secp256k1::Signing>(
 pub(super) fn verify_recipient_metadata<'a, T: secp256k1::Signing>(
 	metadata: &[u8], expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
 	signing_pubkey: PublicKey, tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
-	secp_ctx: &Secp256k1<T>
+	secp_ctx: &Secp256k1<T>,
 ) -> Result<Option<KeyPair>, ()> {
 	let mut hmac = hmac_for_message(metadata, expanded_key, iv_bytes, tlv_stream)?;
 	hmac.input(WITHOUT_ENCRYPTED_PAYMENT_ID_HMAC_INPUT);
@@ -279,11 +278,12 @@ pub(super) fn verify_recipient_metadata<'a, T: secp256k1::Signing>(
 }
 
 fn verify_metadata<T: secp256k1::Signing>(
-	metadata: &[u8], hmac: Hmac<Sha256>, signing_pubkey: PublicKey, secp_ctx: &Secp256k1<T>
+	metadata: &[u8], hmac: Hmac<Sha256>, signing_pubkey: PublicKey, secp_ctx: &Secp256k1<T>,
 ) -> Result<Option<KeyPair>, ()> {
 	if metadata.len() == Nonce::LENGTH {
 		let derived_keys = KeyPair::from_secret_key(
-			secp_ctx, &SecretKey::from_slice(hmac.as_byte_array()).unwrap()
+			secp_ctx,
+			&SecretKey::from_slice(hmac.as_byte_array()).unwrap(),
 		);
 		if fixed_time_eq(&signing_pubkey.serialize(), &derived_keys.public_key().serialize()) {
 			Ok(Some(derived_keys))
@@ -303,7 +303,7 @@ fn verify_metadata<T: secp256k1::Signing>(
 
 fn hmac_for_message<'a>(
 	metadata: &[u8], expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
-	tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>
+	tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
 ) -> Result<HmacEngine<Sha256>, ()> {
 	if metadata.len() < Nonce::LENGTH {
 		return Err(());

@@ -18,30 +18,33 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
-use crate::sign::SpendableOutputDescriptor;
-use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
+use crate::chain::transaction;
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
+use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
-use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
-use crate::chain::transaction;
+use crate::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::routing::gossip::NetworkUpdate;
-use crate::util::errors::APIError;
-use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
-use crate::util::string::UntrustedString;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
+use crate::sign::SpendableOutputDescriptor;
+use crate::util::errors::APIError;
+use crate::util::ser::{
+	BigSize, FixedLengthReader, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired,
+	WithoutLength, Writeable, Writer,
+};
+use crate::util::string::UntrustedString;
 
-use bitcoin::{Transaction, OutPoint};
-use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::script::ScriptBuf;
-use bitcoin::hashes::Hash;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::PublicKey;
 use crate::io;
 use crate::prelude::*;
-use core::time::Duration;
-use core::ops::Deref;
 use crate::sync::Arc;
+use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::blockdata::script::ScriptBuf;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::{OutPoint, Transaction};
+use core::ops::Deref;
+use core::time::Duration;
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
@@ -229,18 +232,36 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::CounterpartyForceClosed { peer_msg } => {
 				f.write_fmt(format_args!("counterparty force-closed with message: {}", peer_msg))
 			},
-			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
-			ClosureReason::CooperativeClosure => f.write_str("the channel was cooperatively closed"),
-			ClosureReason::CommitmentTxConfirmed => f.write_str("commitment or closing transaction was confirmed on chain."),
-			ClosureReason::FundingTimedOut => write!(f, "funding transaction failed to confirm within {} blocks", FUNDING_CONF_DEADLINE_BLOCKS),
+			ClosureReason::HolderForceClosed => {
+				f.write_str("user manually force-closed the channel")
+			},
+			ClosureReason::CooperativeClosure => {
+				f.write_str("the channel was cooperatively closed")
+			},
+			ClosureReason::CommitmentTxConfirmed => {
+				f.write_str("commitment or closing transaction was confirmed on chain.")
+			},
+			ClosureReason::FundingTimedOut => write!(
+				f,
+				"funding transaction failed to confirm within {} blocks",
+				FUNDING_CONF_DEADLINE_BLOCKS
+			),
 			ClosureReason::ProcessingError { err } => {
 				f.write_str("of an exception: ")?;
 				f.write_str(&err)
 			},
-			ClosureReason::DisconnectedPeer => f.write_str("the peer disconnected prior to the channel being funded"),
-			ClosureReason::OutdatedChannelManager => f.write_str("the ChannelManager read from disk was stale compared to ChannelMonitor(s)"),
-			ClosureReason::CounterpartyCoopClosedUnfundedChannel => f.write_str("the peer requested the unfunded channel be closed"),
-			ClosureReason::FundingBatchClosure => f.write_str("another channel in the same funding batch closed"),
+			ClosureReason::DisconnectedPeer => {
+				f.write_str("the peer disconnected prior to the channel being funded")
+			},
+			ClosureReason::OutdatedChannelManager => f.write_str(
+				"the ChannelManager read from disk was stale compared to ChannelMonitor(s)",
+			),
+			ClosureReason::CounterpartyCoopClosedUnfundedChannel => {
+				f.write_str("the peer requested the unfunded channel be closed")
+			},
+			ClosureReason::FundingBatchClosure => {
+				f.write_str("another channel in the same funding batch closed")
+			},
 		}
 	}
 }
@@ -280,7 +301,7 @@ pub enum HTLCDestination {
 	/// intercept HTLC.
 	InvalidForward {
 		/// Short channel id we are requesting to forward an HTLC to.
-		requested_forward_scid: u64
+		requested_forward_scid: u64,
 	},
 	/// Failure scenario where an HTLC may have been forwarded to be intended for us,
 	/// but is invalid for some reason, so we reject it.
@@ -294,7 +315,7 @@ pub enum HTLCDestination {
 	///   recipient for a payment.
 	FailedPayment {
 		/// The payment hash of the payment we attempted to process.
-		payment_hash: PaymentHash
+		payment_hash: PaymentHash,
 	},
 }
 
@@ -319,9 +340,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 /// will be added for general-purpose HTLC forward intercepts as well as trampoline forward
 /// intercepts in upcoming work.
 enum InterceptNextHop {
-	FakeScid {
-		requested_next_hop_scid: u64,
-	},
+	FakeScid { requested_next_hop_scid: u64 },
 }
 
 impl_writeable_tlv_based_enum!(InterceptNextHop,
@@ -680,9 +699,9 @@ pub enum Event {
 		/// If this is `Some`, then the corresponding channel should be avoided when the payment is
 		/// retried. May be `None` for older [`Event`] serializations.
 		short_channel_id: Option<u64>,
-#[cfg(test)]
+		#[cfg(test)]
 		error_code: Option<u16>,
-#[cfg(test)]
+		#[cfg(test)]
 		error_data: Option<Vec<u8>>,
 	},
 	/// Indicates that a probe payment we sent returned successful, i.e., only failed at the destination.
@@ -900,7 +919,7 @@ pub enum Event {
 		/// The channel_id of the channel which has been closed.
 		channel_id: ChannelId,
 		/// The full transaction received from the user
-		transaction: Transaction
+		transaction: Transaction,
 	},
 	/// Indicates a request to open a new channel by a peer.
 	///
@@ -992,24 +1011,37 @@ impl Writeable for Event {
 				// We never write out FundingGenerationReady events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, counterparty_skimmed_fee_msat,
-				ref purpose, ref receiver_node_id, ref via_channel_id, ref via_user_channel_id,
-				ref claim_deadline, ref onion_fields
+			&Event::PaymentClaimable {
+				ref payment_hash,
+				ref amount_msat,
+				counterparty_skimmed_fee_msat,
+				ref purpose,
+				ref receiver_node_id,
+				ref via_channel_id,
+				ref via_user_channel_id,
+				ref claim_deadline,
+				ref onion_fields,
 			} => {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
 				let payment_preimage;
 				match &purpose {
-					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret } => {
+					PaymentPurpose::InvoicePayment {
+						payment_preimage: preimage,
+						payment_secret: secret,
+					} => {
 						payment_secret = Some(secret);
 						payment_preimage = *preimage;
 					},
 					PaymentPurpose::SpontaneousPayment(preimage) => {
 						payment_preimage = Some(*preimage);
-					}
+					},
 				}
-				let skimmed_fee_opt = if counterparty_skimmed_fee_msat == 0 { None }
-					else { Some(counterparty_skimmed_fee_msat) };
+				let skimmed_fee_opt = if counterparty_skimmed_fee_msat == 0 {
+					None
+				} else {
+					Some(counterparty_skimmed_fee_msat)
+				};
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
 					(1, receiver_node_id, option),
@@ -1024,7 +1056,12 @@ impl Writeable for Event {
 					(10, skimmed_fee_opt, option),
 				});
 			},
-			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
+			&Event::PaymentSent {
+				ref payment_id,
+				ref payment_preimage,
+				ref payment_hash,
+				ref fee_paid_msat,
+			} => {
 				2u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
@@ -1034,8 +1071,12 @@ impl Writeable for Event {
 				});
 			},
 			&Event::PaymentPathFailed {
-				ref payment_id, ref payment_hash, ref payment_failed_permanently, ref failure,
-				ref path, ref short_channel_id,
+				ref payment_id,
+				ref payment_hash,
+				ref payment_failed_permanently,
+				ref failure,
+				ref path,
+				ref short_channel_id,
 				#[cfg(test)]
 				ref error_code,
 				#[cfg(test)]
@@ -1071,7 +1112,13 @@ impl Writeable for Event {
 					(1, channel_id, option),
 				});
 			},
-			&Event::HTLCIntercepted { requested_next_hop_scid, payment_hash, inbound_amount_msat, expected_outbound_amount_msat, intercept_id } => {
+			&Event::HTLCIntercepted {
+				requested_next_hop_scid,
+				payment_hash,
+				inbound_amount_msat,
+				expected_outbound_amount_msat,
+				intercept_id,
+			} => {
 				6u8.write(writer)?;
 				let intercept_scid = InterceptNextHop::FakeScid { requested_next_hop_scid };
 				write_tlv_fields!(writer, {
@@ -1081,10 +1128,13 @@ impl Writeable for Event {
 					(6, inbound_amount_msat, required),
 					(8, expected_outbound_amount_msat, required),
 				});
-			}
+			},
 			&Event::PaymentForwarded {
-				fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
-				next_channel_id, outbound_amount_forwarded_msat
+				fee_earned_msat,
+				prev_channel_id,
+				claim_from_onchain_tx,
+				next_channel_id,
+				outbound_amount_forwarded_msat,
 			} => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1095,8 +1145,13 @@ impl Writeable for Event {
 					(5, outbound_amount_forwarded_msat, option),
 				});
 			},
-			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason,
-				ref counterparty_node_id, ref channel_capacity_sats, ref channel_funding_txo
+			&Event::ChannelClosed {
+				ref channel_id,
+				ref user_channel_id,
+				ref reason,
+				ref counterparty_node_id,
+				ref channel_capacity_sats,
+				ref channel_funding_txo,
 			} => {
 				9u8.write(writer)?;
 				// `user_channel_id` used to be a single u64 value. In order to remain backwards
@@ -1143,7 +1198,14 @@ impl Writeable for Event {
 				// We never write the OpenChannelRequest events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref htlcs, ref sender_intended_total_msat } => {
+			&Event::PaymentClaimed {
+				ref payment_hash,
+				ref amount_msat,
+				ref purpose,
+				ref receiver_node_id,
+				ref htlcs,
+				ref sender_intended_total_msat,
+			} => {
 				19u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
@@ -1163,7 +1225,12 @@ impl Writeable for Event {
 					(6, path.blinded_tail, option),
 				})
 			},
-			&Event::ProbeFailed { ref payment_id, ref payment_hash, ref path, ref short_channel_id } => {
+			&Event::ProbeFailed {
+				ref payment_id,
+				ref payment_hash,
+				ref path,
+				ref short_channel_id,
+			} => {
 				23u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
@@ -1180,17 +1247,22 @@ impl Writeable for Event {
 					(2, failed_next_destination, required),
 				})
 			},
-			&Event::BumpTransaction(ref event)=> {
+			&Event::BumpTransaction(ref event) => {
 				27u8.write(writer)?;
 				match event {
 					// We never write the ChannelClose|HTLCResolution events as they'll be replayed
 					// upon restarting anyway if they remain unresolved.
-					BumpTransactionEvent::ChannelClose { .. } => {}
-					BumpTransactionEvent::HTLCResolution { .. } => {}
+					BumpTransactionEvent::ChannelClose { .. } => {},
+					BumpTransactionEvent::HTLCResolution { .. } => {},
 				}
 				write_tlv_fields!(writer, {}); // Write a length field for forwards compat
-			}
-			&Event::ChannelReady { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref channel_type } => {
+			},
+			&Event::ChannelReady {
+				ref channel_id,
+				ref user_channel_id,
+				ref counterparty_node_id,
+				ref channel_type,
+			} => {
 				29u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
@@ -1199,7 +1271,13 @@ impl Writeable for Event {
 					(6, channel_type, required),
 				});
 			},
-			&Event::ChannelPending { ref channel_id, ref user_channel_id, ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo } => {
+			&Event::ChannelPending {
+				ref channel_id,
+				ref user_channel_id,
+				ref former_temporary_channel_id,
+				ref counterparty_node_id,
+				ref funding_txo,
+			} => {
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
@@ -1260,16 +1338,19 @@ impl MaybeReadable for Event {
 					let purpose = match payment_secret {
 						Some(secret) => PaymentPurpose::InvoicePayment {
 							payment_preimage,
-							payment_secret: secret
+							payment_secret: secret,
 						},
-						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
+						None if payment_preimage.is_some() => {
+							PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap())
+						},
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
 					Ok(Some(Event::PaymentClaimable {
 						receiver_node_id,
 						payment_hash,
 						amount_msat,
-						counterparty_skimmed_fee_msat: counterparty_skimmed_fee_msat_opt.unwrap_or(0),
+						counterparty_skimmed_fee_msat: counterparty_skimmed_fee_msat_opt
+							.unwrap_or(0),
 						purpose,
 						via_channel_id,
 						via_user_channel_id,
@@ -1292,7 +1373,9 @@ impl MaybeReadable for Event {
 						(5, fee_paid_msat, option),
 					});
 					if payment_hash.is_none() {
-						payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()));
+						payment_hash = Some(PaymentHash(
+							Sha256::hash(&payment_preimage.0[..]).to_byte_array(),
+						));
 					}
 					Ok(Some(Event::PaymentSent {
 						payment_id,
@@ -1329,7 +1412,8 @@ impl MaybeReadable for Event {
 						(11, payment_id, option),
 						(13, failure_opt, upgradable_option),
 					});
-					let failure = failure_opt.unwrap_or_else(|| PathFailure::OnPath { network_update });
+					let failure =
+						failure_opt.unwrap_or_else(|| PathFailure::OnPath { network_update });
 					Ok(Some(Event::PaymentPathFailed {
 						payment_id,
 						payment_hash,
@@ -1361,7 +1445,8 @@ impl MaybeReadable for Event {
 			6u8 => {
 				let mut payment_hash = PaymentHash([0; 32]);
 				let mut intercept_id = InterceptId([0; 32]);
-				let mut requested_next_hop_scid = InterceptNextHop::FakeScid { requested_next_hop_scid: 0 };
+				let mut requested_next_hop_scid =
+					InterceptNextHop::FakeScid { requested_next_hop_scid: 0 };
 				let mut inbound_amount_msat = 0;
 				let mut expected_outbound_amount_msat = 0;
 				read_tlv_fields!(reader, {
@@ -1372,7 +1457,7 @@ impl MaybeReadable for Event {
 					(8, expected_outbound_amount_msat, required),
 				});
 				let next_scid = match requested_next_hop_scid {
-					InterceptNextHop::FakeScid { requested_next_hop_scid: scid } => scid
+					InterceptNextHop::FakeScid { requested_next_hop_scid: scid } => scid,
 				};
 				Ok(Some(Event::HTLCIntercepted {
 					payment_hash,
@@ -1397,8 +1482,11 @@ impl MaybeReadable for Event {
 						(5, outbound_amount_forwarded_msat, option),
 					});
 					Ok(Some(Event::PaymentForwarded {
-						fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
-						outbound_amount_forwarded_msat
+						fee_earned_msat,
+						prev_channel_id,
+						claim_from_onchain_tx,
+						next_channel_id,
+						outbound_amount_forwarded_msat,
 					}))
 				};
 				f()
@@ -1425,23 +1513,34 @@ impl MaybeReadable for Event {
 					// `user_channel_id` used to be a single u64 value. In order to remain
 					// backwards compatible with versions prior to 0.0.113, the u128 is serialized
 					// as two separate u64 values.
-					let user_channel_id = (user_channel_id_low_opt.unwrap_or(0) as u128) +
-						((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
+					let user_channel_id = (user_channel_id_low_opt.unwrap_or(0) as u128)
+						+ ((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
 
-					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: _init_tlv_based_struct_field!(reason, upgradable_required),
-						counterparty_node_id, channel_capacity_sats, channel_funding_txo }))
+					Ok(Some(Event::ChannelClosed {
+						channel_id,
+						user_channel_id,
+						reason: _init_tlv_based_struct_field!(reason, upgradable_required),
+						counterparty_node_id,
+						channel_capacity_sats,
+						channel_funding_txo,
+					}))
 				};
 				f()
 			},
 			11u8 => {
 				let f = || {
 					let mut channel_id = ChannelId::new_zero();
-					let mut transaction = Transaction{ version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+					let mut transaction = Transaction {
+						version: 2,
+						lock_time: LockTime::ZERO,
+						input: Vec::new(),
+						output: Vec::new(),
+					};
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(2, transaction, required),
 					});
-					Ok(Some(Event::DiscardFunding { channel_id, transaction } ))
+					Ok(Some(Event::DiscardFunding { channel_id, transaction }))
 				};
 				f()
 			},
@@ -1471,11 +1570,7 @@ impl MaybeReadable for Event {
 						(1, reason, upgradable_option),
 						(2, payment_hash, required),
 					});
-					Ok(Some(Event::PaymentFailed {
-						payment_id,
-						payment_hash,
-						reason,
-					}))
+					Ok(Some(Event::PaymentFailed { payment_id, payment_hash, reason }))
 				};
 				f()
 			},
@@ -1554,7 +1649,10 @@ impl MaybeReadable for Event {
 					});
 					Ok(Some(Event::HTLCHandlingFailed {
 						prev_channel_id,
-						failed_next_destination: _init_tlv_based_struct_field!(failed_next_destination_opt, upgradable_required),
+						failed_next_destination: _init_tlv_based_struct_field!(
+							failed_next_destination_opt,
+							upgradable_required
+						),
 					}))
 				};
 				f()
@@ -1577,7 +1675,7 @@ impl MaybeReadable for Event {
 						channel_id,
 						user_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						channel_type: channel_type.0.unwrap()
+						channel_type: channel_type.0.unwrap(),
 					}))
 				};
 				f()
@@ -1602,7 +1700,7 @@ impl MaybeReadable for Event {
 						user_channel_id,
 						former_temporary_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						funding_txo: funding_txo.0.unwrap()
+						funding_txo: funding_txo.0.unwrap(),
 					}))
 				};
 				f()
@@ -1612,9 +1710,7 @@ impl MaybeReadable for Event {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 					});
-					Ok(Some(Event::InvoiceRequestFailed {
-						payment_id: payment_id.0.unwrap(),
-					}))
+					Ok(Some(Event::InvoiceRequestFailed { payment_id: payment_id.0.unwrap() }))
 				};
 				f()
 			},
@@ -1631,10 +1727,11 @@ impl MaybeReadable for Event {
 				// exactly the number of bytes specified, ignoring them entirely.
 				let tlv_len: BigSize = Readable::read(reader)?;
 				FixedLengthReader::new(reader, tlv_len.0)
-					.eat_remaining().map_err(|_| msgs::DecodeError::ShortRead)?;
+					.eat_remaining()
+					.map_err(|_| msgs::DecodeError::ShortRead)?;
 				Ok(None)
 			},
-			_ => Err(msgs::DecodeError::InvalidValue)
+			_ => Err(msgs::DecodeError::InvalidValue),
 		}
 	}
 }
@@ -1882,7 +1979,7 @@ pub enum MessageSendEvent {
 		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
 		/// The action which should be taken.
-		action: msgs::ErrorAction
+		action: msgs::ErrorAction,
 	},
 	/// Query a peer for channels with funding transaction UTXOs in a block range.
 	SendChannelRangeQuery {
@@ -1964,7 +2061,9 @@ pub trait EventsProvider {
 	/// Processes any events generated since the last call using the given event handler.
 	///
 	/// See the trait-level documentation for requirements.
-	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler;
+	fn process_pending_events<H: Deref>(&self, handler: H)
+	where
+		H::Target: EventHandler;
 }
 
 /// A trait implemented for objects handling events from [`EventsProvider`].
@@ -1979,7 +2078,10 @@ pub trait EventHandler {
 	fn handle_event(&self, event: Event);
 }
 
-impl<F> EventHandler for F where F: Fn(Event) {
+impl<F> EventHandler for F
+where
+	F: Fn(Event),
+{
 	fn handle_event(&self, event: Event) {
 		self(event)
 	}

@@ -1,12 +1,12 @@
+use super::{LockHeldState, LockTestExt};
 pub use ::alloc::sync::Arc;
+use core::cell::{Ref, RefCell, RefMut};
 use core::ops::{Deref, DerefMut};
-use core::cell::{RefCell, Ref, RefMut};
-use super::{LockTestExt, LockHeldState};
 
 pub type LockResult<Guard> = Result<Guard, ()>;
 
 pub struct Mutex<T: ?Sized> {
-	inner: RefCell<T>
+	inner: RefCell<T>,
 }
 
 #[must_use = "if unused the Mutex will immediately unlock"]
@@ -45,16 +45,21 @@ impl<T> Mutex<T> {
 impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {
 	#[inline]
 	fn held_by_thread(&self) -> LockHeldState {
-		if self.inner.try_borrow_mut().is_err() { return LockHeldState::HeldByThread; }
-		else { return LockHeldState::NotHeldByThread; }
+		if self.inner.try_borrow_mut().is_err() {
+			return LockHeldState::HeldByThread;
+		} else {
+			return LockHeldState::NotHeldByThread;
+		}
 	}
 	type ExclLock = MutexGuard<'a, T>;
 	#[inline]
-	fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> { self.lock().unwrap() }
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> MutexGuard<T> {
+		self.lock().unwrap()
+	}
 }
 
 pub struct RwLock<T: ?Sized> {
-	inner: RefCell<T>
+	inner: RefCell<T>,
 }
 
 pub struct RwLockReadGuard<'a, T: ?Sized + 'a> {
@@ -103,7 +108,7 @@ impl<T> RwLock<T> {
 	pub fn try_write<'a>(&'a self) -> LockResult<RwLockWriteGuard<'a, T>> {
 		match self.inner.try_borrow_mut() {
 			Ok(lock) => Ok(RwLockWriteGuard { lock }),
-			Err(_) => Err(())
+			Err(_) => Err(()),
 		}
 	}
 }
@@ -111,12 +116,17 @@ impl<T> RwLock<T> {
 impl<'a, T: 'a> LockTestExt<'a> for RwLock<T> {
 	#[inline]
 	fn held_by_thread(&self) -> LockHeldState {
-		if self.inner.try_borrow_mut().is_err() { return LockHeldState::HeldByThread; }
-		else { return LockHeldState::NotHeldByThread; }
+		if self.inner.try_borrow_mut().is_err() {
+			return LockHeldState::HeldByThread;
+		} else {
+			return LockHeldState::NotHeldByThread;
+		}
 	}
 	type ExclLock = RwLockWriteGuard<'a, T>;
 	#[inline]
-	fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<T> { self.write().unwrap() }
+	fn unsafe_well_ordered_double_lock_self(&'a self) -> RwLockWriteGuard<T> {
+		self.write().unwrap()
+	}
 }
 
 pub type FairRwLock<T> = RwLock<T>;

@@ -21,8 +21,8 @@
 //! [blinded paths]: crate::blinded_path::BlindedPath
 //! [`OnionMessenger`]: self::messenger::OnionMessenger
 
+#[cfg(test)]
+mod functional_tests;
 pub mod messenger;
 pub mod offers;
 pub mod packet;
-#[cfg(test)]
-mod functional_tests;

@@ -1,9 +1,9 @@
 //! Simple RPC client implementation which implements [`BlockSource`] against a Bitcoin Core RPC
 //! endpoint.
 
-use crate::{BlockData, BlockHeaderData, BlockSource, AsyncBlockSourceResult};
-use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
 use crate::gossip::UtxoSource;
+use crate::http::{HttpClient, HttpEndpoint, HttpError, JsonResponse};
+use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::OutPoint;
@@ -28,9 +28,9 @@ pub struct RpcError {
 }
 
 impl fmt::Display for RpcError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "RPC error {}: {}", self.code, self.message)
-    }
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "RPC error {}: {}", self.code, self.message)
+	}
 }
 
 impl Error for RpcError {}
@@ -63,8 +63,12 @@ impl RpcClient {
 	///
 	/// When an `Err` is returned, [`std::io::Error::into_inner`] may contain an [`RpcError`] if
 	/// [`std::io::Error::kind`] is [`std::io::ErrorKind::Other`].
-	pub async fn call_method<T>(&self, method: &str, params: &[serde_json::Value]) -> std::io::Result<T>
-	where JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error> {
+	pub async fn call_method<T>(
+		&self, method: &str, params: &[serde_json::Value],
+	) -> std::io::Result<T>
+	where
+		JsonResponse: TryFrom<Vec<u8>, Error = std::io::Error> + TryInto<T, Error = std::io::Error>,
+	{
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = self.endpoint.path();
 		let content = serde_json::json!({
@@ -73,9 +77,13 @@ impl RpcClient {
 			"id": &self.id.fetch_add(1, Ordering::AcqRel).to_string()
 		});
 
-		let mut client = if let Some(client) = self.client.lock().unwrap().take() { client }
-			else { HttpClient::connect(&self.endpoint)? };
-		let http_response = client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await;
+		let mut client = if let Some(client) = self.client.lock().unwrap().take() {
+			client
+		} else {
+			HttpClient::connect(&self.endpoint)?
+		};
+		let http_response =
+			client.post::<JsonResponse>(&uri, &host, &self.basic_auth, content).await;
 		*self.client.lock().unwrap() = Some(client);
 
 		let mut response = match http_response {
@@ -93,23 +101,30 @@ impl RpcClient {
 		};
 
 		if !response.is_object() {
-			return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON object"));
+			return Err(std::io::Error::new(
+				std::io::ErrorKind::InvalidData,
+				"expected JSON object",
+			));
 		}
 
 		let error = &response["error"];
 		if !error.is_null() {
 			// TODO: Examine error code for a more precise std::io::ErrorKind.
-			let rpc_error = RpcError { 
-				code: error["code"].as_i64().unwrap_or(-1), 
-				message: error["message"].as_str().unwrap_or("unknown error").to_string() 
+			let rpc_error = RpcError {
+				code: error["code"].as_i64().unwrap_or(-1),
+				message: error["message"].as_str().unwrap_or("unknown error").to_string(),
 			};
 			return Err(std::io::Error::new(std::io::ErrorKind::Other, rpc_error));
 		}
 
 		let result = match response.get_mut("result") {
 			Some(result) => result.take(),
-			None =>
-				return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "expected JSON result")),
+			None => {
+				return Err(std::io::Error::new(
+					std::io::ErrorKind::InvalidData,
+					"expected JSON result",
+				))
+			},
 		};
 
 		JsonResponse(result).try_into()
@@ -117,14 +132,18 @@ impl RpcClient {
 }
 
 impl BlockSource for RpcClient {
-	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, _height: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
+	fn get_header<'a>(
+		&'a self, header_hash: &'a BlockHash, _height: Option<u32>,
+	) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 		Box::pin(async move {
 			let header_hash = serde_json::json!(header_hash.to_string());
 			Ok(self.call_method("getblockheader", &[header_hash]).await?)
 		})
 	}
 
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
+	fn get_block<'a>(
+		&'a self, header_hash: &'a BlockHash,
+	) -> AsyncBlockSourceResult<'a, BlockData> {
 		Box::pin(async move {
 			let header_hash = serde_json::json!(header_hash.to_string());
 			let verbosity = serde_json::json!(0);
@@ -133,14 +152,14 @@ impl BlockSource for RpcClient {
 	}
 
 	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
-		Box::pin(async move {
-			Ok(self.call_method("getblockchaininfo", &[]).await?)
-		})
+		Box::pin(async move { Ok(self.call_method("getblockchaininfo", &[]).await?) })
 	}
 }
 
 impl UtxoSource for RpcClient {
-	fn get_block_hash_by_height<'a>(&'a self, block_height: u32) -> AsyncBlockSourceResult<'a, BlockHash> {
+	fn get_block_hash_by_height<'a>(
+		&'a self, block_height: u32,
+	) -> AsyncBlockSourceResult<'a, BlockHash> {
 		Box::pin(async move {
 			let height_param = serde_json::json!(block_height);
 			Ok(self.call_method("getblockhash", &[height_param]).await?)
@@ -152,8 +171,8 @@ impl UtxoSource for RpcClient {
 			let txid_param = serde_json::json!(outpoint.txid.to_string());
 			let vout_param = serde_json::json!(outpoint.vout);
 			let include_mempool = serde_json::json!(false);
-			let utxo_opt: serde_json::Value = self.call_method(
-				"gettxout", &[txid_param, vout_param, include_mempool]).await?;
+			let utxo_opt: serde_json::Value =
+				self.call_method("gettxout", &[txid_param, vout_param, include_mempool]).await?;
 			Ok(!utxo_opt.is_null())
 		})
 	}
@@ -229,7 +248,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn call_method_returning_missing_result() {
-		let response = serde_json::json!({  });
+		let response = serde_json::json!({});
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
 

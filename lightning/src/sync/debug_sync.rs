@@ -5,26 +5,30 @@ use core::time::Duration;
 use std::cell::RefCell;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Condvar as StdCondvar;
 use std::sync::Mutex as StdMutex;
 use std::sync::MutexGuard as StdMutexGuard;
 use std::sync::RwLock as StdRwLock;
 use std::sync::RwLockReadGuard as StdRwLockReadGuard;
 use std::sync::RwLockWriteGuard as StdRwLockWriteGuard;
-use std::sync::Condvar as StdCondvar;
 
 pub use std::sync::WaitTimeoutResult;
 
 use crate::prelude::HashMap;
 
-use super::{LockTestExt, LockHeldState};
+use super::{LockHeldState, LockTestExt};
 
 #[cfg(feature = "backtrace")]
 use {crate::prelude::hash_map, backtrace::Backtrace, std::sync::Once};
 
 #[cfg(not(feature = "backtrace"))]
-struct Backtrace{}
+struct Backtrace {}
 #[cfg(not(feature = "backtrace"))]
-impl Backtrace { fn new() -> Backtrace { Backtrace {} } }
+impl Backtrace {
+	fn new() -> Backtrace {
+		Backtrace {}
+	}
+}
 
 pub type LockResult<Guard> = Result<Guard, ()>;
 
@@ -37,22 +41,30 @@ impl Condvar {
 		Condvar { inner: StdCondvar::new() }
 	}
 
-	pub fn wait_while<'a, T, F: FnMut(&mut T) -> bool>(&'a self, guard: MutexGuard<'a, T>, condition: F)
-	-> LockResult<MutexGuard<'a, T>> {
+	pub fn wait_while<'a, T, F: FnMut(&mut T) -> bool>(
+		&'a self, guard: MutexGuard<'a, T>, condition: F,
+	) -> LockResult<MutexGuard<'a, T>> {
 		let mutex: &'a Mutex<T> = guard.mutex;
-		self.inner.wait_while(guard.into_inner(), condition).map(|lock| MutexGuard { mutex, lock })
+		self.inner
+			.wait_while(guard.into_inner(), condition)
+			.map(|lock| MutexGuard { mutex, lock })
 			.map_err(|_| ())
 	}
 
 	#[allow(unused)]
-	pub fn wait_timeout_while<'a, T, F: FnMut(&mut T) -> bool>(&'a self, guard: MutexGuard<'a, T>, dur: Duration, condition: F)
-	-> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
+	pub fn wait_timeout_while<'a, T, F: FnMut(&mut T) -> bool>(
+		&'a self, guard: MutexGuard<'a, T>, dur: Duration, condition: F,
+	) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
 		let mutex = guard.mutex;
-		self.inner.wait_timeout_while(guard.into_inner(), dur, condition).map_err(|_| ())
+		self.inner
+			.wait_timeout_while(guard.into_inner(), dur, condition)
+			.map_err(|_| ())
 			.map(|(lock, e)| (MutexGuard { mutex, lock }, e))
 	}
 
-	pub fn notify_all(&self) { self.inner.notify_all(); }
+	pub fn notify_all(&self) {
+		self.inner.notify_all();
+	}
 }
 
 thread_local! {
@@ -99,12 +111,17 @@ fn locate_call_symbol(backtrace: &Backtrace) -> (String, Option<u32>) {
 						symbol_after_latest_debug_sync = Some(symbol);
 						found_debug_sync = false;
 					}
-				} else { found_debug_sync = true; }
+				} else {
+					found_debug_sync = true;
+				}
 			}
 		}
 	}
 	let symbol = symbol_after_latest_debug_sync.expect("Couldn't find lock call symbol");
-	(format!("{}:{}", symbol.filename().unwrap().display(), symbol.lineno().unwrap()), symbol.colno())
+	(
+		format!("{}:{}", symbol.filename().unwrap().display(), symbol.lineno().unwrap()),
+		symbol.colno(),
+	)
 }
 
 impl LockMetadata {
@@ -122,16 +139,20 @@ impl LockMetadata {
 		{
 			let (lock_constr_location, lock_constr_colno) =
 				locate_call_symbol(&res._lock_construction_bt);
-			LOCKS_INIT.call_once(|| { unsafe { LOCKS = Some(StdMutex::new(HashMap::new())); } });
+			LOCKS_INIT.call_once(|| unsafe {
+				LOCKS = Some(StdMutex::new(HashMap::new()));
+			});
 			let mut locks = unsafe { LOCKS.as_ref() }.unwrap().lock().unwrap();
 			match locks.entry(lock_constr_location) {
 				hash_map::Entry::Occupied(e) => {
 					assert_eq!(lock_constr_colno,
 						locate_call_symbol(&e.get()._lock_construction_bt).1,
 						"Because Windows doesn't support column number results in backtraces, we cannot construct two mutexes on the same line or we risk lockorder detection false positives.");
-					return Arc::clone(e.get())
+					return Arc::clone(e.get());
 				},
-				hash_map::Entry::Vacant(e) => { e.insert(Arc::clone(&res)); },
+				hash_map::Entry::Vacant(e) => {
+					e.insert(Arc::clone(&res));
+				},
 			}
 		}
 		res
@@ -211,7 +232,8 @@ impl LockMetadata {
 			let mut locked_before = this.locked_before.lock().unwrap();
 			for (locked_idx, locked) in held.borrow().iter() {
 				if !locked_before.contains_key(locked_idx) {
-					let lockdep = LockDep { lock: Arc::clone(locked), _lockdep_trace: Backtrace::new() };
+					let lockdep =
+						LockDep { lock: Arc::clone(locked), _lockdep_trace: Backtrace::new() };
 					locked_before.insert(*locked_idx, lockdep);
 				}
 			}
@@ -280,7 +302,8 @@ impl<T> Mutex<T> {
 	}
 
 	pub fn try_lock<'a>(&'a self) -> LockResult<MutexGuard<'a, T>> {
-		let res = self.inner.try_lock().map(|lock| MutexGuard { mutex: self, lock }).map_err(|_| ());
+		let res =
+			self.inner.try_lock().map(|lock| MutexGuard { mutex: self, lock }).map_err(|_| ());
 		if res.is_ok() {
 			LockMetadata::try_locked(&self.deps);
 		}
@@ -374,7 +397,11 @@ impl<T> RwLock<T> {
 	}
 
 	pub fn try_write<'a>(&'a self) -> LockResult<RwLockWriteGuard<'a, T>> {
-		let res = self.inner.try_write().map(|guard| RwLockWriteGuard { lock: self, guard }).map_err(|_| ());
+		let res = self
+			.inner
+			.try_write()
+			.map(|guard| RwLockWriteGuard { lock: self, guard })
+			.map_err(|_| ());
 		if res.is_ok() {
 			LockMetadata::try_locked(&self.deps);
 		}

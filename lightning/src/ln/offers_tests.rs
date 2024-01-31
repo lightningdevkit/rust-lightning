@@ -40,10 +40,9 @@
 //! Nodes without channels are disconnected and connected as needed to ensure that deterministic
 //! blinded paths are used.
 
-use core::time::Duration;
 use crate::blinded_path::BlindedPath;
 use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
-use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, Retry, self};
+use crate::ln::channelmanager::{self, PaymentId, RecentPaymentDetails, Retry};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, OnionMessage, OnionMessageHandler};
 use crate::offers::invoice::Bolt12Invoice;
@@ -53,6 +52,7 @@ use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::PeeledOnion;
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
+use core::time::Duration;
 
 use crate::prelude::*;
 
@@ -65,7 +65,7 @@ macro_rules! expect_recent_payment {
 			Some(_) => panic!("Unexpected recent payment state"),
 			None => panic!("No recent payments"),
 		}
-	}
+	};
 }
 
 fn connect_peers<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>) {
@@ -99,7 +99,7 @@ fn disconnect_peers<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, peers: &[&Node<'a, 'b
 }
 
 fn route_bolt12_payment<'a, 'b, 'c>(
-	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], invoice: &Bolt12Invoice
+	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], invoice: &Bolt12Invoice,
 ) {
 	// Monitor added when handling the invoice onion message.
 	check_added_monitors(node, 1);
@@ -112,34 +112,35 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 	// invoice contains the payment_hash but it was encrypted inside an onion message.
 	let amount_msats = invoice.amount_msats();
 	let payment_hash = invoice.payment_hash();
-	do_pass_along_path(
-		node, path, amount_msats, payment_hash, None, ev, false, false, None, false
-	);
+	do_pass_along_path(node, path, amount_msats, payment_hash, None, ev, false, false, None, false);
 }
 
 fn claim_bolt12_payment<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>]) {
 	let recipient = &path[path.len() - 1];
 	match get_event!(recipient, Event::PaymentClaimable) {
 		Event::PaymentClaimable {
-			purpose: PaymentPurpose::InvoicePayment {
-				payment_preimage: Some(payment_preimage), ..
-			}, ..
+			purpose: PaymentPurpose::InvoicePayment { payment_preimage: Some(payment_preimage), .. },
+			..
 		} => claim_payment(node, path, payment_preimage),
 		_ => panic!(),
 	};
 }
 
 fn extract_invoice_request<'a, 'b, 'c>(
-	node: &Node<'a, 'b, 'c>, message: &OnionMessage
+	node: &Node<'a, 'b, 'c>, message: &OnionMessage,
 ) -> (InvoiceRequest, Option<BlindedPath>) {
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Receive(message, _, reply_path)) => match message {
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
 				OffersMessage::InvoiceRequest(invoice_request) => (invoice_request, reply_path),
 				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
-				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
+				OffersMessage::InvoiceError(error) => {
+					panic!("Unexpected invoice_error: {:?}", error)
+				},
 			},
-			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
+			ParsedOnionMessageContents::Custom(message) => {
+				panic!("Unexpected custom message: {:?}", message)
+			},
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
@@ -150,11 +151,17 @@ fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) 
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Receive(message, _, _)) => match message {
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
-				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
+				OffersMessage::InvoiceRequest(invoice_request) => {
+					panic!("Unexpected invoice_request: {:?}", invoice_request)
+				},
 				OffersMessage::Invoice(invoice) => invoice,
-				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
+				OffersMessage::InvoiceError(error) => {
+					panic!("Unexpected invoice_error: {:?}", error)
+				},
 			},
-			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
+			ParsedOnionMessageContents::Custom(message) => {
+				panic!("Unexpected custom message: {:?}", message)
+			},
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
@@ -162,16 +169,20 @@ fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) 
 }
 
 fn extract_invoice_error<'a, 'b, 'c>(
-	node: &Node<'a, 'b, 'c>, message: &OnionMessage
+	node: &Node<'a, 'b, 'c>, message: &OnionMessage,
 ) -> InvoiceError {
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Receive(message, _, _)) => match message {
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
-				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
+				OffersMessage::InvoiceRequest(invoice_request) => {
+					panic!("Unexpected invoice_request: {:?}", invoice_request)
+				},
 				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
 				OffersMessage::InvoiceError(error) => error,
 			},
-			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
+			ParsedOnionMessageContents::Custom(message) => {
+				panic!("Unexpected custom message: {:?}", message)
+			},
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
@@ -195,7 +206,9 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 
 	let node_chanmgrs = create_node_chanmgrs(
-		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+		6,
+		&node_cfgs,
+		&[None, Some(accept_forward_cfg), None, None, None, None],
 	);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 
@@ -216,10 +229,13 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
-	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+	let offer = alice
+		.node
+		.create_offer_builder("coffee".to_string())
+		.unwrap()
 		.amount_msats(10_000_000)
-		.build().unwrap();
+		.build()
+		.unwrap();
 	assert_ne!(offer.signing_pubkey(), alice_id);
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -227,7 +243,9 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	}
 
 	let payment_id = PaymentId([1; 32]);
-	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+	david
+		.node
+		.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
 		.unwrap();
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -284,7 +302,9 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 
 	let node_chanmgrs = create_node_chanmgrs(
-		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+		6,
+		&node_cfgs,
+		&[None, Some(accept_forward_cfg), None, None, None, None],
 	);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 
@@ -307,12 +327,19 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
-	let refund = david.node
+	let refund = david
+		.node
 		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+			"refund".to_string(),
+			10_000_000,
+			absolute_expiry,
+			payment_id,
+			Retry::Attempts(0),
+			None,
 		)
 		.unwrap()
-		.build().unwrap();
+		.build()
+		.unwrap();
 	assert_eq!(refund.amount_msats(), 10_000_000);
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
 	assert_ne!(refund.payer_id(), david_id);
@@ -364,10 +391,13 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	let bob = &nodes[1];
 	let bob_id = bob.node.get_our_node_id();
 
-	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+	let offer = alice
+		.node
+		.create_offer_builder("coffee".to_string())
+		.unwrap()
 		.amount_msats(10_000_000)
-		.build().unwrap();
+		.build()
+		.unwrap();
 	assert_ne!(offer.signing_pubkey(), alice_id);
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -423,12 +453,19 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
-	let refund = bob.node
+	let refund = bob
+		.node
 		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+			"refund".to_string(),
+			10_000_000,
+			absolute_expiry,
+			payment_id,
+			Retry::Attempts(0),
+			None,
 		)
 		.unwrap()
-		.build().unwrap();
+		.build()
+		.unwrap();
 	assert_eq!(refund.amount_msats(), 10_000_000);
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
 	assert_ne!(refund.payer_id(), bob_id);
@@ -475,11 +512,14 @@ fn pays_for_offer_without_blinded_paths() {
 	let bob = &nodes[1];
 	let bob_id = bob.node.get_our_node_id();
 
-	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+	let offer = alice
+		.node
+		.create_offer_builder("coffee".to_string())
+		.unwrap()
 		.clear_paths()
 		.amount_msats(10_000_000)
-		.build().unwrap();
+		.build()
+		.unwrap();
 	assert_eq!(offer.signing_pubkey(), alice_id);
 	assert!(offer.paths().is_empty());
 
@@ -519,13 +559,20 @@ fn pays_for_refund_without_blinded_paths() {
 
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
-	let refund = bob.node
+	let refund = bob
+		.node
 		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+			"refund".to_string(),
+			10_000_000,
+			absolute_expiry,
+			payment_id,
+			Retry::Attempts(0),
+			None,
 		)
 		.unwrap()
 		.clear_paths()
-		.build().unwrap();
+		.build()
+		.unwrap();
 	assert_eq!(refund.payer_id(), bob_id);
 	assert!(refund.paths().is_empty());
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
@@ -573,7 +620,12 @@ fn fails_creating_refund_without_blinded_paths() {
 	let payment_id = PaymentId([1; 32]);
 
 	match nodes[0].node.create_refund_builder(
-		"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		"refund".to_string(),
+		10_000,
+		absolute_expiry,
+		payment_id,
+		Retry::Attempts(0),
+		None,
 	) {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
@@ -602,10 +654,13 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
-	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+	let offer = alice
+		.node
+		.create_offer_builder("coffee".to_string())
+		.unwrap()
 		.amount_msats(10_000_000)
-		.build().unwrap();
+		.build()
+		.unwrap();
 
 	let payment_id = PaymentId([1; 32]);
 
@@ -636,17 +691,19 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
 
-	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+	let offer = alice
+		.node
+		.create_offer_builder("coffee".to_string())
+		.unwrap()
 		.amount_msats(10_000_000)
-		.build().unwrap();
+		.build()
+		.unwrap();
 
 	let payment_id = PaymentId([1; 32]);
-	assert!(
-		david.node.pay_for_offer(
-			&offer, None, None, None, payment_id, Retry::Attempts(0), None
-		).is_ok()
-	);
+	assert!(david
+		.node
+		.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+		.is_ok());
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
@@ -668,15 +725,26 @@ fn fails_creating_refund_with_duplicate_payment_id() {
 
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
-	assert!(
-		nodes[0].node.create_refund_builder(
-			"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		).is_ok()
-	);
+	assert!(nodes[0]
+		.node
+		.create_refund_builder(
+			"refund".to_string(),
+			10_000,
+			absolute_expiry,
+			payment_id,
+			Retry::Attempts(0),
+			None
+		)
+		.is_ok());
 	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
 
 	match nodes[0].node.create_refund_builder(
-		"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		"refund".to_string(),
+		10_000,
+		absolute_expiry,
+		payment_id,
+		Retry::Attempts(0),
+		None,
 	) {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
@@ -701,7 +769,9 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 
 	let node_chanmgrs = create_node_chanmgrs(
-		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+		6,
+		&node_cfgs,
+		&[None, Some(accept_forward_cfg), None, None, None, None],
 	);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 
@@ -722,13 +792,18 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
-	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+	let offer = alice
+		.node
+		.create_offer_builder("coffee".to_string())
+		.unwrap()
 		.amount_msats(10_000_000)
-		.build().unwrap();
+		.build()
+		.unwrap();
 
 	let payment_id = PaymentId([1; 32]);
-	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+	david
+		.node
+		.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
 		.unwrap();
 
 	connect_peers(david, bob);
@@ -767,7 +842,9 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 
 	let node_chanmgrs = create_node_chanmgrs(
-		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+		6,
+		&node_cfgs,
+		&[None, Some(accept_forward_cfg), None, None, None, None],
 	);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 
@@ -786,12 +863,19 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
 
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
-	let refund = david.node
+	let refund = david
+		.node
 		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+			"refund".to_string(),
+			10_000_000,
+			absolute_expiry,
+			payment_id,
+			Retry::Attempts(0),
+			None,
 		)
 		.unwrap()
-		.build().unwrap();
+		.build()
+		.unwrap();
 
 	match alice.node.request_refund_payment(&refund) {
 		Ok(_) => panic!("Expected error"),
@@ -814,7 +898,9 @@ fn fails_paying_invoice_more_than_once() {
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 
 	let node_chanmgrs = create_node_chanmgrs(
-		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+		6,
+		&node_cfgs,
+		&[None, Some(accept_forward_cfg), None, None, None, None],
 	);
 	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
 
@@ -837,12 +923,19 @@ fn fails_paying_invoice_more_than_once() {
 
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
-	let refund = david.node
+	let refund = david
+		.node
 		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+			"refund".to_string(),
+			10_000_000,
+			absolute_expiry,
+			payment_id,
+			Retry::Attempts(0),
+			None,
 		)
 		.unwrap()
-		.build().unwrap();
+		.build()
+		.unwrap();
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
 	// Alice sends the first invoice

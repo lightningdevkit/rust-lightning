@@ -1,10 +1,13 @@
+use crate::prelude::*;
+use bech32::{u5, Base32Len, ToBase32, WriteBase32};
 use core::fmt;
 use core::fmt::{Display, Formatter};
-use bech32::{ToBase32, u5, WriteBase32, Base32Len};
-use crate::prelude::*;
 
-use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, Bolt11InvoiceSignature, PositiveTimestamp,
-	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawBolt11Invoice, RawDataPart};
+use super::{
+	constants, Bolt11Invoice, Bolt11InvoiceSignature, Currency, Description, ExpiryTime, Fallback,
+	MinFinalCltvExpiryDelta, PayeePubKey, PositiveTimestamp, PrivateRoute, RawDataPart, RawHrp,
+	RawTaggedField, Sha256, SiPrefix, SignedRawBolt11Invoice, TaggedField,
+};
 
 /// Converts a stream of bytes written to it to base32. On finalization the according padding will
 /// be applied. That means the results of writing two data blocks with one or two `BytesToBase32`
@@ -24,11 +27,7 @@ impl<'a, W: WriteBase32> BytesToBase32<'a, W> {
 	/// Create a new bytes-to-base32 converter with `writer` as  a sink for the resulting base32
 	/// data.
 	pub fn new(writer: &'a mut W) -> BytesToBase32<'a, W> {
-		BytesToBase32 {
-			writer,
-			buffer: 0,
-			buffer_bits: 0,
-		}
+		BytesToBase32 { writer, buffer: 0, buffer_bits: 0 }
 	}
 
 	/// Add more bytes to the current conversion unit
@@ -44,9 +43,7 @@ impl<'a, W: WriteBase32> BytesToBase32<'a, W> {
 		// buffer holds too many bits, so we don't have to combine buffer bits with new bits
 		// from this rounds byte.
 		if self.buffer_bits >= 5 {
-			self.writer.write_u5(
-				u5::try_from_u8((self.buffer & 0b11111000) >> 3 ).expect("<32")
-			)?;
+			self.writer.write_u5(u5::try_from_u8((self.buffer & 0b11111000) >> 3).expect("<32"))?;
 			self.buffer <<= 5;
 			self.buffer_bits -= 5;
 		}
@@ -63,18 +60,16 @@ impl<'a, W: WriteBase32> BytesToBase32<'a, W> {
 		Ok(())
 	}
 
-	pub fn finalize(mut self) ->  Result<(), W::Err> {
+	pub fn finalize(mut self) -> Result<(), W::Err> {
 		self.inner_finalize()?;
 		core::mem::forget(self);
 		Ok(())
 	}
 
-	fn inner_finalize(&mut self) -> Result<(), W::Err>{
+	fn inner_finalize(&mut self) -> Result<(), W::Err> {
 		// There can be at most two u5s left in the buffer after processing all bytes, write them.
 		if self.buffer_bits >= 5 {
-			self.writer.write_u5(
-				u5::try_from_u8((self.buffer & 0b11111000) >> 3).expect("<32")
-			)?;
+			self.writer.write_u5(u5::try_from_u8((self.buffer & 0b11111000) >> 3).expect("<32"))?;
 			self.buffer <<= 5;
 			self.buffer_bits -= 5;
 		}
@@ -115,7 +110,7 @@ impl Display for Bolt11Invoice {
 impl Display for SignedRawBolt11Invoice {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
 		let hrp = self.raw_invoice.hrp.to_string();
-		let mut data  = self.raw_invoice.data.to_base32();
+		let mut data = self.raw_invoice.data.to_base32();
 		data.extend_from_slice(&self.signature.to_base32());
 
 		bech32::encode_to_fmt(f, &hrp, data, bech32::Variant::Bech32).expect("HRP is valid")?;
@@ -137,13 +132,7 @@ impl Display for RawHrp {
 			None => String::new(),
 		};
 
-		write!(
-			f,
-			"ln{}{}{}",
-			self.currency,
-			amount,
-			si_prefix
-		)
+		write!(f, "ln{}{}{}", self.currency, amount, si_prefix)
 	}
 }
 
@@ -162,7 +151,9 @@ impl Display for Currency {
 
 impl Display for SiPrefix {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-		write!(f, "{}",
+		write!(
+			f,
+			"{}",
 			match *self {
 				SiPrefix::Milli => "m",
 				SiPrefix::Micro => "u",
@@ -215,7 +206,8 @@ fn encode_int_be_base256<T: Into<u64>>(int: T) -> Vec<u8> {
 /// Appends the default value of `T` to the front of the `in_vec` till it reaches the length
 /// `target_length`. If `in_vec` already is too lang `None` is returned.
 fn try_stretch<T>(mut in_vec: Vec<T>, target_len: usize) -> Option<Vec<T>>
-	where T: Default + Copy
+where
+	T: Default + Copy,
 {
 	if in_vec.len() > target_len {
 		None
@@ -248,7 +240,7 @@ impl ToBase32 for PositiveTimestamp {
 		// FIXME: use writer for int encoding
 		writer.write(
 			&try_stretch(encode_int_be_base32(self.as_unix_timestamp()), 7)
-				.expect("Can't be longer due than 7 u5s due to timestamp bounds")
+				.expect("Can't be longer due than 7 u5s due to timestamp bounds"),
 		)
 	}
 }
@@ -256,12 +248,8 @@ impl ToBase32 for PositiveTimestamp {
 impl ToBase32 for RawTaggedField {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		match *self {
-			RawTaggedField::UnknownSemantics(ref content) => {
-				writer.write(content)
-			},
-			RawTaggedField::KnownSemantics(ref tagged_field) => {
-				tagged_field.write_base32(writer)
-			}
+			RawTaggedField::UnknownSemantics(ref content) => writer.write(content),
+			RawTaggedField::KnownSemantics(ref tagged_field) => tagged_field.write_base32(writer),
 		}
 	}
 }
@@ -279,13 +267,13 @@ impl Base32Len for Sha256 {
 
 impl ToBase32 for Description {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
-		self.0.0.as_bytes().write_base32(writer)
+		self.0 .0.as_bytes().write_base32(writer)
 	}
 }
 
 impl Base32Len for Description {
 	fn base32_len(&self) -> usize {
-		self.0.0.as_bytes().base32_len()
+		self.0 .0.as_bytes().base32_len()
 	}
 }
 
@@ -328,7 +316,7 @@ impl Base32Len for MinFinalCltvExpiryDelta {
 impl ToBase32 for Fallback {
 	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
 		match *self {
-			Fallback::SegWitProgram {version: v, program: ref p} => {
+			Fallback::SegWitProgram { version: v, program: ref p } => {
 				writer.write_u5(Into::<u5>::into(v))?;
 				p.write_base32(writer)
 			},
@@ -339,7 +327,7 @@ impl ToBase32 for Fallback {
 			Fallback::ScriptHash(ref hash) => {
 				writer.write_u5(u5::try_from_u8(18).expect("18 < 32"))?;
 				(&hash[..]).write_base32(writer)
-			}
+			},
 		}
 	}
 }
@@ -347,12 +335,10 @@ impl ToBase32 for Fallback {
 impl Base32Len for Fallback {
 	fn base32_len(&self) -> usize {
 		match *self {
-			Fallback::SegWitProgram {program: ref p, ..} => {
+			Fallback::SegWitProgram { program: ref p, .. } => {
 				bytes_size_to_base32_size(p.len()) + 1
 			},
-			Fallback::PubKeyHash(_) | Fallback::ScriptHash(_) => {
-				33
-			},
+			Fallback::PubKeyHash(_) | Fallback::ScriptHash(_) => 33,
 		}
 	}
 }
@@ -363,28 +349,21 @@ impl ToBase32 for PrivateRoute {
 
 		for hop in (self.0).0.iter() {
 			converter.append(&hop.src_node_id.serialize()[..])?;
-			let short_channel_id = try_stretch(
-				encode_int_be_base256(hop.short_channel_id),
-				8
-			).expect("sizeof(u64) == 8");
+			let short_channel_id = try_stretch(encode_int_be_base256(hop.short_channel_id), 8)
+				.expect("sizeof(u64) == 8");
 			converter.append(&short_channel_id)?;
 
-			let fee_base_msat = try_stretch(
-				encode_int_be_base256(hop.fees.base_msat),
-				4
-			).expect("sizeof(u32) == 4");
+			let fee_base_msat = try_stretch(encode_int_be_base256(hop.fees.base_msat), 4)
+				.expect("sizeof(u32) == 4");
 			converter.append(&fee_base_msat)?;
 
-			let fee_proportional_millionths = try_stretch(
-				encode_int_be_base256(hop.fees.proportional_millionths),
-				4
-			).expect("sizeof(u32) == 4");
+			let fee_proportional_millionths =
+				try_stretch(encode_int_be_base256(hop.fees.proportional_millionths), 4)
+					.expect("sizeof(u32) == 4");
 			converter.append(&fee_proportional_millionths)?;
 
-			let cltv_expiry_delta = try_stretch(
-				encode_int_be_base256(hop.cltv_expiry_delta),
-				2
-			).expect("sizeof(u16) == 2");
+			let cltv_expiry_delta = try_stretch(encode_int_be_base256(hop.cltv_expiry_delta), 2)
+				.expect("sizeof(u16) == 2");
 			converter.append(&cltv_expiry_delta)?;
 		}
 
@@ -404,17 +383,18 @@ impl ToBase32 for TaggedField {
 		/// Writes a tagged field: tag, length and data. `tag` should be in `0..32` otherwise the
 		/// function will panic.
 		fn write_tagged_field<W, P>(writer: &mut W, tag: u8, payload: &P) -> Result<(), W::Err>
-			where W: WriteBase32,
-				  P: ToBase32 + Base32Len,
+		where
+			W: WriteBase32,
+			P: ToBase32 + Base32Len,
 		{
 			let len = payload.base32_len();
 			assert!(len < 1024, "Every tagged field data can be at most 1023 bytes long.");
 
 			writer.write_u5(u5::try_from_u8(tag).expect("invalid tag, not in 0..32"))?;
-			writer.write(&try_stretch(
-				encode_int_be_base32(len as u64),
-				2
-			).expect("Can't be longer than 2, see assert above."))?;
+			writer.write(
+				&try_stretch(encode_int_be_base32(len as u64), 2)
+					.expect("Can't be longer than 2, see assert above."),
+			)?;
 			payload.write_base32(writer)
 		}
 
@@ -444,10 +424,10 @@ impl ToBase32 for TaggedField {
 				write_tagged_field(writer, constants::TAG_PRIVATE_ROUTE, route_hops)
 			},
 			TaggedField::PaymentSecret(ref payment_secret) => {
-				  write_tagged_field(writer, constants::TAG_PAYMENT_SECRET, payment_secret)
+				write_tagged_field(writer, constants::TAG_PAYMENT_SECRET, payment_secret)
 			},
 			TaggedField::PaymentMetadata(ref payment_metadata) => {
-				  write_tagged_field(writer, constants::TAG_PAYMENT_METADATA, payment_metadata)
+				write_tagged_field(writer, constants::TAG_PAYMENT_METADATA, payment_metadata)
 			},
 			TaggedField::Features(ref features) => {
 				write_tagged_field(writer, constants::TAG_FEATURES, features)

@@ -1,6 +1,6 @@
-use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockResult};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use super::{LockHeldState, LockTestExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockResult};
 
 /// Rust libstd's RwLock does not provide any fairness guarantees (and, in fact, when used on
 /// Linux with pthreads under the hood, readers trivially and completely starve writers).

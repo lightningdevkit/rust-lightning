@@ -13,16 +13,16 @@
 #[macro_use]
 pub mod functional_test_utils;
 
-pub mod onion_payment;
-pub mod channelmanager;
+pub mod chan_utils;
+mod channel_id;
 pub mod channel_keys;
+pub mod channelmanager;
+pub mod features;
 pub mod inbound_payment;
 pub mod msgs;
+pub mod onion_payment;
 pub mod peer_handler;
-pub mod chan_utils;
-pub mod features;
 pub mod script;
-mod channel_id;
 
 #[cfg(fuzzing)]
 pub mod peer_channel_encryptor;
@@ -46,12 +46,27 @@ pub use onion_utils::create_payment_onion;
 // without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
 // about an unnecessary mut. Thus, we silence the unused_mut warning in two test modules below.
 
+#[cfg(all(test, async_signing))]
+#[allow(unused_mut)]
+mod async_signer_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod blinded_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
+mod chanmon_update_fail_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
 mod functional_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod monitor_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod offers_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod onion_route_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod payment_tests;
@@ -60,28 +75,13 @@ mod payment_tests;
 mod priv_short_conf_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
-mod chanmon_update_fail_tests;
+mod reload_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod reorg_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
-mod reload_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod onion_route_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod monitor_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
 mod shutdown_tests;
-#[cfg(all(test, async_signing))]
-#[allow(unused_mut)]
-mod async_signer_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod offers_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
 
@@ -117,14 +117,14 @@ pub struct PaymentSecret(pub [u8; 32]);
 
 use crate::prelude::*;
 use bitcoin::bech32;
-use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
+use bitcoin::bech32::{u5, Base32Len, FromBase32, ToBase32, WriteBase32};
 
 impl FromBase32 for PaymentSecret {
 	type Err = bech32::Error;
 
 	fn from_base32(field_data: &[u5]) -> Result<PaymentSecret, bech32::Error> {
 		if field_data.len() != 52 {
-			return Err(bech32::Error::InvalidLength)
+			return Err(bech32::Error::InvalidLength);
 		} else {
 			let data_bytes = Vec::<u8>::from_base32(field_data)?;
 			let mut payment_secret = [0; 32];

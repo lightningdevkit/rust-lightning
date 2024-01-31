@@ -1,4 +1,4 @@
-use crate::sync::debug_sync::{RwLock, Mutex};
+use crate::sync::debug_sync::{Mutex, RwLock};
 
 use super::{LockHeldState, LockTestExt};
 

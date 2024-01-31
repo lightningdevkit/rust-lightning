@@ -67,7 +67,9 @@ impl FilesystemStore {
 		}
 	}
 
-	fn get_dest_dir_path(&self, primary_namespace: &str, secondary_namespace: &str) -> std::io::Result<PathBuf> {
+	fn get_dest_dir_path(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> std::io::Result<PathBuf> {
 		let mut dest_dir_path = {
 			#[cfg(target_os = "windows")]
 			{
@@ -91,7 +93,9 @@ impl FilesystemStore {
 }
 
 impl KVStore for FilesystemStore {
-	fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> std::io::Result<Vec<u8>> {
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> std::io::Result<Vec<u8>> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "read")?;
 
 		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
@@ -114,19 +118,19 @@ impl KVStore for FilesystemStore {
 		Ok(buf)
 	}
 
-	fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> std::io::Result<()> {
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8],
+	) -> std::io::Result<()> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "write")?;
 
 		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
 		dest_file_path.push(key);
 
-		let parent_directory = dest_file_path
-			.parent()
-			.ok_or_else(|| {
-				let msg =
-					format!("Could not retrieve parent directory of {}.", dest_file_path.display());
-				std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
-			})?;
+		let parent_directory = dest_file_path.parent().ok_or_else(|| {
+			let msg =
+				format!("Could not retrieve parent directory of {}.", dest_file_path.display());
+			std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
+		})?;
 		fs::create_dir_all(&parent_directory)?;
 
 		// Do a crazy dance with lots of fsync()s to be overly cautious here...
@@ -186,11 +190,11 @@ impl KVStore for FilesystemStore {
 				match res {
 					Ok(()) => {
 						// We fsync the dest file in hopes this will also flush the metadata to disk.
-						let dest_file = fs::OpenOptions::new().read(true).write(true)
-							.open(&dest_file_path)?;
+						let dest_file =
+							fs::OpenOptions::new().read(true).write(true).open(&dest_file_path)?;
 						dest_file.sync_all()?;
 						Ok(())
-					}
+					},
 					Err(e) => Err(e),
 				}
 			}
@@ -201,7 +205,9 @@ impl KVStore for FilesystemStore {
 		res
 	}
 
-	fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> std::io::Result<()> {
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> std::io::Result<()> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "remove")?;
 
 		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
@@ -229,8 +235,10 @@ impl KVStore for FilesystemStore {
 					fs::remove_file(&dest_file_path)?;
 
 					let parent_directory = dest_file_path.parent().ok_or_else(|| {
-						let msg =
-							format!("Could not retrieve parent directory of {}.", dest_file_path.display());
+						let msg = format!(
+							"Could not retrieve parent directory of {}.",
+							dest_file_path.display()
+						);
 						std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
 					})?;
 					let dir_file = fs::OpenOptions::new().read(true).open(parent_directory)?;
@@ -257,8 +265,8 @@ impl KVStore for FilesystemStore {
 					// However, all this is partially based on assumptions and local experiments, as
 					// Windows API is horribly underdocumented.
 					let mut trash_file_path = dest_file_path.clone();
-					let trash_file_ext = format!("{}.trash",
-						self.tmp_file_counter.fetch_add(1, Ordering::AcqRel));
+					let trash_file_ext =
+						format!("{}.trash", self.tmp_file_counter.fetch_add(1, Ordering::AcqRel));
 					trash_file_path.set_extension(trash_file_ext);
 
 					call!(unsafe {
@@ -273,7 +281,9 @@ impl KVStore for FilesystemStore {
 					{
 						// We fsync the trash file in hopes this will also flush the original's file
 						// metadata to disk.
-						let trash_file = fs::OpenOptions::new().read(true).write(true)
+						let trash_file = fs::OpenOptions::new()
+							.read(true)
+							.write(true)
 							.open(&trash_file_path.clone())?;
 						trash_file.sync_all()?;
 					}
@@ -290,7 +300,9 @@ impl KVStore for FilesystemStore {
 		Ok(())
 	}
 
-	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> std::io::Result<Vec<String>> {
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> std::io::Result<Vec<String>> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, None, "list")?;
 
 		let prefixed_dest = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
@@ -327,10 +339,17 @@ impl KVStore for FilesystemStore {
 
 			// If we otherwise don't find a file at the given path something went wrong.
 			if !metadata.is_file() {
-				debug_assert!(false, "Failed to list keys of {}/{}: file couldn't be accessed.",
-					PrintableString(primary_namespace), PrintableString(secondary_namespace));
-				let msg = format!("Failed to list keys of {}/{}: file couldn't be accessed.",
-					PrintableString(primary_namespace), PrintableString(secondary_namespace));
+				debug_assert!(
+					false,
+					"Failed to list keys of {}/{}: file couldn't be accessed.",
+					PrintableString(primary_namespace),
+					PrintableString(secondary_namespace)
+				);
+				let msg = format!(
+					"Failed to list keys of {}/{}: file couldn't be accessed.",
+					PrintableString(primary_namespace),
+					PrintableString(secondary_namespace)
+				);
 				return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
 			}
 
@@ -341,20 +360,36 @@ impl KVStore for FilesystemStore {
 							keys.push(relative_path.to_string())
 						}
 					} else {
-						debug_assert!(false, "Failed to list keys of {}/{}: file path is not valid UTF-8",
-							PrintableString(primary_namespace), PrintableString(secondary_namespace));
-						let msg = format!("Failed to list keys of {}/{}: file path is not valid UTF-8",
-							PrintableString(primary_namespace), PrintableString(secondary_namespace));
+						debug_assert!(
+							false,
+							"Failed to list keys of {}/{}: file path is not valid UTF-8",
+							PrintableString(primary_namespace),
+							PrintableString(secondary_namespace)
+						);
+						let msg = format!(
+							"Failed to list keys of {}/{}: file path is not valid UTF-8",
+							PrintableString(primary_namespace),
+							PrintableString(secondary_namespace)
+						);
 						return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
 					}
-				}
+				},
 				Err(e) => {
-					debug_assert!(false, "Failed to list keys of {}/{}: {}",
-						PrintableString(primary_namespace), PrintableString(secondary_namespace), e);
-					let msg = format!("Failed to list keys of {}/{}: {}",
-						PrintableString(primary_namespace), PrintableString(secondary_namespace), e);
+					debug_assert!(
+						false,
+						"Failed to list keys of {}/{}: {}",
+						PrintableString(primary_namespace),
+						PrintableString(secondary_namespace),
+						e
+					);
+					let msg = format!(
+						"Failed to list keys of {}/{}: {}",
+						PrintableString(primary_namespace),
+						PrintableString(secondary_namespace),
+						e
+					);
 					return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
-				}
+				},
 			}
 		}
 
@@ -371,14 +406,14 @@ mod tests {
 
 	use bitcoin::Txid;
 
-	use lightning::chain::ChannelMonitorUpdateStatus;
 	use lightning::chain::chainmonitor::Persist;
 	use lightning::chain::transaction::OutPoint;
+	use lightning::chain::ChannelMonitorUpdateStatus;
 	use lightning::check_closed_event;
 	use lightning::events::{ClosureReason, MessageSendEventsProvider};
 	use lightning::ln::functional_test_utils::*;
-	use lightning::util::test_utils;
 	use lightning::util::persist::read_channel_monitors;
+	use lightning::util::test_utils;
 	use std::fs;
 	use std::str::FromStr;
 
@@ -388,7 +423,7 @@ mod tests {
 			// fails.
 			match fs::remove_dir_all(&self.data_dir) {
 				Err(e) => println!("Failed to remove test persister directory: {}", e),
-				_ => {}
+				_ => {},
 			}
 		}
 	}
@@ -412,14 +447,23 @@ mod tests {
 
 		let chanmon_cfgs = create_chanmon_cfgs(1);
 		let mut node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
-		let chain_mon_0 = test_utils::TestChainMonitor::new(Some(&chanmon_cfgs[0].chain_source), &chanmon_cfgs[0].tx_broadcaster, &chanmon_cfgs[0].logger, &chanmon_cfgs[0].fee_estimator, &store, node_cfgs[0].keys_manager);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&store,
+			node_cfgs[0].keys_manager,
+		);
 		node_cfgs[0].chain_monitor = chain_mon_0;
 		let node_chanmgrs = create_node_chanmgrs(1, &node_cfgs, &[None]);
 		let nodes = create_network(1, &node_cfgs, &node_chanmgrs);
 
 		// Check that read_channel_monitors() returns error if monitors/ is not a
 		// directory.
-		assert!(read_channel_monitors(&store, nodes[0].keys_manager, nodes[0].keys_manager).is_err());
+		assert!(
+			read_channel_monitors(&store, nodes[0].keys_manager, nodes[0].keys_manager).is_err()
+		);
 	}
 
 	#[test]
@@ -446,8 +490,17 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
-		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
+		nodes[1]
+			.node
+			.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id())
+			.unwrap();
+		check_closed_event!(
+			nodes[1],
+			1,
+			ClosureReason::HolderForceClosed,
+			[nodes[0].node.get_our_node_id()],
+			100000
+		);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
 		let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();
@@ -461,12 +514,15 @@ mod tests {
 		fs::set_permissions(path, perms).unwrap();
 
 		let test_txo = OutPoint {
-			txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
-			index: 0
+			txid: Txid::from_str(
+				"8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be",
+			)
+			.unwrap(),
+			index: 0,
 		};
 		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
 			ChannelMonitorUpdateStatus::UnrecoverableError => {},
-			_ => panic!("unexpected result from persisting new channel")
+			_ => panic!("unexpected result from persisting new channel"),
 		}
 
 		nodes[1].node.get_and_clear_pending_msg_events();
@@ -485,8 +541,17 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
-		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
+		nodes[1]
+			.node
+			.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id())
+			.unwrap();
+		check_closed_event!(
+			nodes[1],
+			1,
+			ClosureReason::HolderForceClosed,
+			[nodes[0].node.get_our_node_id()],
+			100000
+		);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
 		let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();
@@ -498,12 +563,15 @@ mod tests {
 		let store = FilesystemStore::new(":<>/".into());
 
 		let test_txo = OutPoint {
-			txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
-			index: 0
+			txid: Txid::from_str(
+				"8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be",
+			)
+			.unwrap(),
+			index: 0,
 		};
 		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
 			ChannelMonitorUpdateStatus::UnrecoverableError => {},
-			_ => panic!("unexpected result from persisting new channel")
+			_ => panic!("unexpected result from persisting new channel"),
 		}
 
 		nodes[1].node.get_and_clear_pending_msg_events();
@@ -521,6 +589,10 @@ pub mod bench {
 		let store_a = super::FilesystemStore::new("bench_filesystem_store_a".into());
 		let store_b = super::FilesystemStore::new("bench_filesystem_store_b".into());
 		lightning::ln::channelmanager::bench::bench_two_sends(
-			bench, "bench_filesystem_persisted_sends", store_a, store_b);
+			bench,
+			"bench_filesystem_persisted_sends",
+			store_a,
+			store_b,
+		);
 	}
 }
