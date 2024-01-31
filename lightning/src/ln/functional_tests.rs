@@ -10513,6 +10513,90 @@ fn test_remove_expired_inbound_unfunded_channels() {
 	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100000);
 }
 
+#[test]
+fn test_channel_close_when_not_timely_accepted() {
+	// Create network of two nodes
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Simulate peer-disconnects mid-handshake
+	// The channel is initiated from the node 0 side,
+	// but the nodes disconnect before node 1 could send accept channel
+	let create_chan_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
+	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	assert_eq!(open_channel_msg.temporary_channel_id, create_chan_id);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+	// Make sure that we have not removed the OutboundV1Channel from node[0] immediately.
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+	// Since channel was inbound from node[1] perspective, it should have been dropped immediately.
+	assert_eq!(nodes[1].node.list_channels().len(), 0);
+
+	// In the meantime, some time passes.
+	for _ in 0..UNFUNDED_CHANNEL_AGE_LIMIT_TICKS {
+		nodes[0].node.timer_tick_occurred();
+	}
+
+	// Since we disconnected from peer and did not connect back within time,
+	// we should have forced-closed the channel by now.
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+	assert_eq!(nodes[0].node.list_channels().len(), 0);
+
+	{
+		// Since accept channel message was never received
+		// The channel should be forced close by now from node 0 side
+		// and the peer removed from per_peer_state
+		let node_0_per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		assert_eq!(node_0_per_peer_state.len(), 0);
+	}
+}
+
+#[test]
+fn test_rebroadcast_open_channel_when_reconnect_mid_handshake() {
+	// Create network of two nodes
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Simulate peer-disconnects mid-handshake
+	// The channel is initiated from the node 0 side,
+	// but the nodes disconnect before node 1 could send accept channel
+	let create_chan_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
+	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	assert_eq!(open_channel_msg.temporary_channel_id, create_chan_id);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+	// Make sure that we have not removed the OutboundV1Channel from node[0] immediately.
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+	// Since channel was inbound from node[1] perspective, it should have been immediately dropped.
+	assert_eq!(nodes[1].node.list_channels().len(), 0);
+
+	// The peers now reconnect
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+
+	// Make sure the SendOpenChannel message is added to node_0 pending message events
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::SendOpenChannel { msg, .. } => assert_eq!(msg, &open_channel_msg),
+		_ => panic!("Unexpected message."),
+	}
+}
+
 fn do_test_multi_post_event_actions(do_reload: bool) {
 	// Tests handling multiple post-Event actions at once.
 	// There is specific code in ChannelManager to handle channels where multiple post-Event
