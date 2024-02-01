@@ -1,4 +1,4 @@
-#![cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum"))]
+#![cfg(all(not(target_os = "windows"), any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum")))]
 
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 use lightning_transaction_sync::EsploraSyncClient;
