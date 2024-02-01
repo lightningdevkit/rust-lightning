@@ -783,7 +783,7 @@ pub enum Event {
 		/// The outgoing channel between the next node and us. This is only `None` for events
 		/// generated or serialized by versions prior to 0.0.107.
 		next_channel_id: Option<ChannelId>,
-		/// The fee, in milli-satoshis, which was earned as a result of the payment.
+		/// The total fee, in milli-satoshis, which was earned as a result of the payment.
 		///
 		/// Note that if we force-closed the channel over which we forwarded an HTLC while the HTLC
 		/// was pending, the amount the next hop claimed will have been rounded down to the nearest
@@ -794,15 +794,29 @@ pub enum Event {
 		/// If the channel which sent us the payment has been force-closed, we will claim the funds
 		/// via an on-chain transaction. In that case we do not yet know the on-chain transaction
 		/// fees which we will spend and will instead set this to `None`. It is possible duplicate
-		/// `PaymentForwarded` events are generated for the same payment iff `fee_earned_msat` is
+		/// `PaymentForwarded` events are generated for the same payment iff `total_fee_earned_msat` is
 		/// `None`.
-		fee_earned_msat: Option<u64>,
+		total_fee_earned_msat: Option<u64>,
+		/// The share of the total fee, in milli-satoshis, which was withheld in addition to the
+		/// forwarding fee.
+		///
+		/// This will only be `Some` if we forwarded an intercepted HTLC with less than the
+		/// expected amount. This means our counterparty accepted to receive less than the invoice
+		/// amount, e.g., by claiming the payment featuring a corresponding
+		/// [`PaymentClaimable::counterparty_skimmed_fee_msat`].
+		///
+		/// Will also always be `None` for events serialized with LDK prior to version 0.0.122.
+		///
+		/// The caveat described above the `total_fee_earned_msat` field applies here as well.
+		///
+		/// [`PaymentClaimable::counterparty_skimmed_fee_msat`]: Self::PaymentClaimable::counterparty_skimmed_fee_msat
+		skimmed_fee_msat: Option<u64>,
 		/// If this is `true`, the forwarded HTLC was claimed by our counterparty via an on-chain
 		/// transaction.
 		claim_from_onchain_tx: bool,
 		/// The final amount forwarded, in milli-satoshis, after the fee is deducted.
 		///
-		/// The caveat described above the `fee_earned_msat` field applies here as well.
+		/// The caveat described above the `total_fee_earned_msat` field applies here as well.
 		outbound_amount_forwarded_msat: Option<u64>,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is being opened and pending
@@ -1083,16 +1097,17 @@ impl Writeable for Event {
 				});
 			}
 			&Event::PaymentForwarded {
-				fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
-				next_channel_id, outbound_amount_forwarded_msat
+				total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
+				next_channel_id, outbound_amount_forwarded_msat, skimmed_fee_msat,
 			} => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
-					(0, fee_earned_msat, option),
+					(0, total_fee_earned_msat, option),
 					(1, prev_channel_id, option),
 					(2, claim_from_onchain_tx, required),
 					(3, next_channel_id, option),
 					(5, outbound_amount_forwarded_msat, option),
+					(7, skimmed_fee_msat, option),
 				});
 			},
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason,
@@ -1384,21 +1399,23 @@ impl MaybeReadable for Event {
 			},
 			7u8 => {
 				let f = || {
-					let mut fee_earned_msat = None;
+					let mut total_fee_earned_msat = None;
 					let mut prev_channel_id = None;
 					let mut claim_from_onchain_tx = false;
 					let mut next_channel_id = None;
 					let mut outbound_amount_forwarded_msat = None;
+					let mut skimmed_fee_msat = None;
 					read_tlv_fields!(reader, {
-						(0, fee_earned_msat, option),
+						(0, total_fee_earned_msat, option),
 						(1, prev_channel_id, option),
 						(2, claim_from_onchain_tx, required),
 						(3, next_channel_id, option),
 						(5, outbound_amount_forwarded_msat, option),
+						(7, skimmed_fee_msat, option),
 					});
 					Ok(Some(Event::PaymentForwarded {
-						fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
-						outbound_amount_forwarded_msat
+						total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
+						outbound_amount_forwarded_msat, skimmed_fee_msat,
 					}))
 				};
 				f()

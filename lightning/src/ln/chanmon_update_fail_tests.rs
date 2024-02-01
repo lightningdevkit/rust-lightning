@@ -3404,7 +3404,8 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	let bc_update_id = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_bc).unwrap().2;
 	let mut events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if close_during_reload { 2 } else { 1 });
-	expect_payment_forwarded(events.pop().unwrap(), &nodes[1], &nodes[0], &nodes[2], Some(1000), close_during_reload, false);
+	expect_payment_forwarded(events.pop().unwrap(), &nodes[1], &nodes[0], &nodes[2], Some(1000),
+		None, close_during_reload, false);
 	if close_during_reload {
 		match events[0] {
 			Event::ChannelClosed { .. } => {},
