@@ -63,7 +63,13 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # The addr2line v0.21 crate (a dependency of `backtrace` starting with 0.3.69) relies on rustc 1.65
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p backtrace --precise "0.3.68" --verbose
 
+# Starting with version 0.5.9 (there is no .6-.8), the `home` crate has an MSRV of rustc 1.70.0.
+[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p home --precise "0.5.5" --verbose
+
 export RUST_BACKTRACE=1
+
+# Build `lightning-transaction-sync` in no_download mode.
+export RUSTFLAGS="$RUSTFLAGS --cfg no_download"
 
 echo -e "\n\nBuilding and testing all workspace crates..."
 cargo test --verbose --color always
@@ -84,25 +90,18 @@ popd
 if [[ "$HOST_PLATFORM" != *windows* ]]; then
 	echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
 	pushd lightning-transaction-sync
-
 	# reqwest 0.11.21 had a regression that broke its 1.63.0 MSRV
 	[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p reqwest --precise "0.11.20" --verbose
-	# Starting with version 1.10.0, the `regex` crate has an MSRV of rustc 1.65.0.
-	[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
-	# Starting with version 0.5.9 (there is no .6-.8), the `home` crate has an MSRV of rustc 1.70.0.
-	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p home --precise "0.5.5" --verbose
-
 	DOWNLOAD_ELECTRS_AND_BITCOIND
 
-	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo test --verbose --color always --features esplora-blocking
-	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo check --verbose --color always --features esplora-blocking
-	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo test --verbose --color always --features esplora-async
-	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo check --verbose --color always --features esplora-async
-	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo test --verbose --color always --features esplora-async-https
-	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo check --verbose --color always --features esplora-async-https
-	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo test --verbose --color always --features electrum
-	RUSTFLAGS="$RUSTFLAGS --cfg no_download" cargo check --verbose --color always --features electrum
-
+	cargo test --verbose --color always --features esplora-blocking
+	cargo check --verbose --color always --features esplora-blocking
+	cargo test --verbose --color always --features esplora-async
+	cargo check --verbose --color always --features esplora-async
+	cargo test --verbose --color always --features esplora-async-https
+	cargo check --verbose --color always --features esplora-async-https
+	cargo test --verbose --color always --features electrum
+	cargo check --verbose --color always --features electrum
 	popd
 fi
 
