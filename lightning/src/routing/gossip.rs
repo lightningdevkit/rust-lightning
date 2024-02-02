@@ -1032,13 +1032,13 @@ impl<'a> DirectedChannelInfo<'a> {
 	///
 	/// Refers to the `node_id` forwarding the payment to the next hop.
 	#[inline]
-	pub(super) fn source(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_one } else { &self.channel.node_two } }
+	pub fn source(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_one } else { &self.channel.node_two } }
 
 	/// Returns the `node_id` of the target hop.
 	///
 	/// Refers to the `node_id` receiving the payment from the previous hop.
 	#[inline]
-	pub(super) fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
+	pub fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
