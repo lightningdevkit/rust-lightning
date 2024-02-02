@@ -1257,7 +1257,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 pub fn exchange_open_accept_chan<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, push_msat: u64) -> ChannelId {
 	let create_chan_id = node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None, None).unwrap();
 	let open_channel_msg = get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id());
-	assert_eq!(open_channel_msg.temporary_channel_id, create_chan_id);
+	assert_eq!(open_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 	assert_eq!(node_a.node.list_channels().iter().find(|channel| channel.channel_id == create_chan_id).unwrap().user_channel_id, 42);
 	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &open_channel_msg);
 	if node_b.node.get_current_default_configuration().manually_accept_inbound_channels {

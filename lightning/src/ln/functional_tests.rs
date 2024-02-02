@@ -107,22 +107,22 @@ fn test_insane_channel_opens() {
 	use crate::ln::channelmanager::MAX_LOCAL_BREAKDOWN_TIMEOUT;
 
 	// Test all mutations that would make the channel open message insane
-	insane_open_helper(format!("Per our config, funding must be at most {}. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1, TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2).as_str(), |mut msg| { msg.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2; msg });
-	insane_open_helper(format!("Funding must be smaller than the total bitcoin supply. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS).as_str(), |mut msg| { msg.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS; msg });
+	insane_open_helper(format!("Per our config, funding must be at most {}. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1, TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2).as_str(), |mut msg| { msg.common_fields.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS + 2; msg });
+	insane_open_helper(format!("Funding must be smaller than the total bitcoin supply. It was {}", TOTAL_BITCOIN_SUPPLY_SATOSHIS).as_str(), |mut msg| { msg.common_fields.funding_satoshis = TOTAL_BITCOIN_SUPPLY_SATOSHIS; msg });
 
-	insane_open_helper("Bogus channel_reserve_satoshis", |mut msg| { msg.channel_reserve_satoshis = msg.funding_satoshis + 1; msg });
+	insane_open_helper("Bogus channel_reserve_satoshis", |mut msg| { msg.channel_reserve_satoshis = msg.common_fields.funding_satoshis + 1; msg });
 
-	insane_open_helper(r"push_msat \d+ was larger than channel amount minus reserve \(\d+\)", |mut msg| { msg.push_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000 + 1; msg });
+	insane_open_helper(r"push_msat \d+ was larger than channel amount minus reserve \(\d+\)", |mut msg| { msg.push_msat = (msg.common_fields.funding_satoshis - msg.channel_reserve_satoshis) * 1000 + 1; msg });
 
-	insane_open_helper("Peer never wants payout outputs?", |mut msg| { msg.dust_limit_satoshis = msg.funding_satoshis + 1 ; msg });
+	insane_open_helper("Peer never wants payout outputs?", |mut msg| { msg.common_fields.dust_limit_satoshis = msg.common_fields.funding_satoshis + 1 ; msg });
 
-	insane_open_helper(r"Minimum htlc value \(\d+\) was larger than full channel value \(\d+\)", |mut msg| { msg.htlc_minimum_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000; msg });
+	insane_open_helper(r"Minimum htlc value \(\d+\) was larger than full channel value \(\d+\)", |mut msg| { msg.common_fields.htlc_minimum_msat = (msg.common_fields.funding_satoshis - msg.channel_reserve_satoshis) * 1000; msg });
 
-	insane_open_helper("They wanted our payments to be delayed by a needlessly long period", |mut msg| { msg.to_self_delay = MAX_LOCAL_BREAKDOWN_TIMEOUT + 1; msg });
+	insane_open_helper("They wanted our payments to be delayed by a needlessly long period", |mut msg| { msg.common_fields.to_self_delay = MAX_LOCAL_BREAKDOWN_TIMEOUT + 1; msg });
 
-	insane_open_helper("0 max_accepted_htlcs makes for a useless channel", |mut msg| { msg.max_accepted_htlcs = 0; msg });
+	insane_open_helper("0 max_accepted_htlcs makes for a useless channel", |mut msg| { msg.common_fields.max_accepted_htlcs = 0; msg });
 
-	insane_open_helper("max_accepted_htlcs was 484. It must not be larger than 483", |mut msg| { msg.max_accepted_htlcs = 484; msg });
+	insane_open_helper("max_accepted_htlcs was 484. It must not be larger than 483", |mut msg| { msg.common_fields.max_accepted_htlcs = 484; msg });
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	let mut open_channel_message = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	if !send_from_initiator {
 		open_channel_message.channel_reserve_satoshis = 0;
-		open_channel_message.max_htlc_value_in_flight_msat = 100_000_000;
+		open_channel_message.common_fields.max_htlc_value_in_flight_msat = 100_000_000;
 	}
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_message);
 
@@ -5834,26 +5834,26 @@ fn bolt2_open_channel_sending_node_checks_part2() {
 	let push_msat=10001;
 	assert!(nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None, None).is_ok()); //Create a valid channel
 	let node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	assert!(node0_to_1_send_open_channel.channel_reserve_satoshis>=node0_to_1_send_open_channel.dust_limit_satoshis);
+	assert!(node0_to_1_send_open_channel.channel_reserve_satoshis>=node0_to_1_send_open_channel.common_fields.dust_limit_satoshis);
 
 	// BOLT #2 spec: Sending node must set undefined bits in channel_flags to 0
 	// Only the least-significant bit of channel_flags is currently defined resulting in channel_flags only having one of two possible states 0 or 1
-	assert!(node0_to_1_send_open_channel.channel_flags<=1);
+	assert!(node0_to_1_send_open_channel.common_fields.channel_flags<=1);
 
 	// BOLT #2 spec: Sending node should set to_self_delay sufficient to ensure the sender can irreversibly spend a commitment transaction output, in case of misbehaviour by the receiver.
 	assert!(BREAKDOWN_TIMEOUT>0);
-	assert!(node0_to_1_send_open_channel.to_self_delay==BREAKDOWN_TIMEOUT);
+	assert!(node0_to_1_send_open_channel.common_fields.to_self_delay==BREAKDOWN_TIMEOUT);
 
 	// BOLT #2 spec: Sending node must ensure the chain_hash value identifies the chain it wishes to open the channel within.
 	let chain_hash = ChainHash::using_genesis_block(Network::Testnet);
-	assert_eq!(node0_to_1_send_open_channel.chain_hash, chain_hash);
+	assert_eq!(node0_to_1_send_open_channel.common_fields.chain_hash, chain_hash);
 
 	// BOLT #2 spec: Sending node must set funding_pubkey, revocation_basepoint, htlc_basepoint, payment_basepoint, and delayed_payment_basepoint to valid DER-encoded, compressed, secp256k1 pubkeys.
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.funding_pubkey.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.revocation_basepoint.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.htlc_basepoint.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.payment_point.serialize()).is_ok());
-	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.delayed_payment_basepoint.serialize()).is_ok());
+	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.funding_pubkey.serialize()).is_ok());
+	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.revocation_basepoint.serialize()).is_ok());
+	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.htlc_basepoint.serialize()).is_ok());
+	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.payment_basepoint.serialize()).is_ok());
+	assert!(PublicKey::from_slice(&node0_to_1_send_open_channel.common_fields.delayed_payment_basepoint.serialize()).is_ok());
 }
 
 #[test]
@@ -5867,7 +5867,7 @@ fn bolt2_open_channel_sane_dust_limit() {
 	let push_msat=10001;
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, push_msat, 42, None, None).unwrap();
 	let mut node0_to_1_send_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	node0_to_1_send_open_channel.dust_limit_satoshis = 547;
+	node0_to_1_send_open_channel.common_fields.dust_limit_satoshis = 547;
 	node0_to_1_send_open_channel.channel_reserve_satoshis = 100001;
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &node0_to_1_send_open_channel);
@@ -7207,7 +7207,7 @@ fn test_user_configurable_csv_delay() {
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in InboundV1Channel::new()
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
-	open_channel.to_self_delay = 200;
+	open_channel.common_fields.to_self_delay = 200;
 	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
 		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
 		&low_our_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
@@ -7239,7 +7239,7 @@ fn test_user_configurable_csv_delay() {
 	// We test msg.to_self_delay <= config.their_to_self_delay is enforced in InboundV1Channel::new()
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
-	open_channel.to_self_delay = 200;
+	open_channel.common_fields.to_self_delay = 200;
 	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
 		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
 		&high_their_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
@@ -7924,8 +7924,8 @@ fn test_override_channel_config() {
 
 	// Assert the channel created by node0 is using the override config.
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	assert_eq!(res.channel_flags, 0);
-	assert_eq!(res.to_self_delay, 200);
+	assert_eq!(res.common_fields.channel_flags, 0);
+	assert_eq!(res.common_fields.to_self_delay, 200);
 }
 
 #[test]
@@ -7939,7 +7939,7 @@ fn test_override_0msat_htlc_minimum() {
 
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 16_000_000, 12_000_000, 42, None, Some(zero_config)).unwrap();
 	let res = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	assert_eq!(res.htlc_minimum_msat, 1);
+	assert_eq!(res.common_fields.htlc_minimum_msat, 1);
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &res);
 	let res = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
@@ -8955,7 +8955,7 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 
 	// Modify the `OpenChannel` from `nodes[2]` to `nodes[0]` to ensure that it uses the same
 	// `temporary_channel_id` as the `OpenChannel` from nodes[1] to nodes[0].
-	open_chan_msg_chan_2_0.temporary_channel_id = open_chan_msg_chan_1_0.temporary_channel_id;
+	open_chan_msg_chan_2_0.common_fields.temporary_channel_id = open_chan_msg_chan_1_0.common_fields.temporary_channel_id;
 
 	// Assert that `nodes[0]` can accept both `OpenChannel` requests, even though they use the same
 	// `temporary_channel_id` as they are from different peers.
@@ -8966,7 +8966,7 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 		match &events[0] {
 			MessageSendEvent::SendAcceptChannel { node_id, msg } => {
 				assert_eq!(node_id, &nodes[1].node.get_our_node_id());
-				assert_eq!(msg.temporary_channel_id, open_chan_msg_chan_1_0.temporary_channel_id);
+				assert_eq!(msg.temporary_channel_id, open_chan_msg_chan_1_0.common_fields.temporary_channel_id);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -8979,7 +8979,7 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 		match &events[0] {
 			MessageSendEvent::SendAcceptChannel { node_id, msg } => {
 				assert_eq!(node_id, &nodes[2].node.get_our_node_id());
-				assert_eq!(msg.temporary_channel_id, open_chan_msg_chan_1_0.temporary_channel_id);
+				assert_eq!(msg.temporary_channel_id, open_chan_msg_chan_1_0.common_fields.temporary_channel_id);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -9099,8 +9099,8 @@ fn test_duplicate_funding_err_in_funding() {
 
 	nodes[2].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
 	let mut open_chan_msg = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	let node_c_temp_chan_id = open_chan_msg.temporary_channel_id;
-	open_chan_msg.temporary_channel_id = real_channel_id;
+	let node_c_temp_chan_id = open_chan_msg.common_fields.temporary_channel_id;
+	open_chan_msg.common_fields.temporary_channel_id = real_channel_id;
 	nodes[1].node.handle_open_channel(&nodes[2].node.get_our_node_id(), &open_chan_msg);
 	let mut accept_chan_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[2].node.get_our_node_id());
 	accept_chan_msg.temporary_channel_id = node_c_temp_chan_id;
@@ -9161,7 +9161,7 @@ fn test_duplicate_chan_id() {
 				// first (valid) and second (invalid) channels are closed, given they both have
 				// the same non-temporary channel_id. However, currently we do not, so we just
 				// move forward with it.
-				assert_eq!(msg.channel_id, open_chan_msg.temporary_channel_id);
+				assert_eq!(msg.channel_id, open_chan_msg.common_fields.temporary_channel_id);
 				assert_eq!(node_id, nodes[0].node.get_our_node_id());
 			},
 			_ => panic!("Unexpected event"),
@@ -9195,7 +9195,7 @@ fn test_duplicate_chan_id() {
 	// First try to open a second channel with a temporary channel id equal to the txid-based one.
 	// Technically this is allowed by the spec, but we don't support it and there's little reason
 	// to. Still, it shouldn't cause any other issues.
-	open_chan_msg.temporary_channel_id = channel_id;
+	open_chan_msg.common_fields.temporary_channel_id = channel_id;
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_chan_msg);
 	{
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -9204,7 +9204,7 @@ fn test_duplicate_chan_id() {
 			MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { ref msg }, node_id } => {
 				// Technically, at this point, nodes[1] would be justified in thinking both
 				// channels are closed, but currently we do not, so we just move forward with it.
-				assert_eq!(msg.channel_id, open_chan_msg.temporary_channel_id);
+				assert_eq!(msg.channel_id, open_chan_msg.common_fields.temporary_channel_id);
 				assert_eq!(node_id, nodes[0].node.get_our_node_id());
 			},
 			_ => panic!("Unexpected event"),
@@ -9225,7 +9225,7 @@ fn test_duplicate_chan_id() {
 		// another channel in the ChannelManager - an invalid state. Thus, we'd panic later when we
 		// try to create another channel. Instead, we drop the channel entirely here (leaving the
 		// channelmanager in a possibly nonsense state instead).
-		match a_peer_state.channel_by_id.remove(&open_chan_2_msg.temporary_channel_id).unwrap() {
+		match a_peer_state.channel_by_id.remove(&open_chan_2_msg.common_fields.temporary_channel_id).unwrap() {
 			ChannelPhase::UnfundedOutboundV1(mut chan) => {
 				let logger = test_utils::TestLogger::new();
 				chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
@@ -9892,10 +9892,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	open_channel.max_htlc_value_in_flight_msat = 50_000_000;
-	open_channel.max_accepted_htlcs = 60;
+	open_channel.common_fields.max_htlc_value_in_flight_msat = 50_000_000;
+	open_channel.common_fields.max_accepted_htlcs = 60;
 	if on_holder_tx {
-		open_channel.dust_limit_satoshis = 546;
+		open_channel.common_fields.dust_limit_satoshis = 546;
 	}
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
@@ -9940,10 +9940,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		(chan.context().get_dust_buffer_feerate(None) as u64,
 		chan.context().get_max_dust_htlc_exposure_msat(&LowerBoundedFeeEstimator(nodes[0].fee_estimator)))
 	};
-	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type_features) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
+	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type_features) / 1000 + open_channel.common_fields.dust_limit_satoshis - 1) * 1000;
 	let dust_outbound_htlc_on_holder_tx: u64 = max_dust_htlc_exposure_msat / dust_outbound_htlc_on_holder_tx_msat;
 
-	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_success_tx_weight(&channel_type_features) / 1000 + open_channel.dust_limit_satoshis - 1) * 1000;
+	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_success_tx_weight(&channel_type_features) / 1000 + open_channel.common_fields.dust_limit_satoshis - 1) * 1000;
 	let dust_inbound_htlc_on_holder_tx: u64 = max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
 
 	let dust_htlc_on_counterparty_tx: u64 = 4;
