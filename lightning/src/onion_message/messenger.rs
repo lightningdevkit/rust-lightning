@@ -811,8 +811,8 @@ where
 		}
 	}
 
-	#[cfg(test)]
-	pub(super) fn send_onion_message_using_path<T: OnionMessageContents>(
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn send_onion_message_using_path<T: OnionMessageContents>(
 		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
 	) -> Result<SendSuccess, SendError> {
 		self.enqueue_onion_message(path, contents, reply_path, format_args!(""))
