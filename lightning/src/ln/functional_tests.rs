@@ -174,7 +174,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	let mut accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	if send_from_initiator {
 		accept_channel_message.channel_reserve_satoshis = 0;
-		accept_channel_message.max_htlc_value_in_flight_msat = 100_000_000;
+		accept_channel_message.common_fields.max_htlc_value_in_flight_msat = 100_000_000;
 	}
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message);
 	{
@@ -7222,7 +7222,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1000000, 1000000, 42, None, None).unwrap();
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id()));
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	accept_channel.to_self_delay = 200;
+	accept_channel.common_fields.to_self_delay = 200;
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 	let reason_msg;
 	if let MessageSendEvent::HandleError { ref action, .. } = nodes[0].node.get_and_clear_pending_msg_events()[0] {
@@ -7943,7 +7943,7 @@ fn test_override_0msat_htlc_minimum() {
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &res);
 	let res = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	assert_eq!(res.htlc_minimum_msat, 1);
+	assert_eq!(res.common_fields.htlc_minimum_msat, 1);
 }
 
 #[test]
@@ -8966,7 +8966,7 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 		match &events[0] {
 			MessageSendEvent::SendAcceptChannel { node_id, msg } => {
 				assert_eq!(node_id, &nodes[1].node.get_our_node_id());
-				assert_eq!(msg.temporary_channel_id, open_chan_msg_chan_1_0.common_fields.temporary_channel_id);
+				assert_eq!(msg.common_fields.temporary_channel_id, open_chan_msg_chan_1_0.common_fields.temporary_channel_id);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -8979,7 +8979,7 @@ fn test_duplicate_temporary_channel_id_from_different_peers() {
 		match &events[0] {
 			MessageSendEvent::SendAcceptChannel { node_id, msg } => {
 				assert_eq!(node_id, &nodes[2].node.get_our_node_id());
-				assert_eq!(msg.temporary_channel_id, open_chan_msg_chan_1_0.common_fields.temporary_channel_id);
+				assert_eq!(msg.common_fields.temporary_channel_id, open_chan_msg_chan_1_0.common_fields.temporary_channel_id);
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -9103,7 +9103,7 @@ fn test_duplicate_funding_err_in_funding() {
 	open_chan_msg.common_fields.temporary_channel_id = real_channel_id;
 	nodes[1].node.handle_open_channel(&nodes[2].node.get_our_node_id(), &open_chan_msg);
 	let mut accept_chan_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[2].node.get_our_node_id());
-	accept_chan_msg.temporary_channel_id = node_c_temp_chan_id;
+	accept_chan_msg.common_fields.temporary_channel_id = node_c_temp_chan_id;
 	nodes[2].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_chan_msg);
 
 	// Now that we have a second channel with the same funding txo, send a bogus funding message

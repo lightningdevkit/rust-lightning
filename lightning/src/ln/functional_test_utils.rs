@@ -1203,7 +1203,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 	};
 
 	let accept_channel = get_event_msg!(receiver, MessageSendEvent::SendAcceptChannel, initiator.node.get_our_node_id());
-	assert_eq!(accept_channel.minimum_depth, 0);
+	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
 	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&initiator, &receiver.node.get_our_node_id(), 100_000, 42);
@@ -1270,7 +1270,7 @@ pub fn exchange_open_accept_chan<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: 
 		};
 	}
 	let accept_channel_msg = get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id());
-	assert_eq!(accept_channel_msg.temporary_channel_id, create_chan_id);
+	assert_eq!(accept_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &accept_channel_msg);
 	assert_ne!(node_b.node.list_channels().iter().find(|channel| channel.channel_id == create_chan_id).unwrap().user_channel_id, 0);
 

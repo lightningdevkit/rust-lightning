@@ -838,7 +838,7 @@ fn test_unsupported_anysegwit_upfront_shutdown_script() {
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	accept_channel.shutdown_scriptpubkey = Some(anysegwit_shutdown_script.clone());
+	accept_channel.common_fields.shutdown_scriptpubkey = Some(anysegwit_shutdown_script.clone());
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 	let events = nodes[0].node.get_and_clear_pending_msg_events();

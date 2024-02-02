@@ -605,7 +605,7 @@ fn test_0conf_channel_with_async_monitor() {
 	};
 
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	assert_eq!(accept_channel.minimum_depth, 0);
+	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
@@ -996,7 +996,7 @@ fn test_connect_before_funding() {
 	};
 
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	assert_eq!(accept_channel.minimum_depth, 0);
+	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 	let events = nodes[0].node.get_and_clear_pending_events();

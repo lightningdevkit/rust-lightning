@@ -225,7 +225,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.common_fields.temporary_channel_id);
 	}
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannel) {
-		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
+		ErroringMessageHandler::push_error(self, their_node_id, msg.common_fields.temporary_channel_id);
 	}
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &msgs::FundingCreated) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
@@ -319,7 +319,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	}
 
 	fn handle_accept_channel_v2(&self, their_node_id: &PublicKey, msg: &msgs::AcceptChannelV2) {
-		ErroringMessageHandler::push_error(self, their_node_id, msg.temporary_channel_id);
+		ErroringMessageHandler::push_error(self, their_node_id, msg.common_fields.temporary_channel_id);
 	}
 
 	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &msgs::TxAddInput) {
@@ -1979,15 +1979,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				for event in events_generated.drain(..) {
 					match event {
 						MessageSendEvent::SendAcceptChannel { ref node_id, ref msg } => {
-							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.temporary_channel_id)), "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
+							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.common_fields.temporary_channel_id)), "Handling SendAcceptChannel event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
-									&msg.temporary_channel_id);
+									&msg.common_fields.temporary_channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						},
 						MessageSendEvent::SendAcceptChannelV2 { ref node_id, ref msg } => {
-							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.temporary_channel_id)), "Handling SendAcceptChannelV2 event in peer_handler for node {} for channel {}",
+							log_debug!(WithContext::from(&self.logger, Some(*node_id), Some(msg.common_fields.temporary_channel_id)), "Handling SendAcceptChannelV2 event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
-									&msg.temporary_channel_id);
+									&msg.common_fields.temporary_channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						},
 						MessageSendEvent::SendOpenChannel { ref node_id, ref msg } => {
