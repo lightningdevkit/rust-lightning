@@ -185,7 +185,7 @@ pub enum ClosureReason {
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
 	// Can be removed once we disallow downgrading to 0.0.121
-	CooperativeClosure,
+	LegacyCooperativeClosure,
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. This indicates that the shutdown was initiated by our
 	/// counterparty.
@@ -237,7 +237,7 @@ impl core::fmt::Display for ClosureReason {
 				f.write_fmt(format_args!("counterparty force-closed with message: {}", peer_msg))
 			},
 			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
-			ClosureReason::CooperativeClosure => f.write_str("the channel was cooperatively closed"),
+			ClosureReason::LegacyCooperativeClosure => f.write_str("the channel was cooperatively closed"),
 			ClosureReason::CounterpartyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by our peer"),
 			ClosureReason::LocallyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by us"),
 			ClosureReason::CommitmentTxConfirmed => f.write_str("commitment or closing transaction was confirmed on chain."),
@@ -259,7 +259,7 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(1, FundingTimedOut) => {},
 	(2, HolderForceClosed) => {},
 	(6, CommitmentTxConfirmed) => {},
-	(4, CooperativeClosure) => {},
+	(4, LegacyCooperativeClosure) => {},
 	(8, ProcessingError) => { (1, err, required) },
 	(10, DisconnectedPeer) => {},
 	(12, OutdatedChannelManager) => {},
