@@ -871,8 +871,8 @@ fn test_update_fee_with_fundee_update_add_htlc() {
 	send_payment(&nodes[1], &vec!(&nodes[0])[..], 800000);
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 800000);
 	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -985,8 +985,8 @@ fn test_update_fee() {
 	assert_eq!(get_feerate!(nodes[0], nodes[1], channel_id), feerate + 30);
 	assert_eq!(get_feerate!(nodes[1], nodes[0], channel_id), feerate + 30);
 	close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -1104,17 +1104,17 @@ fn fake_network_test() {
 
 	// Close down the channels...
 	close_channel(&nodes[0], &nodes[1], &chan_1.2, chan_1.3, true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 	close_channel(&nodes[1], &nodes[2], &chan_2.2, chan_2.3, false);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[2].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[2], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[2].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[2], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 	close_channel(&nodes[2], &nodes[3], &chan_3.2, chan_3.3, true);
-	check_closed_event!(nodes[2], 1, ClosureReason::CooperativeClosure, [nodes[3].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[3], 1, ClosureReason::CooperativeClosure, [nodes[2].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[2], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[3].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[3], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[2].node.get_our_node_id()], 100000);
 	close_channel(&nodes[1], &nodes[3], &chan_4.2, chan_4.3, false);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[3].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[3], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[3].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[3], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -5625,7 +5625,7 @@ fn test_static_output_closing_tx() {
 	let closing_tx = close_channel(&nodes[0], &nodes[1], &chan.2, chan.3, true).2;
 
 	mine_transaction(&nodes[0], &closing_tx);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[0], node_cfgs[0].keys_manager);
@@ -5633,7 +5633,7 @@ fn test_static_output_closing_tx() {
 	check_spends!(spend_txn[0], closing_tx);
 
 	mine_transaction(&nodes[1], &closing_tx);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
 	let spend_txn = check_spendable_outputs!(nodes[1], node_cfgs[1].keys_manager);
