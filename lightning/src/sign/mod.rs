@@ -350,7 +350,7 @@ impl SpendableOutputDescriptor {
 		let mut input = Vec::with_capacity(descriptors.len());
 		let mut input_value = 0;
 		let mut witness_weight = 0;
-		let mut output_set = HashSet::with_capacity(descriptors.len());
+		let mut output_set = hash_set_with_capacity(descriptors.len());
 		for outp in descriptors {
 			match outp {
 				SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {

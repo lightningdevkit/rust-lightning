@@ -317,8 +317,8 @@ impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a dyn chainmonitor::Persist<TestChannelSigner>, keys_manager: &'a TestKeysInterface) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
-			monitor_updates: Mutex::new(HashMap::new()),
-			latest_monitor_update_id: Mutex::new(HashMap::new()),
+			monitor_updates: Mutex::new(new_hash_map()),
+			latest_monitor_update_id: Mutex::new(new_hash_map()),
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
@@ -413,8 +413,8 @@ impl WatchtowerPersister {
 	pub(crate) fn new(destination_script: ScriptBuf) -> Self {
 		WatchtowerPersister {
 			persister: TestPersister::new(),
-			unsigned_justice_tx_data: Mutex::new(HashMap::new()),
-			watchtower_state: Mutex::new(HashMap::new()),
+			unsigned_justice_tx_data: Mutex::new(new_hash_map()),
+			watchtower_state: Mutex::new(new_hash_map()),
 			destination_script,
 		}
 	}
@@ -447,7 +447,7 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 		assert!(self.unsigned_justice_tx_data.lock().unwrap()
 			.insert(funding_txo, VecDeque::new()).is_none());
 		assert!(self.watchtower_state.lock().unwrap()
-			.insert(funding_txo, HashMap::new()).is_none());
+			.insert(funding_txo, new_hash_map()).is_none());
 
 		let initial_counterparty_commitment_tx = data.initial_counterparty_commitment_tx()
 			.expect("First and only call expects Some");
@@ -508,8 +508,8 @@ impl TestPersister {
 	pub fn new() -> Self {
 		Self {
 			update_rets: Mutex::new(VecDeque::new()),
-			chain_sync_monitor_persistences: Mutex::new(HashMap::new()),
-			offchain_monitor_updates: Mutex::new(HashMap::new()),
+			chain_sync_monitor_persistences: Mutex::new(new_hash_map()),
+			offchain_monitor_updates: Mutex::new(new_hash_map()),
 		}
 	}
 
@@ -533,9 +533,9 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 		}
 		let is_chain_sync = if let UpdateOrigin::ChainSync(_) = update_id.contents { true } else { false };
 		if is_chain_sync {
-			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
+			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update_id);
 		} else {
-			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
+			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update_id);
 		}
 		ret
 	}
@@ -548,7 +548,7 @@ pub struct TestStore {
 
 impl TestStore {
 	pub fn new(read_only: bool) -> Self {
-		let persisted_bytes = Mutex::new(HashMap::new());
+		let persisted_bytes = Mutex::new(new_hash_map());
 		Self { persisted_bytes, read_only }
 	}
 }
@@ -588,7 +588,7 @@ impl KVStore for TestStore {
 		} else {
 			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
-		let outer_e = persisted_lock.entry(prefixed).or_insert(HashMap::new());
+		let outer_e = persisted_lock.entry(prefixed).or_insert(new_hash_map());
 		let mut bytes = Vec::new();
 		bytes.write_all(buf)?;
 		outer_e.insert(key.to_string(), bytes);
@@ -655,7 +655,7 @@ impl TestBroadcaster {
 
 	pub fn unique_txn_broadcast(&self) -> Vec<Transaction> {
 		let mut txn = self.txn_broadcasted.lock().unwrap().split_off(0);
-		let mut seen = HashSet::new();
+		let mut seen = new_hash_set();
 		txn.retain(|tx| seen.insert(tx.txid()));
 		txn
 	}
@@ -692,7 +692,7 @@ impl TestChannelMessageHandler {
 		TestChannelMessageHandler {
 			pending_events: Mutex::new(Vec::new()),
 			expected_recv_msgs: Mutex::new(None),
-			connected_peers: Mutex::new(HashSet::new()),
+			connected_peers: Mutex::new(new_hash_set()),
 			message_fetch_counter: AtomicUsize::new(0),
 			chain_hash,
 		}
@@ -1044,8 +1044,8 @@ impl TestLogger {
 		TestLogger {
 			level: Level::Trace,
 			id,
-			lines: Mutex::new(HashMap::new()),
-			context: Mutex::new(HashMap::new()),
+			lines: Mutex::new(new_hash_map()),
+			context: Mutex::new(new_hash_map()),
 		}
 	}
 	pub fn enable(&mut self, level: Level) {
@@ -1258,7 +1258,7 @@ impl TestKeysInterface {
 			backing: sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
 			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
-			enforcement_states: Mutex::new(HashMap::new()),
+			enforcement_states: Mutex::new(new_hash_map()),
 			expectations: Mutex::new(None),
 		}
 	}
@@ -1339,8 +1339,8 @@ impl TestChainSource {
 			chain_hash: ChainHash::using_genesis_block(network),
 			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut { value: u64::max_value(), script_pubkey }))),
 			get_utxo_call_count: AtomicUsize::new(0),
-			watched_txn: Mutex::new(HashSet::new()),
-			watched_outputs: Mutex::new(HashSet::new()),
+			watched_txn: Mutex::new(new_hash_set()),
+			watched_outputs: Mutex::new(new_hash_set()),
 		}
 	}
 }

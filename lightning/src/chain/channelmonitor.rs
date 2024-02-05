@@ -1235,7 +1235,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx
 		);
 
-		let mut outputs_to_watch = HashMap::new();
+		let mut outputs_to_watch = new_hash_map();
 		outputs_to_watch.insert(funding_info.0.txid, vec![(funding_info.0.index as u32, funding_info.1.clone())]);
 
 		Self::from_impl(ChannelMonitorImpl {
@@ -1262,17 +1262,17 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			on_holder_tx_csv: counterparty_channel_parameters.selected_contest_delay,
 
 			commitment_secrets: CounterpartyCommitmentSecrets::new(),
-			counterparty_claimable_outpoints: HashMap::new(),
-			counterparty_commitment_txn_on_chain: HashMap::new(),
-			counterparty_hash_commitment_number: HashMap::new(),
-			counterparty_fulfilled_htlcs: HashMap::new(),
+			counterparty_claimable_outpoints: new_hash_map(),
+			counterparty_commitment_txn_on_chain: new_hash_map(),
+			counterparty_hash_commitment_number: new_hash_map(),
+			counterparty_fulfilled_htlcs: new_hash_map(),
 
 			prev_holder_signed_commitment_tx: None,
 			current_holder_commitment_tx: holder_commitment_tx,
 			current_counterparty_commitment_number: 1 << 48,
 			current_holder_commitment_number,
 
-			payment_preimages: HashMap::new(),
+			payment_preimages: new_hash_map(),
 			pending_monitor_events: Vec::new(),
 			pending_events: Vec::new(),
 			is_processing_pending_events: false,
@@ -2174,7 +2174,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// HTLCs which were resolved on-chain (i.e. where the final HTLC resolution was done by an
 	/// event from this `ChannelMonitor`).
 	pub(crate) fn get_all_current_outbound_htlcs(&self) -> HashMap<HTLCSource, (HTLCOutputInCommitment, Option<PaymentPreimage>)> {
-		let mut res = HashMap::new();
+		let mut res = new_hash_map();
 		// Just examine the available counterparty commitment transactions. See docs on
 		// `fail_unbroadcast_htlcs`, below, for justification.
 		let us = self.inner.lock().unwrap();
@@ -2226,7 +2226,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			return self.get_all_current_outbound_htlcs();
 		}
 
-		let mut res = HashMap::new();
+		let mut res = new_hash_map();
 		macro_rules! walk_htlcs {
 			($holder_commitment: expr, $htlc_iter: expr) => {
 				for (htlc, source) in $htlc_iter {
@@ -3172,7 +3172,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
 				} else {
-					debug_assert!(false, "We should have per-commitment option for any recognized old commitment txn");
+					// Our fuzzers aren't contrained by pesky things like valid signatures, so can
+					// spend our funding output with a transaction which doesn't match our past
+					// commitment transactions. Thus, we can only debug-assert here when not
+					// fuzzing.
+					debug_assert!(cfg!(fuzzing), "We should have per-commitment option for any recognized old commitment txn");
 					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
 						block_hash, [].iter().map(|reference| *reference), logger);
 				}
@@ -3679,6 +3683,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						claimable_outpoints.append(&mut new_outpoints);
 						if new_outpoints.is_empty() {
 							if let Some((mut new_outpoints, new_outputs)) = self.check_spend_holder_transaction(&tx, height, &block_hash, &logger) {
+								#[cfg(not(fuzzing))]
 								debug_assert!(commitment_tx_to_counterparty_output.is_none(),
 									"A commitment transaction matched as both a counterparty and local commitment tx?");
 								if !new_outputs.1.is_empty() {
@@ -3935,7 +3940,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Filters a block's `txdata` for transactions spending watched outputs or for any child
 	/// transactions thereof.
 	fn filter_block<'a>(&self, txdata: &TransactionData<'a>) -> Vec<&'a Transaction> {
-		let mut matched_txn = HashSet::new();
+		let mut matched_txn = new_hash_set();
 		txdata.iter().filter(|&&(_, tx)| {
 			let mut matches = self.spends_watched_output(tx);
 			for input in tx.input.iter() {
@@ -4450,7 +4455,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let counterparty_claimable_outpoints_len: u64 = Readable::read(reader)?;
-		let mut counterparty_claimable_outpoints = HashMap::with_capacity(cmp::min(counterparty_claimable_outpoints_len as usize, MAX_ALLOC_SIZE / 64));
+		let mut counterparty_claimable_outpoints = hash_map_with_capacity(cmp::min(counterparty_claimable_outpoints_len as usize, MAX_ALLOC_SIZE / 64));
 		for _ in 0..counterparty_claimable_outpoints_len {
 			let txid: Txid = Readable::read(reader)?;
 			let htlcs_count: u64 = Readable::read(reader)?;
@@ -4464,7 +4469,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let counterparty_commitment_txn_on_chain_len: u64 = Readable::read(reader)?;
-		let mut counterparty_commitment_txn_on_chain = HashMap::with_capacity(cmp::min(counterparty_commitment_txn_on_chain_len as usize, MAX_ALLOC_SIZE / 32));
+		let mut counterparty_commitment_txn_on_chain = hash_map_with_capacity(cmp::min(counterparty_commitment_txn_on_chain_len as usize, MAX_ALLOC_SIZE / 32));
 		for _ in 0..counterparty_commitment_txn_on_chain_len {
 			let txid: Txid = Readable::read(reader)?;
 			let commitment_number = <U48 as Readable>::read(reader)?.0;
@@ -4474,7 +4479,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let counterparty_hash_commitment_number_len: u64 = Readable::read(reader)?;
-		let mut counterparty_hash_commitment_number = HashMap::with_capacity(cmp::min(counterparty_hash_commitment_number_len as usize, MAX_ALLOC_SIZE / 32));
+		let mut counterparty_hash_commitment_number = hash_map_with_capacity(cmp::min(counterparty_hash_commitment_number_len as usize, MAX_ALLOC_SIZE / 32));
 		for _ in 0..counterparty_hash_commitment_number_len {
 			let payment_hash: PaymentHash = Readable::read(reader)?;
 			let commitment_number = <U48 as Readable>::read(reader)?.0;
@@ -4497,7 +4502,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let current_holder_commitment_number = <U48 as Readable>::read(reader)?.0;
 
 		let payment_preimages_len: u64 = Readable::read(reader)?;
-		let mut payment_preimages = HashMap::with_capacity(cmp::min(payment_preimages_len as usize, MAX_ALLOC_SIZE / 32));
+		let mut payment_preimages = hash_map_with_capacity(cmp::min(payment_preimages_len as usize, MAX_ALLOC_SIZE / 32));
 		for _ in 0..payment_preimages_len {
 			let preimage: PaymentPreimage = Readable::read(reader)?;
 			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
@@ -4537,7 +4542,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let outputs_to_watch_len: u64 = Readable::read(reader)?;
-		let mut outputs_to_watch = HashMap::with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<u32>() + mem::size_of::<Vec<ScriptBuf>>())));
+		let mut outputs_to_watch = hash_map_with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<u32>() + mem::size_of::<Vec<ScriptBuf>>())));
 		for _ in 0..outputs_to_watch_len {
 			let txid = Readable::read(reader)?;
 			let outputs_len: u64 = Readable::read(reader)?;
@@ -4579,7 +4584,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut counterparty_node_id = None;
 		let mut confirmed_commitment_tx_counterparty_output = None;
 		let mut spendable_txids_confirmed = Some(Vec::new());
-		let mut counterparty_fulfilled_htlcs = Some(HashMap::new());
+		let mut counterparty_fulfilled_htlcs = Some(new_hash_map());
 		let mut initial_counterparty_commitment_info = None;
 		let mut channel_id = None;
 		read_tlv_fields!(reader, {

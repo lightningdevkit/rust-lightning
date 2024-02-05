@@ -6446,7 +6446,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				channel_ready_event_emitted: false,
 
 				#[cfg(any(test, fuzzing))]
-				historical_inbound_htlc_fulfills: HashSet::new(),
+				historical_inbound_htlc_fulfills: new_hash_set(),
 
 				channel_type,
 				channel_keys_id,
@@ -7248,7 +7248,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 				channel_ready_event_emitted: false,
 
 				#[cfg(any(test, fuzzing))]
-				historical_inbound_htlc_fulfills: HashSet::new(),
+				historical_inbound_htlc_fulfills: new_hash_set(),
 
 				channel_type,
 				channel_keys_id,
@@ -8067,7 +8067,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let channel_update_status = Readable::read(reader)?;
 
 		#[cfg(any(test, fuzzing))]
-		let mut historical_inbound_htlc_fulfills = HashSet::new();
+		let mut historical_inbound_htlc_fulfills = new_hash_set();
 		#[cfg(any(test, fuzzing))]
 		{
 			let htlc_fulfills_len: u64 = Readable::read(reader)?;

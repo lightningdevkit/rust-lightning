@@ -653,7 +653,7 @@ impl Default for ProbabilisticScoringFeeParameters {
 			base_penalty_amount_multiplier_msat: 8192,
 			liquidity_penalty_multiplier_msat: 30_000,
 			liquidity_penalty_amount_multiplier_msat: 192,
-			manual_node_penalties: HashMap::new(),
+			manual_node_penalties: new_hash_map(),
 			anti_probing_penalty_msat: 250,
 			considered_impossible_penalty_msat: 1_0000_0000_000,
 			historical_liquidity_penalty_multiplier_msat: 10_000,
@@ -695,7 +695,7 @@ impl ProbabilisticScoringFeeParameters {
 
 	/// Clears the list of manual penalties that are applied during path finding.
 	pub fn clear_manual_penalties(&mut self) {
-		self.manual_node_penalties = HashMap::new();
+		self.manual_node_penalties = new_hash_map();
 	}
 }
 
@@ -709,7 +709,7 @@ impl ProbabilisticScoringFeeParameters {
 			liquidity_penalty_amount_multiplier_msat: 0,
 			historical_liquidity_penalty_multiplier_msat: 0,
 			historical_liquidity_penalty_amount_multiplier_msat: 0,
-			manual_node_penalties: HashMap::new(),
+			manual_node_penalties: new_hash_map(),
 			anti_probing_penalty_msat: 0,
 			considered_impossible_penalty_msat: 0,
 			linear_success_probability: true,
@@ -819,7 +819,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 			decay_params,
 			network_graph,
 			logger,
-			channel_liquidities: HashMap::new(),
+			channel_liquidities: new_hash_map(),
 		}
 	}
 
@@ -1330,7 +1330,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for Probabilistic
 			_ => return 0,
 		};
 		let source = candidate.source();
-		if let Some(penalty) = score_params.manual_node_penalties.get(&target) {
+		if let Some(penalty) = score_params.manual_node_penalties.get(target) {
 			return *penalty;
 		}
 
@@ -1360,7 +1360,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for Probabilistic
 		let amount_msat = usage.amount_msat.saturating_add(usage.inflight_htlc_msat);
 		let capacity_msat = usage.effective_capacity.as_msat();
 		self.channel_liquidities
-			.get(&scid)
+			.get(scid)
 			.unwrap_or(&ChannelLiquidity::new(Duration::ZERO))
 			.as_directed(&source, &target, capacity_msat)
 			.penalty_msat(amount_msat, score_params)
@@ -2073,7 +2073,7 @@ ReadableArgs<(ProbabilisticScoringDecayParameters, G, L)> for ProbabilisticScore
 		r: &mut R, args: (ProbabilisticScoringDecayParameters, G, L)
 	) -> Result<Self, DecodeError> {
 		let (decay_params, network_graph, logger) = args;
-		let mut channel_liquidities = HashMap::new();
+		let mut channel_liquidities = new_hash_map();
 		read_tlv_fields!(r, {
 			(0, channel_liquidities, required),
 		});

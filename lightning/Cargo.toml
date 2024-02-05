@@ -31,7 +31,7 @@ unsafe_revoked_tx_signing = []
 # Override signing to not include randomness when generating signatures for test vectors.
 _test_vectors = []
 
-no-std = ["hashbrown", "bitcoin/no-std", "core2/alloc", "libm"]
+no-std = ["hashbrown", "ahash", "bitcoin/no-std", "core2/alloc", "libm"]
 std = ["bitcoin/std"]
 
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
@@ -42,13 +42,24 @@ default = ["std", "grind_signatures"]
 [dependencies]
 bitcoin = { version = "0.30.2", default-features = false, features = ["secp-recovery"] }
 
-hashbrown = { version = "0.8", optional = true }
+hashbrown = { version = "0.13", optional = true }
+ahash = { version = "0.8", optional = true, default-features = false }
 hex = { package = "hex-conservative", version = "0.1.1", default-features = false }
 regex = { version = "1.5.6", optional = true }
 backtrace = { version = "0.3", optional = true }
 
 core2 = { version = "0.3.0", optional = true, default-features = false }
 libm = { version = "0.2", optional = true, default-features = false }
+
+# Because ahash no longer (kinda poorly) does it for us, (roughly) list out the targets that
+# getrandom supports and turn on ahash's `runtime-rng` feature for them.
+[target.'cfg(not(any(target_os = "unknown", target_os = "none")))'.dependencies]
+ahash = { version = "0.8", optional = true, default-features = false, features = ["runtime-rng"] }
+
+# Not sure what target_os gets set to for sgx, so to be safe always enable runtime-rng for x86_64
+# platforms (assuming LDK isn't being used on embedded x86-64 running directly on metal).
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+ahash = { version = "0.8", optional = true, default-features = false, features = ["runtime-rng"] }
 
 [dev-dependencies]
 regex = "1.5.6"

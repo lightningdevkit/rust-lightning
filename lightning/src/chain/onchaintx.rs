@@ -374,13 +374,13 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		signer.provide_channel_parameters(&channel_parameters);
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
-		let mut pending_claim_requests = HashMap::with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
+		let mut pending_claim_requests = hash_map_with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..pending_claim_requests_len {
 			pending_claim_requests.insert(Readable::read(reader)?, Readable::read(reader)?);
 		}
 
 		let claimable_outpoints_len: u64 = Readable::read(reader)?;
-		let mut claimable_outpoints = HashMap::with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
+		let mut claimable_outpoints = hash_map_with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..claimable_outpoints_len {
 			let outpoint = Readable::read(reader)?;
 			let ancestor_claim_txid = Readable::read(reader)?;
@@ -445,8 +445,8 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			prev_holder_commitment: None,
 			signer,
 			channel_transaction_parameters: channel_parameters,
-			pending_claim_requests: HashMap::new(),
-			claimable_outpoints: HashMap::new(),
+			pending_claim_requests: new_hash_map(),
+			claimable_outpoints: new_hash_map(),
 			locktimed_packages: BTreeMap::new(),
 			onchain_events_awaiting_threshold_conf: Vec::new(),
 			pending_claim_events: Vec::new(),
@@ -686,7 +686,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		if let Some(claim_id) = claim_id {
 			if let Some(claim) = self.pending_claim_requests.remove(&claim_id) {
 				for outpoint in claim.outpoints() {
-					self.claimable_outpoints.remove(&outpoint);
+					self.claimable_outpoints.remove(outpoint);
 				}
 			}
 		} else {
@@ -806,7 +806,9 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 						claim_id
 					},
 				};
-				debug_assert!(self.pending_claim_requests.get(&claim_id).is_none());
+				// Because fuzzing can cause hash collisions, we can end up with conflicting claim
+				// ids here, so we only assert when not fuzzing.
+				debug_assert!(cfg!(fuzzing) || self.pending_claim_requests.get(&claim_id).is_none());
 				for k in req.outpoints() {
 					log_info!(logger, "Registering claiming request for {}:{}", k.txid, k.vout);
 					self.claimable_outpoints.insert(k.clone(), (claim_id, conf_height));
@@ -832,7 +834,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		F::Target: FeeEstimator,
 	{
 		log_debug!(logger, "Updating claims view at height {} with {} matched transactions in block {}", cur_height, txn_matched.len(), conf_height);
-		let mut bump_candidates = HashMap::new();
+		let mut bump_candidates = new_hash_map();
 		for tx in txn_matched {
 			// Scan all input to verify is one of the outpoint spent is of interest for us
 			let mut claimed_outputs_material = Vec::new();
@@ -1018,7 +1020,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		where B::Target: BroadcasterInterface,
 			F::Target: FeeEstimator,
 	{
-		let mut bump_candidates = HashMap::new();
+		let mut bump_candidates = new_hash_map();
 		let onchain_events_awaiting_threshold_conf =
 			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
 		for entry in onchain_events_awaiting_threshold_conf {

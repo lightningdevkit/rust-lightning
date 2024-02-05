@@ -272,7 +272,7 @@ pub struct InFlightHtlcs(
 
 impl InFlightHtlcs {
 	/// Constructs an empty `InFlightHtlcs`.
-	pub fn new() -> Self { InFlightHtlcs(HashMap::new()) }
+	pub fn new() -> Self { InFlightHtlcs(new_hash_map()) }
 
 	/// Takes in a path with payer's node id and adds the path's details to `InFlightHtlcs`.
 	pub fn process_path(&mut self, path: &Path, payer_node_id: PublicKey) {
@@ -1971,7 +1971,7 @@ where L::Target: Logger {
 	// inserting first hops suggested by the caller as targets.
 	// Our search will then attempt to reach them while traversing from the payee node.
 	let mut first_hop_targets: HashMap<_, Vec<&ChannelDetails>> =
-		HashMap::with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
+		hash_map_with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 	if let Some(hops) = first_hops {
 		for chan in hops {
 			if chan.get_outbound_payment_scid().is_none() {
@@ -1990,7 +1990,7 @@ where L::Target: Logger {
 		}
 	}
 
-	let mut private_hop_key_cache = HashMap::with_capacity(
+	let mut private_hop_key_cache = hash_map_with_capacity(
 		payment_params.payee.unblinded_route_hints().iter().map(|path| path.0.len()).sum()
 	);
 
@@ -2011,7 +2011,7 @@ where L::Target: Logger {
 
 	// Map from node_id to information about the best current path to that node, including feerate
 	// information.
-	let mut dist: HashMap<NodeId, PathBuildingHop> = HashMap::with_capacity(network_nodes.len());
+	let mut dist: HashMap<NodeId, PathBuildingHop> = hash_map_with_capacity(network_nodes.len());
 
 	// During routing, if we ignore a path due to an htlc_minimum_msat limit, we set this,
 	// indicating that we may wish to try again with a higher value, potentially paying to meet an
@@ -2052,7 +2052,7 @@ where L::Target: Logger {
 	// is used. Hence, liquidity used in one direction will not offset any used in the opposite
 	// direction.
 	let mut used_liquidities: HashMap<CandidateHopId, u64> =
-		HashMap::with_capacity(network_nodes.len());
+		hash_map_with_capacity(network_nodes.len());
 
 	// Keeping track of how much value we already collected across other paths. Helps to decide
 	// when we want to stop looking for new paths.
@@ -2575,9 +2575,9 @@ where L::Target: Logger {
 				let mut aggregate_path_contribution_msat = path_value_msat;
 
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
-					let target = private_hop_key_cache.get(&prev_hop_id).unwrap();
+					let target = private_hop_key_cache.get(prev_hop_id).unwrap();
 
-					if let Some(first_channels) = first_hop_targets.get(&target) {
+					if let Some(first_channels) = first_hop_targets.get(target) {
 						if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {
 							log_trace!(logger, "Ignoring route hint with SCID {} (and any previous) due to it being a direct channel of ours.",
 								hop.short_channel_id);
@@ -2587,7 +2587,7 @@ where L::Target: Logger {
 
 					let candidate = network_channels
 						.get(&hop.short_channel_id)
-						.and_then(|channel| channel.as_directed_to(&target))
+						.and_then(|channel| channel.as_directed_to(target))
 						.map(|(info, _)| CandidateRouteHop::PublicHop(PublicHopCandidate {
 							info,
 							short_channel_id: hop.short_channel_id,
@@ -2628,7 +2628,7 @@ where L::Target: Logger {
 						.saturating_add(1);
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
-					if let Some(first_channels) = first_hop_targets.get_mut(&target) {
+					if let Some(first_channels) = first_hop_targets.get_mut(target) {
 						sort_first_hop_channels(first_channels, &used_liquidities,
 							recommended_value_msat, our_node_pubkey);
 						for details in first_channels {

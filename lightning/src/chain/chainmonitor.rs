@@ -43,7 +43,6 @@ use crate::ln::channelmanager::ChannelDetails;
 
 use crate::prelude::*;
 use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};
-use core::iter::FromIterator;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use bitcoin::secp256k1::PublicKey;
@@ -318,7 +317,7 @@ where C::Target: chain::Filter,
 		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
 	{
 		let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
-		let funding_outpoints: HashSet<OutPoint> = HashSet::from_iter(self.monitors.read().unwrap().keys().cloned());
+		let funding_outpoints = hash_set_from_iter(self.monitors.read().unwrap().keys().cloned());
 		for funding_outpoint in funding_outpoints.iter() {
 			let monitor_lock = self.monitors.read().unwrap();
 			if let Some(monitor_state) = monitor_lock.get(funding_outpoint) {
@@ -420,7 +419,7 @@ where C::Target: chain::Filter,
 	/// transactions relevant to the watched channels.
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
 		Self {
-			monitors: RwLock::new(HashMap::new()),
+			monitors: RwLock::new(new_hash_map()),
 			sync_persistence_id: AtomicCounter::new(),
 			chain_source,
 			broadcaster,
@@ -486,9 +485,9 @@ where C::Target: chain::Filter,
 	#[cfg(not(c_bindings))]
 	/// Lists the pending updates for each [`ChannelMonitor`] (by `OutPoint` being monitored).
 	pub fn list_pending_monitor_updates(&self) -> HashMap<OutPoint, Vec<MonitorUpdateId>> {
-		self.monitors.read().unwrap().iter().map(|(outpoint, holder)| {
+		hash_map_from_iter(self.monitors.read().unwrap().iter().map(|(outpoint, holder)| {
 			(*outpoint, holder.pending_monitor_updates.lock().unwrap().clone())
-		}).collect()
+		}))
 	}
 
 	#[cfg(c_bindings)]
