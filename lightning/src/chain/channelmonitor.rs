@@ -1416,8 +1416,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Loads the funding txo and outputs to watch into the given `chain::Filter` by repeatedly
 	/// calling `chain::Filter::register_output` and `chain::Filter::register_tx` until all outputs
 	/// have been registered.
-	pub fn load_outputs_to_watch<F: Deref, L: Deref>(&self, filter: &F, logger: &L) 
-	where 
+	pub fn load_outputs_to_watch<F: Deref, L: Deref>(&self, filter: &F, logger: &L)
+	where
 		F::Target: chain::Filter, L::Target: Logger,
 	{
 		let lock = self.inner.lock().unwrap();
@@ -2931,12 +2931,19 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ClaimEvent::BumpCommitment {
 					package_target_feerate_sat_per_1000_weight, commitment_tx, anchor_output_idx,
 				} => {
+					let channel_id = self.channel_id;
+					// unwrap safety: `ClaimEvent`s are only available for Anchor channels,
+					// introduced with v0.0.116. counterparty_node_id is guaranteed to be `Some`
+					// since v0.0.110.
+					let counterparty_node_id = self.counterparty_node_id.unwrap();
 					let commitment_txid = commitment_tx.txid();
 					debug_assert_eq!(self.current_holder_commitment_tx.txid, commitment_txid);
 					let pending_htlcs = self.current_holder_commitment_tx.non_dust_htlcs();
 					let commitment_tx_fee_satoshis = self.channel_value_satoshis -
 						commitment_tx.output.iter().fold(0u64, |sum, output| sum + output.value);
 					ret.push(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
+						channel_id,
+						counterparty_node_id,
 						claim_id,
 						package_target_feerate_sat_per_1000_weight,
 						commitment_tx,
@@ -2958,6 +2965,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				ClaimEvent::BumpHTLC {
 					target_feerate_sat_per_1000_weight, htlcs, tx_lock_time,
 				} => {
+					let channel_id = self.channel_id;
+					// unwrap safety: `ClaimEvent`s are only available for Anchor channels,
+					// introduced with v0.0.116. counterparty_node_id is guaranteed to be `Some`
+					// since v0.0.110.
+					let counterparty_node_id = self.counterparty_node_id.unwrap();
 					let mut htlc_descriptors = Vec::with_capacity(htlcs.len());
 					for htlc in htlcs {
 						htlc_descriptors.push(HTLCDescriptor {
@@ -2978,6 +2990,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						});
 					}
 					ret.push(Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
+						channel_id,
+						counterparty_node_id,
 						claim_id,
 						target_feerate_sat_per_1000_weight,
 						htlc_descriptors,
