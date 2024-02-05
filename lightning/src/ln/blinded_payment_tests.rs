@@ -509,6 +509,12 @@ fn three_hop_blinded_path_success() {
 	let chan_upd_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
 	let chan_upd_3_4 = create_announced_chan_between_nodes_with_value(&nodes, 3, 4, 1_000_000, 0).0.contents;
 
+	// Get all our nodes onto the same height so payments don't fail for CLTV violations.
+	connect_blocks(&nodes[0], nodes[4].best_block_info().1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], nodes[4].best_block_info().1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], nodes[4].best_block_info().1 - nodes[2].best_block_info().1);
+	assert_eq!(nodes[4].best_block_info().1, nodes[3].best_block_info().1);
+
 	let amt_msat = 5000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[4], Some(amt_msat), None);
 	let route_params = get_blinded_route_parameters(amt_msat, payment_secret,

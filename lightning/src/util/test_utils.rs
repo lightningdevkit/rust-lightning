@@ -70,7 +70,7 @@ use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
 use bitcoin::bech32::u5;
-use crate::sign::{InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
+use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -107,10 +107,12 @@ pub struct TestRouter<'a> {
 	pub router: DefaultRouter<
 		Arc<NetworkGraph<&'a TestLogger>>,
 		&'a TestLogger,
+		Arc<RandomBytes>,
 		&'a RwLock<TestScorer>,
 		(),
 		TestScorer,
 	>,
+	//pub entropy_source: &'a RandomBytes,
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Result<Route, LightningError>)>>,
 	pub scorer: &'a RwLock<TestScorer>,
@@ -119,10 +121,11 @@ pub struct TestRouter<'a> {
 impl<'a> TestRouter<'a> {
 	pub fn new(
 		network_graph: Arc<NetworkGraph<&'a TestLogger>>, logger: &'a TestLogger,
-		scorer: &'a RwLock<TestScorer>
+		scorer: &'a RwLock<TestScorer>,
 	) -> Self {
+		let entropy_source = Arc::new(RandomBytes::new([42; 32]));
 		Self {
-			router: DefaultRouter::new(network_graph.clone(), logger, [42u8; 32], scorer, ()),
+			router: DefaultRouter::new(network_graph.clone(), logger, entropy_source, scorer, ()),
 			network_graph,
 			next_routes: Mutex::new(VecDeque::new()),
 			scorer,
@@ -165,7 +168,7 @@ impl<'a> Router for TestRouter<'a> {
 										details: first_hops[idx],
 										payer_node_id: &node_id,
 									});
-									scorer.channel_penalty_msat(&candidate, usage, &());
+									scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 									continue;
 								}
 							}
@@ -177,7 +180,7 @@ impl<'a> Router for TestRouter<'a> {
 								info: directed,
 								short_channel_id: hop.short_channel_id,
 							});
-							scorer.channel_penalty_msat(&candidate, usage, &());
+							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 						} else {
 							let target_node_id = NodeId::from_pubkey(&hop.pubkey);
 							let route_hint = RouteHintHop {
@@ -192,7 +195,7 @@ impl<'a> Router for TestRouter<'a> {
 								hint: &route_hint,
 								target_node_id: &target_node_id,
 							});
-							scorer.channel_penalty_msat(&candidate, usage, &());
+							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 						}
 						prev_hop_node = &hop.pubkey;
 					}
@@ -205,13 +208,13 @@ impl<'a> Router for TestRouter<'a> {
 	}
 
 	fn create_blinded_payment_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: u64, entropy_source: &ES, secp_ctx: &Secp256k1<T>
+		amount_msats: u64, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		self.router.create_blinded_payment_paths(
-			recipient, first_hops, tlvs, amount_msats, entropy_source, secp_ctx
+			recipient, first_hops, tlvs, amount_msats, secp_ctx
 		)
 	}
 }
@@ -224,12 +227,11 @@ impl<'a> MessageRouter for TestRouter<'a> {
 	}
 
 	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
-		secp_ctx: &Secp256k1<T>
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.router.create_blinded_paths(recipient, peers, entropy_source, secp_ctx)
+		self.router.create_blinded_paths(recipient, peers, secp_ctx)
 	}
 }
 
@@ -245,12 +247,12 @@ impl<'a> Drop for TestRouter<'a> {
 }
 
 pub struct TestMessageRouter<'a> {
-	inner: DefaultMessageRouter<Arc<NetworkGraph<&'a TestLogger>>, &'a TestLogger>,
+	inner: DefaultMessageRouter<Arc<NetworkGraph<&'a TestLogger>>, &'a TestLogger, &'a TestKeysInterface>,
 }
 
 impl<'a> TestMessageRouter<'a> {
-	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>) -> Self {
-		Self { inner: DefaultMessageRouter::new(network_graph) }
+	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>, entropy_source: &'a TestKeysInterface) -> Self {
+		Self { inner: DefaultMessageRouter::new(network_graph, entropy_source) }
 	}
 }
 
@@ -261,13 +263,10 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 		self.inner.find_path(sender, peers, destination)
 	}
 
-	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
-	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
-		secp_ctx: &Secp256k1<T>
+	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.inner.create_blinded_paths(recipient, peers, entropy_source, secp_ctx)
+		self.inner.create_blinded_paths(recipient, peers, secp_ctx)
 	}
 }
 

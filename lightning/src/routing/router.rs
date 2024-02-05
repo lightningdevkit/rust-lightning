@@ -10,8 +10,6 @@
 //! The router finds paths within a [`NetworkGraph`] for a payment.
 
 use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
-use bitcoin::hashes::Hash;
-use bitcoin::hashes::sha256::Hash as Sha256;
 
 use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
@@ -30,39 +28,40 @@ use crate::crypto::chacha20::ChaCha20;
 
 use crate::io;
 use crate::prelude::*;
-use crate::sync::Mutex;
 use alloc::collections::BinaryHeap;
 use core::{cmp, fmt};
 use core::ops::Deref;
 
 /// A [`Router`] implemented using [`find_route`].
-pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
+pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	ES::Target: EntropySource,
 {
 	network_graph: G,
 	logger: L,
-	random_seed_bytes: Mutex<[u8; 32]>,
+	entropy_source: ES,
 	scorer: S,
 	score_params: SP,
-	message_router: DefaultMessageRouter<G, L>,
+	message_router: DefaultMessageRouter<G, L, ES>,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> DefaultRouter<G, L, S, SP, Sc> where
+impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref + Clone, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> DefaultRouter<G, L, ES, S, SP, Sc> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	ES::Target: EntropySource,
 {
 	/// Creates a new router.
-	pub fn new(network_graph: G, logger: L, random_seed_bytes: [u8; 32], scorer: S, score_params: SP) -> Self {
-		let random_seed_bytes = Mutex::new(random_seed_bytes);
-		let message_router = DefaultMessageRouter::new(network_graph.clone());
-		Self { network_graph, logger, random_seed_bytes, scorer, score_params, message_router }
+	pub fn new(network_graph: G, logger: L, entropy_source: ES, scorer: S, score_params: SP) -> Self {
+		let message_router = DefaultMessageRouter::new(network_graph.clone(), entropy_source.clone());
+		Self { network_graph, logger, entropy_source, scorer, score_params, message_router }
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> Router for DefaultRouter<G, L, S, SP, Sc> where
+impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> Router for DefaultRouter<G, L, ES, S, SP, Sc> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	ES::Target: EntropySource,
 {
 	fn find_route(
 		&self,
@@ -71,11 +70,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 		first_hops: Option<&[&ChannelDetails]>,
 		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, LightningError> {
-		let random_seed_bytes = {
-			let mut locked_random_seed_bytes = self.random_seed_bytes.lock().unwrap();
-			*locked_random_seed_bytes = Sha256::hash(&*locked_random_seed_bytes).to_byte_array();
-			*locked_random_seed_bytes
-		};
+		let random_seed_bytes = self.entropy_source.get_secure_random_bytes();
 		find_route(
 			payer, params, &self.network_graph, first_hops, &*self.logger,
 			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read_lock(), &inflight_htlcs),
@@ -85,10 +80,10 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 	}
 
 	fn create_blinded_payment_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
-	>(
+		T: secp256k1::Signing + secp256k1::Verification
+	> (
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: u64, entropy_source: &ES, secp_ctx: &Secp256k1<T>
+		amount_msats: u64, secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PAYMENT_PATHS: usize = 3;
@@ -139,7 +134,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 			})
 			.map(|forward_node| {
 				BlindedPath::new_for_payment(
-					&[forward_node], recipient, tlvs.clone(), u64::MAX, entropy_source, secp_ctx
+					&[forward_node], recipient, tlvs.clone(), u64::MAX, &*self.entropy_source, secp_ctx
 				)
 			})
 			.take(MAX_PAYMENT_PATHS)
@@ -149,7 +144,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
-					BlindedPath::one_hop_for_payment(recipient, tlvs, entropy_source, secp_ctx)
+					BlindedPath::one_hop_for_payment(recipient, tlvs, &*self.entropy_source, secp_ctx)
 						.map(|path| vec![path])
 				} else {
 					Err(())
@@ -159,9 +154,10 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, 
 	}
 }
 
-impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> MessageRouter for DefaultRouter<G, L, S, SP, Sc> where
+impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> MessageRouter for DefaultRouter<G, L, ES, S, SP, Sc> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	ES::Target: EntropySource,
 {
 	fn find_path(
 		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
@@ -170,12 +166,11 @@ impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, S: Deref, SP: Sized,
 	}
 
 	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
-	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
-		secp_ctx: &Secp256k1<T>
+		T: secp256k1::Signing + secp256k1::Verification
+	> (
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.message_router.create_blinded_paths(recipient, peers, entropy_source, secp_ctx)
+		self.message_router.create_blinded_paths(recipient, peers, secp_ctx)
 	}
 }
 
@@ -209,10 +204,10 @@ pub trait Router: MessageRouter {
 	/// are assumed to be with the `recipient`'s peers. The payment secret and any constraints are
 	/// given in `tlvs`.
 	fn create_blinded_payment_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
-	>(
+		T: secp256k1::Signing + secp256k1::Verification
+	> (
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: u64, entropy_source: &ES, secp_ctx: &Secp256k1<T>
+		amount_msats: u64, secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()>;
 }
 
@@ -1146,8 +1141,12 @@ pub struct FirstHopCandidate<'a> {
 	/// has been funded and is able to pay), and accessor methods may panic otherwise.
 	///
 	/// [`find_route`] validates this prior to constructing a [`CandidateRouteHop`].
+	///
+	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
 	pub details: &'a ChannelDetails,
 	/// The node id of the payer, which is also the source side of this candidate route hop.
+	///
+	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
 	pub payer_node_id: &'a NodeId,
 }
 
@@ -1156,6 +1155,8 @@ pub struct FirstHopCandidate<'a> {
 pub struct PublicHopCandidate<'a> {
 	/// Information about the channel, including potentially its capacity and
 	/// direction-specific information.
+	///
+	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
 	pub info: DirectedChannelInfo<'a>,
 	/// The short channel ID of the channel, i.e. the identifier by which we refer to this
 	/// channel.
@@ -1166,8 +1167,12 @@ pub struct PublicHopCandidate<'a> {
 #[derive(Clone, Debug)]
 pub struct PrivateHopCandidate<'a> {
 	/// Information about the private hop communicated via BOLT 11.
+	///
+	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
 	pub hint: &'a RouteHintHop,
 	/// Node id of the next hop in BOLT 11 route hint.
+	///
+	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
 	pub target_node_id: &'a NodeId
 }
 
@@ -1176,6 +1181,8 @@ pub struct PrivateHopCandidate<'a> {
 pub struct BlindedPathCandidate<'a> {
 	/// Information about the blinded path including the fee, HTLC amount limits, and
 	/// cryptographic material required to build an HTLC through the given path.
+	///
+	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
 	pub hint: &'a (BlindedPayInfo, BlindedPath),
 	/// Index of the hint in the original list of blinded hints.
 	///
@@ -1191,6 +1198,8 @@ pub struct OneHopBlindedPathCandidate<'a> {
 	/// cryptographic material required to build an HTLC terminating with the given path.
 	///
 	/// Note that the [`BlindedPayInfo`] is ignored here.
+	///
+	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
 	pub hint: &'a (BlindedPayInfo, BlindedPath),
 	/// Index of the hint in the original list of blinded hints.
 	///
