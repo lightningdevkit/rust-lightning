@@ -2152,6 +2152,7 @@ macro_rules! emit_channel_pending_event {
 				counterparty_node_id: $channel.context.get_counterparty_node_id(),
 				user_channel_id: $channel.context.get_user_id(),
 				funding_txo: $channel.context.get_funding_txo().unwrap().into_bitcoin_outpoint(),
+				channel_type: Some($channel.context.get_channel_type().clone()),
 			}, None));
 			$channel.context.set_channel_pending_event_emitted();
 		}

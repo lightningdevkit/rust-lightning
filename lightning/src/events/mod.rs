@@ -845,6 +845,10 @@ pub enum Event {
 		counterparty_node_id: PublicKey,
 		/// The outpoint of the channel's funding transaction.
 		funding_txo: OutPoint,
+		/// The features that this channel will operate with.
+		///
+		/// Will be `None` for channels created prior to LDK version 0.0.122.
+		channel_type: Option<ChannelTypeFeatures>,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is ready to
 	/// be used. This event is emitted either when the funding transaction has been confirmed
@@ -1214,10 +1218,14 @@ impl Writeable for Event {
 					(6, channel_type, required),
 				});
 			},
-			&Event::ChannelPending { ref channel_id, ref user_channel_id, ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo } => {
+			&Event::ChannelPending { ref channel_id, ref user_channel_id,
+				ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo,
+				ref channel_type
+			} => {
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
+					(1, channel_type, option),
 					(2, user_channel_id, required),
 					(4, former_temporary_channel_id, required),
 					(6, counterparty_node_id, required),
@@ -1606,8 +1614,10 @@ impl MaybeReadable for Event {
 					let mut former_temporary_channel_id = None;
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut funding_txo = RequiredWrapper(None);
+					let mut channel_type = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
+						(1, channel_type, option),
 						(2, user_channel_id, required),
 						(4, former_temporary_channel_id, required),
 						(6, counterparty_node_id, required),
@@ -1619,7 +1629,8 @@ impl MaybeReadable for Event {
 						user_channel_id,
 						former_temporary_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						funding_txo: funding_txo.0.unwrap()
+						funding_txo: funding_txo.0.unwrap(),
+						channel_type,
 					}))
 				};
 				f()
