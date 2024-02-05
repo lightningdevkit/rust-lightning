@@ -120,7 +120,7 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 ///     &keys_manager, &keys_manager, logger, message_router, &offers_message_handler,
 ///     &custom_message_handler
 /// );
-
+///
 /// # #[derive(Debug)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
@@ -129,12 +129,14 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// 		// Write your custom onion message to `w`
 /// 	}
 /// }
+///
 /// impl OnionMessageContents for YourCustomMessage {
 /// 	fn tlv_type(&self) -> u64 {
 /// 		# let your_custom_message_type = 42;
 /// 		your_custom_message_type
 /// 	}
 /// }
+///
 /// // Send a custom onion message to a node id.
 /// let destination = Destination::Node(destination_node_id);
 /// let reply_path = None;
@@ -348,6 +350,8 @@ where
 		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
 		secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPath>, ()> {
+		let recipient_node_id = NodeId::from_pubkey(&recipient);
+
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
 
@@ -356,31 +360,58 @@ where
 		const MIN_PEER_CHANNELS: usize = 3;
 
 		let network_graph = self.network_graph.deref().read_only();
-		let paths = peers.iter()
+		let peer_channels = peers.iter()
+			.map(|pubkey| (pubkey, NodeId::from_pubkey(&pubkey)))
 			// Limit to peers with announced channels
-			.filter(|pubkey|
+			.filter_map(|(pubkey, node_id)|
 				network_graph
-					.node(&NodeId::from_pubkey(pubkey))
+					.node(&node_id)
 					.map(|info| &info.channels[..])
-					.map(|channels| channels.len() >= MIN_PEER_CHANNELS)
-					.unwrap_or(false)
-			)
-			.map(|pubkey| vec![*pubkey, recipient])
-			.map(|node_pks| BlindedPath::new_for_message(&node_pks, entropy_source, secp_ctx))
-			.take(MAX_PATHS)
-			.collect::<Result<Vec<_>, _>>();
+					.and_then(|channels| (channels.len() >= MIN_PEER_CHANNELS).then(|| channels))
+					.map(|channels| (pubkey, node_id, channels))
+			);
 
-		match paths {
-			Ok(paths) if !paths.is_empty() => Ok(paths),
-			_ => {
-				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
-					BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx)
-						.map(|path| vec![path])
-				} else {
-					Err(())
-				}
-			},
-		}
+		let three_hop_paths = peer_channels.clone()
+			// Pair peers with their other peers
+			.flat_map(|(pubkey, node_id, channels)|
+				channels
+					.iter()
+					.filter_map(|scid| network_graph.channels().get(scid))
+					.filter_map(move |info| info
+						.as_directed_to(&node_id)
+						.map(|(_, source)| source)
+					)
+					.filter(|source| **source != recipient_node_id)
+					.filter(|source| network_graph
+						.node(source)
+						.and_then(|info| info.announcement_info.as_ref())
+						.map(|info| info.features.supports_onion_messages())
+						.unwrap_or(false)
+					)
+					.filter_map(|source| source.as_pubkey().ok())
+					.map(move |source_pubkey| (source_pubkey, *pubkey))
+			)
+			.map(|(source_pubkey, pubkey)| vec![source_pubkey, pubkey, recipient])
+			.map(|node_pks| BlindedPath::new_for_message(&node_pks, entropy_source, secp_ctx))
+			.take(MAX_PATHS);
+
+		let two_hop_paths = peer_channels
+			.map(|(pubkey, _, _)| vec![*pubkey, recipient])
+			.map(|node_pks| BlindedPath::new_for_message(&node_pks, entropy_source, secp_ctx))
+			.take(MAX_PATHS);
+
+		three_hop_paths
+			.collect::<Result<Vec<_>, _>>().ok()
+			.and_then(|paths| (!paths.is_empty()).then(|| paths))
+			.or_else(|| two_hop_paths.collect::<Result<Vec<_>, _>>().ok())
+			.and_then(|paths| (!paths.is_empty()).then(|| paths))
+			.or_else(|| network_graph
+				.node(&NodeId::from_pubkey(&recipient)).ok_or(())
+				.and_then(|_| BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx))
+				.map(|path| vec![path])
+				.ok()
+			)
+			.ok_or(())
 	}
 }
 
