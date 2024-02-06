@@ -184,11 +184,16 @@ pub enum ClosureReason {
 	HolderForceClosed,
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
+	///
+	/// This was only set in versions of LDK prior to 0.0.122.
 	// Can be removed once we disallow downgrading to 0.0.121
 	LegacyCooperativeClosure,
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. This indicates that the shutdown was initiated by our
 	/// counterparty.
+	///
+	/// In rare cases where we initiated closure immediately prior to shutting down without
+	/// persisting, this value may be provided for channels we initiated closure for.
 	CounterpartyInitiatedCooperativeClosure,
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. This indicates that the shutdown was initiated by us.
