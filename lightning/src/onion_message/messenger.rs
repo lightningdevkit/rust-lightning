@@ -766,7 +766,7 @@ where
 			},
 			Ok(SendSuccess::BufferedAwaitingConnection(node_id)) => {
 				log_trace!(
-					self.logger, "Buffered onion message waiting on peer connection {}: {:?}",
+					self.logger, "Buffered onion message waiting on peer connection {}: {}",
 					log_suffix, node_id
 				);
 			},
@@ -957,7 +957,7 @@ where
 			Ok(PeeledOnion::Forward(next_node_id, onion_message)) => {
 				let mut message_recipients = self.message_recipients.lock().unwrap();
 				if outbound_buffer_full(&next_node_id, &message_recipients) {
-					log_trace!(self.logger, "Dropping forwarded onion message to peer {:?}: outbound buffer full", next_node_id);
+					log_trace!(self.logger, "Dropping forwarded onion message to peer {}: outbound buffer full", next_node_id);
 					return
 				}
 
@@ -974,7 +974,7 @@ where
 						log_trace!(self.logger, "Forwarding an onion message to peer {}", next_node_id);
 					},
 					_ => {
-						log_trace!(self.logger, "Dropping forwarded onion message to disconnected peer {:?}", next_node_id);
+						log_trace!(self.logger, "Dropping forwarded onion message to disconnected peer {}", next_node_id);
 						return
 					},
 				}
