@@ -158,6 +158,72 @@ enum InboundHTLCState {
 	LocalRemoved(InboundHTLCRemovalReason),
 }
 
+/// Exposes the state of pending inbound HTLCs.
+///
+/// At a high level, an HTLC being forwarded from one Lightning node to another Lightning node goes
+/// through the following states in the state machine:
+/// - Announced for addition by the originating node through the update_add_htlc message.
+/// - Added to the commitment transaction of the receiving node and originating node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+/// - Announced for resolution (fulfillment or failure) by the receiving node through either one of
+///   the update_fulfill_htlc, update_fail_htlc, and update_fail_malformed_htlc messages.
+/// - Removed from the commitment transaction of the originating node and receiving node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+///
+/// This can be used to inspect what next message an HTLC is waiting for to advance its state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InboundHTLCStateDetails {
+	/// We have added this HTLC in our commitment transaction by receiving commitment_signed and
+	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
+	/// before this HTLC is included on the remote commitment transaction.
+	AwaitingRemoteRevokeToAdd,
+	/// This HTLC has been included in the commitment_signed and revoke_and_ack messages on both sides
+	/// and is included in both commitment transactions.
+	///
+	/// This HTLC is now safe to either forward or be claimed as a payment by us. The HTLC will
+	/// remain in this state until the forwarded upstream HTLC has been resolved and we resolve this
+	/// HTLC correspondingly, or until we claim it as a payment. If it is part of a multipart
+	/// payment, it will only be claimed together with other required parts.
+	Committed,
+	/// We have received the preimage for this HTLC and it is being removed by fulfilling it with
+	/// update_fulfill_htlc. This HTLC is still on both commitment transactions, but we are awaiting
+	/// the appropriate revoke_and_ack's from the remote before this HTLC is removed from the remote
+	/// commitment transaction after update_fulfill_htlc.
+	AwaitingRemoteRevokeToRemoveFulfill,
+	/// The HTLC is being removed by failing it with update_fail_htlc or update_fail_malformed_htlc.
+	/// This HTLC is still on both commitment transactions, but we are awaiting the appropriate
+	/// revoke_and_ack's from the remote before this HTLC is removed from the remote commitment
+	/// transaction.
+	AwaitingRemoteRevokeToRemoveFail,
+}
+
+impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
+	fn from(state: &InboundHTLCState) -> Option<InboundHTLCStateDetails> {
+		match state {
+			InboundHTLCState::RemoteAnnounced(_) => None,
+			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+			InboundHTLCState::Committed =>
+				Some(InboundHTLCStateDetails::Committed),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(_)) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum_upgradable!(InboundHTLCStateDetails,
+	(0, AwaitingRemoteRevokeToAdd) => {},
+	(2, Committed) => {},
+	(4, AwaitingRemoteRevokeToRemoveFulfill) => {},
+	(6, AwaitingRemoteRevokeToRemoveFail) => {};
+);
+
 struct InboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -165,6 +231,48 @@ struct InboundHTLCOutput {
 	payment_hash: PaymentHash,
 	state: InboundHTLCState,
 }
+
+/// Exposes details around pending inbound HTLCs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InboundHTLCDetails {
+	/// The HTLC ID.
+	/// The IDs are incremented by 1 starting from 0 for each offered HTLC.
+	/// They are unique per channel and inbound/outbound direction, unless an HTLC was only announced
+	/// and not part of any commitment transaction.
+	pub htlc_id: u64,
+	/// The amount in msat.
+	pub amount_msat: u64,
+	/// The block height at which this HTLC expires.
+	pub cltv_expiry: u32,
+	/// The payment hash.
+	pub payment_hash: PaymentHash,
+	/// The state of the HTLC in the state machine.
+	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
+	/// waiting for to advance to the next state.
+	/// See [`InboundHTLCStateDetails`] for information on the specific states.
+	pub state: Option<InboundHTLCStateDetails>,
+	/// Whether the HTLC has an output below the local dust limit. If so, the output will be trimmed
+	/// from the local commitment transaction and added to the commitment transaction fee.
+	/// For non-anchor channels, this takes into account the cost of the second-stage HTLC
+	/// transactions as well.
+	///
+	/// When the local commitment transaction is broadcasted as part of a unilateral closure,
+	/// the value of this HTLC will therefore not be claimable but instead burned as a transaction
+	/// fee.
+	///
+	/// Note that dust limits are specific to each party. An HTLC can be dust for the local
+	/// commitment transaction but not for the counterparty's commitment transaction and vice versa.
+	pub is_dust: bool,
+}
+
+impl_writeable_tlv_based!(InboundHTLCDetails, {
+	(0, htlc_id, required),
+	(2, amount_msat, required),
+	(4, cltv_expiry, required),
+	(6, payment_hash, required),
+	(7, state, upgradable_option),
+	(8, is_dust, required),
+});
 
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 enum OutboundHTLCState {
@@ -198,6 +306,72 @@ enum OutboundHTLCState {
 	/// revoke_and_ack to drop completely.
 	AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome),
 }
+
+/// Exposes the state of pending outbound HTLCs.
+///
+/// At a high level, an HTLC being forwarded from one Lightning node to another Lightning node goes
+/// through the following states in the state machine:
+/// - Announced for addition by the originating node through the update_add_htlc message.
+/// - Added to the commitment transaction of the receiving node and originating node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+/// - Announced for resolution (fulfillment or failure) by the receiving node through either one of
+///   the update_fulfill_htlc, update_fail_htlc, and update_fail_malformed_htlc messages.
+/// - Removed from the commitment transaction of the originating node and receiving node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+///
+/// This can be used to inspect what next message an HTLC is waiting for to advance its state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OutboundHTLCStateDetails {
+	/// We are awaiting the appropriate revoke_and_ack's from the remote before the HTLC is added
+	/// on the remote's commitment transaction after update_add_htlc.
+	AwaitingRemoteRevokeToAdd,
+	/// The HTLC has been added to the remote's commitment transaction by sending commitment_signed
+	/// and receiving revoke_and_ack in return.
+	///
+	/// The HTLC will remain in this state until the remote node resolves the HTLC, or until we
+	/// unilaterally close the channel due to a timeout with an uncooperative remote node.
+	Committed,
+	/// The HTLC has been fulfilled successfully by the remote with a preimage in update_fulfill_htlc,
+	/// and we removed the HTLC from our commitment transaction by receiving commitment_signed and
+	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
+	/// for the removal from its commitment transaction.
+	AwaitingRemoteRevokeToRemoveSuccess,
+	/// The HTLC has been failed by the remote with update_fail_htlc or update_fail_malformed_htlc,
+	/// and we removed the HTLC from our commitment transaction by receiving commitment_signed and
+	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
+	/// for the removal from its commitment transaction.
+	AwaitingRemoteRevokeToRemoveFailure,
+}
+
+impl From<&OutboundHTLCState> for OutboundHTLCStateDetails {
+	fn from(state: &OutboundHTLCState) -> OutboundHTLCStateDetails {
+		match state {
+			OutboundHTLCState::LocalAnnounced(_) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd,
+			OutboundHTLCState::Committed =>
+				OutboundHTLCStateDetails::Committed,
+			// RemoteRemoved states are ignored as the state is transient and the remote has not committed to
+			// the state yet.
+			OutboundHTLCState::RemoteRemoved(_) =>
+				OutboundHTLCStateDetails::Committed,
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Failure(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Failure(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum_upgradable!(OutboundHTLCStateDetails,
+	(0, AwaitingRemoteRevokeToAdd) => {},
+	(2, Committed) => {},
+	(4, AwaitingRemoteRevokeToRemoveSuccess) => {},
+	(6, AwaitingRemoteRevokeToRemoveFailure) => {};
+);
 
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
@@ -236,6 +410,53 @@ struct OutboundHTLCOutput {
 	blinding_point: Option<PublicKey>,
 	skimmed_fee_msat: Option<u64>,
 }
+
+/// Exposes details around pending outbound HTLCs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutboundHTLCDetails {
+	/// The HTLC ID.
+	/// The IDs are incremented by 1 starting from 0 for each offered HTLC.
+	/// They are unique per channel and inbound/outbound direction, unless an HTLC was only announced
+	/// and not part of any commitment transaction.
+	///
+	/// Not present when we are awaiting a remote revocation and the HTLC is not added yet.
+	pub htlc_id: Option<u64>,
+	/// The amount in msat.
+	pub amount_msat: u64,
+	/// The block height at which this HTLC expires.
+	pub cltv_expiry: u32,
+	/// The payment hash.
+	pub payment_hash: PaymentHash,
+	/// The state of the HTLC in the state machine.
+	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
+	/// waiting for to advance to the next state.
+	/// See [`OutboundHTLCStateDetails`] for information on the specific states.
+	pub state: Option<OutboundHTLCStateDetails>,
+	/// The extra fee being skimmed off the top of this HTLC.
+	pub skimmed_fee_msat: Option<u64>,
+	/// Whether the HTLC has an output below the local dust limit. If so, the output will be trimmed
+	/// from the local commitment transaction and added to the commitment transaction fee.
+	/// For non-anchor channels, this takes into account the cost of the second-stage HTLC
+	/// transactions as well.
+	///
+	/// When the local commitment transaction is broadcasted as part of a unilateral closure,
+	/// the value of this HTLC will therefore not be claimable but instead burned as a transaction
+	/// fee.
+	///
+	/// Note that dust limits are specific to each party. An HTLC can be dust for the local
+	/// commitment transaction but not for the counterparty's commitment transaction and vice versa.
+	pub is_dust: bool,
+}
+
+impl_writeable_tlv_based!(OutboundHTLCDetails, {
+	(0, htlc_id, required),
+	(2, amount_msat, required),
+	(4, cltv_expiry, required),
+	(6, payment_hash, required),
+	(7, state, upgradable_option),
+	(8, skimmed_fee_msat, required),
+	(10, is_dust, required),
+});
 
 /// See AwaitingRemoteRevoke ChannelState for more info
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
@@ -1992,6 +2213,99 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 		}
 		stats
+	}
+
+	/// Returns information on all pending inbound HTLCs.
+	pub fn get_pending_inbound_htlc_details(&self) -> Vec<InboundHTLCDetails> {
+		let mut holding_cell_states = new_hash_map();
+		for holding_cell_update in self.holding_cell_htlc_updates.iter() {
+			match holding_cell_update {
+				HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
+					holding_cell_states.insert(
+						htlc_id,
+						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill,
+					);
+				},
+				HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
+					holding_cell_states.insert(
+						htlc_id,
+						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail,
+					);
+				},
+				HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => {
+					holding_cell_states.insert(
+						htlc_id,
+						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail,
+					);
+				},
+				// Outbound HTLC.
+				HTLCUpdateAwaitingACK::AddHTLC { .. } => {},
+			}
+		}
+		let mut inbound_details = Vec::new();
+		let htlc_success_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			0
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
+		};
+		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
+		for htlc in self.pending_inbound_htlcs.iter() {
+			if let Some(state_details) = (&htlc.state).into() {
+				inbound_details.push(InboundHTLCDetails{
+					htlc_id: htlc.htlc_id,
+					amount_msat: htlc.amount_msat,
+					cltv_expiry: htlc.cltv_expiry,
+					payment_hash: htlc.payment_hash,
+					state: Some(holding_cell_states.remove(&htlc.htlc_id).unwrap_or(state_details)),
+					is_dust: htlc.amount_msat / 1000 < holder_dust_limit_success_sat,
+				});
+			}
+		}
+		inbound_details
+	}
+
+	/// Returns information on all pending outbound HTLCs.
+	pub fn get_pending_outbound_htlc_details(&self) -> Vec<OutboundHTLCDetails> {
+		let mut outbound_details = Vec::new();
+		let htlc_timeout_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			0
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
+		};
+		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
+		for htlc in self.pending_outbound_htlcs.iter() {
+			outbound_details.push(OutboundHTLCDetails{
+				htlc_id: Some(htlc.htlc_id),
+				amount_msat: htlc.amount_msat,
+				cltv_expiry: htlc.cltv_expiry,
+				payment_hash: htlc.payment_hash,
+				skimmed_fee_msat: htlc.skimmed_fee_msat,
+				state: Some((&htlc.state).into()),
+				is_dust: htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat,
+			});
+		}
+		for holding_cell_update in self.holding_cell_htlc_updates.iter() {
+			if let HTLCUpdateAwaitingACK::AddHTLC {
+				amount_msat,
+				cltv_expiry,
+				payment_hash,
+				skimmed_fee_msat,
+				..
+			} = *holding_cell_update {
+				outbound_details.push(OutboundHTLCDetails{
+					htlc_id: None,
+					amount_msat: amount_msat,
+					cltv_expiry: cltv_expiry,
+					payment_hash: payment_hash,
+					skimmed_fee_msat: skimmed_fee_msat,
+					state: Some(OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+					is_dust: amount_msat / 1000 < holder_dust_limit_timeout_sat,
+				});
+			}
+		}
+		outbound_details
 	}
 
 	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.

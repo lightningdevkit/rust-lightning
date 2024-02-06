@@ -242,6 +242,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							config: None,
 							feerate_sat_per_1000_weight: None,
 							channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
+							pending_inbound_htlcs: Vec::new(),
+							pending_outbound_htlcs: Vec::new(),
 						});
 					}
 					Some(&$first_hops_vec[..])

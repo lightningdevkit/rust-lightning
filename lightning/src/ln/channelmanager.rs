@@ -44,6 +44,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 // construct one themselves.
 use crate::ln::{inbound_payment, ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
+pub use crate::ln::channel::{InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -1805,6 +1806,14 @@ pub struct ChannelDetails {
 	///
 	/// This field is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.109.
 	pub config: Option<ChannelConfig>,
+	/// Pending inbound HTLCs.
+	///
+	/// This field is empty for objects serialized with LDK versions prior to 0.0.122.
+	pub pending_inbound_htlcs: Vec<InboundHTLCDetails>,
+	/// Pending outbound HTLCs.
+	///
+	/// This field is empty for objects serialized with LDK versions prior to 0.0.122.
+	pub pending_outbound_htlcs: Vec<OutboundHTLCDetails>,
 }
 
 impl ChannelDetails {
@@ -1882,6 +1891,8 @@ impl ChannelDetails {
 			inbound_htlc_maximum_msat: context.get_holder_htlc_maximum_msat(),
 			config: Some(context.config()),
 			channel_shutdown_state: Some(context.shutdown_state()),
+			pending_inbound_htlcs: context.get_pending_inbound_htlc_details(),
+			pending_outbound_htlcs: context.get_pending_outbound_htlc_details(),
 		}
 	}
 }
@@ -9480,6 +9491,8 @@ impl Writeable for ChannelDetails {
 			(37, user_channel_id_high_opt, option),
 			(39, self.feerate_sat_per_1000_weight, option),
 			(41, self.channel_shutdown_state, option),
+			(43, self.pending_inbound_htlcs, optional_vec),
+			(45, self.pending_outbound_htlcs, optional_vec),
 		});
 		Ok(())
 	}
@@ -9518,6 +9531,8 @@ impl Readable for ChannelDetails {
 			(37, user_channel_id_high_opt, option),
 			(39, feerate_sat_per_1000_weight, option),
 			(41, channel_shutdown_state, option),
+			(43, pending_inbound_htlcs, optional_vec),
+			(45, pending_outbound_htlcs, optional_vec),
 		});
 
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
@@ -9554,6 +9569,8 @@ impl Readable for ChannelDetails {
 			inbound_htlc_maximum_msat,
 			feerate_sat_per_1000_weight,
 			channel_shutdown_state,
+			pending_inbound_htlcs: pending_inbound_htlcs.unwrap_or(Vec::new()),
+			pending_outbound_htlcs: pending_outbound_htlcs.unwrap_or(Vec::new()),
 		})
 	}
 }
