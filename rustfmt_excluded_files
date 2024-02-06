@@ -202,7 +202,6 @@
 ./lightning/src/ln/offers_tests.rs
 ./lightning/src/ln/onion_payment.rs
 ./lightning/src/ln/onion_route_tests.rs
-./lightning/src/ln/onion_utils.rs
 ./lightning/src/ln/outbound_payment.rs
 ./lightning/src/ln/payment_tests.rs
 ./lightning/src/ln/peer_channel_encryptor.rs
