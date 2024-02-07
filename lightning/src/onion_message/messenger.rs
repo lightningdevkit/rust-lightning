@@ -28,7 +28,7 @@ use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
 use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload, ReceiveControlTlvs, SMALL_PACKET_HOP_DATA_LEN};
-use crate::util::logger::Logger;
+use crate::util::logger::{Logger, WithContext};
 use crate::util::ser::Writeable;
 
 use core::fmt;
@@ -748,25 +748,31 @@ where
 		&self, contents: T, destination: Destination, reply_path: Option<BlindedPath>,
 		log_suffix: fmt::Arguments
 	) -> Result<SendSuccess, SendError> {
+		let mut logger = WithContext::from(&self.logger, None, None);
 		let result = self.find_path(destination)
-			.and_then(|path| self.enqueue_onion_message(path, contents, reply_path, log_suffix));
+			.and_then(|path| {
+				let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
+				logger = WithContext::from(&self.logger, first_hop, None);
+				self.enqueue_onion_message(path, contents, reply_path, log_suffix)
+			});
 
 		match result.as_ref() {
 			Err(SendError::GetNodeIdFailed) => {
-				log_warn!(self.logger, "Unable to retrieve node id {}", log_suffix);
+				log_warn!(logger, "Unable to retrieve node id {}", log_suffix);
 			},
 			Err(SendError::PathNotFound) => {
-				log_trace!(self.logger, "Failed to find path {}", log_suffix);
+				log_trace!(logger, "Failed to find path {}", log_suffix);
 			},
 			Err(e) => {
-				log_trace!(self.logger, "Failed sending onion message {}: {:?}", log_suffix, e);
+				log_trace!(logger, "Failed sending onion message {}: {:?}", log_suffix, e);
 			},
 			Ok(SendSuccess::Buffered) => {
-				log_trace!(self.logger, "Buffered onion message {}", log_suffix);
+				log_trace!(logger, "Buffered onion message {}", log_suffix);
 			},
 			Ok(SendSuccess::BufferedAwaitingConnection(node_id)) => {
 				log_trace!(
-					self.logger, "Buffered onion message waiting on peer connection {}: {}",
+					logger,
+					"Buffered onion message waiting on peer connection {}: {}",
 					log_suffix, node_id
 				);
 			},
@@ -925,12 +931,13 @@ where
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
-	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &OnionMessage) {
+	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage) {
+		let logger = WithContext::from(&self.logger, Some(*peer_node_id), None);
 		match self.peel_onion_message(msg) {
 			Ok(PeeledOnion::Receive(message, path_id, reply_path)) => {
 				log_trace!(
-					self.logger,
-				   "Received an onion message with path_id {:02x?} and {} reply_path: {:?}",
+					logger,
+					"Received an onion message with path_id {:02x?} and {} reply_path: {:?}",
 					path_id, if reply_path.is_some() { "a" } else { "no" }, message);
 
 				match message {
@@ -957,7 +964,10 @@ where
 			Ok(PeeledOnion::Forward(next_node_id, onion_message)) => {
 				let mut message_recipients = self.message_recipients.lock().unwrap();
 				if outbound_buffer_full(&next_node_id, &message_recipients) {
-					log_trace!(self.logger, "Dropping forwarded onion message to peer {}: outbound buffer full", next_node_id);
+					log_trace!(
+						logger,
+						"Dropping forwarded onion message to peer {}: outbound buffer full",
+						next_node_id);
 					return
 				}
 
@@ -971,16 +981,19 @@ where
 						e.get(), OnionMessageRecipient::ConnectedPeer(..)
 					) => {
 						e.get_mut().enqueue_message(onion_message);
-						log_trace!(self.logger, "Forwarding an onion message to peer {}", next_node_id);
+						log_trace!(logger, "Forwarding an onion message to peer {}", next_node_id);
 					},
 					_ => {
-						log_trace!(self.logger, "Dropping forwarded onion message to disconnected peer {}", next_node_id);
+						log_trace!(
+							logger,
+							"Dropping forwarded onion message to disconnected peer {}",
+							next_node_id);
 						return
 					},
 				}
 			},
 			Err(e) => {
-				log_error!(self.logger, "Failed to process onion message {:?}", e);
+				log_error!(logger, "Failed to process onion message {:?}", e);
 			}
 		}
 	}
