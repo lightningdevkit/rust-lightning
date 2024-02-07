@@ -632,6 +632,9 @@ impl KVStore for TestStore {
 	}
 }
 
+unsafe impl Sync for TestStore {}
+unsafe impl Send for TestStore {}
+
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
 	pub blocks: Arc<Mutex<Vec<(Block, u32)>>>,
