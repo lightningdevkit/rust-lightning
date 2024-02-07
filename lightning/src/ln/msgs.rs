@@ -2477,17 +2477,16 @@ impl Writeable for OutboundOnionPayload {
 				// to reject any reserved types in the experimental range if new ones are ever
 				// standardized.
 				let keysend_tlv = keysend_preimage.map(|preimage| (5482373484, preimage.encode()));
-				let trampoline_tlv = trampoline_packet.as_ref().map(|trampoline| (66100, trampoline.encode()));
 				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter()
 					.chain(keysend_tlv.iter())
-					.chain(trampoline_tlv.iter())
 					.collect();
 				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(8, payment_data, option),
-					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option)
+					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option),
+					(20, trampoline_packet, option)
 				}, custom_tlvs.iter());
 			},
 			Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point } => {
@@ -4366,12 +4365,12 @@ mod tests {
 		};
 		let encoded_payload = msg.encode();
 
-		let trampoline_type_bytes = &encoded_payload[19..=23];
+		let trampoline_type_bytes = &encoded_payload[19..=19];
 		let mut trampoline_type_cursor = Cursor::new(trampoline_type_bytes);
 		let trampoline_type_big_size: BigSize = Readable::read(&mut trampoline_type_cursor).unwrap();
-		assert_eq!(trampoline_type_big_size.0, 66100);
+		assert_eq!(trampoline_type_big_size.0, 20);
 
-		let trampoline_length_bytes = &encoded_payload[24..=26];
+		let trampoline_length_bytes = &encoded_payload[20..=22];
 		let mut trampoline_length_cursor = Cursor::new(trampoline_length_bytes);
 		let trampoline_length_big_size: BigSize = Readable::read(&mut trampoline_length_cursor).unwrap();
 		assert_eq!(trampoline_length_big_size.0, encoded_trampoline_packet.len() as u64);
