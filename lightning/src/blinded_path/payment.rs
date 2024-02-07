@@ -215,11 +215,12 @@ pub(crate) fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &Payment
 }
 
 pub(super) fn compute_payinfo(
-	intermediate_nodes: &[ForwardNode], payee_tlvs: &ReceiveTlvs, payee_htlc_maximum_msat: u64
+	intermediate_nodes: &[ForwardNode], payee_tlvs: &ReceiveTlvs, payee_htlc_maximum_msat: u64,
+	min_final_cltv_expiry_delta: u16
 ) -> Result<BlindedPayInfo, ()> {
 	let mut curr_base_fee: u64 = 0;
 	let mut curr_prop_mil: u64 = 0;
-	let mut cltv_expiry_delta: u16 = 0;
+	let mut cltv_expiry_delta: u16 = min_final_cltv_expiry_delta;
 	for tlvs in intermediate_nodes.iter().rev().map(|n| &n.tlvs) {
 		// In the future, we'll want to take the intersection of all supported features for the
 		// `BlindedPayInfo`, but there are no features in that context right now.
@@ -292,6 +293,7 @@ mod tests {
 	use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, ReceiveTlvs, PaymentConstraints, PaymentRelay};
 	use crate::ln::PaymentSecret;
 	use crate::ln::features::BlindedHopFeatures;
+	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
 
 	#[test]
 	fn compute_payinfo() {
@@ -339,10 +341,10 @@ mod tests {
 			},
 		};
 		let htlc_maximum_msat = 100_000;
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat).unwrap();
+		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, 12).unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 201);
 		assert_eq!(blinded_payinfo.fee_proportional_millionths, 1001);
-		assert_eq!(blinded_payinfo.cltv_expiry_delta, 288);
+		assert_eq!(blinded_payinfo.cltv_expiry_delta, 300);
 		assert_eq!(blinded_payinfo.htlc_minimum_msat, 900);
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, htlc_maximum_msat);
 	}
@@ -356,10 +358,10 @@ mod tests {
 				htlc_minimum_msat: 1,
 			},
 		};
-		let blinded_payinfo = super::compute_payinfo(&[], &recv_tlvs, 4242).unwrap();
+		let blinded_payinfo = super::compute_payinfo(&[], &recv_tlvs, 4242, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 0);
 		assert_eq!(blinded_payinfo.fee_proportional_millionths, 0);
-		assert_eq!(blinded_payinfo.cltv_expiry_delta, 0);
+		assert_eq!(blinded_payinfo.cltv_expiry_delta, TEST_FINAL_CLTV as u16);
 		assert_eq!(blinded_payinfo.htlc_minimum_msat, 1);
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, 4242);
 	}
@@ -410,7 +412,7 @@ mod tests {
 			},
 		};
 		let htlc_maximum_msat = 100_000;
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat).unwrap();
+		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.htlc_minimum_msat, 2_000);
 	}
 
@@ -460,10 +462,10 @@ mod tests {
 			},
 		};
 		let htlc_minimum_msat = 3798;
-		assert!(super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_minimum_msat - 1).is_err());
+		assert!(super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_minimum_msat - 1, TEST_FINAL_CLTV as u16).is_err());
 
 		let htlc_maximum_msat = htlc_minimum_msat + 1;
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat).unwrap();
+		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.htlc_minimum_msat, htlc_minimum_msat);
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, htlc_maximum_msat);
 	}
@@ -514,7 +516,7 @@ mod tests {
 			},
 		};
 
-		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000).unwrap();
+		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, 3997);
 	}
 }

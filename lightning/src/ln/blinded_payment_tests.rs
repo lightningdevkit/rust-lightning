@@ -61,7 +61,7 @@ fn blinded_payment_path(
 	let mut secp_ctx = Secp256k1::new();
 	BlindedPath::new_for_payment(
 		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
-		channel_upds.last().unwrap().htlc_maximum_msat, keys_manager, &secp_ctx
+		channel_upds.last().unwrap().htlc_maximum_msat, TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
 	).unwrap()
 }
 
@@ -100,7 +100,8 @@ fn do_one_hop_blinded_path(success: bool) {
 	};
 	let mut secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::one_hop_for_payment(
-		nodes[1].node.get_our_node_id(), payee_tlvs, &chanmon_cfgs[1].keys_manager, &secp_ctx
+		nodes[1].node.get_our_node_id(), payee_tlvs, TEST_FINAL_CLTV as u16,
+		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
 	let route_params = RouteParameters::from_payment_params_and_value(
@@ -141,7 +142,8 @@ fn mpp_to_one_hop_blinded_path() {
 		},
 	};
 	let blinded_path = BlindedPath::one_hop_for_payment(
-		nodes[3].node.get_our_node_id(), payee_tlvs, &chanmon_cfgs[3].keys_manager, &secp_ctx
+		nodes[3].node.get_our_node_id(), payee_tlvs, TEST_FINAL_CLTV as u16,
+		&chanmon_cfgs[3].keys_manager, &secp_ctx
 	).unwrap();
 
 	let bolt12_features =
@@ -695,7 +697,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			commitment_signed_dance!(nodes[2], nodes[1], (), false, true, false, false);
 		},
 		ReceiveCheckFail::ProcessPendingHTLCsCheck => {
-			assert_eq!(payment_event_1_2.msgs[0].cltv_expiry, nodes[0].best_block_info().1 + 1 + excess_final_cltv_delta_opt.unwrap() as u32);
+			assert_eq!(payment_event_1_2.msgs[0].cltv_expiry, nodes[0].best_block_info().1 + 1 + excess_final_cltv_delta_opt.unwrap() as u32 + TEST_FINAL_CLTV);
 			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event_1_2.msgs[0]);
 			check_added_monitors!(nodes[2], 0);
 			do_commitment_signed_dance(&nodes[2], &nodes[1], &payment_event_1_2.commitment_msg, true, true);
