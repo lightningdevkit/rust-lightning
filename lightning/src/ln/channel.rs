@@ -247,9 +247,14 @@ pub struct InboundHTLCDetails {
 	/// The payment hash.
 	pub payment_hash: PaymentHash,
 	/// The state of the HTLC in the state machine.
+	///
 	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
 	/// waiting for to advance to the next state.
+	///
 	/// See [`InboundHTLCStateDetails`] for information on the specific states.
+	///
+	/// LDK will always fill this field in, but when downgrading to prior versions of LDK, new
+	/// states may result in `None` here.
 	pub state: Option<InboundHTLCStateDetails>,
 	/// Whether the HTLC has an output below the local dust limit. If so, the output will be trimmed
 	/// from the local commitment transaction and added to the commitment transaction fee.
@@ -428,9 +433,14 @@ pub struct OutboundHTLCDetails {
 	/// The payment hash.
 	pub payment_hash: PaymentHash,
 	/// The state of the HTLC in the state machine.
+	///
 	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
 	/// waiting for to advance to the next state.
+	///
 	/// See [`OutboundHTLCStateDetails`] for information on the specific states.
+	///
+	/// LDK will always fill this field in, but when downgrading to prior versions of LDK, new
+	/// states may result in `None` here.
 	pub state: Option<OutboundHTLCStateDetails>,
 	/// The extra fee being skimmed off the top of this HTLC.
 	pub skimmed_fee_msat: Option<u64>,

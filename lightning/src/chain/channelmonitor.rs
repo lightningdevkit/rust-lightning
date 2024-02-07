@@ -3172,7 +3172,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
 				} else {
-					// Our fuzzers aren't contrained by pesky things like valid signatures, so can
+					// Our fuzzers aren't constrained by pesky things like valid signatures, so can
 					// spend our funding output with a transaction which doesn't match our past
 					// commitment transactions. Thus, we can only debug-assert here when not
 					// fuzzing.
