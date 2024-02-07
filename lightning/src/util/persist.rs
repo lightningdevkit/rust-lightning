@@ -187,7 +187,73 @@ impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Der
 	}
 }
 
+impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, ES, NS, SP, F, R, L, S> for dyn KVStore + Send + Sync
+	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+		T::Target: 'static + BroadcasterInterface,
+		ES::Target: 'static + EntropySource,
+		NS::Target: 'static + NodeSigner,
+		SP::Target: 'static + SignerProvider,
+		F::Target: 'static + FeeEstimator,
+		R::Target: 'static + Router,
+		L::Target: 'static + Logger,
+{
+	/// Persist the given [`ChannelManager`] to disk, returning an error if persistence failed.
+	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error> {
+		self.write(CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+			CHANNEL_MANAGER_PERSISTENCE_KEY,
+			&channel_manager.encode())
+	}
+
+	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
+	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
+		self.write(NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+			NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+			NETWORK_GRAPH_PERSISTENCE_KEY,
+			&network_graph.encode())
+	}
+
+	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
+	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error> {
+		self.write(SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+			SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+			SCORER_PERSISTENCE_KEY,
+			&scorer.encode())
+	}
+}
+
 impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSigner> for K {
+	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
+	// down once these start returning failure.
+	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
+	// just shut down the node since we're not retrying persistence!
+
+	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
+		match self.write(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key, &monitor.encode())
+		{
+			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
+			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError
+		}
+	}
+
+	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
+		match self.write(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key, &monitor.encode())
+		{
+			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
+			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError
+		}
+	}
+}
+
+impl<ChannelSigner: WriteableEcdsaChannelSigner> Persist<ChannelSigner> for dyn KVStore + Send + Sync {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
 	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
