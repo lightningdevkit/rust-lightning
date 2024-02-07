@@ -48,7 +48,7 @@ use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessa
 use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router};
-use lightning::util::config::UserConfig;
+use lightning::util::config::{ChannelConfig, UserConfig};
 use lightning::util::errors::APIError;
 use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState};
 use lightning::util::logger::Logger;
@@ -102,6 +102,16 @@ impl InputData {
 			return None;
 		}
 		Some(&self.data[old_pos..old_pos + len])
+	}
+}
+impl std::io::Read for &InputData {
+	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+		if let Some(sl) = self.get_slice(buf.len()) {
+			buf.copy_from_slice(sl);
+			Ok(buf.len())
+		} else {
+			Ok(0)
+		}
 	}
 }
 
@@ -756,6 +766,16 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 						let chan = &chans[amt as usize % chans.len()];
 						channelmanager.forward_intercepted_htlc(id, &chan.channel_id, chan.counterparty.node_id, amt).unwrap();
 					}
+				}
+			}
+			35 => {
+				let config: ChannelConfig =
+					if let Ok(c) = Readable::read(&mut &*input) { c } else { return; };
+				let chans = channelmanager.list_channels();
+				if let Some(chan) = chans.get(0) {
+					let _ = channelmanager.update_channel_config(
+						&chan.counterparty.node_id, &[chan.channel_id], &config
+					);
 				}
 			}
 			_ => return,
