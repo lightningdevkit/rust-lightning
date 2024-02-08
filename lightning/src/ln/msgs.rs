@@ -1787,63 +1787,63 @@ impl From<io::Error> for DecodeError {
 }
 
 impl Writeable for AcceptChannel {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-    	self.common_fields.temporary_channel_id.write(w)?;
-    	self.common_fields.dust_limit_satoshis.write(w)?;
-    	self.common_fields.max_htlc_value_in_flight_msat.write(w)?;
-    	self.channel_reserve_satoshis.write(w)?;
-    	self.common_fields.htlc_minimum_msat.write(w)?;
-    	self.common_fields.minimum_depth.write(w)?;
-    	self.common_fields.to_self_delay.write(w)?;
-    	self.common_fields.max_accepted_htlcs.write(w)?;
-    	self.common_fields.funding_pubkey.write(w)?;
-    	self.common_fields.revocation_basepoint.write(w)?;
-    	self.common_fields.payment_basepoint.write(w)?;
-    	self.common_fields.delayed_payment_basepoint.write(w)?;
-    	self.common_fields.htlc_basepoint.write(w)?;
-    	self.common_fields.first_per_commitment_point.write(w)?;
-    	#[cfg(not(taproot))]
-        encode_tlv_stream!(w, {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.common_fields.temporary_channel_id.write(w)?;
+		self.common_fields.dust_limit_satoshis.write(w)?;
+		self.common_fields.max_htlc_value_in_flight_msat.write(w)?;
+		self.channel_reserve_satoshis.write(w)?;
+		self.common_fields.htlc_minimum_msat.write(w)?;
+		self.common_fields.minimum_depth.write(w)?;
+		self.common_fields.to_self_delay.write(w)?;
+		self.common_fields.max_accepted_htlcs.write(w)?;
+		self.common_fields.funding_pubkey.write(w)?;
+		self.common_fields.revocation_basepoint.write(w)?;
+		self.common_fields.payment_basepoint.write(w)?;
+		self.common_fields.delayed_payment_basepoint.write(w)?;
+		self.common_fields.htlc_basepoint.write(w)?;
+		self.common_fields.first_per_commitment_point.write(w)?;
+		#[cfg(not(taproot))]
+		encode_tlv_stream!(w, {
 			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
 			(1, self.common_fields.channel_type, option),
-        });
-        #[cfg(taproot)]
+		});
+		#[cfg(taproot)]
 		encode_tlv_stream!(w, {
 			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
 			(1, self.common_fields.channel_type, option),
 			(4, self.next_local_nonce, option),
-        });
-        Ok(())
-    }
+		});
+		Ok(())
+	}
 }
 
 impl Readable for AcceptChannel {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let dust_limit_satoshis: u64 = Readable::read(r)?;
-    	let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
-    	let channel_reserve_satoshis: u64 = Readable::read(r)?;
-    	let htlc_minimum_msat: u64 = Readable::read(r)?;
-    	let minimum_depth: u32 = Readable::read(r)?;
-    	let to_self_delay: u16 = Readable::read(r)?;
-    	let max_accepted_htlcs: u16 = Readable::read(r)?;
-    	let funding_pubkey: PublicKey = Readable::read(r)?;
-    	let revocation_basepoint: PublicKey = Readable::read(r)?;
-    	let payment_basepoint: PublicKey = Readable::read(r)?;
-    	let delayed_payment_basepoint: PublicKey = Readable::read(r)?;
-    	let htlc_basepoint: PublicKey = Readable::read(r)?;
-    	let first_per_commitment_point: PublicKey = Readable::read(r)?;
+		let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
+		let channel_reserve_satoshis: u64 = Readable::read(r)?;
+		let htlc_minimum_msat: u64 = Readable::read(r)?;
+		let minimum_depth: u32 = Readable::read(r)?;
+		let to_self_delay: u16 = Readable::read(r)?;
+		let max_accepted_htlcs: u16 = Readable::read(r)?;
+		let funding_pubkey: PublicKey = Readable::read(r)?;
+		let revocation_basepoint: PublicKey = Readable::read(r)?;
+		let payment_basepoint: PublicKey = Readable::read(r)?;
+		let delayed_payment_basepoint: PublicKey = Readable::read(r)?;
+		let htlc_basepoint: PublicKey = Readable::read(r)?;
+		let first_per_commitment_point: PublicKey = Readable::read(r)?;
 
 		let mut shutdown_scriptpubkey: Option<ScriptBuf> = None;
 		let mut channel_type: Option<ChannelTypeFeatures> = None;
-    	#[cfg(not(taproot))]
+		#[cfg(not(taproot))]
 		decode_tlv_stream!(r, {
 			(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))),
 			(1, channel_type, option),
 		});
-        #[cfg(taproot)]
-        let mut next_local_nonce: Option<musig2::types::PublicNonce> = None;
-        #[cfg(taproot)]
+		#[cfg(taproot)]
+		let mut next_local_nonce: Option<musig2::types::PublicNonce> = None;
+		#[cfg(taproot)]
 		decode_tlv_stream!(r, {
 			(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))),
 			(1, channel_type, option),
@@ -1852,54 +1852,54 @@ impl Readable for AcceptChannel {
 
 		Ok(AcceptChannel {
 			common_fields: CommonAcceptChannelFields {
-			    temporary_channel_id,
-			    dust_limit_satoshis,
-			    max_htlc_value_in_flight_msat,
-			    htlc_minimum_msat,
-			    minimum_depth,
-			    to_self_delay,
-			    max_accepted_htlcs,
-			    funding_pubkey,
-			    revocation_basepoint,
-			    payment_basepoint,
-			    delayed_payment_basepoint,
-			    htlc_basepoint,
-			    first_per_commitment_point,
-			    shutdown_scriptpubkey,
-			    channel_type,
+				temporary_channel_id,
+				dust_limit_satoshis,
+				max_htlc_value_in_flight_msat,
+				htlc_minimum_msat,
+				minimum_depth,
+				to_self_delay,
+				max_accepted_htlcs,
+				funding_pubkey,
+				revocation_basepoint,
+				payment_basepoint,
+				delayed_payment_basepoint,
+				htlc_basepoint,
+				first_per_commitment_point,
+				shutdown_scriptpubkey,
+				channel_type,
 			},
-		    channel_reserve_satoshis,
-	        #[cfg(taproot)]
+			channel_reserve_satoshis,
+			#[cfg(taproot)]
 			next_local_nonce,
 		})
 	}
 }
 
 impl Writeable for AcceptChannelV2 {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-    	self.common_fields.temporary_channel_id.write(w)?;
-    	self.funding_satoshis.write(w)?;
-    	self.common_fields.dust_limit_satoshis.write(w)?;
-    	self.common_fields.max_htlc_value_in_flight_msat.write(w)?;
-    	self.common_fields.htlc_minimum_msat.write(w)?;
-    	self.common_fields.minimum_depth.write(w)?;
-    	self.common_fields.to_self_delay.write(w)?;
-    	self.common_fields.max_accepted_htlcs.write(w)?;
-    	self.common_fields.funding_pubkey.write(w)?;
-    	self.common_fields.revocation_basepoint.write(w)?;
-    	self.common_fields.payment_basepoint.write(w)?;
-    	self.common_fields.delayed_payment_basepoint.write(w)?;
-    	self.common_fields.htlc_basepoint.write(w)?;
-    	self.common_fields.first_per_commitment_point.write(w)?;
-    	self.second_per_commitment_point.write(w)?;
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.common_fields.temporary_channel_id.write(w)?;
+		self.funding_satoshis.write(w)?;
+		self.common_fields.dust_limit_satoshis.write(w)?;
+		self.common_fields.max_htlc_value_in_flight_msat.write(w)?;
+		self.common_fields.htlc_minimum_msat.write(w)?;
+		self.common_fields.minimum_depth.write(w)?;
+		self.common_fields.to_self_delay.write(w)?;
+		self.common_fields.max_accepted_htlcs.write(w)?;
+		self.common_fields.funding_pubkey.write(w)?;
+		self.common_fields.revocation_basepoint.write(w)?;
+		self.common_fields.payment_basepoint.write(w)?;
+		self.common_fields.delayed_payment_basepoint.write(w)?;
+		self.common_fields.htlc_basepoint.write(w)?;
+		self.common_fields.first_per_commitment_point.write(w)?;
+		self.second_per_commitment_point.write(w)?;
 
-        encode_tlv_stream!(w, {
+		encode_tlv_stream!(w, {
 			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
 			(1, self.common_fields.channel_type, option),
 			(2, self.require_confirmed_inputs, option),
-        });
-        Ok(())
-    }
+		});
+		Ok(())
+	}
 }
 
 impl Readable for AcceptChannelV2 {
@@ -1907,17 +1907,17 @@ impl Readable for AcceptChannelV2 {
 		let temporary_channel_id: ChannelId = Readable::read(r)?;
 		let funding_satoshis: u64 = Readable::read(r)?;
 		let dust_limit_satoshis: u64 = Readable::read(r)?;
-    	let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
-    	let htlc_minimum_msat: u64 = Readable::read(r)?;
-    	let minimum_depth: u32 = Readable::read(r)?;
-    	let to_self_delay: u16 = Readable::read(r)?;
-    	let max_accepted_htlcs: u16 = Readable::read(r)?;
-    	let funding_pubkey: PublicKey = Readable::read(r)?;
-    	let revocation_basepoint: PublicKey = Readable::read(r)?;
-    	let payment_basepoint: PublicKey = Readable::read(r)?;
-    	let delayed_payment_basepoint: PublicKey = Readable::read(r)?;
-    	let htlc_basepoint: PublicKey = Readable::read(r)?;
-    	let first_per_commitment_point: PublicKey = Readable::read(r)?;
+		let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
+		let htlc_minimum_msat: u64 = Readable::read(r)?;
+		let minimum_depth: u32 = Readable::read(r)?;
+		let to_self_delay: u16 = Readable::read(r)?;
+		let max_accepted_htlcs: u16 = Readable::read(r)?;
+		let funding_pubkey: PublicKey = Readable::read(r)?;
+		let revocation_basepoint: PublicKey = Readable::read(r)?;
+		let payment_basepoint: PublicKey = Readable::read(r)?;
+		let delayed_payment_basepoint: PublicKey = Readable::read(r)?;
+		let htlc_basepoint: PublicKey = Readable::read(r)?;
+		let first_per_commitment_point: PublicKey = Readable::read(r)?;
 		let second_per_commitment_point: PublicKey = Readable::read(r)?;
 
 		let mut shutdown_scriptpubkey: Option<ScriptBuf> = None;
@@ -1931,25 +1931,25 @@ impl Readable for AcceptChannelV2 {
 
 		Ok(AcceptChannelV2 {
 			common_fields: CommonAcceptChannelFields {
-			    temporary_channel_id,
-			    dust_limit_satoshis,
-			    max_htlc_value_in_flight_msat,
-			    htlc_minimum_msat,
-			    minimum_depth,
-			    to_self_delay,
-			    max_accepted_htlcs,
-			    funding_pubkey,
-			    revocation_basepoint,
-			    payment_basepoint,
-			    delayed_payment_basepoint,
-			    htlc_basepoint,
-			    first_per_commitment_point,
-			    shutdown_scriptpubkey,
-			    channel_type,
+				temporary_channel_id,
+				dust_limit_satoshis,
+				max_htlc_value_in_flight_msat,
+				htlc_minimum_msat,
+				minimum_depth,
+				to_self_delay,
+				max_accepted_htlcs,
+				funding_pubkey,
+				revocation_basepoint,
+				payment_basepoint,
+				delayed_payment_basepoint,
+				htlc_basepoint,
+				first_per_commitment_point,
+				shutdown_scriptpubkey,
+				channel_type,
 			},
-		    funding_satoshis,
-		    second_per_commitment_point,
-		    require_confirmed_inputs,
+			funding_satoshis,
+			second_per_commitment_point,
+			require_confirmed_inputs,
 		})
 	}
 }
@@ -2154,10 +2154,10 @@ impl Readable for Init {
 }
 
 impl Writeable for OpenChannel {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-    	self.common_fields.chain_hash.write(w)?;
-    	self.common_fields.temporary_channel_id.write(w)?;
-    	self.common_fields.funding_satoshis.write(w)?;
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.common_fields.chain_hash.write(w)?;
+		self.common_fields.temporary_channel_id.write(w)?;
+		self.common_fields.funding_satoshis.write(w)?;
 		self.push_msat.write(w)?;
 		self.common_fields.dust_limit_satoshis.write(w)?;
 		self.common_fields.max_htlc_value_in_flight_msat.write(w)?;
@@ -2173,12 +2173,12 @@ impl Writeable for OpenChannel {
 		self.common_fields.htlc_basepoint.write(w)?;
 		self.common_fields.first_per_commitment_point.write(w)?;
 		self.common_fields.channel_flags.write(w)?;
-        encode_tlv_stream!(w, {
+		encode_tlv_stream!(w, {
 			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
 			(1, self.common_fields.channel_type, option),
-        });
-        Ok(())
-    }
+		});
+		Ok(())
+	}
 }
 
 impl Readable for OpenChannel {
@@ -2210,33 +2210,33 @@ impl Readable for OpenChannel {
 		});
 		Ok(OpenChannel {
 			common_fields: CommonOpenChannelFields {
-			    chain_hash,
-			    temporary_channel_id,
-			    funding_satoshis,
-			    dust_limit_satoshis,
-			    max_htlc_value_in_flight_msat,
-			    htlc_minimum_msat,
-			    commitment_feerate_sat_per_1000_weight,
-			    to_self_delay,
-			    max_accepted_htlcs,
-			    funding_pubkey,
-			    revocation_basepoint,
-			    payment_basepoint,
-			    delayed_payment_basepoint,
-			    htlc_basepoint,
-			    first_per_commitment_point,
-			    channel_flags,
-			    shutdown_scriptpubkey,
-			    channel_type,
+				chain_hash,
+				temporary_channel_id,
+				funding_satoshis,
+				dust_limit_satoshis,
+				max_htlc_value_in_flight_msat,
+				htlc_minimum_msat,
+				commitment_feerate_sat_per_1000_weight,
+				to_self_delay,
+				max_accepted_htlcs,
+				funding_pubkey,
+				revocation_basepoint,
+				payment_basepoint,
+				delayed_payment_basepoint,
+				htlc_basepoint,
+				first_per_commitment_point,
+				channel_flags,
+				shutdown_scriptpubkey,
+				channel_type,
 			},
-		    push_msat,
-		    channel_reserve_satoshis,
+			push_msat,
+			channel_reserve_satoshis,
 		})
 	}
 }
 
 impl Writeable for OpenChannelV2 {
-    fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.common_fields.chain_hash.write(w)?;
 		self.common_fields.temporary_channel_id.write(w)?;
 		self.funding_feerate_sat_per_1000_weight.write(w)?;
@@ -2256,13 +2256,13 @@ impl Writeable for OpenChannelV2 {
 		self.common_fields.first_per_commitment_point.write(w)?;
 		self.second_per_commitment_point.write(w)?;
 		self.common_fields.channel_flags.write(w)?;
-        encode_tlv_stream!(w, {
+		encode_tlv_stream!(w, {
 			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
 			(1, self.common_fields.channel_type, option),
 			(2, self.require_confirmed_inputs, option),
-        });
+		});
 		Ok(())
-    }
+	}
 }
 
 impl Readable for OpenChannelV2 {
@@ -2297,29 +2297,29 @@ impl Readable for OpenChannelV2 {
 		});
 		Ok(OpenChannelV2 {
 			common_fields: CommonOpenChannelFields {
-			    chain_hash,
-			    temporary_channel_id,
-			    funding_satoshis,
-			    dust_limit_satoshis,
-			    max_htlc_value_in_flight_msat,
-			    htlc_minimum_msat,
-			    commitment_feerate_sat_per_1000_weight,
-			    to_self_delay,
-			    max_accepted_htlcs,
-			    funding_pubkey,
-			    revocation_basepoint,
-			    payment_basepoint,
-			    delayed_payment_basepoint,
-			    htlc_basepoint,
-			    first_per_commitment_point,
-			    channel_flags,
-			    shutdown_scriptpubkey,
-			    channel_type,
+				chain_hash,
+				temporary_channel_id,
+				funding_satoshis,
+				dust_limit_satoshis,
+				max_htlc_value_in_flight_msat,
+				htlc_minimum_msat,
+				commitment_feerate_sat_per_1000_weight,
+				to_self_delay,
+				max_accepted_htlcs,
+				funding_pubkey,
+				revocation_basepoint,
+				payment_basepoint,
+				delayed_payment_basepoint,
+				htlc_basepoint,
+				first_per_commitment_point,
+				channel_flags,
+				shutdown_scriptpubkey,
+				channel_type,
 			},
-		    funding_feerate_sat_per_1000_weight,
-		    locktime,
-		    second_per_commitment_point,
-		    require_confirmed_inputs,
+			funding_feerate_sat_per_1000_weight,
+			locktime,
+			second_per_commitment_point,
+			require_confirmed_inputs,
 		})
 	}
 }
