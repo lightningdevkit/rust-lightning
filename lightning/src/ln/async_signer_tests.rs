@@ -197,7 +197,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 
 	// nodes[0] <-- accept_channel --- nodes[1]
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	assert_eq!(accept_channel.minimum_depth, 0, "Expected minimum depth of 0");
+	assert_eq!(accept_channel.common_fields.minimum_depth, 0, "Expected minimum depth of 0");
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 	// nodes[0] --- funding_created --> nodes[1]
