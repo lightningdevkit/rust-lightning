@@ -10532,7 +10532,7 @@ fn test_channel_close_when_not_timely_accepted() {
 	// but the nodes disconnect before node 1 could send accept channel
 	let create_chan_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	assert_eq!(open_channel_msg.temporary_channel_id, create_chan_id);
+	assert_eq!(open_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
@@ -10575,7 +10575,7 @@ fn test_rebroadcast_open_channel_when_reconnect_mid_handshake() {
 	// but the nodes disconnect before node 1 could send accept channel
 	let create_chan_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	assert_eq!(open_channel_msg.temporary_channel_id, create_chan_id);
+	assert_eq!(open_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
