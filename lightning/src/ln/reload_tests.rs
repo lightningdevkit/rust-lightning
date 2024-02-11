@@ -627,9 +627,10 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 			std::mem::forget(nodes);
 		}
 	} else {
+		let error_message = "Channel force-closed";
 		assert!(!not_stale, "We only care about the stale case when not testing panicking");
 
-		nodes[0].node.force_close_without_broadcasting_txn(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
+		nodes[0].node.force_close_without_broadcasting_txn(&chan.2, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 1000000);
 		{
@@ -1024,8 +1025,9 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	assert!(nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 
 	let _ = nodes[2].node.get_and_clear_pending_msg_events();
+	let error_message = "Channel force-closed";
 
-	nodes[2].node.force_close_broadcasting_latest_txn(&chan_id_2, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[2].node.force_close_broadcasting_latest_txn(&chan_id_2, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	let cs_commitment_tx = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(cs_commitment_tx.len(), if claim_htlc { 2 } else { 1 });
 

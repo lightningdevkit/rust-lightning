@@ -363,12 +363,13 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	// Route an HTLC and set the signer as unavailable.
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
 	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let error_message = "Channel force-closed";
 
 	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, false);
 
 	if remote_commitment {
 		// Make the counterparty broadcast its latest commitment.
-		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id()).unwrap();
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_added_monitors(&nodes[1], 1);
 		check_closed_broadcast(&nodes[1], 1, true);
 		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100_000);

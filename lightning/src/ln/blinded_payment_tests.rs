@@ -457,6 +457,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 		(chan.0.contents, chan.2)
 	};
 
+	let error_message = "Channel force-closed";
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
@@ -489,7 +490,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 				ProcessPendingHTLCsCheck::FwdChannelClosed => {
 					// Force close the next-hop channel so when we go to forward in process_pending_htlc_forwards,
 					// the intro node will error backwards.
-					$curr_node.node.force_close_broadcasting_latest_txn(&$failed_chan_id, &$next_node.node.get_our_node_id()).unwrap();
+					$curr_node.node.force_close_broadcasting_latest_txn(&$failed_chan_id, &$next_node.node.get_our_node_id(), error_message.to_string()).unwrap();
 					let events = $curr_node.node.get_and_clear_pending_events();
 					match events[0] {
 						crate::events::Event::PendingHTLCsForwardable { .. } => {},

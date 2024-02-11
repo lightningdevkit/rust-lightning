@@ -635,15 +635,16 @@ fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reor
 
 	// Route an HTLC which we will claim onchain with the preimage.
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let error_message = "Channel force-closed";
 
 	// Force close with the latest counterparty commitment, confirm it, and reorg it with the latest
 	// holder commitment.
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100000);
 
-	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100000);
@@ -718,9 +719,10 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 	// commitment is still valid (unrevoked).
 	nodes[1].node().handle_update_fee(&nodes[0].node.get_our_node_id(), &update_fee);
 	let _last_revoke_and_ack = commitment_signed_dance!(nodes[1], nodes[0], commit_sig, false, true, false, true);
+	let error_message = "Channel force-closed";
 
 	// Force close with the latest commitment, confirm it, and reorg it with the previous commitment.
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100000);
@@ -783,6 +785,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 
 	// Route a payment so we have an HTLC to claim as well.
 	let _ = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let error_message = "Channel force-closed";
 
 	if revoked_counterparty_commitment {
 		// Trigger a fee update such that we advance the state. We will have B broadcast its state
@@ -825,7 +828,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	};
 
 	// B will also broadcast its own commitment.
-	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id()).unwrap();
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100_000);
