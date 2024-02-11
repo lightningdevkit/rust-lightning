@@ -724,8 +724,9 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 
 	// First confirm the commitment transaction on nodes[0], which should leave us with three
 	// claimable balances.
+	let error_message = "Channel force-closed";
 	let node_a_commitment_claimable = nodes[0].best_block_info().1 + BREAKDOWN_TIMEOUT as u32;
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], true);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 1000000);
@@ -1982,8 +1983,8 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	// ensures that the HTLC timeout package is held until we reach its expiration height.
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000);
 	route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
-
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	let error_message = "Channel force-closed";
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed, false,
@@ -2655,7 +2656,8 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 
 	// Confirm the counterparty's commitment and reload the monitor (either before or after) such
 	// that we arrive at the correct `counterparty_payment_script` after the reload.
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+	let error_message = "Channel force-closed";
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed, false,
