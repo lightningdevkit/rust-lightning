@@ -413,7 +413,7 @@ impl OnionMessagePath {
 }
 
 /// The destination of an onion message.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Destination {
 	/// We're sending this onion message to a node.
 	Node(PublicKey),
