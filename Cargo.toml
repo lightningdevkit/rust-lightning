@@ -11,6 +11,7 @@ members = [
     "lightning-rapid-gossip-sync",
     "lightning-custom-message",
     "lightning-transaction-sync",
+    "possiblyrandom",
 ]
 
 exclude = [
@@ -38,3 +39,6 @@ lto = "off"
 opt-level = 3
 lto = true
 panic = "abort"
+
+[patch.crates-io.possiblyrandom]
+path = "possiblyrandom"
