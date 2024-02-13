@@ -413,7 +413,7 @@ impl OnionMessagePath {
 }
 
 /// The destination of an onion message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Hash, Debug, PartialEq, Eq)]
 pub enum Destination {
 	/// We're sending this onion message to a node.
 	Node(PublicKey),
@@ -440,7 +440,7 @@ impl Destination {
 /// Result of successfully [sending an onion message].
 ///
 /// [sending an onion message]: OnionMessenger::send_onion_message
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Hash, Debug, PartialEq, Eq)]
 pub enum SendSuccess {
 	/// The message was buffered and will be sent once it is processed by
 	/// [`OnionMessageHandler::next_onion_message_for_peer`].
@@ -453,7 +453,7 @@ pub enum SendSuccess {
 /// Errors that may occur when [sending an onion message].
 ///
 /// [sending an onion message]: OnionMessenger::send_onion_message
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Hash, Debug, PartialEq, Eq)]
 pub enum SendError {
 	/// Errored computing onion message packet keys.
 	Secp256k1(secp256k1::Error),
@@ -523,6 +523,7 @@ pub trait CustomOnionMessageHandler {
 
 /// A processed incoming onion message, containing either a Forward (another onion message)
 /// or a Receive payload with decrypted contents.
+#[derive(Debug)]
 pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
 	Forward(PublicKey, OnionMessage),
