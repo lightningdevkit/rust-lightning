@@ -10,10 +10,10 @@ members = [
     "lightning-background-processor",
     "lightning-rapid-gossip-sync",
     "lightning-custom-message",
+    "lightning-transaction-sync",
 ]
 
 exclude = [
-    "lightning-transaction-sync",
     "no-std-check",
     "msrv-no-dev-deps-check",
     "bench",
