@@ -861,8 +861,15 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 	{
-		log_debug!(logger, "Updating claims view at height {} with {} matched transactions in block {}", cur_height, txn_matched.len(), conf_height);
+		let mut have_logged_intro = false;
+		let mut maybe_log_intro = || {
+			if !have_logged_intro {
+				log_debug!(logger, "Updating claims view at height {} with {} matched transactions in block {}", cur_height, txn_matched.len(), conf_height);
+				have_logged_intro = true;
+			}
+		};
 		let mut bump_candidates = new_hash_map();
+		if !txn_matched.is_empty() { maybe_log_intro(); }
 		for tx in txn_matched {
 			// Scan all input to verify is one of the outpoint spent is of interest for us
 			let mut claimed_outputs_material = Vec::new();
@@ -955,6 +962,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
 		for entry in onchain_events_awaiting_threshold_conf {
 			if entry.has_reached_confirmation_threshold(cur_height) {
+				maybe_log_intro();
 				match entry.event {
 					OnchainEvent::Claim { claim_id } => {
 						// We may remove a whole set of claim outpoints here, as these one may have
@@ -992,7 +1000,11 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		}
 
 		// Build, bump and rebroadcast tx accordingly
-		log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
+		if !bump_candidates.is_empty() {
+			maybe_log_intro();
+			log_trace!(logger, "Bumping {} candidates", bump_candidates.len());
+		}
+
 		for (claim_id, request) in bump_candidates.iter() {
 			if let Some((new_timer, new_feerate, bump_claim)) = self.generate_claim(
 				cur_height, &request, &FeerateStrategy::ForceBump, &*fee_estimator, &*logger,
