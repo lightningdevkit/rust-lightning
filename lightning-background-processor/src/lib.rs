@@ -854,8 +854,8 @@ impl BackgroundProcessor {
 				peer_manager.onion_message_handler().process_pending_events(&event_handler),
 				gossip_sync, logger, scorer, stop_thread.load(Ordering::Acquire),
 				{ Sleeper::from_two_futures(
-					channel_manager.get_event_or_persistence_needed_future(),
-					chain_monitor.get_update_future()
+					&channel_manager.get_event_or_persistence_needed_future(),
+					&chain_monitor.get_update_future()
 				).wait_timeout(Duration::from_millis(100)); },
 				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur, false,
 				|| {
