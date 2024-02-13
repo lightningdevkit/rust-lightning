@@ -79,14 +79,7 @@ mod tb;
 
 #[allow(unused_imports)]
 mod prelude {
-	#[cfg(feature = "hashbrown")]
-	extern crate hashbrown;
-
 	pub use alloc::{vec, vec::Vec, string::String};
-	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{HashMap, hash_map};
-	#[cfg(feature = "hashbrown")]
-	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 
 	pub use alloc::string::ToString;
 }
