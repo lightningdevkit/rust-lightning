@@ -726,7 +726,10 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		B::Target: BroadcasterInterface,
 		F::Target: FeeEstimator,
 	{
-		log_debug!(logger, "Updating claims view at height {} with {} claim requests", cur_height, requests.len());
+		if !requests.is_empty() {
+			log_debug!(logger, "Updating claims view at height {} with {} claim requests", cur_height, requests.len());
+		}
+
 		let mut preprocessed_requests = Vec::with_capacity(requests.len());
 		let mut aggregated_request = None;
 
@@ -772,6 +775,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 
 		// Claim everything up to and including `cur_height`
 		let remaining_locked_packages = self.locktimed_packages.split_off(&(cur_height + 1));
+		if !self.locktimed_packages.is_empty() {
+			log_debug!(logger,
+				"Updating claims view at height {} with {} locked packages available for claim",
+				cur_height,
+				self.locktimed_packages.len());
+		}
 		for (pop_height, mut entry) in self.locktimed_packages.iter_mut() {
 			log_trace!(logger, "Restoring delayed claim of package(s) at their timelock at {}.", pop_height);
 			preprocessed_requests.append(&mut entry);
