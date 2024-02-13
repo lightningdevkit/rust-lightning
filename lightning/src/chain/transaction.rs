@@ -58,7 +58,7 @@ pub struct OutPoint {
 impl OutPoint {
 	/// Converts this OutPoint into the OutPoint field as used by rust-bitcoin
 	///
-	/// This is not exported to bindings users as the same type is used universally in the C bindings 
+	/// This is not exported to bindings users as the same type is used universally in the C bindings
 	/// for all outpoints
 	pub fn into_bitcoin_outpoint(self) -> BitcoinOutPoint {
 		BitcoinOutPoint {
@@ -75,6 +75,15 @@ impl core::fmt::Display for OutPoint {
 }
 
 impl_writeable!(OutPoint, { txid, index });
+
+#[derive(Debug, Clone)]
+pub(crate) struct MaybeSignedTransaction(pub Transaction);
+
+impl MaybeSignedTransaction {
+	pub fn is_fully_signed(&self) -> bool {
+		!self.0.input.iter().any(|input| input.witness.is_empty())
+	}
+}
 
 #[cfg(test)]
 mod tests {

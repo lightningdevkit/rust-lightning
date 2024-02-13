@@ -10,7 +10,12 @@
 //! Tests for asynchronous signing. These tests verify that the channel state machine behaves
 //! properly with a signer implementation that asynchronously derives signatures.
 
-use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
+use bitcoin::{Transaction, TxOut, TxIn, Amount};
+use bitcoin::blockdata::locktime::absolute::LockTime;
+
+use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
+use crate::events::bump_transaction::WalletSource;
+use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
@@ -320,4 +325,125 @@ fn test_async_commitment_signature_for_peer_disconnect() {
 			panic!("expected UpdateHTLCs message, not {:?}", events[0]);
 		};
 	}
+}
+
+fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
+	// Ensures that we can obtain holder signatures for commitment and HTLC transactions
+	// asynchronously by allowing their retrieval to fail and retrying via
+	// `ChannelMonitor::signer_unblocked`.
+	let mut config = test_default_channel_config();
+	if anchors {
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		config.manually_accept_inbound_channels = true;
+	}
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let closing_node = if remote_commitment { &nodes[1] } else { &nodes[0] };
+	let coinbase_tx = Transaction {
+		version: 2,
+		lock_time: LockTime::ZERO,
+		input: vec![TxIn { ..Default::default() }],
+		output: vec![
+			TxOut {
+				value: Amount::ONE_BTC.to_sat(),
+				script_pubkey: closing_node.wallet_source.get_change_script().unwrap(),
+			},
+		],
+	};
+	if anchors {
+		*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
+		*nodes[1].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
+		closing_node.wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+	}
+
+	// Route an HTLC and set the signer as unavailable.
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, false);
+
+	if remote_commitment {
+		// Make the counterparty broadcast its latest commitment.
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id()).unwrap();
+		check_added_monitors(&nodes[1], 1);
+		check_closed_broadcast(&nodes[1], 1, true);
+		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100_000);
+	} else {
+		// We'll connect blocks until the sender has to go onchain to time out the HTLC.
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+
+		// No transaction should be broadcast since the signer is not available yet.
+		assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+		assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+		// Mark it as available now, we should see the signed commitment transaction.
+		nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, true);
+		get_monitor!(nodes[0], chan_id).signer_unblocked(nodes[0].tx_broadcaster, nodes[0].fee_estimator, &nodes[0].logger);
+	}
+
+	let commitment_tx = {
+		let mut txn = closing_node.tx_broadcaster.txn_broadcast();
+		if anchors || remote_commitment {
+			assert_eq!(txn.len(), 1);
+			check_spends!(txn[0], funding_tx);
+			txn.remove(0)
+		} else {
+			assert_eq!(txn.len(), 2);
+			if txn[0].input[0].previous_output.txid == funding_tx.txid() {
+				check_spends!(txn[0], funding_tx);
+				check_spends!(txn[1], txn[0]);
+				txn.remove(0)
+			} else {
+				check_spends!(txn[1], funding_tx);
+				check_spends!(txn[0], txn[1]);
+				txn.remove(1)
+			}
+		}
+	};
+
+	// Mark it as unavailable again to now test the HTLC transaction. We'll mine the commitment such
+	// that the HTLC transaction is retried.
+	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, false);
+	mine_transaction(&nodes[0], &commitment_tx);
+
+	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false, &[nodes[1].node.get_our_node_id()], 100_000);
+
+	// If the counterparty broadcast its latest commitment, we need to mine enough blocks for the
+	// HTLC timeout.
+	if remote_commitment {
+		connect_blocks(&nodes[0], TEST_FINAL_CLTV);
+	}
+
+	// No HTLC transaction should be broadcast as the signer is not available yet.
+	if anchors && !remote_commitment {
+		handle_bump_htlc_event(&nodes[0], 1);
+	}
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+
+	// Mark it as available now, we should see the signed HTLC transaction.
+	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, true);
+	get_monitor!(nodes[0], chan_id).signer_unblocked(nodes[0].tx_broadcaster, nodes[0].fee_estimator, &nodes[0].logger);
+
+	if anchors && !remote_commitment {
+		handle_bump_htlc_event(&nodes[0], 1);
+	}
+	{
+		let txn = nodes[0].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		check_spends!(txn[0], commitment_tx, coinbase_tx);
+	}
+}
+
+#[test]
+fn test_async_holder_signatures() {
+	do_test_async_holder_signatures(false, false);
+	do_test_async_holder_signatures(false, true);
+	do_test_async_holder_signatures(true, false);
+	do_test_async_holder_signatures(true, true);
 }

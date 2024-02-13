@@ -3021,8 +3021,8 @@ where
 	/// the latest local transaction(s). Fails if `channel_id` is unknown to the manager, or if the
 	/// `counterparty_node_id` isn't the counterparty of the corresponding channel.
 	///
-	/// You can always get the latest local transaction(s) to broadcast from
-	/// [`ChannelMonitor::get_latest_holder_commitment_txn`].
+	/// You can always broadcast the latest local transaction(s) via
+	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
 	pub fn force_close_without_broadcasting_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey)
 	-> Result<(), APIError> {
 		self.force_close_sending_error(channel_id, counterparty_node_id, false)
