@@ -33,7 +33,7 @@ use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::gossip::{NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
-use crate::util::logger::{Logger, WithContext};
+use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::string::PrintableString;
 
 use crate::prelude::*;
@@ -1329,7 +1329,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 											return Err(PeerHandleError { });
 										},
 										msgs::ErrorAction::IgnoreAndLog(level) => {
-											log_given_level!(logger, level, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer_node_id), e.err);
+											log_given_level!(logger, level, "Error handling {}message{}; ignoring: {}",
+												if level == Level::Gossip { "gossip " } else { "" },
+												OptionalFromDebugger(&peer_node_id), e.err);
 											continue
 										},
 										msgs::ErrorAction::IgnoreDuplicateGossip => continue, // Don't even bother logging these
