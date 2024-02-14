@@ -621,8 +621,11 @@ mod tests {
 		fn handle_accept_channel_v2(&self, _their_node_id: &PublicKey, _msg: &AcceptChannelV2) {}
 		fn handle_stfu(&self, _their_node_id: &PublicKey, _msg: &Stfu) {}
 		// #SPLICING
+		#[cfg(dual_funding)]
 		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
+		#[cfg(dual_funding)]
 		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
+		#[cfg(dual_funding)]
 		fn handle_splice_locked(&self, _their_node_id: &PublicKey, _msg: &SpliceLocked) {}
 		#[cfg(dual_funding)]
 		fn handle_tx_add_input(&self, _their_node_id: &PublicKey, _msg: &TxAddInput) {}

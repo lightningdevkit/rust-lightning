@@ -23,6 +23,7 @@ pub mod chan_utils;
 pub mod features;
 pub mod script;
 mod channel_id;
+mod channel_splice;
 
 #[cfg(fuzzing)]
 pub mod peer_channel_encryptor;
@@ -52,6 +53,9 @@ mod blinded_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod functional_tests;
+#[cfg(all(test, dual_funding))]
+#[allow(unused_mut)]
+mod functional_tests_splice;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod payment_tests;

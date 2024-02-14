@@ -1482,10 +1482,13 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 
 	// Splicing
 	/// Handle an incoming `splice` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_splice(&self, their_node_id: &PublicKey, msg: &Splice);
 	/// Handle an incoming `splice_ack` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
 	/// Handle an incoming `splice_locked` message from the given peer.
+	#[cfg(dual_funding)]
 	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &SpliceLocked);
 
 	// Interactive channel construction

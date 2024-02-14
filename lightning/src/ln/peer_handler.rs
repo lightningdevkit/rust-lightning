@@ -238,12 +238,15 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_stfu(&self, their_node_id: &PublicKey, msg: &msgs::Stfu) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
+	#[cfg(dual_funding)]
 	fn handle_splice(&self, their_node_id: &PublicKey, msg: &msgs::Splice) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
+	#[cfg(dual_funding)]
 	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &msgs::SpliceAck) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
+	#[cfg(dual_funding)]
 	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
@@ -274,7 +277,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
-		// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
+	// msgs::ChannelUpdate does not contain the channel_id field, so we just drop them.
 	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {}
 	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
 	fn peer_connected(&self, _their_node_id: &PublicKey, _init: &msgs::Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
@@ -1700,12 +1703,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 			// Splicing messages:
 			wire::Message::Splice(msg) => {
+				#[cfg(dual_funding)]
 				self.message_handler.chan_handler.handle_splice(&their_node_id, &msg);
 			}
 			wire::Message::SpliceAck(msg) => {
+				#[cfg(dual_funding)]
 				self.message_handler.chan_handler.handle_splice_ack(&their_node_id, &msg);
 			}
 			wire::Message::SpliceLocked(msg) => {
+				#[cfg(dual_funding)]
 				self.message_handler.chan_handler.handle_splice_locked(&their_node_id, &msg);
 			}
 

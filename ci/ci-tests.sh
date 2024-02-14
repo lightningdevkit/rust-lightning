@@ -161,3 +161,8 @@ echo -e "\n\nTest dual-funding builds"
 pushd lightning
 RUSTFLAGS="$RUSTFLAGS --cfg=dual_funding" cargo test --verbose --color always -p lightning
 popd
+
+echo -e "\n\nTest dual-funding builds"
+pushd lightning
+RUSTFLAGS="$RUSTFLAGS --cfg=dual_funding" cargo test --verbose --color always -p lightning
+popd

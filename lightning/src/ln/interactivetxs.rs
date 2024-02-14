@@ -936,7 +936,7 @@ mod tests {
 			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, holder_node_id, counterparty_node_id, true, tx_locktime, session.inputs_a.clone(), session.outputs_a.clone()
 		);
 		let (mut constructor_b, first_message_b) = InteractiveTxConstructor::new(
-			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, holder_node_id, counterparty_node_id, false, tx_locktime, session.inputs_b.clone(), session.outputs_b.clone()	
+			entropy_source, channel_id, FEERATE_FLOOR_SATS_PER_KW * 10, holder_node_id, counterparty_node_id, false, tx_locktime, session.inputs_b.clone(), session.outputs_b.clone()
 		);
 
 		let handle_message_send = |msg: InteractiveTxMessageSend, for_constructor: &mut InteractiveTxConstructor| {
