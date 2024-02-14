@@ -1925,7 +1925,10 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			None => {
 				core::mem::drop(channels);
 				self.pending_checks.check_hold_pending_channel_update(msg, full_msg)?;
-				return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError});
+				return Err(LightningError {
+					err: "Couldn't find channel for update".to_owned(),
+					action: ErrorAction::IgnoreAndLog(Level::Gossip),
+				});
 			},
 			Some(channel) => {
 				if msg.htlc_maximum_msat > MAX_VALUE_MSAT {
