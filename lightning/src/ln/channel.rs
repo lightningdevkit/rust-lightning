@@ -3364,6 +3364,49 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			_ => todo!()
 		}
 	}
+
+	/// If we receive an error message when attempting to open a channel, it may only be a rejection
+	/// of the channel type we tried, not of our ability to open any channel at all. We can see if a
+	/// downgrade of channel features would be possible so that we can still open the channel.
+	pub(crate) fn maybe_downgrade_channel_features<F: Deref>(
+		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>
+	) -> Result<(), ()>
+	where
+		F::Target: FeeEstimator
+	{
+		if !self.is_outbound() ||
+			!matches!(
+				self.channel_state, ChannelState::NegotiatingFunding(flags)
+				if flags == NegotiatingFundingFlags::OUR_INIT_SENT
+			)
+		{
+			return Err(());
+		}
+		if self.channel_type == ChannelTypeFeatures::only_static_remote_key() {
+			// We've exhausted our options
+			return Err(());
+		}
+		// We support opening a few different types of channels. Try removing our additional
+		// features one by one until we've either arrived at our default or the counterparty has
+		// accepted one.
+		//
+		// Due to the order below, we may not negotiate `option_anchors_zero_fee_htlc_tx` if the
+		// counterparty doesn't support `option_scid_privacy`. Since `get_initial_channel_type`
+		// checks whether the counterparty supports every feature, this would only happen if the
+		// counterparty is advertising the feature, but rejecting channels proposing the feature for
+		// whatever reason.
+		if self.channel_type.supports_anchors_zero_fee_htlc_tx() {
+			self.channel_type.clear_anchors_zero_fee_htlc_tx();
+			self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
+			assert!(!self.channel_transaction_parameters.channel_type_features.supports_anchors_nonzero_fee_htlc_tx());
+		} else if self.channel_type.supports_scid_privacy() {
+			self.channel_type.clear_scid_privacy();
+		} else {
+			self.channel_type = ChannelTypeFeatures::only_static_remote_key();
+		}
+		self.channel_transaction_parameters.channel_type_features = self.channel_type.clone();
+		Ok(())
+	}
 }
 
 // Internal utility functions for channels
@@ -7302,37 +7345,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	where
 		F::Target: FeeEstimator
 	{
-		if !self.context.is_outbound() ||
-			!matches!(
-				self.context.channel_state, ChannelState::NegotiatingFunding(flags)
-				if flags == NegotiatingFundingFlags::OUR_INIT_SENT
-			)
-		{
-			return Err(());
-		}
-		if self.context.channel_type == ChannelTypeFeatures::only_static_remote_key() {
-			// We've exhausted our options
-			return Err(());
-		}
-		// We support opening a few different types of channels. Try removing our additional
-		// features one by one until we've either arrived at our default or the counterparty has
-		// accepted one.
-		//
-		// Due to the order below, we may not negotiate `option_anchors_zero_fee_htlc_tx` if the
-		// counterparty doesn't support `option_scid_privacy`. Since `get_initial_channel_type`
-		// checks whether the counterparty supports every feature, this would only happen if the
-		// counterparty is advertising the feature, but rejecting channels proposing the feature for
-		// whatever reason.
-		if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() {
-			self.context.channel_type.clear_anchors_zero_fee_htlc_tx();
-			self.context.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-			assert!(!self.context.channel_transaction_parameters.channel_type_features.supports_anchors_nonzero_fee_htlc_tx());
-		} else if self.context.channel_type.supports_scid_privacy() {
-			self.context.channel_type.clear_scid_privacy();
-		} else {
-			self.context.channel_type = ChannelTypeFeatures::only_static_remote_key();
-		}
-		self.context.channel_transaction_parameters.channel_type_features = self.context.channel_type.clone();
+		self.context.maybe_downgrade_channel_features(fee_estimator)?;
 		Ok(self.get_open_channel(chain_hash))
 	}
 
@@ -7964,6 +7977,19 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			}
 		};
 		Ok(chan)
+	}
+
+	/// If we receive an error message, it may only be a rejection of the channel type we tried,
+	/// not of our ability to open any channel at all. Thus, on error, we should first call this
+	/// and see if we get a new `OpenChannelV2` message, otherwise the channel is failed.
+	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
+		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>
+	) -> Result<msgs::OpenChannelV2, ()>
+	where
+		F::Target: FeeEstimator
+	{
+		self.context.maybe_downgrade_channel_features(fee_estimator)?;
+		Ok(self.get_open_channel_v2(chain_hash))
 	}
 
 	pub fn get_open_channel_v2(&self, chain_hash: ChainHash) -> msgs::OpenChannelV2 {
