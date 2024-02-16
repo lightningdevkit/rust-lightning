@@ -143,7 +143,9 @@ impl<'a> Router for TestRouter<'a> {
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
 		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
-		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
+		let route_res;
+		let next_route_opt = self.next_routes.lock().unwrap().pop_front();
+		if let Some((find_route_query, find_route_res)) = next_route_opt {
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
 				assert_eq!(route.route_params, Some(find_route_query));
@@ -201,10 +203,18 @@ impl<'a> Router for TestRouter<'a> {
 					}
 				}
 			}
-			return find_route_res;
-		}
+			route_res = find_route_res;
+		} else {
+			route_res = self.router.find_route(payer, params, first_hops, inflight_htlcs);
+		};
 
-		self.router.find_route(payer, params, first_hops, inflight_htlcs)
+		if let Ok(route) = &route_res {
+			// Previously, `Route`s failed to round-trip through serialization due to a write/read
+			// mismatch. Thus, here we test all test-generated routes round-trip:
+			let ser = route.encode();
+			assert_eq!(Route::read(&mut &ser[..]).unwrap(), *route);
+		}
+		route_res
 	}
 
 	fn create_blinded_payment_paths<
