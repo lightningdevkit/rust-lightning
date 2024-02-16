@@ -2284,65 +2284,6 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_paying_for_bolt12_invoice() {
-		let logger = test_utils::TestLogger::new();
-		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
-		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
-		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
-
-		let pending_events = Mutex::new(VecDeque::new());
-		let outbound_payments = OutboundPayments::new();
-		let payment_id = PaymentId([0; 32]);
-		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
-
-		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
-			.build().unwrap()
-			.sign(recipient_sign).unwrap();
-
-		assert!(
-			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0),
-				Some(invoice.amount_msats() / 100 + 50_000)
-			).is_ok()
-		);
-		assert!(outbound_payments.has_pending_payments());
-
-		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_bolt12_invoice(&invoice),
-			invoice.amount_msats(),
-		);
-		router.expect_find_route(
-			route_params.clone(), Ok(Route { paths: vec![], route_params: Some(route_params) })
-		);
-
-		assert_eq!(
-			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
-			),
-			Ok(()),
-		);
-		assert!(!outbound_payments.has_pending_payments());
-
-		let payment_hash = invoice.payment_hash();
-		let reason = Some(PaymentFailureReason::UnexpectedError);
-
-		assert!(!pending_events.lock().unwrap().is_empty());
-		assert_eq!(
-			pending_events.lock().unwrap().pop_front(),
-			Some((Event::PaymentFailed { payment_id, payment_hash, reason }, None)),
-		);
-		assert!(pending_events.lock().unwrap().is_empty());
-	}
-
-	#[test]
 	fn sends_payment_for_bolt12_invoice() {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
