@@ -412,7 +412,7 @@ impl Writeable for Route {
 			(1, self.route_params.as_ref().map(|p| &p.payment_params), option),
 			(2, blinded_tails, optional_vec),
 			(3, self.route_params.as_ref().map(|p| p.final_value_msat), option),
-			(5, self.route_params.as_ref().map(|p| p.max_total_routing_fee_msat), option),
+			(5, self.route_params.as_ref().and_then(|p| p.max_total_routing_fee_msat), option),
 		});
 		Ok(())
 	}
