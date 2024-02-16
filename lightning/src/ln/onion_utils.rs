@@ -268,6 +268,19 @@ pub(super) fn construct_onion_packet(
 		payloads, onion_keys, FixedSizeOnionPacket(packet_data), Some(associated_data))
 }
 
+pub(super) fn construct_variable_length_onion_packet(
+	payloads: Vec<msgs::OutboundOnionPayload>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32],
+	associated_data: &PaymentHash, length: u16,
+) -> Result<crate::onion_message::packet::Packet, ()> {
+	let mut packet_data = vec![0u8; length as usize];
+
+	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
+	chacha.process(&vec![0u8; length as usize], &mut packet_data);
+
+	construct_onion_packet_with_init_noise::<_, _>(
+		payloads, onion_keys, packet_data, Some(associated_data))
+}
+
 #[cfg(test)]
 /// Used in testing to write bogus `BogusOnionHopData` as well as `RawOnionHopData`, which is
 /// otherwise not representable in `msgs::OnionHopData`.
@@ -294,6 +307,14 @@ pub(crate) trait Packet {
 pub(crate) struct FixedSizeOnionPacket(pub(crate) [u8; ONION_DATA_LEN]);
 
 impl AsMut<[u8]> for FixedSizeOnionPacket {
+	fn as_mut(&mut self) -> &mut [u8] {
+		&mut self.0
+	}
+}
+
+pub(crate) struct VariableLengthOnionPacket(pub(crate) Vec<u8>);
+
+impl AsMut<[u8]> for VariableLengthOnionPacket {
 	fn as_mut(&mut self) -> &mut [u8] {
 		&mut self.0
 	}

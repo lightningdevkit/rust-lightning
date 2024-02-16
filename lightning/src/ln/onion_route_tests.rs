@@ -19,10 +19,10 @@ use crate::ln::channel::EXPIRE_PREV_CONFIG_TICKS;
 use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY, DISABLE_GOSSIP_TICKS, MIN_CLTV_EXPIRY_DELTA, PendingAddHTLCInfo, PendingHTLCInfo, PendingHTLCRouting, PaymentId, RecipientOnionFields};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
-use crate::routing::router::{get_route, PaymentParameters, Route, RouteParameters, RouteHint, RouteHintHop};
-use crate::ln::features::{InitFeatures, Bolt11InvoiceFeatures};
+use crate::routing::router::{get_route, PaymentParameters, Route, RouteParameters, RouteHint, RouteHintHop, Path, RouteHop};
+use crate::ln::features::{InitFeatures, Bolt11InvoiceFeatures, NodeFeatures, ChannelFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
+use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate, FinalOnionHopData, OutboundOnionPayload};
 use crate::ln::wire::Encode;
 use crate::util::ser::{Writeable, Writer, BigSize};
 use crate::util::test_utils;
@@ -35,11 +35,12 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use crate::io;
 use crate::prelude::*;
 use core::default::Default;
+use bitcoin::hashes::hex::FromHex;
 
 use crate::ln::functional_test_utils::*;
 
@@ -964,6 +965,146 @@ fn test_always_create_tlv_format_onion_payloads() {
 			despite that the features signals no support for variable length onions"
 		)}
 	}
+}
+
+#[test]
+fn test_trampoline_onion_payload_construction_vectors() {
+	// As per https://github.com/lightning/bolts/blob/c01d2e6267d4a8d1095f0f1188970055a9a22d29/bolt04/trampoline-payment-onion-test.json#L3
+
+	let trampoline_payloads = vec![
+		// Carol
+		OutboundOnionPayload::TrampolineForward {
+			amt_to_forward: 100000000,
+			outgoing_cltv_value: 800000,
+			outgoing_node_id: PublicKey::from_slice(&<Vec<u8>>::from_hex("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()).unwrap(),
+		},
+
+		// Eve
+		OutboundOnionPayload::Receive {
+			payment_data: Some(FinalOnionHopData {
+				payment_secret: PaymentSecret([0x2a; 32]),
+				total_msat: 100000000
+			}),
+			payment_metadata: None,
+			keysend_preimage: None,
+			custom_tlvs: vec![],
+			sender_intended_htlc_amt_msat: 100000000,
+			cltv_expiry_height: 800000,
+			trampoline_packet: None,
+		}
+	];
+
+	let trampoline_hops = Path { hops: vec![
+		// Carol
+		RouteHop {
+			pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()).unwrap(),
+			node_features: NodeFeatures::empty(),
+			short_channel_id: 0,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 0,
+			cltv_expiry_delta: 0,
+			maybe_announced_channel: false,
+		},
+
+		// Eve
+		RouteHop {
+			pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()).unwrap(),
+			node_features: NodeFeatures::empty(),
+			short_channel_id: 0,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 0,
+			cltv_expiry_delta: 0,
+			maybe_announced_channel: false,
+		}
+	], blinded_tail: None };
+
+	let slice_to_hex = |slice: &[u8]| {
+		slice.iter()
+			.map(|b| format!("{:02x}", b).to_string())
+			.collect::<String>()
+	};
+
+	let carol_payload_hex = slice_to_hex(&trampoline_payloads[0].encode());
+	println!("Carol Payload Hex: {}", carol_payload_hex);
+	assert_eq!(carol_payload_hex, "2e020405f5e10004030c35000e2102edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145");
+
+	let eve_payload_hex = slice_to_hex(&trampoline_payloads[1].encode());
+	println!("Eve Payload Hex: {}", eve_payload_hex);
+	assert_eq!(eve_payload_hex, "31020405f5e10004030c350008242a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a05f5e100");
+
+	let trampoline_session_key = SecretKey::from_slice(&[0x03; 32]).unwrap();
+	let trampoline_onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &trampoline_hops, &trampoline_session_key).unwrap();
+	let associated_data = PaymentHash([0x42; 32]);
+	let trampoline_onion_packet = onion_utils::construct_variable_length_onion_packet(trampoline_payloads, trampoline_onion_keys, [0u8; 32], &associated_data, 161).unwrap();
+	let trampoline_onion_packet_hex = slice_to_hex(&trampoline_onion_packet.encode());
+	println!("Trampoline Onion Packet Hex: {}", trampoline_onion_packet_hex);
+	assert_eq!(trampoline_onion_packet_hex, "0002531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe3371860c0749bfd613056cfc5718beecc25a2f255fc7abbea3cd75ff820e9d30807d19b30f33626452fa54bb2d822e918558ed3e6714deb3f9a2a10895e7553c6f088c9a852043530dbc9abcc486030894364b205f5de60171b451ff462664ebce23b672579bf2a444ebfe0a81875c26d2fa16d426795b9b02ccbc4bdf909c583f0c2ebe9136510645917153ecb05181ca0c1b207824578ee841804a148f4c3df7306dcea52d94222907c9187bc31c0880fc084f0d88716e195c0abe7672d15217623");
+
+	let outer_payloads = vec![
+		// Bob
+		OutboundOnionPayload::Forward {
+			short_channel_id: 1105,
+			amt_to_forward: 100005000,
+			outgoing_cltv_value: 800250,
+		},
+		
+		// Carol
+		OutboundOnionPayload::Receive {
+			payment_data: Some(FinalOnionHopData {
+				payment_secret: PaymentSecret([0x2b; 32]),
+				total_msat: 100005000,
+			}),
+			payment_metadata: None,
+			keysend_preimage: None,
+			custom_tlvs: vec![],
+			sender_intended_htlc_amt_msat: 100005000,
+			cltv_expiry_height: 800250,
+			trampoline_packet: Some(trampoline_onion_packet),
+		}
+	];
+
+	let outer_hops = Path {
+		hops: vec![
+			// Bob
+			RouteHop {
+				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c").unwrap()).unwrap(),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 0,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
+			},
+
+			// Carol
+			RouteHop {
+				pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007").unwrap()).unwrap(),
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 0,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: 0,
+				maybe_announced_channel: false,
+			},
+		],
+		blinded_tail: None,
+	};
+
+	let bob_payload_hex = slice_to_hex(&outer_payloads[0].encode());
+	println!("Bob Payload Hex: {}", bob_payload_hex);
+	assert_eq!(bob_payload_hex, "15020405f5f48804030c35fa06080000000000000451");
+
+	let carol_payload_hex = slice_to_hex(&outer_payloads[1].encode());
+	println!("Carol Outer Payload Hex: {}", carol_payload_hex);
+	assert_eq!(carol_payload_hex, "fd0116020405f5f48804030c35fa08242b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b05f5f48814e30002531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe3371860c0749bfd613056cfc5718beecc25a2f255fc7abbea3cd75ff820e9d30807d19b30f33626452fa54bb2d822e918558ed3e6714deb3f9a2a10895e7553c6f088c9a852043530dbc9abcc486030894364b205f5de60171b451ff462664ebce23b672579bf2a444ebfe0a81875c26d2fa16d426795b9b02ccbc4bdf909c583f0c2ebe9136510645917153ecb05181ca0c1b207824578ee841804a148f4c3df7306dcea52d94222907c9187bc31c0880fc084f0d88716e195c0abe7672d15217623");
+
+	let outer_session_key = SecretKey::from_slice(&[0x04; 32]).unwrap();
+	let outer_onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &outer_hops, &outer_session_key).unwrap();
+	let outer_onion_prng_seed = onion_utils::gen_pad_from_shared_secret(&outer_session_key.secret_bytes());
+	let outer_onion_packet = onion_utils::construct_onion_packet(outer_payloads, outer_onion_keys, outer_onion_prng_seed, &associated_data).unwrap();
+	let outer_onion_packet_hex = slice_to_hex(&outer_onion_packet.encode());
+	println!("Outer Onion Packet Hex: {}", outer_onion_packet_hex);
+	assert_eq!(outer_onion_packet_hex, "0003462779ad4aad39514614751a71085f2f10e1c7a593e4e030efb5b8721ce55b0b9149ce01cce1709194109ab5940379a84297ab6620025c770527dd8537997e2528082b984fe078a5667978a573abeaf7977d9b8b6ee4f124d3352f7eea52cc66c0e76b8f6d7a25d4501a04ae190b17baff8e6378b36f165815f714559dfef275278eba897f5f229be70fc8a1980cf859d1c25fe90c77f006419770e19d29ba80be8f613d039dd05600734e0d1e218af441fe30877e717a26b7b37c2c071d62bf6d61dd17f7abfb81546d2c722c9a6dc581aa97fb6f3b513e5fbaf0d669fbf0714b2b016a0a8e356d55f267fa144f7501792f2a59269c5a22e555a914e2eb71eba5af519564f246cf58983ea3fa2674e3ab7d9969d8dffbb2bda2b2752657417937d46601eb8ebf1837221d4bdf55a4d6a97ecffde5a09bd409717fa19e440e55d775890aed89f72e65af515757e94a9b501e6bad048af55e1583adb2960a84f60fb5efd0352e77a34045fc6b221498f62810bd8294d995d9f513696f8633f29faaa9668d0c6fa0d0dd7fa13e2c185572485762bd2810dc12187f521fbefa9c320762ac1e107f7988d81c6ee201ab68a95d45d578027e271b6526154317877037dca17134ccd955a22a8481b8e1996d896fc4bf006154ed18ef279d4f255e3f1233d037aea2560011069a0ae56d6bfdd8327054ded12d85d120b8982bff970986db333baae7c95f85677726a8f74cc8bd1e5aca3d433c113048305ecce8e35caf0485a53df00284b52b42291a9ffe686b96442135b3107d8856bc652d674ee9a148e79b02c9972d3ca8c2b02609f3b358c4a67c540ba6769c4d83169bceda640b1d18b74d12b6df605b417dacf6f82d79d43bb40920898f818dc8344c036ae9c8bbf9ef52ea1ccf225c8825a4d8503df190b999e15a4be34c9d7bbf60d3b93bb7d6559f4a5916f5e40c3defeeca9337ccd1280e46d6727c5c91c2d898b685543d4ca7cfee23981323c43260b6387e7febb0fffb200a8c974ef36b3253d0fb9fe0c1c6017f2dbbdc169f3f061d9781521e8118164aeec31c3e59c199016f1025c295d8f7bdeb627d357105a2708c4c3a856b9e83ff37ed69f59f2d2e464ed1db5882925ebe2493a7ddb707e1a308fa445172a24b3ea60732f75f5c69b41fc11467ee93f37c9a6f7285ba42f716e2a0e30909056ea3e4f7985d14ca9ab280cc184ce98e2a0722d0447aa1a2eedc5e53ddfa53731df7eced406b10627b0bebd768a30bde0d470c0f1d10adc070f8d3029cacceec74e4833f4dc8c52c3f41733f5f896fceb425d0737e717a63bfb033df46286d99594dd01e2bd0a942ab792874177b32842f4833bc0340ddb74852e9cd6f29f1d997a4a4bf05dd5d12011f95e6ce18928e3a9b83b24d15f989bdf43370bcc657c3ac6601eaf5e951efdbd7ee69b1623dc5039b2dfc640692378ef032f17bc36cc00293ad90b7e18f5feb8f287a7061ed9713929aed9b14b8d566199fc7822b1c38daa16b6d83077b10af0e2b6e531ccc34ea248ea593128c9ff17defcee6618c29cd2d93cfed99b90319104b1fdcfea91e98b41d792782840fb7b25280d8565b0bcd874e79b1b323139e7fc88eb5f80f690ce30fcd81111076adb31de6aeced879b538c0b5f2b74c027cc582a540133952cb021424510312f13e15d403f700f3e15b41d677c5a1e7c4e692c5880cb4522c48e993381996a29615d2956781509cd74aec6a3c73b8536d1817e473dad4cbb1787e046606b692a44e5d21ef6b5219658b002f674367e90a2b610924e9ac543362257d4567728f2e61f61231cb5d7816e100bb6f6bd9a42329b728b18d7a696711650c16fd476e2f471f38af0f6b00d45c6ecadbc5b61e5bb642046fd1c8ba6168b9499ec8acb3fda46cc37e2e442629cbdf");
 }
 
 fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {

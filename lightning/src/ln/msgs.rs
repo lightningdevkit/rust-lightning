@@ -1688,6 +1688,14 @@ mod fuzzy_internal_msgs {
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
 		},
+		// This should only be used for nested Trampoline onions
+		TrampolineForward {
+			/// The value, in msat, of the payment after this hop's fee is deducted.
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			/// The node id to which the trampoline node must find a route
+			outgoing_node_id: PublicKey
+		},
 		Receive {
 			payment_data: Option<FinalOnionHopData>,
 			payment_metadata: Option<Vec<u8>>,
@@ -2467,6 +2475,13 @@ impl Writeable for OutboundOnionPayload {
 					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(6, short_channel_id, required)
+				});
+			},
+			Self::TrampolineForward { amt_to_forward, outgoing_cltv_value, outgoing_node_id } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(14, outgoing_node_id, required)
 				});
 			},
 			Self::Receive {
