@@ -6827,6 +6827,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	pub fn get_funding_created<L: Deref>(&mut self, funding_transaction: Transaction, funding_txo: OutPoint, is_batch_funding: bool, logger: &L)
 	-> Result<Option<msgs::FundingCreated>, (Self, ChannelError)> where L::Target: Logger {
 		if !self.context.is_outbound() {
+			// REMOVE ME - TRIGGER MUTANTS
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
 		}
 		if !matches!(
