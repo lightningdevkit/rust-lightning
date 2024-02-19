@@ -13,7 +13,9 @@ def check_feature(feature):
         pass
     elif feature == "no-std":
         pass
-    elif feature == "ahash":
+    elif feature == "possiblyrandom":
+        pass
+    elif feature == "getrandom":
         pass
     elif feature == "hashbrown":
         pass

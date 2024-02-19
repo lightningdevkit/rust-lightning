@@ -49,6 +49,7 @@ use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
 use lightning::routing::utxo::UtxoLookup;
 use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router};
 use lightning::util::config::{ChannelConfig, UserConfig};
+use lightning::util::hash_tables::*;
 use lightning::util::errors::APIError;
 use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState};
 use lightning::util::logger::Logger;
@@ -63,7 +64,6 @@ use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 
 use std::cell::RefCell;
-use hashbrown::{HashMap, hash_map};
 use std::convert::TryInto;
 use std::cmp;
 use std::sync::{Arc, Mutex};
@@ -229,7 +229,7 @@ impl<'a> MoneyLossDetector<'a> {
 
 			peers,
 			funding_txn: Vec::new(),
-			txids_confirmed: HashMap::new(),
+			txids_confirmed: new_hash_map(),
 			header_hashes: vec![(genesis_block(Network::Bitcoin).block_hash(), 0)],
 			height: 0,
 			max_height: 0,
@@ -241,13 +241,10 @@ impl<'a> MoneyLossDetector<'a> {
 		let mut txdata = Vec::with_capacity(all_txn.len());
 		for (idx, tx) in all_txn.iter().enumerate() {
 			let txid = tx.txid();
-			match self.txids_confirmed.entry(txid) {
-				hash_map::Entry::Vacant(e) => {
-					e.insert(self.height);
-					txdata.push((idx + 1, tx));
-				},
-				_ => {},
-			}
+			self.txids_confirmed.entry(txid).or_insert_with(|| {
+				txdata.push((idx + 1, tx));
+				self.height
+			});
 		}
 
 		self.blocks_connected += 1;
@@ -489,7 +486,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		node_secret: our_network_key.clone(),
 		inbound_payment_key: KeyMaterial(inbound_payment_key.try_into().unwrap()),
 		counter: AtomicU64::new(0),
-		signer_state: RefCell::new(HashMap::new())
+		signer_state: RefCell::new(new_hash_map())
 	});
 	let network = Network::Bitcoin;
 	let best_block_timestamp = genesis_block(network).header.time;
@@ -518,7 +515,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	let mut intercepted_htlcs: Vec<InterceptId> = Vec::new();
 	let mut payments_sent: u16 = 0;
 	let mut pending_funding_generation: Vec<(ChannelId, PublicKey, u64, ScriptBuf)> = Vec::new();
-	let mut pending_funding_signatures = HashMap::new();
+	let mut pending_funding_signatures = new_hash_map();
 
 	loop {
 		match get_slice!(1)[0] {
