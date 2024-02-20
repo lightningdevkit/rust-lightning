@@ -737,10 +737,10 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			// 15, 16, 17, 18 is above
 			19 => {
-				let mut list = loss_detector.handler.get_peer_node_ids();
-				list.sort_by_key(|v| v.0);
-				if let Some((id, _)) = list.get(0) {
-					loss_detector.handler.disconnect_by_node_id(*id);
+				let mut list = loss_detector.handler.list_peers();
+				list.sort_by_key(|v| v.counterparty_node_id);
+				if let Some(peer_details) = list.get(0) {
+					loss_detector.handler.disconnect_by_node_id(peer_details.counterparty_node_id);
 				}
 			},
 			20 => loss_detector.handler.disconnect_all_peers(),
