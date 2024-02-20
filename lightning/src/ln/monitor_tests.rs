@@ -1188,14 +1188,14 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	assert!(failed_payments.is_empty());
 	if let Event::PendingHTLCsForwardable { .. } = events[0] {} else { panic!(); }
 	match &events[1] {
-		Event::ChannelClosed { reason: ClosureReason::HolderForceClosed, .. } => {},
+		Event::ChannelClosed { reason: ClosureReason::HTLCsTimedOut, .. } => {},
 		_ => panic!(),
 	}
 
 	connect_blocks(&nodes[1], htlc_cltv_timeout + 1 - 10);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 1000000);
+	check_closed_event!(nodes[1], 1, ClosureReason::HTLCsTimedOut, [nodes[0].node.get_our_node_id()], 1000000);
 
 	// Prior to channel closure, B considers the preimage HTLC as its own, and otherwise only
 	// lists the two on-chain timeout-able HTLCs as claimable balances.
