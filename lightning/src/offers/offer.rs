@@ -134,9 +134,12 @@ pub struct ExplicitMetadata {}
 pub struct DerivedMetadata {}
 
 impl MetadataStrategy for ExplicitMetadata {}
+
 impl MetadataStrategy for DerivedMetadata {}
 
-impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
+macro_rules! offer_explicit_metadata_builder_methods { (
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+) => {
 	/// Creates a new builder for an offer setting the [`Offer::description`] and using the
 	/// [`Offer::signing_pubkey`] for signing invoices. The associated secret key must be remembered
 	/// while the offer is valid.
@@ -151,7 +154,7 @@ impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
 	pub fn new(description: String, signing_pubkey: PublicKey) -> Self {
-		OfferBuilder {
+		Self {
 			offer: OfferContents {
 				chains: None, metadata: None, amount: None, description,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
@@ -165,13 +168,13 @@ impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
 	/// Sets the [`Offer::metadata`] to the given bytes.
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn metadata(mut self, metadata: Vec<u8>) -> Result<Self, Bolt12SemanticError> {
-		self.offer.metadata = Some(Metadata::Bytes(metadata));
-		Ok(self)
+	pub fn metadata(mut $self: $self_type, metadata: Vec<u8>) -> Result<$return_type, Bolt12SemanticError> {
+		$self.offer.metadata = Some(Metadata::Bytes(metadata));
+		Ok($return_value)
 	}
-}
+} }
 
-impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
+macro_rules! offer_derived_metadata_builder_methods { () => {
 	/// Similar to [`OfferBuilder::new`] except, if [`OfferBuilder::path`] is called, the signing
 	/// pubkey is derived from the given [`ExpandedKey`] and [`EntropySource`]. This provides
 	/// recipient privacy by using a different signing pubkey for each offer. Otherwise, the
@@ -190,7 +193,7 @@ impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
 		let nonce = Nonce::from_entropy_source(entropy_source);
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, None);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
-		OfferBuilder {
+		Self {
 			offer: OfferContents {
 				chains: None, metadata: Some(metadata), amount: None, description,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
@@ -200,17 +203,19 @@ impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
 			secp_ctx: Some(secp_ctx),
 		}
 	}
-}
+} }
 
-impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
+macro_rules! offer_builder_methods { (
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+) => {
 	/// Adds the chain hash of the given [`Network`] to [`Offer::chains`]. If not called,
 	/// the chain hash of [`Network::Bitcoin`] is assumed to be the only one supported.
 	///
 	/// See [`Offer::chains`] on how this relates to the payment currency.
 	///
 	/// Successive calls to this method will add another chain hash.
-	pub fn chain(self, network: Network) -> Self {
-		self.chain_hash(ChainHash::using_genesis_block(network))
+	pub fn chain($self: $self_type, network: Network) -> $return_type {
+		$self.chain_hash(ChainHash::using_genesis_block(network))
 	}
 
 	/// Adds the [`ChainHash`] to [`Offer::chains`]. If not called, the chain hash of
@@ -219,45 +224,45 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 	/// See [`Offer::chains`] on how this relates to the payment currency.
 	///
 	/// Successive calls to this method will add another chain hash.
-	pub(crate) fn chain_hash(mut self, chain: ChainHash) -> Self {
-		let chains = self.offer.chains.get_or_insert_with(Vec::new);
+	pub(crate) fn chain_hash(mut $self: $self_type, chain: ChainHash) -> $return_type {
+		let chains = $self.offer.chains.get_or_insert_with(Vec::new);
 		if !chains.contains(&chain) {
 			chains.push(chain);
 		}
 
-		self
+		$return_value
 	}
 
 	/// Sets the [`Offer::amount`] as an [`Amount::Bitcoin`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn amount_msats(self, amount_msats: u64) -> Self {
-		self.amount(Amount::Bitcoin { amount_msats })
+	pub fn amount_msats($self: $self_type, amount_msats: u64) -> $return_type {
+		$self.amount(Amount::Bitcoin { amount_msats })
 	}
 
 	/// Sets the [`Offer::amount`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub(super) fn amount(mut self, amount: Amount) -> Self {
-		self.offer.amount = Some(amount);
-		self
+	pub(super) fn amount(mut $self: $self_type, amount: Amount) -> $return_type {
+		$self.offer.amount = Some(amount);
+		$return_value
 	}
 
 	/// Sets the [`Offer::absolute_expiry`] as seconds since the Unix epoch. Any expiry that has
 	/// already passed is valid and can be checked for using [`Offer::is_expired`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn absolute_expiry(mut self, absolute_expiry: Duration) -> Self {
-		self.offer.absolute_expiry = Some(absolute_expiry);
-		self
+	pub fn absolute_expiry(mut $self: $self_type, absolute_expiry: Duration) -> $return_type {
+		$self.offer.absolute_expiry = Some(absolute_expiry);
+		$return_value
 	}
 
 	/// Sets the [`Offer::issuer`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn issuer(mut self, issuer: String) -> Self {
-		self.offer.issuer = Some(issuer);
-		self
+	pub fn issuer(mut $self: $self_type, issuer: String) -> $return_type {
+		$self.offer.issuer = Some(issuer);
+		$return_value
 	}
 
 	/// Adds a blinded path to [`Offer::paths`]. Must include at least one path if only connected by
@@ -265,23 +270,23 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 	///
 	/// Successive calls to this method will add another blinded path. Caller is responsible for not
 	/// adding duplicate paths.
-	pub fn path(mut self, path: BlindedPath) -> Self {
-		self.offer.paths.get_or_insert_with(Vec::new).push(path);
-		self
+	pub fn path(mut $self: $self_type, path: BlindedPath) -> $return_type {
+		$self.offer.paths.get_or_insert_with(Vec::new).push(path);
+		$return_value
 	}
 
 	/// Sets the quantity of items for [`Offer::supported_quantity`]. If not called, defaults to
 	/// [`Quantity::One`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn supported_quantity(mut self, quantity: Quantity) -> Self {
-		self.offer.supported_quantity = quantity;
-		self
+	pub fn supported_quantity(mut $self: $self_type, quantity: Quantity) -> $return_type {
+		$self.offer.supported_quantity = quantity;
+		$return_value
 	}
 
 	/// Builds an [`Offer`] from the builder's settings.
-	pub fn build(mut self) -> Result<Offer, Bolt12SemanticError> {
-		match self.offer.amount {
+	pub fn build(mut $self: $self_type) -> Result<Offer, Bolt12SemanticError> {
+		match $self.offer.amount {
 			Some(Amount::Bitcoin { amount_msats }) => {
 				if amount_msats > MAX_VALUE_MSAT {
 					return Err(Bolt12SemanticError::InvalidAmount);
@@ -291,62 +296,79 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 			None => {},
 		}
 
-		if let Some(chains) = &self.offer.chains {
-			if chains.len() == 1 && chains[0] == self.offer.implied_chain() {
-				self.offer.chains = None;
+		if let Some(chains) = &$self.offer.chains {
+			if chains.len() == 1 && chains[0] == $self.offer.implied_chain() {
+				$self.offer.chains = None;
 			}
 		}
 
-		Ok(self.build_without_checks())
+		Ok($self.build_without_checks())
 	}
 
-	fn build_without_checks(mut self) -> Offer {
+	fn build_without_checks(mut $self: $self_type) -> Offer {
 		// Create the metadata for stateless verification of an InvoiceRequest.
-		if let Some(mut metadata) = self.offer.metadata.take() {
+		if let Some(mut metadata) = $self.offer.metadata.take() {
 			if metadata.has_derivation_material() {
-				if self.offer.paths.is_none() {
+				if $self.offer.paths.is_none() {
 					metadata = metadata.without_keys();
 				}
 
-				let mut tlv_stream = self.offer.as_tlv_stream();
+				let mut tlv_stream = $self.offer.as_tlv_stream();
 				debug_assert_eq!(tlv_stream.metadata, None);
 				tlv_stream.metadata = None;
 				if metadata.derives_recipient_keys() {
 					tlv_stream.node_id = None;
 				}
 
-				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, self.secp_ctx);
+				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
 				metadata = derived_metadata;
 				if let Some(keys) = keys {
-					self.offer.signing_pubkey = keys.public_key();
+					$self.offer.signing_pubkey = keys.public_key();
 				}
 			}
 
-			self.offer.metadata = Some(metadata);
+			$self.offer.metadata = Some(metadata);
 		}
 
 		let mut bytes = Vec::new();
-		self.offer.write(&mut bytes).unwrap();
+		$self.offer.write(&mut bytes).unwrap();
 
-		Offer { bytes, contents: self.offer }
+		Offer { bytes, contents: $self.offer }
 	}
-}
+} }
 
 #[cfg(test)]
+macro_rules! offer_builder_test_methods { (
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+) => {
+	fn features_unchecked(mut $self: $self_type, features: OfferFeatures) -> $return_type {
+		$self.offer.features = features;
+		$return_value
+	}
+
+	pub(crate) fn clear_paths(mut $self: $self_type) -> $return_type {
+		$self.offer.paths = None;
+		$return_value
+	}
+
+	pub(super) fn build_unchecked($self: $self_type) -> Offer {
+		$self.build_without_checks()
+	}
+} }
+
 impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
-	fn features_unchecked(mut self, features: OfferFeatures) -> Self {
-		self.offer.features = features;
-		self
-	}
+	offer_builder_methods!(self, Self, Self, self);
 
-	pub(crate) fn clear_paths(mut self) -> Self {
-		self.offer.paths = None;
-		self
-	}
+	#[cfg(test)]
+	offer_builder_test_methods!(self, Self, Self, self);
+}
 
-	pub(super) fn build_unchecked(self) -> Offer {
-		self.build_without_checks()
-	}
+impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
+	offer_explicit_metadata_builder_methods!(self, Self, Self, self);
+}
+
+impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
+	offer_derived_metadata_builder_methods!();
 }
 
 /// An `Offer` is a potentially long-lived proposal for payment of a good or service.
