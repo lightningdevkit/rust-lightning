@@ -698,7 +698,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 			// Prior replies should use the number of blocks that fit into the reply. Overflow
 			// safe since first_blocknum is always <= last SCID's block.
 			else {
-				(false, block_from_scid(batch.last().unwrap()) - first_blocknum)
+				(false, block_from_scid(*batch.last().unwrap()) - first_blocknum)
 			};
 
 			prev_batch_endblock = first_blocknum + number_of_blocks;

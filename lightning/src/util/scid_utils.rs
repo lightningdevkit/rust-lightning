@@ -33,17 +33,17 @@ pub enum ShortChannelIdError {
 }
 
 /// Extracts the block height (most significant 3-bytes) from the `short_channel_id`
-pub fn block_from_scid(short_channel_id: &u64) -> u32 {
+pub fn block_from_scid(short_channel_id: u64) -> u32 {
 	return (short_channel_id >> 40) as u32;
 }
 
 /// Extracts the tx index (bytes [2..4]) from the `short_channel_id`
-pub fn tx_index_from_scid(short_channel_id: &u64) -> u32 {
+pub fn tx_index_from_scid(short_channel_id: u64) -> u32 {
 	return ((short_channel_id >> 16) & MAX_SCID_TX_INDEX) as u32;
 }
 
 /// Extracts the vout (bytes [0..2]) from the `short_channel_id`
-pub fn vout_from_scid(short_channel_id: &u64) -> u16 {
+pub fn vout_from_scid(short_channel_id: u64) -> u16 {
 	return ((short_channel_id) & MAX_SCID_VOUT_INDEX) as u16;
 }
 
@@ -162,22 +162,22 @@ pub(crate) mod fake_scid {
 
 	/// Returns whether the given fake scid falls into the phantom namespace.
 	pub fn is_valid_phantom(fake_scid_rand_bytes: &[u8; 32], scid: u64, chain_hash: &ChainHash) -> bool {
-		let block_height = scid_utils::block_from_scid(&scid);
-		let tx_index = scid_utils::tx_index_from_scid(&scid);
+		let block_height = scid_utils::block_from_scid(scid);
+		let tx_index = scid_utils::tx_index_from_scid(scid);
 		let namespace = Namespace::Phantom;
 		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
 		block_height >= segwit_activation_height(chain_hash)
-			&& valid_vout == scid_utils::vout_from_scid(&scid) as u8
+			&& valid_vout == scid_utils::vout_from_scid(scid) as u8
 	}
 
 	/// Returns whether the given fake scid falls into the intercept namespace.
 	pub fn is_valid_intercept(fake_scid_rand_bytes: &[u8; 32], scid: u64, chain_hash: &ChainHash) -> bool {
-		let block_height = scid_utils::block_from_scid(&scid);
-		let tx_index = scid_utils::tx_index_from_scid(&scid);
+		let block_height = scid_utils::block_from_scid(scid);
+		let tx_index = scid_utils::tx_index_from_scid(scid);
 		let namespace = Namespace::Intercept;
 		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
 		block_height >= segwit_activation_height(chain_hash)
-			&& valid_vout == scid_utils::vout_from_scid(&scid) as u8
+			&& valid_vout == scid_utils::vout_from_scid(scid) as u8
 	}
 
 	#[cfg(test)]
@@ -248,14 +248,14 @@ pub(crate) mod fake_scid {
 			let namespace = Namespace::Phantom;
 			let fake_scid = namespace.get_fake_scid(500_000, &mainnet_genesis, &fake_scid_rand_bytes, &keys_manager);
 
-			let fake_height = scid_utils::block_from_scid(&fake_scid);
+			let fake_height = scid_utils::block_from_scid(fake_scid);
 			assert!(fake_height >= MAINNET_SEGWIT_ACTIVATION_HEIGHT);
 			assert!(fake_height <= 500_000);
 
-			let fake_tx_index = scid_utils::tx_index_from_scid(&fake_scid);
+			let fake_tx_index = scid_utils::tx_index_from_scid(fake_scid);
 			assert!(fake_tx_index <= MAX_TX_INDEX);
 
-			let fake_vout = scid_utils::vout_from_scid(&fake_scid);
+			let fake_vout = scid_utils::vout_from_scid(fake_scid);
 			assert!(fake_vout < MAX_NAMESPACES as u16);
 		}
 	}
@@ -267,29 +267,29 @@ mod tests {
 
 	#[test]
 	fn test_block_from_scid() {
-		assert_eq!(block_from_scid(&0x000000_000000_0000), 0);
-		assert_eq!(block_from_scid(&0x000001_000000_0000), 1);
-		assert_eq!(block_from_scid(&0x000001_ffffff_ffff), 1);
-		assert_eq!(block_from_scid(&0x800000_ffffff_ffff), 0x800000);
-		assert_eq!(block_from_scid(&0xffffff_ffffff_ffff), 0xffffff);
+		assert_eq!(block_from_scid(0x000000_000000_0000), 0);
+		assert_eq!(block_from_scid(0x000001_000000_0000), 1);
+		assert_eq!(block_from_scid(0x000001_ffffff_ffff), 1);
+		assert_eq!(block_from_scid(0x800000_ffffff_ffff), 0x800000);
+		assert_eq!(block_from_scid(0xffffff_ffffff_ffff), 0xffffff);
 	}
 
 	#[test]
 	fn test_tx_index_from_scid() {
-		assert_eq!(tx_index_from_scid(&0x000000_000000_0000), 0);
-		assert_eq!(tx_index_from_scid(&0x000000_000001_0000), 1);
-		assert_eq!(tx_index_from_scid(&0xffffff_000001_ffff), 1);
-		assert_eq!(tx_index_from_scid(&0xffffff_800000_ffff), 0x800000);
-		assert_eq!(tx_index_from_scid(&0xffffff_ffffff_ffff), 0xffffff);
+		assert_eq!(tx_index_from_scid(0x000000_000000_0000), 0);
+		assert_eq!(tx_index_from_scid(0x000000_000001_0000), 1);
+		assert_eq!(tx_index_from_scid(0xffffff_000001_ffff), 1);
+		assert_eq!(tx_index_from_scid(0xffffff_800000_ffff), 0x800000);
+		assert_eq!(tx_index_from_scid(0xffffff_ffffff_ffff), 0xffffff);
 	}
 
 	#[test]
 	fn test_vout_from_scid() {
-		assert_eq!(vout_from_scid(&0x000000_000000_0000), 0);
-		assert_eq!(vout_from_scid(&0x000000_000000_0001), 1);
-		assert_eq!(vout_from_scid(&0xffffff_ffffff_0001), 1);
-		assert_eq!(vout_from_scid(&0xffffff_ffffff_8000), 0x8000);
-		assert_eq!(vout_from_scid(&0xffffff_ffffff_ffff), 0xffff);
+		assert_eq!(vout_from_scid(0x000000_000000_0000), 0);
+		assert_eq!(vout_from_scid(0x000000_000000_0001), 1);
+		assert_eq!(vout_from_scid(0xffffff_ffffff_0001), 1);
+		assert_eq!(vout_from_scid(0xffffff_ffffff_8000), 0x8000);
+		assert_eq!(vout_from_scid(0xffffff_ffffff_ffff), 0xffff);
 	}
 
 	#[test]
