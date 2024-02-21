@@ -190,7 +190,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 				chan_context.holder_selected_channel_reserve_satoshis = 0;
 				chan_context.holder_max_htlc_value_in_flight_msat = 100_000_000;
 			},
-			ChannelPhase::Funded(_) => assert!(false),
+			_ => assert!(false),
 		}
 	}
 
