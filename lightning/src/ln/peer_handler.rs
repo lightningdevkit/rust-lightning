@@ -431,6 +431,26 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	fn disconnect_socket(&mut self);
 }
 
+/// Details of a connected peer as returned by [`PeerManager::list_peers`].
+pub struct PeerDetails {
+	/// The node id of the peer.
+	///
+	/// For outbound connections, this [`PublicKey`] will be the same as the `their_node_id` parameter
+	/// passed in to [`PeerManager::new_outbound_connection`].
+	pub counterparty_node_id: PublicKey,
+	/// The socket address the peer provided in the initial handshake.
+	///
+	/// Will only be `Some` if an address had been previously provided to
+	/// [`PeerManager::new_outbound_connection`] or [`PeerManager::new_inbound_connection`].
+	pub socket_address: Option<SocketAddress>,
+	/// The features the peer provided in the initial handshake.
+	pub init_features: InitFeatures,
+	/// Indicates the direction of the peer connection.
+	///
+	/// Will be `true` for inbound connections, and `false` for outbound connections.
+	pub is_inbound_connection: bool,
+}
+
 /// Error for PeerManager errors. If you get one of these, you must disconnect the socket and
 /// generate no further read_event/write_buffer_space_avail/socket_disconnected calls for the
 /// descriptor.
@@ -958,25 +978,58 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		}
 	}
 
-	/// Get a list of tuples mapping from node id to network addresses for peers which have
-	/// completed the initial handshake.
-	///
-	/// For outbound connections, the [`PublicKey`] will be the same as the `their_node_id` parameter
-	/// passed in to [`Self::new_outbound_connection`], however entries will only appear once the initial
-	/// handshake has completed and we are sure the remote peer has the private key for the given
-	/// [`PublicKey`].
-	///
-	/// The returned `Option`s will only be `Some` if an address had been previously given via
-	/// [`Self::new_outbound_connection`] or [`Self::new_inbound_connection`].
-	pub fn get_peer_node_ids(&self) -> Vec<(PublicKey, Option<SocketAddress>)> {
+	/// Returns a list of [`PeerDetails`] for connected peers that have completed the initial
+	/// handshake.
+	pub fn list_peers(&self) -> Vec<PeerDetails> {
 		let peers = self.peers.read().unwrap();
 		peers.values().filter_map(|peer_mutex| {
 			let p = peer_mutex.lock().unwrap();
 			if !p.handshake_complete() {
 				return None;
 			}
-			Some((p.their_node_id.unwrap().0, p.their_socket_address.clone()))
+			let details = PeerDetails {
+				// unwrap safety: their_node_id is guaranteed to be `Some` after the handshake
+				// completed.
+				counterparty_node_id: p.their_node_id.unwrap().0,
+				socket_address: p.their_socket_address.clone(),
+				// unwrap safety: their_features is guaranteed to be `Some` after the handshake
+				// completed.
+				init_features: p.their_features.clone().unwrap(),
+				is_inbound_connection: p.inbound_connection,
+			};
+			Some(details)
 		}).collect()
+	}
+
+	/// Returns the [`PeerDetails`] of a connected peer that has completed the initial handshake.
+	///
+	/// Will return `None` if the peer is unknown or it hasn't completed the initial handshake.
+	pub fn peer_by_node_id(&self, their_node_id: &PublicKey) -> Option<PeerDetails> {
+		let peers = self.peers.read().unwrap();
+		peers.values().find_map(|peer_mutex| {
+			let p = peer_mutex.lock().unwrap();
+			if !p.handshake_complete() {
+				return None;
+			}
+
+			// unwrap safety: their_node_id is guaranteed to be `Some` after the handshake
+			// completed.
+			let counterparty_node_id = p.their_node_id.unwrap().0;
+
+			if counterparty_node_id != *their_node_id {
+				return None;
+			}
+
+			let details = PeerDetails {
+				counterparty_node_id,
+				socket_address: p.their_socket_address.clone(),
+				// unwrap safety: their_features is guaranteed to be `Some` after the handshake
+				// completed.
+				init_features: p.their_features.clone().unwrap(),
+				is_inbound_connection: p.inbound_connection,
+			};
+			Some(details)
+		})
 	}
 
 	fn get_ephemeral_key(&self) -> SecretKey {
@@ -2746,6 +2799,8 @@ mod tests {
 		};
 		let addr_a = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1000};
 		let id_b = peer_b.node_signer.get_node_id(Recipient::Node).unwrap();
+		let features_a = peer_a.init_features(&id_b);
+		let features_b = peer_b.init_features(&id_a);
 		let mut fd_b = FileDescriptor {
 			fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
 			disconnect: Arc::new(AtomicBool::new(false)),
@@ -2767,9 +2822,12 @@ mod tests {
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
 		assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
 
-		assert!(peer_a.get_peer_node_ids().contains(&(id_b, Some(addr_b))));
-		assert!(peer_b.get_peer_node_ids().contains(&(id_a, Some(addr_a))));
-
+		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().counterparty_node_id, id_b);
+		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().socket_address, Some(addr_b));
+		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().init_features, features_b);
+		assert_eq!(peer_b.peer_by_node_id(&id_a).unwrap().counterparty_node_id, id_a);
+		assert_eq!(peer_b.peer_by_node_id(&id_a).unwrap().socket_address, Some(addr_a));
+		assert_eq!(peer_b.peer_by_node_id(&id_a).unwrap().init_features, features_a);
 		(fd_a.clone(), fd_b.clone())
 	}
 
