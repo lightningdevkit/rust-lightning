@@ -1348,6 +1348,15 @@ impl Bolt11Invoice {
 		self.signed_invoice.recover_payee_pub_key().expect("was checked by constructor").0
 	}
 
+	/// Recover the payee's public key if one was included in the invoice, otherwise return the
+	/// recovered public key from the signature
+	pub fn get_payee_pub_key(&self) -> PublicKey {
+		match self.payee_pub_key() {
+			Some(pk) => *pk,
+			None => self.recover_payee_pub_key()
+		}
+	}
+
 	/// Returns the Duration since the Unix epoch at which the invoice expires.
 	/// Returning None if overflow occurred.
 	pub fn expires_at(&self) -> Option<Duration> {
