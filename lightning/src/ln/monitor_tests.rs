@@ -209,8 +209,8 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 	assert_eq!(shutdown_tx, nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0));
 	assert_eq!(shutdown_tx.len(), 1);
 
-	let shutdown_tx_conf_height_a = block_from_scid(&mine_transaction(&nodes[0], &shutdown_tx[0]));
-	let shutdown_tx_conf_height_b = block_from_scid(&mine_transaction(&nodes[1], &shutdown_tx[0]));
+	let shutdown_tx_conf_height_a = block_from_scid(mine_transaction(&nodes[0], &shutdown_tx[0]));
+	let shutdown_tx_conf_height_b = block_from_scid(mine_transaction(&nodes[1], &shutdown_tx[0]));
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());
@@ -736,7 +736,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		check_spends!(commitment_tx, funding_tx);
 		commitment_tx
 	};
-	let commitment_tx_conf_height_a = block_from_scid(&mine_transaction(&nodes[0], &commitment_tx));
+	let commitment_tx_conf_height_a = block_from_scid(mine_transaction(&nodes[0], &commitment_tx));
 	if nodes[0].connect_style.borrow().updates_best_block_first() {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
@@ -2674,14 +2674,14 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 		// We should expect our round trip serialization check to fail as we're writing the monitor
 		// with the incorrect P2WPKH script but reading it with the correct P2WSH script.
 		*nodes[1].chain_monitor.expect_monitor_round_trip_fail.lock().unwrap() = Some(chan_id);
-		let commitment_tx_conf_height = block_from_scid(&mine_transaction(&nodes[1], &commitment_tx));
+		let commitment_tx_conf_height = block_from_scid(mine_transaction(&nodes[1], &commitment_tx));
 		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
 		reload_node!(nodes[1], user_config, &nodes[1].node.encode(), &[&serialized_monitor], persister, chain_monitor, node_deserialized);
 		commitment_tx_conf_height
 	} else {
 		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
 		reload_node!(nodes[1], user_config, &nodes[1].node.encode(), &[&serialized_monitor], persister, chain_monitor, node_deserialized);
-		let commitment_tx_conf_height = block_from_scid(&mine_transaction(&nodes[1], &commitment_tx));
+		let commitment_tx_conf_height = block_from_scid(mine_transaction(&nodes[1], &commitment_tx));
 		check_added_monitors(&nodes[1], 1);
 		check_closed_broadcast(&nodes[1], 1, true);
 		commitment_tx_conf_height
