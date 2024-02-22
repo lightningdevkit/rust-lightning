@@ -144,6 +144,14 @@ impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerI
 			secp_ctx: None,
 		}
 	}
+
+	/// Builds an unsigned [`InvoiceRequest`] after checking for valid semantics. It can be signed
+	/// by [`UnsignedInvoiceRequest::sign`].
+	pub fn build(self) -> Result<UnsignedInvoiceRequest, Bolt12SemanticError> {
+		let (unsigned_invoice_request, keys, _) = self.build_with_checks()?;
+		debug_assert!(keys.is_none());
+		Ok(unsigned_invoice_request)
+	}
 }
 
 impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T> {
@@ -162,6 +170,21 @@ impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId
 			payer_id_strategy: core::marker::PhantomData,
 			secp_ctx: Some(secp_ctx),
 		}
+	}
+
+	/// Builds a signed [`InvoiceRequest`] after checking for valid semantics.
+	pub fn build_and_sign(self) -> Result<InvoiceRequest, Bolt12SemanticError> {
+		let (unsigned_invoice_request, keys, secp_ctx) = self.build_with_checks()?;
+		debug_assert!(keys.is_some());
+
+		let secp_ctx = secp_ctx.unwrap();
+		let keys = keys.unwrap();
+		let invoice_request = unsigned_invoice_request
+			.sign::<_, Infallible>(
+				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
+			.unwrap();
+		Ok(invoice_request)
 	}
 }
 
@@ -298,33 +321,6 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 		let unsigned_invoice_request = UnsignedInvoiceRequest::new(self.offer, invoice_request);
 
 		(unsigned_invoice_request, keys, secp_ctx)
-	}
-}
-
-impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerId, T> {
-	/// Builds an unsigned [`InvoiceRequest`] after checking for valid semantics. It can be signed
-	/// by [`UnsignedInvoiceRequest::sign`].
-	pub fn build(self) -> Result<UnsignedInvoiceRequest, Bolt12SemanticError> {
-		let (unsigned_invoice_request, keys, _) = self.build_with_checks()?;
-		debug_assert!(keys.is_none());
-		Ok(unsigned_invoice_request)
-	}
-}
-
-impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T> {
-	/// Builds a signed [`InvoiceRequest`] after checking for valid semantics.
-	pub fn build_and_sign(self) -> Result<InvoiceRequest, Bolt12SemanticError> {
-		let (unsigned_invoice_request, keys, secp_ctx) = self.build_with_checks()?;
-		debug_assert!(keys.is_some());
-
-		let secp_ctx = secp_ctx.unwrap();
-		let keys = keys.unwrap();
-		let invoice_request = unsigned_invoice_request
-			.sign::<_, Infallible>(
-				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-			)
-			.unwrap();
-		Ok(invoice_request)
 	}
 }
 
