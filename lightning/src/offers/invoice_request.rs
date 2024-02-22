@@ -117,7 +117,7 @@ pub struct DerivedPayerId {}
 impl PayerIdStrategy for ExplicitPayerId {}
 impl PayerIdStrategy for DerivedPayerId {}
 
-impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerId, T> {
+macro_rules! invoice_request_explicit_payer_id_builder_methods { ($self: ident, $self_type: ty) => {
 	pub(super) fn new(offer: &'a Offer, metadata: Vec<u8>, payer_id: PublicKey) -> Self {
 		Self {
 			offer,
@@ -147,14 +147,14 @@ impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerI
 
 	/// Builds an unsigned [`InvoiceRequest`] after checking for valid semantics. It can be signed
 	/// by [`UnsignedInvoiceRequest::sign`].
-	pub fn build(self) -> Result<UnsignedInvoiceRequest, Bolt12SemanticError> {
-		let (unsigned_invoice_request, keys, _) = self.build_with_checks()?;
+	pub fn build($self: $self_type) -> Result<UnsignedInvoiceRequest, Bolt12SemanticError> {
+		let (unsigned_invoice_request, keys, _) = $self.build_with_checks()?;
 		debug_assert!(keys.is_none());
 		Ok(unsigned_invoice_request)
 	}
-}
+} }
 
-impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T> {
+macro_rules! invoice_request_derived_payer_id_builder_methods { ($self: ident, $self_type: ty) => {
 	pub(super) fn deriving_payer_id<ES: Deref>(
 		offer: &'a Offer, expanded_key: &ExpandedKey, entropy_source: ES,
 		secp_ctx: &'b Secp256k1<T>, payment_id: PaymentId
@@ -173,8 +173,8 @@ impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId
 	}
 
 	/// Builds a signed [`InvoiceRequest`] after checking for valid semantics.
-	pub fn build_and_sign(self) -> Result<InvoiceRequest, Bolt12SemanticError> {
-		let (unsigned_invoice_request, keys, secp_ctx) = self.build_with_checks()?;
+	pub fn build_and_sign($self: $self_type) -> Result<InvoiceRequest, Bolt12SemanticError> {
+		let (unsigned_invoice_request, keys, secp_ctx) = $self.build_with_checks()?;
 		debug_assert!(keys.is_some());
 
 		let secp_ctx = secp_ctx.unwrap();
@@ -186,9 +186,11 @@ impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId
 			.unwrap();
 		Ok(invoice_request)
 	}
-}
+} }
 
-impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, P, T> {
+macro_rules! invoice_request_builder_methods { (
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+) => {
 	fn create_contents(offer: &Offer, metadata: Metadata) -> InvoiceRequestContentsWithoutPayerId {
 		let offer = offer.contents.clone();
 		InvoiceRequestContentsWithoutPayerId {
@@ -202,8 +204,8 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 	/// by the offer.
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn chain(self, network: Network) -> Result<Self, Bolt12SemanticError> {
-		self.chain_hash(ChainHash::using_genesis_block(network))
+	pub fn chain($self: $self_type, network: Network) -> Result<$return_type, Bolt12SemanticError> {
+		$self.chain_hash(ChainHash::using_genesis_block(network))
 	}
 
 	/// Sets the [`InvoiceRequest::chain`] for paying an invoice. If not called, the chain hash of
@@ -211,13 +213,13 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 	/// offer.
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub(crate) fn chain_hash(mut self, chain: ChainHash) -> Result<Self, Bolt12SemanticError> {
-		if !self.offer.supports_chain(chain) {
+	pub(crate) fn chain_hash(mut $self: $self_type, chain: ChainHash) -> Result<$return_type, Bolt12SemanticError> {
+		if !$self.offer.supports_chain(chain) {
 			return Err(Bolt12SemanticError::UnsupportedChain);
 		}
 
-		self.invoice_request.chain = Some(chain);
-		Ok(self)
+		$self.invoice_request.chain = Some(chain);
+		Ok($return_value)
 	}
 
 	/// Sets the [`InvoiceRequest::amount_msats`] for paying an invoice. Errors if `amount_msats` is
@@ -226,130 +228,147 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 	/// Successive calls to this method will override the previous setting.
 	///
 	/// [`quantity`]: Self::quantity
-	pub fn amount_msats(mut self, amount_msats: u64) -> Result<Self, Bolt12SemanticError> {
-		self.invoice_request.offer.check_amount_msats_for_quantity(
-			Some(amount_msats), self.invoice_request.quantity
+	pub fn amount_msats(mut $self: $self_type, amount_msats: u64) -> Result<$return_type, Bolt12SemanticError> {
+		$self.invoice_request.offer.check_amount_msats_for_quantity(
+			Some(amount_msats), $self.invoice_request.quantity
 		)?;
-		self.invoice_request.amount_msats = Some(amount_msats);
-		Ok(self)
+		$self.invoice_request.amount_msats = Some(amount_msats);
+		Ok($return_value)
 	}
 
 	/// Sets [`InvoiceRequest::quantity`] of items. If not set, `1` is assumed. Errors if `quantity`
 	/// does not conform to [`Offer::is_valid_quantity`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn quantity(mut self, quantity: u64) -> Result<Self, Bolt12SemanticError> {
-		self.invoice_request.offer.check_quantity(Some(quantity))?;
-		self.invoice_request.quantity = Some(quantity);
-		Ok(self)
+	pub fn quantity(mut $self: $self_type, quantity: u64) -> Result<$return_type, Bolt12SemanticError> {
+		$self.invoice_request.offer.check_quantity(Some(quantity))?;
+		$self.invoice_request.quantity = Some(quantity);
+		Ok($return_value)
 	}
 
 	/// Sets the [`InvoiceRequest::payer_note`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn payer_note(mut self, payer_note: String) -> Self {
-		self.invoice_request.payer_note = Some(payer_note);
-		self
+	pub fn payer_note(mut $self: $self_type, payer_note: String) -> $return_type {
+		$self.invoice_request.payer_note = Some(payer_note);
+		$return_value
 	}
 
-	fn build_with_checks(mut self) -> Result<
+	fn build_with_checks(mut $self: $self_type) -> Result<
 		(UnsignedInvoiceRequest, Option<KeyPair>, Option<&'b Secp256k1<T>>),
 		Bolt12SemanticError
 	> {
 		#[cfg(feature = "std")] {
-			if self.offer.is_expired() {
+			if $self.offer.is_expired() {
 				return Err(Bolt12SemanticError::AlreadyExpired);
 			}
 		}
 
-		let chain = self.invoice_request.chain();
-		if !self.offer.supports_chain(chain) {
+		let chain = $self.invoice_request.chain();
+		if !$self.offer.supports_chain(chain) {
 			return Err(Bolt12SemanticError::UnsupportedChain);
 		}
 
-		if chain == self.offer.implied_chain() {
-			self.invoice_request.chain = None;
+		if chain == $self.offer.implied_chain() {
+			$self.invoice_request.chain = None;
 		}
 
-		if self.offer.amount().is_none() && self.invoice_request.amount_msats.is_none() {
+		if $self.offer.amount().is_none() && $self.invoice_request.amount_msats.is_none() {
 			return Err(Bolt12SemanticError::MissingAmount);
 		}
 
-		self.invoice_request.offer.check_quantity(self.invoice_request.quantity)?;
-		self.invoice_request.offer.check_amount_msats_for_quantity(
-			self.invoice_request.amount_msats, self.invoice_request.quantity
+		$self.invoice_request.offer.check_quantity($self.invoice_request.quantity)?;
+		$self.invoice_request.offer.check_amount_msats_for_quantity(
+			$self.invoice_request.amount_msats, $self.invoice_request.quantity
 		)?;
 
-		Ok(self.build_without_checks())
+		Ok($self.build_without_checks())
 	}
 
-	fn build_without_checks(mut self) ->
+	fn build_without_checks(mut $self: $self_type) ->
 		(UnsignedInvoiceRequest, Option<KeyPair>, Option<&'b Secp256k1<T>>)
 	{
 		// Create the metadata for stateless verification of a Bolt12Invoice.
 		let mut keys = None;
-		let secp_ctx = self.secp_ctx.clone();
-		if self.invoice_request.payer.0.has_derivation_material() {
-			let mut metadata = core::mem::take(&mut self.invoice_request.payer.0);
+		let secp_ctx = $self.secp_ctx.clone();
+		if $self.invoice_request.payer.0.has_derivation_material() {
+			let mut metadata = core::mem::take(&mut $self.invoice_request.payer.0);
 
-			let mut tlv_stream = self.invoice_request.as_tlv_stream();
+			let mut tlv_stream = $self.invoice_request.as_tlv_stream();
 			debug_assert!(tlv_stream.2.payer_id.is_none());
 			tlv_stream.0.metadata = None;
 			if !metadata.derives_payer_keys() {
-				tlv_stream.2.payer_id = self.payer_id.as_ref();
+				tlv_stream.2.payer_id = $self.payer_id.as_ref();
 			}
 
-			let (derived_metadata, derived_keys) = metadata.derive_from(tlv_stream, self.secp_ctx);
+			let (derived_metadata, derived_keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
 			metadata = derived_metadata;
 			keys = derived_keys;
 			if let Some(keys) = keys {
-				debug_assert!(self.payer_id.is_none());
-				self.payer_id = Some(keys.public_key());
+				debug_assert!($self.payer_id.is_none());
+				$self.payer_id = Some(keys.public_key());
 			}
 
-			self.invoice_request.payer.0 = metadata;
+			$self.invoice_request.payer.0 = metadata;
 		}
 
-		debug_assert!(self.invoice_request.payer.0.as_bytes().is_some());
-		debug_assert!(self.payer_id.is_some());
-		let payer_id = self.payer_id.unwrap();
+		debug_assert!($self.invoice_request.payer.0.as_bytes().is_some());
+		debug_assert!($self.payer_id.is_some());
+		let payer_id = $self.payer_id.unwrap();
 
 		let invoice_request = InvoiceRequestContents {
-			inner: self.invoice_request,
+			inner: $self.invoice_request,
 			payer_id,
 		};
-		let unsigned_invoice_request = UnsignedInvoiceRequest::new(self.offer, invoice_request);
+		let unsigned_invoice_request = UnsignedInvoiceRequest::new($self.offer, invoice_request);
 
 		(unsigned_invoice_request, keys, secp_ctx)
 	}
-}
+} }
 
 #[cfg(test)]
-impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, P, T> {
-	fn chain_unchecked(mut self, network: Network) -> Self {
+macro_rules! invoice_request_builder_test_methods { (
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+) => {
+	fn chain_unchecked(mut $self: $self_type, network: Network) -> $return_type {
 		let chain = ChainHash::using_genesis_block(network);
-		self.invoice_request.chain = Some(chain);
-		self
+		$self.invoice_request.chain = Some(chain);
+		$return_value
 	}
 
-	fn amount_msats_unchecked(mut self, amount_msats: u64) -> Self {
-		self.invoice_request.amount_msats = Some(amount_msats);
-		self
+	fn amount_msats_unchecked(mut $self: $self_type, amount_msats: u64) -> $return_type {
+		$self.invoice_request.amount_msats = Some(amount_msats);
+		$return_value
 	}
 
-	fn features_unchecked(mut self, features: InvoiceRequestFeatures) -> Self {
-		self.invoice_request.features = features;
-		self
+	fn features_unchecked(mut $self: $self_type, features: InvoiceRequestFeatures) -> $return_type {
+		$self.invoice_request.features = features;
+		$return_value
 	}
 
-	fn quantity_unchecked(mut self, quantity: u64) -> Self {
-		self.invoice_request.quantity = Some(quantity);
-		self
+	fn quantity_unchecked(mut $self: $self_type, quantity: u64) -> $return_type {
+		$self.invoice_request.quantity = Some(quantity);
+		$return_value
 	}
 
-	pub(super) fn build_unchecked(self) -> UnsignedInvoiceRequest {
-		self.build_without_checks().0
+	pub(super) fn build_unchecked($self: $self_type) -> UnsignedInvoiceRequest {
+		$self.build_without_checks().0
 	}
+} }
+
+impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerId, T> {
+	invoice_request_explicit_payer_id_builder_methods!(self, Self);
+}
+
+impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T> {
+	invoice_request_derived_payer_id_builder_methods!(self, Self);
+}
+
+impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, P, T> {
+	invoice_request_builder_methods!(self, Self, Self, self);
+
+	#[cfg(test)]
+	invoice_request_builder_test_methods!(self, Self, Self, self);
 }
 
 /// A semantically valid [`InvoiceRequest`] that hasn't been signed.
@@ -385,31 +404,37 @@ impl UnsignedInvoiceRequest {
 	pub fn tagged_hash(&self) -> &TaggedHash {
 		&self.tagged_hash
 	}
+}
 
+macro_rules! unsigned_invoice_request_sign_method { ($self: ident, $self_type: ty) => {
 	/// Signs the [`TaggedHash`] of the invoice request using the given function.
 	///
 	/// Note: The hash computation may have included unknown, odd TLV records.
 	///
 	/// This is not exported to bindings users as functions are not yet mapped.
-	pub fn sign<F, E>(mut self, sign: F) -> Result<InvoiceRequest, SignError<E>>
+	pub fn sign<F, E>(mut $self: $self_type, sign: F) -> Result<InvoiceRequest, SignError<E>>
 	where
 		F: FnOnce(&Self) -> Result<Signature, E>
 	{
-		let pubkey = self.contents.payer_id;
-		let signature = merkle::sign_message(sign, &self, pubkey)?;
+		let pubkey = $self.contents.payer_id;
+		let signature = merkle::sign_message(sign, &$self, pubkey)?;
 
 		// Append the signature TLV record to the bytes.
 		let signature_tlv_stream = SignatureTlvStreamRef {
 			signature: Some(&signature),
 		};
-		signature_tlv_stream.write(&mut self.bytes).unwrap();
+		signature_tlv_stream.write(&mut $self.bytes).unwrap();
 
 		Ok(InvoiceRequest {
-			bytes: self.bytes,
-			contents: self.contents,
+			bytes: $self.bytes,
+			contents: $self.contents,
 			signature,
 		})
 	}
+} }
+
+impl UnsignedInvoiceRequest {
+	unsigned_invoice_request_sign_method!(self, Self);
 }
 
 impl AsRef<TaggedHash> for UnsignedInvoiceRequest {

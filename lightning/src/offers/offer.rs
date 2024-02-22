@@ -584,7 +584,9 @@ impl Offer {
 	pub fn expects_quantity(&self) -> bool {
 		self.contents.expects_quantity()
 	}
+}
 
+macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => {
 	/// Similar to [`Offer::request_invoice`] except it:
 	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
 	///   request,
@@ -603,21 +605,21 @@ impl Offer {
 	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
-		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>,
+		&'a $self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>,
 		payment_id: PaymentId
-	) -> Result<InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>, Bolt12SemanticError>
+	) -> Result<$builder, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
-		if self.offer_features().requires_unknown_bits() {
+		if $self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(InvoiceRequestBuilder::deriving_payer_id(
-			self, expanded_key, entropy_source, secp_ctx, payment_id
-		))
+		Ok(<$builder>::deriving_payer_id($self, expanded_key, entropy_source, secp_ctx, payment_id))
 	}
+} }
 
+macro_rules! request_invoice_explicit_payer_id { ($self: ident, $builder: ty) => {
 	/// Similar to [`Offer::request_invoice_deriving_payer_id`] except uses `payer_id` for the
 	/// [`InvoiceRequest::payer_id`] instead of deriving a different key for each request.
 	///
@@ -627,19 +629,17 @@ impl Offer {
 	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	pub fn request_invoice_deriving_metadata<ES: Deref>(
-		&self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+		&$self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
 		payment_id: PaymentId
-	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, Bolt12SemanticError>
+	) -> Result<$builder, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
-		if self.offer_features().requires_unknown_bits() {
+		if $self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(InvoiceRequestBuilder::deriving_metadata(
-			self, payer_id, expanded_key, entropy_source, payment_id
-		))
+		Ok(<$builder>::deriving_metadata($self, payer_id, expanded_key, entropy_source, payment_id))
 	}
 
 	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and `payer_id`,
@@ -658,16 +658,23 @@ impl Offer {
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
-		&self, metadata: Vec<u8>, payer_id: PublicKey
-	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, Bolt12SemanticError> {
-		if self.offer_features().requires_unknown_bits() {
+		&$self, metadata: Vec<u8>, payer_id: PublicKey
+	) -> Result<$builder, Bolt12SemanticError> {
+		if $self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(InvoiceRequestBuilder::new(self, metadata, payer_id))
+		Ok(<$builder>::new($self, metadata, payer_id))
 	}
+} }
 
-	#[cfg(test)]
+impl Offer {
+	request_invoice_derived_payer_id!(self, InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>);
+	request_invoice_explicit_payer_id!(self, InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>);
+}
+
+#[cfg(test)]
+impl Offer {
 	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		self.contents.as_tlv_stream()
 	}
