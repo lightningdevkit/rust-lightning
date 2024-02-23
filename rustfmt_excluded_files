@@ -261,5 +261,4 @@
 ./lightning/src/util/time.rs
 ./lightning/src/util/transaction_utils.rs
 ./lightning/src/util/wakers.rs
-./msrv-no-dev-deps-check/src/lib.rs
 ./no-std-check/src/lib.rs
