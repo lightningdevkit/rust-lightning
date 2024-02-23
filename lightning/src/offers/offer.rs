@@ -91,12 +91,20 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::MAX_VALUE_MSAT;
-use crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder};
 use crate::offers::merkle::TlvStream;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
+
+#[cfg(not(c_bindings))]
+use {
+	crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder},
+};
+#[cfg(c_bindings)]
+use {
+	crate::offers::invoice_request::{InvoiceRequestWithDerivedPayerIdBuilder, InvoiceRequestWithExplicitPayerIdBuilder},
+};
 
 use crate::prelude::*;
 
@@ -598,14 +606,20 @@ macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => 
 	///
 	/// Useful to protect the sender's privacy.
 	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	/// [`InvoiceRequest::payer_metadata`]: crate::offers::invoice_request::InvoiceRequest::payer_metadata
 	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
-		&'a $self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>,
+	pub fn request_invoice_deriving_payer_id<
+		'a, 'b, ES: Deref,
+		#[cfg(not(c_bindings))]
+		T: secp256k1::Signing
+	>(
+		&'a $self, expanded_key: &ExpandedKey, entropy_source: ES,
+		#[cfg(not(c_bindings))]
+		secp_ctx: &'b Secp256k1<T>,
+		#[cfg(c_bindings)]
+		secp_ctx: &'b Secp256k1<secp256k1::All>,
 		payment_id: PaymentId
 	) -> Result<$builder, Bolt12SemanticError>
 	where
@@ -624,8 +638,6 @@ macro_rules! request_invoice_explicit_payer_id { ($self: ident, $builder: ty) =>
 	/// [`InvoiceRequest::payer_id`] instead of deriving a different key for each request.
 	///
 	/// Useful for recurring payments using the same `payer_id` with different invoices.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	pub fn request_invoice_deriving_metadata<ES: Deref>(
@@ -654,8 +666,6 @@ macro_rules! request_invoice_explicit_payer_id { ($self: ident, $builder: ty) =>
 	///
 	/// Errors if the offer contains unknown required features.
 	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
 		&$self, metadata: Vec<u8>, payer_id: PublicKey
@@ -668,9 +678,16 @@ macro_rules! request_invoice_explicit_payer_id { ($self: ident, $builder: ty) =>
 	}
 } }
 
+#[cfg(not(c_bindings))]
 impl Offer {
 	request_invoice_derived_payer_id!(self, InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>);
 	request_invoice_explicit_payer_id!(self, InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>);
+}
+
+#[cfg(c_bindings)]
+impl Offer {
+	request_invoice_derived_payer_id!(self, InvoiceRequestWithDerivedPayerIdBuilder<'a, 'b>);
+	request_invoice_explicit_payer_id!(self, InvoiceRequestWithExplicitPayerIdBuilder);
 }
 
 #[cfg(test)]

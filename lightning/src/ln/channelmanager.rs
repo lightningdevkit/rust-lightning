@@ -59,6 +59,7 @@ use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PaymentA
 use crate::ln::wire::Encode;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, InvoiceBuilder};
 use crate::offers::invoice_error::InvoiceError;
+use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
 use crate::offers::merkle::SignError;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
@@ -7735,9 +7736,11 @@ where
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
 
-		let builder = offer
+		let builder: InvoiceRequestBuilder<DerivedPayerId, secp256k1::All> = offer
 			.request_invoice_deriving_payer_id(expanded_key, entropy, secp_ctx, payment_id)?
-			.chain_hash(self.chain_hash)?;
+			.into();
+		let builder = builder.chain_hash(self.chain_hash)?;
+
 		let builder = match quantity {
 			None => builder,
 			Some(quantity) => builder.quantity(quantity)?,
