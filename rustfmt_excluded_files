@@ -234,7 +234,6 @@
 ./lightning/src/routing/scoring.rs
 ./lightning/src/routing/test_utils.rs
 ./lightning/src/routing/utxo.rs
-./lightning/src/sign/type_resolver.rs
 ./lightning/src/sync/debug_sync.rs
 ./lightning/src/sync/fairrwlock.rs
 ./lightning/src/sync/mod.rs
