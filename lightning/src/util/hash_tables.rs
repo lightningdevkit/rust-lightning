@@ -15,10 +15,10 @@ extern crate possiblyrandom;
 
 #[cfg(not(feature = "hashbrown"))]
 mod std_hashtables {
-	pub use std::collections::HashMap;
 	pub use std::collections::hash_map::RandomState;
+	pub use std::collections::HashMap;
 
-	pub(crate) use std::collections::{HashSet, hash_map};
+	pub(crate) use std::collections::{hash_map, HashSet};
 
 	pub(crate) type OccupiedHashMapEntry<'a, K, V> =
 		std::collections::hash_map::OccupiedEntry<'a, K, V>;
@@ -26,20 +26,32 @@ mod std_hashtables {
 		std::collections::hash_map::VacantEntry<'a, K, V>;
 
 	/// Builds a new [`HashMap`].
-	pub fn new_hash_map<K, V>() -> HashMap<K, V> { HashMap::new() }
+	pub fn new_hash_map<K, V>() -> HashMap<K, V> {
+		HashMap::new()
+	}
 	/// Builds a new [`HashMap`] with the given capacity.
 	pub fn hash_map_with_capacity<K, V>(cap: usize) -> HashMap<K, V> {
 		HashMap::with_capacity(cap)
 	}
-	pub(crate) fn hash_map_from_iter<K: core::hash::Hash + Eq, V, I: IntoIterator<Item=(K, V)>>(iter: I) -> HashMap<K, V> {
+	pub(crate) fn hash_map_from_iter<
+		K: core::hash::Hash + Eq,
+		V,
+		I: IntoIterator<Item = (K, V)>,
+	>(
+		iter: I,
+	) -> HashMap<K, V> {
 		HashMap::from_iter(iter)
 	}
 
-	pub(crate) fn new_hash_set<K>() -> HashSet<K> { HashSet::new() }
+	pub(crate) fn new_hash_set<K>() -> HashSet<K> {
+		HashSet::new()
+	}
 	pub(crate) fn hash_set_with_capacity<K>(cap: usize) -> HashSet<K> {
 		HashSet::with_capacity(cap)
 	}
-	pub(crate) fn hash_set_from_iter<K: core::hash::Hash + Eq, I: IntoIterator<Item=K>>(iter: I) -> HashSet<K> {
+	pub(crate) fn hash_set_from_iter<K: core::hash::Hash + Eq, I: IntoIterator<Item = K>>(
+		iter: I,
+	) -> HashSet<K> {
 		HashSet::from_iter(iter)
 	}
 }
@@ -64,7 +76,8 @@ mod hashbrown_tables {
 		/// A simple implementation of [`BuildHasher`] that uses `getrandom` to opportunistically
 		/// randomize, if the platform supports it.
 		pub struct RandomState {
-			k0: u64, k1: u64,
+			k0: u64,
+			k1: u64,
 		}
 
 		impl RandomState {
@@ -72,7 +85,8 @@ mod hashbrown_tables {
 			/// target platform.
 			pub fn new() -> RandomState {
 				let (k0, k1);
-				#[cfg(all(not(fuzzing), feature = "possiblyrandom"))] {
+				#[cfg(all(not(fuzzing), feature = "possiblyrandom"))]
+				{
 					let mut keys = [0; 16];
 					possiblyrandom::getpossiblyrandom(&mut keys);
 
@@ -83,7 +97,8 @@ mod hashbrown_tables {
 					k0 = u64::from_le_bytes(k0_bytes);
 					k1 = u64::from_le_bytes(k1_bytes);
 				}
-				#[cfg(any(fuzzing, not(feature = "possiblyrandom")))] {
+				#[cfg(any(fuzzing, not(feature = "possiblyrandom")))]
+				{
 					k0 = 0;
 					k1 = 0;
 				}
@@ -92,7 +107,9 @@ mod hashbrown_tables {
 		}
 
 		impl Default for RandomState {
-			fn default() -> RandomState { RandomState::new() }
+			fn default() -> RandomState {
+				RandomState::new()
+			}
 		}
 
 		impl BuildHasher for RandomState {
@@ -103,8 +120,8 @@ mod hashbrown_tables {
 		}
 	}
 
-	pub use hasher::*;
 	use super::*;
+	pub use hasher::*;
 
 	/// The HashMap type used in LDK.
 	pub type HashMap<K, V> = hashbrown::HashMap<K, V, RandomState>;
@@ -123,7 +140,13 @@ mod hashbrown_tables {
 	pub fn hash_map_with_capacity<K, V>(cap: usize) -> HashMap<K, V> {
 		HashMap::with_capacity_and_hasher(cap, RandomState::new())
 	}
-	pub(crate) fn hash_map_from_iter<K: core::hash::Hash + Eq, V, I: IntoIterator<Item=(K, V)>>(iter: I) -> HashMap<K, V> {
+	pub(crate) fn hash_map_from_iter<
+		K: core::hash::Hash + Eq,
+		V,
+		I: IntoIterator<Item = (K, V)>,
+	>(
+		iter: I,
+	) -> HashMap<K, V> {
 		let iter = iter.into_iter();
 		let min_size = iter.size_hint().0;
 		let mut res = HashMap::with_capacity_and_hasher(min_size, RandomState::new());
@@ -137,7 +160,9 @@ mod hashbrown_tables {
 	pub(crate) fn hash_set_with_capacity<K>(cap: usize) -> HashSet<K> {
 		HashSet::with_capacity_and_hasher(cap, RandomState::new())
 	}
-	pub(crate) fn hash_set_from_iter<K: core::hash::Hash + Eq, I: IntoIterator<Item=K>>(iter: I) -> HashSet<K> {
+	pub(crate) fn hash_set_from_iter<K: core::hash::Hash + Eq, I: IntoIterator<Item = K>>(
+		iter: I,
+	) -> HashSet<K> {
 		let iter = iter.into_iter();
 		let min_size = iter.size_hint().0;
 		let mut res = HashSet::with_capacity_and_hasher(min_size, RandomState::new());
