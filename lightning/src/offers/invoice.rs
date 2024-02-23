@@ -1306,7 +1306,15 @@ mod tests {
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, TaggedHash, self};
-	use crate::offers::offer::{Amount, OfferBuilder, OfferTlvStreamRef, Quantity};
+	use crate::offers::offer::{Amount, OfferTlvStreamRef, Quantity};
+	#[cfg(not(c_bindings))]
+	use {
+		crate::offers::offer::OfferBuilder,
+	};
+	#[cfg(c_bindings)]
+	use {
+		crate::offers::offer::OfferWithExplicitMetadataBuilder as OfferBuilder,
+	};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::refund::RefundBuilder;
@@ -1644,6 +1652,8 @@ mod tests {
 			],
 		};
 
+		#[cfg(c_bindings)]
+		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
 		let offer = OfferBuilder
 			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)

@@ -941,7 +941,15 @@ mod tests {
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, TaggedHash, self};
-	use crate::offers::offer::{Amount, OfferBuilder, OfferTlvStreamRef, Quantity};
+	use crate::offers::offer::{Amount, OfferTlvStreamRef, Quantity};
+	#[cfg(not(c_bindings))]
+	use {
+		crate::offers::offer::OfferBuilder,
+	};
+	#[cfg(c_bindings)]
+	use {
+		crate::offers::offer::OfferWithExplicitMetadataBuilder as OfferBuilder,
+	};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
