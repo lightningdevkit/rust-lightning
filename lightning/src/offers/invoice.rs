@@ -1310,14 +1310,15 @@ mod tests {
 	#[cfg(not(c_bindings))]
 	use {
 		crate::offers::offer::OfferBuilder,
+		crate::offers::refund::RefundBuilder,
 	};
 	#[cfg(c_bindings)]
 	use {
 		crate::offers::offer::OfferWithExplicitMetadataBuilder as OfferBuilder,
+		crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder as RefundBuilder,
 	};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
-	use crate::offers::refund::RefundBuilder;
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Iterable, Writeable};
 	use crate::util::string::PrintableString;

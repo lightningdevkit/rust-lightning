@@ -124,7 +124,18 @@ pub struct RefundBuilder<'a, T: secp256k1::Signing> {
 	secp_ctx: Option<&'a Secp256k1<T>>,
 }
 
-macro_rules! refund_without_secp256k1_builder_methods { () => {
+/// Builds a [`Refund`] for the "offer for money" flow.
+///
+/// See [module-level documentation] for usage.
+///
+/// [module-level documentation]: self
+#[cfg(c_bindings)]
+pub struct RefundMaybeWithDerivedMetadataBuilder<'a> {
+	refund: RefundContents,
+	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
+}
+
+macro_rules! refund_explicit_metadata_builder_methods { () => {
 	/// Creates a new builder for a refund using the [`Refund::payer_id`] for the public node id to
 	/// send to if no [`Refund::paths`] are set. Otherwise, it may be a transient pubkey.
 	///
@@ -158,7 +169,7 @@ macro_rules! refund_without_secp256k1_builder_methods { () => {
 } }
 
 macro_rules! refund_builder_methods { (
-	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr, $secp_context: ty $(, $self_mut: tt)?
 ) => {
 	/// Similar to [`RefundBuilder::new`] except, if [`RefundBuilder::path`] is called, the payer id
 	/// is derived from the given [`ExpandedKey`] and nonce. This provides sender privacy by using a
@@ -175,7 +186,7 @@ macro_rules! refund_builder_methods { (
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn deriving_payer_id<ES: Deref>(
 		description: String, node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
-		secp_ctx: &'a Secp256k1<T>, amount_msats: u64, payment_id: PaymentId
+		secp_ctx: &'a Secp256k1<$secp_context>, amount_msats: u64, payment_id: PaymentId
 	) -> Result<Self, Bolt12SemanticError> where ES::Target: EntropySource {
 		if amount_msats > MAX_VALUE_MSAT {
 			return Err(Bolt12SemanticError::InvalidAmount);
@@ -199,7 +210,7 @@ macro_rules! refund_builder_methods { (
 	/// already passed is valid and can be checked for using [`Refund::is_expired`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn absolute_expiry(mut $self: $self_type, absolute_expiry: Duration) -> $return_type {
+	pub fn absolute_expiry($($self_mut)* $self: $self_type, absolute_expiry: Duration) -> $return_type {
 		$self.refund.absolute_expiry = Some(absolute_expiry);
 		$return_value
 	}
@@ -207,7 +218,7 @@ macro_rules! refund_builder_methods { (
 	/// Sets the [`Refund::issuer`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn issuer(mut $self: $self_type, issuer: String) -> $return_type {
+	pub fn issuer($($self_mut)* $self: $self_type, issuer: String) -> $return_type {
 		$self.refund.issuer = Some(issuer);
 		$return_value
 	}
@@ -217,7 +228,7 @@ macro_rules! refund_builder_methods { (
 	///
 	/// Successive calls to this method will add another blinded path. Caller is responsible for not
 	/// adding duplicate paths.
-	pub fn path(mut $self: $self_type, path: BlindedPath) -> $return_type {
+	pub fn path($($self_mut)* $self: $self_type, path: BlindedPath) -> $return_type {
 		$self.refund.paths.get_or_insert_with(Vec::new).push(path);
 		$return_value
 	}
@@ -234,7 +245,7 @@ macro_rules! refund_builder_methods { (
 	/// [`Network::Bitcoin`] is assumed.
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub(crate) fn chain_hash(mut $self: $self_type, chain: ChainHash) -> $return_type {
+	pub(crate) fn chain_hash($($self_mut)* $self: $self_type, chain: ChainHash) -> $return_type {
 		$self.refund.chain = Some(chain);
 		$return_value
 	}
@@ -248,7 +259,7 @@ macro_rules! refund_builder_methods { (
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
 	/// [`Offer`]: crate::offers::offer::Offer
-	pub fn quantity(mut $self: $self_type, quantity: u64) -> $return_type {
+	pub fn quantity($($self_mut)* $self: $self_type, quantity: u64) -> $return_type {
 		$self.refund.quantity = Some(quantity);
 		$return_value
 	}
@@ -256,13 +267,13 @@ macro_rules! refund_builder_methods { (
 	/// Sets the [`Refund::payer_note`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn payer_note(mut $self: $self_type, payer_note: String) -> $return_type {
+	pub fn payer_note($($self_mut)* $self: $self_type, payer_note: String) -> $return_type {
 		$self.refund.payer_note = Some(payer_note);
 		$return_value
 	}
 
 	/// Builds a [`Refund`] after checking for valid semantics.
-	pub fn build(mut $self: $self_type) -> Result<Refund, Bolt12SemanticError> {
+	pub fn build($($self_mut)* $self: $self_type) -> Result<Refund, Bolt12SemanticError> {
 		if $self.refund.chain() == $self.refund.implied_chain() {
 			$self.refund.chain = None;
 		}
@@ -293,34 +304,65 @@ macro_rules! refund_builder_methods { (
 		let mut bytes = Vec::new();
 		$self.refund.write(&mut bytes).unwrap();
 
-		Ok(Refund { bytes, contents: $self.refund })
+		Ok(Refund {
+			bytes,
+			#[cfg(not(c_bindings))]
+			contents: $self.refund,
+			#[cfg(c_bindings)]
+			contents: $self.refund.clone(),
+		})
 	}
 } }
 
 #[cfg(test)]
 macro_rules! refund_builder_test_methods { (
-	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr $(, $self_mut: tt)?
 ) => {
-	pub(crate) fn clear_paths(mut $self: $self_type) -> $return_type {
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn clear_paths($($self_mut)* $self: $self_type) -> $return_type {
 		$self.refund.paths = None;
 		$return_value
 	}
 
-	fn features_unchecked(mut $self: $self_type, features: InvoiceRequestFeatures) -> $return_type {
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	fn features_unchecked($($self_mut)* $self: $self_type, features: InvoiceRequestFeatures) -> $return_type {
 		$self.refund.features = features;
 		$return_value
 	}
 } }
 
 impl<'a> RefundBuilder<'a, secp256k1::SignOnly> {
-	refund_without_secp256k1_builder_methods!();
+	refund_explicit_metadata_builder_methods!();
 }
 
 impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
-	refund_builder_methods!(self, Self, Self, self);
+	refund_builder_methods!(self, Self, Self, self, T, mut);
 
 	#[cfg(test)]
-	refund_builder_test_methods!(self, Self, Self, self);
+	refund_builder_test_methods!(self, Self, Self, self, mut);
+}
+
+#[cfg(all(c_bindings, not(test)))]
+impl<'a> RefundMaybeWithDerivedMetadataBuilder<'a> {
+	refund_explicit_metadata_builder_methods!();
+	refund_builder_methods!(self, &mut Self, (), (), secp256k1::All);
+}
+
+#[cfg(all(c_bindings, test))]
+impl<'a> RefundMaybeWithDerivedMetadataBuilder<'a> {
+	refund_explicit_metadata_builder_methods!();
+	refund_builder_methods!(self, &mut Self, &mut Self, self, secp256k1::All);
+	refund_builder_test_methods!(self, &mut Self, &mut Self, self);
+}
+
+#[cfg(c_bindings)]
+impl<'a> From<RefundBuilder<'a, secp256k1::All>>
+for RefundMaybeWithDerivedMetadataBuilder<'a> {
+	fn from(builder: RefundBuilder<'a, secp256k1::All>) -> Self {
+		let RefundBuilder { refund, secp_ctx } = builder;
+
+		Self { refund, secp_ctx }
+	}
 }
 
 /// A `Refund` is a request to send an [`Bolt12Invoice`] without a preceding [`Offer`].
@@ -798,7 +840,15 @@ impl core::fmt::Display for Refund {
 
 #[cfg(test)]
 mod tests {
-	use super::{Refund, RefundBuilder, RefundTlvStreamRef};
+	use super::{Refund, RefundTlvStreamRef};
+	#[cfg(not(c_bindings))]
+	use {
+		super::RefundBuilder,
+	};
+	#[cfg(c_bindings)]
+	use {
+		super::RefundMaybeWithDerivedMetadataBuilder as RefundBuilder,
+	};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;

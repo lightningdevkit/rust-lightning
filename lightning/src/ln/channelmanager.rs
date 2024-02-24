@@ -85,6 +85,7 @@ use {
 #[cfg(c_bindings)]
 use {
 	crate::offers::offer::OfferWithDerivedMetadataBuilder,
+	crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder,
 };
 
 use alloc::collections::{btree_map, BTreeMap};
@@ -7574,23 +7575,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	}
 } }
 
-impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, L>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	L::Target: Logger,
-{
-	#[cfg(not(c_bindings))]
-	create_offer_builder!(self, OfferBuilder<DerivedMetadata, secp256k1::All>);
-
-	#[cfg(c_bindings)]
-	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);
-
+macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
 	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund.
 	///
@@ -7640,31 +7625,53 @@ where
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn create_refund_builder(
-		&self, description: String, amount_msats: u64, absolute_expiry: Duration,
+		&$self, description: String, amount_msats: u64, absolute_expiry: Duration,
 		payment_id: PaymentId, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
-	) -> Result<RefundBuilder<secp256k1::All>, Bolt12SemanticError> {
-		let node_id = self.get_our_node_id();
-		let expanded_key = &self.inbound_payment_key;
-		let entropy = &*self.entropy_source;
-		let secp_ctx = &self.secp_ctx;
+	) -> Result<$builder, Bolt12SemanticError> {
+		let node_id = $self.get_our_node_id();
+		let expanded_key = &$self.inbound_payment_key;
+		let entropy = &*$self.entropy_source;
+		let secp_ctx = &$self.secp_ctx;
 
-		let path = self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = RefundBuilder::deriving_payer_id(
 			description, node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
 		)?
-			.chain_hash(self.chain_hash)
+			.chain_hash($self.chain_hash)
 			.absolute_expiry(absolute_expiry)
 			.path(path);
 
 		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
-		self.pending_outbound_payments
+		$self.pending_outbound_payments
 			.add_new_awaiting_invoice(
 				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
-		Ok(builder)
+		Ok(builder.into())
 	}
+} }
+
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
+{
+	#[cfg(not(c_bindings))]
+	create_offer_builder!(self, OfferBuilder<DerivedMetadata, secp256k1::All>);
+	#[cfg(not(c_bindings))]
+	create_refund_builder!(self, RefundBuilder<secp256k1::All>);
+
+	#[cfg(c_bindings)]
+	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);
+	#[cfg(c_bindings)]
+	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
 
 	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
 	/// enqueuing it to be sent via an onion message. [`ChannelManager`] will pay the actual
