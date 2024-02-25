@@ -662,17 +662,9 @@ impl UnsignedInvoiceRequest {
 	invoice_request_accessors!(self, self.contents);
 }
 
-impl InvoiceRequest {
-	offer_accessors!(self, self.contents.inner.offer);
-	invoice_request_accessors!(self, self.contents);
-
-	/// Signature of the invoice request using [`payer_id`].
-	///
-	/// [`payer_id`]: Self::payer_id
-	pub fn signature(&self) -> Signature {
-		self.signature
-	}
-
+macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
+	$self: ident, $contents: expr, $builder: ty
+) => {
 	/// Creates an [`InvoiceBuilder`] for the request with the given required fields and using the
 	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
 	///
@@ -684,13 +676,13 @@ impl InvoiceRequest {
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
 	pub fn respond_with(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
-	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
+	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		self.respond_with_no_std(payment_paths, payment_hash, created_at)
+		$contents.respond_with_no_std(payment_paths, payment_hash, created_at)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request with the given required fields.
@@ -719,29 +711,46 @@ impl InvoiceRequest {
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
 	pub fn respond_with_no_std(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
-	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
-		if self.invoice_request_features().requires_unknown_bits() {
+	) -> Result<$builder, Bolt12SemanticError> {
+		if $contents.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		InvoiceBuilder::for_offer(self, payment_paths, created_at, payment_hash)
+		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash)
 	}
+} }
 
+macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 	/// Verifies that the request was for an offer created using the given key. Returns the verified
 	/// request which contains the derived keys needed to sign a [`Bolt12Invoice`] for the request
 	/// if they could be extracted from the metadata.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn verify<T: secp256k1::Signing>(
-		self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+		$self: $self_type, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<VerifiedInvoiceRequest, ()> {
-		let keys = self.contents.inner.offer.verify(&self.bytes, key, secp_ctx)?;
+		let keys = $self.contents.inner.offer.verify(&$self.bytes, key, secp_ctx)?;
 		Ok(VerifiedInvoiceRequest {
-			inner: self,
+			inner: $self,
 			keys,
 		})
+	}
+
+} }
+
+impl InvoiceRequest {
+	offer_accessors!(self, self.contents.inner.offer);
+	invoice_request_accessors!(self, self.contents);
+	invoice_request_respond_with_explicit_signing_pubkey_methods!(self, self, InvoiceBuilder<ExplicitSigningPubkey>);
+	invoice_request_verify_method!(self, Self);
+
+	/// Signature of the invoice request using [`payer_id`].
+	///
+	/// [`payer_id`]: Self::payer_id
+	pub fn signature(&self) -> Signature {
+		self.signature
 	}
 
 	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceRequestTlvStreamRef {
@@ -754,37 +763,9 @@ impl InvoiceRequest {
 	}
 }
 
-impl VerifiedInvoiceRequest {
-	offer_accessors!(self, self.inner.contents.inner.offer);
-	invoice_request_accessors!(self, self.inner.contents);
-
-	/// Creates an [`InvoiceBuilder`] for the request with the given required fields and using the
-	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
-	///
-	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
-	/// [`Duration`]: core::time::Duration
-	#[cfg(feature = "std")]
-	pub fn respond_with(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
-	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
-		self.inner.respond_with(payment_paths, payment_hash)
-	}
-
-	/// Creates an [`InvoiceBuilder`] for the request with the given required fields.
-	///
-	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	pub fn respond_with_no_std(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
-		created_at: core::time::Duration
-	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
-		self.inner.respond_with_no_std(payment_paths, payment_hash, created_at)
-	}
-
+macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
+	$self: ident, $contents: expr, $builder: ty
+) => {
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
 	/// derived signing keys from the originating [`Offer`] to sign the [`Bolt12Invoice`]. Must use
 	/// the same [`ExpandedKey`] as the one used to create the offer.
@@ -796,13 +777,13 @@ impl VerifiedInvoiceRequest {
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
-	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, Bolt12SemanticError> {
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash
+	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		self.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at)
+		$self.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
@@ -815,22 +796,29 @@ impl VerifiedInvoiceRequest {
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn respond_using_derived_keys_no_std(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
-	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, Bolt12SemanticError> {
-		if self.inner.invoice_request_features().requires_unknown_bits() {
+	) -> Result<$builder, Bolt12SemanticError> {
+		if $self.inner.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		let keys = match self.keys {
+		let keys = match $self.keys {
 			None => return Err(Bolt12SemanticError::InvalidMetadata),
 			Some(keys) => keys,
 		};
 
-		InvoiceBuilder::for_offer_using_keys(
-			&self.inner, payment_paths, created_at, payment_hash, keys
+		<$builder>::for_offer_using_keys(
+			&$self.inner, payment_paths, created_at, payment_hash, keys
 		)
 	}
+} }
+
+impl VerifiedInvoiceRequest {
+	offer_accessors!(self, self.inner.contents.inner.offer);
+	invoice_request_accessors!(self, self.inner.contents);
+	invoice_request_respond_with_explicit_signing_pubkey_methods!(self, self.inner, InvoiceBuilder<ExplicitSigningPubkey>);
+	invoice_request_respond_with_derived_signing_pubkey_methods!(self, self.inner, InvoiceBuilder<DerivedSigningPubkey>);
 }
 
 impl InvoiceRequestContents {

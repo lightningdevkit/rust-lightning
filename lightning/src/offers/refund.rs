@@ -480,7 +480,9 @@ impl Refund {
 	pub fn payer_note(&self) -> Option<PrintableString> {
 		self.contents.payer_note()
 	}
+}
 
+macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $builder: ty) => {
 	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields and using the
 	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
 	///
@@ -492,14 +494,14 @@ impl Refund {
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
 	pub fn respond_with(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey,
-	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
+	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		self.respond_with_no_std(payment_paths, payment_hash, signing_pubkey, created_at)
+		$self.respond_with_no_std(payment_paths, payment_hash, signing_pubkey, created_at)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields.
@@ -525,16 +527,18 @@ impl Refund {
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	pub fn respond_with_no_std(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey, created_at: Duration
-	) -> Result<InvoiceBuilder<ExplicitSigningPubkey>, Bolt12SemanticError> {
-		if self.features().requires_unknown_bits() {
+	) -> Result<$builder, Bolt12SemanticError> {
+		if $self.features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		InvoiceBuilder::for_refund(self, payment_paths, created_at, payment_hash, signing_pubkey)
+		<$builder>::for_refund($self, payment_paths, created_at, payment_hash, signing_pubkey)
 	}
+} }
 
+macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $builder: ty) => {
 	/// Creates an [`InvoiceBuilder`] for the refund using the given required fields and that uses
 	/// derived signing keys to sign the [`Bolt12Invoice`].
 	///
@@ -545,9 +549,9 @@ impl Refund {
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys<ES: Deref>(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		expanded_key: &ExpandedKey, entropy_source: ES
-	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, Bolt12SemanticError>
+	) -> Result<$builder, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
@@ -555,7 +559,7 @@ impl Refund {
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		self.respond_using_derived_keys_no_std(
+		$self.respond_using_derived_keys_no_std(
 			payment_paths, payment_hash, created_at, expanded_key, entropy_source
 		)
 	}
@@ -569,22 +573,29 @@ impl Refund {
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn respond_using_derived_keys_no_std<ES: Deref>(
-		&self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, expanded_key: &ExpandedKey, entropy_source: ES
-	) -> Result<InvoiceBuilder<DerivedSigningPubkey>, Bolt12SemanticError>
+	) -> Result<$builder, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
-		if self.features().requires_unknown_bits() {
+		if $self.features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
 		let nonce = Nonce::from_entropy_source(entropy_source);
 		let keys = signer::derive_keys(nonce, expanded_key);
-		InvoiceBuilder::for_refund_using_keys(self, payment_paths, created_at, payment_hash, keys)
+		<$builder>::for_refund_using_keys($self, payment_paths, created_at, payment_hash, keys)
 	}
+} }
 
-	#[cfg(test)]
+impl Refund {
+	respond_with_explicit_signing_pubkey_methods!(self, InvoiceBuilder<ExplicitSigningPubkey>);
+	respond_with_derived_signing_pubkey_methods!(self, InvoiceBuilder<DerivedSigningPubkey>);
+}
+
+#[cfg(test)]
+impl Refund {
 	fn as_tlv_stream(&self) -> RefundTlvStreamRef {
 		self.contents.as_tlv_stream()
 	}
