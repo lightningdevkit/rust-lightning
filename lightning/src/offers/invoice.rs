@@ -200,6 +200,25 @@ impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
 
 		Self::new(&refund.bytes, contents, ExplicitSigningPubkey {})
 	}
+
+	/// Builds an unsigned [`Bolt12Invoice`] after checking for valid semantics. It can be signed by
+	/// [`UnsignedBolt12Invoice::sign`].
+	pub fn build(self) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
+		#[cfg(feature = "std")] {
+			if self.invoice.is_offer_or_refund_expired() {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		#[cfg(not(feature = "std"))] {
+			if self.invoice.is_offer_or_refund_expired_no_std(self.invoice.created_at()) {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		let InvoiceBuilder { invreq_bytes, invoice, .. } = self;
+		Ok(UnsignedBolt12Invoice::new(invreq_bytes, invoice))
+	}
 }
 
 impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
@@ -233,6 +252,35 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 		};
 
 		Self::new(&refund.bytes, contents, DerivedSigningPubkey(keys))
+	}
+
+	/// Builds a signed [`Bolt12Invoice`] after checking for valid semantics.
+	pub fn build_and_sign<T: secp256k1::Signing>(
+		self, secp_ctx: &Secp256k1<T>
+	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
+		#[cfg(feature = "std")] {
+			if self.invoice.is_offer_or_refund_expired() {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		#[cfg(not(feature = "std"))] {
+			if self.invoice.is_offer_or_refund_expired_no_std(self.invoice.created_at()) {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		let InvoiceBuilder {
+			invreq_bytes, invoice, signing_pubkey_strategy: DerivedSigningPubkey(keys)
+		} = self;
+		let unsigned_invoice = UnsignedBolt12Invoice::new(invreq_bytes, invoice);
+
+		let invoice = unsigned_invoice
+			.sign::<_, Infallible>(
+				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
+			.unwrap();
+		Ok(invoice)
 	}
 }
 
@@ -328,58 +376,6 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	pub fn allow_mpp(mut self) -> Self {
 		self.invoice.fields_mut().features.set_basic_mpp_optional();
 		self
-	}
-}
-
-impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
-	/// Builds an unsigned [`Bolt12Invoice`] after checking for valid semantics. It can be signed by
-	/// [`UnsignedBolt12Invoice::sign`].
-	pub fn build(self) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
-		#[cfg(feature = "std")] {
-			if self.invoice.is_offer_or_refund_expired() {
-				return Err(Bolt12SemanticError::AlreadyExpired);
-			}
-		}
-
-		#[cfg(not(feature = "std"))] {
-			if self.invoice.is_offer_or_refund_expired_no_std(self.invoice.created_at()) {
-				return Err(Bolt12SemanticError::AlreadyExpired);
-			}
-		}
-
-		let InvoiceBuilder { invreq_bytes, invoice, .. } = self;
-		Ok(UnsignedBolt12Invoice::new(invreq_bytes, invoice))
-	}
-}
-
-impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
-	/// Builds a signed [`Bolt12Invoice`] after checking for valid semantics.
-	pub fn build_and_sign<T: secp256k1::Signing>(
-		self, secp_ctx: &Secp256k1<T>
-	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
-		#[cfg(feature = "std")] {
-			if self.invoice.is_offer_or_refund_expired() {
-				return Err(Bolt12SemanticError::AlreadyExpired);
-			}
-		}
-
-		#[cfg(not(feature = "std"))] {
-			if self.invoice.is_offer_or_refund_expired_no_std(self.invoice.created_at()) {
-				return Err(Bolt12SemanticError::AlreadyExpired);
-			}
-		}
-
-		let InvoiceBuilder {
-			invreq_bytes, invoice, signing_pubkey_strategy: DerivedSigningPubkey(keys)
-		} = self;
-		let unsigned_invoice = UnsignedBolt12Invoice::new(invreq_bytes, invoice);
-
-		let invoice = unsigned_invoice
-			.sign::<_, Infallible>(
-				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-			)
-			.unwrap();
-		Ok(invoice)
 	}
 }
 
