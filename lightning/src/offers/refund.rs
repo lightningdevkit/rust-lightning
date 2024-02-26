@@ -96,7 +96,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-use crate::offers::invoice::{BlindedPayInfo, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder};
+use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -104,6 +104,15 @@ use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
+
+#[cfg(not(c_bindings))]
+use {
+	crate::offers::invoice::{DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder},
+};
+#[cfg(c_bindings)]
+use {
+	crate::offers::invoice::{InvoiceWithDerivedSigningPubkeyBuilder, InvoiceWithExplicitSigningPubkeyBuilder},
+};
 
 use crate::prelude::*;
 
@@ -589,9 +598,16 @@ macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $build
 	}
 } }
 
+#[cfg(not(c_bindings))]
 impl Refund {
 	respond_with_explicit_signing_pubkey_methods!(self, InvoiceBuilder<ExplicitSigningPubkey>);
 	respond_with_derived_signing_pubkey_methods!(self, InvoiceBuilder<DerivedSigningPubkey>);
+}
+
+#[cfg(c_bindings)]
+impl Refund {
+	respond_with_explicit_signing_pubkey_methods!(self, InvoiceWithExplicitSigningPubkeyBuilder);
+	respond_with_derived_signing_pubkey_methods!(self, InvoiceWithDerivedSigningPubkeyBuilder);
 }
 
 #[cfg(test)]

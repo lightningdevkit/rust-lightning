@@ -28,7 +28,7 @@
 //! use lightning::util::ser::Writeable;
 //!
 //! # use lightning::ln::PaymentHash;
-//! # use lightning::offers::invoice::BlindedPayInfo;
+//! # use lightning::offers::invoice::{BlindedPayInfo, ExplicitSigningPubkey, InvoiceBuilder};
 //! # use lightning::blinded_path::BlindedPath;
 //! #
 //! # fn create_payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> { unimplemented!() }
@@ -44,6 +44,7 @@
 //! let mut buffer = Vec::new();
 //!
 //! // Invoice for the "offer to be paid" flow.
+//! # <InvoiceBuilder<ExplicitSigningPubkey>>::from(
 //! InvoiceRequest::try_from(bytes)?
 #![cfg_attr(feature = "std", doc = "
     .respond_with(payment_paths, payment_hash)?
@@ -51,6 +52,7 @@
 #![cfg_attr(not(feature = "std"), doc = "
     .respond_with_no_std(payment_paths, payment_hash, core::time::Duration::from_secs(0))?
 ")]
+//! # )
 //!     .relative_expiry(3600)
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
@@ -74,6 +76,7 @@
 //! # let mut buffer = Vec::new();
 //!
 //! // Invoice for the "offer for money" flow.
+//! # <InvoiceBuilder<ExplicitSigningPubkey>>::from(
 //! "lnr1qcp4256ypq"
 //!     .parse::<Refund>()?
 #![cfg_attr(feature = "std", doc = "
@@ -82,6 +85,7 @@
 #![cfg_attr(not(feature = "std"), doc = "
     .respond_with_no_std(payment_paths, payment_hash, pubkey, core::time::Duration::from_secs(0))?
 ")]
+//! # )
 //!     .relative_expiry(3600)
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
@@ -151,6 +155,38 @@ pub struct InvoiceBuilder<'a, S: SigningPubkeyStrategy> {
 	signing_pubkey_strategy: S,
 }
 
+/// Builds a [`Bolt12Invoice`] from either:
+/// - an [`InvoiceRequest`] for the "offer to be paid" flow or
+/// - a [`Refund`] for the "offer for money" flow.
+///
+/// See [module-level documentation] for usage.
+///
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+/// [`Refund`]: crate::offers::refund::Refund
+/// [module-level documentation]: self
+#[cfg(c_bindings)]
+pub struct InvoiceWithExplicitSigningPubkeyBuilder<'a> {
+	invreq_bytes: &'a Vec<u8>,
+	invoice: InvoiceContents,
+	signing_pubkey_strategy: ExplicitSigningPubkey,
+}
+
+/// Builds a [`Bolt12Invoice`] from either:
+/// - an [`InvoiceRequest`] for the "offer to be paid" flow or
+/// - a [`Refund`] for the "offer for money" flow.
+///
+/// See [module-level documentation] for usage.
+///
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+/// [`Refund`]: crate::offers::refund::Refund
+/// [module-level documentation]: self
+#[cfg(c_bindings)]
+pub struct InvoiceWithDerivedSigningPubkeyBuilder<'a> {
+	invreq_bytes: &'a Vec<u8>,
+	invoice: InvoiceContents,
+	signing_pubkey_strategy: DerivedSigningPubkey,
+}
+
 /// Indicates how [`Bolt12Invoice::signing_pubkey`] was set.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
@@ -170,6 +206,7 @@ impl SigningPubkeyStrategy for ExplicitSigningPubkey {}
 impl SigningPubkeyStrategy for DerivedSigningPubkey {}
 
 macro_rules! invoice_explicit_signing_pubkey_builder_methods { ($self: ident, $self_type: ty) => {
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_offer(
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash
@@ -186,6 +223,7 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods { ($self: ident, $s
 		Self::new(&invoice_request.bytes, contents, ExplicitSigningPubkey {})
 	}
 
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_refund(
 		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
 		payment_hash: PaymentHash, signing_pubkey: PublicKey
@@ -216,12 +254,18 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods { ($self: ident, $s
 			}
 		}
 
-		let InvoiceBuilder { invreq_bytes, invoice, .. } = $self;
-		Ok(UnsignedBolt12Invoice::new(invreq_bytes, invoice))
+		let Self { invreq_bytes, invoice, .. } = $self;
+		#[cfg(not(c_bindings))] {
+			Ok(UnsignedBolt12Invoice::new(invreq_bytes, invoice))
+		}
+		#[cfg(c_bindings)] {
+			Ok(UnsignedBolt12Invoice::new(invreq_bytes, invoice.clone()))
+		}
 	}
 } }
 
 macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $self_type: ty) => {
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_offer_using_keys(
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		created_at: Duration, payment_hash: PaymentHash, keys: KeyPair
@@ -238,6 +282,7 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 		Self::new(&invoice_request.bytes, contents, DerivedSigningPubkey(keys))
 	}
 
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_refund_using_keys(
 		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
 		payment_hash: PaymentHash, keys: KeyPair,
@@ -270,10 +315,13 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 			}
 		}
 
-		let InvoiceBuilder {
+		let Self {
 			invreq_bytes, invoice, signing_pubkey_strategy: DerivedSigningPubkey(keys)
 		} = $self;
+		#[cfg(not(c_bindings))]
 		let unsigned_invoice = UnsignedBolt12Invoice::new(invreq_bytes, invoice);
+		#[cfg(c_bindings)]
+		let mut unsigned_invoice = UnsignedBolt12Invoice::new(invreq_bytes, invoice.clone());
 
 		let invoice = unsigned_invoice
 			.sign::<_, Infallible>(
@@ -285,7 +333,7 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 } }
 
 macro_rules! invoice_builder_methods { (
-	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
+	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr, $type_param: ty $(, $self_mut: tt)?
 ) => {
 	pub(crate) fn amount_msats(
 		invoice_request: &InvoiceRequest
@@ -303,6 +351,7 @@ macro_rules! invoice_builder_methods { (
 		}
 	}
 
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	fn fields(
 		payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
 		payment_hash: PaymentHash, amount_msats: u64, signing_pubkey: PublicKey
@@ -313,8 +362,9 @@ macro_rules! invoice_builder_methods { (
 		}
 	}
 
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	fn new(
-		invreq_bytes: &'a Vec<u8>, contents: InvoiceContents, signing_pubkey_strategy: S
+		invreq_bytes: &'a Vec<u8>, contents: InvoiceContents, signing_pubkey_strategy: $type_param
 	) -> Result<Self, Bolt12SemanticError> {
 		if contents.fields().payment_paths.is_empty() {
 			return Err(Bolt12SemanticError::MissingPaths);
@@ -328,7 +378,7 @@ macro_rules! invoice_builder_methods { (
 	/// [`Bolt12Invoice::is_expired`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn relative_expiry(mut $self: $self_type, relative_expiry_secs: u32) -> $return_type {
+	pub fn relative_expiry($($self_mut)* $self: $self_type, relative_expiry_secs: u32) -> $return_type {
 		let relative_expiry = Duration::from_secs(relative_expiry_secs as u64);
 		$self.invoice.fields_mut().relative_expiry = Some(relative_expiry);
 		$return_value
@@ -338,7 +388,7 @@ macro_rules! invoice_builder_methods { (
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2WSH addresses.
-	pub fn fallback_v0_p2wsh(mut $self: $self_type, script_hash: &WScriptHash) -> $return_type {
+	pub fn fallback_v0_p2wsh($($self_mut)* $self: $self_type, script_hash: &WScriptHash) -> $return_type {
 		let address = FallbackAddress {
 			version: WitnessVersion::V0.to_num(),
 			program: Vec::from(script_hash.to_byte_array()),
@@ -351,7 +401,7 @@ macro_rules! invoice_builder_methods { (
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2WPKH addresses.
-	pub fn fallback_v0_p2wpkh(mut $self: $self_type, pubkey_hash: &WPubkeyHash) -> $return_type {
+	pub fn fallback_v0_p2wpkh($($self_mut)* $self: $self_type, pubkey_hash: &WPubkeyHash) -> $return_type {
 		let address = FallbackAddress {
 			version: WitnessVersion::V0.to_num(),
 			program: Vec::from(pubkey_hash.to_byte_array()),
@@ -364,7 +414,7 @@ macro_rules! invoice_builder_methods { (
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2TR addresses.
-	pub fn fallback_v1_p2tr_tweaked(mut $self: $self_type, output_key: &TweakedPublicKey) -> $return_type {
+	pub fn fallback_v1_p2tr_tweaked($($self_mut)* $self: $self_type, output_key: &TweakedPublicKey) -> $return_type {
 		let address = FallbackAddress {
 			version: WitnessVersion::V1.to_num(),
 			program: Vec::from(&output_key.serialize()[..]),
@@ -375,7 +425,7 @@ macro_rules! invoice_builder_methods { (
 
 	/// Sets [`Bolt12Invoice::invoice_features`] to indicate MPP may be used. Otherwise, MPP is
 	/// disallowed.
-	pub fn allow_mpp(mut $self: $self_type) -> $return_type {
+	pub fn allow_mpp($($self_mut)* $self: $self_type) -> $return_type {
 		$self.invoice.fields_mut().features.set_basic_mpp_optional();
 		$return_value
 	}
@@ -390,7 +440,59 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 }
 
 impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
-	invoice_builder_methods!(self, Self, Self, self);
+	invoice_builder_methods!(self, Self, Self, self, S, mut);
+}
+
+#[cfg(all(c_bindings, not(test)))]
+impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
+	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
+	invoice_builder_methods!(self, &mut Self, (), (), ExplicitSigningPubkey);
+}
+
+#[cfg(all(c_bindings, test))]
+impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
+	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
+	invoice_builder_methods!(self, &mut Self, &mut Self, self, ExplicitSigningPubkey);
+}
+
+#[cfg(all(c_bindings, not(test)))]
+impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
+	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
+	invoice_builder_methods!(self, &mut Self, (), (), DerivedSigningPubkey);
+}
+
+#[cfg(all(c_bindings, test))]
+impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
+	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
+	invoice_builder_methods!(self, &mut Self, &mut Self, self, DerivedSigningPubkey);
+}
+
+#[cfg(c_bindings)]
+impl<'a> From<InvoiceWithExplicitSigningPubkeyBuilder<'a>>
+for InvoiceBuilder<'a, ExplicitSigningPubkey> {
+	fn from(builder: InvoiceWithExplicitSigningPubkeyBuilder<'a>) -> Self {
+		let InvoiceWithExplicitSigningPubkeyBuilder {
+			invreq_bytes, invoice, signing_pubkey_strategy,
+		} = builder;
+
+		Self {
+			invreq_bytes, invoice, signing_pubkey_strategy,
+		}
+	}
+}
+
+#[cfg(c_bindings)]
+impl<'a> From<InvoiceWithDerivedSigningPubkeyBuilder<'a>>
+for InvoiceBuilder<'a, DerivedSigningPubkey> {
+	fn from(builder: InvoiceWithDerivedSigningPubkeyBuilder<'a>) -> Self {
+		let InvoiceWithDerivedSigningPubkeyBuilder {
+			invreq_bytes, invoice, signing_pubkey_strategy,
+		} = builder;
+
+		Self {
+			invreq_bytes, invoice, signing_pubkey_strategy,
+		}
+	}
 }
 
 /// A semantically valid [`Bolt12Invoice`] that hasn't been signed.
@@ -428,13 +530,13 @@ impl UnsignedBolt12Invoice {
 	}
 }
 
-macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty) => {
+macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $self_mut: tt)?) => {
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
 	///
 	/// Note: The hash computation may have included unknown, odd TLV records.
 	///
 	/// This is not exported to bindings users as functions aren't currently mapped.
-	pub fn sign<F, E>(mut $self: $self_type, sign: F) -> Result<Bolt12Invoice, SignError<E>>
+	pub fn sign<F, E>($($self_mut)* $self: $self_type, sign: F) -> Result<Bolt12Invoice, SignError<E>>
 	where
 		F: FnOnce(&Self) -> Result<Signature, E>
 	{
@@ -448,16 +550,31 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty) => {
 		signature_tlv_stream.write(&mut $self.bytes).unwrap();
 
 		Ok(Bolt12Invoice {
+			#[cfg(not(c_bindings))]
 			bytes: $self.bytes,
+			#[cfg(c_bindings)]
+			bytes: $self.bytes.clone(),
+			#[cfg(not(c_bindings))]
 			contents: $self.contents,
+			#[cfg(c_bindings)]
+			contents: $self.contents.clone(),
 			signature,
+			#[cfg(not(c_bindings))]
 			tagged_hash: $self.tagged_hash,
+			#[cfg(c_bindings)]
+			tagged_hash: $self.tagged_hash.clone(),
 		})
 	}
 } }
 
+#[cfg(not(c_bindings))]
 impl UnsignedBolt12Invoice {
-	unsigned_invoice_sign_method!(self, Self);
+	unsigned_invoice_sign_method!(self, Self, mut);
+}
+
+#[cfg(c_bindings)]
+impl UnsignedBolt12Invoice {
+	unsigned_invoice_sign_method!(self, &mut Self);
 }
 
 impl AsRef<TaggedHash> for UnsignedBolt12Invoice {
@@ -1409,6 +1526,8 @@ mod tests {
 			},
 		}
 
+		#[cfg(c_bindings)]
+		let mut unsigned_invoice = unsigned_invoice;
 		let invoice = unsigned_invoice.sign(recipient_sign).unwrap();
 
 		let mut buffer = Vec::new();
@@ -2120,11 +2239,18 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
+		#[cfg(not(c_bindings))]
+		let invoice_builder = invoice_request
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap();
+		#[cfg(c_bindings)]
 		let mut invoice_builder = invoice_request
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap();
+		let invoice_builder = invoice_builder
 			.fallback_v0_p2wsh(&script.wscript_hash())
 			.fallback_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap())
 			.fallback_v1_p2tr_tweaked(&tweaked_pubkey);
+		#[cfg(not(c_bindings))]
+		let mut invoice_builder = invoice_builder;
 
 		// Only standard addresses will be included.
 		let fallbacks = invoice_builder.invoice.fields_mut().fallbacks.as_mut().unwrap();

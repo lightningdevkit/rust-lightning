@@ -57,7 +57,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
 use crate::ln::wire::Encode;
-use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, InvoiceBuilder};
+use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
 use crate::offers::merkle::SignError;
@@ -7834,6 +7834,7 @@ where
 				let builder = refund.respond_using_derived_keys_no_std(
 					payment_paths, payment_hash, created_at, expanded_key, entropy
 				)?;
+				let builder: InvoiceBuilder<DerivedSigningPubkey> = builder.into();
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
 				let reply_path = self.create_blinded_path()
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
@@ -9281,6 +9282,8 @@ where
 					let builder = invoice_request.respond_using_derived_keys_no_std(
 						payment_paths, payment_hash, created_at
 					);
+					let builder: Result<InvoiceBuilder<DerivedSigningPubkey>, _> =
+						builder.map(|b| b.into());
 					match builder.and_then(|b| b.allow_mpp().build_and_sign(secp_ctx)) {
 						Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
 						Err(error) => Some(OffersMessage::InvoiceError(error.into())),
@@ -9292,9 +9295,13 @@ where
 					let builder = invoice_request.respond_with_no_std(
 						payment_paths, payment_hash, created_at
 					);
+					let builder: Result<InvoiceBuilder<ExplicitSigningPubkey>, _> =
+						builder.map(|b| b.into());
 					let response = builder.and_then(|builder| builder.allow_mpp().build())
 						.map_err(|e| OffersMessage::InvoiceError(e.into()))
-						.and_then(|invoice|
+						.and_then(|invoice| {
+							#[cfg(c_bindings)]
+							let mut invoice = invoice;
 							match invoice.sign(|invoice| self.node_signer.sign_bolt12_invoice(invoice)) {
 								Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
 								Err(SignError::Signing(())) => Err(OffersMessage::InvoiceError(
@@ -9303,7 +9310,8 @@ where
 								Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(
 										InvoiceError::from_string("Failed invoice signature verification".to_string())
 								)),
-							});
+							}
+						});
 					match response {
 						Ok(invoice) => Some(invoice),
 						Err(error) => Some(error),

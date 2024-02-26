@@ -71,7 +71,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::DecodeError;
-use crate::offers::invoice::{BlindedPayInfo, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder};
+use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
@@ -79,6 +79,15 @@ use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
+
+#[cfg(not(c_bindings))]
+use {
+	crate::offers::invoice::{DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder},
+};
+#[cfg(c_bindings)]
+use {
+	crate::offers::invoice::{InvoiceWithDerivedSigningPubkeyBuilder, InvoiceWithExplicitSigningPubkeyBuilder},
+};
 
 use crate::prelude::*;
 
@@ -671,8 +680,6 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// See [`InvoiceRequest::respond_with_no_std`] for further details where the aforementioned
 	/// creation time is used for the `created_at` parameter.
 	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
 	pub fn respond_with(
@@ -706,8 +713,6 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// If the originating [`Offer`] was created using [`OfferBuilder::deriving_signing_pubkey`],
 	/// then use [`InvoiceRequest::verify`] and [`VerifiedInvoiceRequest`] methods instead.
 	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
 	pub fn respond_with_no_std(
@@ -728,24 +733,45 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 	/// if they could be extracted from the metadata.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn verify<T: secp256k1::Signing>(
-		$self: $self_type, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	pub fn verify<
+		#[cfg(not(c_bindings))]
+		T: secp256k1::Signing
+	>(
+		$self: $self_type, key: &ExpandedKey,
+		#[cfg(not(c_bindings))]
+		secp_ctx: &Secp256k1<T>,
+		#[cfg(c_bindings)]
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<VerifiedInvoiceRequest, ()> {
 		let keys = $self.contents.inner.offer.verify(&$self.bytes, key, secp_ctx)?;
 		Ok(VerifiedInvoiceRequest {
+			#[cfg(not(c_bindings))]
 			inner: $self,
+			#[cfg(c_bindings)]
+			inner: $self.clone(),
 			keys,
 		})
 	}
 
 } }
 
+#[cfg(not(c_bindings))]
 impl InvoiceRequest {
 	offer_accessors!(self, self.contents.inner.offer);
 	invoice_request_accessors!(self, self.contents);
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(self, self, InvoiceBuilder<ExplicitSigningPubkey>);
 	invoice_request_verify_method!(self, Self);
+}
 
+#[cfg(c_bindings)]
+impl InvoiceRequest {
+	offer_accessors!(self, self.contents.inner.offer);
+	invoice_request_accessors!(self, self.contents);
+	invoice_request_respond_with_explicit_signing_pubkey_methods!(self, self, InvoiceWithExplicitSigningPubkeyBuilder);
+	invoice_request_verify_method!(self, &Self);
+}
+
+impl InvoiceRequest {
 	/// Signature of the invoice request using [`payer_id`].
 	///
 	/// [`payer_id`]: Self::payer_id
@@ -772,8 +798,6 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	///
 	/// See [`InvoiceRequest::respond_with`] for further details.
 	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys(
@@ -791,8 +815,6 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	/// the same [`ExpandedKey`] as the one used to create the offer.
 	///
 	/// See [`InvoiceRequest::respond_with_no_std`] for further details.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn respond_using_derived_keys_no_std(
@@ -817,8 +839,14 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 impl VerifiedInvoiceRequest {
 	offer_accessors!(self, self.inner.contents.inner.offer);
 	invoice_request_accessors!(self, self.inner.contents);
+	#[cfg(not(c_bindings))]
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(self, self.inner, InvoiceBuilder<ExplicitSigningPubkey>);
+	#[cfg(c_bindings)]
+	invoice_request_respond_with_explicit_signing_pubkey_methods!(self, self.inner, InvoiceWithExplicitSigningPubkeyBuilder);
+	#[cfg(not(c_bindings))]
 	invoice_request_respond_with_derived_signing_pubkey_methods!(self, self.inner, InvoiceBuilder<DerivedSigningPubkey>);
+	#[cfg(c_bindings)]
+	invoice_request_respond_with_derived_signing_pubkey_methods!(self, self.inner, InvoiceWithDerivedSigningPubkeyBuilder);
 }
 
 impl InvoiceRequestContents {
