@@ -843,6 +843,16 @@ impl SocketAddress {
 	/// This maximum length is reached by a hostname address descriptor:
 	/// a hostname with a maximum length of 255, its 1-byte length and a 2-byte port.
 	pub(crate) const MAX_LEN: u16 = 258;
+
+	pub(crate) fn is_tor(&self) -> bool {
+		match self {
+			&SocketAddress::TcpIpV4 {..} => false,
+			&SocketAddress::TcpIpV6 {..} => false,
+			&SocketAddress::OnionV2(_) => true,
+			&SocketAddress::OnionV3 {..} => true,
+			&SocketAddress::Hostname {..} => false,
+		}
+	}
 }
 
 impl Writeable for SocketAddress {
