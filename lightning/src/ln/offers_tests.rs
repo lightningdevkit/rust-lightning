@@ -250,7 +250,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let tor = SocketAddress::OnionV2([255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 38, 7]);
-	announce_node_address(charlie, &[alice, bob, david, &nodes[4], &nodes[5]], tor);
+	announce_node_address(charlie, &[alice, bob, david, &nodes[4], &nodes[5]], tor.clone());
 
 	let offer = bob.node
 		.create_offer_builder("coffee".to_string()).unwrap()
@@ -259,7 +259,22 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	assert_ne!(offer.signing_pubkey(), bob_id);
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
+		assert_ne!(path.introduction_node_id, bob_id);
 		assert_ne!(path.introduction_node_id, charlie_id);
+	}
+
+	// Use a one-hop blinded path when Bob is announced and all his peers are Tor-only.
+	announce_node_address(&nodes[4], &[alice, bob, charlie, david, &nodes[5]], tor.clone());
+	announce_node_address(&nodes[5], &[alice, bob, charlie, david, &nodes[4]], tor.clone());
+
+	let offer = bob.node
+		.create_offer_builder("coffee".to_string()).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_ne!(offer.signing_pubkey(), bob_id);
+	assert!(!offer.paths().is_empty());
+	for path in offer.paths() {
+		assert_eq!(path.introduction_node_id, bob_id);
 	}
 }
 

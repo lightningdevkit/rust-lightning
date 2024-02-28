@@ -358,6 +358,9 @@ where
 		const MIN_PEER_CHANNELS: usize = 3;
 
 		let network_graph = self.network_graph.deref().read_only();
+		let is_recipient_announced =
+			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
+
 		let mut peer_info = peers.iter()
 			// Limit to peers with announced channels
 			.filter_map(|pubkey|
@@ -366,6 +369,8 @@ where
 					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
 					.map(|info| (*pubkey, info.is_tor_only(), info.channels.len()))
 			)
+			// Exclude Tor-only nodes when the recipient is announced.
+			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
 			.collect::<Vec<_>>();
 
 		// Prefer using non-Tor nodes with the most channels as the introduction node.
@@ -382,7 +387,7 @@ where
 		match paths {
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
-				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
+				if is_recipient_announced {
 					BlindedPath::one_hop_for_message(recipient, &*self.entropy_source, secp_ctx)
 						.map(|path| vec![path])
 				} else {
