@@ -358,16 +358,19 @@ where
 		const MIN_PEER_CHANNELS: usize = 3;
 
 		let network_graph = self.network_graph.deref().read_only();
-		let paths = peers.iter()
+		let mut peer_info = peers.iter()
 			// Limit to peers with announced channels
-			.filter(|pubkey|
+			.filter_map(|pubkey|
 				network_graph
 					.node(&NodeId::from_pubkey(pubkey))
-					.map(|info| &info.channels[..])
-					.map(|channels| channels.len() >= MIN_PEER_CHANNELS)
-					.unwrap_or(false)
+					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
+					.map(|info| (*pubkey, info.is_tor_only()))
 			)
-			.map(|pubkey| vec![*pubkey, recipient])
+			.collect::<Vec<_>>();
+		peer_info.sort_unstable_by(|(_, a_tor_only), (_, b_tor_only)| a_tor_only.cmp(b_tor_only));
+
+		let paths = peer_info.into_iter()
+			.map(|(pubkey, _)| vec![pubkey, recipient])
 			.map(|node_pks| BlindedPath::new_for_message(&node_pks, &*self.entropy_source, secp_ctx))
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
