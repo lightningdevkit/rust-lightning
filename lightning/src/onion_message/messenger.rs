@@ -364,13 +364,17 @@ where
 				network_graph
 					.node(&NodeId::from_pubkey(pubkey))
 					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
-					.map(|info| (*pubkey, info.is_tor_only()))
+					.map(|info| (*pubkey, info.is_tor_only(), info.channels.len()))
 			)
 			.collect::<Vec<_>>();
-		peer_info.sort_unstable_by(|(_, a_tor_only), (_, b_tor_only)| a_tor_only.cmp(b_tor_only));
+
+		// Prefer using non-Tor nodes with the most channels as the introduction node.
+		peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
+			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
+		});
 
 		let paths = peer_info.into_iter()
-			.map(|(pubkey, _)| vec![pubkey, recipient])
+			.map(|(pubkey, _, _)| vec![pubkey, recipient])
 			.map(|node_pks| BlindedPath::new_for_message(&node_pks, &*self.entropy_source, secp_ctx))
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
