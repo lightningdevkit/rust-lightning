@@ -45,7 +45,7 @@ use crate::blinded_path::BlindedPath;
 use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
 use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, Retry, self};
 use crate::ln::functional_test_utils::*;
-use crate::ln::msgs::{ChannelMessageHandler, Init, OnionMessage, OnionMessageHandler};
+use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::InvoiceRequest;
@@ -53,6 +53,8 @@ use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::PeeledOnion;
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
+use crate::routing::gossip::{NodeAlias, NodeId};
+use crate::sign::{NodeSigner, Recipient};
 
 use crate::prelude::*;
 
@@ -95,6 +97,37 @@ fn disconnect_peers<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, peers: &[&Node<'a, 'b
 		node_b.node.peer_disconnected(&node_a.node.get_our_node_id());
 		node_a.onion_messenger.peer_disconnected(&node_b.node.get_our_node_id());
 		node_b.onion_messenger.peer_disconnected(&node_a.node.get_our_node_id());
+	}
+}
+
+fn announce_node_address<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, peers: &[&Node<'a, 'b, 'c>], address: SocketAddress,
+) {
+	let features = node.onion_messenger.provided_node_features()
+		| node.gossip_sync.provided_node_features();
+	let rgb = [0u8; 3];
+	let announcement = UnsignedNodeAnnouncement {
+		features,
+		timestamp: 1000,
+		node_id: NodeId::from_pubkey(&node.keys_manager.get_node_id(Recipient::Node).unwrap()),
+		rgb,
+		alias: NodeAlias([0u8; 32]),
+		addresses: vec![address],
+		excess_address_data: Vec::new(),
+		excess_data: Vec::new(),
+	};
+	let signature = node.keys_manager.sign_gossip_message(
+		UnsignedGossipMessage::NodeAnnouncement(&announcement)
+	).unwrap();
+
+	let msg = NodeAnnouncement {
+		signature,
+		contents: announcement
+	};
+
+	node.gossip_sync.handle_node_announcement(&msg).unwrap();
+	for peer in peers {
+		peer.gossip_sync.handle_node_announcement(&msg).unwrap();
 	}
 }
 
@@ -175,6 +208,58 @@ fn extract_invoice_error<'a, 'b, 'c>(
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
+	}
+}
+
+/// Checks that blinded paths without Tor-only nodes are preferred when constructing an offer.
+#[test]
+fn prefers_non_tor_nodes_in_blinded_paths() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.set_route_blinding_optional();
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	// Add an extra channel so that more than one of Bob's peers have MIN_PEER_CHANNELS.
+	create_announced_chan_between_nodes_with_value(&nodes, 4, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let bob_id = bob.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let tor = SocketAddress::OnionV2([255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 38, 7]);
+	announce_node_address(charlie, &[alice, bob, david, &nodes[4], &nodes[5]], tor);
+
+	let offer = bob.node
+		.create_offer_builder("coffee".to_string()).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_ne!(offer.signing_pubkey(), bob_id);
+	assert!(!offer.paths().is_empty());
+	for path in offer.paths() {
+		assert_ne!(path.introduction_node_id, charlie_id);
 	}
 }
 
