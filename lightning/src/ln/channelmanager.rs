@@ -7830,6 +7830,7 @@ where
 	/// Errors if:
 	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
 	/// - the provided parameters are invalid for the offer,
+	/// - the offer is for an unsupported chain, or
 	/// - the parameterized [`Router`] is unable to create a blinded reply path for the invoice
 	///   request.
 	///
