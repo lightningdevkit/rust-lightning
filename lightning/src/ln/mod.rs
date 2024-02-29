@@ -85,6 +85,8 @@ mod offers_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
 
+use bitcoin::hashes::{sha256::Hash as Sha256, Hash};
+
 /// payment_hash type, use to cross-lock hop
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
@@ -106,6 +108,13 @@ pub struct PaymentPreimage(pub [u8; 32]);
 impl core::fmt::Display for PaymentPreimage {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
 		crate::util::logger::DebugBytes(&self.0).fmt(f)
+	}
+}
+
+/// Converts a `PaymentPreimage` into a `PaymentHash` by hashing the preimage with SHA256.
+impl Into<PaymentHash> for PaymentPreimage {
+	fn into(self) -> PaymentHash {
+		PaymentHash(Sha256::hash(&self.0).to_byte_array())
 	}
 }
 
