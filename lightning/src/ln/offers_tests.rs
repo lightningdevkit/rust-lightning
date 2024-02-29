@@ -759,6 +759,35 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 	}
 }
 
+/// Fails requesting a payment when the refund contains an unsupported chain.
+#[test]
+fn fails_sending_invoice_with_unsupported_chain_for_refund() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let bob = &nodes[1];
+
+	let absolute_expiry = Duration::from_secs(u64::MAX);
+	let payment_id = PaymentId([1; 32]);
+	let refund = bob.node
+		.create_refund_builder(
+			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		)
+		.unwrap()
+		.chain(Network::Signet)
+		.build().unwrap();
+
+	match alice.node.request_refund_payment(&refund) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedChain),
+	}
+}
+
 /// Fails creating an invoice request when a blinded reply path cannot be created without exposing
 /// the node's id.
 #[test]

@@ -7919,8 +7919,10 @@ where
 	///
 	/// # Errors
 	///
-	/// Errors if the parameterized [`Router`] is unable to create a blinded payment path or reply
-	/// path for the invoice.
+	/// Errors if:
+	/// - the refund is for an unsupported chain, or
+	/// - the parameterized [`Router`] is unable to create a blinded payment path or reply path for
+	///   the invoice.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn request_refund_payment(&self, refund: &Refund) -> Result<(), Bolt12SemanticError> {
@@ -7930,6 +7932,10 @@ where
 
 		let amount_msats = refund.amount_msats();
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
+
+		if refund.chain() != self.chain_hash {
+			return Err(Bolt12SemanticError::UnsupportedChain);
+		}
 
 		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
 			Ok((payment_hash, payment_secret)) => {
