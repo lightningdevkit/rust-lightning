@@ -112,9 +112,9 @@ impl core::fmt::Display for PaymentPreimage {
 }
 
 /// Converts a `PaymentPreimage` into a `PaymentHash` by hashing the preimage with SHA256.
-impl Into<PaymentHash> for PaymentPreimage {
-	fn into(self) -> PaymentHash {
-		PaymentHash(Sha256::hash(&self.0).to_byte_array())
+impl From<PaymentPreimage> for PaymentHash {
+	fn from(value: PaymentPreimage) -> Self {
+		PaymentHash(Sha256::hash(&value.0).to_byte_array())
 	}
 }
 
