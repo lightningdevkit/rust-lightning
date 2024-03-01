@@ -57,7 +57,7 @@ use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
 use crate::ln::wire::Encode;
-use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder};
+use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
 use crate::offers::merkle::SignError;
@@ -9302,7 +9302,9 @@ where
 						.and_then(|invoice| {
 							#[cfg(c_bindings)]
 							let mut invoice = invoice;
-							match invoice.sign(|invoice| self.node_signer.sign_bolt12_invoice(invoice)) {
+							match invoice.sign(|invoice: &UnsignedBolt12Invoice|
+								self.node_signer.sign_bolt12_invoice(invoice)
+							) {
 								Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
 								Err(SignError::Signing(())) => Err(OffersMessage::InvoiceError(
 										InvoiceError::from_string("Failed signing invoice".to_string())

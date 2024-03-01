@@ -37,17 +37,17 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			let even_pubkey = x_only_pubkey.public_key(Parity::Even);
 			if signing_pubkey == odd_pubkey || signing_pubkey == even_pubkey {
 				unsigned_invoice
-					.sign::<_, Infallible>(
-						|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-					)
+					.sign(|message: &UnsignedBolt12Invoice| -> Result<_, Infallible> {
+						Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+					})
 					.unwrap()
 					.write(&mut buffer)
 					.unwrap();
 			} else {
 				unsigned_invoice
-					.sign::<_, Infallible>(
-						|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-					)
+					.sign(|message: &UnsignedBolt12Invoice| -> Result<_, Infallible> {
+						Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+					})
 					.unwrap_err();
 			}
 		}

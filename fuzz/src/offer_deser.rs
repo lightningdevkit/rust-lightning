@@ -29,9 +29,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 
 		if let Ok(invoice_request) = build_response(&offer, pubkey) {
 			invoice_request
-				.sign::<_, Infallible>(
-					|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-				)
+				.sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+					Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+				})
 				.unwrap()
 				.write(&mut buffer)
 				.unwrap();

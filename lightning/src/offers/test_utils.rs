@@ -20,6 +20,10 @@ use crate::ln::features::BlindedHopFeatures;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::TaggedHash;
 
+pub(crate) fn fail_sign<T: AsRef<TaggedHash>>(_message: &T) -> Result<Signature, ()> {
+	Err(())
+}
+
 pub(crate) fn payer_keys() -> KeyPair {
 	let secp_ctx = Secp256k1::new();
 	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())

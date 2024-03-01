@@ -33,9 +33,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 
 		if let Ok(invoice) = build_response(&refund, pubkey, &secp_ctx) {
 			invoice
-				.sign::<_, Infallible>(
-					|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-				)
+				.sign(|message: &UnsignedBolt12Invoice| -> Result<_, Infallible> {
+					Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+				})
 				.unwrap()
 				.write(&mut buffer)
 				.unwrap();

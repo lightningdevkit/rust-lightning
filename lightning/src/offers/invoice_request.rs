@@ -27,6 +27,7 @@
 //! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 //! use core::convert::Infallible;
 //! use lightning::ln::features::OfferFeatures;
+//! use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 //! use lightning::offers::offer::Offer;
 //! use lightning::util::ser::Writeable;
 //!
@@ -47,9 +48,9 @@
 //!     .quantity(5)?
 //!     .payer_note("foo".to_string())
 //!     .build()?
-//!     .sign::<_, Infallible>(
-//!         |message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-//!     )
+//!     .sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+//!         Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+//!     })
 //!     .expect("failed verifying signature")
 //!     .write(&mut buffer)
 //!     .unwrap();
@@ -72,7 +73,7 @@ use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
-use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
+use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
 use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -227,9 +228,9 @@ macro_rules! invoice_request_derived_payer_id_builder_methods { (
 		let secp_ctx = secp_ctx.unwrap();
 		let keys = keys.unwrap();
 		let invoice_request = unsigned_invoice_request
-			.sign::<_, Infallible>(
-				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-			)
+			.sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			})
 			.unwrap();
 		Ok(invoice_request)
 	}
@@ -493,6 +494,37 @@ pub struct UnsignedInvoiceRequest {
 	tagged_hash: TaggedHash,
 }
 
+/// A function for signing an [`UnsignedInvoiceRequest`].
+pub trait SignInvoiceRequestFn {
+	/// Error type returned by the function.
+	type Error;
+
+	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
+	fn sign_invoice_request(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, Self::Error>;
+}
+
+impl<F, E> SignInvoiceRequestFn for F
+where
+	F: Fn(&UnsignedInvoiceRequest) -> Result<Signature, E>,
+{
+	type Error = E;
+
+	fn sign_invoice_request(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, E> {
+		self(message)
+	}
+}
+
+impl<F, E> SignFn<UnsignedInvoiceRequest> for F
+where
+	F: SignInvoiceRequestFn<Error = E>,
+{
+	type Error = E;
+
+	fn sign(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, Self::Error> {
+		self.sign_invoice_request(message)
+	}
+}
+
 impl UnsignedInvoiceRequest {
 	fn new(offer: &Offer, contents: InvoiceRequestContents) -> Self {
 		// Use the offer bytes instead of the offer TLV stream as the offer may have contained
@@ -522,12 +554,9 @@ macro_rules! unsigned_invoice_request_sign_method { (
 	/// Signs the [`TaggedHash`] of the invoice request using the given function.
 	///
 	/// Note: The hash computation may have included unknown, odd TLV records.
-	///
-	/// This is not exported to bindings users as functions are not yet mapped.
-	pub fn sign<F, E>($($self_mut)* $self: $self_type, sign: F) -> Result<InvoiceRequest, SignError<E>>
-	where
-		F: FnOnce(&Self) -> Result<Signature, E>
-	{
+	pub fn sign<F: SignInvoiceRequestFn>(
+		$($self_mut)* $self: $self_type, sign: F
+	) -> Result<InvoiceRequest, SignError<F::Error>> {
 		let pubkey = $self.contents.payer_id;
 		let signature = merkle::sign_message(sign, &$self, pubkey)?;
 
@@ -1712,7 +1741,7 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
-			.sign(|_| Err(()))
+			.sign(fail_sign)
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, SignError::Signing(())),
@@ -2126,9 +2155,9 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(vec![1; 32], keys.public_key()).unwrap()
 			.build().unwrap()
-			.sign::<_, Infallible>(
-				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-			)
+			.sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			})
 			.unwrap();
 
 		let mut encoded_invoice_request = Vec::new();

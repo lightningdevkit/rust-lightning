@@ -23,6 +23,7 @@
 //! use bitcoin::hashes::Hash;
 //! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 //! use core::convert::{Infallible, TryFrom};
+//! use lightning::offers::invoice::UnsignedBolt12Invoice;
 //! use lightning::offers::invoice_request::InvoiceRequest;
 //! use lightning::offers::refund::Refund;
 //! use lightning::util::ser::Writeable;
@@ -57,9 +58,9 @@
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
 //!     .build()?
-//!     .sign::<_, Infallible>(
-//!         |message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-//!     )
+//!     .sign(|message: &UnsignedBolt12Invoice| -> Result<_, Infallible> {
+//!         Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+//!     })
 //!     .expect("failed verifying signature")
 //!     .write(&mut buffer)
 //!     .unwrap();
@@ -90,9 +91,9 @@
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
 //!     .build()?
-//!     .sign::<_, Infallible>(
-//!         |message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-//!     )
+//!     .sign(|message: &UnsignedBolt12Invoice| -> Result<_, Infallible> {
+//!         Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+//!     })
 //!     .expect("failed verifying signature")
 //!     .write(&mut buffer)
 //!     .unwrap();
@@ -119,7 +120,7 @@ use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequ
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
-use crate::offers::merkle::{SignError, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
+use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
 use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
@@ -324,9 +325,9 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 		let mut unsigned_invoice = UnsignedBolt12Invoice::new(invreq_bytes, invoice.clone());
 
 		let invoice = unsigned_invoice
-			.sign::<_, Infallible>(
-				|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-			)
+			.sign(|message: &UnsignedBolt12Invoice| -> Result<_, Infallible> {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			})
 			.unwrap();
 		Ok(invoice)
 	}
@@ -507,6 +508,37 @@ pub struct UnsignedBolt12Invoice {
 	tagged_hash: TaggedHash,
 }
 
+/// A function for signing an [`UnsignedBolt12Invoice`].
+pub trait SignBolt12InvoiceFn {
+	/// Error type returned by the function.
+	type Error;
+
+	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
+	fn sign_invoice(&self, message: &UnsignedBolt12Invoice) -> Result<Signature, Self::Error>;
+}
+
+impl<F, E> SignBolt12InvoiceFn for F
+where
+	F: Fn(&UnsignedBolt12Invoice) -> Result<Signature, E>,
+{
+	type Error = E;
+
+	fn sign_invoice(&self, message: &UnsignedBolt12Invoice) -> Result<Signature, E> {
+		self(message)
+	}
+}
+
+impl<F, E> SignFn<UnsignedBolt12Invoice> for F
+where
+	F: SignBolt12InvoiceFn<Error = E>,
+{
+	type Error = E;
+
+	fn sign(&self, message: &UnsignedBolt12Invoice) -> Result<Signature, Self::Error> {
+		self.sign_invoice(message)
+	}
+}
+
 impl UnsignedBolt12Invoice {
 	fn new(invreq_bytes: &[u8], contents: InvoiceContents) -> Self {
 		// Use the invoice_request bytes instead of the invoice_request TLV stream as the latter may
@@ -534,12 +566,9 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
 	///
 	/// Note: The hash computation may have included unknown, odd TLV records.
-	///
-	/// This is not exported to bindings users as functions aren't currently mapped.
-	pub fn sign<F, E>($($self_mut)* $self: $self_type, sign: F) -> Result<Bolt12Invoice, SignError<E>>
-	where
-		F: FnOnce(&Self) -> Result<Signature, E>
-	{
+	pub fn sign<F: SignBolt12InvoiceFn>(
+		$($self_mut)* $self: $self_type, sign: F
+	) -> Result<Bolt12Invoice, SignError<F::Error>> {
 		let pubkey = $self.contents.fields().signing_pubkey;
 		let signature = merkle::sign_message(sign, &$self, pubkey)?;
 
@@ -2013,7 +2042,7 @@ mod tests {
 			.sign(payer_sign).unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
-			.sign(|_| Err(()))
+			.sign(fail_sign)
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, SignError::Signing(())),
