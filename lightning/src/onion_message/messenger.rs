@@ -16,7 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::blinded_path::BlindedPath;
-use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, NextHop, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -647,9 +647,9 @@ where
 			Ok(PeeledOnion::Receive(message, path_id, reply_path))
 		},
 		Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-			next_node_id, next_blinding_override
+			next_hop, next_blinding_override
 		})), Some((next_hop_hmac, new_packet_bytes)))) => {
-			// TODO: we need to check whether `next_node_id` is our node, in which case this is a dummy
+			// TODO: we need to check whether `next_hop` is our node, in which case this is a dummy
 			// blinded hop and this onion message is destined for us. In this situation, we should keep
 			// unwrapping the onion layers to get to the final payload. Since we don't have the option
 			// of creating blinded paths with dummy hops currently, we should be ok to not handle this
@@ -683,6 +683,11 @@ where
 					}
 				},
 				onion_routing_packet: outgoing_packet,
+			};
+
+			let next_node_id = match next_hop {
+				NextHop::NodeId(pubkey) => pubkey,
+				NextHop::ShortChannelId(_) => todo!(),
 			};
 
 			Ok(PeeledOnion::Forward(next_node_id, onion_message))
@@ -1133,7 +1138,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 				if let Some(ss) = prev_control_tlvs_ss.take() {
 					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(
 						ForwardTlvs {
-							next_node_id: unblinded_pk_opt.unwrap(),
+							next_hop: NextHop::NodeId(unblinded_pk_opt.unwrap()),
 							next_blinding_override: None,
 						}
 					)), ss));
@@ -1143,7 +1148,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 			} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
 				if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
 					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-						next_node_id: intro_node_id,
+						next_hop: NextHop::NodeId(intro_node_id),
 						next_blinding_override: Some(blinding_pt),
 					})), control_tlvs_ss));
 				}
