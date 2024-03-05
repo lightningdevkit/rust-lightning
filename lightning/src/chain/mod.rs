@@ -322,11 +322,12 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 /// [BIP 157]: https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki
 /// [BIP 158]: https://github.com/bitcoin/bips/blob/master/bip-0158.mediawiki
 pub trait Filter {
-	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
+	/// Registers interest in funding transactions to inform LDK that a channel
+	/// Funding transaction is transaction with `txid` and having an output with `script_pubkey` as
 	/// a spending condition.
 	fn register_tx(&self, txid: &Txid, script_pubkey: &Script);
 
-	/// Registers interest in spends of a transaction output.
+	/// Registers interest in spends of a  force close transaction.
 	///
 	/// Note that this method might be called during processing of a new block. You therefore need
 	/// to ensure that also dependent output spents within an already connected block are correctly
