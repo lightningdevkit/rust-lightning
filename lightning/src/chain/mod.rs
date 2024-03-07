@@ -31,10 +31,12 @@ pub(crate) mod onchaintx;
 pub(crate) mod package;
 
 /// The best known block as identified by its hash and height.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct BestBlock {
-	block_hash: BlockHash,
-	height: u32,
+	/// The block's hash
+	pub block_hash: BlockHash,
+	/// The height at which the block was confirmed.
+	pub height: u32,
 }
 
 impl BestBlock {
@@ -51,12 +53,6 @@ impl BestBlock {
 	pub fn new(block_hash: BlockHash, height: u32) -> Self {
 		BestBlock { block_hash, height }
 	}
-
-	/// Returns the best block hash.
-	pub fn block_hash(&self) -> BlockHash { self.block_hash }
-
-	/// Returns the best block height.
-	pub fn height(&self) -> u32 { self.height }
 }
 
 

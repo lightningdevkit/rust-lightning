@@ -1342,8 +1342,8 @@ mod tests {
 
 	fn confirm_transaction_depth(node: &mut Node, tx: &Transaction, depth: u32) {
 		for i in 1..=depth {
-			let prev_blockhash = node.best_block.block_hash();
-			let height = node.best_block.height() + 1;
+			let prev_blockhash = node.best_block.block_hash;
+			let height = node.best_block.height + 1;
 			let header = create_dummy_header(prev_blockhash, height);
 			let txdata = vec![(0, tx)];
 			node.best_block = BestBlock::new(header.block_hash(), height);

@@ -387,7 +387,7 @@ impl OnchainEventEntry {
 	}
 
 	fn has_reached_confirmation_threshold(&self, best_block: &BestBlock) -> bool {
-		best_block.height() >= self.confirmation_threshold()
+		best_block.height >= self.confirmation_threshold()
 	}
 }
 
@@ -1077,8 +1077,8 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 			event.write(writer)?;
 		}
 
-		self.best_block.block_hash().write(writer)?;
-		writer.write_all(&self.best_block.height().to_be_bytes())?;
+		self.best_block.block_hash.write(writer)?;
+		writer.write_all(&self.best_block.height.to_be_bytes())?;
 
 		writer.write_all(&(self.onchain_events_awaiting_threshold_conf.len() as u64).to_be_bytes())?;
 		for ref entry in self.onchain_events_awaiting_threshold_conf.iter() {
@@ -2273,7 +2273,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 								// before considering it "no longer pending" - this matches when we
 								// provide the ChannelManager an HTLC failure event.
 								Some(commitment_tx_output_idx) == htlc.transaction_output_index &&
-									us.best_block.height() >= event.height + ANTI_REORG_DELAY - 1
+									us.best_block.height >= event.height + ANTI_REORG_DELAY - 1
 							} else if let OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, .. } = event.event {
 								// If the HTLC was fulfilled with a preimage, we consider the HTLC
 								// immediately non-pending, matching when we provide ChannelManager
@@ -2674,7 +2674,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		macro_rules! claim_htlcs {
 			($commitment_number: expr, $txid: expr) => {
 				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None);
-				self.onchain_tx_handler.update_claims_view_from_requests(htlc_claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
+				self.onchain_tx_handler.update_claims_view_from_requests(htlc_claim_reqs, self.best_block.height, self.best_block.height, broadcaster, fee_estimator, logger);
 			}
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
@@ -2721,8 +2721,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// Assume that the broadcasted commitment transaction confirmed in the current best
 				// block. Even if not, its a reasonable metric for the bump criteria on the HTLC
 				// transactions.
-				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&holder_commitment_tx, self.best_block.height());
-				self.onchain_tx_handler.update_claims_view_from_requests(claim_reqs, self.best_block.height(), self.best_block.height(), broadcaster, fee_estimator, logger);
+				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&holder_commitment_tx, self.best_block.height);
+				self.onchain_tx_handler.update_claims_view_from_requests(claim_reqs, self.best_block.height, self.best_block.height, broadcaster, fee_estimator, logger);
 			}
 		}
 	}
@@ -2736,7 +2736,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let commitment_package = PackageTemplate::build_package(
 			self.funding_info.0.txid.clone(), self.funding_info.0.index as u32,
 			PackageSolvingData::HolderFundingOutput(funding_outp),
-			self.best_block.height(), self.best_block.height()
+			self.best_block.height, self.best_block.height
 		);
 		let mut claimable_outpoints = vec![commitment_package];
 		self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
@@ -2753,7 +2753,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// assuming it gets confirmed in the next block. Sadly, we have code which considers
 			// "not yet confirmed" things as discardable, so we cannot do that here.
 			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(
-				&self.current_holder_commitment_tx, self.best_block.height()
+				&self.current_holder_commitment_tx, self.best_block.height
 			);
 			let unsigned_commitment_tx = self.onchain_tx_handler.get_unsigned_holder_commitment_tx();
 			let new_outputs = self.get_broadcasted_holder_watch_outputs(
@@ -2777,7 +2777,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	{
 		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs();
 		self.onchain_tx_handler.update_claims_view_from_requests(
-			claimable_outpoints, self.best_block.height(), self.best_block.height(), broadcaster,
+			claimable_outpoints, self.best_block.height, self.best_block.height, broadcaster,
 			fee_estimator, logger
 		);
 	}
@@ -3593,11 +3593,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	{
 		let block_hash = header.block_hash();
 
-		if height > self.best_block.height() {
+		if height > self.best_block.height {
 			self.best_block = BestBlock::new(block_hash, height);
 			log_trace!(logger, "Connecting new block {} at height {}", block_hash, height);
 			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger)
-		} else if block_hash != self.best_block.block_hash() {
+		} else if block_hash != self.best_block.block_hash {
 			self.best_block = BestBlock::new(block_hash, height);
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
@@ -3742,7 +3742,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		if height > self.best_block.height() {
+		if height > self.best_block.height {
 			self.best_block = BestBlock::new(block_hash, height);
 		}
 
@@ -3774,7 +3774,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		L::Target: Logger,
 	{
 		log_trace!(logger, "Processing {} matched transactions for block at height {}.", txn_matched.len(), conf_height);
-		debug_assert!(self.best_block.height() >= conf_height);
+		debug_assert!(self.best_block.height >= conf_height);
 
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
@@ -3865,8 +3865,8 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		self.onchain_tx_handler.update_claims_view_from_requests(claimable_outpoints, conf_height, self.best_block.height(), broadcaster, fee_estimator, logger);
-		self.onchain_tx_handler.update_claims_view_from_matched_txn(&txn_matched, conf_height, conf_hash, self.best_block.height(), broadcaster, fee_estimator, logger);
+		self.onchain_tx_handler.update_claims_view_from_requests(claimable_outpoints, conf_height, self.best_block.height, broadcaster, fee_estimator, logger);
+		self.onchain_tx_handler.update_claims_view_from_matched_txn(&txn_matched, conf_height, conf_hash, self.best_block.height, broadcaster, fee_estimator, logger);
 
 		// Determine new outputs to watch by comparing against previously known outputs to watch,
 		// updating the latter in the process.
@@ -4017,7 +4017,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// to the source, and if we don't fail the channel we will have to ensure that the next
 		// updates that peer sends us are update_fails, failing the channel if not. It's probably
 		// easier to just fail the channel as this case should be rare enough anyway.
-		let height = self.best_block.height();
+		let height = self.best_block.height;
 		macro_rules! scan_commitment {
 			($htlcs: expr, $holder_tx: expr) => {
 				for ref htlc in $htlcs {
@@ -4616,7 +4616,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point).to_v0_p2wsh();
 		}
 
-		Ok((best_block.block_hash(), ChannelMonitor::from_impl(ChannelMonitorImpl {
+		Ok((best_block.block_hash, ChannelMonitor::from_impl(ChannelMonitorImpl {
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
 
