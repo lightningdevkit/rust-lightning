@@ -151,7 +151,7 @@ mod tests {
 				let writeable_len = $obj.serialized_length() as u64 + 16;
 				let write_adapter = ChaChaPolyWriteAdapter::new(rho, &$obj);
 				let encrypted_writeable_bytes = write_adapter.encode();
-				let encrypted_writeable = &encrypted_writeable_bytes[..];
+				let encrypted_writeable = &mut &encrypted_writeable_bytes[..];
 
 				// Now deserialize the object back and make sure it matches the original.
 				let mut rd = FixedLengthReader::new(encrypted_writeable, writeable_len);

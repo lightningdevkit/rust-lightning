@@ -108,14 +108,14 @@ impl Writer for LengthCalculatingWriter {
 /// forward to ensure we always consume exactly the fixed length specified.
 ///
 /// This is not exported to bindings users as manual TLV building is not currently supported in bindings
-pub struct FixedLengthReader<R: Read> {
-	read: R,
+pub struct FixedLengthReader<'a, R: Read> {
+	read: &'a mut R,
 	bytes_read: u64,
 	total_bytes: u64,
 }
-impl<R: Read> FixedLengthReader<R> {
+impl<'a, R: Read> FixedLengthReader<'a, R> {
 	/// Returns a new [`FixedLengthReader`].
-	pub fn new(read: R, total_bytes: u64) -> Self {
+	pub fn new(read: &'a mut R, total_bytes: u64) -> Self {
 		Self { read, bytes_read: 0, total_bytes }
 	}
 
@@ -136,7 +136,7 @@ impl<R: Read> FixedLengthReader<R> {
 		}
 	}
 }
-impl<R: Read> Read for FixedLengthReader<R> {
+impl<'a, R: Read> Read for FixedLengthReader<'a, R> {
 	#[inline]
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
 		if self.total_bytes == self.bytes_read {
@@ -154,7 +154,7 @@ impl<R: Read> Read for FixedLengthReader<R> {
 	}
 }
 
-impl<R: Read> LengthRead for FixedLengthReader<R> {
+impl<'a, R: Read> LengthRead for FixedLengthReader<'a, R> {
 	#[inline]
 	fn total_bytes(&self) -> u64 {
 		self.total_bytes
