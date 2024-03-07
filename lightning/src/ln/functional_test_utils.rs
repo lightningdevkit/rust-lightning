@@ -2230,8 +2230,8 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 ) {
 	match event {
 		Event::PaymentForwarded {
-			total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
-			outbound_amount_forwarded_msat: _, skimmed_fee_msat
+			prev_channel_id, next_channel_id, prev_user_channel_id, next_user_channel_id,
+			total_fee_earned_msat, skimmed_fee_msat, claim_from_onchain_tx, ..
 		} => {
 			assert_eq!(total_fee_earned_msat, expected_fee);
 
@@ -2240,12 +2240,31 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 			assert!(skimmed_fee_msat == expected_extra_fees_msat);
 			if !upstream_force_closed {
 				// Is the event prev_channel_id in one of the channels between the two nodes?
-				assert!(node.node().list_channels().iter().any(|x| x.counterparty.node_id == prev_node.node().get_our_node_id() && x.channel_id == prev_channel_id.unwrap()));
+				assert!(node.node().list_channels().iter().any(|x|
+					x.counterparty.node_id == prev_node.node().get_our_node_id() &&
+					x.channel_id == prev_channel_id.unwrap() &&
+					x.user_channel_id == prev_user_channel_id.unwrap()
+				));
 			}
 			// We check for force closures since a force closed channel is removed from the
 			// node's channel list
 			if !downstream_force_closed {
-				assert!(node.node().list_channels().iter().any(|x| x.counterparty.node_id == next_node.node().get_our_node_id() && x.channel_id == next_channel_id.unwrap()));
+				// As documented, `next_user_channel_id` will only be `Some` if we didn't settle via an
+				// onchain transaction, just as the `total_fee_earned_msat` field. Rather than
+				// introducing yet another variable, we use the latter's state as a flag to detect
+				// this and only check if it's `Some`.
+				if total_fee_earned_msat.is_none() {
+					assert!(node.node().list_channels().iter().any(|x|
+						x.counterparty.node_id == next_node.node().get_our_node_id() &&
+						x.channel_id == next_channel_id.unwrap()
+					));
+				} else {
+					assert!(node.node().list_channels().iter().any(|x|
+						x.counterparty.node_id == next_node.node().get_our_node_id() &&
+						x.channel_id == next_channel_id.unwrap() &&
+						x.user_channel_id == next_user_channel_id.unwrap()
+					));
+				}
 			}
 			assert_eq!(claim_from_onchain_tx, downstream_force_closed);
 		},
