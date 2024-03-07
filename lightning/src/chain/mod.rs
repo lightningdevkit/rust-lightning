@@ -31,7 +31,7 @@ pub(crate) mod onchaintx;
 pub(crate) mod package;
 
 /// The best known block as identified by its hash and height.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct BestBlock {
 	/// The block's hash
 	pub block_hash: BlockHash,
