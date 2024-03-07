@@ -22,7 +22,7 @@
 //!
 //! use bitcoin::hashes::Hash;
 //! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
-//! use core::convert::{Infallible, TryFrom};
+//! use core::convert::TryFrom;
 //! use lightning::offers::invoice::UnsignedBolt12Invoice;
 //! use lightning::offers::invoice_request::InvoiceRequest;
 //! use lightning::offers::refund::Refund;
@@ -58,9 +58,9 @@
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
 //!     .build()?
-//!     .sign(|message: &UnsignedBolt12Invoice| -> Result<_, Infallible> {
+//!     .sign(|message: &UnsignedBolt12Invoice|
 //!         Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-//!     })
+//!     )
 //!     .expect("failed verifying signature")
 //!     .write(&mut buffer)
 //!     .unwrap();
@@ -91,9 +91,9 @@
 //!     .allow_mpp()
 //!     .fallback_v0_p2wpkh(&wpubkey_hash)
 //!     .build()?
-//!     .sign(|message: &UnsignedBolt12Invoice| -> Result<_, Infallible> {
+//!     .sign(|message: &UnsignedBolt12Invoice|
 //!         Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-//!     })
+//!     )
 //!     .expect("failed verifying signature")
 //!     .write(&mut buffer)
 //!     .unwrap();
@@ -110,7 +110,7 @@ use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::address::{Address, Payload, WitnessProgram, WitnessVersion};
 use bitcoin::key::TweakedPublicKey;
-use core::convert::{AsRef, Infallible, TryFrom};
+use core::convert::{AsRef, TryFrom};
 use core::time::Duration;
 use crate::io;
 use crate::blinded_path::BlindedPath;
@@ -325,9 +325,9 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 		let mut unsigned_invoice = UnsignedBolt12Invoice::new(invreq_bytes, invoice.clone());
 
 		let invoice = unsigned_invoice
-			.sign(|message: &UnsignedBolt12Invoice| -> Result<_, Infallible> {
+			.sign(|message: &UnsignedBolt12Invoice|
 				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-			})
+			)
 			.unwrap();
 		Ok(invoice)
 	}
@@ -510,31 +510,24 @@ pub struct UnsignedBolt12Invoice {
 
 /// A function for signing an [`UnsignedBolt12Invoice`].
 pub trait SignBolt12InvoiceFn {
-	/// Error type returned by the function.
-	type Error;
-
 	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
-	fn sign_invoice(&self, message: &UnsignedBolt12Invoice) -> Result<Signature, Self::Error>;
+	fn sign_invoice(&self, message: &UnsignedBolt12Invoice) -> Result<Signature, ()>;
 }
 
-impl<F, E> SignBolt12InvoiceFn for F
+impl<F> SignBolt12InvoiceFn for F
 where
-	F: Fn(&UnsignedBolt12Invoice) -> Result<Signature, E>,
+	F: Fn(&UnsignedBolt12Invoice) -> Result<Signature, ()>,
 {
-	type Error = E;
-
-	fn sign_invoice(&self, message: &UnsignedBolt12Invoice) -> Result<Signature, E> {
+	fn sign_invoice(&self, message: &UnsignedBolt12Invoice) -> Result<Signature, ()> {
 		self(message)
 	}
 }
 
-impl<F, E> SignFn<UnsignedBolt12Invoice> for F
+impl<F> SignFn<UnsignedBolt12Invoice> for F
 where
-	F: SignBolt12InvoiceFn<Error = E>,
+	F: SignBolt12InvoiceFn,
 {
-	type Error = E;
-
-	fn sign(&self, message: &UnsignedBolt12Invoice) -> Result<Signature, Self::Error> {
+	fn sign(&self, message: &UnsignedBolt12Invoice) -> Result<Signature, ()> {
 		self.sign_invoice(message)
 	}
 }
@@ -568,7 +561,7 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 	/// Note: The hash computation may have included unknown, odd TLV records.
 	pub fn sign<F: SignBolt12InvoiceFn>(
 		$($self_mut)* $self: $self_type, sign: F
-	) -> Result<Bolt12Invoice, SignError<F::Error>> {
+	) -> Result<Bolt12Invoice, SignError> {
 		let pubkey = $self.contents.fields().signing_pubkey;
 		let signature = merkle::sign_message(sign, &$self, pubkey)?;
 
@@ -2045,7 +2038,7 @@ mod tests {
 			.sign(fail_sign)
 		{
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SignError::Signing(())),
+			Err(e) => assert_eq!(e, SignError::Signing),
 		}
 
 		match OfferBuilder::new("foo".into(), recipient_pubkey())

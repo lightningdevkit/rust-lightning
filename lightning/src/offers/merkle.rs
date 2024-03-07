@@ -76,29 +76,24 @@ impl AsRef<TaggedHash> for TaggedHash {
 
 /// Error when signing messages.
 #[derive(Debug, PartialEq)]
-pub enum SignError<E = ()> {
+pub enum SignError {
 	/// User-defined error when signing the message.
-	Signing(E),
+	Signing,
 	/// Error when verifying the produced signature using the given pubkey.
 	Verification(secp256k1::Error),
 }
 
 /// A function for signing a [`TaggedHash`].
 pub(super) trait SignFn<T: AsRef<TaggedHash>> {
-	/// Error type returned by the function.
-	type Error;
-
 	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
-	fn sign(&self, message: &T) -> Result<Signature, Self::Error>;
+	fn sign(&self, message: &T) -> Result<Signature, ()>;
 }
 
-impl<F, E> SignFn<TaggedHash> for F
+impl<F> SignFn<TaggedHash> for F
 where
-	F: Fn(&TaggedHash) -> Result<Signature, E>,
+	F: Fn(&TaggedHash) -> Result<Signature, ()>,
 {
-	type Error = E;
-
-	fn sign(&self, message: &TaggedHash) -> Result<Signature, E> {
+	fn sign(&self, message: &TaggedHash) -> Result<Signature, ()> {
 		self(message)
 	}
 }
@@ -112,14 +107,14 @@ where
 ///
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-pub(super) fn sign_message<F, T, E>(
+pub(super) fn sign_message<F, T>(
 	f: F, message: &T, pubkey: PublicKey,
-) -> Result<Signature, SignError<E>>
+) -> Result<Signature, SignError>
 where
-	F: SignFn<T, Error = E>,
+	F: SignFn<T>,
 	T: AsRef<TaggedHash>,
 {
-	let signature = f.sign(message).map_err(|e| SignError::Signing(e))?;
+	let signature = f.sign(message).map_err(|()| SignError::Signing)?;
 
 	let digest = message.as_ref().as_digest();
 	let pubkey = pubkey.into();
@@ -296,7 +291,6 @@ mod tests {
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
 	use bitcoin::secp256k1::schnorr::Signature;
-	use core::convert::Infallible;
 	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
 	use crate::offers::parse::Bech32Encode;
@@ -341,9 +335,9 @@ mod tests {
 			.build_unchecked()
 			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
 			.build_unchecked()
-			.sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+			.sign(|message: &UnsignedInvoiceRequest|
 				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			})
+			)
 			.unwrap();
 		assert_eq!(
 			invoice_request.to_string(),
@@ -395,9 +389,9 @@ mod tests {
 			.build_unchecked()
 			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
 			.build_unchecked()
-			.sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+			.sign(|message: &UnsignedInvoiceRequest|
 				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			})
+			)
 			.unwrap();
 
 		let mut bytes_without_signature = Vec::new();
@@ -427,9 +421,9 @@ mod tests {
 			.build_unchecked()
 			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
 			.build_unchecked()
-			.sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+			.sign(|message: &UnsignedInvoiceRequest|
 				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			})
+			)
 			.unwrap();
 
 		let tlv_stream = TlvStream::new(&invoice_request.bytes).range(0..1)

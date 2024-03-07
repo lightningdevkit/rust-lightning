@@ -25,7 +25,6 @@
 //!
 //! use bitcoin::network::constants::Network;
 //! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
-//! use core::convert::Infallible;
 //! use lightning::ln::features::OfferFeatures;
 //! use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 //! use lightning::offers::offer::Offer;
@@ -48,9 +47,9 @@
 //!     .quantity(5)?
 //!     .payer_note("foo".to_string())
 //!     .build()?
-//!     .sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+//!     .sign(|message: &UnsignedInvoiceRequest|
 //!         Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-//!     })
+//!     )
 //!     .expect("failed verifying signature")
 //!     .write(&mut buffer)
 //!     .unwrap();
@@ -62,7 +61,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::{AsRef, Infallible, TryFrom};
+use core::convert::{AsRef, TryFrom};
 use core::ops::Deref;
 use crate::sign::EntropySource;
 use crate::io;
@@ -228,9 +227,9 @@ macro_rules! invoice_request_derived_payer_id_builder_methods { (
 		let secp_ctx = secp_ctx.unwrap();
 		let keys = keys.unwrap();
 		let invoice_request = unsigned_invoice_request
-			.sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+			.sign(|message: &UnsignedInvoiceRequest|
 				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-			})
+			)
 			.unwrap();
 		Ok(invoice_request)
 	}
@@ -496,31 +495,24 @@ pub struct UnsignedInvoiceRequest {
 
 /// A function for signing an [`UnsignedInvoiceRequest`].
 pub trait SignInvoiceRequestFn {
-	/// Error type returned by the function.
-	type Error;
-
 	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
-	fn sign_invoice_request(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, Self::Error>;
+	fn sign_invoice_request(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, ()>;
 }
 
-impl<F, E> SignInvoiceRequestFn for F
+impl<F> SignInvoiceRequestFn for F
 where
-	F: Fn(&UnsignedInvoiceRequest) -> Result<Signature, E>,
+	F: Fn(&UnsignedInvoiceRequest) -> Result<Signature, ()>,
 {
-	type Error = E;
-
-	fn sign_invoice_request(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, E> {
+	fn sign_invoice_request(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, ()> {
 		self(message)
 	}
 }
 
-impl<F, E> SignFn<UnsignedInvoiceRequest> for F
+impl<F> SignFn<UnsignedInvoiceRequest> for F
 where
-	F: SignInvoiceRequestFn<Error = E>,
+	F: SignInvoiceRequestFn,
 {
-	type Error = E;
-
-	fn sign(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, Self::Error> {
+	fn sign(&self, message: &UnsignedInvoiceRequest) -> Result<Signature, ()> {
 		self.sign_invoice_request(message)
 	}
 }
@@ -556,7 +548,7 @@ macro_rules! unsigned_invoice_request_sign_method { (
 	/// Note: The hash computation may have included unknown, odd TLV records.
 	pub fn sign<F: SignInvoiceRequestFn>(
 		$($self_mut)* $self: $self_type, sign: F
-	) -> Result<InvoiceRequest, SignError<F::Error>> {
+	) -> Result<InvoiceRequest, SignError> {
 		let pubkey = $self.contents.payer_id;
 		let signature = merkle::sign_message(sign, &$self, pubkey)?;
 
@@ -1111,7 +1103,7 @@ mod tests {
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey, self};
-	use core::convert::{Infallible, TryFrom};
+	use core::convert::TryFrom;
 	use core::num::NonZeroU64;
 	#[cfg(feature = "std")]
 	use core::time::Duration;
@@ -1744,7 +1736,7 @@ mod tests {
 			.sign(fail_sign)
 		{
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, SignError::Signing(())),
+			Err(e) => assert_eq!(e, SignError::Signing),
 		}
 
 		match OfferBuilder::new("foo".into(), recipient_pubkey())
@@ -2155,9 +2147,9 @@ mod tests {
 			.build().unwrap()
 			.request_invoice(vec![1; 32], keys.public_key()).unwrap()
 			.build().unwrap()
-			.sign(|message: &UnsignedInvoiceRequest| -> Result<_, Infallible> {
+			.sign(|message: &UnsignedInvoiceRequest|
 				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-			})
+			)
 			.unwrap();
 
 		let mut encoded_invoice_request = Vec::new();

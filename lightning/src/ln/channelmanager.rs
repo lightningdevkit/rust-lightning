@@ -9306,7 +9306,7 @@ where
 								self.node_signer.sign_bolt12_invoice(invoice)
 							) {
 								Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
-								Err(SignError::Signing(())) => Err(OffersMessage::InvoiceError(
+								Err(SignError::Signing) => Err(OffersMessage::InvoiceError(
 										InvoiceError::from_string("Failed signing invoice".to_string())
 								)),
 								Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(

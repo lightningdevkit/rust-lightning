@@ -11,7 +11,7 @@
 
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::{AsRef, Infallible};
+use core::convert::AsRef; 
 use core::time::Duration;
 use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::sign::EntropySource;
@@ -29,7 +29,7 @@ pub(crate) fn payer_keys() -> KeyPair {
 	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
 }
 
-pub(crate) fn payer_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
+pub(crate) fn payer_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, ()> {
 	let secp_ctx = Secp256k1::new();
 	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
@@ -44,7 +44,7 @@ pub(crate) fn recipient_keys() -> KeyPair {
 	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap())
 }
 
-pub(crate) fn recipient_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
+pub(crate) fn recipient_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, ()> {
 	let secp_ctx = Secp256k1::new();
 	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
