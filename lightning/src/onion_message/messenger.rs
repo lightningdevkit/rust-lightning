@@ -538,7 +538,7 @@ pub trait CustomOnionMessageHandler {
 #[derive(Debug)]
 pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
-	Forward(PublicKey, OnionMessage),
+	Forward(NextHop, OnionMessage),
 	/// Received onion message, with decrypted contents, path_id, and reply path
 	Receive(ParsedOnionMessageContents<T>, Option<[u8; 32]>, Option<BlindedPath>)
 }
@@ -685,12 +685,7 @@ where
 				onion_routing_packet: outgoing_packet,
 			};
 
-			let next_node_id = match next_hop {
-				NextHop::NodeId(pubkey) => pubkey,
-				NextHop::ShortChannelId(_) => todo!(),
-			};
-
-			Ok(PeeledOnion::Forward(next_node_id, onion_message))
+			Ok(PeeledOnion::Forward(next_hop, onion_message))
 		},
 		Err(e) => {
 			log_trace!(logger, "Errored decoding onion message packet: {:?}", e);
@@ -959,7 +954,12 @@ where
 					},
 				}
 			},
-			Ok(PeeledOnion::Forward(next_node_id, onion_message)) => {
+			Ok(PeeledOnion::Forward(next_hop, onion_message)) => {
+				let next_node_id = match next_hop {
+					NextHop::NodeId(pubkey) => pubkey,
+					NextHop::ShortChannelId(_) => todo!(),
+				};
+
 				let mut message_recipients = self.message_recipients.lock().unwrap();
 				if outbound_buffer_full(&next_node_id, &message_recipients) {
 					log_trace!(self.logger, "Dropping forwarded onion message to peer {:?}: outbound buffer full", next_node_id);

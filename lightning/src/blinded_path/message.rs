@@ -33,7 +33,8 @@ pub(crate) struct ReceiveTlvs {
 }
 
 /// The next hop to forward the onion message along its path.
-pub(crate) enum NextHop {
+#[derive(Debug)]
+pub enum NextHop {
 	/// The node id of the next hop.
 	NodeId(PublicKey),
 	/// The short channel id leading to the next hop.
