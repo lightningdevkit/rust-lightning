@@ -5756,8 +5756,6 @@ where
 				let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 				#[cfg(debug_assertions)]
 				let claiming_chan_funding_outpoint = hop_data.outpoint;
-				#[cfg(debug_assertions)]
-				let claiming_channel_id = hop_data.channel_id;
 				let res = self.claim_funds_from_hop(hop_data, payment_preimage,
 					|htlc_claim_value_msat, definitely_duplicate| {
 						let chan_to_release =
@@ -5815,7 +5813,7 @@ where
 										BackgroundEvent::MonitorUpdatesComplete {
 											channel_id, ..
 										} =>
-											*channel_id == claiming_channel_id,
+											*channel_id == prev_channel_id,
 									}
 								}), "{:?}", *background_events);
 							}
