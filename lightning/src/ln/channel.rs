@@ -4086,7 +4086,7 @@ impl<SP: Deref> Channel<SP> where
 
 		log_info!(logger, "Received channel_ready from peer for channel {}", &self.context.channel_id());
 
-		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger))
+		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
 	}
 
 	pub fn update_add_htlc<F, FE: Deref, L: Deref>(
@@ -5475,7 +5475,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let shutdown_msg = self.get_outbound_shutdown();
 
-		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger);
+		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger);
 
 		if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
 			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.

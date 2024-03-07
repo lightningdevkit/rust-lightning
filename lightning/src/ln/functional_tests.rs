@@ -1401,7 +1401,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).expect("RNG is bad!");
 
-	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
+	let cur_height = nodes[1].node.best_block.read().unwrap().height + 1;
 
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
@@ -1599,7 +1599,7 @@ fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
-	let cur_height = nodes[1].node.best_block.read().unwrap().height() + 1;
+	let cur_height = nodes[1].node.best_block.read().unwrap().height + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(&route.paths[0],
 		700_000, RecipientOnionFields::secret_only(payment_secret), cur_height, &None).unwrap();
@@ -1778,7 +1778,7 @@ fn test_chan_reserve_violation_inbound_htlc_inbound_chan() {
 	// Need to manually create the update_add_htlc message to go around the channel reserve check in send_htlc()
 	let secp_ctx = Secp256k1::new();
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
-	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
+	let cur_height = nodes[0].node.best_block.read().unwrap().height + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route_2.paths[0], &session_priv).unwrap();
 	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
 		&route_2.paths[0], recv_value_2, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
@@ -3503,7 +3503,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 
 		let secp_ctx = Secp256k1::new();
 		let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
-		let current_height = nodes[1].node.best_block.read().unwrap().height() + 1;
+		let current_height = nodes[1].node.best_block.read().unwrap().height + 1;
 		let (onion_payloads, _amount_msat, cltv_expiry) = onion_utils::build_onion_payloads(
 			&route.paths[0], 50_000, RecipientOnionFields::secret_only(payment_secret), current_height, &None).unwrap();
 		let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv).unwrap();
@@ -6488,7 +6488,7 @@ fn test_update_add_htlc_bolt2_receiver_check_max_htlc_limit() {
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000);
 	route.paths[0].hops[0].fee_msat = send_amt;
 	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
-	let cur_height = nodes[0].node.best_block.read().unwrap().height() + 1;
+	let cur_height = nodes[0].node.best_block.read().unwrap().height + 1;
 	let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::signing_only(), &route.paths[0], &session_priv).unwrap();
 	let (onion_payloads, _htlc_msat, htlc_cltv) = onion_utils::build_onion_payloads(
 		&route.paths[0], send_amt, RecipientOnionFields::secret_only(our_payment_secret), cur_height, &None).unwrap();
@@ -10085,7 +10085,7 @@ fn test_non_final_funding_tx() {
 	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message);
 
-	let best_height = nodes[0].node.best_block.read().unwrap().height();
+	let best_height = nodes[0].node.best_block.read().unwrap().height;
 
 	let chan_id = *nodes[0].network_chan_count.borrow();
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -10130,7 +10130,7 @@ fn test_non_final_funding_tx_within_headroom() {
 	let accept_channel_message = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel_message);
 
-	let best_height = nodes[0].node.best_block.read().unwrap().height();
+	let best_height = nodes[0].node.best_block.read().unwrap().height;
 
 	let chan_id = *nodes[0].network_chan_count.borrow();
 	let events = nodes[0].node.get_and_clear_pending_events();
