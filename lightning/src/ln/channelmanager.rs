@@ -3189,13 +3189,6 @@ where
 			let chan_update_opt = self.do_funded_channel_callback(next_packet_details.outgoing_scid, |chan: &mut Channel<SP>| {
 				self.get_channel_update_for_onion(next_packet_details.outgoing_scid, chan).ok()
 			}).flatten();
-			if err_code & 0x1000 != 0 && chan_update_opt.is_none() {
-				// We really should set `incorrect_cltv_expiry` here but as we're not
-				// forwarding over a real channel we can't generate a channel_update
-				// for it. Instead we just return a generic temporary_node_failure.
-				return Err((err_msg, 0x2000 | 2, None));
-			}
-			let chan_update_opt = if err_code & 0x1000 != 0 { chan_update_opt } else { None };
 			return Err((err_msg, err_code, chan_update_opt));
 		}
 
@@ -3208,7 +3201,8 @@ where
 		shared_secret: &[u8; 32]
 	) -> HTLCFailureMsg {
 		let mut res = VecWriter(Vec::with_capacity(chan_update.serialized_length() + 2 + 8 + 2));
-		if let Some(chan_update) = chan_update {
+		if chan_update.is_some() && err_code & 0x1000 == 0x1000 {
+			let chan_update = chan_update.unwrap();
 			if err_code == 0x1000 | 11 || err_code == 0x1000 | 12 {
 				msg.amount_msat.write(&mut res).expect("Writes cannot fail");
 			}
