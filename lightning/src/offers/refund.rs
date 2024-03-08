@@ -317,7 +317,6 @@ impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
 pub struct Refund {
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: RefundContents,
@@ -538,6 +537,14 @@ impl AsRef<[u8]> for Refund {
 		&self.bytes
 	}
 }
+
+impl PartialEq for Refund {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for Refund {}
 
 impl RefundContents {
 	pub fn description(&self) -> PrintableString {

@@ -363,7 +363,6 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
@@ -583,6 +582,14 @@ impl AsRef<[u8]> for Offer {
 		&self.bytes
 	}
 }
+
+impl PartialEq for Offer {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for Offer {}
 
 impl OfferContents {
 	pub fn chains(&self) -> Vec<ChainHash> {
