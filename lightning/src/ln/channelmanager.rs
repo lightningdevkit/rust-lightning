@@ -3103,15 +3103,6 @@ where
 			msg, &self.node_signer, &self.logger, &self.secp_ctx
 		)?;
 
-		let is_intro_node_forward = match next_hop {
-			onion_utils::Hop::Forward {
-				next_hop_data: msgs::InboundOnionPayload::BlindedForward {
-					intro_node_blinding_point: Some(_), ..
-				}, ..
-			} => true,
-			_ => false,
-		};
-
 		macro_rules! return_err {
 			($msg: expr, $err_code: expr, $data: expr) => {
 				{
@@ -3129,7 +3120,7 @@ where
 						}));
 					}
 
-					let (err_code, err_data) = if is_intro_node_forward {
+					let (err_code, err_data) = if next_hop.is_intro_node_blinded_forward() {
 						(INVALID_ONION_BLINDING, &[0; 32][..])
 					} else { ($err_code, $data) };
 					return Err(HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {

@@ -1054,6 +1054,21 @@ pub(crate) enum Hop {
 	},
 }
 
+impl Hop {
+	pub(crate) fn is_intro_node_blinded_forward(&self) -> bool {
+		match self {
+			Self::Forward {
+				next_hop_data:
+					msgs::InboundOnionPayload::BlindedForward {
+						intro_node_blinding_point: Some(_), ..
+					},
+				..
+			} => true,
+			_ => false,
+		}
+	}
+}
+
 /// Error returned when we fail to decode the onion packet.
 #[derive(Debug)]
 pub(crate) enum OnionDecodeErr {
