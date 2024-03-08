@@ -465,6 +465,12 @@ fn do_htlc_fail_async_shutdown(blinded_recipient: bool) {
 	check_added_monitors!(nodes[1], 1);
 	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
 	commitment_signed_dance!(nodes[1], nodes[0], (), false, true, false, false);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(
+		nodes[1].node.get_and_clear_pending_events(),
+		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_2.2 }]
+	);
+	check_added_monitors(&nodes[1], 1);
 
 	let updates_2 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(updates_2.update_add_htlcs.is_empty());

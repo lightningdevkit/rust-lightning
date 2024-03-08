@@ -71,6 +71,12 @@ fn test_priv_forwarding_rejection() {
 	let payment_event = SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(
+		nodes[1].node.get_and_clear_pending_events(),
+		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan_id_2 }]
+	);
+	check_added_monitors(&nodes[1], 1);
 
 	let htlc_fail_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(htlc_fail_updates.update_add_htlcs.is_empty());
@@ -435,6 +441,12 @@ fn test_inbound_scid_privacy() {
 	assert_eq!(nodes[1].node.get_our_node_id(), payment_event.node_id);
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, true, true);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(
+		nodes[1].node.get_and_clear_pending_events(),
+		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: last_hop[0].channel_id }]
+	);
+	check_added_monitors(&nodes[1], 1);
 
 	nodes[1].logger.assert_log_regex("lightning::ln::channelmanager", regex::Regex::new(r"Refusing to forward over real channel SCID as our counterparty requested").unwrap(), 1);
 
@@ -513,6 +525,13 @@ fn test_scid_alias_returned() {
 	let as_updates = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &as_updates.update_add_htlcs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], &as_updates.commitment_signed, false, true);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(
+		nodes[1].node.get_and_clear_pending_events(),
+		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: chan.0.channel_id }]
+	);
+	check_added_monitors(&nodes[1], 1);
 
 	let bs_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &bs_updates.update_fail_htlcs[0]);
