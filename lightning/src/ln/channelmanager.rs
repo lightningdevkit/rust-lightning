@@ -5355,9 +5355,14 @@ where
 		}
 	}
 
+	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
+		let push_forward_event = self.fail_htlc_backwards_internal_without_forward_event(source, payment_hash, onion_error, destination);
+		if push_forward_event { self.push_pending_forwards_ev(); }
+	}
+
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that we do not assume that channels corresponding to failed HTLCs are still available.
-	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
+	fn fail_htlc_backwards_internal_without_forward_event(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) -> bool {
 		// Ensure that no peer state channel storage lock is held when calling this function.
 		// This ensures that future code doesn't introduce a lock-order requirement for
 		// `forward_htlcs` to be locked after the `per_peer_state` peer locks, which calling
@@ -5375,12 +5380,12 @@ where
 		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
 		// from block_connected which may run during initialization prior to the chain_monitor
 		// being fully configured. See the docs for `ChannelManagerReadArgs` for more.
+		let mut push_forward_event;
 		match source {
 			HTLCSource::OutboundRoute { ref path, ref session_priv, ref payment_id, .. } => {
-				if self.pending_outbound_payments.fail_htlc(source, payment_hash, onion_error, path,
+				push_forward_event = self.pending_outbound_payments.fail_htlc(source, payment_hash, onion_error, path,
 					session_priv, payment_id, self.probing_cookie_secret, &self.secp_ctx,
-					&self.pending_events, &self.logger)
-				{ self.push_pending_forwards_ev(); }
+					&self.pending_events, &self.logger);
 			},
 			HTLCSource::PreviousHopData(HTLCPreviousHopData {
 				ref short_channel_id, ref htlc_id, ref incoming_packet_shared_secret,
@@ -5414,9 +5419,9 @@ where
 					}
 				};
 
-				let mut push_forward_ev = self.decode_update_add_htlcs.lock().unwrap().is_empty();
+				push_forward_event = self.decode_update_add_htlcs.lock().unwrap().is_empty();
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
-				push_forward_ev &= forward_htlcs.is_empty();
+				push_forward_event &= forward_htlcs.is_empty();
 				match forward_htlcs.entry(*short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
 						entry.get_mut().push(failure);
@@ -5426,7 +5431,6 @@ where
 					}
 				}
 				mem::drop(forward_htlcs);
-				if push_forward_ev { self.push_pending_forwards_ev(); }
 				let mut pending_events = self.pending_events.lock().unwrap();
 				pending_events.push_back((events::Event::HTLCHandlingFailed {
 					prev_channel_id: *channel_id,
@@ -5434,6 +5438,7 @@ where
 				}, None));
 			},
 		}
+		push_forward_event
 	}
 
 	/// Provides a payment preimage in response to [`Event::PaymentClaimable`], generating any
@@ -7016,8 +7021,14 @@ where
 
 	#[inline]
 	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) {
+		let push_forward_event = self.forward_htlcs_without_forward_event(per_source_pending_forwards);
+		if push_forward_event { self.push_pending_forwards_ev() }
+	}
+
+	#[inline]
+	fn forward_htlcs_without_forward_event(&self, per_source_pending_forwards: &mut [(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) -> bool {
+		let mut push_forward_event = false;
 		for &mut (prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_user_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
-			let mut push_forward_event = false;
 			let mut new_intercept_events = VecDeque::new();
 			let mut failed_intercept_forwards = Vec::new();
 			if !pending_forwards.is_empty() {
@@ -7079,9 +7090,7 @@ where
 							} else {
 								// We don't want to generate a PendingHTLCsForwardable event if only intercepted
 								// payments are being processed.
-								if forward_htlcs_empty && decode_update_add_htlcs_empty {
-									push_forward_event = true;
-								}
+								push_forward_event |= forward_htlcs_empty && decode_update_add_htlcs_empty;
 								entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 									prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info })));
 							}
@@ -7091,15 +7100,15 @@ where
 			}
 
 			for (htlc_source, payment_hash, failure_reason, destination) in failed_intercept_forwards.drain(..) {
-				self.fail_htlc_backwards_internal(&htlc_source, &payment_hash, &failure_reason, destination);
+				push_forward_event |= self.fail_htlc_backwards_internal_without_forward_event(&htlc_source, &payment_hash, &failure_reason, destination);
 			}
 
 			if !new_intercept_events.is_empty() {
 				let mut events = self.pending_events.lock().unwrap();
 				events.append(&mut new_intercept_events);
 			}
-			if push_forward_event { self.push_pending_forwards_ev() }
 		}
+		push_forward_event
 	}
 
 	fn push_pending_forwards_ev(&self) {
