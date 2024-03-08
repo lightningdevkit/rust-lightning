@@ -85,6 +85,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 use core::convert::TryFrom;
+use core::hash::{Hash, Hasher};
 use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
@@ -545,6 +546,12 @@ impl PartialEq for Refund {
 }
 
 impl Eq for Refund {}
+
+impl Hash for Refund {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		self.bytes.hash(state);
+	}
+}
 
 impl RefundContents {
 	pub fn description(&self) -> PrintableString {

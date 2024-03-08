@@ -80,6 +80,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use core::convert::TryFrom;
+use core::hash::{Hash, Hasher};
 use core::num::NonZeroU64;
 use core::ops::Deref;
 use core::str::FromStr;
@@ -590,6 +591,12 @@ impl PartialEq for Offer {
 }
 
 impl Eq for Offer {}
+
+impl Hash for Offer {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		self.bytes.hash(state);
+	}
+}
 
 impl OfferContents {
 	pub fn chains(&self) -> Vec<ChainHash> {
