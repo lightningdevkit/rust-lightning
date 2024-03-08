@@ -2,8 +2,9 @@
 //! current UTXO set. This module defines an implementation of the LDK API required to do so
 //! against a [`BlockSource`] which implements a few additional methods for accessing the UTXO set.
 
-use crate::{AsyncBlockSourceResult, BlockData, BlockSource, BlockSourceError};
+use crate::{BlockSourceResult, BlockData, BlockSource, BlockSourceError};
 
+use async_trait::async_trait;
 use bitcoin::blockdata::block::Block;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::transaction::{TxOut, OutPoint};
@@ -29,16 +30,17 @@ use std::task::Poll;
 /// Note that while this is implementable for a [`BlockSource`] which returns filtered block data
 /// (i.e. [`BlockData::HeaderOnly`] for [`BlockSource::get_block`] requests), such an
 /// implementation will reject all gossip as it is not fully able to verify the UTXOs referenced.
+#[async_trait]
 pub trait UtxoSource : BlockSource + 'static {
 	/// Fetches the block hash of the block at the given height.
 	///
 	/// This will, in turn, be passed to to [`BlockSource::get_block`] to fetch the block needed
 	/// for gossip validation.
-	fn get_block_hash_by_height<'a>(&'a self, block_height: u32) -> AsyncBlockSourceResult<'a, BlockHash>;
+	async fn get_block_hash_by_height(&self, block_height: u32) -> BlockSourceResult<BlockHash>;
 
 	/// Returns true if the given output has *not* been spent, i.e. is a member of the current UTXO
 	/// set.
-	fn is_output_unspent<'a>(&'a self, outpoint: OutPoint) -> AsyncBlockSourceResult<'a, bool>;
+	async fn is_output_unspent(&self, outpoint: OutPoint) -> BlockSourceResult<bool>;
 }
 
 /// A generic trait which is able to spawn futures in the background.
@@ -199,11 +201,15 @@ impl<S: FutureSpawner,
 					}
 				}
 			}
-
+			
+			// TODO: Temporary value is required to be stored somewhere in Rust <v1.75
+			let get_best_block_fut = source.get_best_block();
+			let get_block_hash_by_height_fut = source.get_block_hash_by_height(block_height);
 			let ((_, tip_height_opt), block_hash) =
-				Joiner::new(source.get_best_block(), source.get_block_hash_by_height(block_height))
+				Joiner::new(get_best_block_fut, get_block_hash_by_height_fut)
 				.await
 				.map_err(|_| UtxoLookupError::UnknownTx)?;
+
 			if let Some(tip_height) = tip_height_opt {
 				// If the block doesn't yet have five confirmations, error out.
 				//
@@ -214,7 +220,8 @@ impl<S: FutureSpawner,
 					return Err(UtxoLookupError::UnknownTx);
 				}
 			}
-			let block_data = source.get_block(&block_hash).await
+			let get_block_fut = source.get_block(&block_hash);
+			let block_data = get_block_fut.await
 				.map_err(|_| UtxoLookupError::UnknownTx)?;
 			let block = match block_data {
 				BlockData::HeaderOnly(_) => return Err(UtxoLookupError::UnknownTx),
@@ -238,8 +245,8 @@ impl<S: FutureSpawner,
 			}
 			break 'tx_found;
 		};
-		let outpoint_unspent =
-			source.is_output_unspent(outpoint).await.map_err(|_| UtxoLookupError::UnknownTx)?;
+		let is_output_unspent_fut = source.is_output_unspent(outpoint);
+		let outpoint_unspent = is_output_unspent_fut.await.map_err(|_| UtxoLookupError::UnknownTx)?;
 		if outpoint_unspent {
 			Ok(output)
 		} else {

@@ -1,6 +1,7 @@
-use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError, UnboundedCache};
+use crate::{BlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError, UnboundedCache};
 use crate::poll::{Validate, ValidatedBlockHeader};
 
+use async_trait::async_trait;
 use bitcoin::blockdata::block::{Block, Header, Version};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::locktime::absolute::LockTime;
@@ -133,58 +134,53 @@ impl Blockchain {
 	}
 }
 
+#[async_trait]
 impl BlockSource for Blockchain {
-	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, _height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
-		Box::pin(async move {
-			if self.without_headers {
-				return Err(BlockSourceError::persistent("header not found"));
-			}
+	async fn get_header(&self, header_hash: &BlockHash, _height_hint: Option<u32>) -> BlockSourceResult<BlockHeaderData> {
+		if self.without_headers {
+			return Err(BlockSourceError::persistent("header not found"));
+		}
 
-			for (height, block) in self.blocks.iter().enumerate() {
-				if block.header.block_hash() == *header_hash {
-					let mut header_data = self.at_height_unvalidated(height);
-					if self.malformed_headers {
-						header_data.header.time += 1;
-					}
-
-					return Ok(header_data);
+		for (height, block) in self.blocks.iter().enumerate() {
+			if block.header.block_hash() == *header_hash {
+				let mut header_data = self.at_height_unvalidated(height);
+				if self.malformed_headers {
+					header_data.header.time += 1;
 				}
+
+				return Ok(header_data);
 			}
-			Err(BlockSourceError::transient("header not found"))
-		})
+		}
+		Err(BlockSourceError::transient("header not found"))
 	}
 
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
-		Box::pin(async move {
-			for (height, block) in self.blocks.iter().enumerate() {
-				if block.header.block_hash() == *header_hash {
-					if let Some(without_blocks) = &self.without_blocks {
-						if without_blocks.contains(&height) {
-							return Err(BlockSourceError::persistent("block not found"));
-						}
-					}
-
-					if self.filtered_blocks {
-						return Ok(BlockData::HeaderOnly(block.header));
-					} else {
-						return Ok(BlockData::FullBlock(block.clone()));
+	async fn get_block(&self, header_hash: &BlockHash) -> BlockSourceResult<BlockData> {
+		for (height, block) in self.blocks.iter().enumerate() {
+			if block.header.block_hash() == *header_hash {
+				if let Some(without_blocks) = &self.without_blocks {
+					if without_blocks.contains(&height) {
+						return Err(BlockSourceError::persistent("block not found"));
 					}
 				}
+
+				if self.filtered_blocks {
+					return Ok(BlockData::HeaderOnly(block.header));
+				} else {
+					return Ok(BlockData::FullBlock(block.clone()));
+				}
 			}
-			Err(BlockSourceError::transient("block not found"))
-		})
+		}
+		Err(BlockSourceError::transient("block not found"))
 	}
 
-	fn get_best_block<'a>(&'a self) -> AsyncBlockSourceResult<'a, (BlockHash, Option<u32>)> {
-		Box::pin(async move {
-			match self.blocks.last() {
-				None => Err(BlockSourceError::transient("empty chain")),
-				Some(block) => {
-					let height = (self.blocks.len() - 1) as u32;
-					Ok((block.block_hash(), Some(height)))
-				},
-			}
-		})
+	async fn get_best_block(&self) -> BlockSourceResult<(BlockHash, Option<u32>)> {
+		match self.blocks.last() {
+			None => Err(BlockSourceError::transient("empty chain")),
+			Some(block) => {
+				let height = (self.blocks.len() - 1) as u32;
+				Ok((block.block_hash(), Some(height)))
+			},
+		}
 	}
 }
 

@@ -60,7 +60,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 /// use std::io::Cursor;
 ///
 /// async fn init_sync<
-/// 	B: BlockSource,
+/// 	B: BlockSource + std::marker::Sync,
 /// 	ES: EntropySource,
 /// 	NS: NodeSigner,
 /// 	SP: SignerProvider,
