@@ -5414,11 +5414,9 @@ where
 					}
 				};
 
-				let mut push_forward_ev = false;
+				let mut push_forward_ev = self.decode_update_add_htlcs.lock().unwrap().is_empty();
 				let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
-				if forward_htlcs.is_empty() {
-					push_forward_ev = true;
-				}
+				push_forward_ev &= forward_htlcs.is_empty();
 				match forward_htlcs.entry(*short_channel_id) {
 					hash_map::Entry::Occupied(mut entry) => {
 						entry.get_mut().push(failure);
@@ -7005,12 +7003,15 @@ where
 	}
 
 	fn push_decode_update_add_htlcs(&self, mut update_add_htlcs: (u64, Vec<msgs::UpdateAddHTLC>)) {
+		let mut push_forward_event = self.forward_htlcs.lock().unwrap().is_empty();
 		let mut decode_update_add_htlcs = self.decode_update_add_htlcs.lock().unwrap();
+		push_forward_event &= decode_update_add_htlcs.is_empty();
 		let scid = update_add_htlcs.0;
 		match decode_update_add_htlcs.entry(scid) {
 			hash_map::Entry::Occupied(mut e) => { e.get_mut().append(&mut update_add_htlcs.1); },
 			hash_map::Entry::Vacant(e) => { e.insert(update_add_htlcs.1); },
 		}
+		if push_forward_event { self.push_pending_forwards_ev(); }
 	}
 
 	#[inline]
@@ -7029,6 +7030,7 @@ where
 					// Pull this now to avoid introducing a lock order with `forward_htlcs`.
 					let is_our_scid = self.short_to_chan_info.read().unwrap().contains_key(&scid);
 
+					let decode_update_add_htlcs_empty = self.decode_update_add_htlcs.lock().unwrap().is_empty();
 					let mut forward_htlcs = self.forward_htlcs.lock().unwrap();
 					let forward_htlcs_empty = forward_htlcs.is_empty();
 					match forward_htlcs.entry(scid) {
@@ -7077,7 +7079,7 @@ where
 							} else {
 								// We don't want to generate a PendingHTLCsForwardable event if only intercepted
 								// payments are being processed.
-								if forward_htlcs_empty {
+								if forward_htlcs_empty && decode_update_add_htlcs_empty {
 									push_forward_event = true;
 								}
 								entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
@@ -10874,7 +10876,7 @@ where
 			(13, claimable_htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs, option),
 		});
-		let decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
+		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		if fake_scid_rand_bytes.is_none() {
 			fake_scid_rand_bytes = Some(args.entropy_source.get_secure_random_bytes());
 		}
@@ -11094,6 +11096,18 @@ where
 								// still have an entry for this HTLC in `forward_htlcs` or
 								// `pending_intercepted_htlcs`, we were apparently not persisted after
 								// the monitor was when forwarding the payment.
+								decode_update_add_htlcs.retain(|scid, update_add_htlcs| {
+									update_add_htlcs.retain(|update_add_htlc| {
+										let matches = *scid == prev_hop_data.short_channel_id &&
+											update_add_htlc.htlc_id == prev_hop_data.htlc_id;
+										if matches {
+											log_info!(logger, "Removing pending to-decode HTLC with hash {} as it was forwarded to the closed channel {}",
+												&htlc.payment_hash, &monitor.channel_id());
+										}
+										!matches
+									});
+									!update_add_htlcs.is_empty()
+								});
 								forward_htlcs.retain(|_, forwards| {
 									forwards.retain(|forward| {
 										if let HTLCForwardInfo::AddHTLC(htlc_info) = forward {
@@ -11175,7 +11189,7 @@ where
 			}
 		}
 
-		if !forward_htlcs.is_empty() || pending_outbounds.needs_abandon() {
+		if !forward_htlcs.is_empty() || !decode_update_add_htlcs.is_empty() || pending_outbounds.needs_abandon() {
 			// If we have pending HTLCs to forward, assume we either dropped a
 			// `PendingHTLCsForwardable` or the user received it but never processed it as they
 			// shut down before the timer hit. Either way, set the time_forwardable to a small
