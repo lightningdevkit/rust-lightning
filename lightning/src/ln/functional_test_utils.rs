@@ -2223,17 +2223,26 @@ macro_rules! expect_payment_path_successful {
 	}
 }
 
+/// Returns the total fee earned by this HTLC forward, in msat.
 pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 	event: Event, node: &H, prev_node: &H, next_node: &H, expected_fee: Option<u64>,
 	expected_extra_fees_msat: Option<u64>, upstream_force_closed: bool,
-	downstream_force_closed: bool
-) {
+	downstream_force_closed: bool, allow_1_msat_fee_overpay: bool,
+) -> Option<u64> {
 	match event {
 		Event::PaymentForwarded {
 			total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
 			outbound_amount_forwarded_msat: _, skimmed_fee_msat
 		} => {
-			assert_eq!(total_fee_earned_msat, expected_fee);
+			if allow_1_msat_fee_overpay {
+				// Aggregating fees for blinded paths may result in a rounding error, causing slight
+				// overpayment in fees.
+				let actual_fee = total_fee_earned_msat.unwrap();
+				let expected_fee = expected_fee.unwrap();
+				assert!(actual_fee == expected_fee || actual_fee == expected_fee + 1);
+			} else {
+				assert_eq!(total_fee_earned_msat, expected_fee);
+			}
 
 			// Check that the (knowingly) withheld amount is always less or equal to the expected
 			// overpaid amount.
@@ -2248,6 +2257,7 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 				assert!(node.node().list_channels().iter().any(|x| x.counterparty.node_id == next_node.node().get_our_node_id() && x.channel_id == next_channel_id.unwrap()));
 			}
 			assert_eq!(claim_from_onchain_tx, downstream_force_closed);
+			total_fee_earned_msat
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -2260,7 +2270,7 @@ macro_rules! expect_payment_forwarded {
 		assert_eq!(events.len(), 1);
 		$crate::ln::functional_test_utils::expect_payment_forwarded(
 			events.pop().unwrap(), &$node, &$prev_node, &$next_node, $expected_fee, None,
-			$upstream_force_closed, $downstream_force_closed
+			$upstream_force_closed, $downstream_force_closed, false
 		);
 	}
 }
@@ -2472,7 +2482,60 @@ fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
 	}
 }
 
-pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, clear_recipient_events: bool, expected_preimage: Option<PaymentPreimage>, is_probe: bool) -> Option<Event> {
+pub struct PassAlongPathArgs<'a, 'b, 'c, 'd> {
+	pub origin_node: &'a Node<'b, 'c, 'd>,
+	pub expected_path: &'a [&'a Node<'b, 'c, 'd>],
+	pub recv_value: u64,
+	pub payment_hash: PaymentHash,
+	pub payment_secret: Option<PaymentSecret>,
+	pub event: MessageSendEvent,
+	pub payment_claimable_expected: bool,
+	pub clear_recipient_events: bool,
+	pub expected_preimage: Option<PaymentPreimage>,
+	pub is_probe: bool,
+}
+
+impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
+	pub fn new(
+		origin_node: &'a Node<'b, 'c, 'd>, expected_path: &'a [&'a Node<'b, 'c, 'd>], recv_value: u64,
+		payment_hash: PaymentHash, event: MessageSendEvent,
+	) -> Self {
+		Self {
+			origin_node, expected_path, recv_value, payment_hash, payment_secret: None, event,
+			payment_claimable_expected: true, clear_recipient_events: true, expected_preimage: None,
+			is_probe: false,
+		}
+	}
+	pub fn without_clearing_recipient_events(mut self) -> Self {
+		self.clear_recipient_events = false;
+		self
+	}
+	pub fn is_probe(mut self) -> Self {
+		self.payment_claimable_expected = false;
+		self.is_probe = true;
+		self
+	}
+	pub fn without_claimable_event(mut self) -> Self {
+		self.payment_claimable_expected = false;
+		self
+	}
+	pub fn with_payment_secret(mut self, payment_secret: PaymentSecret) -> Self {
+		self.payment_secret = Some(payment_secret);
+		self
+	}
+	pub fn with_payment_preimage(mut self, payment_preimage: PaymentPreimage) -> Self {
+		self.expected_preimage = Some(payment_preimage);
+		self
+	}
+}
+
+pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> {
+	let PassAlongPathArgs {
+		origin_node, expected_path, recv_value, payment_hash: our_payment_hash,
+		payment_secret: our_payment_secret, event: ev, payment_claimable_expected,
+		clear_recipient_events, expected_preimage, is_probe
+	} = args;
+
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
 	let mut event = None;
@@ -2539,7 +2602,17 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 }
 
 pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, expected_preimage: Option<PaymentPreimage>) -> Option<Event> {
-	do_pass_along_path(origin_node, expected_path, recv_value, our_payment_hash, our_payment_secret, ev, payment_claimable_expected, true, expected_preimage, false)
+	let mut args = PassAlongPathArgs::new(origin_node, expected_path, recv_value, our_payment_hash, ev);
+	if !payment_claimable_expected {
+		args = args.without_claimable_event();
+	}
+	if let Some(payment_secret) = our_payment_secret {
+		args = args.with_payment_secret(payment_secret);
+	}
+	if let Some(payment_preimage) = expected_preimage {
+		args = args.with_payment_preimage(payment_preimage);
+	}
+	do_pass_along_path(args)
 }
 
 pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]]) {
@@ -2551,7 +2624,10 @@ pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expect
 	for path in expected_route.iter() {
 		let ev = remove_first_msg_event_to_node(&path[0].node.get_our_node_id(), &mut events);
 
-		do_pass_along_path(origin_node, path, 0, PaymentHash([0_u8; 32]), None, ev, false, false, None, true);
+		do_pass_along_path(PassAlongPathArgs::new(origin_node, path, 0, PaymentHash([0_u8; 32]), ev)
+			.is_probe()
+			.without_clearing_recipient_events());
+
 		let nodes_to_fail_payment: Vec<_> = vec![origin_node].into_iter().chain(path.iter().cloned()).collect();
 
 		fail_payment_along_path(nodes_to_fail_payment.as_slice());
@@ -2598,6 +2674,14 @@ pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	pub expected_min_htlc_overpay: Vec<u32>,
 	pub skip_last: bool,
 	pub payment_preimage: PaymentPreimage,
+	// Allow forwarding nodes to have taken 1 msat more fee than expected based on the downstream
+	// fulfill amount.
+	//
+	// Necessary because our test utils calculate the expected fee for an intermediate node based on
+	// the amount was claimed in their downstream peer's fulfill, but blinded intermediate nodes
+	// calculate their fee based on the inbound amount from their upstream peer, causing a difference
+	// in rounding.
+	pub allow_1_msat_fee_overpay: bool,
 }
 
 impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
@@ -2608,6 +2692,7 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 		Self {
 			origin_node, expected_paths, expected_extra_fees: vec![0; expected_paths.len()],
 			expected_min_htlc_overpay: vec![0; expected_paths.len()], skip_last: false, payment_preimage,
+			allow_1_msat_fee_overpay: false,
 		}
 	}
 	pub fn skip_last(mut self, skip_last: bool) -> Self {
@@ -2622,15 +2707,21 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 		self.expected_min_htlc_overpay = extra_fees;
 		self
 	}
+	pub fn allow_1_msat_fee_overpay(mut self) -> Self {
+		self.allow_1_msat_fee_overpay = true;
+		self
+	}
 }
 
 pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArgs) -> u64 {
 	let ClaimAlongRouteArgs {
 		origin_node, expected_paths, expected_extra_fees, expected_min_htlc_overpay, skip_last,
-		payment_preimage: our_payment_preimage
+		payment_preimage: our_payment_preimage, allow_1_msat_fee_overpay,
 	} = args;
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
+	#[allow(unused)]
+	let mut fwd_amt_msat = 0;
 	match claim_event[0] {
 		Event::PaymentClaimed {
 			purpose: PaymentPurpose::SpontaneousPayment(preimage),
@@ -2647,6 +2738,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
 			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
+			fwd_amt_msat = amount_msat;
 		},
 		Event::PaymentClaimed {
 			purpose: PaymentPurpose::InvoicePayment { .. },
@@ -2659,6 +2751,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
 			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
+			fwd_amt_msat = amount_msat;
 		}
 		_ => panic!(),
 	}
@@ -2690,8 +2783,12 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 		per_path_msgs.push(msgs_from_ev!(&events[0]));
 	} else {
 		for expected_path in expected_paths.iter() {
-			// For MPP payments, we always want the message to the first node in the path.
-			let ev = remove_first_msg_event_to_node(&expected_path[0].node.get_our_node_id(), &mut events);
+			// For MPP payments, we want the fulfill message from the payee to the penultimate hop in the
+			// path.
+			let penultimate_hop_node_id = expected_path.iter().rev().skip(1).next()
+				.map(|n| n.node.get_our_node_id())
+				.unwrap_or(origin_node.node.get_our_node_id());
+			let ev = remove_first_msg_event_to_node(&penultimate_hop_node_id, &mut events);
 			per_path_msgs.push(msgs_from_ev!(&ev));
 		}
 	}
@@ -2715,15 +2812,20 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
 					let mut fee = {
-						let per_peer_state = $node.node.per_peer_state.read().unwrap();
-						let peer_state = per_peer_state.get(&$prev_node.node.get_our_node_id())
-							.unwrap().lock().unwrap();
-						let channel = peer_state.channel_by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap();
-						if let Some(prev_config) = channel.context().prev_config() {
-							prev_config.forwarding_fee_base_msat
-						} else {
-							channel.context().config().forwarding_fee_base_msat
-						}
+						let (base_fee, prop_fee) = {
+							let per_peer_state = $node.node.per_peer_state.read().unwrap();
+							let peer_state = per_peer_state.get(&$prev_node.node.get_our_node_id())
+								.unwrap().lock().unwrap();
+							let channel = peer_state.channel_by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap();
+							if let Some(prev_config) = channel.context().prev_config() {
+								(prev_config.forwarding_fee_base_msat as u64,
+								 prev_config.forwarding_fee_proportional_millionths as u64)
+							} else {
+								(channel.context().config().forwarding_fee_base_msat as u64,
+								 channel.context().config().forwarding_fee_proportional_millionths as u64)
+							}
+						};
+						((fwd_amt_msat * prop_fee / 1_000_000) + base_fee) as u32
 					};
 
 					let mut expected_extra_fee = None;
@@ -2734,9 +2836,10 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 					}
 					let mut events = $node.node.get_and_clear_pending_events();
 					assert_eq!(events.len(), 1);
-					expect_payment_forwarded(events.pop().unwrap(), *$node, $next_node, $prev_node,
-						Some(fee as u64), expected_extra_fee, false, false);
-					expected_total_fee_msat += fee as u64;
+					let actual_fee = expect_payment_forwarded(events.pop().unwrap(), *$node, $next_node, $prev_node,
+						Some(fee as u64), expected_extra_fee, false, false, allow_1_msat_fee_overpay);
+					expected_total_fee_msat += actual_fee.unwrap();
+					fwd_amt_msat += actual_fee.unwrap();
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
 						let events = $node.node.get_and_clear_pending_msg_events();

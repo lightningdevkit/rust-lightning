@@ -145,9 +145,9 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 	// invoice contains the payment_hash but it was encrypted inside an onion message.
 	let amount_msats = invoice.amount_msats();
 	let payment_hash = invoice.payment_hash();
-	do_pass_along_path(
-		node, path, amount_msats, payment_hash, None, ev, false, false, None, false
-	);
+	let args = PassAlongPathArgs::new(node, path, amount_msats, payment_hash, ev)
+		.without_clearing_recipient_events();
+	do_pass_along_path(args);
 }
 
 fn claim_bolt12_payment<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>]) {
