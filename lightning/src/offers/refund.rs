@@ -85,6 +85,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 use core::convert::TryFrom;
+use core::hash::{Hash, Hasher};
 use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
@@ -317,7 +318,6 @@ impl<'a, T: secp256k1::Signing> RefundBuilder<'a, T> {
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
 pub struct Refund {
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: RefundContents,
@@ -536,6 +536,20 @@ impl Refund {
 impl AsRef<[u8]> for Refund {
 	fn as_ref(&self) -> &[u8] {
 		&self.bytes
+	}
+}
+
+impl PartialEq for Refund {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for Refund {}
+
+impl Hash for Refund {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		self.bytes.hash(state);
 	}
 }
 

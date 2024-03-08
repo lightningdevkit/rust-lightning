@@ -80,6 +80,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use core::convert::TryFrom;
+use core::hash::{Hash, Hasher};
 use core::num::NonZeroU64;
 use core::ops::Deref;
 use core::str::FromStr;
@@ -363,7 +364,6 @@ impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
@@ -581,6 +581,20 @@ impl Offer {
 impl AsRef<[u8]> for Offer {
 	fn as_ref(&self) -> &[u8] {
 		&self.bytes
+	}
+}
+
+impl PartialEq for Offer {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for Offer {}
+
+impl Hash for Offer {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		self.bytes.hash(state);
 	}
 }
 
