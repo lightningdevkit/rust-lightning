@@ -4121,19 +4121,11 @@ impl<SP: Deref> Channel<SP> where
 		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
 	}
 
-	pub fn update_add_htlc<F, FE: Deref, L: Deref>(
-		&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus,
-		create_pending_htlc_status: F, fee_estimator: &LowerBoundedFeeEstimator<FE>, logger: &L
-	) -> Result<(), ChannelError>
-	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus,
-		FE::Target: FeeEstimator, L::Target: Logger,
-	{
+	pub fn update_add_htlc(
+		&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_status: PendingHTLCStatus,
+	) -> Result<(), ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state".to_owned()));
-		}
-		// We can't accept HTLCs sent after we've sent a shutdown.
-		if self.context.channel_state.is_local_shutdown_sent() {
-			pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x4000|8);
 		}
 		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
 		if self.context.channel_state.is_remote_shutdown_sent() {
@@ -4153,7 +4145,6 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
-		let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
 		if inbound_stats.pending_htlcs + 1 > self.context.holder_max_accepted_htlcs as u32 {
 			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.context.holder_max_accepted_htlcs)));
 		}
@@ -4179,34 +4170,6 @@ impl<SP: Deref> Channel<SP> where
 				removed_outbound_total_msat += htlc.amount_msat;
 			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
 				removed_outbound_total_msat += htlc.amount_msat;
-			}
-		}
-
-		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			(0, 0)
-		} else {
-			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(self.context.get_channel_type()) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(self.context.get_channel_type()) / 1000)
-		};
-		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
-		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
-			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
-			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
-				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
-					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
-				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
-			}
-		}
-
-		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
-		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
-			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
-			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
-				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
-					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
-				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
 			}
 		}
 
@@ -4243,23 +4206,7 @@ impl<SP: Deref> Channel<SP> where
 		} else {
 			0
 		};
-		if !self.context.is_outbound() {
-			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
-			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
-			// side, only on the sender's. Note that with anchor outputs we are no longer as
-			// sensitive to fee spikes, so we need to account for them.
-			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
-			if !self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
-			}
-			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
-				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
-				// the HTLC, i.e. its status is already set to failing.
-				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
-				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
-			}
-		} else {
+		if self.context.is_outbound() {
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
@@ -6146,6 +6093,86 @@ impl<SP: Deref> Channel<SP> where
 					Err(err)
 				}
 			})
+	}
+
+	pub fn can_accept_incoming_htlc<F: Deref, L: Deref>(
+		&self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: L
+	) -> Result<(), (&'static str, u16)>
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger
+	{
+		if self.context.channel_state.is_local_shutdown_sent() {
+			return Err(("Shutdown was already sent", 0x4000|8))
+		}
+
+		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
+		let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
+		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(self.context.get_channel_type()) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(self.context.get_channel_type()) / 1000)
+		};
+		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
+		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
+			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
+			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
+				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
+					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
+				return Err(("Exceeded our dust exposure limit on counterparty commitment tx", 0x1000|7))
+			}
+		}
+
+		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
+		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
+			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
+			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
+				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
+					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
+				return Err(("Exceeded our dust exposure limit on holder commitment tx", 0x1000|7))
+			}
+		}
+
+		let anchor_outputs_value_msat = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
+		} else {
+			0
+		};
+
+		let mut removed_outbound_total_msat = 0;
+		for ref htlc in self.context.pending_outbound_htlcs.iter() {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
+				removed_outbound_total_msat += htlc.amount_msat;
+			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+				removed_outbound_total_msat += htlc.amount_msat;
+			}
+		}
+
+		let pending_value_to_self_msat =
+			self.context.value_to_self_msat + inbound_stats.pending_htlcs_value_msat - removed_outbound_total_msat;
+		let pending_remote_value_msat =
+			self.context.channel_value_satoshis * 1000 - pending_value_to_self_msat;
+
+		if !self.context.is_outbound() {
+			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
+			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
+			// side, only on the sender's. Note that with anchor outputs we are no longer as
+			// sensitive to fee spikes, so we need to account for them.
+			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
+			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
+			if !self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
+			}
+			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
+				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
+				return Err(("Fee spike buffer violation", 0x1000|7));
+			}
+		}
+
+		Ok(())
 	}
 
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {

@@ -6814,7 +6814,7 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
-					let pending_forward_info = match decoded_hop_res {
+					let mut pending_forward_info = match decoded_hop_res {
 						Ok((next_hop, shared_secret, next_packet_pk_opt)) =>
 							self.construct_pending_htlc_status(
 								msg, counterparty_node_id, shared_secret, next_hop,
@@ -6822,44 +6822,45 @@ where
 							),
 						Err(e) => PendingHTLCStatus::Fail(e)
 					};
-					let create_pending_htlc_status = |chan: &Channel<SP>, pending_forward_info: PendingHTLCStatus, error_code: u16| {
+					let logger = WithChannelContext::from(&self.logger, &chan.context);
+					// If the update_add is completely bogus, the call will Err and we will close,
+					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
+					// want to reject the new HTLC and fail it backwards instead of forwarding.
+					if let Err((_, error_code)) = chan.can_accept_incoming_htlc(&msg, &self.fee_estimator, &logger) {
 						if msg.blinding_point.is_some() {
-							return PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
-									msgs::UpdateFailMalformedHTLC {
-										channel_id: msg.channel_id,
-										htlc_id: msg.htlc_id,
-										sha256_of_onion: [0; 32],
-										failure_code: INVALID_ONION_BLINDING,
-									}
-							))
-						}
-						// If the update_add is completely bogus, the call will Err and we will close,
-						// but if we've sent a shutdown and they haven't acknowledged it yet, we just
-						// want to reject the new HTLC and fail it backwards instead of forwarding.
-						match pending_forward_info {
-							PendingHTLCStatus::Forward(PendingHTLCInfo {
-								ref incoming_shared_secret, ref routing, ..
-							}) => {
-								let reason = if routing.blinded_failure().is_some() {
-									HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32])
-								} else if (error_code & 0x1000) != 0 {
-									let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
-									HTLCFailReason::reason(real_code, error_data)
-								} else {
-									HTLCFailReason::from_failure_code(error_code)
-								}.get_encrypted_failure_packet(incoming_shared_secret, &None);
-								let msg = msgs::UpdateFailHTLC {
+							pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
+								msgs::UpdateFailMalformedHTLC {
 									channel_id: msg.channel_id,
 									htlc_id: msg.htlc_id,
-									reason
-								};
-								PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msg))
-							},
-							_ => pending_forward_info
+									sha256_of_onion: [0; 32],
+									failure_code: INVALID_ONION_BLINDING,
+								}
+							))
+						} else {
+							match pending_forward_info {
+								PendingHTLCStatus::Forward(PendingHTLCInfo {
+									ref incoming_shared_secret, ref routing, ..
+								}) => {
+									let reason = if routing.blinded_failure().is_some() {
+										HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32])
+									} else if (error_code & 0x1000) != 0 {
+										let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
+										HTLCFailReason::reason(real_code, error_data)
+									} else {
+										HTLCFailReason::from_failure_code(error_code)
+									}.get_encrypted_failure_packet(incoming_shared_secret, &None);
+									let msg = msgs::UpdateFailHTLC {
+										channel_id: msg.channel_id,
+										htlc_id: msg.htlc_id,
+										reason
+									};
+									pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msg));
+								},
+								_ => {},
+							}
 						}
-					};
-					let logger = WithChannelContext::from(&self.logger, &chan.context);
-					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info, create_pending_htlc_status, &self.fee_estimator, &&logger), chan_phase_entry);
+					}
+					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info), chan_phase_entry);
 				} else {
 					return try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
