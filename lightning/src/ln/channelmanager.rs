@@ -4304,12 +4304,153 @@ where
 		Ok(())
 	}
 
+	fn process_pending_update_add_htlcs(&self) {
+		let mut decode_update_add_htlcs = new_hash_map();
+		mem::swap(&mut decode_update_add_htlcs, &mut self.decode_update_add_htlcs.lock().unwrap());
+
+		let get_failed_htlc_destination = |outgoing_scid_opt: Option<u64>, payment_hash: PaymentHash| {
+			if let Some(outgoing_scid) = outgoing_scid_opt {
+				match self.short_to_chan_info.read().unwrap().get(&outgoing_scid) {
+					Some((outgoing_counterparty_node_id, outgoing_channel_id)) =>
+						HTLCDestination::NextHopChannel {
+							node_id: Some(*outgoing_counterparty_node_id),
+							channel_id: *outgoing_channel_id,
+						},
+					None => HTLCDestination::UnknownNextHop {
+						requested_forward_scid: outgoing_scid,
+					},
+				}
+			} else {
+				HTLCDestination::FailedPayment { payment_hash }
+			}
+		};
+
+		'outer_loop: for (incoming_scid, update_add_htlcs) in decode_update_add_htlcs {
+			let incoming_channel_details_opt = self.do_funded_channel_callback(incoming_scid, |chan: &mut Channel<SP>| {
+				let counterparty_node_id = chan.context.get_counterparty_node_id();
+				let channel_id = chan.context.channel_id();
+				let funding_txo = chan.context.get_funding_txo().unwrap();
+				let user_channel_id = chan.context.get_user_id();
+				let accept_underpaying_htlcs = chan.context.config().accept_underpaying_htlcs;
+				(counterparty_node_id, channel_id, funding_txo, user_channel_id, accept_underpaying_htlcs)
+			});
+			let (
+				incoming_counterparty_node_id, incoming_channel_id, incoming_funding_txo,
+				incoming_user_channel_id, incoming_accept_underpaying_htlcs
+			 ) = if let Some(incoming_channel_details) = incoming_channel_details_opt {
+				incoming_channel_details
+			} else {
+				// The incoming channel no longer exists, HTLCs should be resolved onchain instead.
+				continue;
+			};
+
+			let mut htlc_forwards = Vec::new();
+			let mut htlc_fails = Vec::new();
+			for update_add_htlc in &update_add_htlcs {
+				let (next_hop, shared_secret, next_packet_details_opt) = match decode_incoming_update_add_htlc_onion(
+					&update_add_htlc, &self.node_signer, &self.logger, &self.secp_ctx
+				) {
+					Ok(decoded_onion) => decoded_onion,
+					Err(htlc_fail) => {
+						htlc_fails.push((htlc_fail, HTLCDestination::InvalidOnion));
+						continue;
+					},
+				};
+
+				let is_intro_node_blinded_forward = next_hop.is_intro_node_blinded_forward();
+				let outgoing_scid_opt = next_packet_details_opt.as_ref().map(|d| d.outgoing_scid);
+
+				// Process the HTLC on the incoming channel.
+				match self.do_funded_channel_callback(incoming_scid, |chan: &mut Channel<SP>| {
+					let logger = WithChannelContext::from(&self.logger, &chan.context);
+					chan.can_accept_incoming_htlc(
+						update_add_htlc, &self.fee_estimator, &logger,
+					)
+				}) {
+					Some(Ok(_)) => {},
+					Some(Err((err, code))) => {
+						let outgoing_chan_update_opt = if let Some(outgoing_scid) = outgoing_scid_opt.as_ref() {
+							self.do_funded_channel_callback(*outgoing_scid, |chan: &mut Channel<SP>| {
+								self.get_channel_update_for_onion(*outgoing_scid, chan).ok()
+							}).flatten()
+						} else {
+							None
+						};
+						let htlc_fail = self.htlc_failure_from_update_add_err(
+							&update_add_htlc, &incoming_counterparty_node_id, err, code,
+							outgoing_chan_update_opt, is_intro_node_blinded_forward, &shared_secret,
+						);
+						let htlc_destination = get_failed_htlc_destination(outgoing_scid_opt, update_add_htlc.payment_hash);
+						htlc_fails.push((htlc_fail, htlc_destination));
+						continue;
+					},
+					// The incoming channel no longer exists, HTLCs should be resolved onchain instead.
+					None => continue 'outer_loop,
+				}
+
+				// Now process the HTLC on the outgoing channel if it's a forward.
+				if let Some(next_packet_details) = next_packet_details_opt.as_ref() {
+					if let Err((err, code, chan_update_opt)) = self.can_forward_htlc(
+						&update_add_htlc, next_packet_details
+					) {
+						let htlc_fail = self.htlc_failure_from_update_add_err(
+							&update_add_htlc, &incoming_counterparty_node_id, err, code,
+							chan_update_opt, is_intro_node_blinded_forward, &shared_secret,
+						);
+						let htlc_destination = get_failed_htlc_destination(outgoing_scid_opt, update_add_htlc.payment_hash);
+						htlc_fails.push((htlc_fail, htlc_destination));
+						continue;
+					}
+				}
+
+				match self.construct_pending_htlc_status(
+					&update_add_htlc, &incoming_counterparty_node_id, shared_secret, next_hop,
+					incoming_accept_underpaying_htlcs, next_packet_details_opt.map(|d| d.next_packet_pubkey),
+				) {
+					PendingHTLCStatus::Forward(htlc_forward) => {
+						htlc_forwards.push((htlc_forward, update_add_htlc.htlc_id));
+					},
+					PendingHTLCStatus::Fail(htlc_fail) => {
+						let htlc_destination = get_failed_htlc_destination(outgoing_scid_opt, update_add_htlc.payment_hash);
+						htlc_fails.push((htlc_fail, htlc_destination));
+					},
+				}
+			}
+
+			// Process all of the forwards and failures for the channel in which the HTLCs were
+			// proposed to as a batch.
+			let pending_forwards = (incoming_scid, incoming_funding_txo, incoming_channel_id,
+				incoming_user_channel_id, htlc_forwards.drain(..).collect());
+			self.forward_htlcs_without_forward_event(&mut [pending_forwards]);
+			for (htlc_fail, htlc_destination) in htlc_fails.drain(..) {
+				let failure = match htlc_fail {
+					HTLCFailureMsg::Relay(fail_htlc) => HTLCForwardInfo::FailHTLC {
+						htlc_id: fail_htlc.htlc_id,
+						err_packet: fail_htlc.reason,
+					},
+					HTLCFailureMsg::Malformed(fail_malformed_htlc) => HTLCForwardInfo::FailMalformedHTLC {
+						htlc_id: fail_malformed_htlc.htlc_id,
+						sha256_of_onion: fail_malformed_htlc.sha256_of_onion,
+						failure_code: fail_malformed_htlc.failure_code,
+					},
+				};
+				self.forward_htlcs.lock().unwrap().entry(incoming_scid).or_insert(vec![]).push(failure);
+				self.pending_events.lock().unwrap().push_back((events::Event::HTLCHandlingFailed {
+					prev_channel_id: incoming_channel_id,
+					failed_next_destination: htlc_destination,
+				}, None));
+			}
+		}
+	}
+
 	/// Processes HTLCs which are pending waiting on random forward delay.
 	///
 	/// Should only really ever be called in response to a PendingHTLCsForwardable event.
 	/// Will likely generate further events.
 	pub fn process_pending_htlc_forwards(&self) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		self.process_pending_update_add_htlcs();
 
 		let mut new_events = VecDeque::new();
 		let mut failed_forwards = Vec::new();
