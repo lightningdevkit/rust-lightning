@@ -13,9 +13,10 @@ use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::prelude::*;
-use crate::util::ser::{Readable, Writeable, Writer};
+use crate::util::ser::{BigSize, FixedLengthReader, Readable, Writeable, Writer};
 
 use core::convert::TryFrom;
+use crate::io::Read;
 
 /// An intermediate node, its outbound channel, and relay parameters.
 #[derive(Clone, Debug)]
@@ -53,6 +54,8 @@ pub struct ReceiveTlvs {
 	pub payment_secret: PaymentSecret,
 	/// Constraints for the receiver of this payment.
 	pub payment_constraints: PaymentConstraints,
+	/// Custom Tlvs
+	pub custom_tlvs: Vec<(u64, Vec<u8>)>,
 }
 
 /// Data to construct a [`BlindedHop`] for sending a payment over.
@@ -133,6 +136,7 @@ impl Writeable for ForwardTlvs {
 impl Writeable for ReceiveTlvs {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		encode_tlv_stream!(w, {
+			(1, self.custom_tlvs, optional_vec),
 			(12, self.payment_constraints, required),
 			(65536, self.payment_secret, required)
 		});
@@ -153,18 +157,29 @@ impl<'a> Writeable for BlindedPaymentTlvsRef<'a> {
 
 impl Readable for BlindedPaymentTlvs {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_stream!(r, {
+		let mut custom_tlvs = Vec::new();
+
+		let tlv_len = BigSize::read(r)?;
+		let rd = FixedLengthReader::new(r, tlv_len.0);
+		_init_and_read_tlv_stream_with_custom_tlv_decode!(rd, {
 			(1, _padding, option),
 			(2, scid, option),
 			(10, payment_relay, option),
 			(12, payment_constraints, required),
 			(14, features, option),
 			(65536, payment_secret, option),
+		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
+			if msg_type < 1 << 16 { return Ok(false) }
+			let mut value = Vec::new();
+			msg_reader.read_to_end(&mut value)?;
+			custom_tlvs.push((msg_type, value));
+			Ok(true)
 		});
 		let _padding: Option<utils::Padding> = _padding;
 
 		if let Some(short_channel_id) = scid {
 			if payment_secret.is_some() { return Err(DecodeError::InvalidValue) }
+			if !custom_tlvs.is_empty() { return Err(DecodeError::InvalidValue) }
 			Ok(BlindedPaymentTlvs::Forward(ForwardTlvs {
 				short_channel_id,
 				payment_relay: payment_relay.ok_or(DecodeError::InvalidValue)?,
@@ -176,6 +191,7 @@ impl Readable for BlindedPaymentTlvs {
 			Ok(BlindedPaymentTlvs::Receive(ReceiveTlvs {
 				payment_secret: payment_secret.ok_or(DecodeError::InvalidValue)?,
 				payment_constraints: payment_constraints.0.unwrap(),
+				custom_tlvs,
 			}))
 		}
 	}
@@ -339,6 +355,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,
 			},
+			custom_tlvs: Vec::new(),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, 12).unwrap();
@@ -357,6 +374,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,
 			},
+			custom_tlvs: Vec::new(),
 		};
 		let blinded_payinfo = super::compute_payinfo(&[], &recv_tlvs, 4242, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.fee_base_msat, 0);
@@ -410,6 +428,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 3,
 			},
+			custom_tlvs: Vec::new(),
 		};
 		let htlc_maximum_msat = 100_000;
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_maximum_msat, TEST_FINAL_CLTV as u16).unwrap();
@@ -460,6 +479,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,
 			},
+			custom_tlvs: Vec::new(),
 		};
 		let htlc_minimum_msat = 3798;
 		assert!(super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, htlc_minimum_msat - 1, TEST_FINAL_CLTV as u16).is_err());
@@ -514,6 +534,7 @@ mod tests {
 				max_cltv_expiry: 0,
 				htlc_minimum_msat: 1,
 			},
+			custom_tlvs: Vec::new(),
 		};
 
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000, TEST_FINAL_CLTV as u16).unwrap();

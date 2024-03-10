@@ -2587,8 +2587,8 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
-					payment_secret, payment_constraints
-				})} => {
+					payment_secret, payment_constraints,
+					custom_tlvs: _ })} => {
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
 						sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,

@@ -282,12 +282,22 @@ pub(crate) enum ControlTlvs {
 
 impl Readable for ControlTlvs {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_stream!(r, {
+		let mut custom_tlvs = Vec::new();
+
+		let tlv_len = BigSize::read(r)?;
+		let rd = FixedLengthReader::new(r, tlv_len.0);
+		_init_and_read_tlv_stream_with_custom_tlv_decode!(rd, {
 			(1, _padding, option),
 			(2, _short_channel_id, option),
 			(4, next_node_id, option),
 			(6, path_id, option),
 			(8, next_blinding_override, option),
+		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
+			if msg_type < 1 << 16 { return Ok(false) }
+			let mut value = Vec::new();
+			msg_reader.read_to_end(&mut value)?;
+			custom_tlvs.push((msg_type, value));
+			Ok(true)
 		});
 		let _padding: Option<Padding> = _padding;
 		let _short_channel_id: Option<u64> = _short_channel_id;
@@ -296,6 +306,7 @@ impl Readable for ControlTlvs {
 		let valid_recv_fmt = next_node_id.is_none() && next_blinding_override.is_none();
 
 		let payload_fmt = if valid_fwd_fmt {
+			if !custom_tlvs.is_empty() { return Err(DecodeError::InvalidValue) }
 			ControlTlvs::Forward(ForwardTlvs {
 				next_node_id: next_node_id.unwrap(),
 				next_blinding_override,
@@ -303,6 +314,7 @@ impl Readable for ControlTlvs {
 		} else if valid_recv_fmt {
 			ControlTlvs::Receive(ReceiveTlvs {
 				path_id,
+				custom_tlvs,
 			})
 		} else {
 			return Err(DecodeError::InvalidValue)

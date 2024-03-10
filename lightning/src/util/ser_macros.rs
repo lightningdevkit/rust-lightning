@@ -472,6 +472,7 @@ macro_rules! decode_tlv_stream {
 ///
 /// [`FixedLengthReader`]: crate::util::ser::FixedLengthReader
 /// [`DecodeError`]: crate::ln::msgs::DecodeError
+#[macro_export]
 macro_rules! decode_tlv_stream_with_custom_tlv_decode {
 	($stream: expr, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	 $(, $decode_custom_tlv: expr)?) => { {
@@ -823,6 +824,24 @@ macro_rules! _init_and_read_tlv_stream {
 			$(($type, $field, $fieldty)),*
 		});
 	}
+}
+
+/// Equivalent to running [`_init_tlv_field_var`] then [`decode_tlv_stream_with_custom_tlv_decode`].
+///
+/// If any unused values are read, their type MUST be specified or else `rustc` will read them as an
+/// `i64`.
+
+macro_rules! _init_and_read_tlv_stream_with_custom_tlv_decode {
+    ($reader: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+     $(, $decode_custom_tlv: expr)?) => {
+        $(
+            $crate::_init_tlv_field_var!($field, $fieldty);
+        )*
+
+        $crate::decode_tlv_stream_with_custom_tlv_decode!(
+            $reader, {$(($type, $field, $fieldty)),*} $(, $decode_custom_tlv)?
+        );
+    }
 }
 
 /// Implements [`Readable`]/[`Writeable`] for a struct storing it as a set of TLVs

@@ -30,6 +30,8 @@ pub(crate) struct ReceiveTlvs {
 	/// sending to. This is useful for receivers to check that said blinded path is being used in
 	/// the right context.
 	pub(crate) path_id: Option<[u8; 32]>,
+	/// Custom Tlvs
+	pub(crate) custom_tlvs: Vec<(u64, Vec<u8>)>,
 }
 
 impl Writeable for ForwardTlvs {
@@ -47,6 +49,7 @@ impl Writeable for ReceiveTlvs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// TODO: write padding
 		encode_tlv_stream!(writer, {
+			(1, self.custom_tlvs, optional_vec),
 			(6, self.path_id, option),
 		});
 		Ok(())
@@ -62,7 +65,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 		.map(|pk| {
 			ControlTlvs::Forward(ForwardTlvs { next_node_id: *pk, next_blinding_override: None })
 		})
-		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { path_id: None })));
+		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { path_id: None, custom_tlvs: Vec::new() })));
 
 	utils::construct_blinded_hops(secp_ctx, unblinded_path.iter(), blinded_tlvs, session_priv)
 }
