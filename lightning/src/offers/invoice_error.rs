@@ -11,6 +11,7 @@
 
 use crate::io;
 use crate::ln::msgs::DecodeError;
+use crate::offers::merkle::SignError;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::UntrustedString;
@@ -109,6 +110,19 @@ impl From<Bolt12SemanticError> for InvoiceError {
 		InvoiceError {
 			erroneous_field: None,
 			message: UntrustedString(format!("{:?}", error)),
+		}
+	}
+}
+
+impl From<SignError> for InvoiceError {
+	fn from(error: SignError) -> Self {
+		let message = match error {
+			SignError::Signing => "Failed signing invoice",
+			SignError::Verification(_) => "Failed invoice signature verification",
+		};
+		InvoiceError {
+			erroneous_field: None,
+			message: UntrustedString(message.to_string()),
 		}
 	}
 }
