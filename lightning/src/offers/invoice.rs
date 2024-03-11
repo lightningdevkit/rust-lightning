@@ -104,13 +104,13 @@
 
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
-use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::address::{Address, Payload, WitnessProgram, WitnessVersion};
 use bitcoin::key::TweakedPublicKey;
 use core::time::Duration;
+use core::hash::{Hash, Hasher};
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::PaymentHash;
@@ -390,6 +390,7 @@ macro_rules! invoice_builder_methods { (
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2WSH addresses.
 	pub fn fallback_v0_p2wsh($($self_mut)* $self: $self_type, script_hash: &WScriptHash) -> $return_type {
+		use bitcoin::hashes::Hash;
 		let address = FallbackAddress {
 			version: WitnessVersion::V0.to_num(),
 			program: Vec::from(script_hash.to_byte_array()),
@@ -403,6 +404,7 @@ macro_rules! invoice_builder_methods { (
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2WPKH addresses.
 	pub fn fallback_v0_p2wpkh($($self_mut)* $self: $self_type, pubkey_hash: &WPubkeyHash) -> $return_type {
+		use bitcoin::hashes::Hash;
 		let address = FallbackAddress {
 			version: WitnessVersion::V0.to_num(),
 			program: Vec::from(pubkey_hash.to_byte_array()),
@@ -614,7 +616,6 @@ impl AsRef<TaggedHash> for UnsignedBolt12Invoice {
 /// [`Refund`]: crate::offers::refund::Refund
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
 pub struct Bolt12Invoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
@@ -883,6 +884,20 @@ impl Bolt12Invoice {
 		};
 		(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream,
 		 signature_tlv_stream)
+	}
+}
+
+impl PartialEq for Bolt12Invoice {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for Bolt12Invoice {}
+
+impl Hash for Bolt12Invoice {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		self.bytes.hash(state);
 	}
 }
 
