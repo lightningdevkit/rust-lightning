@@ -10396,21 +10396,25 @@ where
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				match invoice.verify(expanded_key, secp_ctx) {
-					Err(()) => {
-						Some(OffersMessage::InvoiceError(InvoiceError::from_string("Unrecognized invoice".to_owned())))
-					},
-					Ok(_) if invoice.invoice_features().requires_unknown_bits_from(&self.bolt12_invoice_features()) => {
-						Some(OffersMessage::InvoiceError(Bolt12SemanticError::UnknownRequiredFeatures.into()))
-					},
-					Ok(payment_id) => {
-						if let Err(e) = self.send_payment_for_bolt12_invoice(&invoice, payment_id) {
-							log_trace!(self.logger, "Failed paying invoice: {:?}", e);
-							Some(OffersMessage::InvoiceError(InvoiceError::from_string(format!("{:?}", e))))
+				let response = invoice
+					.verify(expanded_key, secp_ctx)
+					.map_err(|()| InvoiceError::from_string("Unrecognized invoice".to_owned()))
+					.and_then(|payment_id| {
+						let features = self.bolt12_invoice_features();
+						if invoice.invoice_features().requires_unknown_bits_from(&features) {
+							Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
 						} else {
-							None
+							self.send_payment_for_bolt12_invoice(&invoice, payment_id)
+								.map_err(|e| {
+									log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+									InvoiceError::from_string(format!("{:?}", e))
+								})
 						}
-					},
+					});
+
+				match response {
+					Ok(()) => None,
+					Err(e) => Some(OffersMessage::InvoiceError(e)),
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
