@@ -25,6 +25,7 @@ use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::chain::transaction;
+use crate::offers::invoice::Bolt12Invoice;
 use crate::routing::gossip::NetworkUpdate;
 use crate::util::errors::APIError;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
@@ -581,6 +582,39 @@ pub enum Event {
 	InvoiceRequestFailed {
 		/// The `payment_id` to have been associated with payment for the requested invoice.
 		payment_id: PaymentId,
+	},
+	/// Indicates that a [`Bolt12Invoice`] was generated in response to an [`InvoiceRequest`] and is
+	/// being prepared to be sent via an [`OnionMessage`].
+	///
+	/// Note that this doesn't necessarily mean that the invoice was sent and -- once sent -- it may
+	/// never reach its destination because of the unreliable nature of onion messages. Any of the
+	/// following scenarios may occur.
+	/// - Dropped by a node along the path to the destination
+	/// - Dropped upon node restart prior to being sent
+	/// - Buffered waiting to be sent by [`PeerManager`]
+	/// - Buffered waiting for an [`Event::ConnectionNeeded`] to be handled and peer connected
+	/// - Dropped waiting too long for such a peer connection
+	/// - Dropped because the onion message buffer was full
+	/// - Dropped because the [`MessageRouter`] failed to find an [`OnionMessagePath`] to the
+	///   destination
+	///
+	/// Thus, this event is largely for informational purposes as the corresponding [`Offer`] and
+	/// [`InvoiceRequest`] fields are accessible from the invoice. In particular:
+	/// - [`Bolt12Invoice::metadata`] can help identify the corresponding [`Offer`]
+	/// - A common [`Bolt12Invoice::payer_id`] indicates the payer sent multiple requests for
+	///   redundancy, though in that case the [`Bolt12Invoice::payment_hash`] used may be different.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`OnionMessage`]: crate::ln::msgs::OnionMessage
+	/// [`PeerManager`]: crate::ln::peer_handler::PeerManager
+	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
+	/// [`OnionMessagePath`]: crate::onion_message::messenger::OnionMessagePath
+	/// [`Offer`]: crate::offers::offer::Offer
+	InvoiceGenerated {
+		/// An invoice that was generated in response to an [`InvoiceRequest`].
+		///
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		invoice: Bolt12Invoice,
 	},
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
@@ -1262,6 +1296,12 @@ impl Writeable for Event {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
 			},
+			&Event::InvoiceGenerated { ref invoice } => {
+				37u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, invoice, required),
+				})
+			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -1668,6 +1708,18 @@ impl MaybeReadable for Event {
 			},
 			// Note that we do not write a length-prefixed TLV for ConnectionNeeded events.
 			35u8 => Ok(None),
+			37u8 => {
+				let f = || {
+					let mut invoice_bytes = WithoutLength(Vec::new());
+					read_tlv_fields!(reader, {
+						(0, invoice_bytes, required),
+					});
+					let invoice = Bolt12Invoice::try_from(invoice_bytes.0)
+						.map_err(|_| msgs::DecodeError::InvalidValue)?;
+					Ok(Some(Event::InvoiceGenerated { invoice }))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.

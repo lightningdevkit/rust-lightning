@@ -9486,7 +9486,11 @@ where
 				};
 
 				match response {
-					Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
+					Ok(invoice) => {
+						let event = Event::InvoiceGenerated { invoice: invoice.clone() };
+						self.pending_events.lock().unwrap().push_back((event, None));
+						Some(OffersMessage::Invoice(invoice))
+					},
 					Err(error) => Some(OffersMessage::InvoiceError(error.into())),
 				}
 			},

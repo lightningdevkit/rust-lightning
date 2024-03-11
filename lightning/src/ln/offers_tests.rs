@@ -211,6 +211,24 @@ fn extract_invoice_error<'a, 'b, 'c>(
 	}
 }
 
+fn expect_invoice_generated_event<'a, 'b, 'c, 'd>(
+	node: &'a Node<'b, 'c, 'd>, expected_invoice: &Bolt12Invoice
+) {
+	use crate::io::Cursor;
+	use crate::util::ser::MaybeReadable;
+	use crate::util::ser::Writeable;
+
+	let event = get_event!(node, Event::InvoiceGenerated);
+	match &event {
+		Event::InvoiceGenerated { invoice } => assert_eq!(invoice, expected_invoice),
+		_ => panic!(),
+	}
+
+	let mut bytes = Vec::new();
+	event.write(&mut bytes).unwrap();
+	assert_eq!(Some(event), MaybeReadable::read(&mut Cursor::new(&bytes)).unwrap());
+}
+
 /// Checks that blinded paths without Tor-only nodes are preferred when constructing an offer.
 #[test]
 fn prefers_non_tor_nodes_in_blinded_paths() {
@@ -403,6 +421,8 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
 
 	let invoice = extract_invoice(david, &onion_message);
+	expect_invoice_generated_event(alice, &invoice);
+
 	assert_eq!(invoice.amount_msats(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
@@ -540,6 +560,8 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
 	let invoice = extract_invoice(bob, &onion_message);
+	expect_invoice_generated_event(alice, &invoice);
+
 	assert_eq!(invoice.amount_msats(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
@@ -644,6 +666,8 @@ fn pays_for_offer_without_blinded_paths() {
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
 	let invoice = extract_invoice(bob, &onion_message);
+	expect_invoice_generated_event(alice, &invoice);
+
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
