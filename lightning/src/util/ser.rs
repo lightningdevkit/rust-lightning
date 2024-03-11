@@ -820,6 +820,49 @@ macro_rules! impl_for_vec {
 	}
 }
 
+// Alternatives to impl_writeable_for_vec/impl_readable_for_vec that add a length prefix to each
+// element in the Vec. Intended to be used when elements have variable lengths.
+macro_rules! impl_writeable_for_vec_with_element_length_prefix {
+	($ty: ty $(, $name: ident)*) => {
+		impl<$($name : Writeable),*> Writeable for Vec<$ty> {
+			#[inline]
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				CollectionLength(self.len() as u64).write(w)?;
+				for elem in self.iter() {
+					CollectionLength(elem.serialized_length() as u64).write(w)?;
+					elem.write(w)?;
+				}
+				Ok(())
+			}
+		}
+	}
+}
+macro_rules! impl_readable_for_vec_with_element_length_prefix {
+	($ty: ty $(, $name: ident)*) => {
+		impl<$($name : Readable),*> Readable for Vec<$ty> {
+			#[inline]
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let len: CollectionLength = Readable::read(r)?;
+				let mut ret = Vec::with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<$ty>()));
+				for _ in 0..len.0 {
+					let elem_len: CollectionLength = Readable::read(r)?;
+					let mut elem_reader = FixedLengthReader::new(r, elem_len.0);
+					if let Some(val) = MaybeReadable::read(&mut elem_reader)? {
+						ret.push(val);
+					}
+				}
+				Ok(ret)
+			}
+		}
+	}
+}
+macro_rules! impl_for_vec_with_element_length_prefix {
+	($ty: ty $(, $name: ident)*) => {
+		impl_writeable_for_vec_with_element_length_prefix!($ty $(, $name)*);
+		impl_readable_for_vec_with_element_length_prefix!($ty $(, $name)*);
+	}
+}
+
 impl Writeable for Vec<u8> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
