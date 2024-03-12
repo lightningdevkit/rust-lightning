@@ -391,6 +391,12 @@ macro_rules! offer_builder_test_methods { (
 	}
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn clear_chains($($self_mut)* $self: $self_type) -> $return_type {
+		$self.offer.chains = None;
+		$return_value
+	}
+
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(crate) fn clear_paths($($self_mut)* $self: $self_type) -> $return_type {
 		$self.offer.paths = None;
 		$return_value
