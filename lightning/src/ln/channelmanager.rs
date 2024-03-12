@@ -1694,15 +1694,20 @@ where
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T, refund: &Refund) {
 /// # let channel_manager = channel_manager.get_cm();
-/// match channel_manager.request_refund_payment(refund) {
-///     Ok(()) => println!("Requesting payment for refund"),
-///     Err(e) => println!("Unable to request payment for refund: {:?}", e),
-/// }
+/// let known_payment_hash = match channel_manager.request_refund_payment(refund) {
+///     Ok(invoice) => {
+///         let payment_hash = invoice.payment_hash();
+///         println!("Requesting refund payment {}", payment_hash);
+///         payment_hash
+///     },
+///     Err(e) => panic!("Unable to request payment for refund: {:?}", e),
+/// };
 ///
 /// // On the event processing thread
 /// channel_manager.process_pending_events(&|event| match event {
 ///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
 ///     	PaymentPurpose::InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
+///             assert_eq!(payment_hash, known_payment_hash);
 ///             println!("Claiming payment {}", payment_hash);
 ///             channel_manager.claim_funds(payment_preimage);
 ///         },
@@ -1713,6 +1718,7 @@ where
 /// #         _ => {},
 ///     },
 ///     Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
+///         assert_eq!(payment_hash, known_payment_hash);
 ///         println!("Claimed {} msats", amount_msat);
 ///     },
 ///     // ...
@@ -8774,7 +8780,7 @@ where
 	///
 	/// The resulting invoice uses a [`PaymentHash`] recognized by the [`ChannelManager`] and a
 	/// [`BlindedPath`] containing the [`PaymentSecret`] needed to reconstruct the corresponding
-	/// [`PaymentPreimage`].
+	/// [`PaymentPreimage`]. It is returned purely for informational purposes.
 	///
 	/// # Limitations
 	///
@@ -8791,7 +8797,9 @@ where
 	///   the invoice.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn request_refund_payment(&self, refund: &Refund) -> Result<(), Bolt12SemanticError> {
+	pub fn request_refund_payment(
+		&self, refund: &Refund
+	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
@@ -8830,7 +8838,7 @@ where
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 				if refund.paths().is_empty() {
 					let message = new_pending_onion_message(
-						OffersMessage::Invoice(invoice),
+						OffersMessage::Invoice(invoice.clone()),
 						Destination::Node(refund.payer_id()),
 						Some(reply_path),
 					);
@@ -8846,7 +8854,7 @@ where
 					}
 				}
 
-				Ok(())
+				Ok(invoice)
 			},
 			Err(()) => Err(Bolt12SemanticError::InvalidAmount),
 		}
