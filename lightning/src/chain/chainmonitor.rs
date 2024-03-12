@@ -760,7 +760,7 @@ where C::Target: chain::Filter,
 		let monitors = self.monitors.read().unwrap();
 		match monitors.get(&funding_txo) {
 			None => {
-				let logger = WithContext::from(&self.logger, update.counterparty_node_id, Some(channel_id));
+				let logger = WithContext::from(&self.logger, update.counterparty_node_id, Some(channel_id), None);
 				log_error!(logger, "Failed to update channel monitor: no such monitor registered");
 
 				// We should never ever trigger this from within ChannelManager. Technically a

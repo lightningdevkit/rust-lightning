@@ -21,6 +21,7 @@ use core::fmt;
 use core::ops::Deref;
 
 use crate::ln::types::ChannelId;
+use crate::ln::PaymentHash;
 #[cfg(c_bindings)]
 use crate::prelude::*; // Needed for String
 
@@ -120,6 +121,11 @@ pub struct Record<$($args)?> {
 	pub file: &'static str,
 	/// The line containing the message.
 	pub line: u32,
+	/// The payment hash.
+	///
+	/// Note that this is only filled in for logs pertaining to a specific payment, and will be
+	/// `None` for logs which are not directly related to a payment.
+	pub payment_hash: Option<PaymentHash>,
 }
 
 impl<$($args)?> Record<$($args)?> {
@@ -129,7 +135,8 @@ impl<$($args)?> Record<$($args)?> {
 	#[inline]
 	pub fn new<$($nonstruct_args)?>(
 		level: Level, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
-		args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32
+		args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32,
+		payment_hash: Option<PaymentHash>
 	) -> Record<$($args)?> {
 		Record {
 			level,
@@ -142,6 +149,7 @@ impl<$($args)?> Record<$($args)?> {
 			module_path,
 			file,
 			line,
+			payment_hash,
 		}
 	}
 }
@@ -168,6 +176,8 @@ pub struct WithContext<'a, L: Deref> where L::Target: Logger {
 	peer_id: Option<PublicKey>,
 	/// The channel id of the channel pertaining to the logged record.
 	channel_id: Option<ChannelId>,
+	/// The payment hash of the payment pertaining to the logged record.
+	payment_hash: Option<PaymentHash>
 }
 
 impl<'a, L: Deref> Logger for WithContext<'a, L> where L::Target: Logger {
@@ -178,17 +188,21 @@ impl<'a, L: Deref> Logger for WithContext<'a, L> where L::Target: Logger {
 		if self.channel_id.is_some() {
 			record.channel_id = self.channel_id;
 		}
+		if self.payment_hash.is_some() {
+			record.payment_hash = self.payment_hash;
+		}
 		self.logger.log(record)
 	}
 }
 
 impl<'a, L: Deref> WithContext<'a, L> where L::Target: Logger {
 	/// Wraps the given logger, providing additional context to any logged records.
-	pub fn from(logger: &'a L, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>) -> Self {
+	pub fn from(logger: &'a L, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>, payment_hash: Option<PaymentHash>) -> Self {
 		WithContext {
 			logger,
 			peer_id,
 			channel_id,
+			payment_hash,
 		}
 	}
 }
@@ -245,6 +259,7 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 mod tests {
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use crate::ln::types::ChannelId;
+	use crate::ln::PaymentHash;
 	use crate::util::logger::{Logger, Level, WithContext};
 	use crate::util::test_utils::TestLogger;
 	use crate::sync::Arc;
@@ -291,7 +306,8 @@ mod tests {
 		let logger = &TestLogger::new();
 		let secp_ctx = Secp256k1::new();
 		let pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let context_logger = WithContext::from(&logger, Some(pk), Some(ChannelId([0; 32])));
+		let payment_hash = PaymentHash([0; 32]);
+		let context_logger = WithContext::from(&logger, Some(pk), Some(ChannelId([0; 32])), Some(payment_hash));
 		log_error!(context_logger, "This is an error");
 		log_warn!(context_logger, "This is an error");
 		log_debug!(context_logger, "This is an error");
@@ -308,8 +324,9 @@ mod tests {
 		let logger = &TestLogger::new();
 		let secp_ctx = Secp256k1::new();
 		let pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let context_logger = &WithContext::from(&logger, None, Some(ChannelId([0; 32])));
-		let full_context_logger = WithContext::from(&context_logger, Some(pk), None);
+		let payment_hash = PaymentHash([0; 32]);
+		let context_logger = &WithContext::from(&logger, None, Some(ChannelId([0; 32])), Some(payment_hash));
+		let full_context_logger = WithContext::from(&context_logger, Some(pk), None, None);
 		log_error!(full_context_logger, "This is an error");
 		log_warn!(full_context_logger, "This is an error");
 		log_debug!(full_context_logger, "This is an error");
