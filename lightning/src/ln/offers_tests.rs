@@ -473,7 +473,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	}
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	alice.node.request_refund_payment(&refund).unwrap();
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	connect_peers(alice, charlie);
 
@@ -484,6 +484,8 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
 
 	let invoice = extract_invoice(david, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+
 	assert_eq!(invoice.amount_msats(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
@@ -589,12 +591,14 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	}
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	alice.node.request_refund_payment(&refund).unwrap();
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
 	let invoice = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+
 	assert_eq!(invoice.amount_msats(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
@@ -681,12 +685,14 @@ fn pays_for_refund_without_blinded_paths() {
 	assert!(refund.paths().is_empty());
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	alice.node.request_refund_payment(&refund).unwrap();
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
 	let invoice = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
