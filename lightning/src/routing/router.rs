@@ -1962,11 +1962,27 @@ where L::Target: Logger {
 
 	let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
 
+	let first_hop_count = first_hops.map(|hops| hops.len()).unwrap_or(0);
 	log_trace!(logger, "Searching for a route from payer {} to {} {} MPP and {} first hops {}overriding the network graph with a fee limit of {} msat",
 		our_node_pubkey, LoggedPayeePubkey(payment_params.payee.node_id()),
 		if allow_mpp { "with" } else { "without" },
-		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " },
+		first_hop_count, if first_hops.is_some() { "" } else { "not " },
 		max_total_routing_fee_msat);
+
+	if first_hop_count < 10 {
+		if let Some(hops) = first_hops {
+			for hop in hops {
+				log_trace!(
+					logger,
+					" First hop through {}/{} can send between {}msat and {}msat (inclusive).",
+					hop.counterparty.node_id,
+					hop.get_outbound_payment_scid().unwrap_or(0),
+					hop.next_outbound_htlc_minimum_msat,
+					hop.next_outbound_htlc_limit_msat
+				);
+			}
+		}
+	}
 
 	// Step (1).
 	// Prepare the data we'll use for payee-to-payer search by
