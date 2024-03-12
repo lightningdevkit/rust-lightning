@@ -2014,12 +2014,28 @@ where L::Target: Logger {
 
 	let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
 
+	let first_hop_count = first_hops.map(|hops| hops.len()).unwrap_or(0);
 	log_trace!(logger, "Searching for a route from payer {} to {} {} MPP and {} first hops {}overriding the network graph of {} nodes and {} channels with a fee limit of {} msat",
 		our_node_pubkey, LoggedPayeePubkey(payment_params.payee.node_id()),
 		if allow_mpp { "with" } else { "without" },
-		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " },
+		first_hop_count, if first_hops.is_some() { "" } else { "not " },
 		network_graph.nodes().len(), network_graph.channels().len(),
 		max_total_routing_fee_msat);
+
+	if first_hop_count < 10 {
+		if let Some(hops) = first_hops {
+			for hop in hops {
+				log_trace!(
+					logger,
+					" First hop through {}/{} can send between {}msat and {}msat (inclusive).",
+					hop.counterparty.node_id,
+					hop.get_outbound_payment_scid().unwrap_or(0),
+					hop.next_outbound_htlc_minimum_msat,
+					hop.next_outbound_htlc_limit_msat
+				);
+			}
+		}
+	}
 
 	// Step (1).
 	// Prepare the data we'll use for payee-to-payer search by
@@ -2227,14 +2243,9 @@ where L::Target: Logger {
 					// around again with a higher amount.
 					if !contributes_sufficient_value {
 						if should_log_candidate {
-							log_trace!(logger, "Ignoring {} due to insufficient value contribution.", LoggedCandidateHop(&$candidate));
-
-							if let Some(details) = first_hop_details {
-								log_trace!(logger,
-									"First hop candidate next_outbound_htlc_limit_msat: {}",
-									details.next_outbound_htlc_limit_msat,
-								);
-							}
+							log_trace!(logger, "Ignoring {} due to insufficient value contribution (channel max {:?}).",
+								LoggedCandidateHop(&$candidate),
+								effective_capacity);
 						}
 						num_ignored_value_contribution += 1;
 					} else if exceeds_max_path_length {
@@ -2263,15 +2274,8 @@ where L::Target: Logger {
 					} else if may_overpay_to_meet_path_minimum_msat {
 						if should_log_candidate {
 							log_trace!(logger,
-								"Ignoring {} to avoid overpaying to meet htlc_minimum_msat limit.",
-								LoggedCandidateHop(&$candidate));
-
-							if let Some(details) = first_hop_details {
-								log_trace!(logger,
-									"First hop candidate next_outbound_htlc_minimum_msat: {}",
-									details.next_outbound_htlc_minimum_msat,
-								);
-							}
+								"Ignoring {} to avoid overpaying to meet htlc_minimum_msat limit ({}).",
+								LoggedCandidateHop(&$candidate), $candidate.htlc_minimum_msat());
 						}
 						num_ignored_avoid_overpayment += 1;
 						hit_minimum_limit = true;
