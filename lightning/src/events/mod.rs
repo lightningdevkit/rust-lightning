@@ -584,7 +584,9 @@ pub enum Event {
 		payment_id: PaymentId,
 	},
 	/// Indicates that a [`Bolt12Invoice`] was generated in response to an [`InvoiceRequest`] and is
-	/// being prepared to be sent via an [`OnionMessage`].
+	/// being prepared to be sent via an [`OnionMessage`]. The event is provided only for invoices
+	/// corresponding to an [`Offer`], not for a [`Refund`]. For the latter, the invoice is returned
+	/// by [`ChannelManager::request_refund_payment`].
 	///
 	/// Note that this doesn't necessarily mean that the invoice was sent and -- once sent -- it may
 	/// never reach its destination because of the unreliable nature of onion messages. Any of the
@@ -606,10 +608,12 @@ pub enum Event {
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`OnionMessage`]: crate::ln::msgs::OnionMessage
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`ChannelManager::request_refund_payment`]: crate::ln::channelmanager::ChannelManager::request_refund_payment
 	/// [`PeerManager`]: crate::ln::peer_handler::PeerManager
 	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
 	/// [`OnionMessagePath`]: crate::onion_message::messenger::OnionMessagePath
-	/// [`Offer`]: crate::offers::offer::Offer
 	InvoiceGenerated {
 		/// An invoice that was generated in response to an [`InvoiceRequest`].
 		///
