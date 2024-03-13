@@ -200,6 +200,8 @@ pub enum PendingHTLCRouting {
 		/// For HTLCs received by LDK, these will ultimately bubble back up as
 		/// [`RecipientOnionFields::custom_tlvs`].
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
+		/// Set if this HTLC is the final hop in a multi-hop blinded path.
+		requires_blinded_error: bool,
 	},
 }
 
@@ -221,6 +223,7 @@ impl PendingHTLCRouting {
 		match self {
 			Self::Forward { blinded: Some(BlindedForward { failure, .. }), .. } => Some(*failure),
 			Self::Receive { requires_blinded_error: true, .. } => Some(BlindedFailure::FromBlindedNode),
+			Self::ReceiveKeysend { requires_blinded_error: true, .. } => Some(BlindedFailure::FromBlindedNode),
 			_ => None,
 		}
 	}
@@ -4523,7 +4526,10 @@ where
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
-									PendingHTLCRouting::ReceiveKeysend { payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry, custom_tlvs } => {
+									PendingHTLCRouting::ReceiveKeysend {
+										payment_data, payment_preimage, payment_metadata,
+										incoming_cltv_expiry, custom_tlvs, requires_blinded_error: _
+									} => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
 											payment_metadata,
@@ -9766,6 +9772,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
+		(1, requires_blinded_error, (default_value, false)),
 		(2, incoming_cltv_expiry, required),
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
