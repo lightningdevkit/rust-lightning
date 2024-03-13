@@ -602,12 +602,12 @@ impl FromBase32 for PrivateRoute {
 
 			let hop = RouteHintHop {
 				src_node_id: PublicKey::from_slice(&hop_bytes[0..33])?,
-				short_channel_id: parse_int_be(&channel_id, 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes(channel_id),
 				fees: RoutingFees {
-					base_msat: parse_int_be(&hop_bytes[41..45], 256).expect("slice too big?"),
-					proportional_millionths: parse_int_be(&hop_bytes[45..49], 256).expect("slice too big?"),
+					base_msat: u32::from_be_bytes(hop_bytes[41..45].try_into().expect("slice too big?")),
+					proportional_millionths: u32::from_be_bytes(hop_bytes[45..49].try_into().expect("slice too big?")),
 				},
-				cltv_expiry_delta: parse_int_be(&hop_bytes[49..51], 256).expect("slice too big?"),
+				cltv_expiry_delta: u16::from_be_bytes(hop_bytes[49..51].try_into().expect("slice too big?")),
 				htlc_minimum_msat: None,
 				htlc_maximum_msat: None,
 			};
@@ -916,7 +916,6 @@ mod test {
 		use lightning::routing::router::{RouteHint, RouteHintHop};
 		use crate::PrivateRoute;
 		use bech32::FromBase32;
-		use crate::de::parse_int_be;
 
 		let input = from_bech32(
 			"q20q82gphp2nflc7jtzrcazrra7wwgzxqc8u7754cdlpfrmccae92qgzqvzq2ps8pqqqqqqpqqqqq9qqqvpeuqa\
@@ -932,7 +931,7 @@ mod test {
 					0x7e, 0x14, 0x8f, 0x78, 0xc7, 0x72, 0x55
 				][..]
 			).unwrap(),
-			short_channel_id: parse_int_be(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08], 256).expect("short chan ID slice too big?"),
+			short_channel_id: 0x0102030405060708,
 			fees: RoutingFees {
 				base_msat: 1,
 				proportional_millionths: 20,
@@ -949,7 +948,7 @@ mod test {
 					0x7e, 0x14, 0x8f, 0x78, 0xc7, 0x72, 0x55
 				][..]
 			).unwrap(),
-			short_channel_id: parse_int_be(&[0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a], 256).expect("short chan ID slice too big?"),
+			short_channel_id: 0x030405060708090a,
 			fees: RoutingFees {
 				base_msat: 2,
 				proportional_millionths: 30,
