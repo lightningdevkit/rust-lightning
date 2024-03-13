@@ -31,7 +31,6 @@ pub mod utils;
 
 extern crate bech32;
 #[macro_use] extern crate lightning;
-extern crate num_traits;
 extern crate secp256k1;
 extern crate alloc;
 #[cfg(any(test, feature = "std"))]

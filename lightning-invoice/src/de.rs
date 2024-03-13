@@ -18,8 +18,6 @@ use lightning::ln::PaymentSecret;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
 
-use num_traits::{CheckedAdd, CheckedMul};
-
 use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;
 
@@ -356,7 +354,7 @@ impl FromBase32 for PositiveTimestamp {
 		if b32.len() != 7 {
 			return Err(Bolt11ParseError::InvalidSliceLength("PositiveTimestamp::from_base32()".into()));
 		}
-		let timestamp: u64 = parse_int_be(b32, 32)
+		let timestamp: u64 = parse_u64_be(b32)
 			.expect("7*5bit < 64bit, no overflow possible");
 		match PositiveTimestamp::from_unix_timestamp(timestamp) {
 			Ok(t) => Ok(t),
@@ -382,16 +380,17 @@ impl FromBase32 for Bolt11InvoiceSignature {
 	}
 }
 
-pub(crate) fn parse_int_be<T, U>(digits: &[U], base: T) -> Option<T>
-	where T: CheckedAdd + CheckedMul + From<u8> + Default,
-	      U: Into<u8> + Copy
-{
-	digits.iter().fold(Some(Default::default()), |acc, b|
-		acc
-			.and_then(|x| x.checked_mul(&base))
-			.and_then(|x| x.checked_add(&(Into::<u8>::into(*b)).into()))
-	)
-}
+macro_rules! define_parse_int_be { ($name: ident, $ty: ty) => {
+	fn $name(digits: &[u5]) -> Option<$ty> {
+		digits.iter().fold(Some(Default::default()), |acc, b|
+			acc
+				.and_then(|x| x.checked_mul(32))
+				.and_then(|x| x.checked_add((Into::<u8>::into(*b)).into()))
+		)
+	}
+} }
+define_parse_int_be!(parse_u16_be, u16);
+define_parse_int_be!(parse_u64_be, u64);
 
 fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, Bolt11ParseError> {
 	let mut parts = Vec::<RawTaggedField>::new();
@@ -404,7 +403,7 @@ fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, Bolt11ParseErr
 
 		// Ignore tag at data[0], it will be handled in the TaggedField parsers and
 		// parse the length to find the end of the tagged field's data
-		let len = parse_int_be(&data[1..3], 32).expect("can't overflow");
+		let len = parse_u16_be(&data[1..3]).expect("can't overflow") as usize;
 		let last_element = 3 + len;
 
 		if data.len() < last_element {
@@ -517,7 +516,7 @@ impl FromBase32 for ExpiryTime {
 	type Err = Bolt11ParseError;
 
 	fn from_base32(field_data: &[u5]) -> Result<ExpiryTime, Bolt11ParseError> {
-		match parse_int_be::<u64, u5>(field_data, 32)
+		match parse_u64_be(field_data)
 			.map(ExpiryTime::from_seconds)
 		{
 			Some(t) => Ok(t),
@@ -530,7 +529,7 @@ impl FromBase32 for MinFinalCltvExpiryDelta {
 	type Err = Bolt11ParseError;
 
 	fn from_base32(field_data: &[u5]) -> Result<MinFinalCltvExpiryDelta, Bolt11ParseError> {
-		let expiry = parse_int_be::<u64, u5>(field_data, 32);
+		let expiry = parse_u64_be(field_data);
 		if let Some(expiry) = expiry {
 			Ok(MinFinalCltvExpiryDelta(expiry))
 		} else {
@@ -761,12 +760,16 @@ mod test {
 
 	#[test]
 	fn test_parse_int_from_bytes_be() {
-		use crate::de::parse_int_be;
+		use crate::de::parse_u16_be;
 
-		assert_eq!(parse_int_be::<u32, u8>(&[1, 2, 3, 4], 256), Some(16909060));
-		assert_eq!(parse_int_be::<u32, u8>(&[1, 3], 32), Some(35));
-		assert_eq!(parse_int_be::<u32, u8>(&[255, 255, 255, 255], 256), Some(4294967295));
-		assert_eq!(parse_int_be::<u32, u8>(&[1, 0, 0, 0, 0], 256), None);
+		assert_eq!(parse_u16_be(&[
+				u5::try_from_u8(1).unwrap(), u5::try_from_u8(2).unwrap(),
+				u5::try_from_u8(3).unwrap(), u5::try_from_u8(4).unwrap()]
+			), Some(34916));
+		assert_eq!(parse_u16_be(&[
+				u5::try_from_u8(2).unwrap(), u5::try_from_u8(0).unwrap(),
+				u5::try_from_u8(0).unwrap(), u5::try_from_u8(0).unwrap()]
+			), None);
 	}
 
 	#[test]
