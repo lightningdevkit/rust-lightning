@@ -7755,6 +7755,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 			.absolute_expiry(absolute_expiry)
 			.path(path);
 
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop($self);
+
 		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
 		$self.pending_outbound_payments
 			.add_new_awaiting_invoice(
@@ -7870,6 +7872,8 @@ where
 		let invoice_request = builder.build_and_sign()?;
 		let reply_path = self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
 		let expiration = StaleExpiration::TimerTicks(1);
 		self.pending_outbound_payments
 			.add_new_awaiting_invoice(
@@ -7936,6 +7940,8 @@ where
 		if refund.chain() != self.chain_hash {
 			return Err(Bolt12SemanticError::UnsupportedChain);
 		}
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
 			Ok((payment_hash, payment_secret)) => {
