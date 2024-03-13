@@ -213,6 +213,7 @@ pub(super) fn build_onion_payloads(
 							cltv_expiry_height: cur_cltv + excess_final_cltv_expiry_delta,
 							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
 							intro_node_blinding_point: blinding_point.take(),
+							keysend_preimage: *keysend_preimage,
 						});
 					} else {
 						res.push(msgs::OutboundOnionPayload::BlindedForward {

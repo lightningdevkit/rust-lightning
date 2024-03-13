@@ -1716,6 +1716,7 @@ mod fuzzy_internal_msgs {
 			cltv_expiry_height: u32,
 			encrypted_tlvs: Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
+			keysend_preimage: Option<PaymentPreimage>,
 		}
 	}
 
@@ -2503,14 +2504,15 @@ impl Writeable for OutboundOnionPayload {
 			},
 			Self::BlindedReceive {
 				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
-				intro_node_blinding_point,
+				intro_node_blinding_point, keysend_preimage,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(10, *encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option),
-					(18, HighZeroBytesDroppedBigSize(*total_msat), required)
+					(18, HighZeroBytesDroppedBigSize(*total_msat), required),
+					(5482373484, keysend_preimage, option)
 				});
 			},
 		}
