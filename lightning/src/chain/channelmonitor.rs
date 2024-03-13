@@ -2627,6 +2627,14 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		};
 		self.onchain_tx_handler.provide_latest_holder_tx(holder_commitment_tx);
 		mem::swap(&mut new_holder_commitment_tx, &mut self.current_holder_commitment_tx);
+		let detected_funding_spend = self.funding_spend_confirmed.is_some() ||
+			self.onchain_events_awaiting_threshold_conf.iter().find(|event| match event.event {
+				OnchainEvent::FundingSpendConfirmation { .. } => true,
+				_ => false,
+			}).is_some();
+		if detected_funding_spend {
+        	return Ok(());
+    	}
 		self.prev_holder_signed_commitment_tx = Some(new_holder_commitment_tx);
 		for (claimed_htlc_id, claimed_preimage) in claimed_htlcs {
 			#[cfg(debug_assertions)] {
