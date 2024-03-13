@@ -1688,6 +1688,7 @@ mod fuzzy_internal_msgs {
 			payment_secret: PaymentSecret,
 			payment_constraints: PaymentConstraints,
 			intro_node_blinding_point: Option<PublicKey>,
+			keysend_preimage: Option<PaymentPreimage>,
 		}
 	}
 
@@ -2562,9 +2563,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 		}
 
 		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
-			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() ||
-				keysend_preimage.is_some()
-			{
+			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue)
 			}
 			let enc_tlvs = encrypted_tlvs_opt.ok_or(DecodeError::InvalidValue)?.0;
@@ -2577,7 +2576,9 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
 					short_channel_id, payment_relay, payment_constraints, features
 				})} => {
-					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() {
+					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
+						keysend_preimage.is_some()
+					{
 						return Err(DecodeError::InvalidValue)
 					}
 					Ok(Self::BlindedForward {
@@ -2599,6 +2600,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						payment_secret,
 						payment_constraints,
 						intro_node_blinding_point,
+						keysend_preimage,
 					})
 				},
 			}
