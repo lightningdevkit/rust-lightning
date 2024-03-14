@@ -13,7 +13,7 @@ use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::prelude::*;
-use crate::util::ser::{Readable, Writeable, Writer};
+use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, Writeable, Writer};
 
 use core::convert::TryFrom;
 
@@ -275,16 +275,35 @@ pub(super) fn compute_payinfo(
 	})
 }
 
-impl_writeable_msg!(PaymentRelay, {
-	cltv_expiry_delta,
-	fee_proportional_millionths,
-	fee_base_msat
-}, {});
+impl Writeable for PaymentRelay {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.cltv_expiry_delta.write(w)?;
+		self.fee_proportional_millionths.write(w)?;
+		HighZeroBytesDroppedBigSize(self.fee_base_msat).write(w)
+	}
+}
+impl Readable for PaymentRelay {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let cltv_expiry_delta: u16 = Readable::read(r)?;
+		let fee_proportional_millionths: u32 = Readable::read(r)?;
+		let fee_base_msat: HighZeroBytesDroppedBigSize<u32> = Readable::read(r)?;
+		Ok(Self { cltv_expiry_delta, fee_proportional_millionths, fee_base_msat: fee_base_msat.0 })
+	}
+}
 
-impl_writeable_msg!(PaymentConstraints, {
-	max_cltv_expiry,
-	htlc_minimum_msat
-}, {});
+impl Writeable for PaymentConstraints {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.max_cltv_expiry.write(w)?;
+		HighZeroBytesDroppedBigSize(self.htlc_minimum_msat).write(w)
+	}
+}
+impl Readable for PaymentConstraints {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let max_cltv_expiry: u32 = Readable::read(r)?;
+		let htlc_minimum_msat: HighZeroBytesDroppedBigSize<u64> = Readable::read(r)?;
+		Ok(Self { max_cltv_expiry, htlc_minimum_msat: htlc_minimum_msat.0 })
+	}
+}
 
 #[cfg(test)]
 mod tests {

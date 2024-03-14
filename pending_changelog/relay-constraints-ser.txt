@@ -1,0 +1,7 @@
+## Bug fixes
+
+* LDK previously serialized `PaymentRelay::fee_base_msat` as a u32 when it
+	should have been serialized as a tu32. Similarly, we were serializing
+	`PaymentConstraints::htlc_minimum_msat` as a u64 when we should have been
+	serializing it as tu64. This caused lack of interoperability when using other
+	implementations as forwarding nodes along blinded payment paths.
