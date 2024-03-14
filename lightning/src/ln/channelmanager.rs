@@ -8178,8 +8178,6 @@ where
 	}
 
 	fn handle_error(&self, counterparty_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-
 		match &msg.data as &str {
 			"cannot co-op close channel w/ active htlcs"|
 			"link failed to shutdown" =>
@@ -8192,33 +8190,44 @@ where
 				// We're not going to bother handling this in a sensible way, instead simply
 				// repeating the Shutdown message on repeat until morale improves.
 				if !msg.channel_id.is_zero() {
-					let per_peer_state = self.per_peer_state.read().unwrap();
-					let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
-					if peer_state_mutex_opt.is_none() { return; }
-					let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
-					if let Some(ChannelPhase::Funded(chan)) = peer_state.channel_by_id.get(&msg.channel_id) {
-						if let Some(msg) = chan.get_outbound_shutdown() {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
-								node_id: *counterparty_node_id,
-								msg,
-							});
-						}
-						peer_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
-							node_id: *counterparty_node_id,
-							action: msgs::ErrorAction::SendWarningMessage {
-								msg: msgs::WarningMessage {
-									channel_id: msg.channel_id,
-									data: "You appear to be exhibiting LND bug 6039, we'll keep sending you shutdown messages until you handle them correctly".to_owned()
-								},
-								log_level: Level::Trace,
+					PersistenceNotifierGuard::optionally_notify(
+						self,
+						|| -> NotifyOption {
+							let per_peer_state = self.per_peer_state.read().unwrap();
+							let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
+							if peer_state_mutex_opt.is_none() { return NotifyOption::SkipPersistNoEvents; }
+							let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
+							if let Some(ChannelPhase::Funded(chan)) = peer_state.channel_by_id.get(&msg.channel_id) {
+								if let Some(msg) = chan.get_outbound_shutdown() {
+									peer_state.pending_msg_events.push(events::MessageSendEvent::SendShutdown {
+										node_id: *counterparty_node_id,
+										msg,
+									});
+								}
+								peer_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+									node_id: *counterparty_node_id,
+									action: msgs::ErrorAction::SendWarningMessage {
+										msg: msgs::WarningMessage {
+											channel_id: msg.channel_id,
+											data: "You appear to be exhibiting LND bug 6039, we'll keep sending you shutdown messages until you handle them correctly".to_owned()
+										},
+										log_level: Level::Trace,
+									}
+								});
+								// This can happen in a fairly tight loop, so we absolutely cannot trigger
+								// a `ChannelManager` write here.
+								return NotifyOption::SkipPersistHandleEvents;
 							}
-						});
-					}
+							NotifyOption::SkipPersistNoEvents
+						}
+					);
 				}
 				return;
 			}
 			_ => {}
 		}
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		if msg.channel_id.is_zero() {
 			let channel_ids: Vec<ChannelId> = {
