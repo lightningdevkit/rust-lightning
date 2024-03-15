@@ -11,7 +11,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
 
-use lightning::blinded_path::{BlindedHop, BlindedPath};
+use lightning::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::ChannelId;
 use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
@@ -363,7 +363,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						});
 					}
 					(payinfo, BlindedPath {
-						introduction_node_id: hop.src_node_id,
+						introduction_node: IntroductionNode::NodeId(hop.src_node_id),
 						blinding_point: dummy_pk,
 						blinded_hops,
 					})

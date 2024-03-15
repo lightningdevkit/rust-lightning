@@ -13,7 +13,7 @@ use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::schnorr::Signature;
 
 use core::time::Duration;
-use crate::blinded_path::{BlindedHop, BlindedPath};
+use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 use crate::sign::EntropySource;
 use crate::ln::PaymentHash;
 use crate::ln::features::BlindedHopFeatures;
@@ -69,7 +69,7 @@ pub(super) fn privkey(byte: u8) -> SecretKey {
 pub(crate) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> {
 	let paths = vec![
 		BlindedPath {
-			introduction_node_id: pubkey(40),
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
@@ -77,7 +77,7 @@ pub(crate) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> {
 			],
 		},
 		BlindedPath {
-			introduction_node_id: pubkey(40),
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },

@@ -1455,7 +1455,7 @@ mod tests {
 
 	use core::time::Duration;
 
-	use crate::blinded_path::{BlindedHop, BlindedPath};
+	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 	use crate::sign::KeyMaterial;
 	use crate::ln::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -1804,7 +1804,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let blinded_path = BlindedPath {
-			introduction_node_id: pubkey(40),
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
