@@ -103,6 +103,8 @@ use core::ops::Deref;
 pub use crate::ln::outbound_payment::{PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 use crate::ln::script::ShutdownScript;
 
+use std::str;
+
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
 // Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
@@ -4268,7 +4270,9 @@ where
 						});
 					}
 				} else {
-					todo!();
+					return Err(APIError::APIMisuseError {
+						err: format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)
+					});
 				}
 			},
 			Some(_) => return Err(APIError::APIMisuseError {
@@ -10277,6 +10281,11 @@ where
 
 	#[cfg(dual_funding)]
 	fn handle_tx_abort(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAbort) {
+		// log TxAbort, data field
+		log_debug!(&self.logger, "Received a TxAbort message");
+		if let Ok(s) = str::from_utf8(&msg.data) {
+			log_debug!(&self.logger, "  data: {}", s);
+		};
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Dual-funded channels not supported".to_owned(),
 			 msg.channel_id.clone())), *counterparty_node_id);

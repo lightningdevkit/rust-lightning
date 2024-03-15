@@ -5194,8 +5194,7 @@ impl<SP: Deref> Channel<SP> where
 			}
 			self.context.funding_transaction = funding_tx_opt.clone();
 			self.context.funding_transaction_saved = funding_tx_opt.clone();
-			// Mark that the interactive tx session is complete
-			self.interactive_tx_signing_session = None;
+			// Note: cannot mark interactive tx session is complete as of yet, funding_transaction_signed() can come later from the client
 
 			Ok((tx_signatures_opt, funding_tx_opt))
 		} else {
@@ -6591,6 +6590,11 @@ impl<SP: Deref> Channel<SP> where
 								Ok(scid) => Some(scid),
 								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
 							};
+							if self.interactive_tx_signing_session.is_some() {
+								// Mark that the interactive tx session is complete
+								self.interactive_tx_signing_session = None;
+								log_info!(logger, "Interactive transaction signing session closed for channel {}", &self.context.channel_id);
+							}
 
 							// #SPLICING
 							if self.context.pending_splice_post.is_some() {
@@ -8177,7 +8181,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	pub fn funding_tx_constructed<L: Deref>(
-		mut self, counterparty_node_id: &PublicKey, mut 	signing_session: InteractiveTxSigningSession, signer_provider: &SP, logger: &L
+		mut self, counterparty_node_id: &PublicKey, mut signing_session: InteractiveTxSigningSession, signer_provider: &SP, logger: &L
 	) -> Result<(Channel<SP>, msgs::CommitmentSigned, Option<Event>), (Self, ChannelError)>
 	where
 		L::Target: Logger
@@ -8485,7 +8489,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 
 		let mut funding_ready_for_sig_event = None;
 		if self.dual_funding_context.our_funding_satoshis == 0 {
-			signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new(), shared_signature);
+			let _res = signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new(), shared_signature);
 		} else {
 			funding_ready_for_sig_event = Some(Event::FundingTransactionReadyForSigning {
 				channel_id: self.context.channel_id,
