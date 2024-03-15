@@ -1,6 +1,6 @@
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
-use crate::blinded_path::{BlindedHop, BlindedPath};
+use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
@@ -94,7 +94,7 @@ pub(crate) fn advance_path_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::
 		Ok(ChaChaPolyReadAdapter {
 			readable: ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override })
 		}) => {
-			let mut next_node_id = match next_hop {
+			let next_node_id = match next_hop {
 				NextHop::NodeId(pubkey) => pubkey,
 				NextHop::ShortChannelId(_) => todo!(),
 			};
@@ -106,7 +106,7 @@ pub(crate) fn advance_path_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::
 				}
 			};
 			mem::swap(&mut path.blinding_point, &mut new_blinding_point);
-			mem::swap(&mut path.introduction_node_id, &mut next_node_id);
+			path.introduction_node = IntroductionNode::NodeId(next_node_id);
 			Ok(())
 		},
 		_ => Err(())
