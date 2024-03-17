@@ -1415,6 +1415,7 @@ where
 	node_signer: NS,
 	signer_provider: SP,
 
+	peer_storage: RwLock<HashMap<PublicKey, Vec<u8>>>,
 	logger: L,
 }
 
@@ -2505,7 +2506,7 @@ where
 			entropy_source,
 			node_signer,
 			signer_provider,
-
+			peer_storage: RwLock::new(HashMap::new()),
 			logger,
 		}
 	}
@@ -6493,6 +6494,73 @@ where
 		}
 	}
 
+	fn internal_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::PeerStorageMessage) -> Result<(), ()> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = match per_peer_state.get(counterparty_node_id) {
+			Some(peer_state_mutex) => peer_state_mutex,
+			None => return Err(()),
+		};
+
+		// Check if we have any channels with the peer (Currently we only provide the servie to peers we have a channel with).
+		let chan_info = self.list_channels_with_counterparty(counterparty_node_id);
+		if chan_info.is_empty() {
+			return Err(());
+		}
+
+		// Send ChannelMonitor Update.
+		let sorted_chan_info: Vec<ChannelDetails> = chan_info.iter().cloned().collect();
+		let sorted_chan_info = {
+			let mut sorted_vec: Vec<ChannelDetails> = sorted_chan_info;
+			sorted_vec.sort_by_cached_key(|s| s.funding_txo.unwrap().get_txid());
+			sorted_vec
+		};
+
+		let mut found_funded_chan = false;
+		for chan in &sorted_chan_info {
+			if let Some(funding_txo) = chan.funding_txo {
+				found_funded_chan = true;
+				let peer_storage_update = ChannelMonitorUpdate {
+					update_id: CLOSED_CHANNEL_UPDATE_ID,
+					counterparty_node_id: None,
+					updates: vec![ChannelMonitorUpdateStep::LatestPeerStorage { 
+						data: msg.data.clone(),
+					}],
+					channel_id: Some(chan.channel_id),
+				};
+				// Since channel monitor is already loaded so we do not need to push this onto background event.
+				let update_res: ChannelMonitorUpdateStatus = self.chain_monitor.update_channel(funding_txo, &peer_storage_update);
+				if update_res != ChannelMonitorUpdateStatus::Completed {
+					log_error!(WithContext::from(&self.logger, None, Some(chan.channel_id)),
+						"Critical error: failed to update channel monitor with latest peer storage {:?}: {:?}",
+						msg.data, update_res);
+				}
+				break;
+			}
+		}
+
+		if !found_funded_chan {
+			return Err(());
+		}
+		
+
+		// Update the store.
+		let mut peer_storage = self.peer_storage.write().unwrap();
+		peer_storage.insert(*counterparty_node_id, msg.data.clone());
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		// Send ACK.
+		peer_state.pending_msg_events.push(events::MessageSendEvent::SendYourPeerStorageMessage {
+			node_id: counterparty_node_id.clone(),
+			msg: msgs::YourPeerStorageMessage {
+				data: msg.data.clone()
+			},
+		});
+
+		Ok(())
+	}
+
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -8857,6 +8925,13 @@ where
 	}
 
 	fn handle_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::PeerStorageMessage) {
+		match self.internal_peer_storage(counterparty_node_id, msg) {
+			Ok(_) => {},
+			Err(_err) => {
+				let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None);
+				log_debug!(logger, "Could not store Peer Storage for peer {}", log_pubkey!(counterparty_node_id));
+			},
+		}
 	}
 
 	fn handle_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
@@ -9243,6 +9318,19 @@ where
 							debug_assert!(false);
 						},
 					}
+				}
+
+				let peer_storage = self.peer_storage.read().unwrap();
+
+				if let Some(value) = peer_storage.get(counterparty_node_id) {
+					log_debug!(logger, "Generating peerstorage for {}", log_pubkey!(counterparty_node_id));
+
+					pending_msg_events.push(events::MessageSendEvent::SendYourPeerStorageMessage { 
+						node_id: counterparty_node_id.clone(),
+						msg: msgs::YourPeerStorageMessage {
+							data: value.clone()
+						},
+					});
 				}
 			}
 
@@ -10564,6 +10652,7 @@ where
 		let mut channel_closures = VecDeque::new();
 		let mut close_background_events = Vec::new();
 		let mut funding_txo_to_channel_id = hash_map_with_capacity(channel_count as usize);
+		let mut peer_storage_dir: HashMap<PublicKey, Vec<u8>> = HashMap::new();
 		for _ in 0..channel_count {
 			let mut channel: Channel<SP> = Channel::read(reader, (
 				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
@@ -10573,6 +10662,9 @@ where
 			funding_txo_to_channel_id.insert(funding_txo, channel.context.channel_id());
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
+				// Load Peer_storage from ChannelMonitor to memory.
+				peer_storage_dir.insert(channel.context.get_counterparty_node_id(), monitor.get_peer_storage());
+
 				if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
 						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
 						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() ||
@@ -11382,7 +11474,7 @@ where
 			entropy_source: args.entropy_source,
 			node_signer: args.node_signer,
 			signer_provider: args.signer_provider,
-
+			peer_storage: RwLock::new(peer_storage_dir),
 			logger: args.logger,
 			default_configuration: args.default_config,
 		};
