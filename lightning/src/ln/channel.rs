@@ -4530,6 +4530,22 @@ impl<SP: Deref> Channel<SP> where
 		return Ok(self.push_ret_blockable_mon_update(monitor_update));
 	}
 
+	/// Used to send LatestPeerStorage to the corresponding `ChannelMonitor`
+	pub fn update_peer_storage(&mut self, data: Vec<u8>) -> ChannelMonitorUpdate {
+		self.context.latest_monitor_update_id += 1;
+		let monitor_update = ChannelMonitorUpdate {
+			update_id: self.context.latest_monitor_update_id,
+			counterparty_node_id: None,
+			updates: vec![ChannelMonitorUpdateStep::LatestPeerStorage { 
+				data,
+			}],
+			channel_id: Some(self.context.channel_id()),
+		};
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+
+		monitor_update
+	}
+
 	/// Public version of the below, checking relevant preconditions first.
 	/// If we're not in a state where freeing the holding cell makes sense, this is a no-op and
 	/// returns `(None, Vec::new())`.

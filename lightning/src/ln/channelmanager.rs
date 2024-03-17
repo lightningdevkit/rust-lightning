@@ -909,6 +909,7 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
 	/// [`ChannelMessageHandler::peer_disconnected`].
 	pub is_connected: bool,
+	peer_storage: Vec<u8>,
 }
 
 impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
@@ -3192,7 +3193,6 @@ where
 			entropy_source,
 			node_signer,
 			signer_provider,
-
 			logger,
 		}
 	}
@@ -7366,6 +7366,45 @@ where
 		}
 	}
 
+	fn internal_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::PeerStorageMessage) {
+		let per_peer_state = self.per_peer_state.write().unwrap();
+		let peer_state_mutex = match per_peer_state.get(counterparty_node_id) {
+			Some(peer_state_mutex) => peer_state_mutex,
+			None => return,
+		};
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None);
+
+		// Check if we have any channels with the peer (Currently we only provide the servie to peers we have a channel with).
+		if peer_state.total_channel_count() == 0 {
+			log_debug!(logger, "We do not have any channel with {}", log_pubkey!(counterparty_node_id));
+			return;
+		}
+
+		let mut funded_channels: Vec<&mut Channel<SP>> = peer_state.channel_by_id.values_mut()
+			.filter_map(|phase| {
+				if let ChannelPhase::Funded(channel) = phase {
+					Some(channel)
+				} else {
+					None
+				}
+			})
+			.collect();
+
+		let min_funded_chan = funded_channels
+			.iter_mut()
+			.min_by_key(|s| s.context.get_funding_txo().unwrap().get_txid())
+			.unwrap();
+
+		// Send ChannelMonitor Update.
+		let peer_storage_update = min_funded_chan.update_peer_storage(msg.data.clone());
+		// Update the store.
+		peer_state.peer_storage = msg.data.clone();
+
+		handle_new_monitor_update!(self, min_funded_chan.context.get_funding_txo().unwrap(), peer_storage_update, peer_state_lock, peer_state, per_peer_state, min_funded_chan);
+	}
+
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -9771,6 +9810,8 @@ where
 	}
 
 	fn handle_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::PeerStorageMessage) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.internal_peer_storage(counterparty_node_id, msg);
 	}
 
 	fn handle_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
@@ -10094,6 +10135,7 @@ where
 							monitor_update_blocked_actions: BTreeMap::new(),
 							actions_blocking_raa_monitor_updates: BTreeMap::new(),
 							is_connected: true,
+							peer_storage: Vec::new(),
 						}));
 					},
 					hash_map::Entry::Occupied(e) => {
@@ -10166,6 +10208,15 @@ where
 						},
 					}
 				}
+
+				let peer_storage = peer_state.peer_storage.clone();
+
+				pending_msg_events.push(events::MessageSendEvent::SendYourPeerStorageMessage { 
+					node_id: counterparty_node_id.clone(),
+					msg: msgs::YourPeerStorageMessage {
+						data: peer_storage
+					},
+				});
 			}
 
 			return NotifyOption::SkipPersistHandleEvents;
@@ -11513,6 +11564,7 @@ where
 		let mut channel_closures = VecDeque::new();
 		let mut close_background_events = Vec::new();
 		let mut funding_txo_to_channel_id = hash_map_with_capacity(channel_count as usize);
+		let mut peer_storage_dir: HashMap<PublicKey, Vec<u8>> = HashMap::new();
 		for _ in 0..channel_count {
 			let mut channel: Channel<SP> = Channel::read(reader, (
 				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
@@ -11522,6 +11574,9 @@ where
 			funding_txo_to_channel_id.insert(funding_txo, channel.context.channel_id());
 			funding_txo_set.insert(funding_txo.clone());
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
+				// Load Peer_storage from ChannelMonitor to memory.
+				peer_storage_dir.insert(channel.context.get_counterparty_node_id(), monitor.get_peer_storage());
+
 				if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
 						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
 						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() ||
@@ -11669,7 +11724,7 @@ where
 			claimable_htlcs_list.push((payment_hash, previous_hops));
 		}
 
-		let peer_state_from_chans = |channel_by_id| {
+		let peer_state_from_chans = |channel_by_id, peer_storage_blob| {
 			PeerState {
 				channel_by_id,
 				inbound_channel_request_by_id: new_hash_map(),
@@ -11679,6 +11734,7 @@ where
 				monitor_update_blocked_actions: BTreeMap::new(),
 				actions_blocking_raa_monitor_updates: BTreeMap::new(),
 				is_connected: false,
+				peer_storage: peer_storage_blob,
 			}
 		};
 
@@ -11687,7 +11743,7 @@ where
 		for _ in 0..peer_count {
 			let peer_pubkey = Readable::read(reader)?;
 			let peer_chans = funded_peer_channels.remove(&peer_pubkey).unwrap_or(new_hash_map());
-			let mut peer_state = peer_state_from_chans(peer_chans);
+			let mut peer_state = peer_state_from_chans(peer_chans, peer_storage_dir.get(&peer_pubkey).cloned().unwrap_or_default());
 			peer_state.latest_features = Readable::read(reader)?;
 			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
 		}
@@ -11898,7 +11954,7 @@ where
 					// still open, we need to replay any monitor updates that are for closed channels,
 					// creating the neccessary peer_state entries as we go.
 					let peer_state_mutex = per_peer_state.entry(counterparty_id).or_insert_with(|| {
-						Mutex::new(peer_state_from_chans(new_hash_map()))
+						Mutex::new(peer_state_from_chans(new_hash_map(), peer_storage_dir.get(&counterparty_id).cloned().unwrap_or_default()))
 					});
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					handle_in_flight_updates!(counterparty_id, chan_in_flight_updates,
@@ -12351,7 +12407,6 @@ where
 			entropy_source: args.entropy_source,
 			node_signer: args.node_signer,
 			signer_provider: args.signer_provider,
-
 			logger: args.logger,
 			default_configuration: args.default_config,
 		};

@@ -561,6 +561,9 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	ShutdownScript {
 		scriptpubkey: ScriptBuf,
 	},
+	LatestPeerStorage {
+		data: Vec<u8>,
+	},
 }
 
 impl ChannelMonitorUpdateStep {
@@ -572,6 +575,7 @@ impl ChannelMonitorUpdateStep {
 			ChannelMonitorUpdateStep::CommitmentSecret { .. } => "CommitmentSecret",
 			ChannelMonitorUpdateStep::ChannelForceClosed { .. } => "ChannelForceClosed",
 			ChannelMonitorUpdateStep::ShutdownScript { .. } => "ShutdownScript",
+			ChannelMonitorUpdateStep::LatestPeerStorage { .. } => "LatestPeerStorage",
 		}
 	}
 }
@@ -604,6 +608,9 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 	(5, ShutdownScript) => {
 		(0, scriptpubkey, required),
+	},
+	(6, LatestPeerStorage) => {
+		(0, data, required_vec),
 	},
 );
 
@@ -851,6 +858,8 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	/// remote commitment transactions are automatically removed when commitment transactions are
 	/// revoked.
 	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
+
+	peer_storage: Vec<u8>,
 
 	// Note that `MonitorEvent`s MUST NOT be generated during update processing, only generated
 	// during chain data processing. This prevents a race in `ChainMonitor::update_channel` (and
@@ -1149,6 +1158,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 			(17, self.initial_counterparty_commitment_info, option),
 			(19, self.channel_id, required),
 			(21, self.balances_empty_height, option),
+			(23, self.peer_storage, required_vec),
 		});
 
 		Ok(())
@@ -1328,7 +1338,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			confirmed_commitment_tx_counterparty_output: None,
 			htlcs_resolved_on_chain: Vec::new(),
 			spendable_txids_confirmed: Vec::new(),
-
+			peer_storage: Vec::new(),
 			best_block,
 			counterparty_node_id: Some(counterparty_node_id),
 			initial_counterparty_commitment_info: None,
@@ -1444,6 +1454,11 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Gets the channel_id of the channel this ChannelMonitor is monitoring for.
 	pub fn channel_id(&self) -> ChannelId {
 		self.inner.lock().unwrap().channel_id()
+	}
+
+	/// Fets peer_storage of this peer.
+	pub fn get_peer_storage(&self) -> Vec<u8> {
+		self.inner.lock().unwrap().peer_storage()
 	}
 
 	/// Gets a list of txids, with their output scripts (in the order they appear in the
@@ -2816,6 +2831,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
+	fn update_peer_storage(&mut self, new_data: Vec<u8>) {
+		self.peer_storage = new_data;
+	}
+
 	fn generate_claimable_outpoints_and_watch_outputs(&mut self, reason: ClosureReason) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
 		let funding_outp = HolderFundingOutput::build(
 			self.funding_redeemscript.clone(),
@@ -2991,6 +3010,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						panic!("Attempted to replace shutdown script {} with {}", shutdown_script, scriptpubkey);
 					}
 				},
+				ChannelMonitorUpdateStep::LatestPeerStorage { data } => {
+					log_trace!(logger, "Updating ChannelMonitor with latest recieved PeerStorage");
+					self.update_peer_storage(data.clone());
+				}
 			}
 		}
 
@@ -3020,6 +3043,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn get_funding_txo(&self) -> &(OutPoint, ScriptBuf) {
 		&self.funding_info
+	}
+
+	pub fn peer_storage(&self) -> Vec<u8> {
+		self.peer_storage.clone()
 	}
 
 	pub fn channel_id(&self) -> ChannelId {
@@ -4689,6 +4716,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut initial_counterparty_commitment_info = None;
 		let mut balances_empty_height = None;
 		let mut channel_id = None;
+		let mut peer_storage = Some(Vec::new());
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -4701,6 +4729,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(17, initial_counterparty_commitment_info, option),
 			(19, channel_id, option),
 			(21, balances_empty_height, option),
+			(23, peer_storage, optional_vec),
 		});
 
 		// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. If we have both
@@ -4775,7 +4804,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			confirmed_commitment_tx_counterparty_output,
 			htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
 			spendable_txids_confirmed: spendable_txids_confirmed.unwrap(),
-
+			peer_storage: peer_storage.unwrap(),
 			best_block,
 			counterparty_node_id,
 			initial_counterparty_commitment_info,
