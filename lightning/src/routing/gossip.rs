@@ -74,6 +74,16 @@ impl NodeId {
 		NodeId(pubkey.serialize())
 	}
 
+	/// Create a new NodeId from a slice of bytes
+	pub fn from_slice(bytes: &[u8]) -> Result<Self, DecodeError> {
+		if bytes.len() != PUBLIC_KEY_SIZE {
+			return Err(DecodeError::InvalidValue);
+		}
+		let mut data = [0; PUBLIC_KEY_SIZE];
+		data.copy_from_slice(bytes);
+		Ok(NodeId(data))
+	}
+
 	/// Get the public key slice from this NodeId
 	pub fn as_slice(&self) -> &[u8] {
 		&self.0
