@@ -169,7 +169,7 @@ impl Readable for BlindedPaymentTlvs {
 				short_channel_id,
 				payment_relay: payment_relay.ok_or(DecodeError::InvalidValue)?,
 				payment_constraints: payment_constraints.0.unwrap(),
-				features: features.ok_or(DecodeError::InvalidValue)?,
+				features: features.unwrap_or_else(BlindedHopFeatures::empty),
 			}))
 		} else {
 			if payment_relay.is_some() || features.is_some() { return Err(DecodeError::InvalidValue) }
