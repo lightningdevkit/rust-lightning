@@ -1,0 +1,5 @@
+## Bug Fixes
+
+* LDK previously would fail to forward an intermediate blinded payment
+	if the blinded hop features were absent, potentially breaking
+	interoperability.
