@@ -1015,7 +1015,7 @@ fn test_trampoline_onion_payload_construction_vectors() {
 			cltv_expiry_delta: 0,
 			maybe_announced_channel: false,
 		}
-	], blinded_tail: None };
+	], trampoline_hops: vec![], blinded_tail: None };
 
 	let slice_to_hex = |slice: &[u8]| {
 		slice.iter()
@@ -1083,6 +1083,7 @@ fn test_trampoline_onion_payload_construction_vectors() {
 				maybe_announced_channel: false,
 			},
 		],
+		trampoline_hops: vec![],
 		blinded_tail: None,
 	};
 
