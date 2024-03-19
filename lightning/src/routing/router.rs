@@ -389,6 +389,35 @@ impl_writeable_tlv_based!(RouteHop, {
 	(10, cltv_expiry_delta, required),
 });
 
+/// A Trampoline hop in a route, and additional metadata about it. "Hop" is defined as a node.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct TrampolineHop {
+	/// The node_id of the node at this hop.
+	pub pubkey: PublicKey,
+	/// The node_announcement features of the node at this hop. For the last hop, these may be
+	/// amended to match the features present in the invoice this node generated.
+	pub node_features: NodeFeatures,
+	/// The fee taken on this hop (for paying for the use of the *next* channel in the path).
+	/// If this is the last hop in [`Path::hops`]:
+	/// * if we're sending to a [`BlindedPaymentPath`], this is the fee paid for use of the entire
+	///   blinded path
+	/// * otherwise, this is the full value of this [`Path`]'s part of the payment
+	pub fee_msat: u64,
+	/// The CLTV delta added for this hop.
+	/// If this is the last hop in [`Path::hops`]:
+	/// * if we're sending to a [`BlindedPaymentPath`], this is the CLTV delta for the entire
+	///   blinded path
+	/// * otherwise, this is the CLTV delta expected at the destination
+	pub cltv_expiry_delta: u32,
+}
+
+impl_writeable_tlv_based!(TrampolineHop, {
+	(0, pubkey, required),
+	(2, node_features, required),
+	(6, fee_msat, required),
+	(8, cltv_expiry_delta, required),
+});
+
 /// The blinded portion of a [`Path`], if we're routing to a recipient who provided blinded paths in
 /// their [`Bolt12Invoice`].
 ///
