@@ -44,6 +44,43 @@ pub(crate) struct OnionKeys {
 	pub(crate) mu: [u8; 32],
 }
 
+/// Information which is provided, encrypted, to the payment recipient when sending HTLCs.
+///
+/// This should generally be constructed with data communicated to us from the recipient (via a
+/// BOLT11 or BOLT12 invoice).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TrampolineEntryOnionFields {
+	/// The trampoline packet is the inner onion that is used in conjunction with trampoline routing
+	pub trampoline_packet: msgs::TrampolineOnionPacket,
+	/// The payment metadata serves a similar purpose as [`RecipientOnionFields::payment_secret`] but is of
+	/// arbitrary length. This gives recipients substantially more flexibility to receive
+	/// additional data.
+	///
+	/// In LDK, while the [`RecipientOnionFields::payment_secret`] is fixed based on an internal authentication
+	/// scheme to authenticate received payments against expected payments and invoices, this field
+	/// is not used in LDK for received payments, and can be used to store arbitrary data in
+	/// invoices which will be received with the payment.
+	///
+	/// Note that this field was added to the lightning specification more recently than
+	/// [`RecipientOnionFields::payment_secret`] and while nearly all lightning senders support secrets, metadata
+	/// may not be supported as universally.
+	pub payment_metadata: Option<Vec<u8>>,
+	/// See [`Self::custom_tlvs`] for more info.
+	pub(super) custom_tlvs: Vec<(u64, Vec<u8>)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum RecipientOnion {
+	TrampolineEntry(TrampolineEntryOnionFields),
+	Final(RecipientOnionFields),
+}
+
+impl From<RecipientOnionFields> for RecipientOnion {
+	fn from(fields: RecipientOnionFields) -> Self {
+		Self::Final(fields)
+	}
+}
+
 #[inline]
 pub(crate) fn gen_rho_from_shared_secret(shared_secret: &[u8]) -> [u8; 32] {
 	assert_eq!(shared_secret.len(), 32);
