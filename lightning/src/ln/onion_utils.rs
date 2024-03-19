@@ -14,7 +14,7 @@ use crate::ln::msgs;
 use crate::ln::wire::Encode;
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::routing::gossip::NetworkUpdate;
-use crate::routing::router::{BlindedTail, Path, RouteHop};
+use crate::routing::router::{BlindedTail, Path, RouteHop, TrampolineHop};
 use crate::sign::NodeSigner;
 use crate::util::errors::{self, APIError};
 use crate::util::logger::Logger;
@@ -151,6 +151,64 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 	let mut res = Vec::with_capacity(path.hops.len());
 
 	construct_onion_keys_callback(
+		secp_ctx,
+		&path,
+		session_priv,
+		|shared_secret, _blinding_factor, ephemeral_pubkey, _, _| {
+			let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
+
+			res.push(OnionKeys {
+				#[cfg(test)]
+				shared_secret,
+				#[cfg(test)]
+				blinding_factor: _blinding_factor,
+				ephemeral_pubkey,
+				rho,
+				mu,
+			});
+		},
+	)?;
+
+	Ok(res)
+}
+
+pub(super) fn construct_trampoline_keys_callback<T, FType>(
+	secp_ctx: &Secp256k1<T>, path: &[TrampolineHop], session_priv: &SecretKey, mut callback: FType,
+) -> Result<(), secp256k1::Error>
+where
+	T: secp256k1::Signing,
+	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&TrampolineHop>, usize),
+{
+	let mut blinded_priv = session_priv.clone();
+	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
+
+	let unblinded_hops_iter = path.iter().map(|h| (&h.pubkey, Some(h)));
+	for (idx, (pubkey, route_hop_opt)) in unblinded_hops_iter.enumerate() {
+		let shared_secret = SharedSecret::new(pubkey, &blinded_priv);
+
+		let mut sha = Sha256::engine();
+		sha.input(&blinded_pub.serialize()[..]);
+		sha.input(shared_secret.as_ref());
+		let blinding_factor = Sha256::from_engine(sha).to_byte_array();
+
+		let ephemeral_pubkey = blinded_pub;
+
+		blinded_priv = blinded_priv.mul_tweak(&Scalar::from_be_bytes(blinding_factor).unwrap())?;
+		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
+
+		callback(shared_secret, blinding_factor, ephemeral_pubkey, route_hop_opt, idx);
+	}
+
+	Ok(())
+}
+
+// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
+pub(super) fn construct_trampoline_keys<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, path: &[TrampolineHop], session_priv: &SecretKey,
+) -> Result<Vec<OnionKeys>, secp256k1::Error> {
+	let mut res = Vec::with_capacity(path.len());
+
+	construct_trampoline_keys_callback(
 		secp_ctx,
 		&path,
 		session_priv,
