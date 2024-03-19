@@ -668,7 +668,7 @@ impl HTLCSource {
 	pub fn dummy() -> Self {
 		assert!(cfg!(not(feature = "grind_signatures")));
 		HTLCSource::OutboundRoute {
-			path: Path { hops: Vec::new(), blinded_tail: None },
+			path: Path { hops: Vec::new(), trampoline_hops: Vec::new(), blinded_tail: None },
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
@@ -12594,7 +12594,7 @@ impl Readable for HTLCSource {
 					// instead.
 					payment_id = Some(PaymentId(*session_priv.0.unwrap().as_ref()));
 				}
-				let path = Path { hops: path_hops, blinded_tail };
+				let path = Path { hops: path_hops, trampoline_hops: vec![], blinded_tail };
 				if path.hops.len() == 0 {
 					return Err(DecodeError::InvalidValue);
 				}

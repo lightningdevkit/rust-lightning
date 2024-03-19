@@ -565,6 +565,7 @@ fn send_payment(
 				maybe_announced_channel: true,
 			}],
 			blinded_tail: None,
+			trampoline_hops: vec![],
 		}],
 		route_params: None,
 	});
@@ -647,6 +648,7 @@ fn send_hop_payment(
 				},
 			],
 			blinded_tail: None,
+			trampoline_hops: vec![],
 		}],
 		route_params: None,
 	});

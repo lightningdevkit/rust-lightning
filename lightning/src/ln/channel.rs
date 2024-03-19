@@ -10386,7 +10386,7 @@ mod tests {
 			cltv_expiry: 200000000,
 			state: OutboundHTLCState::Committed,
 			source: HTLCSource::OutboundRoute {
-				path: Path { hops: Vec::new(), blinded_tail: None },
+				path: Path { hops: Vec::new(), trampoline_hops: vec![], blinded_tail: None },
 				session_priv: SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap(),
 				first_hop_htlc_msat: 548,
 				payment_id: PaymentId([42; 32]),
@@ -10762,6 +10762,7 @@ mod tests {
 					node_features: NodeFeatures::empty(), short_channel_id: 0, fee_msat: 0,
 					cltv_expiry_delta: 0, maybe_announced_channel: false,
 				}],
+				trampoline_hops: vec![],
 				blinded_tail: None
 			},
 			session_priv: test_utils::privkey(42),

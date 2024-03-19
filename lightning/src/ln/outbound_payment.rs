@@ -2553,7 +2553,7 @@ mod tests {
 				fee_msat: 0,
 				cltv_expiry_delta: 0,
 				maybe_announced_channel: true,
-			}], blinded_tail: None }],
+			}], trampoline_hops: vec![], blinded_tail: None }],
 			route_params: Some(route_params.clone()),
 		};
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));
@@ -2909,6 +2909,7 @@ mod tests {
 								maybe_announced_channel: true,
 							}
 						],
+						trampoline_hops: vec![],
 						blinded_tail: None,
 					}
 				],
