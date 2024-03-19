@@ -27,7 +27,7 @@ use crate::sync::{self, Arc};
 use crate::routing::gossip::NodeId;
 
 // Using the same keys for LN and BTC ids
-pub(super) fn add_channel(
+pub(crate) fn add_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64
 ) {
@@ -59,7 +59,7 @@ pub(super) fn add_channel(
 	};
 }
 
-pub(super) fn add_or_update_node(
+pub(crate) fn add_or_update_node(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, features: NodeFeatures, timestamp: u32
 ) {
@@ -86,7 +86,7 @@ pub(super) fn add_or_update_node(
 	};
 }
 
-pub(super) fn update_channel(
+pub(crate) fn update_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate
 ) {
