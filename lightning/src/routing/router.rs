@@ -1451,6 +1451,74 @@ enum CandidateHopId {
 	Blinded(usize),
 }
 
+/// To avoid doing [`PublicKey`] -> [`PathBuildingHop`] hashtable lookups, we assign each
+/// [`PublicKey`]/node a `usize` index and simply keep a `Vec` of values.
+///
+/// While this is easy for gossip-originating nodes (the [`DirectedChannelInfo`] exposes "counters"
+/// for us for this purpose) we have to have our own indexes for nodes originating from invoice
+/// hints, local channels, or blinded path fake nodes.
+///
+/// This wrapper handles all this for us, allowing look-up of counters from the various contexts.
+///
+/// It is first built by passing all [`NodeId`]s that we'll ever care about either though
+/// [`NodeCountersBuilder::node_counter_from_pubkey`] or
+/// [`NodeCountersBuilder::node_counter_from_id`], then calling [`NodeCountersBuilder::build`] and
+/// using the resulting [`NodeCounters`] to look up any counters.
+///
+/// [`NodeCounters::node_counter_from_pubkey`], specifically, will return `Some` iff
+/// [`NodeCountersBuilder::node_counter_from_pubkey`] was called on the same key (not
+/// [`NodeCountersBuilder::node_counter_from_id`]). It will also returned a cached copy of the
+/// [`PublicKey`] -> [`NodeId`] conversion.
+struct NodeCounters<'a> {
+	network_graph: &'a ReadOnlyNetworkGraph<'a>,
+	private_node_id_to_node_counter: HashMap<NodeId, u32>,
+	private_hop_key_cache: HashMap<PublicKey, (NodeId, u32)>,
+}
+
+struct NodeCountersBuilder<'a>(NodeCounters<'a>);
+
+impl<'a> NodeCountersBuilder<'a> {
+	fn new(network_graph: &'a ReadOnlyNetworkGraph) -> Self {
+		Self(NodeCounters {
+			network_graph,
+			private_node_id_to_node_counter: new_hash_map(),
+			private_hop_key_cache: new_hash_map(),
+		})
+	}
+
+	fn node_counter_from_pubkey(&mut self, pubkey: PublicKey) -> u32 {
+		let id = NodeId::from_pubkey(&pubkey);
+		let counter = self.node_counter_from_id(id);
+		self.0.private_hop_key_cache.insert(pubkey, (id, counter));
+		counter
+	}
+
+	fn node_counter_from_id(&mut self, node_id: NodeId) -> u32 {
+		// For any node_id, we first have to check if its in the existing network graph, and then
+		// ensure that we always look up in our internal map first.
+		self.0.network_graph.nodes().get(&node_id)
+			.map(|node| node.node_counter)
+			.unwrap_or_else(|| {
+				let next_node_counter = self.0.network_graph.max_node_counter() + 1 +
+					self.0.private_node_id_to_node_counter.len() as u32;
+				*self.0.private_node_id_to_node_counter.entry(node_id).or_insert(next_node_counter)
+			})
+	}
+
+	fn build(self) -> NodeCounters<'a> { self.0 }
+}
+
+impl<'a> NodeCounters<'a> {
+	fn max_counter(&self) -> u32 {
+		self.network_graph.max_node_counter() +
+			self.private_node_id_to_node_counter.len() as u32
+	}
+
+	fn node_counter_from_pubkey(&self, pubkey: &PublicKey) -> Option<&(NodeId, u32)> {
+		self.private_hop_key_cache.get(pubkey)
+	}
+}
+
 #[inline]
 fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_power_of_half: u8) -> u64 {
 	let saturation_shift: u32 = max_channel_saturation_power_of_half as u32;
@@ -1967,6 +2035,17 @@ where L::Target: Logger {
 		if allow_mpp { "with" } else { "without" },
 		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " },
 		max_total_routing_fee_msat);
+
+	let mut node_counters = NodeCountersBuilder::new(&network_graph);
+
+	let payer_node_counter = node_counters.node_counter_from_pubkey(*our_node_pubkey);
+	let payee_node_counter = node_counters.node_counter_from_pubkey(maybe_dummy_payee_pk);
+
+	for route in payment_params.payee.unblinded_route_hints().iter() {
+		for hop in route.0.iter() {
+			node_counters.node_counter_from_pubkey(hop.src_node_id);
+		}
+	}
 
 	// Step (1).
 	// Prepare the data we'll use for payee-to-payer search by
