@@ -1505,6 +1505,7 @@ fn route_blinding_spec_test_vector() {
 			maybe_announced_channel: false,
 		}],
 		blinded_tail: Some(BlindedTail {
+			trampoline_hops: vec![],
 			hops: blinded_hops,
 			blinding_point: bob_blinding_point,
 			excess_final_cltv_expiry_delta: 0,

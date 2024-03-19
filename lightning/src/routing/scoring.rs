@@ -3571,6 +3571,7 @@ mod tests {
 		let mut path = payment_path_for_amount(768);
 		let recipient_hop = path.hops.pop().unwrap();
 		path.blinded_tail = Some(BlindedTail {
+			trampoline_hops: vec![],
 			hops: vec![BlindedHop { blinded_node_id: test_utils::pubkey(44), encrypted_payload: Vec::new() }],
 			blinding_point: test_utils::pubkey(42),
 			excess_final_cltv_expiry_delta: recipient_hop.cltv_expiry_delta,
