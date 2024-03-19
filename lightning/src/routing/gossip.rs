@@ -698,7 +698,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 			// Prior replies should use the number of blocks that fit into the reply. Overflow
 			// safe since first_blocknum is always <= last SCID's block.
 			else {
-				(false, block_from_scid(batch.last().unwrap()) - first_blocknum)
+				(false, block_from_scid(*batch.last().unwrap()) - first_blocknum)
 			};
 
 			prev_batch_endblock = first_blocknum + number_of_blocks;
@@ -1032,13 +1032,13 @@ impl<'a> DirectedChannelInfo<'a> {
 	///
 	/// Refers to the `node_id` forwarding the payment to the next hop.
 	#[inline]
-	pub(super) fn source(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_one } else { &self.channel.node_two } }
+	pub fn source(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_one } else { &self.channel.node_two } }
 
 	/// Returns the `node_id` of the target hop.
 	///
 	/// Refers to the `node_id` receiving the payment from the previous hop.
 	#[inline]
-	pub(super) fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
+	pub fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
@@ -1231,6 +1231,18 @@ pub struct NodeInfo {
 	pub announcement_info: Option<NodeAnnouncementInfo>
 }
 
+impl NodeInfo {
+	/// Returns whether the node has only announced Tor addresses.
+	pub fn is_tor_only(&self) -> bool {
+		self.announcement_info
+			.as_ref()
+			.map(|info| info.addresses())
+			.and_then(|addresses| (!addresses.is_empty()).then(|| addresses))
+			.map(|addresses| addresses.iter().all(|address| address.is_tor()))
+			.unwrap_or(false)
+	}
+}
+
 impl fmt::Display for NodeInfo {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		write!(f, " channels: {:?}, announcement_info: {:?}",
@@ -1353,8 +1365,8 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
 			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
-			removed_nodes: Mutex::new(HashMap::new()),
-			removed_channels: Mutex::new(HashMap::new()),
+			removed_nodes: Mutex::new(new_hash_map()),
+			removed_channels: Mutex::new(new_hash_map()),
 			pending_checks: utxo::PendingChecks::new(),
 		})
 	}
@@ -1398,8 +1410,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			channels: RwLock::new(IndexedMap::new()),
 			nodes: RwLock::new(IndexedMap::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
-			removed_channels: Mutex::new(HashMap::new()),
-			removed_nodes: Mutex::new(HashMap::new()),
+			removed_channels: Mutex::new(new_hash_map()),
+			removed_nodes: Mutex::new(new_hash_map()),
 			pending_checks: utxo::PendingChecks::new(),
 		}
 	}
@@ -1845,7 +1857,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				// NOTE: In the case of no-std, we won't have access to the current UNIX time at the time of removal,
 				// so we'll just set the removal time here to the current UNIX time on the very next invocation
 				// of this function.
-				#[cfg(feature = "no-std")]
+				#[cfg(not(feature = "std"))]
 				{
 					let mut tracked_time = Some(current_time_unix);
 					core::mem::swap(time, &mut tracked_time);
@@ -1925,7 +1937,10 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			None => {
 				core::mem::drop(channels);
 				self.pending_checks.check_hold_pending_channel_update(msg, full_msg)?;
-				return Err(LightningError{err: "Couldn't find channel for update".to_owned(), action: ErrorAction::IgnoreError});
+				return Err(LightningError {
+					err: "Couldn't find channel for update".to_owned(),
+					action: ErrorAction::IgnoreAndLog(Level::Gossip),
+				});
 			},
 			Some(channel) => {
 				if msg.htlc_maximum_msat > MAX_VALUE_MSAT {
@@ -2086,6 +2101,7 @@ pub(crate) mod tests {
 	use crate::ln::chan_utils::make_funding_redeemscript;
 	#[cfg(feature = "std")]
 	use crate::ln::features::InitFeatures;
+	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate, NodeAlias, MAX_EXCESS_BYTES_FOR_RELAY, NodeId, RoutingFees, ChannelUpdateInfo, ChannelInfo, NodeAnnouncementInfo, NodeInfo};
 	use crate::routing::utxo::{UtxoLookupError, UtxoResult};
 	use crate::ln::msgs::{RoutingMessageHandler, UnsignedNodeAnnouncement, NodeAnnouncement,
@@ -2093,7 +2109,7 @@ pub(crate) mod tests {
 		ReplyChannelRange, QueryChannelRange, QueryShortChannelIds, MAX_VALUE_MSAT};
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils;
-	use crate::util::ser::{ReadableArgs, Readable, Writeable};
+	use crate::util::ser::{Hostname, ReadableArgs, Readable, Writeable};
 	use crate::util::scid_utils::scid_from_parts;
 
 	use crate::routing::gossip::REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS;
@@ -3470,6 +3486,112 @@ pub(crate) mod tests {
 	fn test_node_id_display() {
 		let node_id = NodeId([42; 33]);
 		assert_eq!(format!("{}", &node_id), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
+	}
+
+	#[test]
+	fn is_tor_only_node() {
+		let network_graph = create_network_graph();
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
+
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_1_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
+
+		let announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+		gossip_sync.handle_channel_announcement(&announcement).unwrap();
+
+		let tcp_ip_v4 = SocketAddress::TcpIpV4 {
+			addr: [255, 254, 253, 252],
+			port: 9735
+		};
+		let tcp_ip_v6 = SocketAddress::TcpIpV6 {
+			addr: [255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240],
+			port: 9735
+		};
+		let onion_v2 = SocketAddress::OnionV2([255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 38, 7]);
+		let onion_v3 = SocketAddress::OnionV3 {
+			ed25519_pubkey:	[255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 244, 243, 242, 241, 240, 239, 238, 237, 236, 235, 234, 233, 232, 231, 230, 229, 228, 227, 226, 225, 224],
+			checksum: 32,
+			version: 16,
+			port: 9735
+		};
+		let hostname = SocketAddress::Hostname {
+			hostname: Hostname::try_from(String::from("host")).unwrap(),
+			port: 9735,
+		};
+
+		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
+
+		let announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
+		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
+
+		let announcement = get_signed_node_announcement(
+			|announcement| {
+				announcement.addresses = vec![
+					tcp_ip_v4.clone(), tcp_ip_v6.clone(), onion_v2.clone(), onion_v3.clone(),
+					hostname.clone()
+				];
+				announcement.timestamp += 1000;
+			},
+			node_1_privkey, &secp_ctx
+		);
+		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
+
+		let announcement = get_signed_node_announcement(
+			|announcement| {
+				announcement.addresses = vec![
+					tcp_ip_v4.clone(), tcp_ip_v6.clone(), onion_v2.clone(), onion_v3.clone()
+				];
+				announcement.timestamp += 2000;
+			},
+			node_1_privkey, &secp_ctx
+		);
+		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
+
+		let announcement = get_signed_node_announcement(
+			|announcement| {
+				announcement.addresses = vec![
+					tcp_ip_v6.clone(), onion_v2.clone(), onion_v3.clone()
+				];
+				announcement.timestamp += 3000;
+			},
+			node_1_privkey, &secp_ctx
+		);
+		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
+
+		let announcement = get_signed_node_announcement(
+			|announcement| {
+				announcement.addresses = vec![onion_v2.clone(), onion_v3.clone()];
+				announcement.timestamp += 4000;
+			},
+			node_1_privkey, &secp_ctx
+		);
+		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		assert!(network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
+
+		let announcement = get_signed_node_announcement(
+			|announcement| {
+				announcement.addresses = vec![onion_v2.clone()];
+				announcement.timestamp += 5000;
+			},
+			node_1_privkey, &secp_ctx
+		);
+		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		assert!(network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
+
+		let announcement = get_signed_node_announcement(
+			|announcement| {
+				announcement.addresses = vec![tcp_ip_v4.clone()];
+				announcement.timestamp += 6000;
+			},
+			node_1_privkey, &secp_ctx
+		);
+		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 	}
 }
 

@@ -1,6 +1,5 @@
-// Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
-#![deny(broken_intra_doc_links)]
-#![deny(private_intra_doc_links)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(rustdoc::private_intra_doc_links)]
 
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
@@ -75,16 +74,41 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use lightning::io;
+use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::routing::gossip::NetworkGraph;
 use lightning::util::logger::Logger;
 
-pub use crate::error::GraphSyncError;
-
-/// Error types that these functions can return
-mod error;
-
 /// Core functionality of this crate
 mod processing;
+
+/// All-encompassing standard error type that processing can return
+#[derive(Debug)]
+pub enum GraphSyncError {
+	/// Error trying to read the update data, typically due to an erroneous data length indication
+	/// that is greater than the actual amount of data provided
+	DecodeError(DecodeError),
+	/// Error applying the patch to the network graph, usually the result of updates that are too
+	/// old or missing prerequisite data to the application of updates out of order
+	LightningError(LightningError),
+}
+
+impl From<lightning::io::Error> for GraphSyncError {
+	fn from(error: lightning::io::Error) -> Self {
+		Self::DecodeError(DecodeError::Io(error.kind()))
+	}
+}
+
+impl From<DecodeError> for GraphSyncError {
+	fn from(error: DecodeError) -> Self {
+		Self::DecodeError(error)
+	}
+}
+
+impl From<LightningError> for GraphSyncError {
+	fn from(error: LightningError) -> Self {
+		Self::LightningError(error)
+	}
+}
 
 /// The main Rapid Gossip Sync object.
 ///
@@ -168,7 +192,7 @@ mod tests {
 	use lightning::ln::msgs::DecodeError;
 	use lightning::routing::gossip::NetworkGraph;
 	use lightning::util::test_utils::TestLogger;
-	use crate::RapidGossipSync;
+	use crate::{GraphSyncError, RapidGossipSync};
 
 	#[test]
 	fn test_sync_from_file() {
@@ -266,7 +290,7 @@ mod tests {
 		let start = std::time::Instant::now();
 		let sync_result = rapid_sync
 			.sync_network_graph_with_file_path("./res/full_graph.lngossip");
-		if let Err(crate::error::GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {
+		if let Err(GraphSyncError::DecodeError(DecodeError::Io(io_error))) = &sync_result {
 			let error_string = format!("Input file lightning-rapid-gossip-sync/res/full_graph.lngossip is missing! Download it from https://bitcoin.ninja/ldk-compressed_graph-285cb27df79-2022-07-21.bin\n\n{:?}", io_error);
 			#[cfg(not(require_route_graph_test))]
 			{

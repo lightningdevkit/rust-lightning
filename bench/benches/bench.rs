@@ -21,5 +21,6 @@ criterion_group!(benches,
 	lightning_persister::fs_store::bench::bench_sends,
 	lightning_rapid_gossip_sync::bench::bench_reading_full_graph_from_file,
 	lightning::routing::gossip::benches::read_network_graph,
-	lightning::routing::gossip::benches::write_network_graph);
+	lightning::routing::gossip::benches::write_network_graph,
+	lightning::routing::scoring::benches::decay_100k_channel_bounds);
 criterion_main!(benches);

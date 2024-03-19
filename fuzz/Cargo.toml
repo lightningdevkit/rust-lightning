@@ -3,7 +3,7 @@ name = "lightning-fuzz"
 version = "0.0.1"
 authors = ["Automatically generated"]
 publish = false
-edition = "2018"
+edition = "2021"
 # Because the function is unused it gets dropped before we link lightning, so
 # we have to duplicate build.rs here. Note that this is only required for
 # fuzzing mode.
@@ -22,7 +22,6 @@ lightning = { path = "../lightning", features = ["regex", "hashbrown", "_test_ut
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
 bitcoin = { version = "0.30.2", features = ["secp-lowmemory"] }
 hex = { package = "hex-conservative", version = "0.1.1", default-features = false }
-hashbrown = "0.8"
 
 afl = { version = "0.12", optional = true }
 honggfuzz = { version = "0.5", optional = true, default-features = false }

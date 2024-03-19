@@ -88,7 +88,7 @@ be covered by functional tests.
 When refactoring, structure your PR to make it easy to review and don't
 hesitate to split it into multiple small, focused PRs.
 
-The Minimum Supported Rust Version (MSRV) currently is 1.48.0 (enforced by
+The Minimum Supported Rust Version (MSRV) currently is 1.63.0 (enforced by
 our GitHub Actions). We support reading serialized LDK objects written by any
 version of LDK 0.0.99 and above. We support LDK versions 0.0.113 and above
 reading serialized LDK objects written by modern LDK. Any expected issues with
@@ -120,7 +120,15 @@ Coding Conventions
 ------------------
 
 Use tabs. If you want to align lines, use spaces. Any desired alignment should
-display fine at any tab-length display setting.
+display fine at any tab-length display setting. We use `rustfmt` to establish
+uniform coding standards throughout the codebase. Please run
+
+```bash
+./ci/rustfmt.sh
+```
+
+before committing and pushing any changes, as compliance will also be checked
+and enforced by our CI scripts.
 
 Our CI enforces [clippy's](https://github.com/rust-lang/rust-clippy) default
 linting
@@ -148,7 +156,7 @@ Security
 --------
 
 Security is the primary focus of `rust-lightning`; disclosure of security
-vulnerabilites helps prevent user loss of funds. If you believe a vulnerability
+vulnerabilities helps prevent user loss of funds. If you believe a vulnerability
 may affect other Lightning implementations, please inform them.
 
 You can find further information on submitting (possible) vulnerabilities in the

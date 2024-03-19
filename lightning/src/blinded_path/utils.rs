@@ -18,8 +18,8 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use super::{BlindedHop, BlindedPath};
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
-use crate::onion_message::Destination;
-use crate::util::chacha20poly1305rfc::ChaChaPolyWriteAdapter;
+use crate::onion_message::messenger::Destination;
+use crate::crypto::streams::ChaChaPolyWriteAdapter;
 use crate::util::ser::{Readable, Writeable};
 
 use crate::io;

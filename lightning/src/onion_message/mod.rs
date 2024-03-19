@@ -19,19 +19,10 @@
 //!
 //! [offers]: <https://github.com/lightning/bolts/pull/798>
 //! [blinded paths]: crate::blinded_path::BlindedPath
+//! [`OnionMessenger`]: self::messenger::OnionMessenger
 
-mod messenger;
-mod offers;
-mod packet;
+pub mod messenger;
+pub mod offers;
+pub mod packet;
 #[cfg(test)]
 mod functional_tests;
-
-// Re-export structs so they can be imported with just the `onion_message::` module prefix.
-pub use self::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, MessageRouter, OnionMessageContents, OnionMessagePath, OnionMessenger, PeeledOnion, PendingOnionMessage, SendError};
-pub use self::messenger::{create_onion_message, peel_onion_message};
-#[cfg(not(c_bindings))]
-pub use self::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
-pub use self::offers::{OffersMessage, OffersMessageHandler};
-pub use self::packet::{Packet, ParsedOnionMessageContents};
-pub(crate) use self::packet::ControlTlvs;
-pub(crate) use self::messenger::new_pending_onion_message;

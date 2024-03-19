@@ -16,11 +16,13 @@ use crate::ln::msgs::{self, DecodeError, OnionMessageHandler, SocketAddress};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
-use super::{CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, PendingOnionMessage, SendError};
+use super::messenger::{CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger, PendingOnionMessage, SendError};
+use super::offers::{OffersMessage, OffersMessageHandler};
+use super::packet::{OnionMessageContents, Packet};
 
 use bitcoin::network::constants::Network;
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
 
 use crate::io;
 use crate::io_extras::read_to_end;
@@ -54,6 +56,14 @@ impl MessageRouter for TestMessageRouter {
 			first_node_addresses:
 				Some(vec![SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 }]),
 		})
+	}
+
+	fn create_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		unreachable!()
 	}
 }
 
@@ -562,8 +572,8 @@ fn spec_test_vector() {
 	let sender_to_alice_packet_bytes_len = sender_to_alice_packet_bytes.len() as u64;
 	let mut reader = io::Cursor::new(sender_to_alice_packet_bytes);
 	let mut packet_reader = FixedLengthReader::new(&mut reader, sender_to_alice_packet_bytes_len);
-	let sender_to_alice_packet: super::Packet =
-		<super::Packet as LengthReadable>::read(&mut packet_reader).unwrap();
+	let sender_to_alice_packet: Packet =
+		<Packet as LengthReadable>::read(&mut packet_reader).unwrap();
 	let secp_ctx = Secp256k1::new();
 	let sender_to_alice_om = msgs::OnionMessage {
 		blinding_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("6363636363636363636363636363636363636363636363636363636363636363").unwrap()).unwrap()),

@@ -371,14 +371,14 @@ impl Writeable for BigSize {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self.0 {
-			0...0xFC => {
+			0..=0xFC => {
 				(self.0 as u8).write(writer)
 			},
-			0xFD...0xFFFF => {
+			0xFD..=0xFFFF => {
 				0xFDu8.write(writer)?;
 				(self.0 as u16).write(writer)
 			},
-			0x10000...0xFFFFFFFF => {
+			0x10000..=0xFFFFFFFF => {
 				0xFEu8.write(writer)?;
 				(self.0 as u32).write(writer)
 			},
@@ -749,7 +749,7 @@ macro_rules! impl_for_map {
 }
 
 impl_for_map!(BTreeMap, Ord, |_| BTreeMap::new());
-impl_for_map!(HashMap, Hash, |len| HashMap::with_capacity(len));
+impl_for_map!(HashMap, Hash, |len| hash_map_with_capacity(len));
 
 // HashSet
 impl<T> Writeable for HashSet<T>
@@ -771,7 +771,7 @@ where T: Readable + Eq + Hash
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: CollectionLength = Readable::read(r)?;
-		let mut ret = HashSet::with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<T>()));
+		let mut ret = hash_set_with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<T>()));
 		for _ in 0..len.0 {
 			if !ret.insert(T::read(r)?) {
 				return Err(DecodeError::InvalidValue)
@@ -847,6 +847,7 @@ impl Readable for Vec<u8> {
 impl_for_vec!(ecdsa::Signature);
 impl_for_vec!(crate::chain::channelmonitor::ChannelMonitorUpdate);
 impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
+impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
@@ -1406,6 +1407,11 @@ impl TransactionU16LenLimited {
 	/// Consumes this `TransactionU16LenLimited` and returns its contained `Transaction`.
 	pub fn into_transaction(self) -> Transaction {
 		self.0
+	}
+
+	/// Returns a reference to the contained `Transaction`
+	pub fn as_transaction(&self) -> &Transaction {
+		&self.0
 	}
 }
 

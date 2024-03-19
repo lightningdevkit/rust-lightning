@@ -18,6 +18,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, fee_for_weight};
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
+use crate::ln::ChannelId;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
@@ -35,8 +36,9 @@ use bitcoin::{OutPoint, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOu
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::consensus::Encodable;
+use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::secp256k1::ecdsa::Signature;
 
 pub(crate) const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
@@ -146,6 +148,10 @@ pub enum BumpTransactionEvent {
 	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_anchor_input
 	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
 	ChannelClose {
+		/// The `channel_id` of the channel which has been closed.
+		channel_id: ChannelId,
+		/// Counterparty in the closed channel.
+		counterparty_node_id: PublicKey,
 		/// The unique identifier for the claim of the anchor output in the commitment transaction.
 		///
 		/// The identifier must map to the set of external UTXOs assigned to the claim, such that
@@ -199,6 +205,10 @@ pub enum BumpTransactionEvent {
 	/// [`EcdsaChannelSigner`]: crate::sign::ecdsa::EcdsaChannelSigner
 	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_htlc_transaction
 	HTLCResolution {
+		/// The `channel_id` of the channel which has been closed.
+		channel_id: ChannelId,
+		/// Counterparty in the closed channel.
+		counterparty_node_id: PublicKey,
 		/// The unique identifier for the claim of the HTLCs in the confirmed commitment
 		/// transaction.
 		///
@@ -343,7 +353,10 @@ pub trait CoinSelectionSource {
 	) -> Result<CoinSelection, ()>;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
-	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()>;
+	///
+	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
+	/// unsigned transaction and then sign it with your wallet.
+	fn sign_psbt(&self, psbt: PartiallySignedTransaction) -> Result<Transaction, ()>;
 }
 
 /// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
@@ -357,7 +370,10 @@ pub trait WalletSource {
 	/// Signs and provides the full [`TxIn::script_sig`] and [`TxIn::witness`] for all inputs within
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
-	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()>;
+	///
+	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
+	/// unsigned transaction and then sign it with your wallet.
+	fn sign_psbt(&self, psbt: PartiallySignedTransaction) -> Result<Transaction, ()>;
 }
 
 /// A wrapper over [`WalletSource`] that implements [`CoinSelection`] by preferring UTXOs that would
@@ -384,7 +400,7 @@ where
 	/// Returns a new instance backed by the given [`WalletSource`] that serves as an implementation
 	/// of [`CoinSelectionSource`].
 	pub fn new(source: W, logger: L) -> Self {
-		Self { source, logger, locked_utxos: Mutex::new(HashMap::new()) }
+		Self { source, logger, locked_utxos: Mutex::new(new_hash_map()) }
 	}
 
 	/// Performs coin selection on the set of UTXOs obtained from
@@ -504,8 +520,8 @@ where
 			.or_else(|_| do_coin_selection(true, true))
 	}
 
-	fn sign_tx(&self, tx: Transaction) -> Result<Transaction, ()> {
-		self.source.sign_tx(tx)
+	fn sign_psbt(&self, psbt: PartiallySignedTransaction) -> Result<Transaction, ()> {
+		self.source.sign_psbt(psbt)
 	}
 }
 
@@ -549,8 +565,8 @@ where
 	}
 
 	/// Updates a transaction with the result of a successful coin selection attempt.
-	fn process_coin_selection(&self, tx: &mut Transaction, mut coin_selection: CoinSelection) {
-		for utxo in coin_selection.confirmed_utxos.drain(..) {
+	fn process_coin_selection(&self, tx: &mut Transaction, coin_selection: &CoinSelection) {
+		for utxo in coin_selection.confirmed_utxos.iter() {
 			tx.input.push(TxIn {
 				previous_output: utxo.outpoint,
 				script_sig: ScriptBuf::new(),
@@ -558,7 +574,7 @@ where
 				witness: Witness::new(),
 			});
 		}
-		if let Some(change_output) = coin_selection.change_output.take() {
+		if let Some(change_output) = coin_selection.change_output.clone() {
 			tx.output.push(change_output);
 		} else if tx.output.is_empty() {
 			// We weren't provided a change output, likely because the input set was a perfect
@@ -595,7 +611,7 @@ where
 
 		log_debug!(self.logger, "Peforming coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
 			package_target_feerate_sat_per_1000_weight);
-		let coin_selection = self.utxo_source.select_confirmed_utxos(
+		let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
 			claim_id, must_spend, &[], package_target_feerate_sat_per_1000_weight,
 		)?;
 
@@ -613,15 +629,29 @@ where
 		let total_input_amount = must_spend_amount +
 			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum::<u64>();
 
-		self.process_coin_selection(&mut anchor_tx, coin_selection);
+		self.process_coin_selection(&mut anchor_tx, &coin_selection);
 		let anchor_txid = anchor_tx.txid();
 
-		debug_assert_eq!(anchor_tx.output.len(), 1);
+		// construct psbt
+		let mut anchor_psbt = PartiallySignedTransaction::from_unsigned_tx(anchor_tx).unwrap();
+		// add witness_utxo to anchor input
+		anchor_psbt.inputs[0].witness_utxo = Some(anchor_descriptor.previous_utxo());
+		// add witness_utxo to remaining inputs
+		for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
+			// add 1 to skip the anchor input
+			let index = idx + 1;
+			debug_assert_eq!(anchor_psbt.unsigned_tx.input[index].previous_output, utxo.outpoint);
+			if utxo.output.script_pubkey.is_witness_program() {
+				anchor_psbt.inputs[index].witness_utxo = Some(utxo.output);
+			}
+		}
+
+		debug_assert_eq!(anchor_psbt.unsigned_tx.output.len(), 1);
 		#[cfg(debug_assertions)]
-		let unsigned_tx_weight = anchor_tx.weight().to_wu() - (anchor_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+		let unsigned_tx_weight = anchor_psbt.unsigned_tx.weight().to_wu() - (anchor_psbt.unsigned_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
 		log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
-		anchor_tx = self.utxo_source.sign_tx(anchor_tx)?;
+		anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
 
 		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
 		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
@@ -690,7 +720,7 @@ where
 		#[cfg(debug_assertions)]
 		let must_spend_amount =	must_spend.iter().map(|input| input.previous_utxo.value).sum::<u64>();
 
-		let coin_selection = self.utxo_source.select_confirmed_utxos(
+		let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
 			claim_id, must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
 		)?;
 
@@ -701,13 +731,30 @@ where
 		let total_input_amount = must_spend_amount +
 			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum::<u64>();
 
-		self.process_coin_selection(&mut htlc_tx, coin_selection);
+		self.process_coin_selection(&mut htlc_tx, &coin_selection);
+
+		// construct psbt
+		let mut htlc_psbt = PartiallySignedTransaction::from_unsigned_tx(htlc_tx).unwrap();
+		// add witness_utxo to htlc inputs
+		for (i, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
+			debug_assert_eq!(htlc_psbt.unsigned_tx.input[i].previous_output, htlc_descriptor.outpoint());
+			htlc_psbt.inputs[i].witness_utxo = Some(htlc_descriptor.previous_utxo(&self.secp));
+		}
+		// add witness_utxo to remaining inputs
+		for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
+			// offset to skip the htlc inputs
+			let index = idx + htlc_descriptors.len();
+			debug_assert_eq!(htlc_psbt.unsigned_tx.input[index].previous_output, utxo.outpoint);
+			if utxo.output.script_pubkey.is_witness_program() {
+				htlc_psbt.inputs[index].witness_utxo = Some(utxo.output);
+			}
+		}
 
 		#[cfg(debug_assertions)]
-		let unsigned_tx_weight = htlc_tx.weight().to_wu() - (htlc_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+		let unsigned_tx_weight = htlc_psbt.unsigned_tx.weight().to_wu() - (htlc_psbt.unsigned_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
-		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_tx.txid());
-		htlc_tx = self.utxo_source.sign_tx(htlc_tx)?;
+		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_psbt.unsigned_tx.txid());
+		htlc_tx = self.utxo_source.sign_psbt(htlc_psbt)?;
 
 		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
@@ -759,7 +806,7 @@ where
 				}
 			}
 			BumpTransactionEvent::HTLCResolution {
-				claim_id, target_feerate_sat_per_1000_weight, htlc_descriptors, tx_lock_time,
+				claim_id, target_feerate_sat_per_1000_weight, htlc_descriptors, tx_lock_time, ..
 			} => {
 				log_info!(self.logger, "Handling HTLC bump (claim_id = {}, htlcs_to_claim = {})",
 					log_bytes!(claim_id.0), log_iter!(htlc_descriptors.iter().map(|d| d.outpoint())));

@@ -162,25 +162,8 @@ impl TryInto<(BlockHash, Option<u32>)> for JsonResponse {
 impl TryInto<Txid> for JsonResponse {
 	type Error = std::io::Error;
 	fn try_into(self) -> std::io::Result<Txid> {
-		match self.0.as_str() {
-			None => Err(std::io::Error::new(
-				std::io::ErrorKind::InvalidData,
-				"expected JSON string",
-			)),
-			Some(hex_data) => match Vec::<u8>::from_hex(hex_data) {
-				Err(_) => Err(std::io::Error::new(
-					std::io::ErrorKind::InvalidData,
-					"invalid hex data",
-				)),
-				Ok(txid_data) => match encode::deserialize(&txid_data) {
-					Err(_) => Err(std::io::Error::new(
-						std::io::ErrorKind::InvalidData,
-						"invalid txid",
-					)),
-					Ok(txid) => Ok(txid),
-				},
-			},
-		}
+		let hex_data = self.0.as_str().ok_or(Self::Error::new(std::io::ErrorKind::InvalidData, "expected JSON string" ))?;
+		Txid::from_str(hex_data).map_err(|err|Self::Error::new(std::io::ErrorKind::InvalidData, err.to_string() ))
 	}
 }
 
@@ -264,10 +247,12 @@ impl TryInto<BlockHash> for JsonResponse {
 /// The REST `getutxos` endpoint retuns a whole pile of data we don't care about and one bit we do
 /// - whether the `hit bitmap` field had any entries. Thus we condense the result down into only
 /// that.
+#[cfg(feature = "rest-client")]
 pub(crate) struct GetUtxosResponse {
 	pub(crate) hit_bitmap_nonempty: bool
 }
 
+#[cfg(feature = "rest-client")]
 impl TryInto<GetUtxosResponse> for JsonResponse {
 	type Error = std::io::Error;
 
@@ -622,7 +607,7 @@ pub(crate) mod tests {
 		match TryInto::<Txid>::try_into(response) {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid hex data");
+				assert_eq!(e.get_ref().unwrap().to_string(), "bad hex string length 6 (expected 64)");
 			}
 			Ok(_) => panic!("Expected error"),
 		}
@@ -634,7 +619,7 @@ pub(crate) mod tests {
 		match TryInto::<Txid>::try_into(response) {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "invalid txid");
+				assert_eq!(e.get_ref().unwrap().to_string(), "bad hex string length 4 (expected 64)");
 			}
 			Ok(_) => panic!("Expected error"),
 		}
@@ -648,6 +633,20 @@ pub(crate) mod tests {
 			Err(e) => panic!("Unexpected error: {:?}", e),
 			Ok(txid) => assert_eq!(txid, target_txid),
 		}
+	}
+
+	#[test]
+	fn into_txid_from_bitcoind_rpc_json_response() {
+		let mut rpc_response = serde_json::json!(
+            {"error": "", "id": "770", "result": "7934f775149929a8b742487129a7c3a535dfb612f0b726cc67bc10bc2628f906"}
+
+        );
+        let r: std::io::Result<Txid> = JsonResponse(rpc_response.get_mut("result").unwrap().take())
+            .try_into();
+        assert_eq!(
+            r.unwrap().to_string(),
+            "7934f775149929a8b742487129a7c3a535dfb612f0b726cc67bc10bc2628f906"
+        );
 	}
 
 	// TryInto<Transaction> can be used in two ways, first with plain hex response where data is

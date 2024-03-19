@@ -24,6 +24,7 @@ use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::chain::transaction;
 use crate::routing::gossip::NetworkUpdate;
 use crate::util::errors::APIError;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
@@ -183,8 +184,20 @@ pub enum ClosureReason {
 	HolderForceClosed,
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
-	//TODO: split between CounterpartyInitiated/LocallyInitiated
-	CooperativeClosure,
+	///
+	/// This was only set in versions of LDK prior to 0.0.122.
+	// Can be removed once we disallow downgrading to 0.0.121
+	LegacyCooperativeClosure,
+	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
+	/// the cooperative close transaction. This indicates that the shutdown was initiated by our
+	/// counterparty.
+	///
+	/// In rare cases where we initiated closure immediately prior to shutting down without
+	/// persisting, this value may be provided for channels we initiated closure for.
+	CounterpartyInitiatedCooperativeClosure,
+	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
+	/// the cooperative close transaction. This indicates that the shutdown was initiated by us.
+	LocallyInitiatedCooperativeClosure,
 	/// A commitment transaction was confirmed on chain, closing the channel. Most likely this
 	/// commitment transaction came from our counterparty, but it may also have come from
 	/// a copy of our own `ChannelMonitor`.
@@ -229,7 +242,9 @@ impl core::fmt::Display for ClosureReason {
 				f.write_fmt(format_args!("counterparty force-closed with message: {}", peer_msg))
 			},
 			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
-			ClosureReason::CooperativeClosure => f.write_str("the channel was cooperatively closed"),
+			ClosureReason::LegacyCooperativeClosure => f.write_str("the channel was cooperatively closed"),
+			ClosureReason::CounterpartyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by our peer"),
+			ClosureReason::LocallyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by us"),
 			ClosureReason::CommitmentTxConfirmed => f.write_str("commitment or closing transaction was confirmed on chain."),
 			ClosureReason::FundingTimedOut => write!(f, "funding transaction failed to confirm within {} blocks", FUNDING_CONF_DEADLINE_BLOCKS),
 			ClosureReason::ProcessingError { err } => {
@@ -249,12 +264,14 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(1, FundingTimedOut) => {},
 	(2, HolderForceClosed) => {},
 	(6, CommitmentTxConfirmed) => {},
-	(4, CooperativeClosure) => {},
+	(4, LegacyCooperativeClosure) => {},
 	(8, ProcessingError) => { (1, err, required) },
 	(10, DisconnectedPeer) => {},
 	(12, OutdatedChannelManager) => {},
 	(13, CounterpartyCoopClosedUnfundedChannel) => {},
-	(15, FundingBatchClosure) => {}
+	(15, FundingBatchClosure) => {},
+	(17, CounterpartyInitiatedCooperativeClosure) => {},
+	(19, LocallyInitiatedCooperativeClosure) => {},
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
@@ -351,6 +368,10 @@ pub enum PaymentFailureReason {
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
 	PaymentExpired,
 	/// We failed to find a route while retrying the payment.
+	///
+	/// Note that this generally indicates that we've exhausted the available set of possible
+	/// routes - we tried the payment over a few routes but were not able to find any further
+	/// candidate routes beyond those.
 	RouteNotFound,
 	/// This error should generally never happen. This likely means that there is a problem with
 	/// your router.
@@ -540,8 +561,8 @@ pub enum Event {
 	/// replies. Handlers should connect to the node otherwise any buffered messages may be lost.
 	///
 	/// [`OnionMessage`]: msgs::OnionMessage
-	/// [`MessageRouter`]: crate::onion_message::MessageRouter
-	/// [`Destination`]: crate::onion_message::Destination
+	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
+	/// [`Destination`]: crate::onion_message::messenger::Destination
 	/// [`OnionMessageHandler`]: crate::ln::msgs::OnionMessageHandler
 	ConnectionNeeded {
 		/// The node id for the node needing a connection.
@@ -782,7 +803,7 @@ pub enum Event {
 		/// The outgoing channel between the next node and us. This is only `None` for events
 		/// generated or serialized by versions prior to 0.0.107.
 		next_channel_id: Option<ChannelId>,
-		/// The fee, in milli-satoshis, which was earned as a result of the payment.
+		/// The total fee, in milli-satoshis, which was earned as a result of the payment.
 		///
 		/// Note that if we force-closed the channel over which we forwarded an HTLC while the HTLC
 		/// was pending, the amount the next hop claimed will have been rounded down to the nearest
@@ -793,15 +814,29 @@ pub enum Event {
 		/// If the channel which sent us the payment has been force-closed, we will claim the funds
 		/// via an on-chain transaction. In that case we do not yet know the on-chain transaction
 		/// fees which we will spend and will instead set this to `None`. It is possible duplicate
-		/// `PaymentForwarded` events are generated for the same payment iff `fee_earned_msat` is
+		/// `PaymentForwarded` events are generated for the same payment iff `total_fee_earned_msat` is
 		/// `None`.
-		fee_earned_msat: Option<u64>,
+		total_fee_earned_msat: Option<u64>,
+		/// The share of the total fee, in milli-satoshis, which was withheld in addition to the
+		/// forwarding fee.
+		///
+		/// This will only be `Some` if we forwarded an intercepted HTLC with less than the
+		/// expected amount. This means our counterparty accepted to receive less than the invoice
+		/// amount, e.g., by claiming the payment featuring a corresponding
+		/// [`PaymentClaimable::counterparty_skimmed_fee_msat`].
+		///
+		/// Will also always be `None` for events serialized with LDK prior to version 0.0.122.
+		///
+		/// The caveat described above the `total_fee_earned_msat` field applies here as well.
+		///
+		/// [`PaymentClaimable::counterparty_skimmed_fee_msat`]: Self::PaymentClaimable::counterparty_skimmed_fee_msat
+		skimmed_fee_msat: Option<u64>,
 		/// If this is `true`, the forwarded HTLC was claimed by our counterparty via an on-chain
 		/// transaction.
 		claim_from_onchain_tx: bool,
 		/// The final amount forwarded, in milli-satoshis, after the fee is deducted.
 		///
-		/// The caveat described above the `fee_earned_msat` field applies here as well.
+		/// The caveat described above the `total_fee_earned_msat` field applies here as well.
 		outbound_amount_forwarded_msat: Option<u64>,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is being opened and pending
@@ -830,6 +865,10 @@ pub enum Event {
 		counterparty_node_id: PublicKey,
 		/// The outpoint of the channel's funding transaction.
 		funding_txo: OutPoint,
+		/// The features that this channel will operate with.
+		///
+		/// Will be `None` for channels created prior to LDK version 0.0.122.
+		channel_type: Option<ChannelTypeFeatures>,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is ready to
 	/// be used. This event is emitted either when the funding transaction has been confirmed
@@ -861,7 +900,7 @@ pub enum Event {
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
-	ChannelClosed  {
+	ChannelClosed {
 		/// The `channel_id` of the channel which has been closed. Note that on-chain transactions
 		/// resolving the channel are likely still awaiting confirmation.
 		channel_id: ChannelId,
@@ -886,6 +925,10 @@ pub enum Event {
 		///
 		/// This field will be `None` for objects serialized prior to LDK 0.0.117.
 		channel_capacity_sats: Option<u64>,
+		/// The original channel funding TXO; this helps checking for the existence and confirmation
+		/// status of the closing tx.
+		/// Note that for instances serialized in v0.0.119 or prior this will be missing (None).
+		channel_funding_txo: Option<transaction::OutPoint>,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -965,6 +1008,7 @@ pub enum Event {
 	/// [`ChannelManager::accept_inbound_channel_with_contribution`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_with_contribution
 	/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
 	/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
+	#[cfg(dual_funding)]
 	OpenChannelV2Request {
 		/// The temporary channel ID of the channel requested to be opened.
 		///
@@ -1044,6 +1088,7 @@ pub enum Event {
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::contribute_funding_inputs`]: crate::ln::channelmanager::ChannelManager::contribute_funding_inputs
+	#[cfg(dual_funding)]
 	FundingInputsContributionReady {
 		/// The channel_id of the channel that requires funding inputs which you'll need to pass into
 		/// [`ChannelManager::contribute_funding_inputs`].
@@ -1249,20 +1294,21 @@ impl Writeable for Event {
 				});
 			}
 			&Event::PaymentForwarded {
-				fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
-				next_channel_id, outbound_amount_forwarded_msat
+				total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
+				next_channel_id, outbound_amount_forwarded_msat, skimmed_fee_msat,
 			} => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
-					(0, fee_earned_msat, option),
+					(0, total_fee_earned_msat, option),
 					(1, prev_channel_id, option),
 					(2, claim_from_onchain_tx, required),
 					(3, next_channel_id, option),
 					(5, outbound_amount_forwarded_msat, option),
+					(7, skimmed_fee_msat, option),
 				});
 			},
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason,
-				ref counterparty_node_id, ref channel_capacity_sats
+				ref counterparty_node_id, ref channel_capacity_sats, ref channel_funding_txo
 			} => {
 				9u8.write(writer)?;
 				// `user_channel_id` used to be a single u64 value. In order to remain backwards
@@ -1277,6 +1323,7 @@ impl Writeable for Event {
 					(3, user_channel_id_high, required),
 					(5, counterparty_node_id, option),
 					(7, channel_capacity_sats, option),
+					(9, channel_funding_txo, option),
 				});
 			},
 			&Event::DiscardFunding { ref channel_id, ref transaction } => {
@@ -1364,10 +1411,14 @@ impl Writeable for Event {
 					(6, channel_type, required),
 				});
 			},
-			&Event::ChannelPending { ref channel_id, ref user_channel_id, ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo } => {
+			&Event::ChannelPending { ref channel_id, ref user_channel_id,
+				ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo,
+				ref channel_type
+			} => {
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
+					(1, channel_type, option),
 					(2, user_channel_id, required),
 					(4, former_temporary_channel_id, required),
 					(6, counterparty_node_id, required),
@@ -1403,6 +1454,7 @@ impl Writeable for Event {
 				// drop any channels which have not yet exchanged the initial commitment_signed in V2 channel
 				// establishment.
 			},
+			#[cfg(dual_funding)]
 			&Event::OpenChannelV2Request { .. } => {
 				39u8.write(writer)?;
 				// We never write the OpenChannelV2Request events as, upon disconnection, peers
@@ -1582,21 +1634,23 @@ impl MaybeReadable for Event {
 			},
 			7u8 => {
 				let f = || {
-					let mut fee_earned_msat = None;
+					let mut total_fee_earned_msat = None;
 					let mut prev_channel_id = None;
 					let mut claim_from_onchain_tx = false;
 					let mut next_channel_id = None;
 					let mut outbound_amount_forwarded_msat = None;
+					let mut skimmed_fee_msat = None;
 					read_tlv_fields!(reader, {
-						(0, fee_earned_msat, option),
+						(0, total_fee_earned_msat, option),
 						(1, prev_channel_id, option),
 						(2, claim_from_onchain_tx, required),
 						(3, next_channel_id, option),
 						(5, outbound_amount_forwarded_msat, option),
+						(7, skimmed_fee_msat, option),
 					});
 					Ok(Some(Event::PaymentForwarded {
-						fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
-						outbound_amount_forwarded_msat
+						total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
+						outbound_amount_forwarded_msat, skimmed_fee_msat,
 					}))
 				};
 				f()
@@ -1609,6 +1663,7 @@ impl MaybeReadable for Event {
 					let mut user_channel_id_high_opt: Option<u64> = None;
 					let mut counterparty_node_id = None;
 					let mut channel_capacity_sats = None;
+					let mut channel_funding_txo = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(1, user_channel_id_low_opt, option),
@@ -1616,6 +1671,7 @@ impl MaybeReadable for Event {
 						(3, user_channel_id_high_opt, option),
 						(5, counterparty_node_id, option),
 						(7, channel_capacity_sats, option),
+						(9, channel_funding_txo, option),
 					});
 
 					// `user_channel_id` used to be a single u64 value. In order to remain
@@ -1625,7 +1681,7 @@ impl MaybeReadable for Event {
 						((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
 
 					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: _init_tlv_based_struct_field!(reason, upgradable_required),
-						counterparty_node_id, channel_capacity_sats }))
+						counterparty_node_id, channel_capacity_sats, channel_funding_txo }))
 				};
 				f()
 			},
@@ -1785,8 +1841,10 @@ impl MaybeReadable for Event {
 					let mut former_temporary_channel_id = None;
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut funding_txo = RequiredWrapper(None);
+					let mut channel_type = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
+						(1, channel_type, option),
 						(2, user_channel_id, required),
 						(4, former_temporary_channel_id, required),
 						(6, counterparty_node_id, required),
@@ -1798,7 +1856,8 @@ impl MaybeReadable for Event {
 						user_channel_id,
 						former_temporary_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						funding_txo: funding_txo.0.unwrap()
+						funding_txo: funding_txo.0.unwrap(),
+						channel_type,
 					}))
 				};
 				f()

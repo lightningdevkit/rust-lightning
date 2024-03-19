@@ -18,19 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         platform: [ ubuntu-latest, windows-latest, macos-latest ]
-        toolchain: [ stable, beta ]
-        include:
-          - toolchain: stable
-            platform: ubuntu-latest
-          # 1.48.0 is the MSRV for all crates except lightning-transaction-sync and Win/Mac
-          - toolchain: 1.48.0
-            platform: ubuntu-latest
-          # Windows requires 1.49.0 because that's the MSRV for supported Tokio
-          - toolchain: 1.49.0
-            platform: windows-latest
-          # MacOS-latest requires 1.54.0 because that's what's required for linking to work properly
-          - toolchain: 1.54.0
-            platform: macos-latest
+        toolchain: [ stable, beta, 1.63.0 ] # 1.63.0 is the MSRV for all crates.
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
@@ -44,11 +32,16 @@ jobs:
         run: |
           rustup target add thumbv7m-none-eabi
           sudo apt-get -y install gcc-arm-none-eabi
+      - name: Check for unknown cfg tags
+        run: ci/check-cfg-flags.py
       - name: shellcheck the CI script
         if: "matrix.platform == 'ubuntu-latest'"
         run: |
           sudo apt-get -y install shellcheck
           shellcheck ci/ci-tests.sh
+      - name: Set RUSTFLAGS to deny warnings
+        if: "matrix.toolchain == '1.63.0'"
+        run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
       - name: Run CI script
         shell: bash # Default on Winblows is powershell
         run: CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
@@ -168,13 +161,13 @@ jobs:
         run: |
           cargo check --release
           cargo check --no-default-features --features=no-std --release
-          cargo check --no-default-features --features=futures --release
+          cargo check --no-default-features --features=futures,std --release
           cargo doc --release
       - name: Run cargo check for Taproot build.
         run: |
           cargo check --release
           cargo check --no-default-features --features=no-std --release
-          cargo check --no-default-features --features=futures --release
+          cargo check --no-default-features --features=futures,std --release
           cargo doc --release
         env:
           RUSTFLAGS: '--cfg=taproot'
@@ -183,7 +176,7 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.58
+      TOOLCHAIN: 1.63
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3
@@ -195,6 +188,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get -y install build-essential binutils-dev libunwind-dev
+      - name: Pin the regex dependency
+        run: |
+          cd fuzz && cargo update -p regex --precise "1.9.6" --verbose && cd ..
+          cd lightning-invoice/fuzz && cargo update -p regex --precise "1.9.6" --verbose
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: cd fuzz && RUSTFLAGS="--cfg=fuzzing" cargo test --verbose --color always
       - name: Run fuzzers
@@ -219,3 +216,20 @@ jobs:
       - name: Run default clippy linting
         run: |
           cargo clippy -- -Aclippy::erasing_op -Aclippy::never_loop -Aclippy::if_same_then_else -Dclippy::try_err
+
+  rustfmt:
+    runs-on: ubuntu-latest
+    env:
+      TOOLCHAIN: 1.63.0
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup override set ${{ env.TOOLCHAIN }}
+      - name: Install rustfmt
+        run: |
+          rustup component add rustfmt
+      - name: Run rustfmt checks
+        run: ci/rustfmt.sh

@@ -13,6 +13,7 @@ use crate::chain::transaction::OutPoint;
 use crate::ln::ChannelId;
 use crate::ln::channel::ChannelError;
 use crate::prelude::*;
+use crate::util::ser::TransactionU16LenLimited;
 use bitcoin::{ScriptBuf, Sequence, Transaction, TxIn, Witness};
 use core::convert::TryFrom;
 
@@ -99,7 +100,7 @@ impl PendingSpliceInfoPost {
 	}
 
 	/// Get a transaction input that is the previous funding transaction
-	pub(super) fn get_input_of_previous_funding(&self) -> Result<(TxIn, Transaction), ChannelError> {
+	pub(super) fn get_input_of_previous_funding(&self) -> Result<(TxIn, TransactionU16LenLimited), ChannelError> {
 		if let Some(pre_funding_transaction) = &self.pre_funding_transaction {
 			if let Some(pre_funding_txo) = &self.pre_funding_txo {
 				Ok((
@@ -109,7 +110,7 @@ impl PendingSpliceInfoPost {
 						sequence: Sequence::ZERO,
 						witness: Witness::new(),
 					},
-					pre_funding_transaction.clone(),
+					TransactionU16LenLimited(pre_funding_transaction.clone()),
 				))
 			} else {
 				Err(ChannelError::Warn("Internal error: Missing previous funding transaction outpoint".to_string()))

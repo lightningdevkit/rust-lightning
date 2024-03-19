@@ -14,7 +14,6 @@ use esplora_client::r#async::AsyncClient;
 #[cfg(not(feature = "async-interface"))]
 use esplora_client::blocking::BlockingClient;
 
-use std::time::Instant;
 use std::collections::HashSet;
 use core::ops::Deref;
 
@@ -91,7 +90,8 @@ where
 		let mut sync_state = self.sync_state.lock().await;
 
 		log_trace!(self.logger, "Starting transaction sync.");
-		let start_time = Instant::now();
+		#[cfg(feature = "time")]
+		let start_time = std::time::Instant::now();
 		let mut num_confirmed = 0;
 		let mut num_unconfirmed = 0;
 
@@ -227,8 +227,12 @@ where
 				sync_state.pending_sync = false;
 			}
 		}
+		#[cfg(feature = "time")]
 		log_debug!(self.logger, "Finished transaction sync at tip {} in {}ms: {} confirmed, {} unconfirmed.",
 				tip_hash, start_time.elapsed().as_millis(), num_confirmed, num_unconfirmed);
+		#[cfg(not(feature = "time"))]
+		log_debug!(self.logger, "Finished transaction sync at tip {}: {} confirmed, {} unconfirmed.",
+				tip_hash, num_confirmed, num_unconfirmed);
 		Ok(())
 	}
 

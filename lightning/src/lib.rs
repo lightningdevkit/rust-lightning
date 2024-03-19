@@ -40,9 +40,8 @@
 #![cfg_attr(not(any(test, fuzzing, feature = "_test_utils")), deny(missing_docs))]
 #![cfg_attr(not(any(test, feature = "_test_utils")), forbid(unsafe_code))]
 
-// Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
-#![deny(broken_intra_doc_links)]
-#![deny(private_intra_doc_links)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(rustdoc::private_intra_doc_links)]
 
 // In general, rust is absolutely horrid at supporting users doing things like,
 // for example, compiling Rust code for real environments. Disable useless lints
@@ -70,6 +69,7 @@ extern crate hex;
 #[cfg(any(test, feature = "_test_utils"))] extern crate regex;
 
 #[cfg(not(feature = "std"))] extern crate core2;
+#[cfg(not(feature = "std"))] extern crate libm;
 
 #[cfg(ldk_bench)] extern crate criterion;
 
@@ -83,6 +83,8 @@ pub mod sign;
 pub mod onion_message;
 pub mod blinded_path;
 pub mod events;
+
+pub(crate) mod crypto;
 
 #[cfg(feature = "std")]
 /// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.
@@ -163,17 +165,12 @@ mod io_extras {
 }
 
 mod prelude {
-	#[cfg(feature = "hashbrown")]
-	extern crate hashbrown;
-
 	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque, boxed::Box};
-	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{HashMap, HashSet, hash_map};
-	#[cfg(feature = "hashbrown")]
-	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 
 	pub use alloc::borrow::ToOwned;
 	pub use alloc::string::ToString;
+
+	pub(crate) use crate::util::hash_tables::*;
 }
 
 #[cfg(all(not(ldk_bench), feature = "backtrace", feature = "std", test))]

@@ -83,7 +83,7 @@ pub fn do_test(data: &[u8]) {
 				Ok(len) => len,
 				Err(_) => return,
 			};
-			buf.copy_from_slice(&get_slice!(len as usize + 16));
+			buf[..len as usize + 16].copy_from_slice(&get_slice!(len as usize + 16));
 			match crypter.decrypt_message(&mut buf[..len as usize + 16]) {
 				Ok(_) => {},
 				Err(_) => return,

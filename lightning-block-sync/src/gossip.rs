@@ -137,7 +137,6 @@ pub struct GossipVerifier<S: FutureSpawner,
 	L::Target: Logger,
 {
 	source: Blocks,
-	// TODO: Note: this change is needed to compile ldk-sample, is already in main, should be removed with next rebase
 	peer_manager_wake: Arc<dyn Fn() + Send + Sync>,
 	gossiper: Arc<P2PGossipSync<Arc<NetworkGraph<L>>, Self, L>>,
 	spawn: S,
@@ -278,7 +277,6 @@ impl<S: FutureSpawner,
 		self.spawn.spawn(async move {
 			let res = Self::retrieve_utxo(source, block_cache, short_channel_id).await;
 			fut.resolve(gossiper.network_graph(), &*gossiper, res);
-			// TODO: Note: this change is needed to compile ldk-sample, is already in main, should be removed with next rebase
 			(pmw)();
 		});
 		UtxoResult::Async(res)

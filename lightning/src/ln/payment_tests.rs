@@ -42,10 +42,11 @@ use crate::prelude::*;
 use crate::ln::functional_test_utils;
 use crate::ln::functional_test_utils::*;
 use crate::routing::gossip::NodeId;
+
 #[cfg(feature = "std")]
 use {
 	crate::util::time::tests::SinceEpoch,
-	std::time::{SystemTime, Instant, Duration}
+	std::time::{SystemTime, Instant, Duration},
 };
 
 #[test]
@@ -276,10 +277,12 @@ fn mpp_retry_overpay() {
 
 	// Can't use claim_payment_along_route as it doesn't support overpayment, so we break out the
 	// individual steps here.
+	nodes[3].node.claim_funds(payment_preimage);
 	let extra_fees = vec![0, total_overpaid_amount];
-	let expected_total_fee_msat = do_claim_payment_along_route_with_extra_penultimate_hop_fees(
-		&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], &extra_fees[..], false,
-		payment_preimage);
+	let expected_route = &[&[&nodes[1], &nodes[3]][..], &[&nodes[2], &nodes[3]][..]];
+	let args = ClaimAlongRouteArgs::new(&nodes[0], &expected_route[..], payment_preimage)
+		.with_expected_min_htlc_overpay(extra_fees);
+	let expected_total_fee_msat = pass_claimed_payment_along_route(args);
 	expect_payment_sent!(&nodes[0], payment_preimage, Some(expected_total_fee_msat));
 }
 
@@ -638,7 +641,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let nodes_0_deserialized;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
-	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let (_, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	// Serialize the ChannelManager prior to sending payments
@@ -750,14 +753,21 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 
 	mine_transaction(&nodes[1], &as_commitment_tx);
-	let bs_htlc_claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(bs_htlc_claim_txn.len(), 1);
-	check_spends!(bs_htlc_claim_txn[0], as_commitment_tx);
+	let bs_htlc_claim_txn = {
+		let mut txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 2);
+		check_spends!(txn[0], funding_tx);
+		check_spends!(txn[1], as_commitment_tx);
+		txn.pop().unwrap()
+	};
 
 	if !confirm_before_reload {
 		mine_transaction(&nodes[0], &as_commitment_tx);
+		let txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		assert_eq!(txn[0].txid(), as_commitment_tx.txid());
 	}
-	mine_transaction(&nodes[0], &bs_htlc_claim_txn[0]);
+	mine_transaction(&nodes[0], &bs_htlc_claim_txn);
 	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, false);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV*4 + 20);
 	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = {
@@ -767,7 +777,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	};
 	check_spends!(first_htlc_timeout_tx, as_commitment_tx);
 	check_spends!(second_htlc_timeout_tx, as_commitment_tx);
-	if first_htlc_timeout_tx.input[0].previous_output == bs_htlc_claim_txn[0].input[0].previous_output {
+	if first_htlc_timeout_tx.input[0].previous_output == bs_htlc_claim_txn.input[0].previous_output {
 		confirm_transaction(&nodes[0], &second_htlc_timeout_tx);
 	} else {
 		confirm_transaction(&nodes[0], &first_htlc_timeout_tx);
@@ -919,18 +929,22 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	// the HTLC-Timeout transaction beyond 1 conf). For dust HTLCs, the HTLC is considered resolved
 	// after the commitment transaction, so always connect the commitment transaction.
 	mine_transaction(&nodes[0], &bs_commitment_tx[0]);
+	if nodes[0].connect_style.borrow().updates_best_block_first() {
+		let _ = nodes[0].tx_broadcaster.txn_broadcast();
+	}
 	mine_transaction(&nodes[1], &bs_commitment_tx[0]);
 	if !use_dust {
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV + (MIN_CLTV_EXPIRY_DELTA as u32));
 		connect_blocks(&nodes[1], TEST_FINAL_CLTV + (MIN_CLTV_EXPIRY_DELTA as u32));
 		let as_htlc_timeout = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-		check_spends!(as_htlc_timeout[0], bs_commitment_tx[0]);
 		assert_eq!(as_htlc_timeout.len(), 1);
+		check_spends!(as_htlc_timeout[0], bs_commitment_tx[0]);
 
 		mine_transaction(&nodes[0], &as_htlc_timeout[0]);
-		// nodes[0] may rebroadcast (or RBF-bump) its HTLC-Timeout, so wipe the announced set.
-		nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 		mine_transaction(&nodes[1], &as_htlc_timeout[0]);
+	}
+	if nodes[0].connect_style.borrow().updates_best_block_first() {
+		let _ = nodes[0].tx_broadcaster.txn_broadcast();
 	}
 
 	// Create a new channel on which to retry the payment before we fail the payment via the
@@ -1049,32 +1063,36 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 
 	// Connect blocks until the CLTV timeout is up so that we get an HTLC-Timeout transaction
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
-	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(node_txn.len(), 3);
-	assert_eq!(node_txn[0].txid(), node_txn[1].txid());
-	check_spends!(node_txn[1], funding_tx);
-	check_spends!(node_txn[2], node_txn[1]);
-	let timeout_txn = vec![node_txn[2].clone()];
+	let (commitment_tx, htlc_timeout_tx) = {
+		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
+		assert_eq!(txn.len(), 2);
+		check_spends!(txn[0], funding_tx);
+		check_spends!(txn[1], txn[0]);
+		(txn.remove(0), txn.remove(0))
+	};
 
 	nodes[1].node.claim_funds(payment_preimage);
 	check_added_monitors!(nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
 
-	connect_block(&nodes[1], &create_dummy_block(nodes[1].best_block_hash(), 42, vec![node_txn[1].clone()]));
+	mine_transaction(&nodes[1], &commitment_tx);
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 100000);
-	let claim_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
-	assert_eq!(claim_txn.len(), 1);
-	check_spends!(claim_txn[0], node_txn[1]);
+	let htlc_success_tx = {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 1);
+		check_spends!(txn[0], commitment_tx);
+		txn.pop().unwrap()
+	};
 
-	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, vec![node_txn[1].clone()]));
+	mine_transaction(&nodes[0], &commitment_tx);
 
 	if confirm_commitment_tx {
 		connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32 - 1);
 	}
 
-	let claim_block = create_dummy_block(nodes[0].best_block_hash(), 42, if payment_timeout { timeout_txn } else { vec![claim_txn[0].clone()] });
+	let claim_block = create_dummy_block(nodes[0].best_block_hash(), 42, if payment_timeout { vec![htlc_timeout_tx] } else { vec![htlc_success_tx] });
 
 	if payment_timeout {
 		assert!(confirm_commitment_tx); // Otherwise we're spending below our CSV!
@@ -2139,9 +2157,10 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	let mut expected_paths = Vec::new();
 	for _ in 0..num_mpp_parts { expected_paths_vecs.push(vec!(&nodes[1], &nodes[2])); }
 	for i in 0..num_mpp_parts { expected_paths.push(&expected_paths_vecs[i][..]); }
-	let total_fee_msat = do_claim_payment_along_route_with_extra_penultimate_hop_fees(
-		&nodes[0], &expected_paths[..], &vec![skimmed_fee_msat as u32; num_mpp_parts][..], false,
-		payment_preimage);
+	expected_paths[0].last().unwrap().node.claim_funds(payment_preimage);
+	let args = ClaimAlongRouteArgs::new(&nodes[0], &expected_paths[..], payment_preimage)
+		.with_expected_extra_fees(vec![skimmed_fee_msat as u32; num_mpp_parts]);
+	let total_fee_msat = pass_claimed_payment_along_route(args);
 	// The sender doesn't know that the penultimate hop took an extra fee.
 	expect_payment_sent(&nodes[0], payment_preimage,
 		Some(Some(total_fee_msat - skimmed_fee_msat * num_mpp_parts as u64)), true, true);
@@ -2299,7 +2318,7 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
 	} else if test == AutoRetry::FailTimeout {
-		#[cfg(not(feature = "no-std"))] {
+		#[cfg(feature = "std")] {
 			// Ensure ChannelManager will not retry a payment if it times out due to Retry::Timeout.
 			nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 				PaymentId(payment_hash.0), route_params, Retry::Timeout(Duration::from_secs(60))).unwrap();
@@ -3339,6 +3358,7 @@ fn test_threaded_payment_retries() {
 		// We really want std::thread::scope, but its not stable until 1.63. Until then, we get unsafe.
 		let node_ref = NodePtr::from_node(&nodes[0]);
 		move || {
+			let _ = &node_ref;
 			let node_a = unsafe { &*node_ref.0 };
 			while Instant::now() < end_time {
 				node_a.node.get_and_clear_pending_events(); // wipe the PendingHTLCsForwardable
@@ -3705,7 +3725,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	match (known_tlvs, even_tlvs) {
 		(true, _) => {
 			nodes[1].node.claim_funds_with_known_custom_tlvs(our_payment_preimage);
-			let expected_total_fee_msat = pass_claimed_payment_along_route(&nodes[0], &[&[&nodes[1]]], &[0; 1], false, our_payment_preimage);
+			let expected_total_fee_msat = pass_claimed_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage));
 			expect_payment_sent!(&nodes[0], our_payment_preimage, Some(expected_total_fee_msat));
 		},
 		(false, false) => {

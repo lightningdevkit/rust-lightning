@@ -1,21 +1,24 @@
 // Imports that need to be added manually
 use bitcoin::bech32::u5;
 use bitcoin::blockdata::script::ScriptBuf;
-use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, self};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::schnorr;
 
-use lightning::sign::{Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
+use lightning::blinded_path::BlindedPath;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
+use lightning::sign::{Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
 use lightning::util::test_channel_signer::TestChannelSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
-use lightning::onion_message::{CustomOnionMessageHandler, Destination, MessageRouter, OffersMessage, OffersMessageHandler, OnionMessageContents, OnionMessagePath, OnionMessenger, PendingOnionMessage};
+use lightning::onion_message::messenger::{CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger, PendingOnionMessage};
+use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
+use lightning::onion_message::packet::OnionMessageContents;
 
 use crate::utils::test_logger;
 
@@ -81,6 +84,12 @@ impl MessageRouter for TestMessageRouter {
 			destination,
 			first_node_addresses: None,
 		})
+	}
+
+	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		unreachable!()
 	}
 }
 

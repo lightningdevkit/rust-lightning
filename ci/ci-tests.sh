@@ -8,40 +8,68 @@ HOST_PLATFORM="$(rustc --version --verbose | grep "host:" | awk '{ print $2 }')"
 # which we do here.
 # Further crates which appear only as dev-dependencies are pinned further down.
 function PIN_RELEASE_DEPS {
-	# Tokio MSRV on versions 1.17 through 1.26 is rustc 1.49. Above 1.26 MSRV is 1.56.
-	[ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p tokio --precise "1.14.1" --verbose
-	[[ "$RUSTC_MINOR_VERSION" -gt 48  &&  "$RUSTC_MINOR_VERSION" -lt 56 ]] && cargo update -p tokio --precise "1.25.1" --verbose
-
-	# Sadly the log crate is always a dependency of tokio until 1.20, and has no reasonable MSRV guarantees
-	[ "$RUSTC_MINOR_VERSION" -lt 49 ] && cargo update -p log --precise "0.4.18" --verbose
-
-	# The serde_json crate switched to Rust edition 2021 starting with v1.0.101, i.e., has MSRV of 1.56
-	[ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p serde_json --precise "1.0.100" --verbose
-
 	return 0 # Don't fail the script if our rustc is higher than the last check
+}
+
+# The tests of `lightning-transaction-sync` require `electrs` and `bitcoind`
+# binaries. Here, we download the binaries, validate them, and export their
+# location via `ELECTRS_EXE`/`BITCOIND_EXE` which will be used by the
+# `electrsd`/`bitcoind` crates in our tests.
+function DOWNLOAD_ELECTRS_AND_BITCOIND {
+	ELECTRS_DL_ENDPOINT="https://github.com/RCasatta/electrsd/releases/download/electrs_releases"
+	ELECTRS_VERSION="esplora_a33e97e1a1fc63fa9c20a116bb92579bbf43b254"
+	BITCOIND_DL_ENDPOINT="https://bitcoincore.org/bin/"
+	BITCOIND_VERSION="25.1"
+	if [[ "$HOST_PLATFORM" == *linux* ]]; then
+		ELECTRS_DL_FILE_NAME=electrs_linux_"$ELECTRS_VERSION".zip
+		ELECTRS_DL_HASH="865e26a96e8df77df01d96f2f569dcf9622fc87a8d99a9b8fe30861a4db9ddf1"
+		BITCOIND_DL_FILE_NAME=bitcoin-"$BITCOIND_VERSION"-x86_64-linux-gnu.tar.gz
+		BITCOIND_DL_HASH="a978c407b497a727f0444156e397b50491ce862d1f906fef9b521415b3611c8b"
+	elif [[ "$HOST_PLATFORM" == *darwin* ]]; then
+		ELECTRS_DL_FILE_NAME=electrs_macos_"$ELECTRS_VERSION".zip
+		ELECTRS_DL_HASH="2d5ff149e8a2482d3658e9b386830dfc40c8fbd7c175ca7cbac58240a9505bcd"
+		BITCOIND_DL_FILE_NAME=bitcoin-"$BITCOIND_VERSION"-x86_64-apple-darwin.tar.gz
+		BITCOIND_DL_HASH="1acfde0ec3128381b83e3e5f54d1c7907871d324549129592144dd12a821eff1"
+	else
+		echo -e "\n\nUnsupported platform. Exiting.."
+		exit 1
+	fi
+
+	DL_TMP_DIR=$(mktemp -d)
+	trap 'rm -rf -- "$DL_TMP_DIR"' EXIT
+
+	pushd "$DL_TMP_DIR"
+	ELECTRS_DL_URL="$ELECTRS_DL_ENDPOINT"/"$ELECTRS_DL_FILE_NAME"
+	curl -L -o "$ELECTRS_DL_FILE_NAME" "$ELECTRS_DL_URL"
+	echo "$ELECTRS_DL_HASH  $ELECTRS_DL_FILE_NAME"|shasum -a 256 -c
+	unzip "$ELECTRS_DL_FILE_NAME"
+	export ELECTRS_EXE="$DL_TMP_DIR"/electrs
+	chmod +x "$ELECTRS_EXE"
+
+	BITCOIND_DL_URL="$BITCOIND_DL_ENDPOINT"/bitcoin-core-"$BITCOIND_VERSION"/"$BITCOIND_DL_FILE_NAME"
+	curl -L -o "$BITCOIND_DL_FILE_NAME" "$BITCOIND_DL_URL"
+	echo "$BITCOIND_DL_HASH  $BITCOIND_DL_FILE_NAME"|shasum -a 256 -c
+	tar xzf "$BITCOIND_DL_FILE_NAME"
+	export BITCOIND_EXE="$DL_TMP_DIR"/bitcoin-"$BITCOIND_VERSION"/bin/bitcoind
+	chmod +x "$BITCOIND_EXE"
+	popd
 }
 
 PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 
-# The addr2line v0.20 crate (a dependency of `backtrace` starting with 0.3.68) relies on 1.55+
-[ "$RUSTC_MINOR_VERSION" -lt 55 ] && cargo update -p backtrace --precise "0.3.67" --verbose
+# Starting with version 1.10.0, the `regex` crate has an MSRV of rustc 1.65.0.
+[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
 
-# The quote crate switched to Rust edition 2021 starting with v1.0.31, i.e., has MSRV of 1.56
-[ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p quote --precise "1.0.30" --verbose
+# The addr2line v0.21 crate (a dependency of `backtrace` starting with 0.3.69) relies on rustc 1.65
+[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p backtrace --precise "0.3.68" --verbose
 
-# The syn crate depends on too-new proc-macro2 starting with v2.0.33, i.e., has MSRV of 1.56
-if [ "$RUSTC_MINOR_VERSION" -lt 56 ]; then
-	SYN_2_DEP=$(grep -o '"syn 2.*' Cargo.lock | tr -d '",' | tr ' ' ':')
-	cargo update -p "$SYN_2_DEP" --precise "2.0.32" --verbose
-fi
-
-# The proc-macro2 crate switched to Rust edition 2021 starting with v1.0.66, i.e., has MSRV of 1.56
-[ "$RUSTC_MINOR_VERSION" -lt 56 ] && cargo update -p proc-macro2 --precise "1.0.65" --verbose
-
-# The memchr crate switched to an MSRV of 1.60 starting with v2.6.0
-[ "$RUSTC_MINOR_VERSION" -lt 60 ] && cargo update -p memchr --precise "2.5.0" --verbose
+# Starting with version 0.5.9 (there is no .6-.8), the `home` crate has an MSRV of rustc 1.70.0.
+[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p home --precise "0.5.5" --verbose
 
 export RUST_BACKTRACE=1
+
+# Build `lightning-transaction-sync` in no_download mode.
+export RUSTFLAGS="$RUSTFLAGS --cfg no_download"
 
 echo -e "\n\nBuilding and testing all workspace crates..."
 cargo test --verbose --color always
@@ -59,9 +87,12 @@ cargo test --verbose --color always --features rpc-client,rest-client,tokio
 cargo check --verbose --color always --features rpc-client,rest-client,tokio
 popd
 
-if [[ $RUSTC_MINOR_VERSION -gt 67 && "$HOST_PLATFORM" != *windows* ]]; then
+if [[ "$HOST_PLATFORM" != *windows* ]]; then
 	echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
 	pushd lightning-transaction-sync
+
+	DOWNLOAD_ELECTRS_AND_BITCOIND
+
 	cargo test --verbose --color always --features esplora-blocking
 	cargo check --verbose --color always --features esplora-blocking
 	cargo test --verbose --color always --features esplora-async
@@ -78,39 +109,36 @@ pushd lightning-background-processor
 cargo test --verbose --color always --features futures
 popd
 
-if [ "$RUSTC_MINOR_VERSION" -gt 55 ]; then
-	echo -e "\n\nTest Custom Message Macros"
-	pushd lightning-custom-message
-	cargo test --verbose --color always
-	[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
-	popd
-fi
+echo -e "\n\nTest Custom Message Macros"
+pushd lightning-custom-message
+cargo test --verbose --color always
+[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
+popd
 
-if [ "$RUSTC_MINOR_VERSION" -gt 51 ]; then # Current `object` MSRV, subject to change
-	echo -e "\n\nTest backtrace-debug builds"
-	pushd lightning
-	cargo test --verbose --color always --features backtrace
-	popd
-fi
+echo -e "\n\nTest backtrace-debug builds"
+pushd lightning
+cargo test --verbose --color always --features backtrace
+popd
 
 echo -e "\n\nBuilding with all Log-Limiting features"
 pushd lightning
 grep '^max_level_' Cargo.toml | awk '{ print $1 }'| while read -r FEATURE; do
-	cargo check --verbose --color always --features "$FEATURE"
+	RUSTFLAGS="$RUSTFLAGS -A unused_variables -A unused_macros -A unused_imports -A dead_code" cargo check --verbose --color always --features "$FEATURE"
 done
 popd
 
 echo -e "\n\nTesting no-std flags in various combinations"
 for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
-	[ "$RUSTC_MINOR_VERSION" -gt 50 ] && cargo test -p $DIR --verbose --color always --no-default-features --features no-std
+	cargo test -p $DIR --verbose --color always --no-default-features --features no-std
 	# check if there is a conflict between no-std and the default std feature
-	[ "$RUSTC_MINOR_VERSION" -gt 50 ] && cargo test -p $DIR --verbose --color always --features no-std
+	cargo test -p $DIR --verbose --color always --features no-std
 done
+
 for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
 	# check if there is a conflict between no-std and the c_bindings cfg
-	[ "$RUSTC_MINOR_VERSION" -gt 50 ] && RUSTFLAGS="--cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
+	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
 done
-RUSTFLAGS="--cfg=c_bindings" cargo test --verbose --color always
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always
 
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
 pushd lightning
@@ -125,16 +153,7 @@ popd
 echo -e "\n\nTesting no-std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
-if [[ $RUSTC_MINOR_VERSION -gt 67 ]]; then
-	# lightning-transaction-sync's MSRV is 1.67
-	cargo check --verbose --color always --features lightning-transaction-sync
-else
-	# The memchr crate switched to an MSRV of 1.60 starting with v2.6.0
-	# This is currently only a release dependency via core2, which we intend to work with
-	# rust-bitcoin to remove soon.
-	[ "$RUSTC_MINOR_VERSION" -lt 60 ] && cargo update -p memchr --precise "2.5.0" --verbose
-	cargo check --verbose --color always
-fi
+cargo check --verbose --color always --features lightning-transaction-sync
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
 
@@ -152,17 +171,7 @@ if [ -f "$(which arm-none-eabi-gcc)" ]; then
 	popd
 fi
 
-echo -e "\n\nTest Taproot builds"
-pushd lightning
-RUSTFLAGS="$RUSTFLAGS --cfg=taproot" cargo test --verbose --color always -p lightning
-popd
-
-echo -e "\n\nTest dual-funding builds"
-pushd lightning
-RUSTFLAGS="$RUSTFLAGS --cfg=dual_funding" cargo test --verbose --color always -p lightning
-popd
-
-echo -e "\n\nTest dual-funding builds"
-pushd lightning
-RUSTFLAGS="$RUSTFLAGS --cfg=dual_funding" cargo test --verbose --color always -p lightning
-popd
+echo -e "\n\nTest cfg-flag builds"
+RUSTFLAGS="--cfg=taproot" cargo test --verbose --color always -p lightning
+RUSTFLAGS="--cfg=async_signing" cargo test --verbose --color always -p lightning
+RUSTFLAGS="--cfg=dual_funding" cargo test --verbose --color always -p lightning

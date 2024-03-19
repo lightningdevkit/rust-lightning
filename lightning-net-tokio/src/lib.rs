@@ -22,9 +22,8 @@
 //!
 //! [`PeerManager`]: lightning::ln::peer_handler::PeerManager
 
-// Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
-#![deny(broken_intra_doc_links)]
-#![deny(private_intra_doc_links)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(rustdoc::private_intra_doc_links)]
 
 #![deny(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
@@ -503,6 +502,9 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 							written_len += res;
 							if written_len == data.len() { return written_len; }
 						},
+						Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+							continue;
+						}
 						Err(_) => return written_len,
 					}
 				},

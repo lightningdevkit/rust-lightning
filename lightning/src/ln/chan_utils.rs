@@ -45,7 +45,7 @@ use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI}
 use core::ops::Deref;
 use crate::chain;
 use crate::ln::features::ChannelTypeFeatures;
-use crate::util::crypto::{sign, sign_with_aux_rand};
+use crate::crypto::utils::{sign, sign_with_aux_rand};
 use super::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcKey, HtlcBasepoint, RevocationKey, RevocationBasepoint};
 
 /// Maximum number of one-way in-flight HTLC (protocol-level value).
@@ -485,9 +485,11 @@ impl TxCreationKeys {
 }
 
 /// The maximum length of a script returned by get_revokeable_redeemscript.
-// Calculated as 6 bytes of opcodes, 1 byte push plus 2 bytes for contest_delay, and two public
-// keys of 33 bytes (+ 1 push).
-pub const REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH: usize = 6 + 3 + 34*2;
+// Calculated as 6 bytes of opcodes, 1 byte push plus 3 bytes for contest_delay, and two public
+// keys of 33 bytes (+ 1 push). Generally, pushes are only 2 bytes (for values below 0x7fff, i.e.
+// around 7 months), however, a 7 month contest delay shouldn't result in being unable to reclaim
+// on-chain funds.
+pub const REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH: usize = 6 + 4 + 34*2;
 
 /// A script either spendable by the revocation
 /// key or the broadcaster_delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.

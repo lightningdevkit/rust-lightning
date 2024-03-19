@@ -80,13 +80,18 @@ mod monitor_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod shutdown_tests;
-#[cfg(test)]
+#[cfg(all(test, async_signing))]
 #[allow(unused_mut)]
 mod async_signer_tests;
-#[allow(unused_mut)] // TODO
+#[cfg(test)]
+#[allow(unused_mut)]
+mod offers_tests;
+#[allow(dead_code)] // TODO(dual_funding): Exchange for dual_funding cfg
 pub(crate) mod interactivetxs;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
+
+use bitcoin::hashes::{sha256::Hash as Sha256, Hash};
 
 /// payment_hash type, use to cross-lock hop
 ///
@@ -109,6 +114,13 @@ pub struct PaymentPreimage(pub [u8; 32]);
 impl core::fmt::Display for PaymentPreimage {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
 		crate::util::logger::DebugBytes(&self.0).fmt(f)
+	}
+}
+
+/// Converts a `PaymentPreimage` into a `PaymentHash` by hashing the preimage with SHA256.
+impl From<PaymentPreimage> for PaymentHash {
+	fn from(value: PaymentPreimage) -> Self {
+		PaymentHash(Sha256::hash(&value.0).to_byte_array())
 	}
 }
 

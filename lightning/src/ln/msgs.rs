@@ -53,7 +53,7 @@ use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
 
 use crate::events::{EventsProvider, MessageSendEventsProvider};
-use crate::util::chacha20poly1305rfc::ChaChaPolyReadAdapter;
+use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::logger;
 use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
 use crate::util::base32;
@@ -172,76 +172,20 @@ pub struct Pong {
 	pub byteslen: u16,
 }
 
-/// An [`open_channel`] message to be sent to or received from a peer.
-///
-/// Used in V1 channel establishment
+/// Contains fields that are both common to [`open_channel`] and `open_channel2` messages.
 ///
 /// [`open_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct OpenChannel {
-	/// The genesis hash of the blockchain where the channel is to be opened
-	pub chain_hash: ChainHash,
-	/// A temporary channel ID, until the funding outpoint is announced
-	pub temporary_channel_id: ChannelId,
-	/// The channel value
-	pub funding_satoshis: u64,
-	/// The amount to push to the counterparty as part of the open, in milli-satoshi
-	pub push_msat: u64,
-	/// The threshold below which outputs on transactions broadcast by sender will be omitted
-	pub dust_limit_satoshis: u64,
-	/// The maximum inbound HTLC value in flight towards sender, in milli-satoshi
-	pub max_htlc_value_in_flight_msat: u64,
-	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
-	pub channel_reserve_satoshis: u64,
-	/// The minimum HTLC size incoming to sender, in milli-satoshi
-	pub htlc_minimum_msat: u64,
-	/// The feerate per 1000-weight of sender generated transactions, until updated by
-	/// [`UpdateFee`]
-	pub feerate_per_kw: u32,
-	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if
-	/// they broadcast a commitment transaction
-	pub to_self_delay: u16,
-	/// The maximum number of inbound HTLCs towards sender
-	pub max_accepted_htlcs: u16,
-	/// The sender's key controlling the funding transaction
-	pub funding_pubkey: PublicKey,
-	/// Used to derive a revocation key for transactions broadcast by counterparty
-	pub revocation_basepoint: PublicKey,
-	/// A payment key to sender for transactions broadcast by counterparty
-	pub payment_point: PublicKey,
-	/// Used to derive a payment key to sender for transactions broadcast by sender
-	pub delayed_payment_basepoint: PublicKey,
-	/// Used to derive an HTLC payment key to sender
-	pub htlc_basepoint: PublicKey,
-	/// The first to-be-broadcast-by-sender transaction's per commitment point
-	pub first_per_commitment_point: PublicKey,
-	/// The channel flags to be used
-	pub channel_flags: u8,
-	/// A request to pre-set the to-sender output's `scriptPubkey` for when we collaboratively close
-	pub shutdown_scriptpubkey: Option<ScriptBuf>,
-	/// The channel type that this channel will represent
-	///
-	/// If this is `None`, we derive the channel type from the intersection of our
-	/// feature bits with our counterparty's feature bits from the [`Init`] message.
-	pub channel_type: Option<ChannelTypeFeatures>,
-}
-
-/// An open_channel2 message to be sent by or received from the channel initiator.
-///
-/// Used in V2 channel establishment
-///
 // TODO(dual_funding): Add spec link for `open_channel2`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct OpenChannelV2 {
+pub struct CommonOpenChannelFields {
 	/// The genesis hash of the blockchain where the channel is to be opened
 	pub chain_hash: ChainHash,
-	/// A temporary channel ID derived using a zeroed out value for the channel acceptor's revocation basepoint
+	/// A temporary channel ID
+	/// For V2 channels: derived using a zeroed out value for the channel acceptor's revocation basepoint
+	/// For V1 channels: a temporary channel ID, until the funding outpoint is announced
 	pub temporary_channel_id: ChannelId,
-	/// The feerate for the funding transaction set by the channel initiator
-	pub funding_feerate_sat_per_1000_weight: u32,
-	/// The feerate for the commitment transaction set by the channel initiator
-	pub commitment_feerate_sat_per_1000_weight: u32,
-	/// Part of the channel value contributed by the channel initiator
+	/// For V1 channels: The channel value
+	/// For V2 channels: Part of the channel value contributed by the channel initiator
 	pub funding_satoshis: u64,
 	/// The threshold below which outputs on transactions broadcast by the channel initiator will be
 	/// omitted
@@ -250,13 +194,14 @@ pub struct OpenChannelV2 {
 	pub max_htlc_value_in_flight_msat: u64,
 	/// The minimum HTLC size incoming to channel initiator, in milli-satoshi
 	pub htlc_minimum_msat: u64,
+	/// The feerate for the commitment transaction set by the channel initiator until updated by
+	/// [`UpdateFee`]
+	pub commitment_feerate_sat_per_1000_weight: u32,
 	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they
 	/// broadcast a commitment transaction
 	pub to_self_delay: u16,
 	/// The maximum number of inbound HTLCs towards channel initiator
 	pub max_accepted_htlcs: u16,
-	/// The locktime for the funding transaction
-	pub locktime: u32,
 	/// The channel initiator's key controlling the funding transaction
 	pub funding_pubkey: PublicKey,
 	/// Used to derive a revocation key for transactions broadcast by counterparty
@@ -270,84 +215,64 @@ pub struct OpenChannelV2 {
 	pub htlc_basepoint: PublicKey,
 	/// The first to-be-broadcast-by-channel-initiator transaction's per commitment point
 	pub first_per_commitment_point: PublicKey,
-	/// The second to-be-broadcast-by-channel-initiator transaction's per commitment point
-	pub second_per_commitment_point: PublicKey,
-	/// Channel flags
+	/// The channel flags to be used
 	pub channel_flags: u8,
 	/// Optionally, a request to pre-set the to-channel-initiator output's scriptPubkey for when we
 	/// collaboratively close
 	pub shutdown_scriptpubkey: Option<ScriptBuf>,
-	/// The channel type that this channel will represent. If none is set, we derive the channel
-	/// type from the intersection of our feature bits with our counterparty's feature bits from
-	/// the Init message.
+	/// The channel type that this channel will represent
+	///
+	/// If this is `None`, we derive the channel type from the intersection of our
+	/// feature bits with our counterparty's feature bits from the [`Init`] message.
 	pub channel_type: Option<ChannelTypeFeatures>,
+}
+
+/// An [`open_channel`] message to be sent to or received from a peer.
+///
+/// Used in V1 channel establishment
+///
+/// [`open_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct OpenChannel {
+	/// Common fields of `open_channel(2)`-like messages
+	pub common_fields: CommonOpenChannelFields,
+	/// The amount to push to the counterparty as part of the open, in milli-satoshi
+	pub push_msat: u64,
+	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	pub channel_reserve_satoshis: u64,
+}
+
+/// An open_channel2 message to be sent by or received from the channel initiator.
+///
+/// Used in V2 channel establishment
+///
+// TODO(dual_funding): Add spec link for `open_channel2`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct OpenChannelV2 {
+	/// Common fields of `open_channel(2)`-like messages
+	pub common_fields: CommonOpenChannelFields,
+	/// The feerate for the funding transaction set by the channel initiator
+	pub funding_feerate_sat_per_1000_weight: u32,
+	/// The locktime for the funding transaction
+	pub locktime: u32,
+	/// The second to-be-broadcast-by-channel-initiator transaction's per commitment point
+	pub second_per_commitment_point: PublicKey,
 	/// Optionally, a requirement that only confirmed inputs can be added
 	pub require_confirmed_inputs: Option<()>,
 }
 
-/// An [`accept_channel`] message to be sent to or received from a peer.
-///
-/// Used in V1 channel establishment
+/// Contains fields that are both common to [`accept_channel`] and `accept_channel2` messages.
 ///
 /// [`accept_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel-message
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct AcceptChannel {
-	/// A temporary channel ID, until the funding outpoint is announced
-	pub temporary_channel_id: ChannelId,
-	/// The threshold below which outputs on transactions broadcast by sender will be omitted
-	pub dust_limit_satoshis: u64,
-	/// The maximum inbound HTLC value in flight towards sender, in milli-satoshi
-	pub max_htlc_value_in_flight_msat: u64,
-	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
-	pub channel_reserve_satoshis: u64,
-	/// The minimum HTLC size incoming to sender, in milli-satoshi
-	pub htlc_minimum_msat: u64,
-	/// Minimum depth of the funding transaction before the channel is considered open
-	pub minimum_depth: u32,
-	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they broadcast a commitment transaction
-	pub to_self_delay: u16,
-	/// The maximum number of inbound HTLCs towards sender
-	pub max_accepted_htlcs: u16,
-	/// The sender's key controlling the funding transaction
-	pub funding_pubkey: PublicKey,
-	/// Used to derive a revocation key for transactions broadcast by counterparty
-	pub revocation_basepoint: PublicKey,
-	/// A payment key to sender for transactions broadcast by counterparty
-	pub payment_point: PublicKey,
-	/// Used to derive a payment key to sender for transactions broadcast by sender
-	pub delayed_payment_basepoint: PublicKey,
-	/// Used to derive an HTLC payment key to sender for transactions broadcast by counterparty
-	pub htlc_basepoint: PublicKey,
-	/// The first to-be-broadcast-by-sender transaction's per commitment point
-	pub first_per_commitment_point: PublicKey,
-	/// A request to pre-set the to-sender output's scriptPubkey for when we collaboratively close
-	pub shutdown_scriptpubkey: Option<ScriptBuf>,
-	/// The channel type that this channel will represent.
-	///
-	/// If this is `None`, we derive the channel type from the intersection of
-	/// our feature bits with our counterparty's feature bits from the [`Init`] message.
-	/// This is required to match the equivalent field in [`OpenChannel::channel_type`].
-	pub channel_type: Option<ChannelTypeFeatures>,
-	#[cfg(taproot)]
-	/// Next nonce the channel initiator should use to create a funding output signature against
-	pub next_local_nonce: Option<musig2::types::PublicNonce>,
-}
-
-/// An accept_channel2 message to be sent by or received from the channel accepter.
-///
-/// Used in V2 channel establishment
-///
 // TODO(dual_funding): Add spec link for `accept_channel2`.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct AcceptChannelV2 {
-	/// The same `temporary_channel_id` received from the initiator's `open_channel2` message.
+pub struct CommonAcceptChannelFields {
+	/// The same `temporary_channel_id` received from the initiator's `open_channel2` or `open_channel` message.
 	pub temporary_channel_id: ChannelId,
-	/// Part of the channel value contributed by the channel acceptor
-	pub funding_satoshis: u64,
 	/// The threshold below which outputs on transactions broadcast by the channel acceptor will be
 	/// omitted
 	pub dust_limit_satoshis: u64,
-	/// The maximum inbound HTLC value in flight towards channel acceptor, in milli-satoshi
+	/// The maximum inbound HTLC value in flight towards sender, in milli-satoshi
 	pub max_htlc_value_in_flight_msat: u64,
 	/// The minimum HTLC size incoming to channel acceptor, in milli-satoshi
 	pub htlc_minimum_msat: u64,
@@ -371,8 +296,6 @@ pub struct AcceptChannelV2 {
 	pub htlc_basepoint: PublicKey,
 	/// The first to-be-broadcast-by-channel-acceptor transaction's per commitment point
 	pub first_per_commitment_point: PublicKey,
-	/// The second to-be-broadcast-by-channel-acceptor transaction's per commitment point
-	pub second_per_commitment_point: PublicKey,
 	/// Optionally, a request to pre-set the to-channel-acceptor output's scriptPubkey for when we
 	/// collaboratively close
 	pub shutdown_scriptpubkey: Option<ScriptBuf>,
@@ -380,8 +303,40 @@ pub struct AcceptChannelV2 {
 	/// type from the intersection of our feature bits with our counterparty's feature bits from
 	/// the Init message.
 	///
-	/// This is required to match the equivalent field in [`OpenChannelV2::channel_type`].
+	/// This is required to match the equivalent field in [`OpenChannel`] or [`OpenChannelV2`]'s
+	/// [`CommonOpenChannelFields::channel_type`].
 	pub channel_type: Option<ChannelTypeFeatures>,
+}
+
+/// An [`accept_channel`] message to be sent to or received from a peer.
+///
+/// Used in V1 channel establishment
+///
+/// [`accept_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel-message
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct AcceptChannel {
+	/// Common fields of `accept_channel(2)`-like messages
+	pub common_fields: CommonAcceptChannelFields,
+	/// The minimum value unencumbered by HTLCs for the counterparty to keep in the channel
+	pub channel_reserve_satoshis: u64,
+	#[cfg(taproot)]
+	/// Next nonce the channel initiator should use to create a funding output signature against
+	pub next_local_nonce: Option<musig2::types::PublicNonce>,
+}
+
+/// An accept_channel2 message to be sent by or received from the channel accepter.
+///
+/// Used in V2 channel establishment
+///
+// TODO(dual_funding): Add spec link for `accept_channel2`.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct AcceptChannelV2 {
+	/// Common fields of `accept_channel(2)`-like messages
+	pub common_fields: CommonAcceptChannelFields,
+	/// Part of the channel value contributed by the channel acceptor
+	pub funding_satoshis: u64,
+	/// The second to-be-broadcast-by-channel-acceptor transaction's per commitment point
+	pub second_per_commitment_point: PublicKey,
 	/// Optionally, a requirement that only confirmed inputs can be added
 	pub require_confirmed_inputs: Option<()>,
 }
@@ -441,6 +396,10 @@ pub struct ChannelReady {
 	pub short_channel_id_alias: Option<u64>,
 }
 
+/// A randomly chosen number that is used to identify inputs within an interactive transaction
+/// construction.
+pub type SerialId = u64;
+
 /// An stfu (quiescence) message to be sent by or received from the stfu initiator.
 // TODO(splicing): Add spec link for `stfu`; still in draft, using from https://github.com/lightning/bolts/pull/863
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -494,10 +453,6 @@ pub struct SpliceLocked {
 	/// The channel ID
 	pub channel_id: ChannelId,
 }
-
-/// A randomly chosen number that is used to identify inputs within an interactive transaction
-/// construction.
-pub type SerialId = u64;
 
 /// A tx_add_input message for adding an input during interactive transaction construction
 ///
@@ -701,7 +656,7 @@ pub struct OnionMessage {
 	/// Used in decrypting the onion packet's payload.
 	pub blinding_point: PublicKey,
 	/// The full onion packet including hop data, pubkey, and hmac
-	pub onion_routing_packet: onion_message::Packet,
+	pub onion_routing_packet: onion_message::packet::Packet,
 }
 
 /// An [`update_fulfill_htlc`] message to be sent to or received from a peer.
@@ -894,6 +849,16 @@ impl SocketAddress {
 	/// This maximum length is reached by a hostname address descriptor:
 	/// a hostname with a maximum length of 255, its 1-byte length and a 2-byte port.
 	pub(crate) const MAX_LEN: u16 = 258;
+
+	pub(crate) fn is_tor(&self) -> bool {
+		match self {
+			&SocketAddress::TcpIpV4 {..} => false,
+			&SocketAddress::TcpIpV6 {..} => false,
+			&SocketAddress::OnionV2(_) => true,
+			&SocketAddress::OnionV3 {..} => true,
+			&SocketAddress::Hostname {..} => false,
+		}
+	}
 }
 
 impl Writeable for SocketAddress {
@@ -1689,22 +1654,31 @@ pub trait OnionMessageHandler: EventsProvider {
 	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
 }
 
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
+/// Information communicated in the onion to the recipient for multi-part tracking and proof that
+/// the payment is associated with an invoice.
+pub struct FinalOnionHopData {
+	/// When sending a multi-part payment, this secret is used to identify a payment across HTLCs.
+	/// Because it is generated by the recipient and included in the invoice, it also provides
+	/// proof to the recipient that the payment was sent by someone with the generated invoice.
+	pub payment_secret: PaymentSecret,
+	/// The intended total amount that this payment is for.
+	///
+	/// Message serialization may panic if this value is more than 21 million Bitcoin.
+	pub total_msat: u64,
+}
+
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
 	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 	use crate::ln::features::BlindedHopFeatures;
+	use super::FinalOnionHopData;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
-	#[derive(Clone)]
-	pub struct FinalOnionHopData {
-		pub payment_secret: PaymentSecret,
-		/// The total value, in msat, of the payment as received by the ultimate recipient.
-		/// Message serialization may panic if this value is more than 21 million Bitcoin.
-		pub total_msat: u64,
-	}
 
 	pub enum InboundOnionPayload {
 		Forward {
@@ -1718,23 +1692,23 @@ mod fuzzy_internal_msgs {
 			payment_metadata: Option<Vec<u8>>,
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
-			amt_msat: u64,
-			outgoing_cltv_value: u32,
+			sender_intended_htlc_amt_msat: u64,
+			cltv_expiry_height: u32,
 		},
 		BlindedForward {
 			short_channel_id: u64,
 			payment_relay: PaymentRelay,
 			payment_constraints: PaymentConstraints,
 			features: BlindedHopFeatures,
-			intro_node_blinding_point: PublicKey,
+			intro_node_blinding_point: Option<PublicKey>,
 		},
 		BlindedReceive {
-			amt_msat: u64,
+			sender_intended_htlc_amt_msat: u64,
 			total_msat: u64,
-			outgoing_cltv_value: u32,
+			cltv_expiry_height: u32,
 			payment_secret: PaymentSecret,
 			payment_constraints: PaymentConstraints,
-			intro_node_blinding_point: PublicKey,
+			intro_node_blinding_point: Option<PublicKey>,
 		}
 	}
 
@@ -1750,17 +1724,17 @@ mod fuzzy_internal_msgs {
 			payment_metadata: Option<Vec<u8>>,
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
-			amt_msat: u64,
-			outgoing_cltv_value: u32,
+			sender_intended_htlc_amt_msat: u64,
+			cltv_expiry_height: u32,
 		},
 		BlindedForward {
 			encrypted_tlvs: Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>,
 		},
 		BlindedReceive {
-			amt_msat: u64,
+			sender_intended_htlc_amt_msat: u64,
 			total_msat: u64,
-			outgoing_cltv_value: u32,
+			cltv_expiry_height: u32,
 			encrypted_tlvs: Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
 		}
@@ -1843,70 +1817,173 @@ impl From<io::Error> for DecodeError {
 	}
 }
 
-#[cfg(not(taproot))]
-impl_writeable_msg!(AcceptChannel, {
-	temporary_channel_id,
-	dust_limit_satoshis,
-	max_htlc_value_in_flight_msat,
-	channel_reserve_satoshis,
-	htlc_minimum_msat,
-	minimum_depth,
-	to_self_delay,
-	max_accepted_htlcs,
-	funding_pubkey,
-	revocation_basepoint,
-	payment_point,
-	delayed_payment_basepoint,
-	htlc_basepoint,
-	first_per_commitment_point,
-}, {
-	(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))), // Don't encode length twice.
-	(1, channel_type, option),
-});
+impl Writeable for AcceptChannel {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.common_fields.temporary_channel_id.write(w)?;
+		self.common_fields.dust_limit_satoshis.write(w)?;
+		self.common_fields.max_htlc_value_in_flight_msat.write(w)?;
+		self.channel_reserve_satoshis.write(w)?;
+		self.common_fields.htlc_minimum_msat.write(w)?;
+		self.common_fields.minimum_depth.write(w)?;
+		self.common_fields.to_self_delay.write(w)?;
+		self.common_fields.max_accepted_htlcs.write(w)?;
+		self.common_fields.funding_pubkey.write(w)?;
+		self.common_fields.revocation_basepoint.write(w)?;
+		self.common_fields.payment_basepoint.write(w)?;
+		self.common_fields.delayed_payment_basepoint.write(w)?;
+		self.common_fields.htlc_basepoint.write(w)?;
+		self.common_fields.first_per_commitment_point.write(w)?;
+		#[cfg(not(taproot))]
+		encode_tlv_stream!(w, {
+			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
+			(1, self.common_fields.channel_type, option),
+		});
+		#[cfg(taproot)]
+		encode_tlv_stream!(w, {
+			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
+			(1, self.common_fields.channel_type, option),
+			(4, self.next_local_nonce, option),
+		});
+		Ok(())
+	}
+}
 
-#[cfg(taproot)]
-impl_writeable_msg!(AcceptChannel, {
-	temporary_channel_id,
-	dust_limit_satoshis,
-	max_htlc_value_in_flight_msat,
-	channel_reserve_satoshis,
-	htlc_minimum_msat,
-	minimum_depth,
-	to_self_delay,
-	max_accepted_htlcs,
-	funding_pubkey,
-	revocation_basepoint,
-	payment_point,
-	delayed_payment_basepoint,
-	htlc_basepoint,
-	first_per_commitment_point,
-}, {
-	(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))), // Don't encode length twice.
-	(1, channel_type, option),
-	(4, next_local_nonce, option),
-});
+impl Readable for AcceptChannel {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let temporary_channel_id: ChannelId = Readable::read(r)?;
+		let dust_limit_satoshis: u64 = Readable::read(r)?;
+		let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
+		let channel_reserve_satoshis: u64 = Readable::read(r)?;
+		let htlc_minimum_msat: u64 = Readable::read(r)?;
+		let minimum_depth: u32 = Readable::read(r)?;
+		let to_self_delay: u16 = Readable::read(r)?;
+		let max_accepted_htlcs: u16 = Readable::read(r)?;
+		let funding_pubkey: PublicKey = Readable::read(r)?;
+		let revocation_basepoint: PublicKey = Readable::read(r)?;
+		let payment_basepoint: PublicKey = Readable::read(r)?;
+		let delayed_payment_basepoint: PublicKey = Readable::read(r)?;
+		let htlc_basepoint: PublicKey = Readable::read(r)?;
+		let first_per_commitment_point: PublicKey = Readable::read(r)?;
 
-impl_writeable_msg!(AcceptChannelV2, {
-	temporary_channel_id,
-	funding_satoshis,
-	dust_limit_satoshis,
-	max_htlc_value_in_flight_msat,
-	htlc_minimum_msat,
-	minimum_depth,
-	to_self_delay,
-	max_accepted_htlcs,
-	funding_pubkey,
-	revocation_basepoint,
-	payment_basepoint,
-	delayed_payment_basepoint,
-	htlc_basepoint,
-	first_per_commitment_point,
-	second_per_commitment_point,
-}, {
-	(0, shutdown_scriptpubkey, option),
-	(1, channel_type, option),
-	(2, require_confirmed_inputs, option),
-});
+		let mut shutdown_scriptpubkey: Option<ScriptBuf> = None;
+		let mut channel_type: Option<ChannelTypeFeatures> = None;
+		#[cfg(not(taproot))]
+		decode_tlv_stream!(r, {
+			(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))),
+			(1, channel_type, option),
+		});
+		#[cfg(taproot)]
+		let mut next_local_nonce: Option<musig2::types::PublicNonce> = None;
+		#[cfg(taproot)]
+		decode_tlv_stream!(r, {
+			(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))),
+			(1, channel_type, option),
+			(4, next_local_nonce, option),
+		});
+
+		Ok(AcceptChannel {
+			common_fields: CommonAcceptChannelFields {
+				temporary_channel_id,
+				dust_limit_satoshis,
+				max_htlc_value_in_flight_msat,
+				htlc_minimum_msat,
+				minimum_depth,
+				to_self_delay,
+				max_accepted_htlcs,
+				funding_pubkey,
+				revocation_basepoint,
+				payment_basepoint,
+				delayed_payment_basepoint,
+				htlc_basepoint,
+				first_per_commitment_point,
+				shutdown_scriptpubkey,
+				channel_type,
+			},
+			channel_reserve_satoshis,
+			#[cfg(taproot)]
+			next_local_nonce,
+		})
+	}
+}
+
+impl Writeable for AcceptChannelV2 {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.common_fields.temporary_channel_id.write(w)?;
+		self.funding_satoshis.write(w)?;
+		self.common_fields.dust_limit_satoshis.write(w)?;
+		self.common_fields.max_htlc_value_in_flight_msat.write(w)?;
+		self.common_fields.htlc_minimum_msat.write(w)?;
+		self.common_fields.minimum_depth.write(w)?;
+		self.common_fields.to_self_delay.write(w)?;
+		self.common_fields.max_accepted_htlcs.write(w)?;
+		self.common_fields.funding_pubkey.write(w)?;
+		self.common_fields.revocation_basepoint.write(w)?;
+		self.common_fields.payment_basepoint.write(w)?;
+		self.common_fields.delayed_payment_basepoint.write(w)?;
+		self.common_fields.htlc_basepoint.write(w)?;
+		self.common_fields.first_per_commitment_point.write(w)?;
+		self.second_per_commitment_point.write(w)?;
+
+		encode_tlv_stream!(w, {
+			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
+			(1, self.common_fields.channel_type, option),
+			(2, self.require_confirmed_inputs, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for AcceptChannelV2 {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let temporary_channel_id: ChannelId = Readable::read(r)?;
+		let funding_satoshis: u64 = Readable::read(r)?;
+		let dust_limit_satoshis: u64 = Readable::read(r)?;
+		let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
+		let htlc_minimum_msat: u64 = Readable::read(r)?;
+		let minimum_depth: u32 = Readable::read(r)?;
+		let to_self_delay: u16 = Readable::read(r)?;
+		let max_accepted_htlcs: u16 = Readable::read(r)?;
+		let funding_pubkey: PublicKey = Readable::read(r)?;
+		let revocation_basepoint: PublicKey = Readable::read(r)?;
+		let payment_basepoint: PublicKey = Readable::read(r)?;
+		let delayed_payment_basepoint: PublicKey = Readable::read(r)?;
+		let htlc_basepoint: PublicKey = Readable::read(r)?;
+		let first_per_commitment_point: PublicKey = Readable::read(r)?;
+		let second_per_commitment_point: PublicKey = Readable::read(r)?;
+
+		let mut shutdown_scriptpubkey: Option<ScriptBuf> = None;
+		let mut channel_type: Option<ChannelTypeFeatures> = None;
+		let mut require_confirmed_inputs: Option<()> = None;
+		decode_tlv_stream!(r, {
+			(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))),
+			(1, channel_type, option),
+			(2, require_confirmed_inputs, option),
+		});
+
+		Ok(AcceptChannelV2 {
+			common_fields: CommonAcceptChannelFields {
+				temporary_channel_id,
+				dust_limit_satoshis,
+				max_htlc_value_in_flight_msat,
+				htlc_minimum_msat,
+				minimum_depth,
+				to_self_delay,
+				max_accepted_htlcs,
+				funding_pubkey,
+				revocation_basepoint,
+				payment_basepoint,
+				delayed_payment_basepoint,
+				htlc_basepoint,
+				first_per_commitment_point,
+				shutdown_scriptpubkey,
+				channel_type,
+			},
+			funding_satoshis,
+			second_per_commitment_point,
+			require_confirmed_inputs,
+		})
+	}
+}
 
 impl_writeable_msg!(Stfu, {
 	channel_id,
@@ -2109,55 +2186,176 @@ impl Readable for Init {
 	}
 }
 
-impl_writeable_msg!(OpenChannel, {
-	chain_hash,
-	temporary_channel_id,
-	funding_satoshis,
-	push_msat,
-	dust_limit_satoshis,
-	max_htlc_value_in_flight_msat,
-	channel_reserve_satoshis,
-	htlc_minimum_msat,
-	feerate_per_kw,
-	to_self_delay,
-	max_accepted_htlcs,
-	funding_pubkey,
-	revocation_basepoint,
-	payment_point,
-	delayed_payment_basepoint,
-	htlc_basepoint,
-	first_per_commitment_point,
-	channel_flags,
-}, {
-	(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))), // Don't encode length twice.
-	(1, channel_type, option),
-});
+impl Writeable for OpenChannel {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.common_fields.chain_hash.write(w)?;
+		self.common_fields.temporary_channel_id.write(w)?;
+		self.common_fields.funding_satoshis.write(w)?;
+		self.push_msat.write(w)?;
+		self.common_fields.dust_limit_satoshis.write(w)?;
+		self.common_fields.max_htlc_value_in_flight_msat.write(w)?;
+		self.channel_reserve_satoshis.write(w)?;
+		self.common_fields.htlc_minimum_msat.write(w)?;
+		self.common_fields.commitment_feerate_sat_per_1000_weight.write(w)?;
+		self.common_fields.to_self_delay.write(w)?;
+		self.common_fields.max_accepted_htlcs.write(w)?;
+		self.common_fields.funding_pubkey.write(w)?;
+		self.common_fields.revocation_basepoint.write(w)?;
+		self.common_fields.payment_basepoint.write(w)?;
+		self.common_fields.delayed_payment_basepoint.write(w)?;
+		self.common_fields.htlc_basepoint.write(w)?;
+		self.common_fields.first_per_commitment_point.write(w)?;
+		self.common_fields.channel_flags.write(w)?;
+		encode_tlv_stream!(w, {
+			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
+			(1, self.common_fields.channel_type, option),
+		});
+		Ok(())
+	}
+}
 
-impl_writeable_msg!(OpenChannelV2, {
-	chain_hash,
-	temporary_channel_id,
-	funding_feerate_sat_per_1000_weight,
-	commitment_feerate_sat_per_1000_weight,
-	funding_satoshis,
-	dust_limit_satoshis,
-	max_htlc_value_in_flight_msat,
-	htlc_minimum_msat,
-	to_self_delay,
-	max_accepted_htlcs,
-	locktime,
-	funding_pubkey,
-	revocation_basepoint,
-	payment_basepoint,
-	delayed_payment_basepoint,
-	htlc_basepoint,
-	first_per_commitment_point,
-	second_per_commitment_point,
-	channel_flags,
-}, {
-	(0, shutdown_scriptpubkey, option),
-	(1, channel_type, option),
-	(2, require_confirmed_inputs, option),
-});
+impl Readable for OpenChannel {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: ChainHash = Readable::read(r)?;
+		let temporary_channel_id: ChannelId = Readable::read(r)?;
+		let funding_satoshis: u64 = Readable::read(r)?;
+		let push_msat: u64 = Readable::read(r)?;
+		let dust_limit_satoshis: u64 = Readable::read(r)?;
+		let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
+		let channel_reserve_satoshis: u64 = Readable::read(r)?;
+		let htlc_minimum_msat: u64 = Readable::read(r)?;
+		let commitment_feerate_sat_per_1000_weight: u32 = Readable::read(r)?;
+		let to_self_delay: u16 = Readable::read(r)?;
+		let max_accepted_htlcs: u16 = Readable::read(r)?;
+		let funding_pubkey: PublicKey = Readable::read(r)?;
+		let revocation_basepoint: PublicKey = Readable::read(r)?;
+		let payment_basepoint: PublicKey = Readable::read(r)?;
+		let delayed_payment_basepoint: PublicKey = Readable::read(r)?;
+		let htlc_basepoint: PublicKey = Readable::read(r)?;
+		let first_per_commitment_point: PublicKey = Readable::read(r)?;
+		let channel_flags: u8 = Readable::read(r)?;
+
+		let mut shutdown_scriptpubkey: Option<ScriptBuf> = None;
+		let mut channel_type: Option<ChannelTypeFeatures> = None;
+		decode_tlv_stream!(r, {
+			(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))),
+			(1, channel_type, option),
+		});
+		Ok(OpenChannel {
+			common_fields: CommonOpenChannelFields {
+				chain_hash,
+				temporary_channel_id,
+				funding_satoshis,
+				dust_limit_satoshis,
+				max_htlc_value_in_flight_msat,
+				htlc_minimum_msat,
+				commitment_feerate_sat_per_1000_weight,
+				to_self_delay,
+				max_accepted_htlcs,
+				funding_pubkey,
+				revocation_basepoint,
+				payment_basepoint,
+				delayed_payment_basepoint,
+				htlc_basepoint,
+				first_per_commitment_point,
+				channel_flags,
+				shutdown_scriptpubkey,
+				channel_type,
+			},
+			push_msat,
+			channel_reserve_satoshis,
+		})
+	}
+}
+
+impl Writeable for OpenChannelV2 {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.common_fields.chain_hash.write(w)?;
+		self.common_fields.temporary_channel_id.write(w)?;
+		self.funding_feerate_sat_per_1000_weight.write(w)?;
+		self.common_fields.commitment_feerate_sat_per_1000_weight.write(w)?;
+		self.common_fields.funding_satoshis.write(w)?;
+		self.common_fields.dust_limit_satoshis.write(w)?;
+		self.common_fields.max_htlc_value_in_flight_msat.write(w)?;
+		self.common_fields.htlc_minimum_msat.write(w)?;
+		self.common_fields.to_self_delay.write(w)?;
+		self.common_fields.max_accepted_htlcs.write(w)?;
+		self.locktime.write(w)?;
+		self.common_fields.funding_pubkey.write(w)?;
+		self.common_fields.revocation_basepoint.write(w)?;
+		self.common_fields.payment_basepoint.write(w)?;
+		self.common_fields.delayed_payment_basepoint.write(w)?;
+		self.common_fields.htlc_basepoint.write(w)?;
+		self.common_fields.first_per_commitment_point.write(w)?;
+		self.second_per_commitment_point.write(w)?;
+		self.common_fields.channel_flags.write(w)?;
+		encode_tlv_stream!(w, {
+			(0, self.common_fields.shutdown_scriptpubkey.as_ref().map(|s| WithoutLength(s)), option), // Don't encode length twice.
+			(1, self.common_fields.channel_type, option),
+			(2, self.require_confirmed_inputs, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for OpenChannelV2 {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let chain_hash: ChainHash = Readable::read(r)?;
+		let temporary_channel_id: ChannelId = Readable::read(r)?;
+		let funding_feerate_sat_per_1000_weight: u32 = Readable::read(r)?;
+		let commitment_feerate_sat_per_1000_weight: u32 = Readable::read(r)?;
+		let funding_satoshis: u64 = Readable::read(r)?;
+		let dust_limit_satoshis: u64 = Readable::read(r)?;
+		let max_htlc_value_in_flight_msat: u64 = Readable::read(r)?;
+		let htlc_minimum_msat: u64 = Readable::read(r)?;
+		let to_self_delay: u16 = Readable::read(r)?;
+		let max_accepted_htlcs: u16 = Readable::read(r)?;
+		let locktime: u32 = Readable::read(r)?;
+		let funding_pubkey: PublicKey = Readable::read(r)?;
+		let revocation_basepoint: PublicKey = Readable::read(r)?;
+		let payment_basepoint: PublicKey = Readable::read(r)?;
+		let delayed_payment_basepoint: PublicKey = Readable::read(r)?;
+		let htlc_basepoint: PublicKey = Readable::read(r)?;
+		let first_per_commitment_point: PublicKey = Readable::read(r)?;
+		let second_per_commitment_point: PublicKey = Readable::read(r)?;
+		let channel_flags: u8 = Readable::read(r)?;
+
+		let mut shutdown_scriptpubkey: Option<ScriptBuf> = None;
+		let mut channel_type: Option<ChannelTypeFeatures> = None;
+		let mut require_confirmed_inputs: Option<()> = None;
+		decode_tlv_stream!(r, {
+			(0, shutdown_scriptpubkey, (option, encoding: (ScriptBuf, WithoutLength))),
+			(1, channel_type, option),
+			(2, require_confirmed_inputs, option),
+		});
+		Ok(OpenChannelV2 {
+			common_fields: CommonOpenChannelFields {
+				chain_hash,
+				temporary_channel_id,
+				funding_satoshis,
+				dust_limit_satoshis,
+				max_htlc_value_in_flight_msat,
+				htlc_minimum_msat,
+				commitment_feerate_sat_per_1000_weight,
+				to_self_delay,
+				max_accepted_htlcs,
+				funding_pubkey,
+				revocation_basepoint,
+				payment_basepoint,
+				delayed_payment_basepoint,
+				htlc_basepoint,
+				first_per_commitment_point,
+				channel_flags,
+				shutdown_scriptpubkey,
+				channel_type,
+			},
+			funding_feerate_sat_per_1000_weight,
+			locktime,
+			second_per_commitment_point,
+			require_confirmed_inputs,
+		})
+	}
+}
 
 #[cfg(not(taproot))]
 impl_writeable_msg!(RevokeAndACK, {
@@ -2259,7 +2457,8 @@ impl Readable for OnionMessage {
 		let blinding_point: PublicKey = Readable::read(r)?;
 		let len: u16 = Readable::read(r)?;
 		let mut packet_reader = FixedLengthReader::new(r, len as u64);
-		let onion_routing_packet: onion_message::Packet = <onion_message::Packet as LengthReadable>::read(&mut packet_reader)?;
+		let onion_routing_packet: onion_message::packet::Packet =
+			<onion_message::packet::Packet as LengthReadable>::read(&mut packet_reader)?;
 		Ok(Self {
 			blinding_point,
 			onion_routing_packet,
@@ -2303,8 +2502,8 @@ impl Writeable for OutboundOnionPayload {
 				});
 			},
 			Self::Receive {
-				ref payment_data, ref payment_metadata, ref keysend_preimage, amt_msat,
-				outgoing_cltv_value, ref custom_tlvs,
+				ref payment_data, ref payment_metadata, ref keysend_preimage, sender_intended_htlc_amt_msat,
+				cltv_expiry_height, ref custom_tlvs,
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
@@ -2313,8 +2512,8 @@ impl Writeable for OutboundOnionPayload {
 				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
 				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(*amt_msat), required),
-					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
+					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(8, payment_data, option),
 					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option)
 				}, custom_tlvs.iter());
@@ -2326,12 +2525,12 @@ impl Writeable for OutboundOnionPayload {
 				});
 			},
 			Self::BlindedReceive {
-				amt_msat, total_msat, outgoing_cltv_value, encrypted_tlvs,
+				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
 				intro_node_blinding_point,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(*amt_msat), required),
-					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
+					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(10, *encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option),
 					(18, HighZeroBytesDroppedBigSize(*total_msat), required)
@@ -2342,8 +2541,10 @@ impl Writeable for OutboundOnionPayload {
 	}
 }
 
-impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: NodeSigner {
-	fn read<R: Read>(r: &mut R, node_signer: &NS) -> Result<Self, DecodeError> {
+impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload where NS::Target: NodeSigner {
+	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, &NS)) -> Result<Self, DecodeError> {
+		let (update_add_blinding_point, node_signer) = args;
+
 		let mut amt = None;
 		let mut cltv_value = None;
 		let mut short_id: Option<u64> = None;
@@ -2377,9 +2578,14 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 		});
 
 		if amt.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
+		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
+			return Err(DecodeError::InvalidValue)
+		}
 
-		if let Some(blinding_point) = intro_node_blinding_point {
-			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
+		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
+			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() ||
+				keysend_preimage.is_some()
+			{
 				return Err(DecodeError::InvalidValue)
 			}
 			let enc_tlvs = encrypted_tlvs_opt.ok_or(DecodeError::InvalidValue)?.0;
@@ -2400,7 +2606,7 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 						payment_relay,
 						payment_constraints,
 						features,
-						intro_node_blinding_point: blinding_point,
+						intro_node_blinding_point,
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
@@ -2408,12 +2614,12 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 				})} => {
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
-						amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
+						sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
 						total_msat: total_msat.ok_or(DecodeError::InvalidValue)?,
-						outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+						cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
 						payment_secret,
 						payment_constraints,
-						intro_node_blinding_point: blinding_point,
+						intro_node_blinding_point,
 					})
 				},
 			}
@@ -2439,8 +2645,8 @@ impl<NS: Deref> ReadableArgs<&NS> for InboundOnionPayload where NS::Target: Node
 				payment_data,
 				payment_metadata: payment_metadata.map(|w| w.0),
 				keysend_preimage,
-				amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
-				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
+				sender_intended_htlc_amt_msat: amt.ok_or(DecodeError::InvalidValue)?,
+				cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
 				custom_tlvs,
 			})
 		}
@@ -2860,7 +3066,7 @@ mod tests {
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket};
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{Writeable, Readable, ReadableArgs, Hostname, TransactionU16LenLimited};
@@ -3212,26 +3418,28 @@ mod tests {
 		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let open_channel = msgs::OpenChannel {
-			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
-			temporary_channel_id: ChannelId::from_bytes([2; 32]),
-			funding_satoshis: 1311768467284833366,
+			common_fields: CommonOpenChannelFields {
+				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
+				temporary_channel_id: ChannelId::from_bytes([2; 32]),
+				funding_satoshis: 1311768467284833366,
+				dust_limit_satoshis: 3608586615801332854,
+				max_htlc_value_in_flight_msat: 8517154655701053848,
+				htlc_minimum_msat: 2316138423780173,
+				commitment_feerate_sat_per_1000_weight: 821716,
+				to_self_delay: 49340,
+				max_accepted_htlcs: 49340,
+				funding_pubkey: pubkey_1,
+				revocation_basepoint: pubkey_2,
+				payment_basepoint: pubkey_3,
+				delayed_payment_basepoint: pubkey_4,
+				htlc_basepoint: pubkey_5,
+				first_per_commitment_point: pubkey_6,
+				channel_flags: if random_bit { 1 << 5 } else { 0 },
+				shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+				channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
+			},
 			push_msat: 2536655962884945560,
-			dust_limit_satoshis: 3608586615801332854,
-			max_htlc_value_in_flight_msat: 8517154655701053848,
 			channel_reserve_satoshis: 8665828695742877976,
-			htlc_minimum_msat: 2316138423780173,
-			feerate_per_kw: 821716,
-			to_self_delay: 49340,
-			max_accepted_htlcs: 49340,
-			funding_pubkey: pubkey_1,
-			revocation_basepoint: pubkey_2,
-			payment_point: pubkey_3,
-			delayed_payment_basepoint: pubkey_4,
-			htlc_basepoint: pubkey_5,
-			first_per_commitment_point: pubkey_6,
-			channel_flags: if random_bit { 1 << 5 } else { 0 },
-			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
-			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
 		};
 		let encoded_value = open_channel.encode();
 		let mut target_value = Vec::new();
@@ -3273,27 +3481,29 @@ mod tests {
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
 		let open_channelv2 = msgs::OpenChannelV2 {
-			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
-			temporary_channel_id: ChannelId::from_bytes([2; 32]),
+			common_fields: CommonOpenChannelFields {
+				chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
+				temporary_channel_id: ChannelId::from_bytes([2; 32]),
+				commitment_feerate_sat_per_1000_weight: 821716,
+				funding_satoshis: 1311768467284833366,
+				dust_limit_satoshis: 3608586615801332854,
+				max_htlc_value_in_flight_msat: 8517154655701053848,
+				htlc_minimum_msat: 2316138423780173,
+				to_self_delay: 49340,
+				max_accepted_htlcs: 49340,
+				funding_pubkey: pubkey_1,
+				revocation_basepoint: pubkey_2,
+				payment_basepoint: pubkey_3,
+				delayed_payment_basepoint: pubkey_4,
+				htlc_basepoint: pubkey_5,
+				first_per_commitment_point: pubkey_6,
+				channel_flags: if random_bit { 1 << 5 } else { 0 },
+				shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+				channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
+			},
 			funding_feerate_sat_per_1000_weight: 821716,
-			commitment_feerate_sat_per_1000_weight: 821716,
-			funding_satoshis: 1311768467284833366,
-			dust_limit_satoshis: 3608586615801332854,
-			max_htlc_value_in_flight_msat: 8517154655701053848,
-			htlc_minimum_msat: 2316138423780173,
-			to_self_delay: 49340,
-			max_accepted_htlcs: 49340,
 			locktime: 305419896,
-			funding_pubkey: pubkey_1,
-			revocation_basepoint: pubkey_2,
-			payment_basepoint: pubkey_3,
-			delayed_payment_basepoint: pubkey_4,
-			htlc_basepoint: pubkey_5,
-			first_per_commitment_point: pubkey_6,
 			second_per_commitment_point: pubkey_7,
-			channel_flags: if random_bit { 1 << 5 } else { 0 },
-			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
-			channel_type: if incl_chan_type { Some(ChannelTypeFeatures::empty()) } else { None },
 			require_confirmed_inputs: if require_confirmed_inputs { Some(()) } else { None },
 		};
 		let encoded_value = open_channelv2.encode();
@@ -3323,7 +3533,6 @@ mod tests {
 			target_value.append(&mut <Vec<u8>>::from_hex("00").unwrap());
 		}
 		if shutdown {
-			target_value.append(&mut <Vec<u8>>::from_hex("001b").unwrap()); // Type 0 + Length 27
 			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
 		}
 		if incl_chan_type {
@@ -3364,22 +3573,24 @@ mod tests {
 		let (_, pubkey_5) = get_keys_from!("0505050505050505050505050505050505050505050505050505050505050505", secp_ctx);
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let accept_channel = msgs::AcceptChannel {
-			temporary_channel_id: ChannelId::from_bytes([2; 32]),
-			dust_limit_satoshis: 1311768467284833366,
-			max_htlc_value_in_flight_msat: 2536655962884945560,
+			common_fields: CommonAcceptChannelFields {
+				temporary_channel_id: ChannelId::from_bytes([2; 32]),
+				dust_limit_satoshis: 1311768467284833366,
+				max_htlc_value_in_flight_msat: 2536655962884945560,
+				htlc_minimum_msat: 2316138423780173,
+				minimum_depth: 821716,
+				to_self_delay: 49340,
+				max_accepted_htlcs: 49340,
+				funding_pubkey: pubkey_1,
+				revocation_basepoint: pubkey_2,
+				payment_basepoint: pubkey_3,
+				delayed_payment_basepoint: pubkey_4,
+				htlc_basepoint: pubkey_5,
+				first_per_commitment_point: pubkey_6,
+				shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+				channel_type: None,
+			},
 			channel_reserve_satoshis: 3608586615801332854,
-			htlc_minimum_msat: 2316138423780173,
-			minimum_depth: 821716,
-			to_self_delay: 49340,
-			max_accepted_htlcs: 49340,
-			funding_pubkey: pubkey_1,
-			revocation_basepoint: pubkey_2,
-			payment_point: pubkey_3,
-			delayed_payment_basepoint: pubkey_4,
-			htlc_basepoint: pubkey_5,
-			first_per_commitment_point: pubkey_6,
-			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
-			channel_type: None,
 			#[cfg(taproot)]
 			next_local_nonce: None,
 		};
@@ -3407,23 +3618,25 @@ mod tests {
 		let (_, pubkey_6) = get_keys_from!("0606060606060606060606060606060606060606060606060606060606060606", secp_ctx);
 		let (_, pubkey_7) = get_keys_from!("0707070707070707070707070707070707070707070707070707070707070707", secp_ctx);
 		let accept_channelv2 = msgs::AcceptChannelV2 {
-			temporary_channel_id: ChannelId::from_bytes([2; 32]),
+			common_fields: CommonAcceptChannelFields {
+				temporary_channel_id: ChannelId::from_bytes([2; 32]),
+				dust_limit_satoshis: 1311768467284833366,
+				max_htlc_value_in_flight_msat: 2536655962884945560,
+				htlc_minimum_msat: 2316138423780173,
+				minimum_depth: 821716,
+				to_self_delay: 49340,
+				max_accepted_htlcs: 49340,
+				funding_pubkey: pubkey_1,
+				revocation_basepoint: pubkey_2,
+				payment_basepoint: pubkey_3,
+				delayed_payment_basepoint: pubkey_4,
+				htlc_basepoint: pubkey_5,
+				first_per_commitment_point: pubkey_6,
+				shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
+				channel_type: None,
+			},
 			funding_satoshis: 1311768467284833366,
-			dust_limit_satoshis: 1311768467284833366,
-			max_htlc_value_in_flight_msat: 2536655962884945560,
-			htlc_minimum_msat: 2316138423780173,
-			minimum_depth: 821716,
-			to_self_delay: 49340,
-			max_accepted_htlcs: 49340,
-			funding_pubkey: pubkey_1,
-			revocation_basepoint: pubkey_2,
-			payment_basepoint: pubkey_3,
-			delayed_payment_basepoint: pubkey_4,
-			htlc_basepoint: pubkey_5,
-			first_per_commitment_point: pubkey_6,
 			second_per_commitment_point: pubkey_7,
-			shutdown_scriptpubkey: if shutdown { Some(Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey()) } else { None },
-			channel_type: None,
 			require_confirmed_inputs: None,
 		};
 		let encoded_value = accept_channelv2.encode();
@@ -3443,7 +3656,6 @@ mod tests {
 		target_value.append(&mut <Vec<u8>>::from_hex("03f006a18d5653c4edf5391ff23a61f03ff83d237e880ee61187fa9f379a028e0a").unwrap()); // first_per_commitment_point
 		target_value.append(&mut <Vec<u8>>::from_hex("02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f").unwrap()); // second_per_commitment_point
 		if shutdown {
-			target_value.append(&mut <Vec<u8>>::from_hex("001b").unwrap()); // Type 0 + Length 27
 			target_value.append(&mut <Vec<u8>>::from_hex("001976a91479b000887626b294a914501a4cd226b58b23598388ac").unwrap());
 		}
 		assert_eq!(encoded_value, target_value);
@@ -4017,7 +4229,7 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), &&node_signer).unwrap();
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Forward {
 			short_channel_id, amt_to_forward, outgoing_cltv_value
 		} = inbound_msg {
@@ -4033,8 +4245,8 @@ mod tests {
 			payment_data: None,
 			payment_metadata: None,
 			keysend_preimage: None,
-			amt_msat: 0x0badf00d01020304,
-			outgoing_cltv_value: 0xffffffff,
+			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
+			cltv_expiry_height: 0xffffffff,
 			custom_tlvs: vec![],
 		};
 		let encoded_value = outbound_msg.encode();
@@ -4042,12 +4254,12 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), &&node_signer).unwrap();
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
-			payment_data: None, amt_msat, outgoing_cltv_value, ..
+			payment_data: None, sender_intended_htlc_amt_msat, cltv_expiry_height, ..
 		} = inbound_msg {
-			assert_eq!(amt_msat, 0x0badf00d01020304);
-			assert_eq!(outgoing_cltv_value, 0xffffffff);
+			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
+			assert_eq!(cltv_expiry_height, 0xffffffff);
 		} else { panic!(); }
 	}
 
@@ -4061,8 +4273,8 @@ mod tests {
 			}),
 			payment_metadata: None,
 			keysend_preimage: None,
-			amt_msat: 0x0badf00d01020304,
-			outgoing_cltv_value: 0xffffffff,
+			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
+			cltv_expiry_height: 0xffffffff,
 			custom_tlvs: vec![],
 		};
 		let encoded_value = outbound_msg.encode();
@@ -4070,20 +4282,20 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), &&node_signer).unwrap();
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
 			payment_data: Some(FinalOnionHopData {
 				payment_secret,
 				total_msat: 0x1badca1f
 			}),
-			amt_msat, outgoing_cltv_value,
+			sender_intended_htlc_amt_msat, cltv_expiry_height,
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs,
 		} = inbound_msg  {
 			assert_eq!(payment_secret, expected_payment_secret);
-			assert_eq!(amt_msat, 0x0badf00d01020304);
-			assert_eq!(outgoing_cltv_value, 0xffffffff);
+			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
+			assert_eq!(cltv_expiry_height, 0xffffffff);
 			assert_eq!(custom_tlvs, vec![]);
 		} else { panic!(); }
 	}
@@ -4101,12 +4313,12 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs: bad_type_range_tlvs,
-			amt_msat: 0x0badf00d01020304,
-			outgoing_cltv_value: 0xffffffff,
+			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
+			cltv_expiry_height: 0xffffffff,
 		};
 		let encoded_value = msg.encode();
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		assert!(msgs::InboundOnionPayload::read(&mut Cursor::new(&encoded_value[..]), &&node_signer).is_err());
+		assert!(msgs::InboundOnionPayload::read(&mut Cursor::new(&encoded_value[..]), (None, &&node_signer)).is_err());
 		let good_type_range_tlvs = vec![
 			((1 << 16) - 3, vec![42]),
 			((1 << 16) - 1, vec![42; 32]),
@@ -4115,7 +4327,7 @@ mod tests {
 			*custom_tlvs = good_type_range_tlvs.clone();
 		}
 		let encoded_value = msg.encode();
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&encoded_value[..]), &&node_signer).unwrap();
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&encoded_value[..]), (None, &&node_signer)).unwrap();
 		match inbound_msg {
 			msgs::InboundOnionPayload::Receive { custom_tlvs, .. } => assert!(custom_tlvs.is_empty()),
 			_ => panic!(),
@@ -4133,25 +4345,25 @@ mod tests {
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs: expected_custom_tlvs.clone(),
-			amt_msat: 0x0badf00d01020304,
-			outgoing_cltv_value: 0xffffffff,
+			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
+			cltv_expiry_height: 0xffffffff,
 		};
 		let encoded_value = msg.encode();
 		let target_value = <Vec<u8>>::from_hex("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
 		assert_eq!(encoded_value, target_value);
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg: msgs::InboundOnionPayload = ReadableArgs::read(&mut Cursor::new(&target_value[..]), &&node_signer).unwrap();
+		let inbound_msg: msgs::InboundOnionPayload = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
 			payment_data: None,
 			payment_metadata: None,
 			keysend_preimage: None,
 			custom_tlvs,
-			amt_msat,
-			outgoing_cltv_value,
+			sender_intended_htlc_amt_msat,
+			cltv_expiry_height: outgoing_cltv_value,
 			..
 		} = inbound_msg {
 			assert_eq!(custom_tlvs, expected_custom_tlvs);
-			assert_eq!(amt_msat, 0x0badf00d01020304);
+			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
 		} else { panic!(); }
 	}
@@ -4305,8 +4517,8 @@ mod tests {
 		let mut rd = Cursor::new(&big_payload[..]);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		<msgs::InboundOnionPayload as ReadableArgs<&&test_utils::TestKeysInterface>>
-			::read(&mut rd, &&node_signer).unwrap();
+		<msgs::InboundOnionPayload as ReadableArgs<(Option<PublicKey>, &&test_utils::TestKeysInterface)>>
+			::read(&mut rd, (None, &&node_signer)).unwrap();
 	}
 	// see above test, needs to be a separate method for use of the serialization macros.
 	fn encode_big_payload() -> Result<Vec<u8>, io::Error> {

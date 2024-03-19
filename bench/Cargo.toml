@@ -2,7 +2,7 @@
 name = "lightning-bench"
 version = "0.0.1"
 authors = ["Matt Corallo"]
-edition = "2018"
+edition = "2021"
 
 [[bench]]
 name = "bench"

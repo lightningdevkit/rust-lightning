@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 
 members = [
     "lightning",
@@ -7,12 +8,13 @@ members = [
     "lightning-net-tokio",
     "lightning-persister",
     "lightning-background-processor",
-    "lightning-rapid-gossip-sync"
+    "lightning-rapid-gossip-sync",
+    "lightning-custom-message",
+    "lightning-transaction-sync",
+    "possiblyrandom",
 ]
 
 exclude = [
-    "lightning-custom-message",
-    "lightning-transaction-sync",
     "no-std-check",
     "msrv-no-dev-deps-check",
     "bench",
@@ -37,3 +39,6 @@ lto = "off"
 opt-level = 3
 lto = true
 panic = "abort"
+
+[patch.crates-io.possiblyrandom]
+path = "possiblyrandom"

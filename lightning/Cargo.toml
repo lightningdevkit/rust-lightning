@@ -1,6 +1,6 @@
 [package]
 name = "lightning"
-version = "0.0.118"
+version = "0.0.121"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
@@ -9,7 +9,7 @@ A Bitcoin Lightning library in Rust.
 Does most of the hard work, without implying a specific runtime, requiring clients implement basic network logic, chain interactions and disk storage.
 Still missing tons of error-handling. See GitHub issues for suggested projects if you want to contribute. Don't have to bother telling you not to use this for anything serious, because you'd have to build a client around it to even try.
 """
-edition = "2018"
+edition = "2021"
 
 [package.metadata.docs.rs]
 features = ["std"]
@@ -31,7 +31,7 @@ unsafe_revoked_tx_signing = []
 # Override signing to not include randomness when generating signatures for test vectors.
 _test_vectors = []
 
-no-std = ["hashbrown", "bitcoin/no-std", "core2/alloc"]
+no-std = ["hashbrown", "possiblyrandom", "bitcoin/no-std", "core2/alloc", "libm"]
 std = ["bitcoin/std"]
 
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
@@ -42,12 +42,14 @@ default = ["std", "grind_signatures"]
 [dependencies]
 bitcoin = { version = "0.30.2", default-features = false, features = ["secp-recovery"] }
 
-hashbrown = { version = "0.8", optional = true }
+hashbrown = { version = "0.13", optional = true, default-features = false }
+possiblyrandom = { version = "0.1", optional = true, default-features = false }
 hex = { package = "hex-conservative", version = "0.1.1", default-features = false }
 regex = { version = "1.5.6", optional = true }
 backtrace = { version = "0.3", optional = true }
 
 core2 = { version = "0.3.0", optional = true, default-features = false }
+libm = { version = "0.2", optional = true, default-features = false }
 
 [dev-dependencies]
 regex = "1.5.6"

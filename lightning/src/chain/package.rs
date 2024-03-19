@@ -28,8 +28,9 @@ use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
+use crate::chain::transaction::MaybeSignedTransaction;
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
-use crate::chain::onchaintx::{ExternalHTLCClaim, OnchainTxHandler};
+use crate::chain::onchaintx::{FeerateStrategy, ExternalHTLCClaim, OnchainTxHandler};
 use crate::util::logger::Logger;
 use crate::util::ser::{Readable, Writer, Writeable, RequiredWrapper};
 
@@ -633,14 +634,14 @@ impl PackageSolvingData {
 		}
 		true
 	}
-	fn get_finalized_tx<Signer: WriteableEcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<Transaction> {
+	fn get_maybe_finalized_tx<Signer: WriteableEcdsaChannelSigner>(&self, outpoint: &BitcoinOutPoint, onchain_handler: &mut OnchainTxHandler<Signer>) -> Option<MaybeSignedTransaction> {
 		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
 				debug_assert!(!outp.channel_type_features.supports_anchors_zero_fee_htlc_tx());
-				return onchain_handler.get_fully_signed_htlc_tx(outpoint, &outp.preimage);
+				onchain_handler.get_maybe_signed_htlc_tx(outpoint, &outp.preimage)
 			}
 			PackageSolvingData::HolderFundingOutput(ref outp) => {
-				return Some(onchain_handler.get_fully_signed_holder_tx(&outp.funding_redeemscript));
+				Some(onchain_handler.get_maybe_signed_holder_tx(&outp.funding_redeemscript))
 			}
 			_ => { panic!("API Error!"); }
 		}
@@ -908,10 +909,10 @@ impl PackageTemplate {
 		}
 		htlcs
 	}
-	pub(crate) fn finalize_malleable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
+	pub(crate) fn maybe_finalize_malleable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
 		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64,
 		destination_script: ScriptBuf, logger: &L
-	) -> Option<Transaction> {
+	) -> Option<MaybeSignedTransaction> {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
 			version: 2,
@@ -927,19 +928,17 @@ impl PackageTemplate {
 		}
 		for (i, (outpoint, out)) in self.inputs.iter().enumerate() {
 			log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-			if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { return None; }
+			if !out.finalize_input(&mut bumped_tx, i, onchain_handler) { continue; }
 		}
-		log_debug!(logger, "Finalized transaction {} ready to broadcast", bumped_tx.txid());
-		Some(bumped_tx)
+		Some(MaybeSignedTransaction(bumped_tx))
 	}
-	pub(crate) fn finalize_untractable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
+	pub(crate) fn maybe_finalize_untractable_package<L: Logger, Signer: WriteableEcdsaChannelSigner>(
 		&self, onchain_handler: &mut OnchainTxHandler<Signer>, logger: &L,
-	) -> Option<Transaction> {
+	) -> Option<MaybeSignedTransaction> {
 		debug_assert!(!self.is_malleable());
 		if let Some((outpoint, outp)) = self.inputs.first() {
-			if let Some(final_tx) = outp.get_finalized_tx(outpoint, onchain_handler) {
+			if let Some(final_tx) = outp.get_maybe_finalized_tx(outpoint, onchain_handler) {
 				log_debug!(logger, "Adding claiming input for outpoint {}:{}", outpoint.txid, outpoint.vout);
-				log_debug!(logger, "Finalized transaction {} ready to broadcast", final_tx.txid());
 				return Some(final_tx);
 			}
 			return None;
@@ -963,7 +962,7 @@ impl PackageTemplate {
 	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
 	/// value.
 	pub(crate) fn compute_package_output<F: Deref, L: Logger>(
-		&self, predicted_weight: u64, dust_limit_sats: u64, force_feerate_bump: bool,
+		&self, predicted_weight: u64, dust_limit_sats: u64, feerate_strategy: &FeerateStrategy,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Option<(u64, u64)>
 	where F::Target: FeeEstimator,
@@ -974,7 +973,7 @@ impl PackageTemplate {
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
 		if self.feerate_previous != 0 {
 			if let Some((new_fee, feerate)) = feerate_bump(
-				predicted_weight, input_amounts, self.feerate_previous, force_feerate_bump,
+				predicted_weight, input_amounts, self.feerate_previous, feerate_strategy,
 				fee_estimator, logger,
 			) {
 				return Some((cmp::max(input_amounts as i64 - new_fee as i64, dust_limit_sats as i64) as u64, feerate));
@@ -987,32 +986,32 @@ impl PackageTemplate {
 		None
 	}
 
-	/// Computes a feerate based on the given confirmation target. If a previous feerate was used,
-	/// the new feerate is below it, and `force_feerate_bump` is set, we'll use a 25% increase of
-	/// the previous feerate instead of the new feerate.
+	/// Computes a feerate based on the given confirmation target and feerate strategy.
 	pub(crate) fn compute_package_feerate<F: Deref>(
 		&self, fee_estimator: &LowerBoundedFeeEstimator<F>, conf_target: ConfirmationTarget,
-		force_feerate_bump: bool,
+		feerate_strategy: &FeerateStrategy,
 	) -> u32 where F::Target: FeeEstimator {
 		let feerate_estimate = fee_estimator.bounded_sat_per_1000_weight(conf_target);
 		if self.feerate_previous != 0 {
-			// Use the new fee estimate if it's higher than the one previously used.
-			if feerate_estimate as u64 > self.feerate_previous {
-				feerate_estimate
-			} else if !force_feerate_bump {
-				self.feerate_previous.try_into().unwrap_or(u32::max_value())
-			} else {
-				// Our fee estimate has decreased, but our transaction remains unconfirmed after
-				// using our previous fee estimate. This may point to an unreliable fee estimator,
-				// so we choose to bump our previous feerate by 25%, making sure we don't use a
-				// lower feerate or overpay by a large margin by limiting it to 5x the new fee
-				// estimate.
-				let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::max_value());
-				let mut new_feerate = previous_feerate.saturating_add(previous_feerate / 4);
-				if new_feerate > feerate_estimate * 5 {
-					new_feerate = cmp::max(feerate_estimate * 5, previous_feerate);
-				}
-				new_feerate
+			let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::max_value());
+			match feerate_strategy {
+				FeerateStrategy::RetryPrevious => previous_feerate,
+				FeerateStrategy::HighestOfPreviousOrNew => cmp::max(previous_feerate, feerate_estimate),
+				FeerateStrategy::ForceBump => if feerate_estimate > previous_feerate {
+					feerate_estimate
+				} else {
+					// Our fee estimate has decreased, but our transaction remains unconfirmed after
+					// using our previous fee estimate. This may point to an unreliable fee estimator,
+					// so we choose to bump our previous feerate by 25%, making sure we don't use a
+					// lower feerate or overpay by a large margin by limiting it to 5x the new fee
+					// estimate.
+					let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::max_value());
+					let mut new_feerate = previous_feerate.saturating_add(previous_feerate / 4);
+					if new_feerate > feerate_estimate * 5 {
+						new_feerate = cmp::max(feerate_estimate * 5, previous_feerate);
+					}
+					new_feerate
+				},
 			}
 		} else {
 			feerate_estimate
@@ -1128,12 +1127,12 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(input_amounts: u64, predi
 
 /// Attempt to propose a bumping fee for a transaction from its spent output's values and predicted
 /// weight. If feerates proposed by the fee-estimator have been increasing since last fee-bumping
-/// attempt, use them. If `force_feerate_bump` is set, we bump the feerate by 25% of the previous
-/// feerate, or just use the previous feerate otherwise. If a feerate bump did happen, we also
-/// verify that those bumping heuristics respect BIP125 rules 3) and 4) and if required adjust the
-/// new fee to meet the RBF policy requirement.
+/// attempt, use them. If we need to force a feerate bump, we manually bump the feerate by 25% of
+/// the previous feerate. If a feerate bump did happen, we also verify that those bumping heuristics
+/// respect BIP125 rules 3) and 4) and if required adjust the new fee to meet the RBF policy
+/// requirement.
 fn feerate_bump<F: Deref, L: Logger>(
-	predicted_weight: u64, input_amounts: u64, previous_feerate: u64, force_feerate_bump: bool,
+	predicted_weight: u64, input_amounts: u64, previous_feerate: u64, feerate_strategy: &FeerateStrategy,
 	fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 ) -> Option<(u64, u64)>
 where
@@ -1141,20 +1140,29 @@ where
 {
 	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
 	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
-		if new_feerate > previous_feerate {
-			(new_fee, new_feerate)
-		} else if !force_feerate_bump {
-			let previous_fee = previous_feerate * predicted_weight / 1000;
-			(previous_fee, previous_feerate)
-		} else {
-			// ...else just increase the previous feerate by 25% (because that's a nice number)
-			let bumped_feerate = previous_feerate + (previous_feerate / 4);
-			let bumped_fee = bumped_feerate * predicted_weight / 1000;
-			if input_amounts <= bumped_fee {
-				log_warn!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
-				return None;
-			}
-			(bumped_fee, bumped_feerate)
+		match feerate_strategy {
+			FeerateStrategy::RetryPrevious => {
+				let previous_fee = previous_feerate * predicted_weight / 1000;
+				(previous_fee, previous_feerate)
+			},
+			FeerateStrategy::HighestOfPreviousOrNew => if new_feerate > previous_feerate {
+				(new_fee, new_feerate)
+			} else {
+				let previous_fee = previous_feerate * predicted_weight / 1000;
+				(previous_fee, previous_feerate)
+			},
+			FeerateStrategy::ForceBump => if new_feerate > previous_feerate {
+				(new_fee, new_feerate)
+			} else {
+				// ...else just increase the previous feerate by 25% (because that's a nice number)
+				let bumped_feerate = previous_feerate + (previous_feerate / 4);
+				let bumped_fee = bumped_feerate * predicted_weight / 1000;
+				if input_amounts <= bumped_fee {
+					log_warn!(logger, "Can't 25% bump new claiming tx, amount {} is too small", input_amounts);
+					return None;
+				}
+				(bumped_fee, bumped_feerate)
+			},
 		}
 	} else {
 		log_warn!(logger, "Can't new-estimation bump new claiming tx, amount {} is too small", input_amounts);

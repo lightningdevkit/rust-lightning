@@ -7,10 +7,9 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::chain::transaction::OutPoint;
+use crate::ln::ChannelId;
 use crate::sign::SpendableOutputDescriptor;
 
-use bitcoin::hash_types::Txid;
 use bitcoin::blockdata::transaction::Transaction;
 
 use crate::routing::router::Route;
@@ -38,27 +37,17 @@ macro_rules! log_bytes {
 	}
 }
 
-pub(crate) struct DebugFundingChannelId<'a>(pub &'a Txid, pub u16);
-impl<'a> core::fmt::Display for DebugFundingChannelId<'a> {
+pub(crate) struct DebugFundingInfo<'a>(pub &'a ChannelId);
+impl<'a> core::fmt::Display for DebugFundingInfo<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		(OutPoint { txid: self.0.clone(), index: self.1 }).to_channel_id().fmt(f)
-	}
-}
-macro_rules! log_funding_channel_id {
-	($funding_txid: expr, $funding_txo: expr) => {
-		$crate::util::macro_logger::DebugFundingChannelId(&$funding_txid, $funding_txo)
-	}
-}
-
-pub(crate) struct DebugFundingInfo<'a, T: 'a>(pub &'a (OutPoint, T));
-impl<'a, T> core::fmt::Display for DebugFundingInfo<'a, T> {
-	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
-		(self.0).0.to_channel_id().fmt(f)
+		self.0.fmt(f)
 	}
 }
 macro_rules! log_funding_info {
 	($key_storage: expr) => {
-		$crate::util::macro_logger::DebugFundingInfo(&$key_storage.get_funding_txo())
+		$crate::util::macro_logger::DebugFundingInfo(
+			&$key_storage.channel_id()
+		)
 	}
 }
 

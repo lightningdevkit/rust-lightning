@@ -4,7 +4,7 @@ use crate::{Bolt11Invoice, CreationError, Currency, InvoiceBuilder, SignOrCreati
 
 use crate::{prelude::*, Description, Bolt11InvoiceDescription, Sha256};
 use bech32::ToBase32;
-use bitcoin_hashes::Hash;
+use bitcoin::hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
@@ -16,6 +16,7 @@ use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop, Router};
 use lightning::util::logger::{Logger, Record};
 use secp256k1::PublicKey;
+use alloc::collections::{btree_map, BTreeMap};
 use core::ops::Deref;
 use core::time::Duration;
 use core::iter::Iterator;
@@ -603,7 +604,7 @@ fn sort_and_filter_channels<L: Deref>(
 where
 	L::Target: Logger,
 {
-	let mut filtered_channels: HashMap<PublicKey, ChannelDetails> = HashMap::new();
+	let mut filtered_channels: BTreeMap<PublicKey, ChannelDetails> = BTreeMap::new();
 	let min_inbound_capacity = min_inbound_capacity_msat.unwrap_or(0);
 	let mut min_capacity_channel_exists = false;
 	let mut online_channel_exists = false;
@@ -664,7 +665,7 @@ where
 		}
 
 		match filtered_channels.entry(channel.counterparty.node_id) {
-			hash_map::Entry::Occupied(mut entry) => {
+			btree_map::Entry::Occupied(mut entry) => {
 				let current_max_capacity = entry.get().inbound_capacity_msat;
 				// If this channel is public and the previous channel is not, ensure we replace the
 				// previous channel to avoid announcing non-public channels.
@@ -697,7 +698,7 @@ where
 						channel.inbound_capacity_msat);
 				}
 			}
-			hash_map::Entry::Vacant(entry) => {
+			btree_map::Entry::Vacant(entry) => {
 				entry.insert(channel);
 			}
 		}
@@ -816,14 +817,15 @@ impl<'a, 'b, L: Deref> WithChannelDetails<'a, 'b, L> where L::Target: Logger {
 
 #[cfg(test)]
 mod test {
-	use core::cell::RefCell;
 	use core::time::Duration;
 	use crate::{Currency, Description, Bolt11InvoiceDescription, SignOrCreationError, CreationError};
-	use bitcoin_hashes::{Hash, sha256};
-	use bitcoin_hashes::sha256::Hash as Sha256;
+	use bitcoin::hashes::{Hash, sha256};
+	use bitcoin::hashes::sha256::Hash as Sha256;
 	use lightning::sign::PhantomKeysManager;
-	use lightning::events::{MessageSendEvent, MessageSendEventsProvider, Event, EventsProvider};
-	use lightning::ln::{PaymentPreimage, PaymentHash};
+	use lightning::events::{MessageSendEvent, MessageSendEventsProvider};
+	use lightning::ln::PaymentHash;
+	#[cfg(feature = "std")]
+	use lightning::ln::PaymentPreimage;
 	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ChannelMessageHandler;
@@ -1294,6 +1296,9 @@ mod test {
 
 	#[cfg(feature = "std")]
 	fn do_test_multi_node_receive(user_generated_pmt_hash: bool) {
+		use lightning::events::{Event, EventsProvider};
+		use core::cell::RefCell;
+
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
 		let seed_2 = [43u8; 32];

@@ -1,6 +1,5 @@
-// Prefix these with `rustdoc::` when we update our MSRV to be >= 1.52 to remove warnings.
-#![deny(broken_intra_doc_links)]
-#![deny(private_intra_doc_links)]
+#![deny(rustdoc::broken_intra_doc_links)]
+#![deny(rustdoc::private_intra_doc_links)]
 
 #![deny(missing_docs)]
 #![deny(non_upper_case_globals)]
@@ -31,7 +30,6 @@ pub mod payment;
 pub mod utils;
 
 extern crate bech32;
-extern crate bitcoin_hashes;
 #[macro_use] extern crate lightning;
 extern crate num_traits;
 extern crate secp256k1;
@@ -47,7 +45,7 @@ use std::time::SystemTime;
 use bech32::u5;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
 use bitcoin::address::{Payload, WitnessProgram, WitnessVersion};
-use bitcoin_hashes::{Hash, sha256};
+use bitcoin::hashes::{Hash, sha256};
 use lightning::ln::features::Bolt11InvoiceFeatures;
 use lightning::util::invoice::construct_invoice_preimage;
 
@@ -79,24 +77,14 @@ mod de;
 mod ser;
 mod tb;
 
+#[allow(unused_imports)]
 mod prelude {
-	#[cfg(feature = "hashbrown")]
-	extern crate hashbrown;
-
 	pub use alloc::{vec, vec::Vec, string::String};
-	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{HashMap, hash_map};
-	#[cfg(feature = "hashbrown")]
-	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 
 	pub use alloc::string::ToString;
 }
 
 use crate::prelude::*;
-
-/// Sync compat for std/no_std
-#[cfg(not(feature = "std"))]
-mod sync;
 
 /// Errors that indicate what is wrong with the invoice. They have some granularity for debug
 /// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
@@ -167,10 +155,10 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// extern crate secp256k1;
 /// extern crate lightning;
 /// extern crate lightning_invoice;
-/// extern crate bitcoin_hashes;
+/// extern crate bitcoin;
 ///
-/// use bitcoin_hashes::Hash;
-/// use bitcoin_hashes::sha256;
+/// use bitcoin::hashes::Hash;
+/// use bitcoin::hashes::sha256;
 ///
 /// use secp256k1::Secp256k1;
 /// use secp256k1::SecretKey;
@@ -528,7 +516,7 @@ impl Ord for Bolt11InvoiceSignature {
 /// The encoded route has to be <1024 5bit characters long (<=639 bytes or <=12 hops)
 ///
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct PrivateRoute(pub RouteHint);
+pub struct PrivateRoute(RouteHint);
 
 /// Tag constants as specified in BOLT11
 #[allow(missing_docs)]
@@ -555,7 +543,7 @@ impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False, tb::False, tb::F
 			amount: None,
 			si_prefix: None,
 			timestamp: None,
-			tagged_fields: Vec::new(),
+			tagged_fields: Vec::with_capacity(8),
 			error: None,
 
 			phantom_d: core::marker::PhantomData,
@@ -1360,6 +1348,15 @@ impl Bolt11Invoice {
 		self.signed_invoice.recover_payee_pub_key().expect("was checked by constructor").0
 	}
 
+	/// Recover the payee's public key if one was included in the invoice, otherwise return the
+	/// recovered public key from the signature
+	pub fn get_payee_pub_key(&self) -> PublicKey {
+		match self.payee_pub_key() {
+			Some(pk) => *pk,
+			None => self.recover_payee_pub_key()
+		}
+	}
+
 	/// Returns the Duration since the Unix epoch at which the invoice expires.
 	/// Returning None if overflow occurred.
 	pub fn expires_at(&self) -> Option<Duration> {
@@ -1757,7 +1754,7 @@ impl<'de> Deserialize<'de> for Bolt11Invoice {
 #[cfg(test)]
 mod test {
 	use bitcoin::ScriptBuf;
-	use bitcoin_hashes::sha256;
+	use bitcoin::hashes::sha256;
 	use std::str::FromStr;
 
 	#[test]
@@ -2051,7 +2048,7 @@ mod test {
 		use lightning::routing::router::RouteHintHop;
 		use secp256k1::Secp256k1;
 		use secp256k1::{SecretKey, PublicKey};
-		use std::time::{UNIX_EPOCH, Duration};
+		use std::time::Duration;
 
 		let secp_ctx = Secp256k1::new();
 
@@ -2140,7 +2137,7 @@ mod test {
 		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
 		#[cfg(feature = "std")]
 		assert_eq!(
-			invoice.timestamp().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+			invoice.timestamp().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
 			1234567
 		);
 		assert_eq!(invoice.payee_pub_key(), Some(&public_key));
