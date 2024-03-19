@@ -23,7 +23,7 @@ use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
-use crate::routing::gossip::{NetworkGraph, NodeId};
+use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
 use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
@@ -318,15 +318,21 @@ where
 	ES::Target: EntropySource,
 {
 	fn find_path(
-		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+		&self, sender: PublicKey, peers: Vec<PublicKey>, mut destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		let first_node = destination.first_node();
+		let network_graph = self.network_graph.deref().read_only();
+		destination.resolve(&network_graph);
+
+		let first_node = match destination.first_node() {
+			Some(first_node) => first_node,
+			None => return Err(()),
+		};
+
 		if peers.contains(&first_node) || sender == first_node {
 			Ok(OnionMessagePath {
 				intermediate_nodes: vec![], destination, first_node_addresses: None
 			})
 		} else {
-			let network_graph = self.network_graph.deref().read_only();
 			let node_announcement = network_graph
 				.node(&NodeId::from_pubkey(&first_node))
 				.and_then(|node_info| node_info.announcement_info.as_ref())
@@ -416,11 +422,11 @@ pub struct OnionMessagePath {
 
 impl OnionMessagePath {
 	/// Returns the first node in the path.
-	pub fn first_node(&self) -> PublicKey {
+	pub fn first_node(&self) -> Option<PublicKey> {
 		self.intermediate_nodes
 			.first()
 			.copied()
-			.unwrap_or_else(|| self.destination.first_node())
+			.or_else(|| self.destination.first_node())
 	}
 }
 
@@ -434,6 +440,22 @@ pub enum Destination {
 }
 
 impl Destination {
+	/// Attempts to resolve the [`IntroductionNode::DirectedShortChannelId`] of a
+	/// [`Destination::BlindedPath`] to a [`IntroductionNode::NodeId`], if applicable, using the
+	/// provided [`ReadOnlyNetworkGraph`].
+	pub fn resolve(&mut self, network_graph: &ReadOnlyNetworkGraph) {
+		if let Destination::BlindedPath(path) = self {
+			if let IntroductionNode::DirectedShortChannelId(..) = path.introduction_node {
+				if let Some(pubkey) = path
+					.public_introduction_node_id(network_graph)
+					.and_then(|node_id| node_id.as_pubkey().ok())
+				{
+					path.introduction_node = IntroductionNode::NodeId(pubkey);
+				}
+			}
+		}
+	}
+
 	pub(super) fn num_hops(&self) -> usize {
 		match self {
 			Destination::Node(_) => 1,
@@ -441,13 +463,13 @@ impl Destination {
 		}
 	}
 
-	fn first_node(&self) -> PublicKey {
+	fn first_node(&self) -> Option<PublicKey> {
 		match self {
-			Destination::Node(node_id) => *node_id,
+			Destination::Node(node_id) => Some(*node_id),
 			Destination::BlindedPath(BlindedPath { introduction_node, .. }) => {
 				match introduction_node {
-					IntroductionNode::NodeId(pubkey) => *pubkey,
-					IntroductionNode::DirectedShortChannelId(..) => todo!(),
+					IntroductionNode::NodeId(pubkey) => Some(*pubkey),
+					IntroductionNode::DirectedShortChannelId(..) => None,
 				}
 			},
 		}
@@ -492,6 +514,10 @@ pub enum SendError {
 	///
 	/// [`NodeSigner`]: crate::sign::NodeSigner
 	GetNodeIdFailed,
+	/// The provided [`Destination`] has a blinded path with an unresolved introduction node. An
+	/// attempt to resolve it in the [`MessageRouter`] when finding an [`OnionMessagePath`] likely
+	/// failed.
+	UnresolvedIntroductionNode,
 	/// We attempted to send to a blinded path where we are the introduction node, and failed to
 	/// advance the blinded path to make the second hop the new introduction node. Either
 	/// [`NodeSigner::ecdh`] failed, we failed to tweak the current blinding point to get the
@@ -576,7 +602,9 @@ where
 		if let Destination::BlindedPath(ref mut blinded_path) = destination {
 			let introduction_node_id = match blinded_path.introduction_node {
 				IntroductionNode::NodeId(pubkey) => pubkey,
-				IntroductionNode::DirectedShortChannelId(..) => todo!(),
+				IntroductionNode::DirectedShortChannelId(..) => {
+					return Err(SendError::UnresolvedIntroductionNode);
+				},
 			};
 			let our_node_id = node_signer.get_node_id(Recipient::Node)
 				.map_err(|()| SendError::GetNodeIdFailed)?;
@@ -597,14 +625,16 @@ where
 			Destination::BlindedPath(BlindedPath { introduction_node, blinding_point, .. }) => {
 				match introduction_node {
 					IntroductionNode::NodeId(pubkey) => (*pubkey, *blinding_point),
-					IntroductionNode::DirectedShortChannelId(..) => todo!(),
+					IntroductionNode::DirectedShortChannelId(..) => {
+						return Err(SendError::UnresolvedIntroductionNode);
+					},
 				}
 			}
 		}
 	};
 	let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-		&secp_ctx, &intermediate_nodes, destination, contents, reply_path, &blinding_secret)
-		.map_err(|e| SendError::Secp256k1(e))?;
+		&secp_ctx, &intermediate_nodes, destination, contents, reply_path, &blinding_secret
+	)?;
 
 	let prng_seed = entropy_source.get_secure_random_bytes();
 	let onion_routing_packet = construct_onion_message_packet(
@@ -1144,7 +1174,7 @@ pub type SimpleRefOnionMessenger<
 fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<S>, unblinded_path: &[PublicKey], destination: Destination, message: T,
 	mut reply_path: Option<BlindedPath>, session_priv: &SecretKey
-) -> Result<(Vec<(Payload<T>, [u8; 32])>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
+) -> Result<(Vec<(Payload<T>, [u8; 32])>, Vec<onion_utils::OnionKeys>), SendError> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
 	let mut payloads = Vec::with_capacity(num_hops);
 	let mut onion_packet_keys = Vec::with_capacity(num_hops);
@@ -1154,7 +1184,9 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 		Destination::BlindedPath(BlindedPath { introduction_node, blinding_point, blinded_hops }) => {
 			let introduction_node_id = match introduction_node {
 				IntroductionNode::NodeId(pubkey) => pubkey,
-				IntroductionNode::DirectedShortChannelId(..) => todo!(),
+				IntroductionNode::DirectedShortChannelId(..) => {
+					return Err(SendError::UnresolvedIntroductionNode);
+				},
 			};
 			(Some((*introduction_node_id, *blinding_point)), blinded_hops.len())
 		},
@@ -1206,7 +1238,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 				mu,
 			});
 		}
-	)?;
+	).map_err(|e| SendError::Secp256k1(e))?;
 
 	if let Some(control_tlvs) = final_control_tlvs {
 		payloads.push((Payload::Receive {
