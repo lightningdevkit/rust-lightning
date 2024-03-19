@@ -120,11 +120,14 @@ impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 
 impl Writeable for ForwardTlvs {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let features_opt =
+			if self.features == BlindedHopFeatures::empty() { None }
+			else { Some(&self.features) };
 		encode_tlv_stream!(w, {
 			(2, self.short_channel_id, required),
 			(10, self.payment_relay, required),
 			(12, self.payment_constraints, required),
-			(14, self.features, required)
+			(14, features_opt, option)
 		});
 		Ok(())
 	}
