@@ -269,17 +269,24 @@ pub(super) fn construct_trampoline_keys<T: secp256k1::Signing>(
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
 pub(super) fn build_onion_payloads(
-	path: &Path, total_msat: u64, mut recipient_onion: RecipientOnionFields,
-	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
+	path: &Path, total_msat: u64, mut recipient_onion: RecipientOnion, starting_htlc_offset: u32,
+	keysend_preimage: &Option<PaymentPreimage>,
 ) -> Result<(Vec<msgs::OutboundOnionPayload>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
-	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(
-		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
-	);
 
-	for (idx, hop) in path.hops.iter().rev().enumerate() {
+	let blinded_path_length =
+		if let (RecipientOnion::Final(_), Some(tail)) = (&recipient_onion, &path.blinded_tail) {
+			// the blinded path is only applicable if the outer onion isn't wrapping a Trampoline onion
+			tail.hops.len()
+		} else {
+			0
+		};
+	let mut res: Vec<msgs::OutboundOnionPayload> =
+		Vec::with_capacity(path.hops.len() + blinded_path_length);
+
+	if let Some(hop) = path.hops.last() {
 		// First hop gets special values so that it can check, on receipt, that everything is
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
@@ -289,55 +296,89 @@ pub(super) fn build_onion_payloads(
 		} else {
 			cur_cltv
 		};
-		if idx == 0 {
-			if let Some(BlindedTail {
-				blinding_point,
-				hops,
-				final_value_msat,
-				excess_final_cltv_expiry_delta,
-				..
-			}) = &path.blinded_tail
-			{
-				let mut blinding_point = Some(*blinding_point);
-				for (i, blinded_hop) in hops.iter().enumerate() {
-					if i == hops.len() - 1 {
-						cur_value_msat += final_value_msat;
-						res.push(msgs::OutboundOnionPayload::BlindedReceive {
-							sender_intended_htlc_amt_msat: *final_value_msat,
-							total_msat,
-							cltv_expiry_height: cur_cltv + excess_final_cltv_expiry_delta,
-							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
-							intro_node_blinding_point: blinding_point.take(),
-						});
-					} else {
-						res.push(msgs::OutboundOnionPayload::BlindedForward {
-							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
-							intro_node_blinding_point: blinding_point.take(),
-						});
-					}
-				}
-			} else {
-				res.push(msgs::OutboundOnionPayload::Receive {
-					payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
-						Some(msgs::FinalOnionHopData { payment_secret: secret, total_msat })
-					} else {
-						None
-					},
-					payment_metadata: recipient_onion.payment_metadata.take(),
-					keysend_preimage: *keysend_preimage,
-					custom_tlvs: recipient_onion.custom_tlvs.clone(),
-					sender_intended_htlc_amt_msat: value_msat,
-					cltv_expiry_height: cltv,
+
+		match recipient_onion {
+			RecipientOnion::TrampolineEntry(mut trampoline_entry_fields) => {
+				res.push(msgs::OutboundOnionPayload::TrampolineEntrypoint {
+					amt_to_forward: value_msat,
+					outgoing_cltv_value: cltv,
+					multipath_trampoline_data: None,
+					trampoline_packet: trampoline_entry_fields.trampoline_packet,
 				});
-			}
-		} else {
-			let payload = msgs::OutboundOnionPayload::Forward {
-				short_channel_id: last_short_channel_id,
-				amt_to_forward: value_msat,
-				outgoing_cltv_value: cltv,
-			};
-			res.insert(0, payload);
+			},
+			RecipientOnion::Final(mut recipient_onion_fields) => {
+				if let Some(BlindedTail {
+					blinding_point,
+					hops,
+					final_value_msat,
+					excess_final_cltv_expiry_delta,
+					..
+				}) = &path.blinded_tail
+				{
+					let mut blinding_point = Some(*blinding_point);
+					for (i, blinded_hop) in hops.iter().enumerate() {
+						if i == hops.len() - 1 {
+							cur_value_msat += final_value_msat;
+							res.push(msgs::OutboundOnionPayload::BlindedReceive {
+								sender_intended_htlc_amt_msat: *final_value_msat,
+								total_msat,
+								cltv_expiry_height: cur_cltv + excess_final_cltv_expiry_delta,
+								encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+								intro_node_blinding_point: blinding_point.take(),
+							});
+						} else {
+							res.push(msgs::OutboundOnionPayload::BlindedForward {
+								encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+								intro_node_blinding_point: blinding_point.take(),
+							});
+						}
+					}
+				} else {
+					res.push(msgs::OutboundOnionPayload::Receive {
+						payment_data: if let Some(secret) =
+							recipient_onion_fields.payment_secret.take()
+						{
+							Some(msgs::FinalOnionHopData { payment_secret: secret, total_msat })
+						} else {
+							None
+						},
+						payment_metadata: recipient_onion_fields.payment_metadata.take(),
+						keysend_preimage: *keysend_preimage,
+						custom_tlvs: recipient_onion_fields.custom_tlvs.clone(),
+						sender_intended_htlc_amt_msat: value_msat,
+						cltv_expiry_height: cltv,
+					});
+				}
+			},
 		}
+
+		cur_value_msat += hop.fee_msat;
+		if cur_value_msat >= 21000000 * 100000000 * 1000 {
+			return Err(APIError::InvalidRoute { err: "Channel fees overflowed?".to_owned() });
+		}
+		cur_cltv += hop.cltv_expiry_delta as u32;
+		if cur_cltv >= 500000000 {
+			return Err(APIError::InvalidRoute { err: "Channel CLTV overflowed?".to_owned() });
+		}
+		last_short_channel_id = hop.short_channel_id;
+	}
+
+	for hop in path.hops.iter().rev().skip(1) {
+		// First hop gets special values so that it can check, on receipt, that everything is
+		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
+		// the intended recipient).
+		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
+		let cltv = if cur_cltv == starting_htlc_offset {
+			hop.cltv_expiry_delta + starting_htlc_offset
+		} else {
+			cur_cltv
+		};
+		let payload = msgs::OutboundOnionPayload::Forward {
+			short_channel_id: last_short_channel_id,
+			amt_to_forward: value_msat,
+			outgoing_cltv_value: cltv,
+		};
+		res.insert(0, payload);
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
 			return Err(APIError::InvalidRoute { err: "Channel fees overflowed?".to_owned() });
@@ -1265,7 +1306,7 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
 		&path,
 		total_msat,
-		recipient_onion,
+		recipient_onion.into(),
 		cur_block_height,
 		keysend_preimage,
 	)?;

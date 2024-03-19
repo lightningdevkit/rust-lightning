@@ -358,7 +358,7 @@ fn test_onion_failure() {
 		let cur_height = nodes[0].best_block_info().1 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(
-			&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
+			&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty().into(), cur_height, &None).unwrap();
 		let mut new_payloads = Vec::new();
 		for payload in onion_payloads.drain(..) {
 			new_payloads.push(BogusOnionHopData::new(payload));
@@ -376,7 +376,7 @@ fn test_onion_failure() {
 		let cur_height = nodes[0].best_block_info().1 + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		let (mut onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(
-			&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
+			&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty().into(), cur_height, &None).unwrap();
 		let mut new_payloads = Vec::new();
 		for payload in onion_payloads.drain(..) {
 			new_payloads.push(BogusOnionHopData::new(payload));
@@ -613,7 +613,7 @@ fn test_onion_failure() {
 		route.paths[0].hops[1].cltv_expiry_delta += CLTV_FAR_FAR_AWAY + route.paths[0].hops[0].cltv_expiry_delta + 1;
 		let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 		let (onion_payloads, _, htlc_cltv) = onion_utils::build_onion_payloads(
-			&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty(), height, &None).unwrap();
+			&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty().into(), height, &None).unwrap();
 		let onion_packet = onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash).unwrap();
 		msg.cltv_expiry = htlc_cltv;
 		msg.onion_routing_packet = onion_packet;
@@ -949,7 +949,7 @@ fn test_always_create_tlv_format_onion_payloads() {
 
 	let cur_height = nodes[0].best_block_info().1 + 1;
 	let (onion_payloads, _htlc_msat, _htlc_cltv) = onion_utils::build_onion_payloads(
-		&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty(), cur_height, &None).unwrap();
+		&route.paths[0], 40000, RecipientOnionFields::spontaneous_empty().into(), cur_height, &None).unwrap();
 
 	match onion_payloads[0] {
 		msgs::OutboundOnionPayload::Forward {..} => {},
@@ -1323,7 +1323,7 @@ fn test_phantom_invalid_onion_payload() {
 					let mut onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 					let (mut onion_payloads, _, _) = onion_utils::build_onion_payloads(
 						&route.paths[0], msgs::MAX_VALUE_MSAT + 1,
-						RecipientOnionFields::secret_only(payment_secret), height + 1, &None).unwrap();
+						RecipientOnionFields::secret_only(payment_secret).into(), height + 1, &None).unwrap();
 					// We only want to construct the onion packet for the last hop, not the entire route, so
 					// remove the first hop's payload and its keys.
 					onion_keys.remove(0);
