@@ -9,7 +9,7 @@
 
 use crate::routing::gossip::{NetworkGraph, NodeAlias, P2PGossipSync};
 use crate::ln::features::{ChannelFeatures, NodeFeatures};
-use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAnnouncement, RoutingMessageHandler, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
+use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAnnouncement, RoutingMessageHandler, SocketAddress, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
 
@@ -70,7 +70,7 @@ pub(super) fn add_or_update_node(
 		node_id,
 		rgb: [0; 3],
 		alias: NodeAlias([0; 32]),
-		addresses: Vec::new(),
+		addresses: vec![SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 }],
 		excess_address_data: Vec::new(),
 		excess_data: Vec::new(),
 	};
