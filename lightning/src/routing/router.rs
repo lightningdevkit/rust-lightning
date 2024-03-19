@@ -448,6 +448,8 @@ impl_writeable_tlv_based!(BlindedTail, {
 pub struct Path {
 	/// The list of unblinded hops in this [`Path`]. Must be at least length one.
 	pub hops: Vec<RouteHop>,
+	/// The list of unblinded Trampoline hops. When using Trampoline, must contain at least one hop.
+	pub trampoline_hops: Vec<TrampolineHop>,
 	/// The blinded path at which this path terminates, if we're sending to one, and its metadata.
 	pub blinded_tail: Option<BlindedTail>,
 }
@@ -580,7 +582,7 @@ impl Readable for Route {
 			if hops.is_empty() { return Err(DecodeError::InvalidValue); }
 			min_final_cltv_expiry_delta =
 				cmp::min(min_final_cltv_expiry_delta, hops.last().unwrap().cltv_expiry_delta);
-			paths.push(Path { hops, blinded_tail: None });
+			paths.push(Path { hops, trampoline_hops: vec![], blinded_tail: None });
 		}
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
@@ -3381,7 +3383,7 @@ where L::Target: Logger {
 			core::mem::replace(&mut hop.cltv_expiry_delta, prev_cltv_expiry_delta)
 		});
 
-		paths.push(Path { hops, blinded_tail });
+		paths.push(Path { hops, trampoline_hops: vec![], blinded_tail });
 	}
 	// Make sure we would never create a route with more paths than we allow.
 	debug_assert!(paths.len() <= payment_params.max_path_count.into());
@@ -7105,7 +7107,7 @@ mod tests {
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
-			], blinded_tail: None }],
+			], trampoline_hops: vec![], blinded_tail: None }],
 			route_params: None,
 		};
 
@@ -7127,7 +7129,7 @@ mod tests {
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
-			], blinded_tail: None }, Path { hops: vec![
+			], trampoline_hops: vec![], blinded_tail: None }, Path { hops: vec![
 				RouteHop {
 					pubkey: PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()[..]).unwrap(),
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
@@ -7138,7 +7140,7 @@ mod tests {
 					channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
-			], blinded_tail: None }],
+			], trampoline_hops: vec![], blinded_tail: None }],
 			route_params: None,
 		};
 
@@ -7713,6 +7715,7 @@ mod tests {
 				cltv_expiry_delta: 0,
 				maybe_announced_channel: true,
 			}],
+			trampoline_hops: vec![],
 			blinded_tail: Some(BlindedTail {
 				hops: vec![
 					BlindedHop { blinded_node_id: ln_test_utils::pubkey(44), encrypted_payload: Vec::new() },
@@ -7730,7 +7733,7 @@ mod tests {
 				fee_msat: 100,
 				cltv_expiry_delta: 0,
 				maybe_announced_channel: true,
-			}], blinded_tail: None }],
+			}], trampoline_hops: vec![], blinded_tail: None }],
 			route_params: None,
 		};
 		let encoded_route = route.encode();
@@ -7778,6 +7781,7 @@ mod tests {
 				cltv_expiry_delta: 0,
 				maybe_announced_channel: false,
 			}],
+			trampoline_hops: vec![],
 			blinded_tail: Some(BlindedTail {
 				hops: vec![BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }],
 				blinding_point: ln_test_utils::pubkey(48),
@@ -7813,6 +7817,7 @@ mod tests {
 				maybe_announced_channel: false,
 			}
 			],
+			trampoline_hops: vec![],
 			blinded_tail: Some(BlindedTail {
 				hops: vec![
 					BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() },
