@@ -1150,13 +1150,15 @@ pub struct FirstHopCandidate<'a> {
 	///
 	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
 	pub payer_node_id: &'a NodeId,
-	/// A unique ID which describes the payer. It will not conlfict with any
-	/// [`super::gossip::NodeInfo::node_counter`]s, but may be equal to one if the payer is a
-	/// public node.
+	/// A unique ID which describes the payer.
+	///
+	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but may be equal
+	/// to one if the payer is a public node.
 	pub(crate) payer_node_counter: u32,
-	/// A unique ID which describes the first hop counterparty. It will not conflict with any
-	/// [`super::gossip::NodeInfo::node_counter`]s, but may be equal to one if the counterparty is
-	/// a public node.
+	/// A unique ID which describes the first hop counterparty.
+	///
+	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but may be equal
+	/// to one if the counterparty is a public node.
 	pub(crate) target_node_counter: u32,
 }
 
@@ -1185,10 +1187,12 @@ pub struct PrivateHopCandidate<'a> {
 	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
 	pub target_node_id: &'a NodeId,
 	/// A unique ID which describes the source node of the hop (further from the payment target).
+	///
 	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but may be equal
 	/// to one if the node is a public node.
 	pub(crate) source_node_counter: u32,
 	/// A unique ID which describes the destination node of the hop (towards the payment target).
+	///
 	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but may be equal
 	/// to one if the node is a public node.
 	pub(crate) target_node_counter: u32,
@@ -1208,6 +1212,7 @@ pub struct BlindedPathCandidate<'a> {
 	/// a short channel ID for this hop.
 	hint_idx: usize,
 	/// A unique ID which describes the introduction point of the blinded path.
+	///
 	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but will generally
 	/// be equal to one from the public network graph (assuming the introduction point is a public
 	/// node).
@@ -1230,6 +1235,7 @@ pub struct OneHopBlindedPathCandidate<'a> {
 	/// a short channel ID for this hop.
 	hint_idx: usize,
 	/// A unique ID which describes the introduction point of the blinded path.
+	///
 	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but will generally
 	/// be equal to one from the public network graph (assuming the introduction point is a public
 	/// node).
