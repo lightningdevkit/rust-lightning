@@ -532,7 +532,7 @@ mod tests {
 		// Ensure the onion will not fit all the payloads by adding a large custom TLV.
 		recipient_onion.custom_tlvs.push((13377331, vec![0; 1156]));
 
-		let path = Path { hops, blinded_tail: None, };
+		let path = Path { hops, trampoline_hops: vec![], blinded_tail: None, };
 		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv).unwrap();
 		let (onion_payloads, ..) = super::onion_utils::build_onion_payloads(
 			&path, total_amt_msat, recipient_onion, cur_height + 1, &Some(keysend_preimage)
@@ -558,6 +558,7 @@ mod tests {
 
 		let path = Path {
 			hops: hops,
+			trampoline_hops: vec![],
 			blinded_tail: None,
 		};
 

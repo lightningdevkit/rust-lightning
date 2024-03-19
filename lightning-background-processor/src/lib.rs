@@ -1776,7 +1776,7 @@ mod tests {
 				fee_msat: 0,
 				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA as u32,
 				maybe_announced_channel: true,
-			}], blinded_tail: None };
+			}], trampoline_hops: vec![], blinded_tail: None };
 
 			$nodes[0].scorer.write_lock().expect(TestResult::PaymentFailure { path: path.clone(), short_channel_id: scored_scid });
 			$nodes[0].node.push_pending_event(Event::PaymentPathFailed {

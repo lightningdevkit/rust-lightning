@@ -1402,7 +1402,7 @@ impl MaybeReadable for Event {
 						payment_hash,
 						payment_failed_permanently,
 						failure,
-						path: Path { hops: path.unwrap(), blinded_tail },
+						path: Path { hops: path.unwrap(), trampoline_hops: vec![], blinded_tail },
 						short_channel_id,
 						#[cfg(test)]
 						error_code,
@@ -1530,7 +1530,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentPathSuccessful {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash,
-						path: Path { hops: path, blinded_tail },
+						path: Path { hops: path, trampoline_hops: vec![], blinded_tail },
 					}))
 				};
 				f()
@@ -1595,7 +1595,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeSuccessful {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path, blinded_tail },
+						path: Path { hops: path, trampoline_hops: vec![], blinded_tail },
 					}))
 				};
 				f()
@@ -1612,7 +1612,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeFailed {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path, blinded_tail },
+						path: Path { hops: path, trampoline_hops: vec![], blinded_tail },
 						short_channel_id,
 					}))
 				};

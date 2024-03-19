@@ -2307,7 +2307,7 @@ mod tests {
 				path_hop(source_pubkey(), 41, 1),
 				path_hop(target_pubkey(), 42, 2),
 				path_hop(recipient_pubkey(), 43, amount_msat),
-			], blinded_tail: None,
+			], trampoline_hops: vec![], blinded_tail: None,
 		}
 	}
 
@@ -2788,7 +2788,7 @@ mod tests {
 		});
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 128);
 
-		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 43, Duration::ZERO);
+		scorer.payment_path_failed(&Path { hops: path, trampoline_hops: vec![], blinded_tail: None }, 43, Duration::ZERO);
 
 		let channel = network_graph.read_only().channel(42).unwrap().to_owned();
 		let (info, _) = channel.as_directed_from(&node_a).unwrap();
@@ -3485,7 +3485,7 @@ mod tests {
 			path_hop(source_pubkey(), 42, 1),
 			path_hop(sender_pubkey(), 41, 0),
 		];
-		scorer.payment_path_failed(&Path { hops: path, blinded_tail: None }, 42, Duration::from_secs(10 * (16 + 60 * 60)));
+		scorer.payment_path_failed(&Path { hops: path, trampoline_hops: vec![], blinded_tail: None }, 42, Duration::from_secs(10 * (16 + 60 * 60)));
 	}
 
 	#[test]
@@ -3712,6 +3712,7 @@ pub mod benches {
 					cltv_expiry_delta: 42,
 					maybe_announced_channel: true,
 				}],
+				trampoline_hops: vec![],
 				blinded_tail: None
 			};
 			seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
