@@ -267,10 +267,13 @@ where
 		// First, check the confirmation status of registered transactions as well as the
 		// status of dependent transactions of registered outputs.
 
-		let mut confirmed_txs = Vec::new();
+		let mut confirmed_txs: Vec<ConfirmedTx> = Vec::new();
 
 		for txid in &sync_state.watched_transactions {
-			if let Some(confirmed_tx) = maybe_await!(self.get_confirmed_tx(&txid, None, None))? {
+			if confirmed_txs.iter().any(|ctx| ctx.txid == *txid) {
+				continue;
+			}
+			if let Some(confirmed_tx) = maybe_await!(self.get_confirmed_tx(*txid, None, None))? {
 				confirmed_txs.push(confirmed_tx);
 			}
 		}
@@ -281,9 +284,19 @@ where
 			{
 				if let Some(spending_txid) = output_status.txid {
 					if let Some(spending_tx_status) = output_status.status {
+						if confirmed_txs.iter().any(|ctx| ctx.txid == spending_txid) {
+							if spending_tx_status.confirmed {
+								// Skip inserting duplicate ConfirmedTx entry
+								continue;
+							} else {
+								log_trace!(self.logger, "Inconsistency: Detected previously-confirmed Tx {} as unconfirmed", spending_txid);
+								return Err(InternalError::Inconsistency);
+							}
+						}
+
 						if let Some(confirmed_tx) = maybe_await!(self
 							.get_confirmed_tx(
-								&spending_txid,
+								spending_txid,
 								spending_tx_status.block_hash,
 								spending_tx_status.block_height,
 							))?
@@ -306,7 +319,7 @@ where
 
 	#[maybe_async]
 	fn get_confirmed_tx(
-		&self, txid: &Txid, expected_block_hash: Option<BlockHash>, known_block_height: Option<u32>,
+		&self, txid: Txid, expected_block_hash: Option<BlockHash>, known_block_height: Option<u32>,
 	) -> Result<Option<ConfirmedTx>, InternalError> {
 		if let Some(merkle_block) = maybe_await!(self.client.get_merkle_block(&txid))? {
 			let block_header = merkle_block.header;
@@ -321,7 +334,7 @@ where
 			let mut matches = Vec::new();
 			let mut indexes = Vec::new();
 			let _ = merkle_block.txn.extract_matches(&mut matches, &mut indexes);
-			if indexes.len() != 1 || matches.len() != 1 || matches[0] != *txid {
+			if indexes.len() != 1 || matches.len() != 1 || matches[0] != txid {
 				log_error!(self.logger, "Retrieved Merkle block for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
 				return Err(InternalError::Failed);
 			}
@@ -329,14 +342,19 @@ where
 			// unwrap() safety: len() > 0 is checked above
 			let pos = *indexes.first().unwrap() as usize;
 			if let Some(tx) = maybe_await!(self.client.get_tx(&txid))? {
+				if tx.txid() != txid {
+					log_error!(self.logger, "Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
+					return Err(InternalError::Failed);
+				}
+
 				if let Some(block_height) = known_block_height {
 					// We can take a shortcut here if a previous call already gave us the height.
-					return Ok(Some(ConfirmedTx { tx, block_header, pos, block_height }));
+					return Ok(Some(ConfirmedTx { tx, txid, block_header, pos, block_height }));
 				}
 
 				let block_status = maybe_await!(self.client.get_block_status(&block_hash))?;
 				if let Some(block_height) = block_status.height {
-					return Ok(Some(ConfirmedTx { tx, block_header, pos, block_height }));
+					return Ok(Some(ConfirmedTx { tx, txid, block_header, pos, block_height }));
 				} else {
 					// If any previously-confirmed block suddenly is no longer confirmed, we found
 					// an inconsistency and should start over.

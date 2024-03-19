@@ -128,6 +128,7 @@ impl FilterQueue {
 #[derive(Debug)]
 pub(crate) struct ConfirmedTx {
 	pub tx: Transaction,
+	pub txid: Txid,
 	pub block_header: Header,
 	pub block_height: u32,
 	pub pos: usize,
