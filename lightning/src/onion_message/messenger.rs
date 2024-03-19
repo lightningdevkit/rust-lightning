@@ -318,10 +318,10 @@ where
 	ES::Target: EntropySource,
 {
 	fn find_path(
-		&self, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
 		let first_node = destination.first_node();
-		if peers.contains(&first_node) {
+		if peers.contains(&first_node) || sender == first_node {
 			Ok(OnionMessagePath {
 				intermediate_nodes: vec![], destination, first_node_addresses: None
 			})
