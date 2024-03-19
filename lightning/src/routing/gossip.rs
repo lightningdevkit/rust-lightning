@@ -204,6 +204,7 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 pub struct ReadOnlyNetworkGraph<'a> {
 	channels: RwLockReadGuard<'a, IndexedMap<u64, ChannelInfo>>,
 	nodes: RwLockReadGuard<'a, IndexedMap<NodeId, NodeInfo>>,
+	max_node_counter: u32,
 }
 
 /// Update to the [`NetworkGraph`] based on payment failure information conveyed via the Onion
@@ -1653,6 +1654,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		ReadOnlyNetworkGraph {
 			channels,
 			nodes,
+			max_node_counter: (self.next_node_counter.load(Ordering::Acquire) as u32).saturating_sub(1),
 		}
 	}
 
@@ -2347,6 +2349,11 @@ impl ReadOnlyNetworkGraph<'_> {
 	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<SocketAddress>> {
 		self.nodes.get(&NodeId::from_pubkey(&pubkey))
 			.and_then(|node| node.announcement_info.as_ref().map(|ann| ann.addresses().to_vec()))
+	}
+
+	/// Gets the maximum possible node_counter for a node in this graph
+	pub(crate) fn max_node_counter(&self) -> u32 {
+		self.max_node_counter
 	}
 }
 
