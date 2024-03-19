@@ -157,6 +157,9 @@ where
 					for c in &confirmables {
 						c.best_block_updated(&tip_header, tip_height);
 					}
+
+					// Prune any sufficiently confirmed output spends
+					sync_state.prune_output_spends(tip_height);
 				}
 
 				match self.get_confirmed_transactions(&sync_state) {

@@ -153,7 +153,7 @@ where
 						}
 					}
 
-					match maybe_await!(self.sync_best_block_updated(&confirmables, &tip_hash)) {
+					match maybe_await!(self.sync_best_block_updated(&confirmables, &mut sync_state, &tip_hash)) {
 						Ok(()) => {}
 						Err(InternalError::Inconsistency) => {
 							// Immediately restart syncing when we encounter any inconsistencies.
@@ -238,7 +238,7 @@ where
 
 	#[maybe_async]
 	fn sync_best_block_updated(
-		&self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>, tip_hash: &BlockHash,
+		&self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>, sync_state: &mut SyncState, tip_hash: &BlockHash,
 	) -> Result<(), InternalError> {
 
 		// Inform the interface of the new block.
@@ -249,6 +249,9 @@ where
 				for c in confirmables {
 					c.best_block_updated(&tip_header, tip_height);
 				}
+
+				// Prune any sufficiently confirmed output spends
+				sync_state.prune_output_spends(tip_height);
 			}
 		} else {
 			return Err(InternalError::Inconsistency);
