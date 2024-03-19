@@ -784,6 +784,35 @@ impl<T: sealed::Context> Features<T> {
 		})
 	}
 
+	pub(crate) fn required_unknown_bits_from(&self, other: &Self) -> Vec<usize> {
+		let mut unknown_bits = Vec::new();
+
+		// Bitwise AND-ing with all even bits set except for known features will select required
+		// unknown features.
+		self.flags.iter().enumerate().for_each(|(i, &byte)| {
+			const REQUIRED_FEATURES: u8 = 0b01_01_01_01;
+			const OPTIONAL_FEATURES: u8 = 0b10_10_10_10;
+			let unknown_features = if i < other.flags.len() {
+				// Form a mask similar to !T::KNOWN_FEATURE_MASK only for `other`
+				!(other.flags[i]
+					| ((other.flags[i] >> 1) & REQUIRED_FEATURES)
+					| ((other.flags[i] << 1) & OPTIONAL_FEATURES))
+			} else {
+				0b11_11_11_11
+			};
+
+			if byte & unknown_features != 0 {
+				for bit in (0..8).step_by(2) {
+					if ((byte & unknown_features) >> bit) & 1 == 1 {
+						unknown_bits.push(i * 8 + bit);
+					}
+				}
+			}
+		});
+
+		unknown_bits
+	}
+
 	/// Returns true if this `Features` object contains unknown feature flags which are set as
 	/// "required".
 	pub fn requires_unknown_bits(&self) -> bool {
@@ -1034,11 +1063,24 @@ mod tests {
 		features.set_unknown_feature_required();
 		assert!(features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
+		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![123456788]);
 
 		let mut features = ChannelFeatures::empty();
 		features.set_unknown_feature_optional();
 		assert!(!features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
+		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![]);
+
+		let mut features = ChannelFeatures::empty();
+		features.set_unknown_feature_required();
+		features.set_custom_bit(123456786).unwrap();
+		assert!(features.requires_unknown_bits());
+		assert!(features.supports_unknown_bits());
+		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![123456786, 123456788]);
+
+		let mut limiter = ChannelFeatures::empty();
+		limiter.set_unknown_feature_optional();
+		assert_eq!(features.required_unknown_bits_from(&limiter), vec![123456786]);
 	}
 
 	#[test]
