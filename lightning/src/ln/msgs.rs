@@ -1136,8 +1136,16 @@ pub struct UnsignedNodeAnnouncement {
 	pub alias: NodeAlias,
 	/// List of addresses on which this node is reachable
 	pub addresses: Vec<SocketAddress>,
-	pub(crate) excess_address_data: Vec<u8>,
-	pub(crate) excess_data: Vec<u8>,
+	/// Excess address data which was signed as a part of the message which we do not (yet) understand how
+	/// to decode.
+	///
+	/// This is stored to ensure forward-compatibility as new address types are added to the lightning gossip protocol.
+	pub excess_address_data: Vec<u8>,
+	/// Excess data which was signed as a part of the message which we do not (yet) understand how
+	/// to decode.
+	///
+	/// This is stored to ensure forward-compatibility as new fields are added to the lightning gossip protocol.
+	pub excess_data: Vec<u8>,
 }
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 /// A [`node_announcement`] message to be sent to or received from a peer.
