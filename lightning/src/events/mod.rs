@@ -797,12 +797,24 @@ pub enum Event {
 	/// This event is generated when a payment has been successfully forwarded through us and a
 	/// forwarding fee earned.
 	PaymentForwarded {
-		/// The incoming channel between the previous node and us. This is only `None` for events
-		/// generated or serialized by versions prior to 0.0.107.
+		/// The channel id of the incoming channel between the previous node and us.
+		///
+		/// This is only `None` for events generated or serialized by versions prior to 0.0.107.
 		prev_channel_id: Option<ChannelId>,
-		/// The outgoing channel between the next node and us. This is only `None` for events
-		/// generated or serialized by versions prior to 0.0.107.
+		/// The channel id of the outgoing channel between the next node and us.
+		///
+		/// This is only `None` for events generated or serialized by versions prior to 0.0.107.
 		next_channel_id: Option<ChannelId>,
+		/// The `user_channel_id` of the incoming channel between the previous node and us.
+		///
+		/// This is only `None` for events generated or serialized by versions prior to 0.0.122.
+		prev_user_channel_id: Option<u128>,
+		/// The `user_channel_id` of the outgoing channel between the next node and us.
+		///
+		/// This will be `None` if the payment was settled via an on-chain transaction. See the
+		/// caveat described for the `total_fee_earned_msat` field. Moreover it will be `None` for
+		/// events generated or serialized by versions prior to 0.0.122.
+		next_user_channel_id: Option<u128>,
 		/// The total fee, in milli-satoshis, which was earned as a result of the payment.
 		///
 		/// Note that if we force-closed the channel over which we forwarded an HTLC while the HTLC
@@ -1121,8 +1133,9 @@ impl Writeable for Event {
 				});
 			}
 			&Event::PaymentForwarded {
-				total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
-				next_channel_id, outbound_amount_forwarded_msat, skimmed_fee_msat,
+				prev_channel_id, next_channel_id, prev_user_channel_id, next_user_channel_id,
+				total_fee_earned_msat, skimmed_fee_msat, claim_from_onchain_tx,
+				outbound_amount_forwarded_msat,
 			} => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1132,6 +1145,8 @@ impl Writeable for Event {
 					(3, next_channel_id, option),
 					(5, outbound_amount_forwarded_msat, option),
 					(7, skimmed_fee_msat, option),
+					(9, prev_user_channel_id, option),
+					(11, next_user_channel_id, option),
 				});
 			},
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason,
@@ -1427,12 +1442,14 @@ impl MaybeReadable for Event {
 			},
 			7u8 => {
 				let f = || {
-					let mut total_fee_earned_msat = None;
 					let mut prev_channel_id = None;
-					let mut claim_from_onchain_tx = false;
 					let mut next_channel_id = None;
-					let mut outbound_amount_forwarded_msat = None;
+					let mut prev_user_channel_id = None;
+					let mut next_user_channel_id = None;
+					let mut total_fee_earned_msat = None;
 					let mut skimmed_fee_msat = None;
+					let mut claim_from_onchain_tx = false;
+					let mut outbound_amount_forwarded_msat = None;
 					read_tlv_fields!(reader, {
 						(0, total_fee_earned_msat, option),
 						(1, prev_channel_id, option),
@@ -1440,10 +1457,13 @@ impl MaybeReadable for Event {
 						(3, next_channel_id, option),
 						(5, outbound_amount_forwarded_msat, option),
 						(7, skimmed_fee_msat, option),
+						(9, prev_user_channel_id, option),
+						(11, next_user_channel_id, option),
 					});
 					Ok(Some(Event::PaymentForwarded {
-						total_fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
-						outbound_amount_forwarded_msat, skimmed_fee_msat,
+						prev_channel_id, next_channel_id, prev_user_channel_id,
+						next_user_channel_id, total_fee_earned_msat, skimmed_fee_msat,
+						claim_from_onchain_tx, outbound_amount_forwarded_msat,
 					}))
 				};
 				f()
