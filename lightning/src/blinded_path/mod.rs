@@ -66,6 +66,24 @@ pub enum Direction {
 	NodeTwo,
 }
 
+/// An interface for looking up the node id of a channel counterparty for the purpose of forwarding
+/// an [`OnionMessage`].
+///
+/// [`OnionMessage`]: crate::ln::msgs::OnionMessage
+pub trait NodeIdLookUp {
+	/// Returns the node if of the channel counterparty with `short_channel_id`.
+	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey>;
+}
+
+/// A [`NodeIdLookUp`] that always returns `None`.
+pub struct EmptyNodeIdLookUp {}
+
+impl NodeIdLookUp for EmptyNodeIdLookUp {
+	fn next_node_id(&self, _short_channel_id: u64) -> Option<PublicKey> {
+		None
+	}
+}
+
 /// An encrypted payload and node id corresponding to a hop in a payment or onion message path, to
 /// be encoded in the sender's onion packet. These hops cannot be identified by outside observers
 /// and thus can be used to hide the identity of the recipient.
