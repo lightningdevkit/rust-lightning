@@ -11,60 +11,51 @@
 
 use crate::blinded_path::BlindedPath;
 use crate::events::{Event, EventsProvider};
-use crate::ln::features::InitFeatures;
-use crate::ln::msgs::{self, DecodeError, OnionMessageHandler, SocketAddress};
+use crate::ln::features::{ChannelFeatures, InitFeatures};
+use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
+use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
+use crate::routing::test_utils::{add_channel, add_or_update_node};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
-use super::messenger::{CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger, PendingOnionMessage, SendError};
+use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, PendingOnionMessage, SendError};
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
 
 use bitcoin::network::constants::Network;
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
+use bitcoin::secp256k1::{All, PublicKey, Secp256k1, SecretKey};
 
 use crate::io;
 use crate::io_extras::read_to_end;
 use crate::sync::{Arc, Mutex};
 
+use core::ops::Deref;
+
 use crate::prelude::*;
 
 struct MessengerNode {
 	node_id: PublicKey,
+	privkey: SecretKey,
 	entropy_source: Arc<test_utils::TestKeysInterface>,
 	messenger: OnionMessenger<
 		Arc<test_utils::TestKeysInterface>,
 		Arc<test_utils::TestNodeSigner>,
 		Arc<test_utils::TestLogger>,
-		Arc<TestMessageRouter>,
+		Arc<DefaultMessageRouter<
+			Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+			Arc<test_utils::TestLogger>,
+			Arc<test_utils::TestKeysInterface>
+		>>,
 		Arc<TestOffersMessageHandler>,
 		Arc<TestCustomMessageHandler>
 	>,
 	custom_message_handler: Arc<TestCustomMessageHandler>,
-}
-
-struct TestMessageRouter {}
-
-impl MessageRouter for TestMessageRouter {
-	fn find_path(
-		&self, _sender: PublicKey, _peers: Vec<PublicKey>, destination: Destination
-	) -> Result<OnionMessagePath, ()> {
-		Ok(OnionMessagePath {
-			intermediate_nodes: vec![],
-			destination,
-			first_node_addresses:
-				Some(vec![SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 }]),
-		})
-	}
-
-	fn create_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedPath>, ()> {
-		unreachable!()
-	}
+	gossip_sync: Arc<P2PGossipSync<
+		Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+		Arc<test_utils::TestChainSource>,
+		Arc<test_utils::TestLogger>
+	>>
 }
 
 struct TestOffersMessageHandler {}
@@ -171,6 +162,12 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 }
 
 fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
+	let gossip_logger = Arc::new(test_utils::TestLogger::with_id("gossip".to_string()));
+	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, gossip_logger.clone()));
+	let gossip_sync = Arc::new(
+		P2PGossipSync::new(network_graph.clone(), None, gossip_logger)
+	);
+
 	let mut nodes = Vec::new();
 	for (i, secret_key) in secrets.into_iter().enumerate() {
 		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
@@ -178,10 +175,13 @@ fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
 		let entropy_source = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
 		let node_signer = Arc::new(test_utils::TestNodeSigner::new(secret_key));
 
-		let message_router = Arc::new(TestMessageRouter {});
+		let message_router = Arc::new(
+			DefaultMessageRouter::new(network_graph.clone(), entropy_source.clone())
+		);
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
 		let custom_message_handler = Arc::new(TestCustomMessageHandler::new());
 		nodes.push(MessengerNode {
+			privkey: secret_key,
 			node_id: node_signer.get_node_id(Recipient::Node).unwrap(),
 			entropy_source: entropy_source.clone(),
 			messenger: OnionMessenger::new(
@@ -189,6 +189,7 @@ fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
 				offers_message_handler, custom_message_handler.clone()
 			),
 			custom_message_handler,
+			gossip_sync: gossip_sync.clone(),
 		});
 	}
 	for i in 0..nodes.len() - 1 {
@@ -216,6 +217,20 @@ fn release_events(node: &MessengerNode) -> Vec<Event> {
 	events.into_inner()
 }
 
+fn add_channel_to_graph(
+	node_a: &MessengerNode, node_b: &MessengerNode, secp_ctx: &Secp256k1<All>, short_channel_id: u64
+) {
+	let gossip_sync = node_a.gossip_sync.deref();
+	let privkey_a = &node_a.privkey;
+	let privkey_b = &node_b.privkey;
+	let channel_features = ChannelFeatures::empty();
+	let node_features_a = node_a.messenger.provided_node_features();
+	let node_features_b = node_b.messenger.provided_node_features();
+	add_channel(gossip_sync, secp_ctx, privkey_a, privkey_b, channel_features, short_channel_id);
+	add_or_update_node(gossip_sync, secp_ctx, privkey_a, node_features_a, 1);
+	add_or_update_node(gossip_sync, secp_ctx, privkey_b, node_features_b, 1);
+}
+
 fn pass_along_path(path: &Vec<MessengerNode>) {
 	let mut prev_node = &path[0];
 	for node in path.into_iter().skip(1) {
@@ -235,12 +250,8 @@ fn one_unblinded_hop() {
 	let nodes = create_nodes(2);
 	let test_msg = TestCustomMessage::Response;
 
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::Node(nodes[1].node_id),
-		first_node_addresses: None,
-	};
-	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
+	let destination = Destination::Node(nodes[1].node_id);
+	nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
@@ -255,6 +266,7 @@ fn two_unblinded_hops() {
 		destination: Destination::Node(nodes[2].node_id),
 		first_node_addresses: None,
 	};
+
 	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
 	nodes[2].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
@@ -267,12 +279,8 @@ fn one_blinded_hop() {
 
 	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::new_for_message(&[nodes[1].node_id], &*nodes[1].entropy_source, &secp_ctx).unwrap();
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::BlindedPath(blinded_path),
-		first_node_addresses: None,
-	};
-	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
+	let destination = Destination::BlindedPath(blinded_path);
+	nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
@@ -302,13 +310,9 @@ fn three_blinded_hops() {
 
 	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::new_for_message(&[nodes[1].node_id, nodes[2].node_id, nodes[3].node_id], &*nodes[3].entropy_source, &secp_ctx).unwrap();
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::BlindedPath(blinded_path),
-		first_node_addresses: None,
-	};
+	let destination = Destination::BlindedPath(blinded_path);
 
-	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
+	nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap();
 	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 }
@@ -339,24 +343,16 @@ fn we_are_intro_node() {
 
 	let secp_ctx = Secp256k1::new();
 	let blinded_path = BlindedPath::new_for_message(&[nodes[0].node_id, nodes[1].node_id, nodes[2].node_id], &*nodes[2].entropy_source, &secp_ctx).unwrap();
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::BlindedPath(blinded_path),
-		first_node_addresses: None,
-	};
+	let destination = Destination::BlindedPath(blinded_path);
 
-	nodes[0].messenger.send_onion_message_using_path(path, test_msg.clone(), None).unwrap();
+	nodes[0].messenger.send_onion_message(test_msg.clone(), destination, None).unwrap();
 	nodes[2].custom_message_handler.expect_message(TestCustomMessage::Response);
 	pass_along_path(&nodes);
 
 	// Try with a two-hop blinded path where we are the introduction node.
 	let blinded_path = BlindedPath::new_for_message(&[nodes[0].node_id, nodes[1].node_id], &*nodes[1].entropy_source, &secp_ctx).unwrap();
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::BlindedPath(blinded_path),
-		first_node_addresses: None,
-	};
-	nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap();
+	let destination = Destination::BlindedPath(blinded_path);
+	nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Response);
 	nodes.remove(2);
 	pass_along_path(&nodes);
@@ -372,12 +368,8 @@ fn invalid_blinded_path_error() {
 	let secp_ctx = Secp256k1::new();
 	let mut blinded_path = BlindedPath::new_for_message(&[nodes[1].node_id, nodes[2].node_id], &*nodes[2].entropy_source, &secp_ctx).unwrap();
 	blinded_path.blinded_hops.clear();
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::BlindedPath(blinded_path),
-		first_node_addresses: None,
-	};
-	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg.clone(), None).unwrap_err();
+	let destination = Destination::BlindedPath(blinded_path);
+	let err = nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 }
 
@@ -404,14 +396,10 @@ fn reply_path() {
 
 	// Destination::BlindedPath
 	let blinded_path = BlindedPath::new_for_message(&[nodes[1].node_id, nodes[2].node_id, nodes[3].node_id], &*nodes[3].entropy_source, &secp_ctx).unwrap();
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::BlindedPath(blinded_path),
-		first_node_addresses: None,
-	};
+	let destination = Destination::BlindedPath(blinded_path);
 	let reply_path = BlindedPath::new_for_message(&[nodes[2].node_id, nodes[1].node_id, nodes[0].node_id], &*nodes[0].entropy_source, &secp_ctx).unwrap();
 
-	nodes[0].messenger.send_onion_message_using_path(path, test_msg, Some(reply_path)).unwrap();
+	nodes[0].messenger.send_onion_message(test_msg, destination, Some(reply_path)).unwrap();
 	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Request);
 	pass_along_path(&nodes);
 
@@ -439,12 +427,8 @@ fn invalid_custom_message_type() {
 	}
 
 	let test_msg = InvalidCustomMessage {};
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::Node(nodes[1].node_id),
-		first_node_addresses: None,
-	};
-	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
+	let destination = Destination::Node(nodes[1].node_id);
+	let err = nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap_err();
 	assert_eq!(err, SendError::InvalidMessage);
 }
 
@@ -452,15 +436,11 @@ fn invalid_custom_message_type() {
 fn peer_buffer_full() {
 	let nodes = create_nodes(2);
 	let test_msg = TestCustomMessage::Request;
-	let path = OnionMessagePath {
-		intermediate_nodes: vec![],
-		destination: Destination::Node(nodes[1].node_id),
-		first_node_addresses: None,
-	};
+	let destination = Destination::Node(nodes[1].node_id);
 	for _ in 0..188 { // Based on MAX_PER_PEER_BUFFER_SIZE in OnionMessenger
-		nodes[0].messenger.send_onion_message_using_path(path.clone(), test_msg.clone(), None).unwrap();
+		nodes[0].messenger.send_onion_message(test_msg.clone(), destination.clone(), None).unwrap();
 	}
-	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap_err();
 	assert_eq!(err, SendError::BufferFull);
 }
 
@@ -492,6 +472,8 @@ fn requests_peer_connection_for_buffered_messages() {
 	let nodes = create_nodes(3);
 	let message = TestCustomMessage::Request;
 	let secp_ctx = Secp256k1::new();
+	add_channel_to_graph(&nodes[0], &nodes[1], &secp_ctx, 42);
+
 	let blinded_path = BlindedPath::new_for_message(
 		&[nodes[1].node_id, nodes[2].node_id], &*nodes[0].entropy_source, &secp_ctx
 	).unwrap();
@@ -527,6 +509,8 @@ fn drops_buffered_messages_waiting_for_peer_connection() {
 	let nodes = create_nodes(3);
 	let message = TestCustomMessage::Request;
 	let secp_ctx = Secp256k1::new();
+	add_channel_to_graph(&nodes[0], &nodes[1], &secp_ctx, 42);
+
 	let blinded_path = BlindedPath::new_for_message(
 		&[nodes[1].node_id, nodes[2].node_id], &*nodes[0].entropy_source, &secp_ctx
 	).unwrap();
