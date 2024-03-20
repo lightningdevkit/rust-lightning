@@ -17,6 +17,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
+use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 
@@ -124,6 +125,14 @@ impl BlindedPath {
 				secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
 			).map_err(|_| ())?,
 		}))
+	}
+
+	/// Returns the introduction [`NodeId`] of the blinded path.
+	pub fn public_introduction_node_id<'a>(
+		&self, network_graph: &'a ReadOnlyNetworkGraph
+	) -> Option<&'a NodeId> {
+		let node_id = NodeId::from_pubkey(&self.introduction_node_id);
+		network_graph.nodes().get_key_value(&node_id).map(|(key, _)| key)
 	}
 }
 

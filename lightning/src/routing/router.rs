@@ -1863,17 +1863,17 @@ where L::Target: Logger {
 			}
 		},
 		Payee::Blinded { route_hints, .. } => {
-			if route_hints.iter().all(|(_, path)| &path.introduction_node_id == our_node_pubkey) {
+			if route_hints.iter().all(|(_, path)| path.public_introduction_node_id(network_graph) == Some(&our_node_id)) {
 				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
 			}
 			for (_, blinded_path) in route_hints.iter() {
 				if blinded_path.blinded_hops.len() == 0 {
 					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
-				} else if &blinded_path.introduction_node_id == our_node_pubkey {
+				} else if blinded_path.public_introduction_node_id(network_graph) == Some(&our_node_id) {
 					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
 				} else if blinded_path.blinded_hops.len() == 1 &&
 					route_hints.iter().any( |(_, p)| p.blinded_hops.len() == 1
-						&& p.introduction_node_id != blinded_path.introduction_node_id)
+						&& p.public_introduction_node_id(network_graph) != blinded_path.public_introduction_node_id(network_graph))
 				{
 					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
 				}
@@ -5301,10 +5301,15 @@ mod tests {
 				if let Some(bt) = &path.blinded_tail {
 					assert_eq!(path.hops.len() + if bt.hops.len() == 1 { 0 } else { 1 }, 2);
 					if bt.hops.len() > 1 {
-						assert_eq!(path.hops.last().unwrap().pubkey,
+						let network_graph = network_graph.read_only();
+						assert_eq!(
+							NodeId::from_pubkey(&path.hops.last().unwrap().pubkey),
 							payment_params.payee.blinded_route_hints().iter()
 								.find(|(p, _)| p.htlc_maximum_msat == path.final_value_msat())
-								.map(|(_, p)| p.introduction_node_id).unwrap());
+								.and_then(|(_, p)| p.public_introduction_node_id(&network_graph))
+								.copied()
+								.unwrap()
+						);
 					} else {
 						assert_eq!(path.hops.last().unwrap().pubkey, nodes[2]);
 					}
@@ -7432,7 +7437,10 @@ mod tests {
 		assert_eq!(tail.final_value_msat, 1001);
 
 		let final_hop = route.paths[0].hops.last().unwrap();
-		assert_eq!(final_hop.pubkey, blinded_path.introduction_node_id);
+		assert_eq!(
+			NodeId::from_pubkey(&final_hop.pubkey),
+			*blinded_path.public_introduction_node_id(&network_graph).unwrap()
+		);
 		if tail.hops.len() > 1 {
 			assert_eq!(final_hop.fee_msat,
 				blinded_payinfo.fee_base_msat as u64 + blinded_payinfo.fee_proportional_millionths as u64 * tail.final_value_msat / 1000000);
