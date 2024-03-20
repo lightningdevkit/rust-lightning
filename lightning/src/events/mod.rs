@@ -232,6 +232,8 @@ pub enum ClosureReason {
 	/// Another channel in the same funding batch closed before the funding transaction
 	/// was ready to be broadcast.
 	FundingBatchClosure,
+	/// One of our HTLCs timed out in a channel, causing us to force close the channel.
+	HTLCsTimedOut,
 }
 
 impl core::fmt::Display for ClosureReason {
@@ -241,7 +243,7 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::CounterpartyForceClosed { peer_msg } => {
 				f.write_fmt(format_args!("counterparty force-closed with message: {}", peer_msg))
 			},
-			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
+			ClosureReason::HolderForceClosed => f.write_str("user force-closed the channel"),
 			ClosureReason::LegacyCooperativeClosure => f.write_str("the channel was cooperatively closed"),
 			ClosureReason::CounterpartyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by our peer"),
 			ClosureReason::LocallyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by us"),
@@ -255,6 +257,7 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::OutdatedChannelManager => f.write_str("the ChannelManager read from disk was stale compared to ChannelMonitor(s)"),
 			ClosureReason::CounterpartyCoopClosedUnfundedChannel => f.write_str("the peer requested the unfunded channel be closed"),
 			ClosureReason::FundingBatchClosure => f.write_str("another channel in the same funding batch closed"),
+			ClosureReason::HTLCsTimedOut => f.write_str("htlcs on the channel timed out"),
 		}
 	}
 }
@@ -272,6 +275,7 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(15, FundingBatchClosure) => {},
 	(17, CounterpartyInitiatedCooperativeClosure) => {},
 	(19, LocallyInitiatedCooperativeClosure) => {},
+	(21, HTLCsTimedOut) => {},
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].

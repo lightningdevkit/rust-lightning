@@ -2417,7 +2417,7 @@ fn channel_monitor_network_test() {
 		}
 		check_added_monitors!(nodes[4], 1);
 		test_txn_broadcast(&nodes[4], &chan_4, None, HTLCType::SUCCESS);
-		check_closed_event!(nodes[4], 1, ClosureReason::HolderForceClosed, [nodes[3].node.get_our_node_id()], 100000);
+		check_closed_event!(nodes[4], 1, ClosureReason::HTLCsTimedOut, [nodes[3].node.get_our_node_id()], 100000);
 
 		mine_transaction(&nodes[4], &node_txn[0]);
 		check_preimage_claim(&nodes[4], &node_txn);
@@ -2430,7 +2430,7 @@ fn channel_monitor_network_test() {
 
 	assert_eq!(nodes[3].chain_monitor.chain_monitor.watch_channel(OutPoint { txid: chan_3.3.txid(), index: 0 }, chan_3_mon),
 		Ok(ChannelMonitorUpdateStatus::Completed));
-	check_closed_event!(nodes[3], 1, ClosureReason::HolderForceClosed, [nodes[4].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[3], 1, ClosureReason::HTLCsTimedOut, [nodes[4].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -5682,7 +5682,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 	test_txn_broadcast(&nodes[1], &chan, None, if use_dust { HTLCType::NONE } else { HTLCType::SUCCESS });
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::HTLCsTimedOut, [nodes[0].node.get_our_node_id()], 100000);
 }
 
 fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
@@ -5713,7 +5713,7 @@ fn do_htlc_claim_current_remote_commitment_only(use_dust: bool) {
 	test_txn_broadcast(&nodes[0], &chan, None, HTLCType::NONE);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::HTLCsTimedOut, [nodes[1].node.get_our_node_id()], 100000);
 }
 
 fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no_close: bool) {
@@ -5759,7 +5759,7 @@ fn do_htlc_claim_previous_remote_commitment_only(use_dust: bool, check_revoke_no
 		test_txn_broadcast(&nodes[0], &chan, None, HTLCType::NONE);
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event!(nodes[0], 1, ClosureReason::HTLCsTimedOut, [nodes[1].node.get_our_node_id()], 100000);
 	} else {
 		expect_payment_failed!(nodes[0], our_payment_hash, true);
 	}
@@ -8654,7 +8654,7 @@ fn test_concurrent_monitor_claim() {
 	let height = HTLC_TIMEOUT_BROADCAST + 1;
 	connect_blocks(&nodes[0], height - nodes[0].best_block_info().1);
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed, false,
+	check_closed_event!(&nodes[0], 1, ClosureReason::HTLCsTimedOut, false,
 		[nodes[1].node.get_our_node_id()], 100000);
 	watchtower_alice.chain_monitor.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, vec![bob_state_y.clone()]), height);
 	check_added_monitors(&nodes[0], 1);

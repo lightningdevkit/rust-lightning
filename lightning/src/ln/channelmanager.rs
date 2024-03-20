@@ -7377,7 +7377,7 @@ where
 							self.fail_htlc_backwards_internal(&htlc_update.source, &htlc_update.payment_hash, &reason, receiver);
 						}
 					},
-					MonitorEvent::HolderForceClosed(_funding_outpoint) => {
+					MonitorEvent::HolderForceClosed(_) | MonitorEvent::HolderForceClosedWithInfo { .. } => {
 						let counterparty_node_id_opt = match counterparty_node_id {
 							Some(cp_id) => Some(cp_id),
 							None => {
@@ -7395,7 +7395,12 @@ where
 								let pending_msg_events = &mut peer_state.pending_msg_events;
 								if let hash_map::Entry::Occupied(chan_phase_entry) = peer_state.channel_by_id.entry(channel_id) {
 									if let ChannelPhase::Funded(mut chan) = remove_channel_phase!(self, chan_phase_entry) {
-										failed_channels.push(chan.context.force_shutdown(false, ClosureReason::HolderForceClosed));
+										let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
+											reason
+										} else {
+											ClosureReason::HolderForceClosed
+										};
+										failed_channels.push(chan.context.force_shutdown(false, reason.clone()));
 										if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
 											pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
 												msg: update
@@ -7404,7 +7409,7 @@ where
 										pending_msg_events.push(events::MessageSendEvent::HandleError {
 											node_id: chan.context.get_counterparty_node_id(),
 											action: msgs::ErrorAction::DisconnectPeer {
-												msg: Some(msgs::ErrorMessage { channel_id: chan.context.channel_id(), data: "Channel force-closed".to_owned() })
+												msg: Some(msgs::ErrorMessage { channel_id: chan.context.channel_id(), data: reason.to_string() })
 											},
 										});
 									}

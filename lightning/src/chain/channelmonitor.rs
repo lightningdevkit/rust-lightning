@@ -50,7 +50,7 @@ use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
-use crate::events::{Event, EventHandler};
+use crate::events::{ClosureReason, Event, EventHandler};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 
 use crate::prelude::*;
@@ -156,6 +156,17 @@ pub enum MonitorEvent {
 	HTLCEvent(HTLCUpdate),
 
 	/// Indicates we broadcasted the channel's latest commitment transaction and thus closed the
+	/// channel. Holds information about the channel and why it was closed.
+	HolderForceClosedWithInfo {
+		/// The reason the channel was closed.
+		reason: ClosureReason,
+		/// The funding outpoint of the channel.
+		outpoint: OutPoint,
+		/// The channel ID of the channel.
+		channel_id: ChannelId,
+	},
+
+	/// Indicates we broadcasted the channel's latest commitment transaction and thus closed the
 	/// channel.
 	HolderForceClosed(OutPoint),
 
@@ -182,6 +193,11 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
 	(0, Completed) => {
 		(0, funding_txo, required),
 		(2, monitor_update_id, required),
+		(4, channel_id, required),
+	},
+	(5, HolderForceClosedWithInfo) => {
+		(0, reason, upgradable_required),
+		(2, outpoint, required),
 		(4, channel_id, required),
 	},
 ;
@@ -1059,6 +1075,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 		writer.write_all(&(self.pending_monitor_events.iter().filter(|ev| match ev {
 			MonitorEvent::HTLCEvent(_) => true,
 			MonitorEvent::HolderForceClosed(_) => true,
+			MonitorEvent::HolderForceClosedWithInfo { .. } => true,
 			_ => false,
 		}).count() as u64).to_be_bytes())?;
 		for event in self.pending_monitor_events.iter() {
@@ -1068,6 +1085,10 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 					upd.write(writer)?;
 				},
 				MonitorEvent::HolderForceClosed(_) => 1u8.write(writer)?,
+				// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. To keep
+				// backwards compatibility, we write a `HolderForceClosed` event along with the
+				// `HolderForceClosedWithInfo` event. This is deduplicated in the reader.
+				MonitorEvent::HolderForceClosedWithInfo { .. } => 1u8.write(writer)?,
 				_ => {}, // Covered in the TLV writes below
 			}
 		}
@@ -1099,10 +1120,23 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 		self.lockdown_from_offchain.write(writer)?;
 		self.holder_tx_signed.write(writer)?;
 
+		// If we have a `HolderForceClosedWithInfo` event, we need to write the `HolderForceClosed` for backwards compatibility.
+		let pending_monitor_events = match self.pending_monitor_events.iter().find(|ev| match ev {
+			MonitorEvent::HolderForceClosedWithInfo { .. } => true,
+			_ => false,
+		}) {
+			Some(MonitorEvent::HolderForceClosedWithInfo { outpoint, .. }) => {
+				let mut pending_monitor_events = self.pending_monitor_events.clone();
+				pending_monitor_events.push(MonitorEvent::HolderForceClosed(*outpoint));
+				pending_monitor_events
+			}
+			_ => self.pending_monitor_events.clone(),
+		};
+
 		write_tlv_fields!(writer, {
 			(1, self.funding_spend_confirmed, option),
 			(3, self.htlcs_resolved_on_chain, required_vec),
-			(5, self.pending_monitor_events, required_vec),
+			(5, pending_monitor_events, required_vec),
 			(7, self.funding_spend_seen, required),
 			(9, self.counterparty_node_id, option),
 			(11, self.confirmed_commitment_tx_counterparty_output, option),
@@ -2727,7 +2761,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	fn generate_claimable_outpoints_and_watch_outputs(&mut self) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
+	fn generate_claimable_outpoints_and_watch_outputs(&mut self, reason: ClosureReason) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
 		let funding_outp = HolderFundingOutput::build(
 			self.funding_redeemscript.clone(),
 			self.channel_value_satoshis,
@@ -2739,7 +2773,13 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.best_block.height, self.best_block.height
 		);
 		let mut claimable_outpoints = vec![commitment_package];
-		self.pending_monitor_events.push(MonitorEvent::HolderForceClosed(self.funding_info.0));
+		let event = MonitorEvent::HolderForceClosedWithInfo {
+			reason,
+			outpoint: self.funding_info.0,
+			channel_id: self.channel_id,
+		};
+		self.pending_monitor_events.push(event);
+
 		// Although we aren't signing the transaction directly here, the transaction will be signed
 		// in the claim that is queued to OnchainTxHandler. We set holder_tx_signed here to reject
 		// new channel updates.
@@ -2775,7 +2815,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs();
+		let (claimable_outpoints, _) = self.generate_claimable_outpoints_and_watch_outputs(ClosureReason::HolderForceClosed);
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, self.best_block.height, self.best_block.height, broadcaster,
 			fee_estimator, logger
@@ -3778,7 +3818,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let should_broadcast = self.should_broadcast_holder_commitment_txn(logger);
 		if should_broadcast {
-			let (mut new_outpoints, mut new_outputs) = self.generate_claimable_outpoints_and_watch_outputs();
+			let (mut new_outpoints, mut new_outputs) = self.generate_claimable_outpoints_and_watch_outputs(ClosureReason::HTLCsTimedOut);
 			claimable_outpoints.append(&mut new_outpoints);
 			watch_outputs.append(&mut new_outputs);
 		}
@@ -4604,6 +4644,16 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(17, initial_counterparty_commitment_info, option),
 			(19, channel_id, option),
 		});
+
+		// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. If we have both
+		// events, we can remove the `HolderForceClosed` event and just keep the `HolderForceClosedWithInfo`.
+		if let Some(ref mut pending_monitor_events) = pending_monitor_events {
+			if pending_monitor_events.iter().any(|e| matches!(e, MonitorEvent::HolderForceClosed(_))) &&
+				pending_monitor_events.iter().any(|e| matches!(e, MonitorEvent::HolderForceClosedWithInfo { .. }))
+			{
+				pending_monitor_events.retain(|e| !matches!(e, MonitorEvent::HolderForceClosed(_)));
+			}
+		}
 
 		// Monitors for anchor outputs channels opened in v0.0.116 suffered from a bug in which the
 		// wrong `counterparty_payment_script` was being tracked. Fix it now on deserialization to
