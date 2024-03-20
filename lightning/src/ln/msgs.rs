@@ -1700,6 +1700,7 @@ mod fuzzy_internal_msgs {
 			payment_secret: PaymentSecret,
 			payment_constraints: PaymentConstraints,
 			intro_node_blinding_point: Option<PublicKey>,
+			keysend_preimage: Option<PaymentPreimage>,
 		}
 	}
 
@@ -1728,6 +1729,7 @@ mod fuzzy_internal_msgs {
 			cltv_expiry_height: u32,
 			encrypted_tlvs: Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
+			keysend_preimage: Option<PaymentPreimage>,
 		}
 	}
 
@@ -2515,14 +2517,15 @@ impl Writeable for OutboundOnionPayload {
 			},
 			Self::BlindedReceive {
 				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
-				intro_node_blinding_point,
+				intro_node_blinding_point, keysend_preimage,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(10, *encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option),
-					(18, HighZeroBytesDroppedBigSize(*total_msat), required)
+					(18, HighZeroBytesDroppedBigSize(*total_msat), required),
+					(5482373484, keysend_preimage, option)
 				});
 			},
 		}
@@ -2572,9 +2575,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 		}
 
 		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
-			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() ||
-				keysend_preimage.is_some()
-			{
+			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue)
 			}
 			let enc_tlvs = encrypted_tlvs_opt.ok_or(DecodeError::InvalidValue)?.0;
@@ -2587,7 +2588,9 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
 					short_channel_id, payment_relay, payment_constraints, features
 				})} => {
-					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() {
+					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
+						keysend_preimage.is_some()
+					{
 						return Err(DecodeError::InvalidValue)
 					}
 					Ok(Self::BlindedForward {
@@ -2609,6 +2612,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						payment_secret,
 						payment_constraints,
 						intro_node_blinding_point,
+						keysend_preimage,
 					})
 				},
 			}
