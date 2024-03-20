@@ -19,7 +19,7 @@ use crate::{GraphSyncError, RapidGossipSync};
 #[cfg(all(feature = "std", not(test)))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(not(feature = "std"))]
+#[cfg(all(not(feature = "std"), not(test)))]
 use alloc::{vec::Vec, borrow::ToOwned};
 
 /// The purpose of this prefix is to identify the serialization format, should other rapid gossip
