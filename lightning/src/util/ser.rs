@@ -1408,6 +1408,11 @@ impl TransactionU16LenLimited {
 	pub fn into_transaction(self) -> Transaction {
 		self.0
 	}
+
+	/// Returns a reference to the contained `Transaction`
+	pub fn as_transaction(&self) -> &Transaction {
+		&self.0
+	}
 }
 
 impl Writeable for TransactionU16LenLimited {

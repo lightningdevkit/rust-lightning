@@ -396,6 +396,10 @@ pub struct ChannelReady {
 	pub short_channel_id_alias: Option<u64>,
 }
 
+/// A randomly chosen number that is used to identify inputs within an interactive transaction
+/// construction.
+pub type SerialId = u64;
+
 /// An stfu (quiescence) message to be sent by or received from the stfu initiator.
 // TODO(splicing): Add spec link for `stfu`; still in draft, using from https://github.com/lightning/bolts/pull/863
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -459,7 +463,7 @@ pub struct TxAddInput {
 	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this input, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 	/// Serialized transaction that contains the output this input spends to verify that it is non
 	/// malleable.
 	pub prevtx: TransactionU16LenLimited,
@@ -478,7 +482,7 @@ pub struct TxAddOutput {
 	pub channel_id: ChannelId,
 	/// A randomly chosen unique identifier for this output, which is even for initiators and odd for
 	/// non-initiators.
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 	/// The satoshi value of the output
 	pub sats: u64,
 	/// The scriptPubKey for the output
@@ -493,7 +497,7 @@ pub struct TxRemoveInput {
 	/// The channel ID
 	pub channel_id: ChannelId,
 	/// The serial ID of the input to be removed
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 }
 
 /// A tx_remove_output message for removing an output during interactive transaction construction.
@@ -504,7 +508,7 @@ pub struct TxRemoveOutput {
 	/// The channel ID
 	pub channel_id: ChannelId,
 	/// The serial ID of the output to be removed
-	pub serial_id: u64,
+	pub serial_id: SerialId,
 }
 
 /// A tx_complete message signalling the conclusion of a peer's transaction contributions during
