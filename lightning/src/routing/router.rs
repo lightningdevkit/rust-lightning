@@ -1181,6 +1181,11 @@ pub struct PrivateHopCandidate<'a> {
 /// A [`CandidateRouteHop::Blinded`] entry.
 #[derive(Clone, Debug)]
 pub struct BlindedPathCandidate<'a> {
+	/// The node id of the introduction node, resolved from either the [`NetworkGraph`] or first
+	/// hops.
+	///
+	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
+	pub source_node_id: &'a NodeId,
 	/// Information about the blinded path including the fee, HTLC amount limits, and
 	/// cryptographic material required to build an HTLC through the given path.
 	///
@@ -1196,6 +1201,11 @@ pub struct BlindedPathCandidate<'a> {
 /// A [`CandidateRouteHop::OneHopBlinded`] entry.
 #[derive(Clone, Debug)]
 pub struct OneHopBlindedPathCandidate<'a> {
+	/// The node id of the introduction node, resolved from either the [`NetworkGraph`] or first
+	/// hops.
+	///
+	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
+	pub source_node_id: &'a NodeId,
 	/// Information about the blinded path including the fee, HTLC amount limits, and
 	/// cryptographic material required to build an HTLC terminating with the given path.
 	///
@@ -1409,8 +1419,8 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::FirstHop(hop) => *hop.payer_node_id,
 			CandidateRouteHop::PublicHop(hop) => *hop.info.source(),
 			CandidateRouteHop::PrivateHop(hop) => hop.hint.src_node_id.into(),
-			CandidateRouteHop::Blinded(hop) => hop.hint.1.introduction_node_id.into(),
-			CandidateRouteHop::OneHopBlinded(hop) => hop.hint.1.introduction_node_id.into(),
+			CandidateRouteHop::Blinded(hop) => *hop.source_node_id,
+			CandidateRouteHop::OneHopBlinded(hop) => *hop.source_node_id,
 		}
 	}
 	/// Returns the target node id of this hop, if known.
@@ -2515,26 +2525,38 @@ where L::Target: Logger {
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
 		for (hint_idx, hint) in payment_params.payee.blinded_route_hints().iter().enumerate() {
-			let intro_node_id = NodeId::from_pubkey(&hint.1.introduction_node_id);
-			let have_intro_node_in_graph =
-				// Only add the hops in this route to our candidate set if either
-				// we have a direct channel to the first hop or the first hop is
-				// in the regular network graph.
-				first_hop_targets.get(&intro_node_id).is_some() ||
-				network_nodes.get(&intro_node_id).is_some();
-			if !have_intro_node_in_graph || our_node_id == intro_node_id { continue }
+			// Only add the hops in this route to our candidate set if either
+			// we have a direct channel to the first hop or the first hop is
+			// in the regular network graph.
+			let source_node_id = match hint.1.public_introduction_node_id(network_graph) {
+				Some(node_id) => node_id,
+				None => {
+					let node_id = NodeId::from_pubkey(&hint.1.introduction_node_id);
+					match first_hop_targets.get_key_value(&node_id).map(|(key, _)| key) {
+						Some(node_id) => node_id,
+						None => continue,
+					}
+				},
+			};
+			if our_node_id == *source_node_id { continue }
 			let candidate = if hint.1.blinded_hops.len() == 1 {
-				CandidateRouteHop::OneHopBlinded(OneHopBlindedPathCandidate { hint, hint_idx })
-			} else { CandidateRouteHop::Blinded(BlindedPathCandidate { hint, hint_idx }) };
+				CandidateRouteHop::OneHopBlinded(
+					OneHopBlindedPathCandidate { source_node_id, hint, hint_idx }
+				)
+			} else {
+				CandidateRouteHop::Blinded(BlindedPathCandidate { source_node_id, hint, hint_idx })
+			};
 			let mut path_contribution_msat = path_value_msat;
 			if let Some(hop_used_msat) = add_entry!(&candidate,
 				0, path_contribution_msat, 0, 0_u64, 0, 0)
 			{
 				path_contribution_msat = hop_used_msat;
 			} else { continue }
-			if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&hint.1.introduction_node_id)) {
-				sort_first_hop_channels(first_channels, &used_liquidities, recommended_value_msat,
-					our_node_pubkey);
+			if let Some(first_channels) = first_hop_targets.get(source_node_id) {
+				let mut first_channels = first_channels.clone();
+				sort_first_hop_channels(
+					&mut first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+				);
 				for details in first_channels {
 					let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 						details, payer_node_id: &our_node_id,
@@ -2630,9 +2652,11 @@ where L::Target: Logger {
 						.saturating_add(1);
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
-					if let Some(first_channels) = first_hop_targets.get_mut(target) {
-						sort_first_hop_channels(first_channels, &used_liquidities,
-							recommended_value_msat, our_node_pubkey);
+					if let Some(first_channels) = first_hop_targets.get(target) {
+						let mut first_channels = first_channels.clone();
+						sort_first_hop_channels(
+							&mut first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+						);
 						for details in first_channels {
 							let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 								details, payer_node_id: &our_node_id,
@@ -2677,9 +2701,11 @@ where L::Target: Logger {
 						// Note that we *must* check if the last hop was added as `add_entry`
 						// always assumes that the third argument is a node to which we have a
 						// path.
-						if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&hop.src_node_id)) {
-							sort_first_hop_channels(first_channels, &used_liquidities,
-								recommended_value_msat, our_node_pubkey);
+						if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&hop.src_node_id)) {
+							let mut first_channels = first_channels.clone();
+							sort_first_hop_channels(
+								&mut first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+							);
 							for details in first_channels {
 								let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 									details, payer_node_id: &our_node_id,
