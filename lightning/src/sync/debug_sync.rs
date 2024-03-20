@@ -103,7 +103,9 @@ fn locate_call_symbol(backtrace: &Backtrace) -> (String, Option<u32>) {
 			}
 		}
 	}
-	let symbol = symbol_after_latest_debug_sync.expect("Couldn't find lock call symbol");
+	let symbol = symbol_after_latest_debug_sync.unwrap_or_else(|| {
+		panic!("Couldn't find lock call symbol in trace {:?}", backtrace);
+	});
 	(format!("{}:{}", symbol.filename().unwrap().display(), symbol.lineno().unwrap()), symbol.colno())
 }
 
