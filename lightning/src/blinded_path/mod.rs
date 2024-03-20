@@ -58,12 +58,35 @@ pub enum IntroductionNode {
 ///
 /// [BOLT 7]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
 /// [`ChannelAnnouncement`]: crate::ln::msgs::ChannelAnnouncement
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Direction {
 	/// The lesser node id when compared lexicographically in ascending order.
 	NodeOne,
 	/// The greater node id when compared lexicographically in ascending order.
 	NodeTwo,
+}
+
+/// An interface for looking up the node id of a channel counterparty for the purpose of forwarding
+/// an [`OnionMessage`].
+///
+/// [`OnionMessage`]: crate::ln::msgs::OnionMessage
+pub trait NodeIdLookUp {
+	/// Returns the node id of the forwarding node's channel counterparty with `short_channel_id`.
+	///
+	/// Here, the forwarding node is referring to the node of the [`OnionMessenger`] parameterized
+	/// by the [`NodeIdLookUp`] and the counterparty to one of that node's peers.
+	///
+	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
+	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey>;
+}
+
+/// A [`NodeIdLookUp`] that always returns `None`.
+pub struct EmptyNodeIdLookUp {}
+
+impl NodeIdLookUp for EmptyNodeIdLookUp {
+	fn next_node_id(&self, _short_channel_id: u64) -> Option<PublicKey> {
+		None
+	}
 }
 
 /// An encrypted payload and node id corresponding to a hop in a payment or onion message path, to
@@ -236,6 +259,19 @@ impl Direction {
 		match self {
 			Direction::NodeOne => core::cmp::min(node_a, node_b),
 			Direction::NodeTwo => core::cmp::max(node_a, node_b),
+		}
+	}
+
+	/// Returns the [`PublicKey`] from the inputs corresponding to the direction.
+	pub fn select_pubkey<'a>(&self, node_a: &'a PublicKey, node_b: &'a PublicKey) -> &'a PublicKey {
+		let (node_one, node_two) = if NodeId::from_pubkey(node_a) < NodeId::from_pubkey(node_b) {
+			(node_a, node_b)
+		} else {
+			(node_b, node_a)
+		};
+		match self {
+			Direction::NodeOne => node_one,
+			Direction::NodeTwo => node_two,
 		}
 	}
 }

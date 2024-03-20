@@ -3,7 +3,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
@@ -84,9 +84,14 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 
 // Advance the blinded onion message path by one hop, so make the second hop into the new
 // introduction node.
-pub(crate) fn advance_path_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-	path: &mut BlindedPath, node_signer: &NS, secp_ctx: &Secp256k1<T>
-) -> Result<(), ()> where NS::Target: NodeSigner {
+pub(crate) fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+	path: &mut BlindedPath, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
+) -> Result<(), ()>
+where
+	NS::Target: NodeSigner,
+	NL::Target: NodeIdLookUp,
+	T: secp256k1::Signing + secp256k1::Verification,
+{
 	let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &path.blinding_point, None)?;
 	let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
 	let encrypted_control_tlvs = path.blinded_hops.remove(0).encrypted_payload;
@@ -98,7 +103,10 @@ pub(crate) fn advance_path_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::
 		}) => {
 			let next_node_id = match next_hop {
 				NextHop::NodeId(pubkey) => pubkey,
-				NextHop::ShortChannelId(_) => todo!(),
+				NextHop::ShortChannelId(scid) => match node_id_lookup.next_node_id(scid) {
+					Some(pubkey) => pubkey,
+					None => return Err(()),
+				},
 			};
 			let mut new_blinding_point = match next_blinding_override {
 				Some(blinding_point) => blinding_point,
