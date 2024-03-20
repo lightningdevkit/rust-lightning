@@ -7004,7 +7004,7 @@ mod tests {
 		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
 
 		let logger = ln_test_utils::TestLogger::new();
-		let (graph, mut scorer) = match super::bench_utils::read_graph_scorer(&logger) {
+		let (graph, scorer) = match super::bench_utils::read_graph_scorer(&logger) {
 			Ok(res) => res,
 			Err(e) => {
 				eprintln!("{}", e);
