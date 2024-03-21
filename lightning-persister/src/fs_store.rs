@@ -379,7 +379,6 @@ mod tests {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::util::test_utils;
 	use lightning::util::persist::read_channel_monitors;
-	use std::fs;
 	use std::str::FromStr;
 
 	impl Drop for FilesystemStore {
