@@ -13,6 +13,7 @@ use crate::chain;
 use crate::chain::WatchedOutput;
 use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
+#[cfg(test)]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor;
 use crate::chain::chainmonitor::{MonitorUpdateId, UpdateOrigin};
@@ -25,6 +26,7 @@ use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
 use crate::ln::ChannelId;
 use crate::ln::channelmanager::{ChannelDetails, self};
+#[cfg(test)]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
@@ -396,12 +398,14 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	}
 }
 
+#[cfg(test)]
 struct JusticeTxData {
 	justice_tx: Transaction,
 	value: u64,
 	commitment_number: u64,
 }
 
+#[cfg(test)]
 pub(crate) struct WatchtowerPersister {
 	persister: TestPersister,
 	/// Upon a new commitment_signed, we'll get a
@@ -415,6 +419,7 @@ pub(crate) struct WatchtowerPersister {
 	destination_script: ScriptBuf,
 }
 
+#[cfg(test)]
 impl WatchtowerPersister {
 	#[cfg(test)]
 	pub(crate) fn new(destination_script: ScriptBuf) -> Self {
@@ -445,6 +450,7 @@ impl WatchtowerPersister {
 	}
 }
 
+#[cfg(test)]
 impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint,
 		data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId
