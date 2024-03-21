@@ -6,7 +6,7 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::schnorr;
 
-use lightning::blinded_path::BlindedPath;
+use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
@@ -36,12 +36,13 @@ pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
 			node_secret: secret,
 			counter: AtomicU64::new(0),
 		};
+		let node_id_lookup = EmptyNodeIdLookUp {};
 		let message_router = TestMessageRouter {};
 		let offers_msg_handler = TestOffersMessageHandler {};
 		let custom_msg_handler = TestCustomMessageHandler {};
 		let onion_messenger = OnionMessenger::new(
-			&keys_manager, &keys_manager, logger, &message_router, &offers_msg_handler,
-			&custom_msg_handler
+			&keys_manager, &keys_manager, logger, &node_id_lookup, &message_router,
+			&offers_msg_handler, &custom_msg_handler
 		);
 
 		let peer_node_id = {
