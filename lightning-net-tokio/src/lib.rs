@@ -556,7 +556,6 @@ mod tests {
 	use lightning::ln::features::*;
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{MessageHandler, PeerManager};
-	use lightning::ln::features::NodeFeatures;
 	use lightning::routing::gossip::NodeId;
 	use lightning::events::*;
 	use lightning::util::test_utils::TestNodeSigner;
