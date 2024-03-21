@@ -1041,6 +1041,18 @@ pub enum Event {
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	BumpTransaction(BumpTransactionEvent),
+	/// We received an onion message that is intended to be forwarded to a peer
+	/// that is currently offline. This event will only be generated if the
+	/// `OnionMessenger` was initialized with
+	/// [`OnionMessenger::new_with_offline_peer_interception`], see its docs.
+	///
+	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
+	OnionMessageIntercepted {
+		/// The node id of the offline peer.
+		peer_node_id: PublicKey,
+		/// The onion message intended to be forwarded to `peer_node_id`.
+		message: msgs::OnionMessage,
+	},
 }
 
 impl Writeable for Event {
@@ -1286,6 +1298,13 @@ impl Writeable for Event {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
 			},
+			&Event::OnionMessageIntercepted { ref peer_node_id, ref message } => {
+				37u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, peer_node_id, required),
+					(2, message, required),
+				});
+			}
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -1697,6 +1716,18 @@ impl MaybeReadable for Event {
 			},
 			// Note that we do not write a length-prefixed TLV for ConnectionNeeded events.
 			35u8 => Ok(None),
+			37u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(0, peer_node_id, required),
+						(2, message, required),
+					});
+					Ok(Some(Event::OnionMessageIntercepted {
+						peer_node_id: peer_node_id.0.unwrap(), message: message.0.unwrap()
+					}))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
