@@ -31,7 +31,6 @@ pub mod utils;
 
 extern crate bech32;
 #[macro_use] extern crate lightning;
-extern crate num_traits;
 extern crate secp256k1;
 extern crate alloc;
 #[cfg(any(test, feature = "std"))]
@@ -2064,7 +2063,7 @@ mod test {
 		let route_1 = RouteHint(vec![
 			RouteHintHop {
 				src_node_id: public_key,
-				short_channel_id: de::parse_int_be(&[123; 8], 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes([123; 8]),
 				fees: RoutingFees {
 					base_msat: 2,
 					proportional_millionths: 1,
@@ -2075,7 +2074,7 @@ mod test {
 			},
 			RouteHintHop {
 				src_node_id: public_key,
-				short_channel_id: de::parse_int_be(&[42; 8], 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes([42; 8]),
 				fees: RoutingFees {
 					base_msat: 3,
 					proportional_millionths: 2,
@@ -2100,7 +2099,7 @@ mod test {
 			},
 			RouteHintHop {
 				src_node_id: public_key,
-				short_channel_id: de::parse_int_be(&[1; 8], 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes([1; 8]),
 				fees: RoutingFees {
 					base_msat: 5,
 					proportional_millionths: 4,
