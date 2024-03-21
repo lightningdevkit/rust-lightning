@@ -53,7 +53,6 @@ use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 
 use crate::prelude::*;
-use core::convert::TryInto;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(taproot)]

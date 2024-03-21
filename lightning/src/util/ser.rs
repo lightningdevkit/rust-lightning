@@ -19,7 +19,6 @@ use crate::io_extras::{copy, sink};
 use core::hash::Hash;
 use crate::sync::{Mutex, RwLock};
 use core::cmp;
-use core::convert::TryFrom;
 use core::ops::Deref;
 
 use alloc::collections::BTreeMap;
@@ -35,7 +34,6 @@ use bitcoin::{consensus, Witness};
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
-use core::marker::Sized;
 use core::time::Duration;
 use crate::chain::ClaimId;
 use crate::ln::msgs::DecodeError;
@@ -1494,10 +1492,10 @@ impl Readable for ClaimId {
 
 #[cfg(test)]
 mod tests {
-	use core::convert::TryFrom;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::ecdsa;
 	use crate::util::ser::{Readable, Hostname, Writeable};
+	use crate::prelude::*;
 
 	#[test]
 	fn hostname_conversion() {

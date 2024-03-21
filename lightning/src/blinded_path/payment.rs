@@ -17,8 +17,6 @@ use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, Writeable, Writer}
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use core::convert::TryFrom;
-
 /// An intermediate node, its outbound channel, and relay parameters.
 #[derive(Clone, Debug)]
 pub struct ForwardNode {

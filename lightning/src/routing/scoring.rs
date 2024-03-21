@@ -64,7 +64,6 @@ use crate::util::logger::Logger;
 
 use crate::prelude::*;
 use core::{cmp, fmt};
-use core::convert::TryInto;
 use core::ops::{Deref, DerefMut};
 use core::time::Duration;
 use crate::io::{self, Read};

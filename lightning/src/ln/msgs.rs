@@ -41,8 +41,6 @@ use crate::sign::{NodeSigner, Recipient};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-#[cfg(feature = "std")]
-use core::convert::TryFrom;
 use core::fmt;
 use core::fmt::Debug;
 use core::ops::Deref;
@@ -3167,7 +3165,6 @@ impl_writeable_msg!(GossipTimestampFilter, {
 
 #[cfg(test)]
 mod tests {
-	use std::convert::TryFrom;
 	use bitcoin::{Transaction, TxIn, ScriptBuf, Sequence, Witness, TxOut};
 	use hex::DisplayHex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};

@@ -36,7 +36,6 @@ use crate::util::ser::{Readable, Writer, Writeable, RequiredWrapper};
 
 use crate::io;
 use core::cmp;
-use core::convert::TryInto;
 use core::mem;
 use core::ops::Deref;
 

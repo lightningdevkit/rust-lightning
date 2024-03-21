@@ -76,8 +76,8 @@ pub(crate) mod fake_scid {
 	use crate::sign::EntropySource;
 	use crate::crypto::chacha20::ChaCha20;
 	use crate::util::scid_utils;
+	use crate::prelude::*;
 
-	use core::convert::TryInto;
 	use core::ops::Deref;
 
 	const TEST_SEGWIT_ACTIVATION_HEIGHT: u32 = 1;

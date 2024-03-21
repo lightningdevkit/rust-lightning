@@ -30,7 +30,6 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::io::{Cursor, Read};
-use core::convert::{AsMut, TryInto};
 use core::ops::Deref;
 
 #[allow(unused_imports)]

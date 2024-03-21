@@ -59,9 +59,6 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 
-#[cfg(any(test, feature = "_test_utils"))]
-use regex;
-
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;

@@ -1,10 +1,8 @@
 //! This module has a map which can be iterated in a deterministic order. See the [`IndexedMap`].
 
 use crate::prelude::*;
-use alloc::vec::Vec;
 use alloc::slice::Iter;
 use core::hash::Hash;
-use core::cmp::Ord;
 use core::ops::{Bound, RangeBounds};
 
 /// A map which can be iterated in a deterministic order.
