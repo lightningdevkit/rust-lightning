@@ -1331,14 +1331,63 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 	recipient_onion: RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
 	keysend_preimage: &Option<PaymentPreimage>, prng_seed: [u8; 32],
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
-	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv).map_err(|_| {
+	let mut outer_private_key = session_priv;
+	let mut outer_recipient_onion = RecipientOnion::Final(recipient_onion);
+	let mut outer_destinatation_msat = total_msat;
+	let mut outer_cltv = cur_block_height;
+
+	if !path.trampoline_hops.is_empty() {
+		// TODO: replace outer_private_key to NOT be session_priv (pass in an entropy source?)
+
+		// unwrap the previously wrapped recipient onion
+		// TODO: find a way to make this less awkward
+		let RecipientOnion::Final(recipient_onion) = outer_recipient_onion else {
+			unreachable!()
+		};
+
+		let trampoline_keys =
+			construct_trampoline_keys(&secp_ctx, &path.trampoline_hops, &session_priv).unwrap();
+		let inner_recipient_onion = recipient_onion.clone();
+		// ensure that there is no value inside the payment secret option
+		let (trampoline_payloads, htlc_msat, htlc_cltv) = build_trampoline_payloads(
+			path,
+			total_msat,
+			inner_recipient_onion,
+			cur_block_height,
+			keysend_preimage,
+		)?;
+
+		// TODO: allow error conversion with ?
+		// TODO: calculate trampoline packet size (currently 650) dynamically
+		let trampoline_packet = construct_variable_length_onion_packet(
+			trampoline_payloads,
+			trampoline_keys,
+			prng_seed,
+			payment_hash,
+			650,
+		)
+		.unwrap();
+
+		let trampoline_onion = TrampolineEntryOnionFields {
+			trampoline_packet,
+			payment_metadata: recipient_onion.payment_metadata,
+			custom_tlvs: recipient_onion.custom_tlvs,
+		};
+		outer_recipient_onion = RecipientOnion::TrampolineEntry(trampoline_onion);
+
+		// TODO: introduce additional padding here?
+		outer_destinatation_msat = htlc_msat;
+		outer_cltv = htlc_cltv;
+	}
+
+	let onion_keys = construct_onion_keys(&secp_ctx, &path, &outer_private_key).map_err(|_| {
 		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
 	})?;
 	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
 		&path,
-		total_msat,
-		recipient_onion.into(),
-		cur_block_height,
+		outer_destinatation_msat,
+		outer_recipient_onion,
+		outer_cltv,
 		keysend_preimage,
 	)?;
 	let onion_packet = construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)
