@@ -170,6 +170,9 @@ mod prelude {
 	pub use alloc::borrow::ToOwned;
 	pub use alloc::string::ToString;
 
+	pub use core::convert::{TryFrom, TryInto};
+	pub use core::marker::Sized;
+
 	pub(crate) use crate::util::hash_tables::*;
 }
 
