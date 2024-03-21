@@ -172,6 +172,8 @@ where
 	message_router: MR,
 	offers_handler: OMH,
 	custom_handler: CMH,
+	intercept_oms_for_offline_peers: bool,
+	pending_events: Mutex<Vec<Event>>,
 }
 
 /// [`OnionMessage`]s buffered to be sent.
@@ -714,6 +716,27 @@ where
 		entropy_source: ES, node_signer: NS, logger: L, message_router: MR, offers_handler: OMH,
 		custom_handler: CMH
 	) -> Self {
+		Self::new_inner(
+			entropy_source, node_signer, logger, message_router, offers_handler,
+			custom_handler, false
+		)
+	}
+
+	///
+	pub fn new_with_offline_peer_interception(
+		entropy_source: ES, node_signer: NS, logger: L, message_router: MR, offers_handler: OMH,
+		custom_handler: CMH
+	) -> Self {
+		Self::new_inner(
+			entropy_source, node_signer, logger, message_router, offers_handler,
+			custom_handler, true
+		)
+	}
+
+	fn new_inner(
+		entropy_source: ES, node_signer: NS, logger: L, message_router: MR, offers_handler: OMH,
+		custom_handler: CMH, intercept_oms_for_offline_peers: bool
+	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 		OnionMessenger {
@@ -725,6 +748,8 @@ where
 			message_router,
 			offers_handler,
 			custom_handler,
+			intercept_oms_for_offline_peers,
+			pending_events: Mutex::new(Vec::new()),
 		}
 	}
 
@@ -918,6 +943,11 @@ where
 				}
 			}
 		}
+		let mut events = Vec::new();
+		core::mem::swap(&mut *self.pending_events.lock().unwrap(), &mut events);
+		for ev in events {
+			handler.handle_event(ev);
+		}
 	}
 }
 
@@ -982,6 +1012,13 @@ where
 					) => {
 						e.get_mut().enqueue_message(onion_message);
 						log_trace!(logger, "Forwarding an onion message to peer {}", next_node_id);
+					},
+					_ if self.intercept_oms_for_offline_peers => {
+						self.pending_events.lock().unwrap().push(
+							Event::OnionMessageForOfflinePeer {
+								peer_node_id: next_node_id, message: onion_message
+							}
+						);
 					},
 					_ => {
 						log_trace!(
