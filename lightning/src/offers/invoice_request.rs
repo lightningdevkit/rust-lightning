@@ -61,7 +61,6 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::{AsRef, TryFrom};
 use core::ops::Deref;
 use crate::sign::EntropySource;
 use crate::io;
@@ -1104,7 +1103,6 @@ mod tests {
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey, self};
-	use core::convert::TryFrom;
 	use core::num::NonZeroU64;
 	#[cfg(feature = "std")]
 	use core::time::Duration;

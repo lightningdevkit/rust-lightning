@@ -39,7 +39,6 @@ use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 use crate::io;
 use crate::prelude::*;
-use core::default::Default;
 
 use crate::ln::functional_test_utils::*;
 

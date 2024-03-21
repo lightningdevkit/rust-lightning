@@ -49,12 +49,9 @@ use bitcoin::OutPoint as BitcoinOutPoint;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 
-use regex;
-
 use crate::io;
 use crate::prelude::*;
 use alloc::collections::BTreeSet;
-use core::default::Default;
 use core::iter::repeat;
 use bitcoin::hashes::Hash;
 use crate::sync::{Arc, Mutex, RwLock};

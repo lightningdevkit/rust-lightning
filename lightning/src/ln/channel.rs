@@ -50,7 +50,6 @@ use crate::util::scid_utils::scid_from_parts;
 use crate::io;
 use crate::prelude::*;
 use core::{cmp,mem,fmt};
-use core::convert::TryInto;
 use core::ops::Deref;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;

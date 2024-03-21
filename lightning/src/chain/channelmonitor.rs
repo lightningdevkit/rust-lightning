@@ -58,7 +58,6 @@ use crate::prelude::*;
 
 use core::{cmp, mem};
 use crate::io::{self, Error};
-use core::convert::TryInto;
 use core::ops::Deref;
 use crate::sync::{Mutex, LockTestExt};
 

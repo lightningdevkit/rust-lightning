@@ -9,7 +9,6 @@
 
 //! Utilities to generate inbound payment information in service of invoice creation.
 
-use alloc::string::ToString;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
@@ -23,7 +22,9 @@ use crate::crypto::utils::hkdf_extract_expand_5x;
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 
-use core::convert::{TryFrom, TryInto};
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use core::ops::Deref;
 
 pub(crate) const IV_LEN: usize = 16;

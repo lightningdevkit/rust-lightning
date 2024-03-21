@@ -12,7 +12,6 @@
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::AsRef;
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
 

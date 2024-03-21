@@ -40,7 +40,6 @@ use crate::util::string::PrintableString;
 use crate::prelude::*;
 
 use crate::io;
-use alloc::collections::VecDeque;
 use crate::sync::{Mutex, MutexGuard, FairRwLock};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicI32, Ordering};
 use core::{cmp, hash, fmt, mem};
