@@ -394,15 +394,17 @@ pub(super) fn build_onion_payloads(
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
 pub(super) fn build_trampoline_payloads(
-	path: &[TrampolineHop], total_msat: u64, mut recipient_onion: RecipientOnionFields,
+	path: &Path, total_msat: u64, mut recipient_onion: RecipientOnionFields,
 	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
 ) -> Result<(Vec<msgs::OutboundOnionPayload>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
-	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(path.len());
 	let mut last_node_id = None;
+	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(
+		path.trampoline_hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
+	);
 
-	for (idx, hop) in path.iter().rev().enumerate() {
+	for (idx, hop) in path.trampoline_hops.iter().rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
@@ -413,25 +415,54 @@ pub(super) fn build_trampoline_payloads(
 			cur_cltv
 		};
 		if idx == 0 {
-			res.push(msgs::OutboundOnionPayload::Receive {
-				payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
-					Some(msgs::FinalOnionHopData { payment_secret: secret, total_msat })
-				} else {
-					None
-				},
-				payment_metadata: recipient_onion.payment_metadata.take(),
-				keysend_preimage: *keysend_preimage,
-				custom_tlvs: recipient_onion.custom_tlvs.clone(),
-				sender_intended_htlc_amt_msat: value_msat,
-				cltv_expiry_height: cltv,
-			});
+			if let Some(BlindedTail {
+				blinding_point,
+				hops,
+				final_value_msat,
+				excess_final_cltv_expiry_delta,
+				..
+			}) = &path.blinded_tail
+			{
+				let mut blinding_point = Some(*blinding_point);
+				for (i, blinded_hop) in hops.iter().enumerate() {
+					if i == hops.len() - 1 {
+						cur_value_msat += final_value_msat;
+						res.push(msgs::OutboundOnionPayload::BlindedReceive {
+							sender_intended_htlc_amt_msat: *final_value_msat,
+							total_msat,
+							cltv_expiry_height: cur_cltv + excess_final_cltv_expiry_delta,
+							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							intro_node_blinding_point: blinding_point.take(),
+						});
+					} else {
+						res.push(msgs::OutboundOnionPayload::BlindedForward {
+							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							intro_node_blinding_point: blinding_point.take(),
+						});
+					}
+				}
+			} else {
+				res.push(msgs::OutboundOnionPayload::Receive {
+					payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
+						Some(msgs::FinalOnionHopData { payment_secret: secret, total_msat })
+					} else {
+						None
+					},
+					payment_metadata: recipient_onion.payment_metadata.take(),
+					keysend_preimage: *keysend_preimage,
+					custom_tlvs: recipient_onion.custom_tlvs.clone(),
+					sender_intended_htlc_amt_msat: value_msat,
+					cltv_expiry_height: cltv,
+				});
+			}
 		} else {
 			res.insert(
 				0,
 				msgs::OutboundOnionPayload::TrampolineForward {
 					amt_to_forward: value_msat,
 					outgoing_cltv_value: cltv,
-					outgoing_node_id: last_node_id.unwrap(),
+					outgoing_node_id: last_node_id
+						.expect("outgoing node id cannot be None after last hop"),
 				},
 			);
 		}
