@@ -89,6 +89,7 @@ use {
 	crate::offers::invoice::{InvoiceWithDerivedSigningPubkeyBuilder, InvoiceWithExplicitSigningPubkeyBuilder},
 };
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 /// Tag for the hash function used when signing an [`InvoiceRequest`]'s merkle root.

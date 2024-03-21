@@ -16,6 +16,7 @@ use core::convert::AsRef;
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 /// Valid type range for signature TLV records.

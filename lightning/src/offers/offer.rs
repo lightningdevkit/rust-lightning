@@ -107,6 +107,7 @@ use {
 	crate::offers::invoice_request::{InvoiceRequestWithDerivedPayerIdBuilder, InvoiceRequestWithExplicitPayerIdBuilder},
 };
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 #[cfg(feature = "std")]

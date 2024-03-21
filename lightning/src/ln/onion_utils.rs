@@ -30,9 +30,11 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::io::{Cursor, Read};
-use crate::prelude::*;
 use core::convert::{AsMut, TryInto};
 use core::ops::Deref;
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 pub(crate) struct OnionKeys {
 	#[cfg(test)]
@@ -1240,9 +1242,11 @@ mod tests {
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs;
 	use crate::ln::PaymentHash;
-	use crate::prelude::*;
 	use crate::routing::router::{Path, Route, RouteHop};
 	use crate::util::ser::{VecWriter, Writeable, Writer};
+
+	#[allow(unused_imports)]
+	use crate::prelude::*;
 
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::Secp256k1;

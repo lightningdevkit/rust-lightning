@@ -20,7 +20,9 @@ use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::logger::Logger;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 use core::ops::Deref;
 
 /// Invalid inbound onion payment.

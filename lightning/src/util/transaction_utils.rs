@@ -14,7 +14,9 @@ use bitcoin::consensus::encode::VarInt;
 
 use crate::ln::msgs::MAX_VALUE_MSAT;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 use crate::io_extras::sink;
 use core::cmp::Ordering;
 

@@ -115,6 +115,7 @@ use {
 	crate::offers::invoice::{InvoiceWithDerivedSigningPubkeyBuilder, InvoiceWithExplicitSigningPubkeyBuilder},
 };
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 #[cfg(feature = "std")]
