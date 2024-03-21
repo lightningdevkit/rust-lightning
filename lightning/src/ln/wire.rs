@@ -54,8 +54,10 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Ping(msgs::Ping),
 	Pong(msgs::Pong),
 	OpenChannel(msgs::OpenChannel),
+	#[cfg(dual_funding)]
 	OpenChannelV2(msgs::OpenChannelV2),
 	AcceptChannel(msgs::AcceptChannel),
+	#[cfg(dual_funding)]
 	AcceptChannelV2(msgs::AcceptChannelV2),
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
@@ -63,14 +65,23 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Splice(msgs::Splice),
 	SpliceAck(msgs::SpliceAck),
 	SpliceLocked(msgs::SpliceLocked),
+	#[cfg(dual_funding)]
 	TxAddInput(msgs::TxAddInput),
+	#[cfg(dual_funding)]
 	TxAddOutput(msgs::TxAddOutput),
+	#[cfg(dual_funding)]
 	TxRemoveInput(msgs::TxRemoveInput),
+	#[cfg(dual_funding)]
 	TxRemoveOutput(msgs::TxRemoveOutput),
+	#[cfg(dual_funding)]
 	TxComplete(msgs::TxComplete),
+	#[cfg(dual_funding)]
 	TxSignatures(msgs::TxSignatures),
+	#[cfg(dual_funding)]
 	TxInitRbf(msgs::TxInitRbf),
+	#[cfg(dual_funding)]
 	TxAckRbf(msgs::TxAckRbf),
+	#[cfg(dual_funding)]
 	TxAbort(msgs::TxAbort),
 	ChannelReady(msgs::ChannelReady),
 	Shutdown(msgs::Shutdown),
@@ -109,8 +120,10 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Ping(ref msg) => msg.write(writer),
 			&Message::Pong(ref msg) => msg.write(writer),
 			&Message::OpenChannel(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::OpenChannelV2(ref msg) => msg.write(writer),
 			&Message::AcceptChannel(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::AcceptChannelV2(ref msg) => msg.write(writer),
 			&Message::FundingCreated(ref msg) => msg.write(writer),
 			&Message::FundingSigned(ref msg) => msg.write(writer),
@@ -118,14 +131,23 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Splice(ref msg) => msg.write(writer),
 			&Message::SpliceAck(ref msg) => msg.write(writer),
 			&Message::SpliceLocked(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::TxAddInput(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::TxAddOutput(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::TxRemoveInput(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::TxRemoveOutput(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::TxComplete(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::TxSignatures(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::TxInitRbf(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::TxAckRbf(ref msg) => msg.write(writer),
+			#[cfg(dual_funding)]
 			&Message::TxAbort(ref msg) => msg.write(writer),
 			&Message::ChannelReady(ref msg) => msg.write(writer),
 			&Message::Shutdown(ref msg) => msg.write(writer),
@@ -164,8 +186,10 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Ping(ref msg) => msg.type_id(),
 			&Message::Pong(ref msg) => msg.type_id(),
 			&Message::OpenChannel(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::OpenChannelV2(ref msg) => msg.type_id(),
 			&Message::AcceptChannel(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::AcceptChannelV2(ref msg) => msg.type_id(),
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
@@ -173,14 +197,23 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Splice(ref msg) => msg.type_id(),
 			&Message::SpliceAck(ref msg) => msg.type_id(),
 			&Message::SpliceLocked(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::TxAddInput(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::TxAddOutput(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::TxRemoveInput(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::TxRemoveOutput(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::TxComplete(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::TxSignatures(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::TxInitRbf(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::TxAckRbf(ref msg) => msg.type_id(),
+			#[cfg(dual_funding)]
 			&Message::TxAbort(ref msg) => msg.type_id(),
 			&Message::ChannelReady(ref msg) => msg.type_id(),
 			&Message::Shutdown(ref msg) => msg.type_id(),
@@ -255,12 +288,14 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::OpenChannel::TYPE => {
 			Ok(Message::OpenChannel(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::OpenChannelV2::TYPE => {
 			Ok(Message::OpenChannelV2(Readable::read(buffer)?))
 		},
 		msgs::AcceptChannel::TYPE => {
 			Ok(Message::AcceptChannel(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::AcceptChannelV2::TYPE => {
 			Ok(Message::AcceptChannelV2(Readable::read(buffer)?))
 		},
@@ -282,30 +317,39 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::SpliceLocked::TYPE => {
 			Ok(Message::SpliceLocked(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::TxAddInput::TYPE => {
 			Ok(Message::TxAddInput(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::TxAddOutput::TYPE => {
 			Ok(Message::TxAddOutput(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::TxRemoveInput::TYPE => {
 			Ok(Message::TxRemoveInput(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::TxRemoveOutput::TYPE => {
 			Ok(Message::TxRemoveOutput(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::TxComplete::TYPE => {
 			Ok(Message::TxComplete(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::TxSignatures::TYPE => {
 			Ok(Message::TxSignatures(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::TxInitRbf::TYPE => {
 			Ok(Message::TxInitRbf(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::TxAckRbf::TYPE => {
 			Ok(Message::TxAckRbf(Readable::read(buffer)?))
 		},
+		#[cfg(dual_funding)]
 		msgs::TxAbort::TYPE => {
 			Ok(Message::TxAbort(Readable::read(buffer)?))
 		},

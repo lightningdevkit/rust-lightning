@@ -782,11 +782,23 @@ pub struct UserConfig {
 	/// [`msgs::AcceptChannel`] message will not be sent back to the counterparty node unless the
 	/// user explicitly chooses to accept the request.
 	///
+	// TODO(dual_funding): Make these part of doc comments when #[cfg(dual_funding)] is dropped.
+	// To be able to contribute to inbound dual-funded channels, this field must be set to true.
+	// In that case the analogous [`Event::OpenChannelV2Request`] will be triggered once a request
+	// to open a new dual-funded channel is received through a [`msgs::OpenChannelV2`] message.
+	// A corresponding [`msgs::AcceptChannelV2`] message will not be sent back to the counterparty
+	// node until the user explicitly chooses to accept the request, optionally contributing funds
+	// to it.
+	///
 	/// Default value: false.
 	///
 	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
 	/// [`msgs::OpenChannel`]: crate::ln::msgs::OpenChannel
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
+	// TODO(dual_funding): Make these part of doc comments when #[cfg(dual_funding)] is dropped.
+	// [`Event::OpenChannelV2Request`]: crate::events::Event::OpenChannelV2Request
+	// [`msgs::OpenChannelV2`]: crate::ln::msgs::OpenChannelV2
+	// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
 	pub manually_accept_inbound_channels: bool,
 	///  If this is set to true, LDK will intercept HTLCs that are attempting to be forwarded over
 	///  fake short channel ids generated via [`ChannelManager::get_intercept_scid`]. Upon HTLC
