@@ -6112,73 +6112,82 @@ where
 		// happening and return an error. N.B. that we create channel with an outbound SCID of zero so
 		// that we can delay allocating the SCID until after we're sure that the checks below will
 		// succeed.
-		let mut channel = match peer_state.inbound_channel_request_by_id.remove(temporary_channel_id) {
+		let res = match peer_state.inbound_channel_request_by_id.remove(temporary_channel_id) {
 			Some(unaccepted_channel) => {
 				let best_block_height = self.best_block.read().unwrap().height;
 				InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
 					counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features,
 					&unaccepted_channel.open_channel_msg, user_channel_id, &self.default_configuration, best_block_height,
-					&self.logger, accept_0conf).map_err(|e| {
-						let err_str = e.to_string();
-						log_error!(logger, "{}", err_str);
-
-						APIError::ChannelUnavailable { err: err_str }
-					})
-				}
+					&self.logger, accept_0conf).map_err(|err| MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id))
+			},
 			_ => {
 				let err_str = "No such channel awaiting to be accepted.".to_owned();
 				log_error!(logger, "{}", err_str);
 
-				Err(APIError::APIMisuseError { err: err_str })
-			}
-		}?;
-
-		if accept_0conf {
-			// This should have been correctly configured by the call to InboundV1Channel::new.
-			debug_assert!(channel.context.minimum_depth().unwrap() == 0);
-		} else if channel.context.get_channel_type().requires_zero_conf() {
-			let send_msg_err_event = events::MessageSendEvent::HandleError {
-				node_id: channel.context.get_counterparty_node_id(),
-				action: msgs::ErrorAction::SendErrorMessage{
-					msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "No zero confirmation channels accepted".to_owned(), }
-				}
-			};
-			peer_state.pending_msg_events.push(send_msg_err_event);
-			let err_str = "Please use accept_inbound_channel_from_trusted_peer_0conf to accept channels with zero confirmations.".to_owned();
-			log_error!(logger, "{}", err_str);
-
-			return Err(APIError::APIMisuseError { err: err_str });
-		} else {
-			// If this peer already has some channels, a new channel won't increase our number of peers
-			// with unfunded channels, so as long as we aren't over the maximum number of unfunded
-			// channels per-peer we can accept channels from a peer with existing ones.
-			if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
-				let send_msg_err_event = events::MessageSendEvent::HandleError {
-					node_id: channel.context.get_counterparty_node_id(),
-					action: msgs::ErrorAction::SendErrorMessage{
-						msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
-					}
-				};
-				peer_state.pending_msg_events.push(send_msg_err_event);
-				let err_str = "Too many peers with unfunded channels, refusing to accept new ones".to_owned();
-				log_error!(logger, "{}", err_str);
-
 				return Err(APIError::APIMisuseError { err: err_str });
 			}
+		};
+
+		match res {
+			Err(err) => {
+				mem::drop(peer_state_lock);
+				mem::drop(per_peer_state);
+				match handle_error!(self, Result::<(), MsgHandleErrInternal>::Err(err), *counterparty_node_id) {
+					Ok(_) => unreachable!("`handle_error` only returns Err as we've passed in an Err"),
+					Err(e) => {
+						return Err(APIError::ChannelUnavailable { err: e.err });
+					},
+				}
+			}
+			Ok(mut channel) => {
+				if accept_0conf {
+					// This should have been correctly configured by the call to InboundV1Channel::new.
+					debug_assert!(channel.context.minimum_depth().unwrap() == 0);
+				} else if channel.context.get_channel_type().requires_zero_conf() {
+					let send_msg_err_event = events::MessageSendEvent::HandleError {
+						node_id: channel.context.get_counterparty_node_id(),
+						action: msgs::ErrorAction::SendErrorMessage{
+							msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "No zero confirmation channels accepted".to_owned(), }
+						}
+					};
+					peer_state.pending_msg_events.push(send_msg_err_event);
+					let err_str = "Please use accept_inbound_channel_from_trusted_peer_0conf to accept channels with zero confirmations.".to_owned();
+					log_error!(logger, "{}", err_str);
+
+					return Err(APIError::APIMisuseError { err: err_str });
+				} else {
+					// If this peer already has some channels, a new channel won't increase our number of peers
+					// with unfunded channels, so as long as we aren't over the maximum number of unfunded
+					// channels per-peer we can accept channels from a peer with existing ones.
+					if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
+						let send_msg_err_event = events::MessageSendEvent::HandleError {
+							node_id: channel.context.get_counterparty_node_id(),
+							action: msgs::ErrorAction::SendErrorMessage{
+								msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
+							}
+						};
+						peer_state.pending_msg_events.push(send_msg_err_event);
+						let err_str = "Too many peers with unfunded channels, refusing to accept new ones".to_owned();
+						log_error!(logger, "{}", err_str);
+
+						return Err(APIError::APIMisuseError { err: err_str });
+					}
+				}
+
+				// Now that we know we have a channel, assign an outbound SCID alias.
+				let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
+				channel.context.set_outbound_scid_alias(outbound_scid_alias);
+
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+					node_id: channel.context.get_counterparty_node_id(),
+					msg: channel.accept_inbound_channel(),
+				});
+
+				peer_state.channel_by_id.insert(temporary_channel_id.clone(), ChannelPhase::UnfundedInboundV1(channel));
+
+				Ok(())
+			},
 		}
-
-		// Now that we know we have a channel, assign an outbound SCID alias.
-		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
-		channel.context.set_outbound_scid_alias(outbound_scid_alias);
-
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-			node_id: channel.context.get_counterparty_node_id(),
-			msg: channel.accept_inbound_channel(),
-		});
-
-		peer_state.channel_by_id.insert(temporary_channel_id.clone(), ChannelPhase::UnfundedInboundV1(channel));
-
-		Ok(())
 	}
 
 	/// Gets the number of peers which match the given filter and do not have any funded, outbound,

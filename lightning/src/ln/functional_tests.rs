@@ -10983,3 +10983,36 @@ fn test_funding_and_commitment_tx_confirm_same_block() {
 	do_test_funding_and_commitment_tx_confirm_same_block(false);
 	do_test_funding_and_commitment_tx_confirm_same_block(true);
 }
+
+#[test]
+fn test_accept_inbound_channel_errors_queued() {
+	// For manually accepted inbound channels, tests that a close error is correctly handled
+	// and the channel fails for the initiator.
+	let mut config0 = test_default_channel_config();
+	let mut config1 = config0.clone();
+	config1.channel_handshake_limits.their_to_self_delay = 1000;
+	config1.manually_accept_inbound_channels = true;
+	config0.channel_handshake_config.our_to_self_delay = 2000;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config0), Some(config1)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
+	let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			match nodes[1].node.accept_inbound_channel(&temporary_channel_id, &nodes[0].node.get_our_node_id(), 23) {
+				Err(APIError::ChannelUnavailable { err: _ }) => (),
+				_ => panic!(),
+			}
+		}
+		_ => panic!("Unexpected event"),
+	}
+	assert_eq!(get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id()).channel_id,
+		open_channel_msg.common_fields.temporary_channel_id);
+}
