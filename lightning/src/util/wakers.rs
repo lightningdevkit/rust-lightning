@@ -17,6 +17,7 @@ use alloc::sync::Arc;
 use core::mem;
 use crate::sync::Mutex;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 #[cfg(feature = "std")]

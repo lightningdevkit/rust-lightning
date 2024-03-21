@@ -12,8 +12,10 @@ use crate::ln::channelmanager::CounterpartyForwardingInfo;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
-use crate::prelude::*;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, Writeable, Writer};
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 use core::convert::TryFrom;
 

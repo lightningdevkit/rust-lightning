@@ -20,6 +20,7 @@
 //! <https://lightning.readthedocs.io/lightning-signmessage.7.html>
 //! <https://api.lightning.community/#signmessage>
 
+#[allow(unused)]
 use crate::prelude::*;
 use crate::util::base32;
 use bitcoin::hashes::{sha256d, Hash};

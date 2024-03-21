@@ -1,4 +1,4 @@
-// This file is Copyright its original authors, visible in version control
+    // This file is Copyright its original authors, visible in version control
 // history.
 //
 // This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
@@ -129,6 +129,7 @@ use crate::offers::signer;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 #[cfg(feature = "std")]

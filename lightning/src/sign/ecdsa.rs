@@ -11,7 +11,9 @@ use crate::ln::PaymentPreimage;
 use crate::ln::chan_utils::{HTLCOutputInCommitment, HolderCommitmentTransaction, CommitmentTransaction, ClosingTransaction};
 use crate::ln::msgs::UnsignedChannelAnnouncement;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 use crate::sign::{ChannelSigner, HTLCDescriptor};
 
 /// A trait to sign Lightning channel transactions as described in

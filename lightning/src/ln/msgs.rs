@@ -38,7 +38,9 @@ use crate::ln::onion_utils;
 use crate::onion_message;
 use crate::sign::{NodeSigner, Recipient};
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 #[cfg(feature = "std")]
 use core::convert::TryFrom;
 use core::fmt;
@@ -1663,10 +1665,12 @@ pub struct FinalOnionHopData {
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
-	use crate::prelude::*;
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 	use crate::ln::features::BlindedHopFeatures;
 	use super::FinalOnionHopData;
+
+	#[allow(unused_imports)]
+	use crate::prelude::*;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):

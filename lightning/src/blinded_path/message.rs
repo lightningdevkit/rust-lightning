@@ -1,12 +1,14 @@
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
 use crate::ln::onion_utils;
 use crate::onion_message::packet::ControlTlvs;
-use crate::prelude::*;
 use crate::sign::{NodeSigner, Recipient};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Writeable, Writer};

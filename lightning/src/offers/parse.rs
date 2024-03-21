@@ -16,6 +16,7 @@ use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::SeekReadable;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 #[cfg(not(fuzzing))]
@@ -31,6 +32,7 @@ mod sealed {
 	use core::fmt;
 	use super::Bolt12ParseError;
 
+	#[allow(unused_imports)]
 	use crate::prelude::*;
 
 	/// Indicates a message can be encoded using bech32.
