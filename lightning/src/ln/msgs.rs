@@ -1765,6 +1765,52 @@ impl fmt::Debug for OnionPacket {
 	}
 }
 
+/// BOLT 4 onion packet including hop data for the next peer.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct TrampolineOnionPacket {
+	/// Bolt 04 version number
+	pub version: u8,
+	/// A random sepc256k1 point, used to build the ECDH shared secret to decrypt hop_data
+	pub public_key: PublicKey,
+	/// Encrypted payload for the next hop
+	//
+	// Unlike the onion packets used for payments, Trampoline onion packets have to be shorter than
+	// 1300 bytes. The expected default is 650 bytes.
+	// TODO: if 650 ends up being the most common size, optimize this to be:
+	// enum { ThirteenHundred([u8; 650]), VarLen(Vec<u8>) }
+	pub hop_data: Vec<u8>,
+	/// HMAC to verify the integrity of hop_data
+	pub hmac: [u8; 32],
+}
+
+impl onion_utils::Packet for TrampolineOnionPacket {
+	type Data = Vec<u8>;
+	fn new(public_key: PublicKey, hop_data: Vec<u8>, hmac: [u8; 32]) -> Self {
+		Self {
+			version: 0,
+			public_key,
+			hop_data,
+			hmac,
+		}
+	}
+}
+
+impl Writeable for TrampolineOnionPacket {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.version.write(w)?;
+		self.public_key.write(w)?;
+		w.write_all(&self.hop_data)?;
+		self.hmac.write(w)?;
+		Ok(())
+	}
+}
+
+impl Debug for TrampolineOnionPacket {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.write_fmt(format_args!("TrampolineOnionPacket version {} with hmac {:?}", self.version, &self.hmac[..]))
+	}
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
