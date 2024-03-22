@@ -1798,7 +1798,7 @@ pub struct TrampolineOnionPacket {
 	// Unlike the onion packets used for payments, Trampoline onion packets have to be shorter than
 	// 1300 bytes. The expected default is 650 bytes.
 	// TODO: if 650 ends up being the most common size, optimize this to be:
-	// enum { ThirteenHundred([u8; 650]), VarLen(Vec<u8>) }
+	// enum { SixFifty([u8; 650]), VarLen(Vec<u8>) }
 	pub hop_data: Vec<u8>,
 	/// HMAC to verify the integrity of hop_data
 	pub hmac: [u8; 32],
