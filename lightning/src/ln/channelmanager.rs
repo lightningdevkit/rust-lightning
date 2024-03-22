@@ -572,6 +572,7 @@ struct MsgHandleErrInternal {
 	err: msgs::LightningError,
 	closes_channel: bool,
 	shutdown_finish: Option<(ShutdownResult, Option<msgs::ChannelUpdate>)>,
+	payment_hash: Option<PaymentHash>
 }
 impl MsgHandleErrInternal {
 	#[inline]
@@ -588,11 +589,12 @@ impl MsgHandleErrInternal {
 			},
 			closes_channel: false,
 			shutdown_finish: None,
+			payment_hash: None
 		}
 	}
 	#[inline]
 	fn from_no_close(err: msgs::LightningError) -> Self {
-		Self { err, closes_channel: false, shutdown_finish: None }
+		Self { err, closes_channel: false, shutdown_finish: None, payment_hash: None }
 	}
 	#[inline]
 	fn from_finish_shutdown(err: String, channel_id: ChannelId, shutdown_res: ShutdownResult, channel_update: Option<msgs::ChannelUpdate>) -> Self {
@@ -609,6 +611,7 @@ impl MsgHandleErrInternal {
 			err: LightningError { err, action },
 			closes_channel: true,
 			shutdown_finish: Some((shutdown_res, channel_update)),
+			payment_hash: None
 		}
 	}
 	#[inline]
@@ -641,6 +644,7 @@ impl MsgHandleErrInternal {
 			},
 			closes_channel: false,
 			shutdown_finish: None,
+			payment_hash: None
 		}
 	}
 
@@ -2004,14 +2008,14 @@ macro_rules! handle_error {
 
 		match $internal {
 			Ok(msg) => Ok(msg),
-			Err(MsgHandleErrInternal { err, shutdown_finish, .. }) => {
+			Err(MsgHandleErrInternal { err, shutdown_finish, payment_hash, .. }) => {
 				let mut msg_events = Vec::with_capacity(2);
 
 				if let Some((shutdown_res, update_option)) = shutdown_finish {
 					let counterparty_node_id = shutdown_res.counterparty_node_id;
 					let channel_id = shutdown_res.channel_id;
 					let logger = WithContext::from(
-						&$self.logger, Some(counterparty_node_id), Some(channel_id), None
+						&$self.logger, Some(counterparty_node_id), Some(channel_id), payment_hash
 					);
 					log_error!(logger, "Force-closing channel: {}", err.err);
 
