@@ -1053,6 +1053,18 @@ pub enum Event {
 		/// The onion message intended to be forwarded to `peer_node_id`.
 		message: msgs::OnionMessage,
 	},
+	/// Indicates that an onion message supporting peer has come online and it may
+	/// be time to forward any onion messages that were previously intercepted for
+	/// them. This event will only be generated if the `OnionMessenger` was
+	/// initialized with
+	/// [`OnionMessenger::new_with_offline_peer_interception`], see its docs.
+	///
+	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
+	OnionMessagePeerConnected {
+		/// The node id of the peer we just connected to, who advertises support for
+		/// onion messages.
+		peer_node_id: PublicKey,
+	}
 }
 
 impl Writeable for Event {
@@ -1303,6 +1315,12 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, peer_node_id, required),
 					(2, message, required),
+				});
+			},
+			&Event::OnionMessagePeerConnected { ref peer_node_id } => {
+				39u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, peer_node_id, required),
 				});
 			}
 			// Note that, going forward, all new events must only write data inside of
@@ -1724,6 +1742,17 @@ impl MaybeReadable for Event {
 					});
 					Ok(Some(Event::OnionMessageIntercepted {
 						peer_node_id: peer_node_id.0.unwrap(), message: message.0.unwrap()
+					}))
+				};
+				f()
+			},
+			39u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(0, peer_node_id, required),
+					});
+					Ok(Some(Event::OnionMessagePeerConnected {
+						peer_node_id: peer_node_id.0.unwrap()
 					}))
 				};
 				f()
