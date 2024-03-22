@@ -1043,6 +1043,12 @@ pub enum Event {
 		/// The onion message intended to be forwarded to `peer_node_id`.
 		message: msgs::OnionMessage,
 	},
+	///
+	OnionMessagePeerConnected {
+		/// The node id of the peer we just connected to, who advertises support for
+		/// onion messages.
+		peer_node_id: PublicKey,
+	}
 }
 
 impl Writeable for Event {
@@ -1293,6 +1299,12 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, peer_node_id, required),
 					(2, message, required),
+				});
+			},
+			&Event::OnionMessagePeerConnected { ref peer_node_id } => {
+				39u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, peer_node_id, required),
 				});
 			}
 			// Note that, going forward, all new events must only write data inside of
@@ -1714,6 +1726,17 @@ impl MaybeReadable for Event {
 					});
 					Ok(Some(Event::OnionMessageForOfflinePeer {
 						peer_node_id: peer_node_id.0.unwrap(), message: message.0.unwrap()
+					}))
+				};
+				f()
+			},
+			39u8 => {
+				let f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(0, peer_node_id, required),
+					});
+					Ok(Some(Event::OnionMessagePeerConnected {
+						peer_node_id: peer_node_id.0.unwrap()
 					}))
 				};
 				f()

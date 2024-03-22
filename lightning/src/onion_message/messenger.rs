@@ -1041,6 +1041,11 @@ where
 				.entry(*their_node_id)
 				.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
 				.mark_connected();
+			if self.intercept_oms_for_offline_peers {
+				self.pending_events.lock().unwrap().push(
+					Event::OnionMessagePeerConnected { peer_node_id: *their_node_id }
+				);
+			}
 		} else {
 			self.message_recipients.lock().unwrap().remove(their_node_id);
 		}
