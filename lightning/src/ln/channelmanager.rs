@@ -576,6 +576,23 @@ struct MsgHandleErrInternal {
 }
 impl MsgHandleErrInternal {
 	#[inline]
+	fn from_update_add_htlc(err: String, channel_id: ChannelId, payment_hash: PaymentHash) -> Self {
+		Self {
+			err: LightningError {
+				err: err.clone(),
+				action: msgs::ErrorAction::SendErrorMessage {
+					msg: msgs::ErrorMessage {
+						channel_id,
+						data: err
+					},
+				},
+			},
+			closes_channel: false,
+			shutdown_finish: None,
+			payment_hash: Some(payment_hash)
+		}
+	}
+	#[inline]
 	fn send_err_msg_no_close(err: String, channel_id: ChannelId) -> Self {
 		Self {
 			err: LightningError {
@@ -6781,7 +6798,7 @@ where
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				MsgHandleErrInternal::from_update_add_htlc(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id, msg.payment_hash)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -6839,7 +6856,7 @@ where
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
-			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::from_update_add_htlc(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id, msg.payment_hash))
 		}
 		Ok(())
 	}
