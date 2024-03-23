@@ -607,9 +607,9 @@ use core::task;
 ///			sleeper,
 ///			mobile_interruptable_platform,
 ///			|| Some(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap())
-///			)
-///			.await
-///			.expect("Failed to process events");
+///		)
+///		.await
+///		.expect("Failed to process events");
 ///	});
 ///
 ///	// Stop the background processing.
