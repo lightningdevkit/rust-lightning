@@ -7,6 +7,8 @@
 //! This module contains a simple key-value store trait [`KVStore`] that
 //! allows one to implement the persistence for [`ChannelManager`], [`NetworkGraph`],
 //! and [`ChannelMonitor`] all in one place.
+//!
+//! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 
 use core::cmp;
 use core::convert::{TryFrom, TryInto};
@@ -21,11 +23,10 @@ use crate::prelude::*;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::{Persist, MonitorUpdateId};
-use crate::sign::{EntropySource, NodeSigner, ecdsa::WriteableEcdsaChannelSigner, SignerProvider};
+use crate::sign::{EntropySource, ecdsa::WriteableEcdsaChannelSigner, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, CLOSED_CHANNEL_UPDATE_ID};
-use crate::ln::channelmanager::ChannelManager;
-use crate::routing::router::Router;
+use crate::ln::channelmanager::AChannelManager;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::scoring::WriteableScore;
 use crate::util::logger::Logger;
@@ -38,10 +39,16 @@ pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyzABCD
 pub const KVSTORE_NAMESPACE_KEY_MAX_LEN: usize = 120;
 
 /// The primary namespace under which the [`ChannelManager`] will be persisted.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 pub const CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
 /// The secondary namespace under which the [`ChannelManager`] will be persisted.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 pub const CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The key under which the [`ChannelManager`] will be persisted.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 pub const CHANNEL_MANAGER_PERSISTENCE_KEY: &str = "manager";
 
 /// The primary namespace under which [`ChannelMonitor`]s will be persisted.
@@ -131,18 +138,17 @@ pub trait KVStore {
 }
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
-pub trait Persister<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>>
-	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-		T::Target: 'static + BroadcasterInterface,
-		ES::Target: 'static + EntropySource,
-		NS::Target: 'static + NodeSigner,
-		SP::Target: 'static + SignerProvider,
-		F::Target: 'static + FeeEstimator,
-		R::Target: 'static + Router,
-		L::Target: 'static + Logger,
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+pub trait Persister<'a, CM: Deref, L: Deref, S: WriteableScore<'a>>
+where
+	CM::Target: 'static + AChannelManager,
+	L::Target: 'static + Logger,
 {
 	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
-	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error>;
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error>;
 
 	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error>;
@@ -152,21 +158,16 @@ pub trait Persister<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: 
 }
 
 
-impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, ES, NS, SP, F, R, L, S> for A
-	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-		T::Target: 'static + BroadcasterInterface,
-		ES::Target: 'static + EntropySource,
-		NS::Target: 'static + NodeSigner,
-		SP::Target: 'static + SignerProvider,
-		F::Target: 'static + FeeEstimator,
-		R::Target: 'static + Router,
-		L::Target: 'static + Logger,
+impl<'a, A: KVStore, CM: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, CM, L, S> for A
+where
+	CM::Target: 'static + AChannelManager,
+	L::Target: 'static + Logger,
 {
-	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error> {
+	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error> {
 		self.write(CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			&channel_manager.encode())
+			&channel_manager.get_cm().encode())
 	}
 
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
@@ -184,21 +185,16 @@ impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Der
 	}
 }
 
-impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, ES, NS, SP, F, R, L, S> for dyn KVStore + Send + Sync
-	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-		T::Target: 'static + BroadcasterInterface,
-		ES::Target: 'static + EntropySource,
-		NS::Target: 'static + NodeSigner,
-		SP::Target: 'static + SignerProvider,
-		F::Target: 'static + FeeEstimator,
-		R::Target: 'static + Router,
-		L::Target: 'static + Logger,
+impl<'a, CM: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, CM, L, S> for dyn KVStore + Send + Sync
+where
+	CM::Target: 'static + AChannelManager,
+	L::Target: 'static + Logger,
 {
-	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error> {
+	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error> {
 		self.write(CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			&channel_manager.encode())
+			&channel_manager.get_cm().encode())
 	}
 
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
