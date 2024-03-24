@@ -1855,6 +1855,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		spendable_outputs
 	}
 
+	pub(crate) fn is_stale(&self) -> bool {
+		self.get_claimable_balances().is_empty()
+	}
+
 	#[cfg(test)]
 	pub fn get_counterparty_payment_script(&self) -> ScriptBuf {
 		self.inner.lock().unwrap().counterparty_payment_script.clone()

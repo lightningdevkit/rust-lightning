@@ -662,6 +662,24 @@ where C::Target: chain::Filter,
 			}
 		}
 	}
+
+	pub fn prune_stale_channel_monitors(&self, to_prune: Vec<OutPoint>) {
+		let mut monitors = self.monitors.write().unwrap();
+		for funding_txo in to_prune {
+			let channel_monitor = monitors.get(&funding_txo);
+			if let Some(channel_monitor) = channel_monitor {
+				if channel_monitor.monitor.is_stale() {
+					log_info!(self.logger, "Pruning stale ChannelMonitor for
+						channel {}", log_funding_info!(channel_monitor.monitor));
+					//TODO: save the channel monitor to disk in an archived namespace before removing it
+
+					self.persister.prune_persisted_channel(funding_txo);
+					monitors.remove(&funding_txo);
+				}
+			}
+
+		}
+	}
 }
 
 impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
@@ -1113,5 +1131,28 @@ mod tests {
 			// ...and also poison our locks causing later use to panic as well
 			core::mem::drop(nodes);
 		}).is_err());
+	}
+
+	#[test]
+	fn prune_stale_channel_monitor() {
+		// Test that we can prune a ChannelMonitor that has no active channel.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		// Get a route for later and rebalance the channel somewhat
+		send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+		// First route a payment that we will claim on chain and give the recipient the preimage.
+		let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		nodes[1].node.claim_funds(payment_preimage);
+		expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
+		nodes[1].node.get_and_clear_pending_msg_events();
+		let binding = node_cfgs[1].chain_monitor.added_monitors.lock().unwrap();
+		let monitors_b = binding.first().unwrap();
+		let outpoint = monitors_b.0.clone();
+		dbg!(&outpoint);
+		// nodes[1].chain_monitor().unwrap().chain_monitor.prune_stale_channel_monitors(vec![outpoint]); // lock order problem
+		assert!(false);
 	}
 }
