@@ -11633,7 +11633,7 @@ where
 
 		for (funding_txo, monitor) in args.channel_monitors.iter() {
 			if !funding_txo_set.contains(funding_txo) {
-				let logger = WithChannelMonitor::from(&args.logger, monitor);
+				let logger = WithChannelMonitor::from(&args.logger, monitor, None);
 				let channel_id = monitor.channel_id();
 				log_info!(logger, "Queueing monitor update to ensure missing channel {} is force closed",
 					&channel_id);
@@ -11940,8 +11940,8 @@ where
 			for (_, monitor) in args.channel_monitors.iter() {
 				let counterparty_opt = outpoint_to_peer.get(&monitor.get_funding_txo().0);
 				if counterparty_opt.is_none() {
-					let logger = WithChannelMonitor::from(&args.logger, monitor);
 					for (htlc_source, (htlc, _)) in monitor.get_pending_or_resolved_outbound_htlcs() {
+						let logger = WithChannelMonitor::from(&args.logger, monitor, Some(htlc.payment_hash));
 						if let HTLCSource::OutboundRoute { payment_id, session_priv, path, .. } = htlc_source {
 							if path.hops.is_empty() {
 								log_error!(logger, "Got an empty path for a pending payment");
@@ -11982,6 +11982,7 @@ where
 						}
 					}
 					for (htlc_source, (htlc, preimage_opt)) in monitor.get_all_current_outbound_htlcs() {
+						let logger = WithChannelMonitor::from(&args.logger, monitor, Some(htlc.payment_hash));
 						match htlc_source {
 							HTLCSource::PreviousHopData(prev_hop_data) => {
 								let pending_forward_matches_htlc = |info: &PendingAddHTLCInfo| {

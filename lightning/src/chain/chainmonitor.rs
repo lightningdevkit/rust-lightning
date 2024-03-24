@@ -301,7 +301,7 @@ where C::Target: chain::Filter,
 		monitor_state: &MonitorHolder<ChannelSigner>
 	) -> Result<(), ()> where FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs> {
 		let monitor = &monitor_state.monitor;
-		let logger = WithChannelMonitor::from(&self.logger, &monitor);
+		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut txn_outputs;
 		{
 			txn_outputs = process(monitor, txdata);
@@ -599,7 +599,7 @@ where C::Target: chain::Filter,
 	pub fn archive_fully_resolved_channel_monitors(&self) {
 		let mut have_monitors_to_prune = false;
 		for (_, monitor_holder) in self.monitors.read().unwrap().iter() {
-			let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor);
+			let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor, None);
 			if monitor_holder.monitor.is_fully_resolved(&logger) {
 				have_monitors_to_prune = true;
 			}
@@ -607,7 +607,7 @@ where C::Target: chain::Filter,
 		if have_monitors_to_prune {
 			let mut monitors = self.monitors.write().unwrap();
 			monitors.retain(|funding_txo, monitor_holder| {
-				let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor);
+				let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor, None);
 				if monitor_holder.monitor.is_fully_resolved(&logger) {
 					log_info!(logger,
 						"Archiving fully resolved ChannelMonitor for funding txo {}",
@@ -715,7 +715,7 @@ where C::Target: chain::Filter,
 	    P::Target: Persist<ChannelSigner>,
 {
 	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
-		let logger = WithChannelMonitor::from(&self.logger, &monitor);
+		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(funding_outpoint) {
 			hash_map::Entry::Occupied(_) => {
@@ -773,7 +773,7 @@ where C::Target: chain::Filter,
 			},
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
-				let logger = WithChannelMonitor::from(&self.logger, &monitor);
+				let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 				log_trace!(logger, "Updating ChannelMonitor to id {} for channel {}", update.update_id, log_funding_info!(monitor));
 				let update_res = monitor.update_monitor(update, &self.broadcaster, &self.fee_estimator, &self.logger);
 
