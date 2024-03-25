@@ -155,14 +155,27 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 }
 
 fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
-	let secrets = (1..=num_messengers)
+	let cfgs = (1..=num_messengers)
 		.into_iter()
-		.map(|i| SecretKey::from_slice(&[i; 32]).unwrap())
+		.map(|_| MessengerCfg::new())
 		.collect();
-	create_nodes_using_secrets(secrets)
+	create_nodes_using_cfgs(cfgs)
 }
 
-fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
+struct MessengerCfg {
+	secret_override: Option<SecretKey>,
+}
+impl MessengerCfg {
+	fn new() -> Self {
+		Self { secret_override: None }
+	}
+	fn with_node_secret(mut self, secret: SecretKey) -> Self {
+		self.secret_override = Some(secret);
+		self
+	}
+}
+
+fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 	let gossip_logger = Arc::new(test_utils::TestLogger::with_id("gossip".to_string()));
 	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, gossip_logger.clone()));
 	let gossip_sync = Arc::new(
@@ -170,7 +183,8 @@ fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
 	);
 
 	let mut nodes = Vec::new();
-	for (i, secret_key) in secrets.into_iter().enumerate() {
+	for (i, cfg) in cfgs.into_iter().enumerate() {
+		let secret_key = cfg.secret_override.unwrap_or(SecretKey::from_slice(&[(i + 1) as u8; 32]).unwrap());
 		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 		let seed = [i as u8; 32];
 		let entropy_source = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
@@ -541,16 +555,17 @@ fn drops_buffered_messages_waiting_for_peer_connection() {
 
 #[test]
 fn spec_test_vector() {
-	let secret_keys = [
+	let node_cfgs = [
 		"4141414141414141414141414141414141414141414141414141414141414141", // Alice
 		"4242424242424242424242424242424242424242424242424242424242424242", // Bob
 		"4343434343434343434343434343434343434343434343434343434343434343", // Carol
 		"4444444444444444444444444444444444444444444444444444444444444444", // Dave
 	]
 		.iter()
-		.map(|secret| SecretKey::from_slice(&<Vec<u8>>::from_hex(secret).unwrap()).unwrap())
+		.map(|secret_hex| SecretKey::from_slice(&<Vec<u8>>::from_hex(secret_hex).unwrap()).unwrap())
+		.map(|secret| MessengerCfg::new().with_node_secret(secret))
 		.collect();
-	let nodes = create_nodes_using_secrets(secret_keys);
+	let nodes = create_nodes_using_cfgs(node_cfgs);
 
 	// Hardcode the sender->Alice onion message, because it includes an unknown TLV of type 1, which
 	// LDK doesn't support constructing.
