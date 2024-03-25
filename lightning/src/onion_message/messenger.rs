@@ -943,6 +943,27 @@ where
 		}
 	}
 
+	/// Forwards an [`OnionMessage`] to `peer_node_id`. Useful if we initialized
+	/// the [`OnionMessenger`] with [`Self::new_with_offline_peer_interception`]
+	/// and want to forward a previously intercepted onion message to a peer that
+	/// has just come online.
+	pub fn forward_onion_message(
+		&self, message: OnionMessage, peer_node_id: &PublicKey
+	) -> Result<(), SendError> {
+		let mut message_recipients = self.message_recipients.lock().unwrap();
+		if outbound_buffer_full(&peer_node_id, &message_recipients) {
+			return Err(SendError::BufferFull);
+		}
+
+		match message_recipients.entry(*peer_node_id) {
+			hash_map::Entry::Occupied(mut e) if e.get().is_connected() => {
+				e.get_mut().enqueue_message(message);
+				Ok(())
+			},
+			_ => Err(SendError::InvalidFirstHop(*peer_node_id))
+		}
+	}
+
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn send_onion_message_using_path<T: OnionMessageContents>(
 		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
