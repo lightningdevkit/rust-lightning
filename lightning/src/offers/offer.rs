@@ -90,11 +90,11 @@ use crate::blinded_path::BlindedPath;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
-use crate::ln::msgs::MAX_VALUE_MSAT;
-use crate::offers::merkle::TlvStream;
+use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::merkle::{TaggedHash, TlvStream};
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
-use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
+use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
@@ -113,6 +113,31 @@ use crate::prelude::*;
 use std::time::SystemTime;
 
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
+
+/// An identifier for an [`Offer`] built using [`DerivedMetadata`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OfferId(pub [u8; 32]);
+
+impl OfferId {
+	const ID_TAG: &'static str = "LDK Offer ID";
+
+	fn from_valid_offer_tlv_stream(bytes: &[u8]) -> Self {
+		let tagged_hash = TaggedHash::new(Self::ID_TAG, &bytes);
+		Self(tagged_hash.to_bytes())
+	}
+}
+
+impl Writeable for OfferId {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for OfferId {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(OfferId(Readable::read(r)?))
+	}
+}
 
 /// Builds an [`Offer`] for the "offer to be paid" flow.
 ///
@@ -370,12 +395,15 @@ macro_rules! offer_builder_methods { (
 		let mut bytes = Vec::new();
 		$self.offer.write(&mut bytes).unwrap();
 
+		let id = OfferId::from_valid_offer_tlv_stream(&bytes);
+
 		Offer {
 			bytes,
 			#[cfg(not(c_bindings))]
 			contents: $self.offer,
 			#[cfg(c_bindings)]
-			contents: $self.offer.clone()
+			contents: $self.offer.clone(),
+			id,
 		}
 	}
 } }
@@ -488,6 +516,7 @@ pub struct Offer {
 	// fields.
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: OfferContents,
+	id: OfferId,
 }
 
 /// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or a
@@ -576,6 +605,11 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 
 impl Offer {
 	offer_accessors!(self, self.contents);
+
+	/// Returns the id of the offer.
+	pub fn id(&self) -> OfferId {
+		self.id
+	}
 
 	pub(super) fn implied_chain(&self) -> ChainHash {
 		self.contents.implied_chain()
@@ -1002,7 +1036,9 @@ impl TryFrom<Vec<u8>> for Offer {
 		let offer = ParsedMessage::<OfferTlvStream>::try_from(bytes)?;
 		let ParsedMessage { bytes, tlv_stream } = offer;
 		let contents = OfferContents::try_from(tlv_stream)?;
-		Ok(Offer { bytes, contents })
+		let id = OfferId::from_valid_offer_tlv_stream(&bytes);
+
+		Ok(Offer { bytes, contents, id })
 	}
 }
 

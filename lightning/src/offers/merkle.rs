@@ -66,6 +66,10 @@ impl TaggedHash {
 	pub fn merkle_root(&self) -> sha256::Hash {
 		self.merkle_root
 	}
+
+	pub(super) fn to_bytes(&self) -> [u8; 32] {
+		*self.digest.as_ref()
+	}
 }
 
 impl AsRef<TaggedHash> for TaggedHash {
