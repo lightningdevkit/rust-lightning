@@ -376,11 +376,10 @@ fn we_are_intro_node() {
 
 #[test]
 fn invalid_blinded_path_error() {
-	// Make sure we error as expected if a provided blinded path has 0 or 1 hops.
+	// Make sure we error as expected if a provided blinded path has 0 hops.
 	let nodes = create_nodes(3);
 	let test_msg = TestCustomMessage::Response;
 
-	// 0 hops
 	let secp_ctx = Secp256k1::new();
 	let mut blinded_path = BlindedPath::new_for_message(&[nodes[1].node_id, nodes[2].node_id], &*nodes[2].entropy_source, &secp_ctx).unwrap();
 	blinded_path.blinded_hops.clear();
