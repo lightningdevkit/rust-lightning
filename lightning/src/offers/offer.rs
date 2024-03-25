@@ -91,11 +91,11 @@ use crate::blinded_path::BlindedPath;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
-use crate::ln::msgs::MAX_VALUE_MSAT;
+use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::merkle::TlvStream;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
-use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
+use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
@@ -114,6 +114,23 @@ use std::time::SystemTime;
 
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 
+/// An identifier for an [`Offer`] built using [`DerivedMetadata`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OfferId(Nonce);
+
+impl Writeable for OfferId {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.0.write(w)
+	}
+}
+
+impl Readable for OfferId {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; Nonce::LENGTH] = Readable::read(r)?;
+		Ok(OfferId(Nonce(buf)))
+	}
+}
+
 /// Builds an [`Offer`] for the "offer to be paid" flow.
 ///
 /// See [module-level documentation] for usage.
@@ -123,7 +140,7 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 /// [module-level documentation]: self
 pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 	offer: OfferContents,
-	metadata_strategy: core::marker::PhantomData<M>,
+	metadata_strategy: M,
 	secp_ctx: Option<&'a Secp256k1<T>>,
 }
 
@@ -151,7 +168,7 @@ pub struct OfferWithExplicitMetadataBuilder<'a> {
 #[cfg(c_bindings)]
 pub struct OfferWithDerivedMetadataBuilder<'a> {
 	offer: OfferContents,
-	metadata_strategy: core::marker::PhantomData<DerivedMetadata>,
+	metadata_strategy: DerivedMetadata,
 	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
 }
 
@@ -163,12 +180,13 @@ pub trait MetadataStrategy {}
 /// [`Offer::metadata`] may be explicitly set or left empty.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+#[derive(Default)]
 pub struct ExplicitMetadata {}
 
 /// [`Offer::metadata`] will be derived.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub struct DerivedMetadata {}
+pub struct DerivedMetadata(OfferId);
 
 impl MetadataStrategy for ExplicitMetadata {}
 
@@ -197,7 +215,7 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
 				supported_quantity: Quantity::One, signing_pubkey,
 			},
-			metadata_strategy: core::marker::PhantomData,
+			metadata_strategy: Default::default(),
 			secp_ctx: None,
 		}
 	}
@@ -236,9 +254,14 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
 				supported_quantity: Quantity::One, signing_pubkey: node_id,
 			},
-			metadata_strategy: core::marker::PhantomData,
+			metadata_strategy: DerivedMetadata(OfferId(nonce)),
 			secp_ctx: Some(secp_ctx),
 		}
+	}
+
+	/// Returns an identifier for the [`Offer`] constructed by the builder.
+	pub fn offer_id(&self) -> OfferId {
+		self.metadata_strategy.0
 	}
 } }
 
