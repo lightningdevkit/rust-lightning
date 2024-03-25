@@ -966,6 +966,13 @@ impl OfferContents {
 	}
 }
 
+impl Readable for Offer {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
+	}
+}
+
 impl Writeable for Offer {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		WithoutLength(&self.bytes).write(writer)
