@@ -299,33 +299,34 @@ impl NegotiationContext {
 		}
 	}
 
-	fn sent_tx_add_input(&mut self, msg: &msgs::TxAddInput) {
+	fn sent_tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<(), AbortReason> {
 		let tx = msg.prevtx.as_transaction();
 		let input = TxIn {
 			previous_output: OutPoint { txid: tx.txid(), vout: msg.prevtx_out },
 			sequence: Sequence(msg.sequence),
 			..Default::default()
 		};
-		debug_assert!((msg.prevtx_out as usize) < tx.output.len());
-		let prev_output = &tx.output[msg.prevtx_out as usize];
+		let prev_output =
+			tx.output.get(msg.prevtx_out as usize).ok_or(AbortReason::PrevTxOutInvalid)?.clone();
 		self.prevtx_outpoints.insert(input.previous_output);
-		self.inputs.insert(
-			msg.serial_id,
-			TxInputWithPrevOutput { input, prev_output: prev_output.clone() },
-		);
+		self.inputs.insert(msg.serial_id, TxInputWithPrevOutput { input, prev_output });
+		Ok(())
 	}
 
-	fn sent_tx_add_output(&mut self, msg: &msgs::TxAddOutput) {
+	fn sent_tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> Result<(), AbortReason> {
 		self.outputs
 			.insert(msg.serial_id, TxOut { value: msg.sats, script_pubkey: msg.script.clone() });
+		Ok(())
 	}
 
-	fn sent_tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) {
+	fn sent_tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> Result<(), AbortReason> {
 		self.inputs.remove(&msg.serial_id);
+		Ok(())
 	}
 
-	fn sent_tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) {
+	fn sent_tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> Result<(), AbortReason> {
 		self.outputs.remove(&msg.serial_id);
+		Ok(())
 	}
 
 	fn build_transaction(self) -> Result<Transaction, AbortReason> {
@@ -358,15 +359,15 @@ impl NegotiationContext {
 		const INPUT_WEIGHT: u64 = BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
 
 		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
-		let counterparty_output_weight_contributed: u64 = self
+		let mut counterparty_weight_contributed: u64 = self
 			.counterparty_outputs_contributed()
 			.map(|output| {
 				(8 /* value */ + output.script_pubkey.consensus_encode(&mut sink()).unwrap() as u64)
 					* WITNESS_SCALE_FACTOR as u64
 			})
 			.sum();
-		let counterparty_weight_contributed = counterparty_output_weight_contributed
-			+ self.counterparty_inputs_contributed().count() as u64 * INPUT_WEIGHT;
+		counterparty_weight_contributed +=
+			self.counterparty_inputs_contributed().count() as u64 * INPUT_WEIGHT;
 		let counterparty_fees_contributed =
 			counterparty_inputs_value.saturating_sub(counterparty_outputs_value);
 		let mut required_counterparty_contribution_fee =
@@ -522,7 +523,7 @@ macro_rules! define_state_transitions {
 			impl<S: ReceivedMsgState> StateTransition<SentChangeMsg, $data> for S {
 				fn transition(self, data: $data) -> StateTransitionResult<SentChangeMsg> {
 					let mut context = self.into_negotiation_context();
-					context.$transition(data);
+					context.$transition(data)?;
 					Ok(SentChangeMsg(context))
 				}
 			}
