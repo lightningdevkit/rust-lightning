@@ -105,7 +105,7 @@ pub struct PaymentConstraints {
 ///
 /// [`BlindedPath`]: crate::blinded_path::BlindedPath
 /// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PaymentContext {
 	/// The payment was made for an invoice requested from a BOLT 12 [`Offer`].
 	///

@@ -32,7 +32,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::blinded_path::BlindedPath;
-use crate::blinded_path::payment::{PaymentConstraints, ReceiveTlvs};
+use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -155,6 +155,8 @@ pub enum PendingHTLCRouting {
 		/// [`Event::PaymentClaimable::onion_fields`] as
 		/// [`RecipientOnionFields::payment_metadata`].
 		payment_metadata: Option<Vec<u8>>,
+		///
+		payment_context: Option<PaymentContext>,
 		/// CLTV expiry of the received HTLC.
 		///
 		/// Used to track when we should expire pending HTLCs that go unclaimed.
@@ -352,6 +354,8 @@ enum OnionPayload {
 		/// This is only here for backwards-compatibility in serialization, in the future it can be
 		/// removed, breaking clients running 0.0.106 and earlier.
 		_legacy_hop_data: Option<msgs::FinalOnionHopData>,
+		///
+		payment_context: Option<PaymentContext>,
 	},
 	/// Contains the payer-provided preimage.
 	Spontaneous(PaymentPreimage),
@@ -4516,13 +4520,14 @@ where
 								let blinded_failure = routing.blinded_failure();
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
 									PendingHTLCRouting::Receive {
-										payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret,
-										custom_tlvs, requires_blinded_error: _
+										payment_data, payment_metadata, payment_context,
+										incoming_cltv_expiry, phantom_shared_secret, custom_tlvs,
+										requires_blinded_error: _
 									} => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
 												payment_metadata, custom_tlvs };
-										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
+										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data, payment_context },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
@@ -4700,7 +4705,7 @@ where
 								match payment_secrets.entry(payment_hash) {
 									hash_map::Entry::Vacant(_) => {
 										match claimable_htlc.onion_payload {
-											OnionPayload::Invoice { .. } => {
+											OnionPayload::Invoice { ref payment_context, .. } => {
 												let payment_data = payment_data.unwrap();
 												let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
 													Ok(result) => result,
@@ -4720,6 +4725,7 @@ where
 												let purpose = events::PaymentPurpose::InvoicePayment {
 													payment_preimage: payment_preimage.clone(),
 													payment_secret: payment_data.payment_secret,
+													payment_context: payment_context.clone(),
 												};
 												check_total_value!(purpose);
 											},
@@ -4730,10 +4736,13 @@ where
 										}
 									},
 									hash_map::Entry::Occupied(inbound_payment) => {
-										if let OnionPayload::Spontaneous(_) = claimable_htlc.onion_payload {
-											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", &payment_hash);
-											fail_htlc!(claimable_htlc, payment_hash);
-										}
+										let payment_context = match claimable_htlc.onion_payload {
+											OnionPayload::Spontaneous(_) => {
+												log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", &payment_hash);
+												fail_htlc!(claimable_htlc, payment_hash);
+											},
+											OnionPayload::Invoice { ref payment_context, .. } => payment_context,
+										};
 										let payment_data = payment_data.unwrap();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", &payment_hash);
@@ -4746,6 +4755,7 @@ where
 											let purpose = events::PaymentPurpose::InvoicePayment {
 												payment_preimage: inbound_payment.get().payment_preimage,
 												payment_secret: payment_data.payment_secret,
+												payment_context: payment_context.clone(),
 											};
 											let payment_claimable_generated = check_total_value!(purpose);
 											if payment_claimable_generated {
@@ -9794,6 +9804,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(3, payment_metadata, option),
 		(5, custom_tlvs, optional_vec),
 		(7, requires_blinded_error, (default_value, false)),
+		(9, payment_context, upgradable_option),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
@@ -9908,9 +9919,11 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 
 impl Writeable for ClaimableHTLC {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let (payment_data, keysend_preimage) = match &self.onion_payload {
-			OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None),
-			OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
+		let (payment_data, keysend_preimage, payment_context) = match &self.onion_payload {
+			OnionPayload::Invoice { _legacy_hop_data, payment_context } => {
+				(_legacy_hop_data.as_ref(), None, payment_context.as_ref())
+			},
+			OnionPayload::Spontaneous(preimage) => (None, Some(preimage), None),
 		};
 		write_tlv_fields!(writer, {
 			(0, self.prev_hop, required),
@@ -9922,6 +9935,7 @@ impl Writeable for ClaimableHTLC {
 			(6, self.cltv_expiry, required),
 			(8, keysend_preimage, option),
 			(10, self.counterparty_skimmed_fee_msat, option),
+			(11, payment_context, option),
 		});
 		Ok(())
 	}
@@ -9939,6 +9953,7 @@ impl Readable for ClaimableHTLC {
 			(6, cltv_expiry, required),
 			(8, keysend_preimage, option),
 			(10, counterparty_skimmed_fee_msat, option),
+			(11, payment_context, upgradable_option),
 		});
 		let payment_data: Option<msgs::FinalOnionHopData> = payment_data_opt;
 		let value = value_ser.0.unwrap();
@@ -9959,7 +9974,7 @@ impl Readable for ClaimableHTLC {
 					}
 					total_msat = Some(payment_data.as_ref().unwrap().total_msat);
 				}
-				OnionPayload::Invoice { _legacy_hop_data: payment_data }
+				OnionPayload::Invoice { _legacy_hop_data: payment_data, payment_context }
 			},
 		};
 		Ok(Self {
@@ -11174,7 +11189,7 @@ where
 					return Err(DecodeError::InvalidValue);
 				}
 				let purpose = match &htlcs[0].onion_payload {
-					OnionPayload::Invoice { _legacy_hop_data } => {
+					OnionPayload::Invoice { _legacy_hop_data, payment_context } => {
 						if let Some(hop_data) = _legacy_hop_data {
 							events::PaymentPurpose::InvoicePayment {
 								payment_preimage: match pending_inbound_payments.get(&payment_hash) {
@@ -11188,6 +11203,7 @@ where
 									}
 								},
 								payment_secret: hop_data.payment_secret,
+								payment_context: payment_context.clone(),
 							}
 						} else { return Err(DecodeError::InvalidValue); }
 					},

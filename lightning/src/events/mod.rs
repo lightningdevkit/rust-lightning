@@ -18,6 +18,7 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
+use crate::blinded_path::payment::PaymentContext;
 use crate::sign::SpendableOutputDescriptor;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
@@ -67,6 +68,8 @@ pub enum PaymentPurpose {
 		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 		payment_secret: PaymentSecret,
+		///
+		payment_context: Option<PaymentContext>,
 	},
 	/// Because this is a spontaneous payment, the payer generated their own preimage rather than us
 	/// (the payee) providing a preimage.
@@ -86,6 +89,7 @@ impl PaymentPurpose {
 impl_writeable_tlv_based_enum!(PaymentPurpose,
 	(0, InvoicePayment) => {
 		(0, payment_preimage, option),
+		(1, payment_context, upgradable_option),
 		(2, payment_secret, required),
 	};
 	(2, SpontaneousPayment)
@@ -1052,10 +1056,14 @@ impl Writeable for Event {
 			} => {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
+				let mut payment_context = None;
 				let payment_preimage;
 				match &purpose {
-					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret } => {
+					PaymentPurpose::InvoicePayment {
+						payment_preimage: preimage, payment_secret: secret, payment_context: context
+				} => {
 						payment_secret = Some(secret);
+						payment_context = context.as_ref();
 						payment_preimage = *preimage;
 					},
 					PaymentPurpose::SpontaneousPayment(preimage) => {
@@ -1076,6 +1084,7 @@ impl Writeable for Event {
 					(8, payment_preimage, option),
 					(9, onion_fields, option),
 					(10, skimmed_fee_opt, option),
+					(11, payment_context, option),
 				});
 			},
 			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
@@ -1298,6 +1307,7 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_preimage = None;
 					let mut payment_secret = None;
+					let mut payment_context = None;
 					let mut amount_msat = 0;
 					let mut counterparty_skimmed_fee_msat_opt = None;
 					let mut receiver_node_id = None;
@@ -1318,11 +1328,13 @@ impl MaybeReadable for Event {
 						(8, payment_preimage, option),
 						(9, onion_fields, option),
 						(10, counterparty_skimmed_fee_msat_opt, option),
+						(11, payment_context, upgradable_option),
 					});
 					let purpose = match payment_secret {
 						Some(secret) => PaymentPurpose::InvoicePayment {
 							payment_preimage,
-							payment_secret: secret
+							payment_secret: secret,
+							payment_context,
 						},
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
