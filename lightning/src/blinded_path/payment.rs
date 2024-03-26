@@ -12,6 +12,7 @@ use crate::ln::channelmanager::CounterpartyForwardingInfo;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
+use crate::offers::offer::OfferId;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, Writeable, Writer};
 
 #[allow(unused_imports)]
@@ -108,11 +109,27 @@ pub struct PaymentConstraints {
 pub enum PaymentContext {
 	/// The payment context was unknown.
 	Unknown(UnknownPaymentContext),
+
+	/// The payment was made for an invoice requested from a BOLT 12 [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	Bolt12Offer(Bolt12OfferContext),
 }
 
 /// An unknown payment context.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UnknownPaymentContext(());
+
+/// The context of a payment made for an invoice requested from a BOLT 12 [`Offer`].
+///
+/// [`Offer`]: crate::offers::offer::Offer
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Bolt12OfferContext {
+	/// The identifier of the [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub offer_id: OfferId,
+}
 
 impl PaymentContext {
 	pub(crate) fn unknown() -> Self {
@@ -340,6 +357,7 @@ impl Readable for PaymentConstraints {
 impl_writeable_tlv_based_enum!(PaymentContext,
 	;
 	(0, Unknown),
+	(1, Bolt12Offer),
 );
 
 impl Writeable for UnknownPaymentContext {
@@ -353,6 +371,10 @@ impl Readable for UnknownPaymentContext {
 		Ok(UnknownPaymentContext(()))
 	}
 }
+
+impl_writeable_tlv_based!(Bolt12OfferContext, {
+	(0, offer_id, required),
+});
 
 #[cfg(test)]
 mod tests {

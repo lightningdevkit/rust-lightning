@@ -115,7 +115,7 @@ use std::time::SystemTime;
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 
 /// An identifier for an [`Offer`] built using [`DerivedMetadata`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OfferId(pub [u8; 32]);
 
 impl OfferId {
