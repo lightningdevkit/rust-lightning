@@ -9888,11 +9888,11 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let mut config = test_default_channel_config();
 	config.channel_config.max_dust_htlc_exposure = if multiplier_dust_limit {
-		// Default test fee estimator rate is 253 sat/kw, so we set the multiplier to 5_000_000 / 253
-		// to get roughly the same initial value as the default setting when this test was
+		// Default test fee estimator rate is 253 sat/kw. so we set the multiplier to 6_000_000 /
+		// 253 to get roughly the same initial value as the default setting when this test was
 		// originally written.
-		MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253)
-	} else { MaxDustHTLCExposure::FixedLimitMsat(5_000_000) }; // initial default setting value
+		MaxDustHTLCExposure::FeeRateMultiplier(6_000_000 / 253)
+	} else { MaxDustHTLCExposure::FixedLimitMsat(6_000_000) }; // initial default setting value
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -9958,34 +9958,34 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 
 	if on_holder_tx {
 		if dust_outbound_balance {
-			// Outbound dust threshold: 2223 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + holder's `dust_limit_satoshis`)
-			// Outbound dust balance: 4372 sats
-			// Note, we need sent payment to be above outbound dust threshold on counterparty_tx of 2132 sats
+			// Outbound dust threshold: 2390 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + holder's `dust_limit_satoshis`)
+			// Outbound dust balance: 4780 sats(dust_outbound_htlc_on_holder_tx * dust_outbound_htlc_on_holder_tx_msat)
+			// Note, we need sent payment to be above outbound dust threshold on counterparty_tx of 1500 sats(dust_htlc_on_counterparty_tx * dust_htlc_on_counterparty_tx_msat)
 			for _ in 0..dust_outbound_htlc_on_holder_tx {
 				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_outbound_htlc_on_holder_tx_msat);
 				nodes[0].node.send_payment_with_route(&route, payment_hash,
 					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 			}
 		} else {
-			// Inbound dust threshold: 2324 sats (`dust_buffer_feerate` * HTLC_SUCCESS_TX_WEIGHT / 1000 + holder's `dust_limit_satoshis`)
-			// Inbound dust balance: 4372 sats
-			// Note, we need sent payment to be above outbound dust threshold on counterparty_tx of 2031 sats
+			// Inbound dust threshold: 2501 sats (`dust_buffer_feerate` * HTLC_SUCCESS_TX_WEIGHT / 1000 + holder's `dust_limit_satoshis`)
+			// Inbound dust balance: 5002 sats(dust_inbound_htlc_on_holder_tx * dust_inbound_htlc_on_holder_tx_msat)
+			// Note, we need sent payment to be above outbound dust threshold on counterparty_tx of 1500 sats(dust_htlc_on_counterparty_tx * dust_htlc_on_counterparty_tx_msat)
 			for _ in 0..dust_inbound_htlc_on_holder_tx {
 				route_payment(&nodes[1], &[&nodes[0]], dust_inbound_htlc_on_holder_tx_msat);
 			}
 		}
 	} else {
 		if dust_outbound_balance {
-			// Outbound dust threshold: 2132 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
-			// Outbound dust balance: 5000 sats
+			// Outbound dust threshold: 2198 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
+			// Outbound dust balance: 4396 sats(dust_outbound_htlc_on_holder_tx * dust_outbound_htlc_on_holder_tx_msat)
 			for _ in 0..dust_htlc_on_counterparty_tx - 1 {
 				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_htlc_on_counterparty_tx_msat);
 				nodes[0].node.send_payment_with_route(&route, payment_hash,
 					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 			}
 		} else {
-			// Inbound dust threshold: 2031 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
-			// Inbound dust balance: 5000 sats
+			// Inbound dust threshold: 2309 sats (`dust_buffer_feerate` * HTLC_SUCCESS_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
+			// Inbound dust balance: 4618 sats(dust_inbound_htlc_on_holder_tx * dust_inbound_htlc_on_holder_tx_msat)
 			for _ in 0..dust_htlc_on_counterparty_tx - 1 {
 				route_payment(&nodes[1], &[&nodes[0]], dust_htlc_on_counterparty_tx_msat);
 			}
@@ -10016,12 +10016,12 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
 		// With default dust exposure: 5000 sats
 		if on_holder_tx {
-			// Outbound dust balance: 6399 sats
+			// Outbound dust balance: 7503 sats (dust_outbound_htlc_on_holder_tx * dust_outbound_htlc_on_holder_tx_msat + dust_inbound_htlc_on_holder_tx_msat)
 			let dust_inbound_overflow = dust_inbound_htlc_on_holder_tx_msat * (dust_inbound_htlc_on_holder_tx + 1);
 			let dust_outbound_overflow = dust_outbound_htlc_on_holder_tx_msat * dust_outbound_htlc_on_holder_tx + dust_inbound_htlc_on_holder_tx_msat;
 			nodes[0].logger.assert_log("lightning::ln::channel", format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx", if dust_outbound_balance { dust_outbound_overflow } else { dust_inbound_overflow }, max_dust_htlc_exposure_msat), 1);
 		} else {
-			// Outbound dust balance: 5200 sats
+			// Outbound dust balance: 6000 sats(dust_htlc_on_counterparty_tx * dust_htlc_on_counterparty_tx_msat)
 			nodes[0].logger.assert_log("lightning::ln::channel",
 				format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
 					dust_htlc_on_counterparty_tx_msat * (dust_htlc_on_counterparty_tx - 1) + dust_htlc_on_counterparty_tx_msat + 4,
@@ -10032,7 +10032,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		// For the multiplier dust exposure limit, since it scales with feerate,
 		// we need to add a lot of HTLCs that will become dust at the new feerate
 		// to cross the threshold.
-		for _ in 0..20 {
+		for _ in 0..30 {
 			let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(1_000), None);
 			nodes[0].node.send_payment_with_route(&route, payment_hash,
 				RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
@@ -10054,12 +10054,12 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 fn do_test_max_dust_htlc_exposure_by_threshold_type(multiplier_dust_limit: bool) {
 	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCForward, true, multiplier_dust_limit);
 	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCForward, true, multiplier_dust_limit);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCForward, false, multiplier_dust_limit);
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCForward, false, multiplier_dust_limit);
 	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCReception, true, multiplier_dust_limit);
 	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCReception, false, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCForward, false, multiplier_dust_limit);
 	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCReception, false, multiplier_dust_limit);
 	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCReception, true, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCForward, false, multiplier_dust_limit);
 	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtUpdateFeeOutbound, true, multiplier_dust_limit);
 	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtUpdateFeeOutbound, false, multiplier_dust_limit);
 	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, false, multiplier_dust_limit);
