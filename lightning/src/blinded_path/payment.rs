@@ -116,6 +116,10 @@ pub enum PaymentContext {
 		/// [`Offer`]: crate::offers::offer::Offer
 		offer_id: OfferId,
 	},
+	/// The payment was made for invoice sent for a BOLT 12 [`Refund`].
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	Bolt12Refund {},
 }
 
 impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
@@ -339,6 +343,7 @@ impl_writeable_tlv_based_enum_upgradable!(PaymentContext,
 	(0, Bolt12Offer) => {
 		(0, offer_id, required),
 	},
+	(2, Bolt12Refund) => {},
 );
 
 #[cfg(test)]

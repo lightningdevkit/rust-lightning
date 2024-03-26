@@ -7979,8 +7979,9 @@ where
 
 		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
 			Ok((payment_hash, payment_secret)) => {
+				let payment_context = PaymentContext::Bolt12Refund {};
 				let payment_paths = self.create_blinded_payment_paths(
-					amount_msats, payment_secret, None
+					amount_msats, payment_secret, Some(payment_context)
 				)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
