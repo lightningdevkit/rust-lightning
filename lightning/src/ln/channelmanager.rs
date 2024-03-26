@@ -7979,7 +7979,9 @@ where
 
 		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
 			Ok((payment_hash, payment_secret)) => {
-				let payment_paths = self.create_blinded_payment_paths(amount_msats, payment_secret)
+				let payment_paths = self.create_blinded_payment_paths(
+					amount_msats, payment_secret, None
+				)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 				#[cfg(feature = "std")]
@@ -8145,7 +8147,8 @@ where
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
 	fn create_blinded_payment_paths(
-		&self, amount_msats: u64, payment_secret: PaymentSecret
+		&self, amount_msats: u64, payment_secret: PaymentSecret,
+		payment_context: Option<PaymentContext>
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		let secp_ctx = &self.secp_ctx;
 
@@ -8159,7 +8162,7 @@ where
 				max_cltv_expiry,
 				htlc_minimum_msat: 1,
 			},
-			payment_context: None,
+			payment_context,
 		};
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
@@ -9493,8 +9496,11 @@ where
 					},
 				};
 
+				let payment_context = PaymentContext::Bolt12Offer {
+					offer_id: invoice_request.offer_id,
+				};
 				let payment_paths = match self.create_blinded_payment_paths(
-					amount_msats, payment_secret
+					amount_msats, payment_secret, Some(payment_context)
 				) {
 					Ok(payment_paths) => payment_paths,
 					Err(()) => {
