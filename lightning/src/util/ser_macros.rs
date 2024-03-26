@@ -1065,6 +1065,10 @@ macro_rules! impl_writeable_tlv_based_enum {
 /// when [`MaybeReadable`] is practical instead of just [`Readable`] as it provides an upgrade path for
 /// new variants to be added which are simply ignored by existing clients.
 ///
+/// Note that only struct and unit variants (not tuple variants) will support downgrading, thus any
+/// new odd variants MUST be non-tuple (i.e. described using `$variant_id` and `$variant_name` not
+/// `$tuple_variant_id` and `$tuple_variant_name`).
+///
 /// [`MaybeReadable`]: crate::util::ser::MaybeReadable
 /// [`Writeable`]: crate::util::ser::Writeable
 /// [`DecodeError::UnknownRequiredFeature`]: crate::ln::msgs::DecodeError::UnknownRequiredFeature
@@ -1102,7 +1106,14 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 					$($($tuple_variant_id => {
 						Ok(Some($st::$tuple_variant_name(Readable::read(reader)?)))
 					}),*)*
-					_ if id % 2 == 1 => Ok(None),
+					_ if id % 2 == 1 => {
+						// Assume that a $variant_id was written, not a $tuple_variant_id, and read
+						// the length prefix and discard the correct number of bytes.
+						let tlv_len: $crate::util::ser::BigSize = $crate::util::ser::Readable::read(reader)?;
+						let mut rd = $crate::util::ser::FixedLengthReader::new(reader, tlv_len.0);
+						rd.eat_remaining().map_err(|_| $crate::ln::msgs::DecodeError::ShortRead)?;
+						Ok(None)
+					},
 					_ => Err($crate::ln::msgs::DecodeError::UnknownRequiredFeature),
 				}
 			}
