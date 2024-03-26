@@ -491,7 +491,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 		log_debug!(self.logger, "Setting channel signer for {} as available={}", chan_id, available);
 
 		let per_peer_state = self.node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(peer_id).unwrap().lock().unwrap();
+		let chan_lock = per_peer_state.get(peer_id).unwrap().write().unwrap();
 
 		let mut channel_keys_id = None;
 		if let Some(chan) = chan_lock.channel_by_id.get(chan_id).map(|phase| phase.context()) {
@@ -930,7 +930,7 @@ macro_rules! get_channel_ref {
 	($node: expr, $counterparty_node: expr, $per_peer_state_lock: ident, $peer_state_lock: ident, $channel_id: expr) => {
 		{
 			$per_peer_state_lock = $node.node.per_peer_state.read().unwrap();
-			$peer_state_lock = $per_peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
+			$peer_state_lock = $per_peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().write().unwrap();
 			$peer_state_lock.channel_by_id.get_mut(&$channel_id).unwrap()
 		}
 	}
@@ -1556,8 +1556,8 @@ macro_rules! check_warn_msg {
 /// Checks if at least one peer is connected.
 fn is_any_peer_connected(node: &Node) -> bool {
 	let peer_state = node.node.per_peer_state.read().unwrap();
-	for (_, peer_mutex) in peer_state.iter() {
-		let peer = peer_mutex.lock().unwrap();
+	for (_, peer_rwlock) in peer_state.iter() {
+		let peer = peer_rwlock.read().unwrap();
 		if peer.is_connected { return true; }
 	}
 	false
@@ -2018,8 +2018,8 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 
 		let node_a_per_peer_state = node_a.node.per_peer_state.read().unwrap();
 		let mut number_of_msg_events = 0;
-		for (cp_id, peer_state_mutex) in node_a_per_peer_state.iter() {
-			let peer_state = peer_state_mutex.lock().unwrap();
+		for (cp_id, peer_state) in node_a_per_peer_state.iter() {
+			let peer_state = peer_state.write().unwrap();
 			let cp_pending_msg_events = &peer_state.pending_msg_events;
 			number_of_msg_events += cp_pending_msg_events.len();
 			if cp_pending_msg_events.len() == 1 {
@@ -2853,7 +2853,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 						let (base_fee, prop_fee) = {
 							let per_peer_state = $node.node.per_peer_state.read().unwrap();
 							let peer_state = per_peer_state.get(&$prev_node.node.get_our_node_id())
-								.unwrap().lock().unwrap();
+								.unwrap().write().unwrap();
 							let channel = peer_state.channel_by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap();
 							if let Some(prev_config) = channel.context().prev_config() {
 								(prev_config.forwarding_fee_base_msat as u64,
@@ -3458,7 +3458,7 @@ pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 
 macro_rules! get_channel_value_stat {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {{
 		let peer_state_lock = $node.node.per_peer_state.read().unwrap();
-		let chan_lock = peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan_lock = peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().write().unwrap();
 		let chan = chan_lock.channel_by_id.get(&$channel_id).map(
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();

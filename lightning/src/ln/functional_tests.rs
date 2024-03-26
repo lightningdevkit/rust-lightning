@@ -699,7 +699,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
 	let (local_revocation_basepoint, local_htlc_basepoint, local_funding) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		let local_chan = chan_lock.channel_by_id.get(&chan.2).map(
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
@@ -710,7 +710,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint,remote_point, remote_funding) = {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().write().unwrap();
 		let remote_chan = chan_lock.channel_by_id.get(&chan.2).map(
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
@@ -727,7 +727,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 
 	let res = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).map(
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
@@ -1429,7 +1429,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	// needed to sign the new commitment tx and (2) sign the new commitment tx.
 	let (local_revocation_basepoint, local_htlc_basepoint, local_secret, next_local_point, local_funding) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		let local_chan = chan_lock.channel_by_id.get(&chan.2).map(
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
@@ -1445,7 +1445,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	};
 	let (remote_delayed_payment_basepoint, remote_htlc_basepoint, remote_point, remote_funding) = {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().write().unwrap();
 		let remote_chan = chan_lock.channel_by_id.get(&chan.2).map(
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
@@ -1476,7 +1476,7 @@ fn test_fee_spike_violation_fails_htlc() {
 
 	let res = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).map(
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap();
@@ -3236,7 +3236,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 		// The dust limit applied to HTLC outputs considers the fee of the HTLC transaction as
 		// well, so HTLCs at exactly the dust limit will not be included in commitment txn.
 		nodes[2].node.per_peer_state.read().unwrap().get(&nodes[1].node.get_our_node_id())
-			.unwrap().lock().unwrap().channel_by_id.get(&chan_2.2).unwrap().context().holder_dust_limit_satoshis * 1000
+			.unwrap().write().unwrap().channel_by_id.get(&chan_2.2).unwrap().context().holder_dust_limit_satoshis * 1000
 	} else { 3000000 };
 
 	let (_, first_payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
@@ -5209,7 +5209,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	assert_eq!(get_local_commitment_txn!(nodes[3], chan_2_3.2)[0].output.len(), 2);
 
 	let ds_dust_limit = nodes[3].node.per_peer_state.read().unwrap().get(&nodes[2].node.get_our_node_id())
-		.unwrap().lock().unwrap().channel_by_id.get(&chan_2_3.2).unwrap().context().holder_dust_limit_satoshis;
+		.unwrap().write().unwrap().channel_by_id.get(&chan_2_3.2).unwrap().context().holder_dust_limit_satoshis;
 	// 0th HTLC:
 	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 1st HTLC:
@@ -6344,7 +6344,7 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0);
 	let max_accepted_htlcs = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
-		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().context().counterparty_max_accepted_htlcs as u64;
+		.unwrap().write().unwrap().channel_by_id.get(&chan.2).unwrap().context().counterparty_max_accepted_htlcs as u64;
 
 	// Fetch a route in advance as we will be unable to once we're unable to send.
 	let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
@@ -6415,7 +6415,7 @@ fn test_update_add_htlc_bolt2_receiver_check_amount_received_more_than_min() {
 	let htlc_minimum_msat: u64;
 	{
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		let channel = chan_lock.channel_by_id.get(&chan.2).unwrap();
 		htlc_minimum_msat = channel.context().get_holder_htlc_minimum_msat();
 	}
@@ -7021,7 +7021,7 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	let chan =create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	let bs_dust_limit = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
-		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().context().holder_dust_limit_satoshis;
+		.unwrap().write().unwrap().channel_by_id.get(&chan.2).unwrap().context().holder_dust_limit_satoshis;
 
 	// We route 2 dust-HTLCs between A and B
 	let (_, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
@@ -7114,7 +7114,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
 	let bs_dust_limit = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
-		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().context().holder_dust_limit_satoshis;
+		.unwrap().write().unwrap().channel_by_id.get(&chan.2).unwrap().context().holder_dust_limit_satoshis;
 
 	let (_payment_preimage_1, dust_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
 	let (_payment_preimage_2, non_dust_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -7796,7 +7796,7 @@ fn test_counterparty_raa_skip_no_crash() {
 	let next_per_commitment_point;
 	{
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let mut guard = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let mut guard = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		let keys = guard.channel_by_id.get_mut(&channel_id).map(
 			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 		).flatten().unwrap().get_signer();
@@ -9227,7 +9227,7 @@ fn test_duplicate_chan_id() {
 
 	let funding_created = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let mut a_peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let mut a_peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		// Once we call `get_funding_created` the channel has a duplicate channel_id as
 		// another channel in the ChannelManager - an invalid state. Thus, we'd panic later when we
 		// try to create another channel. Instead, we drop the channel entirely here (leaving the
@@ -9942,7 +9942,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 
 	let (dust_buffer_feerate, max_dust_htlc_exposure_msat) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		let chan = chan_lock.channel_by_id.get(&channel_id).unwrap();
 		(chan.context().get_dust_buffer_feerate(None) as u64,
 		chan.context().get_max_dust_htlc_exposure_msat(&LowerBoundedFeeEstimator(nodes[0].fee_estimator)))
@@ -10440,7 +10440,7 @@ fn test_remove_expired_outbound_unfunded_channels() {
 	// Asserts the outbound channel has been removed from a nodes[0]'s peer state map.
 	let check_outbound_channel_existence = |should_exist: bool| {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		assert_eq!(chan_lock.channel_by_id.contains_key(&temp_channel_id), should_exist);
 	};
 
@@ -10491,7 +10491,7 @@ fn test_remove_expired_inbound_unfunded_channels() {
 	// Asserts the inbound channel has been removed from a nodes[1]'s peer state map.
 	let check_inbound_channel_existence = |should_exist: bool| {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
+		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().write().unwrap();
 		assert_eq!(chan_lock.channel_by_id.contains_key(&temp_channel_id), should_exist);
 	};
 

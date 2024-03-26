@@ -258,7 +258,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 
 	{
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-		let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 		assert_eq!(peer_state.channel_by_id.len(), 1);
 		assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 2);
 	}
@@ -294,7 +294,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 
 		{
 			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 			assert_eq!(peer_state.channel_by_id.len(), 0);
 			assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 0);
 		}
@@ -340,7 +340,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 
 		{
 			let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
-			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+			let peer_state = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().write().unwrap();
 			assert_eq!(peer_state.channel_by_id.len(), 0);
 			assert_eq!(nodes[0].node.short_to_chan_info.read().unwrap().len(), 0);
 		}
