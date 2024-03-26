@@ -116,7 +116,9 @@ impl RoutingMessageHandler for IgnoringMessageHandler {
 	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), LightningError> { Ok(()) }
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
-		InitFeatures::empty()
+		let mut features = InitFeatures::empty();
+		features.set_gossip_queries_optional();
+		features
 	}
 	fn processing_queue_high(&self) -> bool { false }
 }
