@@ -90,7 +90,6 @@ struct NegotiationContext {
 	outputs: HashMap<SerialId, TxOut>,
 	tx_locktime: AbsoluteLockTime,
 	feerate_sat_per_kw: u32,
-	to_remote_value_satoshis: u64,
 }
 
 impl NegotiationContext {
@@ -177,23 +176,27 @@ impl NegotiationContext {
 		} else {
 			return Err(AbortReason::PrevTxOutInvalid);
 		};
-		if self.inputs.iter().any(|(serial_id, _)| *serial_id == msg.serial_id) {
-			// The receiving node:
-			//  - MUST fail the negotiation if:
-			//    - the `serial_id` is already included in the transaction
-			return Err(AbortReason::DuplicateSerialId);
-		}
-		let prev_outpoint = OutPoint { txid, vout: msg.prevtx_out };
-		self.inputs.entry(msg.serial_id).or_insert_with(|| TxInputWithPrevOutput {
-			input: TxIn {
-				previous_output: prev_outpoint.clone(),
-				sequence: Sequence(msg.sequence),
-				..Default::default()
+		match self.inputs.entry(msg.serial_id) {
+			hash_map::Entry::Occupied(_) => {
+				// The receiving node:
+				//  - MUST fail the negotiation if:
+				//    - the `serial_id` is already included in the transaction
+				Err(AbortReason::DuplicateSerialId)
 			},
-			prev_output: prev_out,
-		});
-		self.prevtx_outpoints.insert(prev_outpoint);
-		Ok(())
+			hash_map::Entry::Vacant(entry) => {
+				let prev_outpoint = OutPoint { txid, vout: msg.prevtx_out };
+				entry.insert(TxInputWithPrevOutput {
+					input: TxIn {
+						previous_output: prev_outpoint,
+						sequence: Sequence(msg.sequence),
+						..Default::default()
+					},
+					prev_output: prev_out,
+				});
+				self.prevtx_outpoints.insert(prev_outpoint);
+				Ok(())
+			},
+		}
 	}
 
 	fn received_tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> Result<(), AbortReason> {
@@ -263,23 +266,25 @@ impl NegotiationContext {
 			return Err(AbortReason::InvalidOutputScript);
 		}
 
-		if self.outputs.iter().any(|(serial_id, _)| *serial_id == msg.serial_id) {
-			// The receiving node:
-			//  - MUST fail the negotiation if:
-			//    - the `serial_id` is already included in the transaction
-			return Err(AbortReason::DuplicateSerialId);
+		match self.outputs.entry(msg.serial_id) {
+			hash_map::Entry::Occupied(_) => {
+				// The receiving node:
+				//  - MUST fail the negotiation if:
+				//    - the `serial_id` is already included in the transaction
+				Err(AbortReason::DuplicateSerialId)
+			},
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(TxOut { value: msg.sats, script_pubkey: msg.script.clone() });
+				Ok(())
+			},
 		}
-
-		let output = TxOut { value: msg.sats, script_pubkey: msg.script.clone() };
-		self.outputs.entry(msg.serial_id).or_insert(output);
-		Ok(())
 	}
 
 	fn received_tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> Result<(), AbortReason> {
 		if !self.is_serial_id_valid_for_counterparty(&msg.serial_id) {
 			return Err(AbortReason::IncorrectSerialIdParity);
 		}
-		if let Some(_) = self.outputs.remove(&msg.serial_id) {
+		if self.outputs.remove(&msg.serial_id).is_some() {
 			Ok(())
 		} else {
 			// The receiving node:
@@ -299,7 +304,7 @@ impl NegotiationContext {
 		};
 		debug_assert!((msg.prevtx_out as usize) < tx.output.len());
 		let prev_output = &tx.output[msg.prevtx_out as usize];
-		self.prevtx_outpoints.insert(input.previous_output.clone());
+		self.prevtx_outpoints.insert(input.previous_output);
 		self.inputs.insert(
 			msg.serial_id,
 			TxInputWithPrevOutput { input, prev_output: prev_output.clone() },
@@ -333,11 +338,7 @@ impl NegotiationContext {
 		for output in self.counterparty_outputs_contributed() {
 			counterparty_outputs_value = counterparty_outputs_value.saturating_add(output.value);
 		}
-		// ...actually the counterparty might be splicing out, so that their balance also contributes
-		// to the total input value.
-		if counterparty_inputs_value.saturating_add(self.to_remote_value_satoshis)
-			< counterparty_outputs_value
-		{
+		if counterparty_inputs_value < counterparty_outputs_value {
 			return Err(AbortReason::OutputsValueExceedsInputsValue);
 		}
 
@@ -596,10 +597,7 @@ macro_rules! define_state_machine_transitions {
 }
 
 impl StateMachine {
-	fn new(
-		feerate_sat_per_kw: u32, is_initiator: bool, tx_locktime: AbsoluteLockTime,
-		to_remote_value_satoshis: u64,
-	) -> Self {
+	fn new(feerate_sat_per_kw: u32, is_initiator: bool, tx_locktime: AbsoluteLockTime) -> Self {
 		let context = NegotiationContext {
 			tx_locktime,
 			holder_is_initiator: is_initiator,
@@ -609,7 +607,6 @@ impl StateMachine {
 			prevtx_outpoints: new_hash_set(),
 			outputs: new_hash_map(),
 			feerate_sat_per_kw,
-			to_remote_value_satoshis,
 		};
 		if is_initiator {
 			Self::ReceivedChangeMsg(ReceivedChangeMsg(context))
@@ -717,26 +714,19 @@ pub enum HandleTxCompleteValue {
 impl InteractiveTxConstructor {
 	/// Instantiates a new `InteractiveTxConstructor`.
 	///
-	/// If this is for a dual_funded channel then the `to_remote_value_satoshis` parameter should be set
-	/// to zero.
-	///
 	/// A tuple is returned containing the newly instantiate `InteractiveTxConstructor` and optionally
 	/// an initial wrapped `Tx_` message which the holder needs to send to the counterparty.
 	pub fn new<ES: Deref>(
 		entropy_source: &ES, channel_id: ChannelId, feerate_sat_per_kw: u32, is_initiator: bool,
 		funding_tx_locktime: AbsoluteLockTime,
 		inputs_to_contribute: Vec<(TxIn, TransactionU16LenLimited)>,
-		outputs_to_contribute: Vec<TxOut>, to_remote_value_satoshis: u64,
+		outputs_to_contribute: Vec<TxOut>,
 	) -> (Self, Option<InteractiveTxMessageSend>)
 	where
 		ES::Target: EntropySource,
 	{
-		let state_machine = StateMachine::new(
-			feerate_sat_per_kw,
-			is_initiator,
-			funding_tx_locktime,
-			to_remote_value_satoshis,
-		);
+		let state_machine =
+			StateMachine::new(feerate_sat_per_kw, is_initiator, funding_tx_locktime);
 		let mut inputs_to_contribute: Vec<(SerialId, TxIn, TransactionU16LenLimited)> =
 			inputs_to_contribute
 				.into_iter()
@@ -841,7 +831,7 @@ impl InteractiveTxConstructor {
 		match &self.state_machine {
 			StateMachine::ReceivedTxComplete(_) => {
 				let msg_send = self.maybe_send_message()?;
-				return match &self.state_machine {
+				match &self.state_machine {
 					StateMachine::NegotiationComplete(s) => {
 						Ok(HandleTxCompleteValue::SendTxComplete(msg_send, s.0.clone()))
 					},
@@ -850,9 +840,9 @@ impl InteractiveTxConstructor {
 					}, // We either had an input or output to contribute.
 					_ => {
 						debug_assert!(false, "We cannot transition to any other states after receiving `tx_complete` and responding");
-						return Err(AbortReason::InvalidStateTransition);
+						Err(AbortReason::InvalidStateTransition)
 					},
-				};
+				}
 			},
 			StateMachine::NegotiationComplete(s) => {
 				Ok(HandleTxCompleteValue::NegotiationComplete(s.0.clone()))
@@ -965,7 +955,6 @@ mod tests {
 			tx_locktime,
 			session.inputs_a,
 			session.outputs_a,
-			0,
 		);
 		let (mut constructor_b, first_message_b) = InteractiveTxConstructor::new(
 			entropy_source,
@@ -975,7 +964,6 @@ mod tests {
 			tx_locktime,
 			session.inputs_b,
 			session.outputs_b,
-			0,
 		);
 
 		let handle_message_send =
