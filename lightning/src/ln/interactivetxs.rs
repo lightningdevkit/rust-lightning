@@ -259,9 +259,13 @@ impl NegotiationContext {
 		// with witness versions V1 and up are always considered standard. Yes, the scripts can be
 		// anyone-can-spend-able, but if our counterparty wants to add an output like that then it's none
 		// of our concern really ¯\_(ツ)_/¯
-		if !msg.script.is_v0_p2wpkh()
-			&& !msg.script.is_v0_p2wsh()
-			&& msg.script.witness_version().map(|v| v.to_num() < 1).unwrap_or(true)
+		//
+		// TODO: The last check would be simplified when https://github.com/rust-bitcoin/rust-bitcoin/commit/1656e1a09a1959230e20af90d20789a4a8f0a31b
+		// hits the next release of rust-bitcoin.
+		if !(msg.script.is_v0_p2wpkh()
+			|| msg.script.is_v0_p2wsh()
+			|| (msg.script.is_witness_program()
+				&& msg.script.witness_version().map(|v| v.to_num() >= 1).unwrap_or(false)))
 		{
 			return Err(AbortReason::InvalidOutputScript);
 		}
