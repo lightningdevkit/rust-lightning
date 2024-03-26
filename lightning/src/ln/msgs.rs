@@ -1672,7 +1672,7 @@ pub struct FinalOnionHopData {
 
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
+	use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 	use crate::ln::features::BlindedHopFeatures;
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
@@ -1711,6 +1711,7 @@ mod fuzzy_internal_msgs {
 			cltv_expiry_height: u32,
 			payment_secret: PaymentSecret,
 			payment_constraints: PaymentConstraints,
+			payment_context: PaymentContext,
 			intro_node_blinding_point: Option<PublicKey>,
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
@@ -2713,7 +2714,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
-					payment_secret, payment_constraints, payment_context: _
+					payment_secret, payment_constraints, payment_context
 				})} => {
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
@@ -2722,6 +2723,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
 						payment_secret,
 						payment_constraints,
+						payment_context,
 						intro_node_blinding_point,
 						keysend_preimage,
 						custom_tlvs,

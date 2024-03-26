@@ -104,14 +104,14 @@ pub struct PaymentConstraints {
 ///
 /// [`BlindedPath`]: crate::blinded_path::BlindedPath
 /// [`PaymentPurpose`]: crate::events::PaymentPurpose
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PaymentContext {
 	/// The payment context was unknown.
 	Unknown(UnknownPaymentContext),
 }
 
 /// An unknown payment context.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UnknownPaymentContext(());
 
 impl PaymentContext {
