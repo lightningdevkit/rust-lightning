@@ -72,7 +72,7 @@ use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
-use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
@@ -529,7 +529,7 @@ impl UnsignedInvoiceRequest {
 		let mut bytes = Vec::new();
 		unsigned_tlv_stream.write(&mut bytes).unwrap();
 
-		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
+		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
 		Self { bytes, contents, tagged_hash }
 	}
@@ -607,6 +607,9 @@ pub struct InvoiceRequest {
 /// ways to respond depending on whether the signing keys were derived.
 #[derive(Clone, Debug)]
 pub struct VerifiedInvoiceRequest {
+	/// The identifier of the [`Offer`] for which the [`InvoiceRequest`] was made.
+	pub offer_id: OfferId,
+
 	/// The verified request.
 	inner: InvoiceRequest,
 
@@ -764,8 +767,9 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 		#[cfg(c_bindings)]
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<VerifiedInvoiceRequest, ()> {
-		let keys = $self.contents.inner.offer.verify(&$self.bytes, key, secp_ctx)?;
+		let (offer_id, keys) = $self.contents.inner.offer.verify(&$self.bytes, key, secp_ctx)?;
 		Ok(VerifiedInvoiceRequest {
+			offer_id,
 			#[cfg(not(c_bindings))]
 			inner: $self,
 			#[cfg(c_bindings)]
@@ -1022,7 +1026,7 @@ impl TryFrom<Vec<u8>> for UnsignedInvoiceRequest {
 			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
 		)?;
 
-		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
+		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
 		Ok(UnsignedInvoiceRequest { bytes, contents, tagged_hash })
 	}
@@ -1046,7 +1050,7 @@ impl TryFrom<Vec<u8>> for InvoiceRequest {
 			None => return Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)),
 			Some(signature) => signature,
 		};
-		let message = TaggedHash::new(SIGNATURE_TAG, &bytes);
+		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 		merkle::verify_signature(&signature, &message, contents.payer_id)?;
 
 		Ok(InvoiceRequest { bytes, contents, signature })
@@ -1192,7 +1196,7 @@ mod tests {
 		assert_eq!(invoice_request.payer_id(), payer_pubkey());
 		assert_eq!(invoice_request.payer_note(), None);
 
-		let message = TaggedHash::new(SIGNATURE_TAG, &invoice_request.bytes);
+		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_request.bytes);
 		assert!(merkle::verify_signature(&invoice_request.signature, &message, payer_pubkey()).is_ok());
 
 		assert_eq!(
@@ -1297,7 +1301,7 @@ mod tests {
 		let mut bytes = Vec::new();
 		tlv_stream.write(&mut bytes).unwrap();
 
-		let message = TaggedHash::new(INVOICE_SIGNATURE_TAG, &bytes);
+		let message = TaggedHash::from_valid_tlv_stream_bytes(INVOICE_SIGNATURE_TAG, &bytes);
 		let signature = merkle::sign_message(recipient_sign, &message, recipient_pubkey()).unwrap();
 		signature_tlv_stream.signature = Some(&signature);
 
@@ -1320,7 +1324,7 @@ mod tests {
 		let mut bytes = Vec::new();
 		tlv_stream.write(&mut bytes).unwrap();
 
-		let message = TaggedHash::new(INVOICE_SIGNATURE_TAG, &bytes);
+		let message = TaggedHash::from_valid_tlv_stream_bytes(INVOICE_SIGNATURE_TAG, &bytes);
 		let signature = merkle::sign_message(recipient_sign, &message, recipient_pubkey()).unwrap();
 		signature_tlv_stream.signature = Some(&signature);
 
@@ -1369,7 +1373,7 @@ mod tests {
 		let mut bytes = Vec::new();
 		tlv_stream.write(&mut bytes).unwrap();
 
-		let message = TaggedHash::new(INVOICE_SIGNATURE_TAG, &bytes);
+		let message = TaggedHash::from_valid_tlv_stream_bytes(INVOICE_SIGNATURE_TAG, &bytes);
 		let signature = merkle::sign_message(recipient_sign, &message, recipient_pubkey()).unwrap();
 		signature_tlv_stream.signature = Some(&signature);
 
@@ -1392,7 +1396,7 @@ mod tests {
 		let mut bytes = Vec::new();
 		tlv_stream.write(&mut bytes).unwrap();
 
-		let message = TaggedHash::new(INVOICE_SIGNATURE_TAG, &bytes);
+		let message = TaggedHash::from_valid_tlv_stream_bytes(INVOICE_SIGNATURE_TAG, &bytes);
 		let signature = merkle::sign_message(recipient_sign, &message, recipient_pubkey()).unwrap();
 		signature_tlv_stream.signature = Some(&signature);
 

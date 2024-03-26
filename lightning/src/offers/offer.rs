@@ -122,7 +122,13 @@ impl OfferId {
 	const ID_TAG: &'static str = "LDK Offer ID";
 
 	fn from_valid_offer_tlv_stream(bytes: &[u8]) -> Self {
-		let tagged_hash = TaggedHash::new(Self::ID_TAG, &bytes);
+		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(Self::ID_TAG, bytes);
+		Self(tagged_hash.to_bytes())
+	}
+
+	fn from_valid_invreq_tlv_stream(bytes: &[u8]) -> Self {
+		let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES);
+		let tagged_hash = TaggedHash::from_tlv_stream(Self::ID_TAG, tlv_stream);
 		Self(tagged_hash.to_bytes())
 	}
 }
@@ -887,7 +893,7 @@ impl OfferContents {
 	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
 	pub(super) fn verify<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> Result<Option<KeyPair>, ()> {
+	) -> Result<(OfferId, Option<KeyPair>), ()> {
 		match self.metadata() {
 			Some(metadata) => {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
@@ -899,9 +905,13 @@ impl OfferContents {
 						_ => true,
 					}
 				});
-				signer::verify_recipient_metadata(
+				let keys = signer::verify_recipient_metadata(
 					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
-				)
+				)?;
+
+				let offer_id = OfferId::from_valid_invreq_tlv_stream(bytes);
+
+				Ok((offer_id, keys))
 			},
 			None => Err(()),
 		}
@@ -1246,7 +1256,10 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
+			Err(_) => panic!("unexpected error"),
+		}
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1305,7 +1318,10 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
+			Err(_) => panic!("unexpected error"),
+		}
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();

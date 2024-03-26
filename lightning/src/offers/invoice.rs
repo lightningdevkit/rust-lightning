@@ -546,7 +546,7 @@ impl UnsignedBolt12Invoice {
 		let mut bytes = Vec::new();
 		unsigned_tlv_stream.write(&mut bytes).unwrap();
 
-		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
+		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
 		Self { bytes, contents, tagged_hash }
 	}
@@ -1225,7 +1225,7 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream)
 		)?;
 
-		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
+		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
 		Ok(UnsignedBolt12Invoice { bytes, contents, tagged_hash })
 	}
@@ -1370,7 +1370,7 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 			None => return Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)),
 			Some(signature) => signature,
 		};
-		let tagged_hash = TaggedHash::new(SIGNATURE_TAG, &bytes);
+		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 		let pubkey = contents.fields().signing_pubkey;
 		merkle::verify_signature(&signature, &tagged_hash, pubkey)?;
 
@@ -1601,7 +1601,7 @@ mod tests {
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
-		let message = TaggedHash::new(SIGNATURE_TAG, &invoice.bytes);
+		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
 
 		let digest = Message::from_slice(&invoice.signable_hash()).unwrap();
@@ -1698,7 +1698,7 @@ mod tests {
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
-		let message = TaggedHash::new(SIGNATURE_TAG, &invoice.bytes);
+		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
 
 		assert_eq!(
