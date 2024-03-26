@@ -8149,6 +8149,7 @@ where
 				max_cltv_expiry,
 				htlc_minimum_msat: 1,
 			},
+			payment_context: None,
 		};
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
