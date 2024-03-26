@@ -3309,8 +3309,8 @@ where
 			let best_block_height = self.best_block.read().unwrap().height;
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_rwlock) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_rwlock.write().unwrap();
-				let peer_state = &mut *peer_state_lock;
+				let peer_state_lock = peer_state_rwlock.read().unwrap();
+				let peer_state = &*peer_state_lock;
 				res.extend(peer_state.channel_by_id.iter()
 					.filter_map(|(chan_id, phase)| match phase {
 						// Only `Channels` in the `ChannelPhase::Funded` phase can be considered funded.
@@ -3342,8 +3342,8 @@ where
 			let best_block_height = self.best_block.read().unwrap().height;
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (_cp_id, peer_state_rwlock) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_rwlock.write().unwrap();
-				let peer_state = &mut *peer_state_lock;
+				let peer_state_lock = peer_state_rwlock.read().unwrap();
+				let peer_state = &*peer_state_lock;
 				for context in peer_state.channel_by_id.iter().map(|(_, phase)| phase.context()) {
 					let details = ChannelDetails::from_channel_context(context, best_block_height,
 						peer_state.latest_features.clone(), &self.fee_estimator);
@@ -3373,8 +3373,8 @@ where
 		let per_peer_state = self.per_peer_state.read().unwrap();
 
 		if let Some(peer_state_rwlock) = per_peer_state.get(counterparty_node_id) {
-			let mut peer_state_lock = peer_state_rwlock.write().unwrap();
-			let peer_state = &mut *peer_state_lock;
+			let peer_state_lock = peer_state_rwlock.read().unwrap();
+			let peer_state = &*peer_state_lock;
 			let features = &peer_state.latest_features;
 			let context_to_details = |context| {
 				ChannelDetails::from_channel_context(context, best_block_height, features.clone(), &self.fee_estimator)
