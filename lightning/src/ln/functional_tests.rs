@@ -9950,7 +9950,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type_features) / 1000 + open_channel.common_fields.dust_limit_satoshis - 1) * 1000;
 	let dust_outbound_htlc_on_holder_tx: u64 = max_dust_htlc_exposure_msat / dust_outbound_htlc_on_holder_tx_msat;
 
-	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_success_tx_weight(&channel_type_features) / 1000 + open_channel.common_fields.dust_limit_satoshis - 1) * 1000;
+	// Substract 3 sats for multiplier and 2 sats for fixed limit to make sure we are 50% below the dust limit.
+	// This is to make sure we fully use the dust limit. If we don't, we could end up with `dust_ibd_htlc_on_holder_tx` being 1 
+	// while `max_dust_htlc_exposure_msat` is not equal to `dust_outbound_htlc_on_holder_tx_msat`.
+	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_success_tx_weight(&channel_type_features) / 1000 + open_channel.common_fields.dust_limit_satoshis - if multiplier_dust_limit { 3 } else { 2 }) * 1000; 
 	let dust_inbound_htlc_on_holder_tx: u64 = max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
 
 	let dust_htlc_on_counterparty_tx: u64 = 4;
