@@ -870,7 +870,7 @@ impl OfferContents {
 	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
 	pub(super) fn verify<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> Result<Option<KeyPair>, ()> {
+	) -> Result<(OfferId, Option<KeyPair>), ()> {
 		match self.metadata() {
 			Some(metadata) => {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
@@ -882,9 +882,11 @@ impl OfferContents {
 						_ => true,
 					}
 				});
-				signer::verify_recipient_metadata(
+				let (keys, nonce) = signer::verify_recipient_metadata(
 					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
-				)
+				)?;
+				let offer_id = OfferId(nonce);
+				Ok((offer_id, keys))
 			},
 			None => Err(()),
 		}

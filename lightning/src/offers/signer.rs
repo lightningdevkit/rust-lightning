@@ -271,11 +271,13 @@ pub(super) fn verify_recipient_metadata<'a, T: secp256k1::Signing>(
 	metadata: &[u8], expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
 	signing_pubkey: PublicKey, tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
 	secp_ctx: &Secp256k1<T>
-) -> Result<Option<KeyPair>, ()> {
+) -> Result<(Option<KeyPair>, Nonce), ()> {
 	let mut hmac = hmac_for_message(metadata, expanded_key, iv_bytes, tlv_stream)?;
 	hmac.input(WITHOUT_ENCRYPTED_PAYMENT_ID_HMAC_INPUT);
 
-	verify_metadata(metadata, Hmac::from_engine(hmac), signing_pubkey, secp_ctx)
+	let keys = verify_metadata(metadata, Hmac::from_engine(hmac), signing_pubkey, secp_ctx)?;
+	let nonce = Nonce::try_from(&metadata[..Nonce::LENGTH]).unwrap();
+	Ok((keys, nonce))
 }
 
 fn verify_metadata<T: secp256k1::Signing>(

@@ -73,7 +73,7 @@ use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
-use crate::offers::offer::{Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
@@ -607,6 +607,9 @@ pub struct InvoiceRequest {
 /// ways to respond depending on whether the signing keys were derived.
 #[derive(Clone, Debug)]
 pub struct VerifiedInvoiceRequest {
+	/// The identifier of the [`Offer`] for which the [`InvoiceRequest`] was made.
+	pub offer_id: OfferId,
+
 	/// The verified request.
 	inner: InvoiceRequest,
 
@@ -764,8 +767,9 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 		#[cfg(c_bindings)]
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<VerifiedInvoiceRequest, ()> {
-		let keys = $self.contents.inner.offer.verify(&$self.bytes, key, secp_ctx)?;
+		let (offer_id, keys) = $self.contents.inner.offer.verify(&$self.bytes, key, secp_ctx)?;
 		Ok(VerifiedInvoiceRequest {
+			offer_id,
 			#[cfg(not(c_bindings))]
 			inner: $self,
 			#[cfg(c_bindings)]
