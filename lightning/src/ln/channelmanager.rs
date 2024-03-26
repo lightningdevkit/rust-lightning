@@ -1359,9 +1359,9 @@ where
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	per_peer_state: FairRwLock<HashMap<PublicKey, RwLock<PeerState<SP>>>>,
+	per_peer_state: FairRwLock<HashMap<PublicKey, FairRwLock<PeerState<SP>>>>,
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, RwLock<PeerState<SP>>>>,
+	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, FairRwLock<PeerState<SP>>>>,
 
 	/// The set of events which we need to give to the user to handle. In some cases an event may
 	/// require some further action after the user handles it (currently only blocking a monitor
@@ -9175,7 +9175,7 @@ where
 							res = Err(());
 							return NotifyOption::SkipPersistNoEvents;
 						}
-						e.insert(RwLock::new(PeerState {
+						e.insert(FairRwLock::new(PeerState {
 							channel_by_id: new_hash_map(),
 							inbound_channel_request_by_id: new_hash_map(),
 							latest_features: init_msg.features.clone(),
@@ -10744,13 +10744,13 @@ where
 		};
 
 		let peer_count: u64 = Readable::read(reader)?;
-		let mut per_peer_state = hash_map_with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, RwLock<PeerState<SP>>)>()));
+		let mut per_peer_state = hash_map_with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, FairRwLock<PeerState<SP>>)>()));
 		for _ in 0..peer_count {
 			let peer_pubkey = Readable::read(reader)?;
 			let peer_chans = funded_peer_channels.remove(&peer_pubkey).unwrap_or(new_hash_map());
 			let mut peer_state = peer_state_from_chans(peer_chans);
 			peer_state.latest_features = Readable::read(reader)?;
-			per_peer_state.insert(peer_pubkey, RwLock::new(peer_state));
+			per_peer_state.insert(peer_pubkey, FairRwLock::new(peer_state));
 		}
 
 		let event_count: u64 = Readable::read(reader)?;
@@ -10956,7 +10956,7 @@ where
 					// still open, we need to replay any monitor updates that are for closed channels,
 					// creating the neccessary peer_state entries as we go.
 					let peer_state_rwlock = per_peer_state.entry(counterparty_id).or_insert_with(|| {
-						RwLock::new(peer_state_from_chans(new_hash_map()))
+						FairRwLock::new(peer_state_from_chans(new_hash_map()))
 					});
 					let mut peer_state = peer_state_rwlock.write().unwrap();
 					handle_in_flight_updates!(counterparty_id, chan_in_flight_updates,
