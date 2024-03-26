@@ -32,7 +32,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::blinded_path::{BlindedPath, NodeIdLookUp};
-use crate::blinded_path::payment::{Bolt12OfferContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
+use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -8826,7 +8826,7 @@ where
 
 		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
 			Ok((payment_hash, payment_secret)) => {
-				let payment_context = PaymentContext::unknown();
+				let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
 				let payment_paths = self.create_blinded_payment_paths(
 					amount_msats, payment_secret, payment_context
 				)

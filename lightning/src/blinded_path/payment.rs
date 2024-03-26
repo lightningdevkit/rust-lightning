@@ -114,6 +114,11 @@ pub enum PaymentContext {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	Bolt12Offer(Bolt12OfferContext),
+
+	/// The payment was made for an invoice sent for a BOLT 12 [`Refund`].
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	Bolt12Refund(Bolt12RefundContext),
 }
 
 /// An unknown payment context.
@@ -130,6 +135,12 @@ pub struct Bolt12OfferContext {
 	/// [`Offer`]: crate::offers::offer::Offer
 	pub offer_id: OfferId,
 }
+
+/// The context of a payment made for an invoice sent for a BOLT 12 [`Refund`].
+///
+/// [`Refund`]: crate::offers::refund::Refund
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Bolt12RefundContext {}
 
 impl PaymentContext {
 	pub(crate) fn unknown() -> Self {
@@ -358,6 +369,7 @@ impl_writeable_tlv_based_enum!(PaymentContext,
 	;
 	(0, Unknown),
 	(1, Bolt12Offer),
+	(2, Bolt12Refund),
 );
 
 impl Writeable for UnknownPaymentContext {
@@ -375,6 +387,8 @@ impl Readable for UnknownPaymentContext {
 impl_writeable_tlv_based!(Bolt12OfferContext, {
 	(0, offer_id, required),
 });
+
+impl_writeable_tlv_based!(Bolt12RefundContext, {});
 
 #[cfg(test)]
 mod tests {
