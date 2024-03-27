@@ -2758,17 +2758,17 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 		let mut pending_inbound_htlcs_value_msat = 0;
 		{
-		let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
-		for ref htlc in context.pending_inbound_htlcs.iter() {
-			pending_inbound_htlcs_value_msat += htlc.amount_msat;
-			if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
-				on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
+			let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
+			let holder_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
+			for ref htlc in context.pending_inbound_htlcs.iter() {
+				pending_inbound_htlcs_value_msat += htlc.amount_msat;
+				if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
+					on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
+				}
+				if htlc.amount_msat / 1000 < holder_dust_limit_success_sat {
+					on_holder_tx_dust_exposure_msat += htlc.amount_msat;
+				}
 			}
-			if htlc.amount_msat / 1000 < holder_dust_limit_success_sat {
-				on_holder_tx_dust_exposure_msat += htlc.amount_msat;
-			}
-		}
 		}
 
 		let mut pending_outbound_htlcs_value_msat = 0;
@@ -2776,33 +2776,33 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let mut on_holder_tx_outbound_holding_cell_htlcs_count = 0;
 		let mut pending_outbound_htlcs = self.pending_outbound_htlcs.len();
 		{
-		let counterparty_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
-		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
-		for ref htlc in context.pending_outbound_htlcs.iter() {
-			pending_outbound_htlcs_value_msat += htlc.amount_msat;
-			if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
-				on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
+			let counterparty_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
+			let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
+			for ref htlc in context.pending_outbound_htlcs.iter() {
+				pending_outbound_htlcs_value_msat += htlc.amount_msat;
+				if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
+					on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
+				}
+				if htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat {
+					on_holder_tx_dust_exposure_msat += htlc.amount_msat;
+				}
 			}
-			if htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat {
-				on_holder_tx_dust_exposure_msat += htlc.amount_msat;
-			}
-		}
 
-		for update in context.holding_cell_htlc_updates.iter() {
-			if let &HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, .. } = update {
-				pending_outbound_htlcs += 1;
-				pending_outbound_htlcs_value_msat += amount_msat;
-				outbound_holding_cell_msat += amount_msat;
-				if *amount_msat / 1000 < counterparty_dust_limit_success_sat {
-					on_counterparty_tx_dust_exposure_msat += amount_msat;
-				}
-				if *amount_msat / 1000 < holder_dust_limit_timeout_sat {
-					on_holder_tx_dust_exposure_msat += amount_msat;
-				} else {
-					on_holder_tx_outbound_holding_cell_htlcs_count += 1;
+			for update in context.holding_cell_htlc_updates.iter() {
+				if let &HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, .. } = update {
+					pending_outbound_htlcs += 1;
+					pending_outbound_htlcs_value_msat += amount_msat;
+					outbound_holding_cell_msat += amount_msat;
+					if *amount_msat / 1000 < counterparty_dust_limit_success_sat {
+						on_counterparty_tx_dust_exposure_msat += amount_msat;
+					}
+					if *amount_msat / 1000 < holder_dust_limit_timeout_sat {
+						on_holder_tx_dust_exposure_msat += amount_msat;
+					} else {
+						on_holder_tx_outbound_holding_cell_htlcs_count += 1;
+					}
 				}
 			}
-		}
 		}
 
 		HTLCStats {
