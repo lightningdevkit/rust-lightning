@@ -214,6 +214,7 @@ pub(super) fn build_onion_payloads(
 							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
 							intro_node_blinding_point: blinding_point.take(),
 							keysend_preimage: *keysend_preimage,
+							custom_tlvs: recipient_onion.custom_tlvs.clone(),
 						});
 					} else {
 						res.push(msgs::OutboundOnionPayload::BlindedForward {
