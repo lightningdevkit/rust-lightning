@@ -22,7 +22,7 @@ use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteParameters, RouteHint, RouteHintHop};
 use crate::ln::features::{InitFeatures, Bolt11InvoiceFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate};
+use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate, OutboundTrampolinePayload};
 use crate::ln::wire::Encode;
 use crate::util::ser::{Writeable, Writer, BigSize};
 use crate::util::test_utils;
@@ -35,11 +35,12 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use crate::io;
 use crate::prelude::*;
 use core::default::Default;
+use bitcoin::hashes::hex::FromHex;
 
 use crate::ln::functional_test_utils::*;
 
@@ -964,6 +965,25 @@ fn test_always_create_tlv_format_onion_payloads() {
 			despite that the features signals no support for variable length onions"
 		)}
 	}
+}
+
+#[test]
+fn test_trampoline_onion_payload_serialization() {
+	// As per https://github.com/lightning/bolts/blob/c01d2e6267d4a8d1095f0f1188970055a9a22d29/bolt04/trampoline-payment-onion-test.json#L3
+	let trampoline_payload = OutboundTrampolinePayload::Forward {
+		amt_to_forward: 100000000,
+		outgoing_cltv_value: 800000,
+		outgoing_node_id: PublicKey::from_slice(&<Vec<u8>>::from_hex("02edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145").unwrap()).unwrap(),
+	};
+
+	let slice_to_hex = |slice: &[u8]| {
+		slice.iter()
+			.map(|b| format!("{:02x}", b).to_string())
+			.collect::<String>()
+	};
+
+	let carol_payload_hex = slice_to_hex(&trampoline_payload.encode());
+	assert_eq!(carol_payload_hex, "2e020405f5e10004030c35000e2102edabbd16b41c8371b92ef2f04c1185b4f03b6dcd52ba9b78d9d7c89c8f221145");
 }
 
 fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
