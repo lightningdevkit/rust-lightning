@@ -11020,8 +11020,8 @@ where
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let mut number_of_funded_channels = 0;
 			for (_, peer_state_rwlock) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_rwlock.write().unwrap();
-				let peer_state = &mut *peer_state_lock;
+				let peer_state_lock = peer_state_rwlock.read().unwrap();
+				let peer_state = &*peer_state_lock;
 				if !peer_state.ok_to_remove(false) {
 					serializable_peer_count += 1;
 				}
@@ -11034,8 +11034,8 @@ where
 			(number_of_funded_channels as u64).write(writer)?;
 
 			for (_, peer_state_rwlock) in per_peer_state.iter() {
-				let mut peer_state_lock = peer_state_rwlock.write().unwrap();
-				let peer_state = &mut *peer_state_lock;
+				let peer_state_lock = peer_state_rwlock.read().unwrap();
+				let peer_state = &*peer_state_lock;
 				for channel in peer_state.channel_by_id.iter().filter_map(
 					|(_, phase)| if let ChannelPhase::Funded(channel) = phase {
 						if channel.context.is_funding_broadcast() { Some(channel) } else { None }
