@@ -61,7 +61,6 @@ use crate::ln::wire::Encode;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
-use crate::offers::merkle::SignError;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
@@ -7935,7 +7934,7 @@ where
 	///
 	/// The resulting invoice uses a [`PaymentHash`] recognized by the [`ChannelManager`] and a
 	/// [`BlindedPath`] containing the [`PaymentSecret`] needed to reconstruct the corresponding
-	/// [`PaymentPreimage`].
+	/// [`PaymentPreimage`]. It is returned purely for informational purposes.
 	///
 	/// # Limitations
 	///
@@ -7952,7 +7951,9 @@ where
 	///   the invoice.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn request_refund_payment(&self, refund: &Refund) -> Result<(), Bolt12SemanticError> {
+	pub fn request_refund_payment(
+		&self, refund: &Refund
+	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
@@ -7991,7 +7992,7 @@ where
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 				if refund.paths().is_empty() {
 					let message = new_pending_onion_message(
-						OffersMessage::Invoice(invoice),
+						OffersMessage::Invoice(invoice.clone()),
 						Destination::Node(refund.payer_id()),
 						Some(reply_path),
 					);
@@ -8007,7 +8008,7 @@ where
 					}
 				}
 
-				Ok(())
+				Ok(invoice)
 			},
 			Err(()) => Err(Bolt12SemanticError::InvalidAmount),
 		}
@@ -9496,7 +9497,7 @@ where
 					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
 				);
 
-				if invoice_request.keys.is_some() {
+				let response = if invoice_request.keys.is_some() {
 					#[cfg(feature = "std")]
 					let builder = invoice_request.respond_using_derived_keys(
 						payment_paths, payment_hash
@@ -9505,12 +9506,10 @@ where
 					let builder = invoice_request.respond_using_derived_keys_no_std(
 						payment_paths, payment_hash, created_at
 					);
-					let builder: Result<InvoiceBuilder<DerivedSigningPubkey>, _> =
-						builder.map(|b| b.into());
-					match builder.and_then(|b| b.allow_mpp().build_and_sign(secp_ctx)) {
-						Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
-						Err(error) => Some(OffersMessage::InvoiceError(error.into())),
-					}
+					builder
+						.map(InvoiceBuilder::<DerivedSigningPubkey>::from)
+						.and_then(|builder| builder.allow_mpp().build_and_sign(secp_ctx))
+						.map_err(InvoiceError::from)
 				} else {
 					#[cfg(feature = "std")]
 					let builder = invoice_request.respond_with(payment_paths, payment_hash);
@@ -9518,47 +9517,50 @@ where
 					let builder = invoice_request.respond_with_no_std(
 						payment_paths, payment_hash, created_at
 					);
-					let builder: Result<InvoiceBuilder<ExplicitSigningPubkey>, _> =
-						builder.map(|b| b.into());
-					let response = builder.and_then(|builder| builder.allow_mpp().build())
-						.map_err(|e| OffersMessage::InvoiceError(e.into()))
+					builder
+						.map(InvoiceBuilder::<ExplicitSigningPubkey>::from)
+						.and_then(|builder| builder.allow_mpp().build())
+						.map_err(InvoiceError::from)
 						.and_then(|invoice| {
 							#[cfg(c_bindings)]
 							let mut invoice = invoice;
-							match invoice.sign(|invoice: &UnsignedBolt12Invoice|
-								self.node_signer.sign_bolt12_invoice(invoice)
-							) {
-								Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
-								Err(SignError::Signing) => Err(OffersMessage::InvoiceError(
-										InvoiceError::from_string("Failed signing invoice".to_string())
-								)),
-								Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(
-										InvoiceError::from_string("Failed invoice signature verification".to_string())
-								)),
-							}
-						});
-					match response {
-						Ok(invoice) => Some(invoice),
-						Err(error) => Some(error),
-					}
+							invoice
+								.sign(|invoice: &UnsignedBolt12Invoice|
+									self.node_signer.sign_bolt12_invoice(invoice)
+								)
+								.map_err(InvoiceError::from)
+						})
+				};
+
+				match response {
+					Ok(invoice) => {
+						let event = Event::InvoiceGenerated { invoice: invoice.clone() };
+						self.pending_events.lock().unwrap().push_back((event, None));
+						Some(OffersMessage::Invoice(invoice))
+					},
+					Err(error) => Some(OffersMessage::InvoiceError(error.into())),
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				match invoice.verify(expanded_key, secp_ctx) {
-					Err(()) => {
-						Some(OffersMessage::InvoiceError(InvoiceError::from_string("Unrecognized invoice".to_owned())))
-					},
-					Ok(_) if invoice.invoice_features().requires_unknown_bits_from(&self.bolt12_invoice_features()) => {
-						Some(OffersMessage::InvoiceError(Bolt12SemanticError::UnknownRequiredFeatures.into()))
-					},
-					Ok(payment_id) => {
-						if let Err(e) = self.send_payment_for_bolt12_invoice(&invoice, payment_id) {
-							log_trace!(self.logger, "Failed paying invoice: {:?}", e);
-							Some(OffersMessage::InvoiceError(InvoiceError::from_string(format!("{:?}", e))))
+				let response = invoice
+					.verify(expanded_key, secp_ctx)
+					.map_err(|()| InvoiceError::from_string("Unrecognized invoice".to_owned()))
+					.and_then(|payment_id| {
+						let features = self.bolt12_invoice_features();
+						if invoice.invoice_features().requires_unknown_bits_from(&features) {
+							Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
 						} else {
-							None
+							self.send_payment_for_bolt12_invoice(&invoice, payment_id)
+								.map_err(|e| {
+									log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+									InvoiceError::from_string(format!("{:?}", e))
+								})
 						}
-					},
+					});
+
+				match response {
+					Ok(()) => None,
+					Err(e) => Some(OffersMessage::InvoiceError(e)),
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
