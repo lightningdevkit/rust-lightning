@@ -368,7 +368,9 @@ impl SpendableOutputDescriptor {
 					});
 					witness_weight += descriptor.max_witness_length();
 					#[cfg(feature = "grind_signatures")]
-					{ witness_weight -= 1; } // Guarantees a low R signature
+					{ // Guarantees a low R signature
+						witness_weight -= 1;
+					}
 					input_value += descriptor.output.value;
 				},
 				SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
@@ -381,7 +383,9 @@ impl SpendableOutputDescriptor {
 					});
 					witness_weight += DelayedPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
 					#[cfg(feature = "grind_signatures")]
-					{ witness_weight -= 1; } // Guarantees a low R signature
+					{ // Guarantees a low R signature
+						witness_weight -= 1;
+					}
 					input_value += descriptor.output.value;
 				},
 				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output, .. } => {
@@ -394,7 +398,9 @@ impl SpendableOutputDescriptor {
 					});
 					witness_weight += 1 + 73 + 34;
 					#[cfg(feature = "grind_signatures")]
-					{ witness_weight -= 1; } // Guarantees a low R signature
+					{ // Guarantees a low R signature
+						witness_weight -= 1;
+					}
 					input_value += output.value;
 				}
 			}
