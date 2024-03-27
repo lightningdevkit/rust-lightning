@@ -24,6 +24,7 @@ use crate::util::logger::Logger;
 use crate::util::ser::{BigSize, FixedLengthReader, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer};
 
 use core::cmp;
+use core::fmt;
 use crate::io::{self, Read};
 use crate::prelude::*;
 
@@ -33,7 +34,7 @@ pub(super) const SMALL_PACKET_HOP_DATA_LEN: usize = 1300;
 pub(super) const BIG_PACKET_HOP_DATA_LEN: usize = 32768;
 
 /// Packet of hop data for next peer
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 pub struct Packet {
 	/// Bolt 04 version number
 	pub version: u8,
@@ -59,6 +60,12 @@ impl onion_utils::Packet for Packet {
 			hop_data,
 			hmac,
 		}
+	}
+}
+
+impl fmt::Debug for Packet {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.write_fmt(format_args!("Onion message packet version {} with hmac {:?}", self.version, &self.hmac[..]))
 	}
 }
 
