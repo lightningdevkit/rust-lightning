@@ -1221,8 +1221,10 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
-			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
+		let builder = OfferBuilder
+			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx);
+		let offer_id = builder.offer_id();
+		let offer = builder
 			.amount_msats(1000)
 			.build().unwrap();
 		assert_eq!(offer.signing_pubkey(), node_id);
@@ -1230,7 +1232,10 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer_id),
+			Err(_) => panic!("unexpected error"),
+		}
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1279,8 +1284,10 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
-			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
+		let builder = OfferBuilder
+			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx);
+		let offer_id = builder.offer_id();
+		let offer = builder
 			.amount_msats(1000)
 			.path(blinded_path)
 			.build().unwrap();
@@ -1289,7 +1296,10 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer_id),
+			Err(_) => panic!("unexpected error"),
+		}
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
