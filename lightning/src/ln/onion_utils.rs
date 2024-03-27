@@ -291,6 +291,24 @@ pub(super) fn construct_onion_packet(
 	)
 }
 
+#[allow(unused)]
+pub(super) fn construct_trampoline_onion_packet(
+	payloads: Vec<msgs::OutboundTrampolinePayload>, onion_keys: Vec<OnionKeys>,
+	prng_seed: [u8; 32], associated_data: &PaymentHash, length: u16,
+) -> Result<msgs::TrampolineOnionPacket, ()> {
+	let mut packet_data = vec![0u8; length as usize];
+
+	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
+	chacha.process(&vec![0u8; length as usize], &mut packet_data);
+
+	construct_onion_packet_with_init_noise::<_, _>(
+		payloads,
+		onion_keys,
+		packet_data,
+		Some(associated_data),
+	)
+}
+
 #[cfg(test)]
 /// Used in testing to write bogus `BogusOnionHopData` as well as `RawOnionHopData`, which is
 /// otherwise not representable in `msgs::OnionHopData`.
