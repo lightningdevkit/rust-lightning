@@ -805,7 +805,27 @@ where
 		)
 	}
 
+	/// Similar to [`Self::new`], but rather than dropping onion messages that are
+	/// intended to be forwarded to offline peers, we will intercept them for
+	/// later forwarding.
 	///
+	/// Interception flow:
+	/// 1. If an onion message for an offline peer is received, `OnionMessenger` will
+	///    generate an [`Event::OnionMessageIntercepted`]. Event handlers can
+	///    then choose to persist this onion message for later forwarding, or drop
+	///    it.
+	/// 2. When the offline peer later comes back online, `OnionMessenger` will
+	///    generate an [`Event::OnionMessagePeerConnected`]. Event handlers will
+	///    then fetch all previously intercepted onion messages for this peer.
+	/// 3. Once the stored onion messages are fetched, they can finally be
+	///    forwarded to the now-online peer via [`Self::forward_onion_message`].
+	///
+	/// # Note
+	///
+	/// LDK will not rate limit how many [`Event::OnionMessageIntercepted`]s
+	/// are generated, so it is the caller's responsibility to limit how many
+	/// onion messages are persisted and only persist onion messages for relevant
+	/// peers.
 	pub fn new_with_offline_peer_interception(
 		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL,
 		message_router: MR, offers_handler: OMH, custom_handler: CMH
