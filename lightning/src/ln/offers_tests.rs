@@ -375,12 +375,12 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
-	let builder = alice.node
+	let (offer_id, offer) = alice.node
 		.create_offer_builder("coffee".to_string())
 		.unwrap()
-		.amount_msats(10_000_000);
-	let payment_context = PaymentContext::Bolt12Offer { offer_id: builder.offer_id() };
-	let offer = builder.build().unwrap();
+		.amount_msats(10_000_000)
+		.build_with_id().unwrap();
+	let payment_context = PaymentContext::Bolt12Offer { offer_id };
 	assert_ne!(offer.signing_pubkey(), alice_id);
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -528,11 +528,11 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	let bob = &nodes[1];
 	let bob_id = bob.node.get_our_node_id();
 
-	let builder = alice.node
+	let (offer_id, offer) = alice.node
 		.create_offer_builder("coffee".to_string()).unwrap()
-		.amount_msats(10_000_000);
-	let payment_context = PaymentContext::Bolt12Offer { offer_id: builder.offer_id() };
-	let offer = builder.build().unwrap();
+		.amount_msats(10_000_000)
+		.build_with_id().unwrap();
+	let payment_context = PaymentContext::Bolt12Offer { offer_id };
 	assert_ne!(offer.signing_pubkey(), alice_id);
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -643,12 +643,12 @@ fn pays_for_offer_without_blinded_paths() {
 	let bob = &nodes[1];
 	let bob_id = bob.node.get_our_node_id();
 
-	let builder = alice.node
+	let (offer_id, offer) = alice.node
 		.create_offer_builder("coffee".to_string()).unwrap()
 		.clear_paths()
-		.amount_msats(10_000_000);
-	let payment_context = PaymentContext::Bolt12Offer { offer_id: builder.offer_id() };
-	let offer = builder.build().unwrap();
+		.amount_msats(10_000_000)
+		.build_with_id().unwrap();
+	let payment_context = PaymentContext::Bolt12Offer { offer_id };
 	assert_eq!(offer.signing_pubkey(), alice_id);
 	assert!(offer.paths().is_empty());
 
