@@ -1221,12 +1221,10 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let builder = OfferBuilder
-			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx);
-		let offer_id = builder.offer_id();
-		let offer = builder
+		let (offer_id, offer) = OfferBuilder
+			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
-			.build().unwrap();
+			.build_with_id().unwrap();
 		assert_eq!(offer.signing_pubkey(), node_id);
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
@@ -1284,13 +1282,11 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let builder = OfferBuilder
-			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx);
-		let offer_id = builder.offer_id();
-		let offer = builder
+		let (offer_id, offer) = OfferBuilder
+			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
 			.path(blinded_path)
-			.build().unwrap();
+			.build_with_id().unwrap();
 		assert_ne!(offer.signing_pubkey(), node_id);
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
