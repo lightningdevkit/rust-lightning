@@ -229,7 +229,9 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 	}
 } }
 
-macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
+macro_rules! offer_derived_metadata_builder_methods { (
+	$secp_context: ty, $self: ident, $self_type: ty
+) => {
 	/// Similar to [`OfferBuilder::new`] except, if [`OfferBuilder::path`] is called, the signing
 	/// pubkey is derived from the given [`ExpandedKey`] and [`EntropySource`]. This provides
 	/// recipient privacy by using a different signing pubkey for each offer. Otherwise, the
@@ -259,9 +261,11 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 		}
 	}
 
-	/// Returns an identifier for the [`Offer`] constructed by the builder.
-	pub fn offer_id(&self) -> OfferId {
-		self.metadata_strategy.0
+	/// Builds an [`Offer`] from the builder's settings. Returns both the offer and its [`OfferId`].
+	pub fn build_with_id($self: $self_type) -> Result<(OfferId, Offer), Bolt12SemanticError> {
+		let offer_id = $self.metadata_strategy.0;
+		let offer = $self.build()?;
+		Ok((offer_id, offer))
 	}
 } }
 
@@ -443,7 +447,7 @@ impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
 }
 
 impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
-	offer_derived_metadata_builder_methods!(T);
+	offer_derived_metadata_builder_methods!(T, self, Self);
 }
 
 #[cfg(all(c_bindings, not(test)))]
@@ -461,13 +465,13 @@ impl<'a> OfferWithExplicitMetadataBuilder<'a> {
 
 #[cfg(all(c_bindings, not(test)))]
 impl<'a> OfferWithDerivedMetadataBuilder<'a> {
-	offer_derived_metadata_builder_methods!(secp256k1::All);
+	offer_derived_metadata_builder_methods!(secp256k1::All, self, &mut Self);
 	offer_builder_methods!(self, &mut Self, (), ());
 }
 
 #[cfg(all(c_bindings, test))]
 impl<'a> OfferWithDerivedMetadataBuilder<'a> {
-	offer_derived_metadata_builder_methods!(secp256k1::All);
+	offer_derived_metadata_builder_methods!(secp256k1::All, self, &mut Self);
 	offer_builder_methods!(self, &mut Self, &mut Self, self);
 	offer_builder_test_methods!(self, &mut Self, &mut Self, self);
 }
