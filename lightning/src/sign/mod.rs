@@ -1216,7 +1216,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let our_htlc_private_key = chan_utils::derive_private_key(
 			&secp_ctx, &htlc_descriptor.per_commitment_point, &self.htlc_base_key
 		);
-		Ok(sign_with_aux_rand(&secp_ctx, &hash_to_message!(sighash.as_byte_array()), &our_htlc_private_key, &self))
+		let sighash = hash_to_message!(sighash.as_byte_array());
+		Ok(sign_with_aux_rand(&secp_ctx, &sighash, &our_htlc_private_key, &self))
 	}
 
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
