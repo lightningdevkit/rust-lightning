@@ -344,7 +344,6 @@ where C::Target: chain::Filter,
 			let update_id = MonitorUpdateId {
 				contents: UpdateOrigin::ChainSync(self.sync_persistence_id.get_increment()),
 			};
-			let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 
 			log_trace!(logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
 			match self.persister.update_persisted_channel(*funding_outpoint, None, monitor, update_id) {
@@ -352,7 +351,6 @@ where C::Target: chain::Filter,
 					log_trace!(logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
 				ChannelMonitorUpdateStatus::InProgress => {
 					log_debug!(logger, "Channel Monitor sync for channel {} in progress.", log_funding_info!(monitor));
-					pending_monitor_updates.push(update_id);
 				},
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
 					return Err(());
