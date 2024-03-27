@@ -1740,6 +1740,17 @@ mod fuzzy_internal_msgs {
 		}
 	}
 
+	pub(crate) enum OutboundTrampolinePayload {
+		#[allow(unused)]
+		Forward {
+			/// The value, in msat, of the payment after this hop's fee is deducted.
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			/// The node id to which the trampoline node must find a route
+			outgoing_node_id: PublicKey,
+		}
+	}
+
 	pub struct DecodedOnionErrorPacket {
 		pub(crate) hmac: [u8; 32],
 		pub(crate) failuremsg: Vec<u8>,
@@ -1798,7 +1809,7 @@ pub struct TrampolineOnionPacket {
 	// Unlike the onion packets used for payments, Trampoline onion packets have to be shorter than
 	// 1300 bytes. The expected default is 650 bytes.
 	// TODO: if 650 ends up being the most common size, optimize this to be:
-	// enum { ThirteenHundred([u8; 650]), VarLen(Vec<u8>) }
+	// enum { SixFifty([u8; 650]), VarLen(Vec<u8>) }
 	pub hop_data: Vec<u8>,
 	/// HMAC to verify the integrity of hop_data
 	pub hmac: [u8; 32],
@@ -2596,6 +2607,22 @@ impl Writeable for OutboundOnionPayload {
 		Ok(())
 	}
 }
+
+impl Writeable for OutboundTrampolinePayload {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match self {
+			Self::Forward { amt_to_forward, outgoing_cltv_value, outgoing_node_id } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(14, outgoing_node_id, required)
+				});
+			}
+		}
+		Ok(())
+	}
+}
+
 
 impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload where NS::Target: NodeSigner {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, &NS)) -> Result<Self, DecodeError> {
