@@ -59,6 +59,17 @@ struct MessengerNode {
 	>>
 }
 
+impl Drop for MessengerNode {
+	fn drop(&mut self) {
+		#[cfg(feature = "std")] {
+			if std::thread::panicking() {
+				return;
+			}
+		}
+		assert!(release_events(self).is_empty());
+	}
+}
+
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
@@ -164,13 +175,18 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 
 struct MessengerCfg {
 	secret_override: Option<SecretKey>,
+	intercept_offline_peer_oms: bool,
 }
 impl MessengerCfg {
 	fn new() -> Self {
-		Self { secret_override: None }
+		Self { secret_override: None, intercept_offline_peer_oms: false }
 	}
 	fn with_node_secret(mut self, secret: SecretKey) -> Self {
 		self.secret_override = Some(secret);
+		self
+	}
+	fn with_offline_peer_interception(mut self) -> Self {
+		self.intercept_offline_peer_oms = true;
 		self
 	}
 }
@@ -196,14 +212,24 @@ fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 		);
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
 		let custom_message_handler = Arc::new(TestCustomMessageHandler::new());
+		let messenger = if cfg.intercept_offline_peer_oms {
+			OnionMessenger::new_with_offline_peer_interception(
+				entropy_source.clone(), node_signer.clone(), logger.clone(),
+				node_id_lookup, message_router, offers_message_handler,
+				custom_message_handler.clone()
+			)
+		} else {
+			OnionMessenger::new(
+				entropy_source.clone(), node_signer.clone(), logger.clone(),
+				node_id_lookup, message_router, offers_message_handler,
+				custom_message_handler.clone()
+			)
+		};
 		nodes.push(MessengerNode {
 			privkey: secret_key,
 			node_id: node_signer.get_node_id(Recipient::Node).unwrap(),
-			entropy_source: entropy_source.clone(),
-			messenger: OnionMessenger::new(
-				entropy_source, node_signer, logger.clone(), node_id_lookup, message_router,
-				offers_message_handler, custom_message_handler.clone()
-			),
+			entropy_source,
+			messenger,
 			custom_message_handler,
 			gossip_sync: gossip_sync.clone(),
 		});
@@ -550,6 +576,70 @@ fn drops_buffered_messages_waiting_for_peer_connection() {
 	}
 	connect_peers(&nodes[0], &nodes[1]);
 	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_none());
+}
+
+#[test]
+fn intercept_offline_peer_oms() {
+	// Ensure that if OnionMessenger is initialized with
+	// new_with_offline_peer_interception, we will intercept OMs for offline
+	// peers, generate the right events, and forward OMs when they are re-injected
+	// by the user.
+	let node_cfgs = vec![MessengerCfg::new(), MessengerCfg::new().with_offline_peer_interception(), MessengerCfg::new()];
+	let mut nodes = create_nodes_using_cfgs(node_cfgs);
+
+	let peer_conn_evs = release_events(&nodes[1]);
+	assert_eq!(peer_conn_evs.len(), 2);
+	for (i, ev) in peer_conn_evs.iter().enumerate() {
+		match ev {
+			Event::OnionMessagePeerConnected { peer_node_id } => {
+				let node_idx = if i == 0 { 0 } else { 2 };
+				assert_eq!(peer_node_id, &nodes[node_idx].node_id);
+			},
+			_ => panic!()
+		}
+	}
+
+	let message = TestCustomMessage::Response;
+	let secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPath::new_for_message(
+		&[nodes[1].node_id, nodes[2].node_id], &*nodes[2].entropy_source, &secp_ctx
+	).unwrap();
+	let destination = Destination::BlindedPath(blinded_path);
+
+	// Disconnect the peers to ensure we intercept the OM.
+	disconnect_peers(&nodes[1], &nodes[2]);
+	nodes[0].messenger.send_onion_message(message, destination, None).unwrap();
+	let mut final_node_vec = nodes.split_off(2);
+	pass_along_path(&nodes);
+
+	let mut events = release_events(&nodes[1]);
+	assert_eq!(events.len(), 1);
+	let onion_message = match events.remove(0) {
+		Event::OnionMessageIntercepted { peer_node_id, message } => {
+			assert_eq!(peer_node_id, final_node_vec[0].node_id);
+			message
+		},
+		_ => panic!()
+	};
+
+	// Ensure that we'll refuse to forward the re-injected OM until after the
+	// outbound peer comes back online.
+	let err = nodes[1].messenger.forward_onion_message(onion_message.clone(), &final_node_vec[0].node_id).unwrap_err();
+	assert_eq!(err, SendError::InvalidFirstHop(final_node_vec[0].node_id));
+
+	connect_peers(&nodes[1], &final_node_vec[0]);
+	let peer_conn_ev = release_events(&nodes[1]);
+	assert_eq!(peer_conn_ev.len(), 1);
+	match peer_conn_ev[0] {
+		Event::OnionMessagePeerConnected { peer_node_id } => {
+			assert_eq!(peer_node_id, final_node_vec[0].node_id);
+		},
+		_ => panic!()
+	}
+
+	nodes[1].messenger.forward_onion_message(onion_message, &final_node_vec[0].node_id).unwrap();
+	final_node_vec[0].custom_message_handler.expect_message(TestCustomMessage::Response);
+	pass_along_path(&vec![nodes.remove(1), final_node_vec.remove(0)]);
 }
 
 #[test]
