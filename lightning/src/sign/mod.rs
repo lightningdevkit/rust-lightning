@@ -156,7 +156,7 @@ impl StaticPaymentOutputDescriptor {
 	pub fn witness_script(&self) -> Option<ScriptBuf> {
 		self.channel_transaction_parameters.as_ref()
 			.and_then(|channel_params|
-				 if channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx() {
+				 if channel_params.supports_anchors() {
 					let payment_point = channel_params.holder_pubkeys.payment_point;
 					Some(chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point))
 				 } else {
@@ -169,9 +169,7 @@ impl StaticPaymentOutputDescriptor {
 	/// Note: If you have the grind_signatures feature enabled, this will be at least 1 byte
 	/// shorter.
 	pub fn max_witness_length(&self) -> u64 {
-		if self.channel_transaction_parameters.as_ref()
-			.map(|channel_params| channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx())
-			.unwrap_or(false)
+		if self.channel_transaction_parameters.as_ref().map_or(false, |p| p.supports_anchors())
 		{
 			let witness_script_weight = 1 /* pubkey push */ + 33 /* pubkey */ +
 				1 /* OP_CHECKSIGVERIFY */ + 1 /* OP_1 */ + 1 /* OP_CHECKSEQUENCEVERIFY */;
@@ -356,8 +354,7 @@ impl SpendableOutputDescriptor {
 					if !output_set.insert(descriptor.outpoint) { return Err(()); }
 					let sequence =
 						if descriptor.channel_transaction_parameters.as_ref()
-							.map(|channel_params| channel_params.channel_type_features.supports_anchors_zero_fee_htlc_tx())
-							.unwrap_or(false)
+							.map_or(false, |p| p.supports_anchors())
 						{
 							Sequence::from_consensus(1)
 						} else {

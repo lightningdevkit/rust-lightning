@@ -852,6 +852,11 @@ impl ChannelTransactionParameters {
 		self.counterparty_parameters.is_some() && self.funding_outpoint.is_some()
 	}
 
+	/// Whether the channel supports zero-fee HTLC transaction anchors.
+	pub(crate) fn supports_anchors(&self) -> bool {
+		self.channel_type_features.supports_anchors_zero_fee_htlc_tx()
+	}
+
 	/// Convert the holder/counterparty parameters to broadcaster/countersignatory-organized parameters,
 	/// given that the holder is the broadcaster.
 	///
