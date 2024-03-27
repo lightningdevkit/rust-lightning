@@ -4859,8 +4859,8 @@ where
 			let peer_state_lock = self.per_peer_state.read().unwrap();
 			let peer_state_rwlock = peer_state_lock.get(&next_node_id)
 				.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", next_node_id) })?;
-			let mut peer_state_lock = peer_state_rwlock.write().unwrap();
-			let peer_state = &mut *peer_state_lock;
+			let peer_state_lock = peer_state_rwlock.read().unwrap();
+			let peer_state = &*peer_state_lock;
 			match peer_state.channel_by_id.get(next_hop_channel_id) {
 				Some(ChannelPhase::Funded(chan)) => {
 					if !chan.context.is_usable() {
