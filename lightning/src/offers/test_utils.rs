@@ -11,7 +11,7 @@
 
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::AsRef; 
+
 use core::time::Duration;
 use crate::blinded_path::{BlindedHop, BlindedPath};
 use crate::sign::EntropySource;
@@ -19,6 +19,9 @@ use crate::ln::PaymentHash;
 use crate::ln::features::BlindedHopFeatures;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::TaggedHash;
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 pub(crate) fn fail_sign<T: AsRef<TaggedHash>>(_message: &T) -> Result<Signature, ()> {
 	Err(())

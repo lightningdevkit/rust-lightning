@@ -617,7 +617,6 @@ impl Encode for msgs::GossipTimestampFilter {
 mod tests {
 	use super::*;
 	use crate::prelude::*;
-	use core::convert::TryInto;
 	use crate::ln::peer_handler::IgnoringMessageHandler;
 
 	// Big-endian wire encoding of Pong message (type = 19, byteslen = 2).

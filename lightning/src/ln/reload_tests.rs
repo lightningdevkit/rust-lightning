@@ -27,7 +27,6 @@ use crate::util::config::UserConfig;
 use bitcoin::hash_types::BlockHash;
 
 use crate::prelude::*;
-use core::default::Default;
 use crate::sync::Mutex;
 
 use crate::ln::functional_test_utils::*;

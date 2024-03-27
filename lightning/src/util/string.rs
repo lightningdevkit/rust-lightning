@@ -9,11 +9,13 @@
 
 //! Utilities for strings.
 
-use alloc::string::String;
 use core::fmt;
 use crate::io::{self, Read};
 use crate::ln::msgs;
 use crate::util::ser::{Writeable, Writer, Readable};
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 /// Struct to `Display` fields in a safe way using `PrintableString`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]

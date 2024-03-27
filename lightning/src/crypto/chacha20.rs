@@ -12,7 +12,6 @@
 #[cfg(not(fuzzing))]
 mod real_chacha {
 	use core::cmp;
-	use core::convert::TryInto;
 
 	#[derive(Clone, Copy, PartialEq, Eq)]
 	#[allow(non_camel_case_types)]
@@ -335,10 +334,9 @@ pub use self::fuzzy_chacha::ChaCha20;
 
 #[cfg(test)]
 mod test {
-	use alloc::vec;
-	use alloc::vec::{Vec};
-	use core::convert::TryInto;
 	use core::iter::repeat;
+
+	use crate::prelude::*;
 
 	use super::ChaCha20;
 

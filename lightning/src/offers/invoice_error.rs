@@ -15,6 +15,7 @@ use crate::offers::parse::Bolt12SemanticError;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::UntrustedString;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 /// An error in response to an [`InvoiceRequest`] or an [`Bolt12Invoice`].

@@ -1,4 +1,4 @@
-// This file is Copyright its original authors, visible in version control
+    // This file is Copyright its original authors, visible in version control
 // history.
 //
 // This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
@@ -110,7 +110,6 @@ use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::address::{Address, Payload, WitnessProgram, WitnessVersion};
 use bitcoin::key::TweakedPublicKey;
-use core::convert::{AsRef, TryFrom};
 use core::time::Duration;
 use crate::io;
 use crate::blinded_path::BlindedPath;
@@ -129,6 +128,7 @@ use crate::offers::signer;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 #[cfg(feature = "std")]
@@ -1452,8 +1452,9 @@ mod tests {
 	use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, self};
 	use bitcoin::address::{Address, Payload, WitnessProgram, WitnessVersion};
 	use bitcoin::key::TweakedPublicKey;
-	use core::convert::TryFrom;
+
 	use core::time::Duration;
+
 	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::sign::KeyMaterial;
 	use crate::ln::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
@@ -1462,6 +1463,7 @@ mod tests {
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, TaggedHash, self};
 	use crate::offers::offer::{Amount, OfferTlvStreamRef, Quantity};
+	use crate::prelude::*;
 	#[cfg(not(c_bindings))]
 	use {
 		crate::offers::offer::OfferBuilder,

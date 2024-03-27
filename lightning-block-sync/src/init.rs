@@ -252,8 +252,6 @@ mod tests {
 	use crate::test_utils::{Blockchain, MockChainListener};
 	use super::*;
 
-	use bitcoin::network::constants::Network;
-
 	#[tokio::test]
 	async fn sync_from_same_chain() {
 		let chain = Blockchain::default().with_height(4);

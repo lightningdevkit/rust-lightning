@@ -23,6 +23,8 @@ use crate::crypto::streams::ChaChaPolyWriteAdapter;
 use crate::util::ser::{Readable, Writeable};
 
 use crate::io;
+
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 // TODO: DRY with onion_utils::construct_onion_keys_callback

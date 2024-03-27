@@ -16,16 +16,8 @@ pub trait Time: Copy + Sub<Duration, Output = Self> where Self: Sized {
 	/// Returns an instance corresponding to the current moment.
 	fn now() -> Self;
 
-	/// Returns the amount of time elapsed since `self` was created.
-	fn elapsed(&self) -> Duration;
-
 	/// Returns the amount of time passed between `earlier` and `self`.
 	fn duration_since(&self, earlier: Self) -> Duration;
-
-	/// Returns the amount of time passed since the beginning of [`Time`].
-	///
-	/// Used during (de-)serialization.
-	fn duration_since_epoch() -> Duration;
 }
 
 /// A state in which time has no meaning.
@@ -38,14 +30,6 @@ impl Time for Eternity {
 	}
 
 	fn duration_since(&self, _earlier: Self) -> Duration {
-		Duration::from_secs(0)
-	}
-
-	fn duration_since_epoch() -> Duration {
-		Duration::from_secs(0)
-	}
-
-	fn elapsed(&self) -> Duration {
 		Duration::from_secs(0)
 	}
 }
@@ -81,15 +65,6 @@ impl Time for MonotonicTime {
 		// manually check for time going backwards here and return a duration of zero in that case.
 		let now = Self::now();
 		if now.0 > earlier.0 { now.0 - earlier.0 } else { Duration::from_secs(0) }
-	}
-
-	fn duration_since_epoch() -> Duration {
-		use std::time::SystemTime;
-		SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap()
-	}
-
-	fn elapsed(&self) -> Duration {
-		Self::now().0 - self.0
 	}
 }
 
@@ -127,19 +102,11 @@ pub mod tests {
 
 	impl Time for SinceEpoch {
 		fn now() -> Self {
-			Self(Self::duration_since_epoch())
+			Self(Self::ELAPSED.with(|elapsed| elapsed.get()))
 		}
 
 		fn duration_since(&self, earlier: Self) -> Duration {
 			self.0 - earlier.0
-		}
-
-		fn duration_since_epoch() -> Duration {
-			Self::ELAPSED.with(|elapsed| elapsed.get())
-		}
-
-		fn elapsed(&self) -> Duration {
-			Self::duration_since_epoch() - self.0
 		}
 	}
 
@@ -154,36 +121,20 @@ pub mod tests {
 	#[test]
 	fn time_passes_when_advanced() {
 		let now = SinceEpoch::now();
-		assert_eq!(now.elapsed(), Duration::from_secs(0));
 
 		SinceEpoch::advance(Duration::from_secs(1));
 		SinceEpoch::advance(Duration::from_secs(1));
 
-		let elapsed = now.elapsed();
 		let later = SinceEpoch::now();
 
-		assert_eq!(elapsed, Duration::from_secs(2));
-		assert_eq!(later - elapsed, now);
+		assert_eq!(now.0 + Duration::from_secs(2), later.0);
 	}
 
 	#[test]
 	fn time_never_passes_in_an_eternity() {
 		let now = Eternity::now();
-		let elapsed = now.elapsed();
 		let later = Eternity::now();
 
-		assert_eq!(now.elapsed(), Duration::from_secs(0));
-		assert_eq!(later - elapsed, now);
-	}
-
-	#[test]
-	#[cfg(feature = "std")]
-	fn monotonic_time_subtracts() {
-		let now = super::MonotonicTime::now();
-		assert!(now.elapsed() < Duration::from_secs(10));
-
-		let ten_years = Duration::from_secs(10 * 365 * 24 * 60 * 60);
-		let past = now - ten_years;
-		assert!(past.elapsed() >= ten_years);
+		assert_eq!(later, now);
 	}
 }

@@ -12,8 +12,10 @@ use crate::ln::features::InitFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, Writeable, Writer};
 
-use core::convert::TryFrom;
 use crate::io;
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 /// A script pubkey for shutting down a channel as defined by [BOLT #2].
 ///
@@ -167,13 +169,15 @@ impl core::fmt::Display for ShutdownScript{
 #[cfg(test)]
 mod shutdown_script_tests {
 	use super::ShutdownScript;
+
+	use bitcoin::address::{WitnessProgram, WitnessVersion};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::script::{Builder, ScriptBuf};
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
+
 	use crate::ln::features::InitFeatures;
-	use core::convert::TryFrom;
-	use bitcoin::address::{WitnessProgram, WitnessVersion};
+	use crate::prelude::*;
 
 	fn pubkey() -> bitcoin::key::PublicKey {
 		let secp_ctx = Secp256k1::signing_only();

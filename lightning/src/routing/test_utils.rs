@@ -21,6 +21,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1, All};
 
+#[allow(unused)]
 use crate::prelude::*;
 use crate::sync::{self, Arc};
 

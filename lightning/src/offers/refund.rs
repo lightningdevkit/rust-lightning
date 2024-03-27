@@ -84,7 +84,6 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
-use core::convert::TryFrom;
 use core::hash::{Hash, Hasher};
 use core::ops::Deref;
 use core::str::FromStr;
@@ -115,6 +114,7 @@ use {
 	crate::offers::invoice::{InvoiceWithDerivedSigningPubkeyBuilder, InvoiceWithExplicitSigningPubkeyBuilder},
 };
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 #[cfg(feature = "std")]
@@ -894,8 +894,9 @@ mod tests {
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
-	use core::convert::TryFrom;
+
 	use core::time::Duration;
+
 	use crate::blinded_path::{BlindedHop, BlindedPath};
 	use crate::sign::KeyMaterial;
 	use crate::ln::channelmanager::PaymentId;
@@ -909,6 +910,7 @@ mod tests {
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Writeable};
 	use crate::util::string::PrintableString;
+	use crate::prelude::*;
 
 	trait ToBytes {
 		fn to_bytes(&self) -> Vec<u8>;

@@ -1,5 +1,6 @@
 #[cfg(feature = "std")]
 use std::error;
+#[cfg(not(feature = "std"))]
 use core::convert::TryFrom;
 use core::fmt;
 use core::fmt::{Display, Formatter};

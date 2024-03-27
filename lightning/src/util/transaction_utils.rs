@@ -14,7 +14,9 @@ use bitcoin::consensus::encode::VarInt;
 
 use crate::ln::msgs::MAX_VALUE_MSAT;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 use crate::io_extras::sink;
 use core::cmp::Ordering;
 
@@ -72,8 +74,8 @@ mod tests {
 	use super::*;
 
 	use bitcoin::blockdata::locktime::absolute::LockTime;
-	use bitcoin::blockdata::transaction::{Transaction, TxOut, TxIn, OutPoint};
-	use bitcoin::blockdata::script::{ScriptBuf, Builder};
+	use bitcoin::blockdata::transaction::{TxIn, OutPoint};
+	use bitcoin::blockdata::script::Builder;
 	use bitcoin::hash_types::{PubkeyHash, Txid};
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::hex::FromHex;

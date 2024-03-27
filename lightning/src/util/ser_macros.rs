@@ -1112,8 +1112,10 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 
 #[cfg(test)]
 mod tests {
-	use crate::io::{self, Cursor};
+	#[allow(unused_imports)]
 	use crate::prelude::*;
+
+	use crate::io::{self, Cursor};
 	use crate::ln::msgs::DecodeError;
 	use crate::util::ser::{Writeable, HighZeroBytesDroppedBigSize, VecWriter};
 	use bitcoin::hashes::hex::FromHex;

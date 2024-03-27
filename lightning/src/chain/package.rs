@@ -35,11 +35,12 @@ use crate::util::logger::Logger;
 use crate::util::ser::{Readable, Writer, Writeable, RequiredWrapper};
 
 use crate::io;
-use crate::prelude::*;
 use core::cmp;
-use core::convert::TryInto;
 use core::mem;
 use core::ops::Deref;
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 use super::chaininterface::LowerBoundedFeeEstimator;
 

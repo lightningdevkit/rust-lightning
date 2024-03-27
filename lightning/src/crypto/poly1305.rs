@@ -8,7 +8,8 @@
 // https://github.com/floodyberry/poly1305-donna
 
 use core::cmp::min;
-use core::convert::TryInto;
+
+use crate::prelude::*;
 
 #[derive(Clone, Copy)]
 pub struct Poly1305 {
@@ -206,7 +207,6 @@ impl Poly1305 {
 #[cfg(test)]
 mod test {
 	use core::iter::repeat;
-	use alloc::vec::Vec;
 
 	use super::Poly1305;
 

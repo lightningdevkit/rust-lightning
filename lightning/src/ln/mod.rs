@@ -126,7 +126,9 @@ impl From<PaymentPreimage> for PaymentHash {
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
 pub struct PaymentSecret(pub [u8; 32]);
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
 

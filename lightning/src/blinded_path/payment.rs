@@ -12,10 +12,10 @@ use crate::ln::channelmanager::CounterpartyForwardingInfo;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
-use crate::prelude::*;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, Writeable, Writer};
 
-use core::convert::TryFrom;
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 /// An intermediate node, its outbound channel, and relay parameters.
 #[derive(Clone, Debug)]
