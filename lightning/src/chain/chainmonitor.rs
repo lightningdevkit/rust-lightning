@@ -370,7 +370,7 @@ where C::Target: chain::Filter,
 				ChannelMonitorUpdateStatus::Completed =>
 					log_trace!(logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
 				ChannelMonitorUpdateStatus::InProgress => {
-					log_debug!(logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
+					log_debug!(logger, "Channel Monitor sync for channel {} in progress.", log_funding_info!(monitor));
 					pending_monitor_updates.push(update_id);
 				},
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
