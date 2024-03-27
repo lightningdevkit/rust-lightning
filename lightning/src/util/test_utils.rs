@@ -504,6 +504,10 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 		}
 		res
 	}
+
+	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+		<TestPersister as chainmonitor::Persist<TestChannelSigner>>::archive_persisted_channel(&self.persister, funding_txo);
+	}
 }
 
 pub struct TestPersister {
@@ -551,6 +555,18 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update_id);
 		}
 		ret
+	}
+
+	fn archive_persisted_channel(&self, funding_txo: OutPoint) { 
+		// remove the channel from the offchain_monitor_updates map
+		match self.offchain_monitor_updates.lock().unwrap().remove(&funding_txo) {
+			Some(_) => {},
+			None => {
+				// If the channel was not in the offchain_monitor_updates map, it should be in the
+				// chain_sync_monitor_persistences map.
+				assert!(self.chain_sync_monitor_persistences.lock().unwrap().remove(&funding_txo).is_some());
+			}
+		};
 	}
 }
 
@@ -1362,6 +1378,10 @@ impl TestChainSource {
 			watched_txn: Mutex::new(new_hash_set()),
 			watched_outputs: Mutex::new(new_hash_set()),
 		}
+	}
+	pub fn remove_watched_txn_and_outputs(&self, outpoint: OutPoint, script_pubkey: ScriptBuf) {
+		self.watched_outputs.lock().unwrap().remove(&(outpoint, script_pubkey.clone())); 
+		self.watched_txn.lock().unwrap().remove(&(outpoint.txid, script_pubkey));
 	}
 }
 

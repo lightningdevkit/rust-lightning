@@ -56,6 +56,11 @@ pub const CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The primary namespace under which [`ChannelMonitorUpdate`]s will be persisted.
 pub const CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_updates";
 
+/// The primary namespace under which archived [`ChannelMonitor`]s will be persisted.
+pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "archived_monitors";
+/// The secondary namespace under which archived [`ChannelMonitor`]s will be persisted.
+pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
+
 /// The primary namespace under which the [`NetworkGraph`] will be persisted.
 pub const NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
 /// The secondary namespace under which the [`NetworkGraph`] will be persisted.
@@ -211,6 +216,33 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore + ?Sized> Persist<Ch
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError
 		}
+	}
+
+	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+		let monitor_name = MonitorName::from(funding_txo);
+		let monitor = match self.read(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+		) {
+			Ok(monitor) => monitor,
+			Err(_) => return
+		};
+		match self.write(
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+			&monitor,
+		) {
+			Ok(()) => {}
+			Err(_e) => return
+		};
+		let _ = self.remove(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+			true,
+		);
 	}
 }
 
@@ -717,6 +749,29 @@ where
 			// There is no update given, so we must persist a new monitor.
 			self.persist_new_channel(funding_txo, monitor, monitor_update_call_id)
 		}
+	}
+
+	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+		let monitor_name = MonitorName::from(funding_txo);
+		let monitor = match self.read_monitor(&monitor_name) {
+			Ok((_block_hash, monitor)) => monitor,
+			Err(_) => return
+		};
+		match self.kv_store.write(
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+			&monitor.encode()
+		) {
+			Ok(()) => {},
+			Err(_e) => return,
+		};
+		let _ = self.kv_store.remove(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+			true,
+		);
 	}
 }
 
