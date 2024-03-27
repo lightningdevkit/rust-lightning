@@ -1036,14 +1036,25 @@ pub enum Event {
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	BumpTransaction(BumpTransactionEvent),
+	/// We received an onion message that is intended to be forwarded to a peer
+	/// that is currently offline. This event will only be generated if the
+	/// `OnionMessenger` was initialized with
+	/// [`OnionMessenger::new_with_offline_peer_interception`], see its docs.
 	///
+	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
 	OnionMessageForOfflinePeer {
 		/// The node id of the offline peer.
 		peer_node_id: PublicKey,
 		/// The onion message intended to be forwarded to `peer_node_id`.
 		message: msgs::OnionMessage,
 	},
+	/// Indicates that an onion message supporting peer has come online and it may
+	/// be time to forward any onion messages that were previously intercepted for
+	/// them. This event will only be generated if the `OnionMessenger` was
+	/// initialized with
+	/// [`OnionMessenger::new_with_offline_peer_interception`], see its docs.
 	///
+	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
 	OnionMessagePeerConnected {
 		/// The node id of the peer we just connected to, who advertises support for
 		/// onion messages.
