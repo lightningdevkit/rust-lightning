@@ -204,17 +204,6 @@ struct MonitorHolder<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// update_persisted_channel, the user returns a
 	/// [`ChannelMonitorUpdateStatus::InProgress`], and then calls channel_monitor_updated
 	/// immediately, racing our insertion of the pending update into the contained Vec.
-	///
-	/// Beyond the synchronization of updates themselves, we cannot handle user events until after
-	/// any chain updates have been stored on disk. Thus, we scan this list when returning updates
-	/// to the ChannelManager, refusing to return any updates for a ChannelMonitor which is still
-	/// being persisted fully to disk after a chain update.
-	///
-	/// This avoids the possibility of handling, e.g. an on-chain claim, generating a claim monitor
-	/// event, resulting in the relevant ChannelManager generating a PaymentSent event and dropping
-	/// the pending payment entry, and then reloading before the monitor is persisted, resulting in
-	/// the ChannelManager re-adding the same payment entry, before the same block is replayed,
-	/// resulting in a duplicate PaymentSent event.
 	pending_monitor_updates: Mutex<Vec<MonitorUpdateId>>,
 	/// The last block height at which no [`UpdateOrigin::ChainSync`] monitor updates were present
 	/// in `pending_monitor_updates`.
