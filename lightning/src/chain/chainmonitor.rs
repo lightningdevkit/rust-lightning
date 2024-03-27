@@ -194,6 +194,12 @@ pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
 	///
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
 	fn update_persisted_channel(&self, channel_funding_outpoint: OutPoint, update: Option<&ChannelMonitorUpdate>, data: &ChannelMonitor<ChannelSigner>, update_id: MonitorUpdateId) -> ChannelMonitorUpdateStatus;
+
+	/// Prune a channel's data.
+	///
+	/// This is called when a channel is stale, ie we dont have balance to claim and its
+	/// closed.
+	fn prune_persisted_channel(&self, channel_funding_outpoint: OutPoint) -> bool;
 }
 
 struct MonitorHolder<ChannelSigner: WriteableEcdsaChannelSigner> {

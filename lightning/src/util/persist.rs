@@ -58,6 +58,11 @@ pub const CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The primary namespace under which [`ChannelMonitorUpdate`]s will be persisted.
 pub const CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_updates";
 
+/// The primary namespace under which [`ChannelMonitor`]s will be persisted.
+pub const PRUNED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "pruned_monitors";
+/// The secondary namespace under which [`ChannelMonitor`]s will be persisted.
+pub const PRUNED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
+
 /// The primary namespace under which the [`NetworkGraph`] will be persisted.
 pub const NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
 /// The secondary namespace under which the [`NetworkGraph`] will be persisted.
@@ -241,6 +246,18 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSign
 			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError
 		}
 	}
+
+	fn prune_persisted_channel(&self, funding_txo: OutPoint) -> bool {
+		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
+		match self.remove(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key, false)
+		{
+			Ok(()) => true,
+			Err(_) => false
+		}
+	}
 }
 
 impl<ChannelSigner: WriteableEcdsaChannelSigner> Persist<ChannelSigner> for dyn KVStore + Send + Sync {
@@ -270,6 +287,18 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> Persist<ChannelSigner> for dyn 
 		{
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError
+		}
+	}
+
+	fn prune_persisted_channel(&self, funding_txo: OutPoint) -> bool {
+		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
+		match self.remove(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key, false)
+		{
+			Ok(()) => true,
+			Err(_) => false
 		}
 	}
 }
@@ -776,6 +805,29 @@ where
 		} else {
 			// There is no update given, so we must persist a new monitor.
 			self.persist_new_channel(funding_txo, monitor, monitor_update_call_id)
+		}
+	}
+
+	fn prune_persisted_channel(&self, funding_txo: OutPoint) -> bool {
+		let monitor_name = MonitorName::from(funding_txo);
+		match self.kv_store.remove(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+			false,
+		) {
+			Ok(()) => true,
+			Err(e) => {
+				log_error!(
+					self.logger,
+					"Failed to remove ChannelMonitor {}/{}/{} reason: {}",
+					CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+					CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+					monitor_name.as_str(),
+					e
+				);
+				false
+			}
 		}
 	}
 }
