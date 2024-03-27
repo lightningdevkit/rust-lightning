@@ -501,6 +501,10 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 		}
 		res
 	}
+
+	fn prune_persisted_channel(&self, _funding_txo: OutPoint) -> bool {
+		false
+	}
 }
 
 pub struct TestPersister {
@@ -548,6 +552,10 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update_id);
 		}
 		ret
+	}
+
+	fn prune_persisted_channel(&self, _funding_txo: OutPoint) -> bool { 
+		false
 	}
 }
 
