@@ -9388,8 +9388,8 @@ where
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		let mut res = Vec::with_capacity(self.short_to_chan_info.read().unwrap().len());
 		for (_cp_id, peer_state_rwlock) in self.per_peer_state.read().unwrap().iter() {
-			let mut peer_state_lock = peer_state_rwlock.write().unwrap();
-			let peer_state = &mut *peer_state_lock;
+			let peer_state_lock = peer_state_rwlock.read().unwrap();
+			let peer_state = &*peer_state_lock;
 			for chan in peer_state.channel_by_id.values().filter_map(|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }) {
 				let txid_opt = chan.context.get_funding_txo();
 				let height_opt = chan.context.get_funding_tx_confirmation_height();
