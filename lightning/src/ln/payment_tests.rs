@@ -1553,6 +1553,37 @@ fn preflight_probes_yield_event_and_skip() {
 }
 
 #[test]
+fn test_self_payment() {
+	let chanmon_cfg = create_chanmon_cfgs(1);
+	let node_cfg = create_node_cfgs(1, &chanmon_cfg);
+	let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None, None]);
+	let nodes = create_network(1, &node_cfg, &node_chanmgr);
+	let (payment_hash, payment_secret) = nodes[0].node.create_inbound_payment(Some(1000), 60, None).unwrap();
+	let payment_params = PaymentParameters::from_node_id(nodes[0].node.get_our_node_id(), TEST_FINAL_CLTV);
+	let route_params = RouteParameters {
+		payment_params,
+		final_value_msat: 100000,
+		max_total_routing_fee_msat: None,
+	};
+	let res = nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0), route_params, Retry::Attempts(0));
+	assert!(res.is_ok());
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	assert!(matches!(events[0], Event::PaymentClaimable { .. }));
+	let pending_payments = nodes[0].node.list_recent_payments();
+	assert_eq!(pending_payments.len(), 1);
+	let payment_preimage = nodes[0].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
+	assert!(matches!(pending_payments[0], RecentPaymentDetails::Pending { .. }));
+	nodes[0].node.claim_funds(payment_preimage);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	assert!(matches!(events[0], Event::PaymentSent { .. }));
+	assert!(matches!(events[1], Event::PaymentClaimed { .. }));
+	let pending_payments = nodes[0].node.list_recent_payments();
+	assert!(matches!(pending_payments[0], RecentPaymentDetails::Fulfilled { .. }));
+}
+
+#[test]
 fn claimed_send_payment_idempotent() {
 	// Tests that `send_payment` (and friends) are (reasonably) idempotent.
 	let chanmon_cfgs = create_chanmon_cfgs(2);

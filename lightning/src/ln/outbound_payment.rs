@@ -19,7 +19,7 @@ use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSource, PaymentId};
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
-use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
+use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router, Payee};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::time::Time;
@@ -170,7 +170,7 @@ impl PendingOutboundPayment {
 		}
 	}
 
-	fn mark_fulfilled(&mut self) {
+	pub fn mark_fulfilled(&mut self) {
 		let mut session_privs = new_hash_set();
 		core::mem::swap(&mut session_privs, match self {
 			PendingOutboundPayment::Legacy { session_privs } |
@@ -421,6 +421,8 @@ pub enum RetryableSendFailure {
 	/// [`Event::PaymentSent`]: crate::events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	DuplicatePayment,
+	/// The intended recipient rejected our payment.
+	RecipientRejected,
 }
 
 /// If a payment fails to send with [`ChannelManager::send_payment_with_route`], it can be in one
@@ -907,16 +909,48 @@ impl OutboundPayments {
 			}
 		}
 
-		let mut route = router.find_route_with_id(
-			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
+		let payer = node_signer.get_node_id(Recipient::Node).unwrap();
+		let route = match router.find_route_with_id(
+			&payer,&route_params,
 			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
 			payment_hash, payment_id,
-		).map_err(|_| {
-			log_error!(logger, "Failed to find route for payment with id {} and hash {}",
-				payment_id, payment_hash);
-			RetryableSendFailure::RouteNotFound
-		})?;
+		) {
+			Ok(res) => Some(res),
+			Err(_) => {
+				// The following code handles self payments.
+				if let Payee::Clear{node_id, .. } = route_params.payment_params.payee {
+					let is_phantom_payee = match node_signer.get_node_id(Recipient::PhantomNode) {
+						Ok(phantom_node_id) => node_id == phantom_node_id,
+						Err(_) => false,
+					};
+					if node_id == payer || is_phantom_payee {
+						let dummy_route = Route {
+							paths: vec![Path {
+								hops: vec![],
+								blinded_tail: None,
+							}],
+							route_params: Some(route_params.clone()),
+						};
 
+						let _ = self.add_new_pending_payment(payment_hash,
+							recipient_onion.clone(), payment_id, keysend_preimage, &dummy_route, Some(retry_strategy),
+							Some(route_params.payment_params.clone()), entropy_source, best_block_height)
+							.map_err(|_| {
+								log_error!(logger, "Payment with id {} is already pending. New payment had payment hash {}",
+									payment_id, payment_hash);
+								RetryableSendFailure::DuplicatePayment
+							})?;
+						return Ok(());
+					}
+				}
+				None
+			}
+		};
+		if route.is_none() {
+			log_error!(logger, "Failed to find route for payment with id {} and hash {}", payment_id, payment_hash);
+			return Err(RetryableSendFailure::RouteNotFound);
+		}
+		let mut route = route.unwrap();
 		if route.route_params.as_ref() != Some(&route_params) {
 			debug_assert!(false,
 				"Routers are expected to return a Route which includes the requested RouteParameters");
