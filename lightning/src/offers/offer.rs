@@ -91,11 +91,11 @@ use crate::blinded_path::BlindedPath;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
-use crate::ln::msgs::MAX_VALUE_MSAT;
+use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::merkle::TlvStream;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
-use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
+use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
@@ -889,6 +889,13 @@ impl OfferContents {
 			quantity_max: self.supported_quantity.to_tlv_record(),
 			node_id: Some(&self.signing_pubkey),
 		}
+	}
+}
+
+impl Readable for Offer {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }
 
