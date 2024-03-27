@@ -1229,7 +1229,8 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let counterparty_htlcpubkey = HtlcKey::from_basepoint(
 			&secp_ctx, &counterparty_keys.htlc_basepoint, &per_commitment_point,
 		);
-		let htlcpubkey = HtlcKey::from_basepoint(&secp_ctx, &self.pubkeys().htlc_basepoint, &per_commitment_point);
+		let htlc_basepoint = self.pubkeys().htlc_basepoint;
+		let htlcpubkey = HtlcKey::from_basepoint(&secp_ctx, &htlc_basepoint, &per_commitment_point);
 		let chan_type = self.channel_type_features().expect(MISSING_PARAMS_ERR);
 		let witness_script = chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, chan_type, &counterparty_htlcpubkey, &htlcpubkey, &revocation_pubkey);
 		let mut sighash_parts = sighash::SighashCache::new(htlc_tx);
