@@ -9046,8 +9046,8 @@ where
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for (_cp_id, peer_state_rwlock) in per_peer_state.iter() {
-			let mut peer_state_lock = peer_state_rwlock.write().unwrap();
-			let peer_state = &mut *peer_state_lock;
+			let peer_state_lock = peer_state_rwlock.read().unwrap();
+			let peer_state = &*peer_state_lock;
 			for chan in peer_state.channel_by_id.values().filter_map(
 				|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
 			) {
