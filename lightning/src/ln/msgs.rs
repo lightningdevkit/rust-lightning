@@ -91,6 +91,16 @@ pub enum DecodeError {
 	Io(io::ErrorKind),
 	/// The message included zlib-compressed values, which we don't support.
 	UnsupportedCompression,
+	/// Value is validly encoded but is dangerous to use.
+	///
+	/// This is used for things like [`ChannelManager`] deserialization where we want to ensure
+	/// that we don't use a [`ChannelManager`] which is in out of sync with the [`ChannelMonitor`].
+	/// This indicates that there is a critical implementation flaw in the storage implementation
+	/// and it's unsafe to continue.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	DangerousValue,
 }
 
 /// An [`init`] message to be sent to or received from a peer.
@@ -1796,6 +1806,7 @@ impl fmt::Display for DecodeError {
 			DecodeError::BadLengthDescriptor => f.write_str("A length descriptor in the packet didn't describe the later data correctly"),
 			DecodeError::Io(ref e) => fmt::Debug::fmt(e, f),
 			DecodeError::UnsupportedCompression => f.write_str("We don't support receiving messages with zlib-compressed fields"),
+			DecodeError::DangerousValue => f.write_str("Value would be dangerous to continue execution with"),
 		}
 	}
 }

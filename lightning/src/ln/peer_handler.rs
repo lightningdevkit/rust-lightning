@@ -1551,6 +1551,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 												}
 												(msgs::DecodeError::BadLengthDescriptor, _) => return Err(PeerHandleError { }),
 												(msgs::DecodeError::Io(_), _) => return Err(PeerHandleError { }),
+												(msgs::DecodeError::DangerousValue, _) => return Err(PeerHandleError { }),
 											}
 										}
 									};
