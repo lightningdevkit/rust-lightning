@@ -14,7 +14,7 @@ use crate::ln::msgs;
 use crate::ln::wire::Encode;
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::routing::gossip::NetworkUpdate;
-use crate::routing::router::{BlindedTail, Path, RouteHop};
+use crate::routing::router::{BlindedTail, Path, RouteHop, TrampolineHop};
 use crate::sign::NodeSigner;
 use crate::util::errors::{self, APIError};
 use crate::util::logger::Logger;
@@ -42,6 +42,43 @@ pub(crate) struct OnionKeys {
 	pub(crate) ephemeral_pubkey: PublicKey,
 	pub(crate) rho: [u8; 32],
 	pub(crate) mu: [u8; 32],
+}
+
+/// Information which is provided, encrypted, to the payment recipient when sending HTLCs.
+///
+/// This should generally be constructed with data communicated to us from the recipient (via a
+/// BOLT11 or BOLT12 invoice).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TrampolineEntryOnionFields {
+	/// The trampoline packet is the inner onion that is used in conjunction with trampoline routing
+	pub trampoline_packet: msgs::TrampolineOnionPacket,
+	/// The payment metadata serves a similar purpose as [`RecipientOnionFields::payment_secret`] but is of
+	/// arbitrary length. This gives recipients substantially more flexibility to receive
+	/// additional data.
+	///
+	/// In LDK, while the [`RecipientOnionFields::payment_secret`] is fixed based on an internal authentication
+	/// scheme to authenticate received payments against expected payments and invoices, this field
+	/// is not used in LDK for received payments, and can be used to store arbitrary data in
+	/// invoices which will be received with the payment.
+	///
+	/// Note that this field was added to the lightning specification more recently than
+	/// [`RecipientOnionFields::payment_secret`] and while nearly all lightning senders support secrets, metadata
+	/// may not be supported as universally.
+	pub payment_metadata: Option<Vec<u8>>,
+	/// See [`Self::custom_tlvs`] for more info.
+	pub(super) custom_tlvs: Vec<(u64, Vec<u8>)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum RecipientOnion {
+	TrampolineEntry(TrampolineEntryOnionFields),
+	Final(RecipientOnionFields),
+}
+
+impl From<RecipientOnionFields> for RecipientOnion {
+	fn from(fields: RecipientOnionFields) -> Self {
+		Self::Final(fields)
+	}
 }
 
 #[inline]
@@ -172,19 +209,202 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 	Ok(res)
 }
 
+pub(super) fn construct_trampoline_keys_callback<T, FType>(
+	secp_ctx: &Secp256k1<T>, path: &[TrampolineHop], session_priv: &SecretKey, mut callback: FType,
+) -> Result<(), secp256k1::Error>
+where
+	T: secp256k1::Signing,
+	FType: FnMut(SharedSecret, [u8; 32], PublicKey, Option<&TrampolineHop>, usize),
+{
+	let mut blinded_priv = session_priv.clone();
+	let mut blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
+
+	let unblinded_hops_iter = path.iter().map(|h| (&h.pubkey, Some(h)));
+	for (idx, (pubkey, route_hop_opt)) in unblinded_hops_iter.enumerate() {
+		let shared_secret = SharedSecret::new(pubkey, &blinded_priv);
+
+		let mut sha = Sha256::engine();
+		sha.input(&blinded_pub.serialize()[..]);
+		sha.input(shared_secret.as_ref());
+		let blinding_factor = Sha256::from_engine(sha).to_byte_array();
+
+		let ephemeral_pubkey = blinded_pub;
+
+		blinded_priv = blinded_priv.mul_tweak(&Scalar::from_be_bytes(blinding_factor).unwrap())?;
+		blinded_pub = PublicKey::from_secret_key(secp_ctx, &blinded_priv);
+
+		callback(shared_secret, blinding_factor, ephemeral_pubkey, route_hop_opt, idx);
+	}
+
+	Ok(())
+}
+
+// can only fail if an intermediary hop has an invalid public key or session_priv is invalid
+pub(super) fn construct_trampoline_keys<T: secp256k1::Signing>(
+	secp_ctx: &Secp256k1<T>, path: &[TrampolineHop], session_priv: &SecretKey,
+) -> Result<Vec<OnionKeys>, secp256k1::Error> {
+	let mut res = Vec::with_capacity(path.len());
+
+	construct_trampoline_keys_callback(
+		secp_ctx,
+		&path,
+		session_priv,
+		|shared_secret, _blinding_factor, ephemeral_pubkey, _, _| {
+			let (rho, mu) = gen_rho_mu_from_shared_secret(shared_secret.as_ref());
+
+			res.push(OnionKeys {
+				#[cfg(test)]
+				shared_secret,
+				#[cfg(test)]
+				blinding_factor: _blinding_factor,
+				ephemeral_pubkey,
+				rho,
+				mu,
+			});
+		},
+	)?;
+
+	Ok(res)
+}
+
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
 pub(super) fn build_onion_payloads(
+	path: &Path, total_msat: u64, mut recipient_onion: RecipientOnion, starting_htlc_offset: u32,
+	keysend_preimage: &Option<PaymentPreimage>,
+) -> Result<(Vec<msgs::OutboundOnionPayload>, u64, u32), APIError> {
+	let mut cur_value_msat = 0u64;
+	let mut cur_cltv = starting_htlc_offset;
+	let mut last_short_channel_id = 0;
+
+	let blinded_path_length =
+		if let (RecipientOnion::Final(_), Some(tail)) = (&recipient_onion, &path.blinded_tail) {
+			// the blinded path is only applicable if the outer onion isn't wrapping a Trampoline onion
+			tail.hops.len()
+		} else {
+			0
+		};
+	let mut res: Vec<msgs::OutboundOnionPayload> =
+		Vec::with_capacity(path.hops.len() + blinded_path_length);
+
+	if let Some(hop) = path.hops.last() {
+		// First hop gets special values so that it can check, on receipt, that everything is
+		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
+		// the intended recipient).
+		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
+		let cltv = if cur_cltv == starting_htlc_offset {
+			hop.cltv_expiry_delta + starting_htlc_offset
+		} else {
+			cur_cltv
+		};
+
+		match recipient_onion {
+			RecipientOnion::TrampolineEntry(mut trampoline_entry_fields) => {
+				res.push(msgs::OutboundOnionPayload::TrampolineEntrypoint {
+					amt_to_forward: value_msat,
+					outgoing_cltv_value: cltv,
+					multipath_trampoline_data: None,
+					trampoline_packet: trampoline_entry_fields.trampoline_packet,
+				});
+			},
+			RecipientOnion::Final(mut recipient_onion_fields) => {
+				if let Some(BlindedTail {
+					blinding_point,
+					hops,
+					final_value_msat,
+					excess_final_cltv_expiry_delta,
+					..
+				}) = &path.blinded_tail
+				{
+					let mut blinding_point = Some(*blinding_point);
+					for (i, blinded_hop) in hops.iter().enumerate() {
+						if i == hops.len() - 1 {
+							cur_value_msat += final_value_msat;
+							res.push(msgs::OutboundOnionPayload::BlindedReceive {
+								sender_intended_htlc_amt_msat: *final_value_msat,
+								total_msat,
+								cltv_expiry_height: cur_cltv + excess_final_cltv_expiry_delta,
+								encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+								intro_node_blinding_point: blinding_point.take(),
+							});
+						} else {
+							res.push(msgs::OutboundOnionPayload::BlindedForward {
+								encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+								intro_node_blinding_point: blinding_point.take(),
+							});
+						}
+					}
+				} else {
+					res.push(msgs::OutboundOnionPayload::Receive {
+						payment_data: if let Some(secret) =
+							recipient_onion_fields.payment_secret.take()
+						{
+							Some(msgs::FinalOnionHopData { payment_secret: secret, total_msat })
+						} else {
+							None
+						},
+						payment_metadata: recipient_onion_fields.payment_metadata.take(),
+						keysend_preimage: *keysend_preimage,
+						custom_tlvs: recipient_onion_fields.custom_tlvs.clone(),
+						sender_intended_htlc_amt_msat: value_msat,
+						cltv_expiry_height: cltv,
+					});
+				}
+			},
+		}
+
+		cur_value_msat += hop.fee_msat;
+		if cur_value_msat >= 21000000 * 100000000 * 1000 {
+			return Err(APIError::InvalidRoute { err: "Channel fees overflowed?".to_owned() });
+		}
+		cur_cltv += hop.cltv_expiry_delta as u32;
+		if cur_cltv >= 500000000 {
+			return Err(APIError::InvalidRoute { err: "Channel CLTV overflowed?".to_owned() });
+		}
+		last_short_channel_id = hop.short_channel_id;
+	}
+
+	for hop in path.hops.iter().rev().skip(1) {
+		// First hop gets special values so that it can check, on receipt, that everything is
+		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
+		// the intended recipient).
+		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
+		let cltv = if cur_cltv == starting_htlc_offset {
+			hop.cltv_expiry_delta + starting_htlc_offset
+		} else {
+			cur_cltv
+		};
+		let payload = msgs::OutboundOnionPayload::Forward {
+			short_channel_id: last_short_channel_id,
+			amt_to_forward: value_msat,
+			outgoing_cltv_value: cltv,
+		};
+		res.insert(0, payload);
+		cur_value_msat += hop.fee_msat;
+		if cur_value_msat >= 21000000 * 100000000 * 1000 {
+			return Err(APIError::InvalidRoute { err: "Channel fees overflowed?".to_owned() });
+		}
+		cur_cltv += hop.cltv_expiry_delta as u32;
+		if cur_cltv >= 500000000 {
+			return Err(APIError::InvalidRoute { err: "Channel CLTV overflowed?".to_owned() });
+		}
+		last_short_channel_id = hop.short_channel_id;
+	}
+	Ok((res, cur_value_msat, cur_cltv))
+}
+
+/// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
+pub(super) fn build_trampoline_payloads(
 	path: &Path, total_msat: u64, mut recipient_onion: RecipientOnionFields,
 	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
 ) -> Result<(Vec<msgs::OutboundOnionPayload>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
-	let mut last_short_channel_id = 0;
+	let mut last_node_id = None;
 	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(
-		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
+		path.trampoline_hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
 	);
 
-	for (idx, hop) in path.hops.iter().rev().enumerate() {
+	for (idx, hop) in path.trampoline_hops.iter().rev().enumerate() {
 		// First hop gets special values so that it can check, on receipt, that everything is
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
@@ -237,12 +457,15 @@ pub(super) fn build_onion_payloads(
 				});
 			}
 		} else {
-			let payload = msgs::OutboundOnionPayload::Forward {
-				short_channel_id: last_short_channel_id,
-				amt_to_forward: value_msat,
-				outgoing_cltv_value: cltv,
-			};
-			res.insert(0, payload);
+			res.insert(
+				0,
+				msgs::OutboundOnionPayload::TrampolineForward {
+					amt_to_forward: value_msat,
+					outgoing_cltv_value: cltv,
+					outgoing_node_id: last_node_id
+						.expect("outgoing node id cannot be None after last hop"),
+				},
+			);
 		}
 		cur_value_msat += hop.fee_msat;
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
@@ -252,7 +475,7 @@ pub(super) fn build_onion_payloads(
 		if cur_cltv >= 500000000 {
 			return Err(APIError::InvalidRoute { err: "Channel CLTV overflowed?".to_owned() });
 		}
-		last_short_channel_id = hop.short_channel_id;
+		last_node_id = Some(hop.pubkey);
 	}
 	Ok((res, cur_value_msat, cur_cltv))
 }
@@ -287,6 +510,23 @@ pub(super) fn construct_onion_packet(
 		payloads,
 		onion_keys,
 		packet,
+		Some(associated_data),
+	)
+}
+
+pub(super) fn construct_variable_length_onion_packet(
+	payloads: Vec<msgs::OutboundOnionPayload>, onion_keys: Vec<OnionKeys>, prng_seed: [u8; 32],
+	associated_data: &PaymentHash, length: u16,
+) -> Result<msgs::TrampolineOnionPacket, ()> {
+	let mut packet_data = vec![0u8; length as usize];
+
+	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
+	chacha.process(&vec![0u8; length as usize], &mut packet_data);
+
+	construct_onion_packet_with_init_noise::<_, _>(
+		payloads,
+		onion_keys,
+		packet_data,
 		Some(associated_data),
 	)
 }
@@ -1092,14 +1332,63 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 	recipient_onion: RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
 	keysend_preimage: &Option<PaymentPreimage>, prng_seed: [u8; 32],
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
-	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv).map_err(|_| {
+	let mut outer_private_key = session_priv;
+	let mut outer_recipient_onion = RecipientOnion::Final(recipient_onion);
+	let mut outer_destinatation_msat = total_msat;
+	let mut outer_cltv = cur_block_height;
+
+	if !path.trampoline_hops.is_empty() {
+		// TODO: replace outer_private_key to NOT be session_priv (pass in an entropy source?)
+
+		// unwrap the previously wrapped recipient onion
+		// TODO: find a way to make this less awkward
+		let RecipientOnion::Final(recipient_onion) = outer_recipient_onion else {
+			unreachable!()
+		};
+
+		let trampoline_keys =
+			construct_trampoline_keys(&secp_ctx, &path.trampoline_hops, &session_priv).unwrap();
+		let inner_recipient_onion = recipient_onion.clone();
+		// ensure that there is no value inside the payment secret option
+		let (trampoline_payloads, htlc_msat, htlc_cltv) = build_trampoline_payloads(
+			path,
+			total_msat,
+			inner_recipient_onion,
+			cur_block_height,
+			keysend_preimage,
+		)?;
+
+		// TODO: allow error conversion with ?
+		// TODO: calculate trampoline packet size (currently 650) dynamically
+		let trampoline_packet = construct_variable_length_onion_packet(
+			trampoline_payloads,
+			trampoline_keys,
+			prng_seed,
+			payment_hash,
+			650,
+		)
+		.unwrap();
+
+		let trampoline_onion = TrampolineEntryOnionFields {
+			trampoline_packet,
+			payment_metadata: recipient_onion.payment_metadata,
+			custom_tlvs: recipient_onion.custom_tlvs,
+		};
+		outer_recipient_onion = RecipientOnion::TrampolineEntry(trampoline_onion);
+
+		// TODO: introduce additional padding here?
+		outer_destinatation_msat = htlc_msat;
+		outer_cltv = htlc_cltv;
+	}
+
+	let onion_keys = construct_onion_keys(&secp_ctx, &path, &outer_private_key).map_err(|_| {
 		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
 	})?;
 	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
 		&path,
-		total_msat,
-		recipient_onion,
-		cur_block_height,
+		outer_destinatation_msat,
+		outer_recipient_onion,
+		outer_cltv,
 		keysend_preimage,
 	)?;
 	let onion_packet = construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)
@@ -1252,7 +1541,7 @@ mod tests {
 						channel_features: ChannelFeatures::empty(), node_features: NodeFeatures::empty(),
 						short_channel_id: 0, fee_msat: 0, cltv_expiry_delta: 0, maybe_announced_channel: true, // We fill in the payloads manually instead of generating them from RouteHops.
 					},
-			], blinded_tail: None }],
+			], trampoline_hops: vec![], blinded_tail: None }],
 			route_params: None,
 		};
 

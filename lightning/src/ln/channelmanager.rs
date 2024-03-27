@@ -10001,7 +10001,7 @@ impl Readable for HTLCSource {
 					// instead.
 					payment_id = Some(PaymentId(*session_priv.0.unwrap().as_ref()));
 				}
-				let path = Path { hops: path_hops, blinded_tail };
+				let path = Path { hops: path_hops, trampoline_hops: vec![], blinded_tail };
 				if path.hops.len() == 0 {
 					return Err(DecodeError::InvalidValue);
 				}
