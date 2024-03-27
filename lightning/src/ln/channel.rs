@@ -998,14 +998,16 @@ enum HTLCInitiator {
 	RemoteOffered,
 }
 
-/// An enum gathering stats on pending HTLCs, either inbound or outbound side.
+/// Current counts of various HTLCs, useful for calculating current balances available exactly.
 struct HTLCStats {
-	pending_htlcs: u32,
-	pending_htlcs_value_msat: u64,
+	pending_inbound_htlcs: usize,
+	pending_outbound_htlcs: usize,
+	pending_inbound_htlcs_value_msat: u64,
+	pending_outbound_htlcs_value_msat: u64,
 	on_counterparty_tx_dust_exposure_msat: u64,
 	on_holder_tx_dust_exposure_msat: u64,
-	holding_cell_msat: u64,
-	on_holder_tx_holding_cell_htlcs_count: u32, // dust HTLCs *non*-included
+	outbound_holding_cell_msat: u64,
+	on_holder_tx_outbound_holding_cell_htlcs_count: u32, // dust HTLCs *non*-included
 }
 
 /// An enum gathering stats on commitment transaction, either local or remote.
@@ -2738,86 +2740,81 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.counterparty_forwarding_info.clone()
 	}
 
-	/// Returns a HTLCStats about inbound pending htlcs
-	fn get_inbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
+	/// Returns a HTLCStats about pending htlcs
+	fn get_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
 		let context = self;
-		let mut stats = HTLCStats {
-			pending_htlcs: context.pending_inbound_htlcs.len() as u32,
-			pending_htlcs_value_msat: 0,
-			on_counterparty_tx_dust_exposure_msat: 0,
-			on_holder_tx_dust_exposure_msat: 0,
-			holding_cell_msat: 0,
-			on_holder_tx_holding_cell_htlcs_count: 0,
-		};
+		let uses_0_htlc_fee_anchors = self.get_channel_type().supports_anchors_zero_fee_htlc_tx();
 
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if uses_0_htlc_fee_anchors {
 			(0, 0)
 		} else {
 			let dust_buffer_feerate = context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
 			(dust_buffer_feerate * htlc_timeout_tx_weight(context.get_channel_type()) / 1000,
 				dust_buffer_feerate * htlc_success_tx_weight(context.get_channel_type()) / 1000)
 		};
+
+		let mut on_holder_tx_dust_exposure_msat = 0;
+		let mut on_counterparty_tx_dust_exposure_msat = 0;
+
+		let mut pending_inbound_htlcs_value_msat = 0;
+		{
 		let counterparty_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.counterparty_dust_limit_satoshis;
 		let holder_dust_limit_success_sat = htlc_success_dust_limit + context.holder_dust_limit_satoshis;
 		for ref htlc in context.pending_inbound_htlcs.iter() {
-			stats.pending_htlcs_value_msat += htlc.amount_msat;
+			pending_inbound_htlcs_value_msat += htlc.amount_msat;
 			if htlc.amount_msat / 1000 < counterparty_dust_limit_timeout_sat {
-				stats.on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
+				on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
 			}
 			if htlc.amount_msat / 1000 < holder_dust_limit_success_sat {
-				stats.on_holder_tx_dust_exposure_msat += htlc.amount_msat;
+				on_holder_tx_dust_exposure_msat += htlc.amount_msat;
 			}
 		}
-		stats
-	}
+		}
 
-	/// Returns a HTLCStats about pending outbound htlcs, *including* pending adds in our holding cell.
-	fn get_outbound_pending_htlc_stats(&self, outbound_feerate_update: Option<u32>) -> HTLCStats {
-		let context = self;
-		let mut stats = HTLCStats {
-			pending_htlcs: context.pending_outbound_htlcs.len() as u32,
-			pending_htlcs_value_msat: 0,
-			on_counterparty_tx_dust_exposure_msat: 0,
-			on_holder_tx_dust_exposure_msat: 0,
-			holding_cell_msat: 0,
-			on_holder_tx_holding_cell_htlcs_count: 0,
-		};
-
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			(0, 0)
-		} else {
-			let dust_buffer_feerate = context.get_dust_buffer_feerate(outbound_feerate_update) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(context.get_channel_type()) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(context.get_channel_type()) / 1000)
-		};
+		let mut pending_outbound_htlcs_value_msat = 0;
+		let mut outbound_holding_cell_msat = 0;
+		let mut on_holder_tx_outbound_holding_cell_htlcs_count = 0;
+		let mut pending_outbound_htlcs = self.pending_outbound_htlcs.len();
+		{
 		let counterparty_dust_limit_success_sat = htlc_success_dust_limit + context.counterparty_dust_limit_satoshis;
 		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + context.holder_dust_limit_satoshis;
 		for ref htlc in context.pending_outbound_htlcs.iter() {
-			stats.pending_htlcs_value_msat += htlc.amount_msat;
+			pending_outbound_htlcs_value_msat += htlc.amount_msat;
 			if htlc.amount_msat / 1000 < counterparty_dust_limit_success_sat {
-				stats.on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
+				on_counterparty_tx_dust_exposure_msat += htlc.amount_msat;
 			}
 			if htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat {
-				stats.on_holder_tx_dust_exposure_msat += htlc.amount_msat;
+				on_holder_tx_dust_exposure_msat += htlc.amount_msat;
 			}
 		}
 
 		for update in context.holding_cell_htlc_updates.iter() {
 			if let &HTLCUpdateAwaitingACK::AddHTLC { ref amount_msat, .. } = update {
-				stats.pending_htlcs += 1;
-				stats.pending_htlcs_value_msat += amount_msat;
-				stats.holding_cell_msat += amount_msat;
+				pending_outbound_htlcs += 1;
+				pending_outbound_htlcs_value_msat += amount_msat;
+				outbound_holding_cell_msat += amount_msat;
 				if *amount_msat / 1000 < counterparty_dust_limit_success_sat {
-					stats.on_counterparty_tx_dust_exposure_msat += amount_msat;
+					on_counterparty_tx_dust_exposure_msat += amount_msat;
 				}
 				if *amount_msat / 1000 < holder_dust_limit_timeout_sat {
-					stats.on_holder_tx_dust_exposure_msat += amount_msat;
+					on_holder_tx_dust_exposure_msat += amount_msat;
 				} else {
-					stats.on_holder_tx_holding_cell_htlcs_count += 1;
+					on_holder_tx_outbound_holding_cell_htlcs_count += 1;
 				}
 			}
 		}
-		stats
+		}
+
+		HTLCStats {
+			pending_inbound_htlcs: self.pending_inbound_htlcs.len(),
+			pending_outbound_htlcs,
+			pending_inbound_htlcs_value_msat,
+			pending_outbound_htlcs_value_msat,
+			on_counterparty_tx_dust_exposure_msat,
+			on_holder_tx_dust_exposure_msat,
+			outbound_holding_cell_msat,
+			on_holder_tx_outbound_holding_cell_htlcs_count,
+		}
 	}
 
 	/// Returns information on all pending inbound HTLCs.
@@ -2923,8 +2920,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	{
 		let context = &self;
 		// Note that we have to handle overflow due to the above case.
-		let inbound_stats = context.get_inbound_pending_htlc_stats(None);
-		let outbound_stats = context.get_outbound_pending_htlc_stats(None);
+		let htlc_stats = context.get_pending_htlc_stats(None);
 
 		let mut balance_msat = context.value_to_self_msat;
 		for ref htlc in context.pending_inbound_htlcs.iter() {
@@ -2932,10 +2928,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				balance_msat += htlc.amount_msat;
 			}
 		}
-		balance_msat -= outbound_stats.pending_htlcs_value_msat;
+		balance_msat -= htlc_stats.pending_outbound_htlcs_value_msat;
 
 		let outbound_capacity_msat = context.value_to_self_msat
-				.saturating_sub(outbound_stats.pending_htlcs_value_msat)
+				.saturating_sub(htlc_stats.pending_outbound_htlcs_value_msat)
 				.saturating_sub(
 					context.counterparty_selected_channel_reserve_satoshis.unwrap_or(0) * 1000);
 
@@ -2995,7 +2991,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 			let holder_selected_chan_reserve_msat = context.holder_selected_channel_reserve_satoshis * 1000;
 			let remote_balance_msat = (context.channel_value_satoshis * 1000 - context.value_to_self_msat)
-				.saturating_sub(inbound_stats.pending_htlcs_value_msat);
+				.saturating_sub(htlc_stats.pending_inbound_htlcs_value_msat);
 
 			if remote_balance_msat < max_reserved_commit_tx_fee_msat + holder_selected_chan_reserve_msat + anchor_outputs_value_msat {
 				// If another HTLC's fee would reduce the remote's balance below the reserve limit
@@ -3021,18 +3017,16 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			(context.counterparty_dust_limit_satoshis + dust_buffer_feerate * htlc_success_tx_weight(context.get_channel_type()) / 1000,
 			 context.holder_dust_limit_satoshis       + dust_buffer_feerate * htlc_timeout_tx_weight(context.get_channel_type()) / 1000)
 		};
-		let on_counterparty_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
-		if on_counterparty_dust_htlc_exposure_msat as i64 + htlc_success_dust_limit as i64 * 1000 - 1 > max_dust_htlc_exposure_msat.try_into().unwrap_or(i64::max_value()) {
+		if htlc_stats.on_counterparty_tx_dust_exposure_msat as i64 + htlc_success_dust_limit as i64 * 1000 - 1 > max_dust_htlc_exposure_msat.try_into().unwrap_or(i64::max_value()) {
 			remaining_msat_below_dust_exposure_limit =
-				Some(max_dust_htlc_exposure_msat.saturating_sub(on_counterparty_dust_htlc_exposure_msat));
+				Some(max_dust_htlc_exposure_msat.saturating_sub(htlc_stats.on_counterparty_tx_dust_exposure_msat));
 			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_success_dust_limit * 1000);
 		}
 
-		let on_holder_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
-		if on_holder_dust_htlc_exposure_msat as i64 + htlc_timeout_dust_limit as i64 * 1000 - 1 > max_dust_htlc_exposure_msat.try_into().unwrap_or(i64::max_value()) {
+		if htlc_stats.on_holder_tx_dust_exposure_msat as i64 + htlc_timeout_dust_limit as i64 * 1000 - 1 > max_dust_htlc_exposure_msat.try_into().unwrap_or(i64::max_value()) {
 			remaining_msat_below_dust_exposure_limit = Some(cmp::min(
 				remaining_msat_below_dust_exposure_limit.unwrap_or(u64::max_value()),
-				max_dust_htlc_exposure_msat.saturating_sub(on_holder_dust_htlc_exposure_msat)));
+				max_dust_htlc_exposure_msat.saturating_sub(htlc_stats.on_holder_tx_dust_exposure_msat)));
 			dust_exposure_dust_limit_msat = cmp::max(dust_exposure_dust_limit_msat, htlc_timeout_dust_limit * 1000);
 		}
 
@@ -3045,16 +3039,16 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 
 		available_capacity_msat = cmp::min(available_capacity_msat,
-			context.counterparty_max_htlc_value_in_flight_msat - outbound_stats.pending_htlcs_value_msat);
+			context.counterparty_max_htlc_value_in_flight_msat - htlc_stats.pending_outbound_htlcs_value_msat);
 
-		if outbound_stats.pending_htlcs + 1 > context.counterparty_max_accepted_htlcs as u32 {
+		if htlc_stats.pending_outbound_htlcs + 1 > context.counterparty_max_accepted_htlcs as usize {
 			available_capacity_msat = 0;
 		}
 
 		AvailableBalances {
 			inbound_capacity_msat: cmp::max(context.channel_value_satoshis as i64 * 1000
 					- context.value_to_self_msat as i64
-					- context.get_inbound_pending_htlc_stats(None).pending_htlcs_value_msat as i64
+					- htlc_stats.pending_inbound_htlcs_value_msat as i64
 					- context.holder_selected_channel_reserve_satoshis as i64 * 1000,
 				0) as u64,
 			outbound_capacity_msat,
@@ -4143,11 +4137,11 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ChannelError::Close(format!("Remote side tried to send less than our minimum HTLC value. Lower limit: ({}). Actual: ({})", self.context.holder_htlc_minimum_msat, msg.amount_msat)));
 		}
 
-		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
-		if inbound_stats.pending_htlcs + 1 > self.context.holder_max_accepted_htlcs as u32 {
+		let htlc_stats = self.context.get_pending_htlc_stats(None);
+		if htlc_stats.pending_inbound_htlcs + 1 > self.context.holder_max_accepted_htlcs as usize {
 			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.context.holder_max_accepted_htlcs)));
 		}
-		if inbound_stats.pending_htlcs_value_msat + msg.amount_msat > self.context.holder_max_htlc_value_in_flight_msat {
+		if htlc_stats.pending_inbound_htlcs_value_msat + msg.amount_msat > self.context.holder_max_htlc_value_in_flight_msat {
 			return Err(ChannelError::Close(format!("Remote HTLC add would put them over our max HTLC value ({})", self.context.holder_max_htlc_value_in_flight_msat)));
 		}
 
@@ -4173,7 +4167,7 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let pending_value_to_self_msat =
-			self.context.value_to_self_msat + inbound_stats.pending_htlcs_value_msat - removed_outbound_total_msat;
+			self.context.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
 		let pending_remote_value_msat =
 			self.context.channel_value_satoshis * 1000 - pending_value_to_self_msat;
 		if pending_remote_value_msat < msg.amount_msat {
@@ -4995,12 +4989,11 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		// Before proposing a feerate update, check that we can actually afford the new fee.
-		let inbound_stats = self.context.get_inbound_pending_htlc_stats(Some(feerate_per_kw));
-		let outbound_stats = self.context.get_outbound_pending_htlc_stats(Some(feerate_per_kw));
+		let htlc_stats = self.context.get_pending_htlc_stats(Some(feerate_per_kw));
 		let keys = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
 		let commitment_stats = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &keys, true, true, logger);
-		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + outbound_stats.on_holder_tx_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
-		let holder_balance_msat = commitment_stats.local_balance_msat - outbound_stats.holding_cell_msat;
+		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
+		let holder_balance_msat = commitment_stats.local_balance_msat - htlc_stats.outbound_holding_cell_msat;
 		if holder_balance_msat < buffer_fee_msat  + self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 {
 			//TODO: auto-close after a number of failures?
 			log_debug!(logger, "Cannot afford to send new feerate at {}", feerate_per_kw);
@@ -5008,14 +5001,12 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		// Note, we evaluate pending htlc "preemptive" trimmed-to-dust threshold at the proposed `feerate_per_kw`.
-		let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
-		let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
 		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
-		if holder_tx_dust_exposure > max_dust_htlc_exposure_msat {
+		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
 			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
 			return None;
 		}
-		if counterparty_tx_dust_exposure > max_dust_htlc_exposure_msat {
+		if htlc_stats.on_counterparty_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
 			log_debug!(logger, "Cannot afford to send new feerate at {} without infringing max dust htlc exposure", feerate_per_kw);
 			return None;
 		}
@@ -5249,18 +5240,15 @@ impl<SP: Deref> Channel<SP> where
 		self.context.update_time_counter += 1;
 		// Check that we won't be pushed over our dust exposure limit by the feerate increase.
 		if !self.context.channel_type.supports_anchors_zero_fee_htlc_tx() {
-			let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
-			let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
-			let holder_tx_dust_exposure = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat;
-			let counterparty_tx_dust_exposure = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat;
+			let htlc_stats = self.context.get_pending_htlc_stats(None);
 			let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
-			if holder_tx_dust_exposure > max_dust_htlc_exposure_msat {
+			if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
 				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
-					msg.feerate_per_kw, holder_tx_dust_exposure)));
+					msg.feerate_per_kw, htlc_stats.on_holder_tx_dust_exposure_msat)));
 			}
-			if counterparty_tx_dust_exposure > max_dust_htlc_exposure_msat {
+			if htlc_stats.on_counterparty_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
 				return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
-					msg.feerate_per_kw, counterparty_tx_dust_exposure)));
+					msg.feerate_per_kw, htlc_stats.on_counterparty_tx_dust_exposure_msat)));
 			}
 		}
 		Ok(())
@@ -6105,8 +6093,7 @@ impl<SP: Deref> Channel<SP> where
 			return Err(("Shutdown was already sent", 0x4000|8))
 		}
 
-		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
-		let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
+		let htlc_stats = self.context.get_pending_htlc_stats(None);
 		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
 		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
 			(0, 0)
@@ -6117,7 +6104,7 @@ impl<SP: Deref> Channel<SP> where
 		};
 		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
-			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
+			let on_counterparty_tx_dust_htlc_exposure_msat = htlc_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
 			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
 				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
 					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
@@ -6127,7 +6114,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
 		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
-			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
+			let on_holder_tx_dust_htlc_exposure_msat = htlc_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
 			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
 				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
 					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
@@ -6151,7 +6138,7 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let pending_value_to_self_msat =
-			self.context.value_to_self_msat + inbound_stats.pending_htlcs_value_msat - removed_outbound_total_msat;
+			self.context.value_to_self_msat + htlc_stats.pending_inbound_htlcs_value_msat - removed_outbound_total_msat;
 		let pending_remote_value_msat =
 			self.context.channel_value_satoshis * 1000 - pending_value_to_self_msat;
 
