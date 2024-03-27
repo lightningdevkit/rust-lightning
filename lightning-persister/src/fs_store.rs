@@ -500,7 +500,7 @@ mod tests {
 			txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
 			index: 0
 		};
-		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
+		match store.persist_new_channel(test_txo, &added_monitors[0].1) {
 			ChannelMonitorUpdateStatus::UnrecoverableError => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}

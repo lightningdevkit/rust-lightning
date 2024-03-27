@@ -350,7 +350,6 @@ where C::Target: chain::Filter,
 			let update_id = MonitorUpdateId {
 				contents: UpdateOrigin::ChainSync(chain_sync_update_id),
 			};
-			let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 
 			log_trace!(logger, "Syncing Channel Monitor for channel {} for block-data update_id {}",
 				log_funding_info!(monitor),
@@ -364,7 +363,6 @@ where C::Target: chain::Filter,
 					),
 				ChannelMonitorUpdateStatus::InProgress => {
 					log_debug!(logger, "Channel Monitor sync for channel {} in progress.", log_funding_info!(monitor));
-					pending_monitor_updates.push(update_id);
 				},
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
 					return Err(());

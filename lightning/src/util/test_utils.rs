@@ -16,7 +16,7 @@ use crate::chain::chaininterface::ConfirmationTarget;
 #[cfg(test)]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor;
-use crate::chain::chainmonitor::{MonitorUpdateId, UpdateOrigin};
+use crate::chain::chainmonitor::{MonitorUpdateId};
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
@@ -516,7 +516,7 @@ pub struct TestPersister {
 	pub update_rets: Mutex<VecDeque<chain::ChannelMonitorUpdateStatus>>,
 	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
 	/// MonitorUpdateId here.
-	pub chain_sync_monitor_persistences: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
+	pub chain_sync_monitor_persistences: Mutex<VecDeque<OutPoint>>,
 	/// When we get an update_persisted_channel call *with* a ChannelMonitorUpdate, we insert the
 	/// MonitorUpdateId here.
 	pub offchain_monitor_updates: Mutex<HashMap<OutPoint, HashSet<MonitorUpdateId>>>,
@@ -525,7 +525,7 @@ impl TestPersister {
 	pub fn new() -> Self {
 		Self {
 			update_rets: Mutex::new(VecDeque::new()),
-			chain_sync_monitor_persistences: Mutex::new(new_hash_map()),
+			chain_sync_monitor_persistences: Mutex::new(VecDeque::new()),
 			offchain_monitor_updates: Mutex::new(new_hash_map()),
 		}
 	}
@@ -543,16 +543,16 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 		chain::ChannelMonitorUpdateStatus::Completed
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>, update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
 		let mut ret = chain::ChannelMonitorUpdateStatus::Completed;
 		if let Some(update_ret) = self.update_rets.lock().unwrap().pop_front() {
 			ret = update_ret;
 		}
-		let is_chain_sync = if let UpdateOrigin::ChainSync(_) = update_id.contents { true } else { false };
-		if is_chain_sync {
-			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update_id);
-		} else {
+
+		if update.is_some()  {
 			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update_id);
+		} else {
+			self.chain_sync_monitor_persistences.lock().unwrap().push_back(funding_txo);
 		}
 		ret
 	}
@@ -564,7 +564,7 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 			None => {
 				// If the channel was not in the offchain_monitor_updates map, it should be in the
 				// chain_sync_monitor_persistences map.
-				assert!(self.chain_sync_monitor_persistences.lock().unwrap().remove(&funding_txo).is_some());
+				self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &funding_txo);
 			}
 		};
 	}
