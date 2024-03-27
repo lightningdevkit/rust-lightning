@@ -1007,6 +1007,20 @@ where
 		}
 		msgs
 	}
+
+	fn enqueue_event(&self, event: Event) {
+		const MAX_EVENTS_BUFFER_SIZE: usize = (1 << 10) * 256;
+		let mut pending_events = self.pending_events.lock().unwrap();
+		let total_buffered_bytes: usize = pending_events
+			.iter()
+			.map(|ev| ev.serialized_length())
+			.sum();
+		if total_buffered_bytes >= MAX_EVENTS_BUFFER_SIZE {
+			log_trace!(self.logger, "Dropping event {:?}: buffer full", event);
+			return
+		}
+		pending_events.push(event);
+	}
 }
 
 fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, OnionMessageRecipient>) -> bool {
@@ -1134,7 +1148,7 @@ where
 						log_trace!(logger, "Forwarding an onion message to peer {}", next_node_id);
 					},
 					_ if self.intercept_messages_for_offline_peers => {
-						self.pending_events.lock().unwrap().push(
+						self.enqueue_event(
 							Event::OnionMessageIntercepted {
 								peer_node_id: next_node_id, message: onion_message
 							}
@@ -1162,7 +1176,7 @@ where
 				.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
 				.mark_connected();
 			if self.intercept_messages_for_offline_peers {
-				self.pending_events.lock().unwrap().push(
+				self.enqueue_event(
 					Event::OnionMessagePeerConnected { peer_node_id: *their_node_id }
 				);
 			}
