@@ -71,7 +71,7 @@ pub enum Direction {
 ///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
 pub trait NodeIdLookUp {
-	/// Returns the node if of the channel counterparty with `short_channel_id`.
+	/// Returns the node id of the forwarding node's channel counterparty with `short_channel_id`.
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey>;
 }
 
