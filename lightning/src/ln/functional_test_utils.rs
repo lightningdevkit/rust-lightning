@@ -2512,6 +2512,7 @@ pub struct PassAlongPathArgs<'a, 'b, 'c, 'd> {
 	pub clear_recipient_events: bool,
 	pub expected_preimage: Option<PaymentPreimage>,
 	pub is_probe: bool,
+	pub custom_tlvs: Vec<(u64, Vec<u8>)>,
 }
 
 impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
@@ -2522,7 +2523,7 @@ impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
 		Self {
 			origin_node, expected_path, recv_value, payment_hash, payment_secret: None, event,
 			payment_claimable_expected: true, clear_recipient_events: true, expected_preimage: None,
-			is_probe: false,
+			is_probe: false, custom_tlvs: Vec::new(),
 		}
 	}
 	pub fn without_clearing_recipient_events(mut self) -> Self {
@@ -2546,13 +2547,17 @@ impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
 		self.expected_preimage = Some(payment_preimage);
 		self
 	}
+	pub fn with_custom_tlvs(mut self, custom_tlvs: Vec<(u64, Vec<u8>)>) -> Self {
+		self.custom_tlvs = custom_tlvs;
+		self
+	}
 }
 
 pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> {
 	let PassAlongPathArgs {
 		origin_node, expected_path, recv_value, payment_hash: our_payment_hash,
 		payment_secret: our_payment_secret, event: ev, payment_claimable_expected,
-		clear_recipient_events, expected_preimage, is_probe
+		clear_recipient_events, expected_preimage, is_probe, custom_tlvs
 	} = args;
 
 	let mut payment_event = SendEvent::from_event(ev);
@@ -2585,6 +2590,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 						assert_eq!(our_payment_hash, *payment_hash);
 						assert_eq!(node.node.get_our_node_id(), receiver_node_id.unwrap());
 						assert!(onion_fields.is_some());
+						assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, custom_tlvs);
 						match &purpose {
 							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
 								assert_eq!(expected_preimage, *payment_preimage);
