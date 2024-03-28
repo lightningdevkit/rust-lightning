@@ -1827,14 +1827,9 @@ macro_rules! expect_htlc_handling_failed_destinations {
 /// there are any [`Event::HTLCHandlingFailed`] events their [`HTLCDestination`] is included in the
 /// `expected_failures` set.
 pub fn expect_pending_htlcs_forwardable_conditions(events: Vec<Event>, expected_failures: &[HTLCDestination]) {
-	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event {:?}", events),
-	};
-
 	let count = expected_failures.len() + 1;
 	assert_eq!(events.len(), count);
-
+	assert!(events.iter().find(|event| matches!(event, Event::PendingHTLCsForwardable { .. })).is_some());
 	if expected_failures.len() > 0 {
 		expect_htlc_handling_failed_destinations!(events, expected_failures)
 	}
