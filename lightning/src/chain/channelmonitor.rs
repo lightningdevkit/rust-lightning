@@ -1190,26 +1190,28 @@ pub(crate) struct WithChannelMonitor<'a, L: Deref> where L::Target: Logger {
 	logger: &'a L,
 	peer_id: Option<PublicKey>,
 	channel_id: Option<ChannelId>,
+	payment_hash: Option<PaymentHash>,
 }
 
 impl<'a, L: Deref> Logger for WithChannelMonitor<'a, L> where L::Target: Logger {
 	fn log(&self, mut record: Record) {
 		record.peer_id = self.peer_id;
 		record.channel_id = self.channel_id;
+		record.payment_hash = self.payment_hash;
 		self.logger.log(record)
 	}
 }
 
 impl<'a, L: Deref> WithChannelMonitor<'a, L> where L::Target: Logger {
-	pub(crate) fn from<S: WriteableEcdsaChannelSigner>(logger: &'a L, monitor: &ChannelMonitor<S>) -> Self {
-		Self::from_impl(logger, &*monitor.inner.lock().unwrap())
+	pub(crate) fn from<S: WriteableEcdsaChannelSigner>(logger: &'a L, monitor: &ChannelMonitor<S>, payment_hash: Option<PaymentHash>) -> Self {
+		Self::from_impl(logger, &*monitor.inner.lock().unwrap(), payment_hash)
 	}
 
-	pub(crate) fn from_impl<S: WriteableEcdsaChannelSigner>(logger: &'a L, monitor_impl: &ChannelMonitorImpl<S>) -> Self {
+	pub(crate) fn from_impl<S: WriteableEcdsaChannelSigner>(logger: &'a L, monitor_impl: &ChannelMonitorImpl<S>, payment_hash: Option<PaymentHash>) -> Self {
 		let peer_id = monitor_impl.counterparty_node_id;
 		let channel_id = Some(monitor_impl.channel_id());
 		WithChannelMonitor {
-			logger, peer_id, channel_id,
+			logger, peer_id, channel_id, payment_hash,
 		}
 	}
 }
@@ -1350,7 +1352,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	where L::Target: Logger
 	{
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.provide_initial_counterparty_commitment_tx(txid,
 			htlc_outputs, commitment_number, their_cur_per_commitment_point, feerate_per_kw,
 			to_broadcaster_value_sat, to_countersignatory_value_sat, &logger);
@@ -1370,7 +1372,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		logger: &L,
 	) where L::Target: Logger {
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.provide_latest_counterparty_commitment_tx(
 			txid, htlc_outputs, commitment_number, their_per_commitment_point, &logger)
 	}
@@ -1398,7 +1400,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, Some(*payment_hash));
 		inner.provide_payment_preimage(
 			payment_hash, payment_preimage, broadcaster, fee_estimator, &logger)
 	}
@@ -1420,7 +1422,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.update_monitor(updates, broadcaster, fee_estimator, &logger)
 	}
 
@@ -1455,7 +1457,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		F::Target: chain::Filter, L::Target: Logger,
 	{
 		let lock = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*lock);
+		let logger = WithChannelMonitor::from_impl(logger, &*lock, None);
 		log_trace!(&logger, "Registering funding outpoint {}", &lock.get_funding_txo().0);
 		filter.register_tx(&lock.get_funding_txo().0.txid, &lock.get_funding_txo().1);
 		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
@@ -1615,7 +1617,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let mut inner = self.inner.lock().unwrap();
 		let fee_estimator = LowerBoundedFeeEstimator::new(&**fee_estimator);
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &fee_estimator, &logger);
 	}
 
@@ -1626,7 +1628,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	pub fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
 	where L::Target: Logger {
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.unsafe_get_latest_holder_commitment_txn(&logger)
 	}
 
@@ -1656,7 +1658,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.block_connected(
 			header, txdata, height, broadcaster, fee_estimator, &logger)
 	}
@@ -1676,7 +1678,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		L::Target: Logger,
 	{
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.block_disconnected(
 			header, height, broadcaster, fee_estimator, &logger)
 	}
@@ -1704,7 +1706,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.transactions_confirmed(
 			header, txdata, height, broadcaster, &bounded_fee_estimator, &logger)
 	}
@@ -1728,7 +1730,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.transaction_unconfirmed(
 			txid, broadcaster, &bounded_fee_estimator, &logger
 		);
@@ -1756,7 +1758,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.best_block_updated(
 			header, height, broadcaster, &bounded_fee_estimator, &logger
 		)
@@ -1796,7 +1798,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		let current_height = inner.best_block.height;
 		inner.onchain_tx_handler.rebroadcast_pending_claims(
 			current_height, FeerateStrategy::HighestOfPreviousOrNew, &broadcaster, &fee_estimator, &logger,
@@ -1815,7 +1817,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let mut inner = self.inner.lock().unwrap();
-		let logger = WithChannelMonitor::from_impl(logger, &*inner);
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		let current_height = inner.best_block.height;
 		inner.onchain_tx_handler.rebroadcast_pending_claims(
 			current_height, FeerateStrategy::RetryPrevious, &broadcaster, &fee_estimator, &logger,
@@ -5199,7 +5201,8 @@ mod tests {
 			best_block, dummy_key, channel_id);
 
 		let chan_id = monitor.inner.lock().unwrap().channel_id();
-		let context_logger = WithChannelMonitor::from(&logger, &monitor);
+		let payment_hash = PaymentHash([1; 32]);
+		let context_logger = WithChannelMonitor::from(&logger, &monitor, Some(payment_hash));
 		log_error!(context_logger, "This is an error");
 		log_warn!(context_logger, "This is an error");
 		log_debug!(context_logger, "This is an error");

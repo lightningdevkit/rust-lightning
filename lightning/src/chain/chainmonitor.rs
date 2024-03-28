@@ -359,7 +359,7 @@ where C::Target: chain::Filter,
 		process: FN, funding_outpoint: &OutPoint, monitor_state: &MonitorHolder<ChannelSigner>
 	) -> Result<(), ()> where FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs> {
 		let monitor = &monitor_state.monitor;
-		let logger = WithChannelMonitor::from(&self.logger, &monitor);
+		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut txn_outputs;
 		{
 			txn_outputs = process(monitor, txdata);
@@ -744,7 +744,7 @@ where C::Target: chain::Filter,
 	    P::Target: Persist<ChannelSigner>,
 {
 	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
-		let logger = WithChannelMonitor::from(&self.logger, &monitor);
+		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut monitors = self.monitors.write().unwrap();
 		let entry = match monitors.entry(funding_outpoint) {
 			hash_map::Entry::Occupied(_) => {
@@ -790,7 +790,7 @@ where C::Target: chain::Filter,
 		let monitors = self.monitors.read().unwrap();
 		match monitors.get(&funding_txo) {
 			None => {
-				let logger = WithContext::from(&self.logger, update.counterparty_node_id, Some(channel_id));
+				let logger = WithContext::from(&self.logger, update.counterparty_node_id, Some(channel_id), None);
 				log_error!(logger, "Failed to update channel monitor: no such monitor registered");
 
 				// We should never ever trigger this from within ChannelManager. Technically a
@@ -803,7 +803,7 @@ where C::Target: chain::Filter,
 			},
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
-				let logger = WithChannelMonitor::from(&self.logger, &monitor);
+				let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 				log_trace!(logger, "Updating ChannelMonitor for channel {}", log_funding_info!(monitor));
 				let update_res = monitor.update_monitor(update, &self.broadcaster, &self.fee_estimator, &self.logger);
 
@@ -851,7 +851,7 @@ where C::Target: chain::Filter,
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		let mut pending_monitor_events = self.pending_monitor_events.lock().unwrap().split_off(0);
 		for monitor_state in self.monitors.read().unwrap().values() {
-			let logger = WithChannelMonitor::from(&self.logger, &monitor_state.monitor);
+			let logger = WithChannelMonitor::from(&self.logger, &monitor_state.monitor, None);
 			let is_pending_monitor_update = monitor_state.has_pending_chainsync_updates(&monitor_state.pending_monitor_updates.lock().unwrap());
 			if !is_pending_monitor_update || monitor_state.last_chain_persist_height.load(Ordering::Acquire) + LATENCY_GRACE_PERIOD_BLOCKS as usize <= self.highest_chain_height.load(Ordering::Acquire) {
 				if is_pending_monitor_update {
