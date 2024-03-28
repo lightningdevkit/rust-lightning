@@ -65,7 +65,7 @@ use crate::offers::merkle::SignError;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
-use crate::onion_message::messenger::{Destination, MessageRouter, PendingOnionMessage, new_pending_onion_message};
+use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
@@ -76,6 +76,7 @@ use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
+
 #[cfg(not(c_bindings))]
 use {
 	crate::offers::offer::DerivedMetadata,
@@ -9450,24 +9451,32 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	fn handle_message(&self, message: OffersMessage) -> Option<OffersMessage> {
+	fn handle_message(&self, message: OffersMessage, responder: Option<Responder>) -> ResponseInstruction<OffersMessage>
+	{
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
 		match message {
 			OffersMessage::InvoiceRequest(invoice_request) => {
+				let responder = match responder {
+					Some(responder) => responder,
+					None => return ResponseInstruction::NoResponse,
+				};
+
 				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
 					&invoice_request
 				) {
 					Ok(amount_msats) => amount_msats,
-					Err(error) => return Some(OffersMessage::InvoiceError(error.into())),
+					Err(error) => {
+						return responder.respond(OffersMessage::InvoiceError(error.into()));
+					}
 				};
 				let invoice_request = match invoice_request.verify(expanded_key, secp_ctx) {
 					Ok(invoice_request) => invoice_request,
 					Err(()) => {
 						let error = Bolt12SemanticError::InvalidMetadata;
-						return Some(OffersMessage::InvoiceError(error.into()));
-					},
+						return responder.respond(OffersMessage::InvoiceError(error.into()));
+					}
 				};
 
 				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
@@ -9477,8 +9486,8 @@ where
 					Ok((payment_hash, payment_secret)) => (payment_hash, payment_secret),
 					Err(()) => {
 						let error = Bolt12SemanticError::InvalidAmount;
-						return Some(OffersMessage::InvoiceError(error.into()));
-					},
+						return responder.respond(OffersMessage::InvoiceError(error.into()));
+					}
 				};
 
 				let payment_paths = match self.create_blinded_payment_paths(
@@ -9487,8 +9496,8 @@ where
 					Ok(payment_paths) => payment_paths,
 					Err(()) => {
 						let error = Bolt12SemanticError::MissingPaths;
-						return Some(OffersMessage::InvoiceError(error.into()));
-					},
+						return responder.respond(OffersMessage::InvoiceError(error.into()));
+					}
 				};
 
 				#[cfg(not(feature = "std"))]
@@ -9508,8 +9517,8 @@ where
 					let builder: Result<InvoiceBuilder<DerivedSigningPubkey>, _> =
 						builder.map(|b| b.into());
 					match builder.and_then(|b| b.allow_mpp().build_and_sign(secp_ctx)) {
-						Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
-						Err(error) => Some(OffersMessage::InvoiceError(error.into())),
+						Ok(invoice) => return responder.respond(OffersMessage::Invoice(invoice)),
+						Err(error) => return responder.respond(OffersMessage::InvoiceError(error.into())),
 					}
 				} else {
 					#[cfg(feature = "std")]
@@ -9538,13 +9547,14 @@ where
 							}
 						});
 					match response {
-						Ok(invoice) => Some(invoice),
-						Err(error) => Some(error),
+						Ok(invoice) => return responder.respond(invoice),
+						Err(error) => return responder.respond(error),
 					}
-				}
+				};
 			},
+
 			OffersMessage::Invoice(invoice) => {
-				match invoice.verify(expanded_key, secp_ctx) {
+				let response = match invoice.verify(expanded_key, secp_ctx) {
 					Err(()) => {
 						Some(OffersMessage::InvoiceError(InvoiceError::from_string("Unrecognized invoice".to_owned())))
 					},
@@ -9559,13 +9569,19 @@ where
 							None
 						}
 					},
+				};
+
+				match (responder, response) {
+					(Some(responder), Some(response)) => return responder.respond(response),
+					_ => return ResponseInstruction::NoResponse
 				}
 			},
+
 			OffersMessage::InvoiceError(invoice_error) => {
 				log_trace!(self.logger, "Received invoice_error: {}", invoice_error);
-				None
+				return ResponseInstruction::NoResponse
 			},
-		}
+		};
 	}
 
 	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> {

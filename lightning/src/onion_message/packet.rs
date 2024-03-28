@@ -135,6 +135,12 @@ impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContent
 			&ParsedOnionMessageContents::Custom(ref msg) => msg.tlv_type(),
 		}
 	}
+	fn msg_type(&self) -> &'static str {
+		match self {
+			ParsedOnionMessageContents::Offers(ref msg) => msg.msg_type(),
+			ParsedOnionMessageContents::Custom(ref msg) => msg.msg_type(),
+		}
+	}
 }
 
 impl<T: OnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
@@ -150,6 +156,9 @@ impl<T: OnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
 pub trait OnionMessageContents: Writeable + core::fmt::Debug {
 	/// Returns the TLV type identifying the message contents. MUST be >= 64.
 	fn tlv_type(&self) -> u64;
+
+	/// Returns the message type
+	fn msg_type(&self) -> &'static str;
 }
 
 /// Forward control TLVs in their blinded and unblinded form.

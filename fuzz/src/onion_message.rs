@@ -16,7 +16,7 @@ use lightning::sign::{Recipient, KeyMaterial, EntropySource, NodeSigner, SignerP
 use lightning::util::test_channel_signer::TestChannelSigner;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
-use lightning::onion_message::messenger::{CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger, PendingOnionMessage};
+use lightning::onion_message::messenger::{CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger, PendingOnionMessage, Responder, ResponseInstruction};
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::onion_message::packet::OnionMessageContents;
 
@@ -96,8 +96,8 @@ impl MessageRouter for TestMessageRouter {
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
-	fn handle_message(&self, _message: OffersMessage) -> Option<OffersMessage> {
-		None
+	fn handle_message(&self, _message: OffersMessage, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
+		ResponseInstruction::NoResponse
 	}
 }
 
@@ -111,6 +111,9 @@ impl OnionMessageContents for TestCustomMessage {
 	fn tlv_type(&self) -> u64 {
 		CUSTOM_MESSAGE_TYPE
 	}
+	fn msg_type(&self) -> &'static str {
+		"CustomMessageType"
+	}
 }
 
 impl Writeable for TestCustomMessage {
@@ -123,8 +126,11 @@ struct TestCustomMessageHandler {}
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
-	fn handle_custom_message(&self, _msg: Self::CustomMessage) -> Option<Self::CustomMessage> {
-		Some(TestCustomMessage {})
+	fn handle_custom_message(&self, message: Self::CustomMessage, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
+		match responder {
+			Some(responder) => responder.respond(message),
+			None => ResponseInstruction::NoResponse
+		}
 	}
 	fn read_custom_message<R: io::Read>(&self, _message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
 		let mut buf = Vec::new();
