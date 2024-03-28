@@ -22,6 +22,7 @@ pub mod invoice;
 pub mod persist;
 pub mod scid_utils;
 pub mod string;
+pub mod sweep;
 pub mod wakers;
 #[cfg(fuzzing)]
 pub mod base32;
