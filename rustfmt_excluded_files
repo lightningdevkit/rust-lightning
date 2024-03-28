@@ -234,10 +234,6 @@
 ./lightning/src/routing/scoring.rs
 ./lightning/src/routing/test_utils.rs
 ./lightning/src/routing/utxo.rs
-./lightning/src/sign/ecdsa.rs
-./lightning/src/sign/mod.rs
-./lightning/src/sign/taproot.rs
-./lightning/src/sign/type_resolver.rs
 ./lightning/src/sync/debug_sync.rs
 ./lightning/src/sync/fairrwlock.rs
 ./lightning/src/sync/mod.rs
@@ -265,5 +261,3 @@
 ./lightning/src/util/time.rs
 ./lightning/src/util/transaction_utils.rs
 ./lightning/src/util/wakers.rs
-./msrv-no-dev-deps-check/src/lib.rs
-./no-std-check/src/lib.rs
