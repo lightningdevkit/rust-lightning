@@ -796,7 +796,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	{
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let mut peer_state = per_peer_state.get(&nodes[2].node.get_our_node_id())
-			.unwrap().lock().unwrap();
+			.unwrap().write().unwrap();
 		let mut channel = peer_state.channel_by_id.get_mut(&chan_id_2).unwrap();
 		let mut new_config = channel.context().config();
 		new_config.forwarding_fee_base_msat += 100_000;
