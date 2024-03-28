@@ -400,6 +400,17 @@ macro_rules! _decode_tlv {
 	// but we can no longer understand it.
 	($outer_reader: expr, $reader: expr, $field: ident, upgradable_option) => {{
 		$field = $crate::util::ser::MaybeReadable::read(&mut $reader)?;
+		if $field.is_none() {
+			#[cfg(not(debug_assertions))] {
+				// In general, MaybeReadable implementations are required to consume all the bytes
+				// of the object even if they don't understand it, but due to a bug in the
+				// serialization format for `impl_writeable_tlv_based_enum_upgradable` we sometimes
+				// don't know how many bytes that is. In such cases, we'd like to spuriously allow
+				// TLV length mismatches, which we do here by calling `eat_remaining` so that the
+				// `s.bytes_remain()` check in `_decode_tlv_stream_range` doesn't fail.
+				$reader.eat_remaining()?;
+			}
+		}
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
 		$field = Some($trait::read(&mut $reader $(, $read_arg)*)?);
