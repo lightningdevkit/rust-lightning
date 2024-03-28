@@ -1030,16 +1030,15 @@ fn test_completed_payment_not_retryable_on_reload() {
 	do_test_completed_payment_not_retryable_on_reload(false);
 }
 
-
-fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, confirm_commitment_tx: bool, payment_timeout: bool) {
+fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(persist_manager_post_event: bool, confirm_commitment_tx: bool, payment_timeout: bool) {
 	// When a Channel is closed, any outbound HTLCs which were relayed through it are simply
-	// dropped when the Channel is. From there, the ChannelManager relies on the ChannelMonitor
-	// having a copy of the relevant fail-/claim-back data and processes the HTLC fail/claim when
-	// the ChannelMonitor tells it to.
+	// dropped. From there, the ChannelManager relies on the ChannelMonitor having a copy of the
+	// relevant fail-/claim-back data and processes the HTLC fail/claim when the ChannelMonitor tells
+	// it to.
 	//
-	// If, due to an on-chain event, an HTLC is failed/claimed, we should avoid providing the
-	// ChannelManager the HTLC event until after the monitor is re-persisted. This should prevent a
-	// duplicate HTLC fail/claim (e.g. via a PaymentPathFailed event).
+	// If, due to an on-chain event, an HTLC is failed/claimed, we provide the
+	// ChannelManager with the HTLC event without waiting for ChannelMonitor persistence.
+	// This might generate duplicate HTLC fail/claim (e.g. via a PaymentPathFailed event) on reload.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let persister;
@@ -1113,13 +1112,10 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 	}
 
 	let funding_txo = OutPoint { txid: funding_tx.txid(), index: 0 };
-	let mon_updates: Vec<_> = chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap()
-		.get_mut(&funding_txo).unwrap().drain().collect();
-	// If we are using chain::Confirm instead of chain::Listen, we will get the same update twice.
-	// If we're testing connection idempotency we may get substantially more.
-	assert!(mon_updates.len() >= 1);
-	assert!(nodes[0].chain_monitor.release_pending_monitor_events().is_empty());
-	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// Note that we skip persisting ChannelMonitors. We should still be generating the payment sent
+	// event without ChannelMonitor persistence. If we reset to a previous state on reload, the block
+	// should be replayed and we'll regenerate the event.
 
 	// If we persist the ChannelManager here, we should get the PaymentSent event after
 	// deserialization.
@@ -1128,13 +1124,7 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 		chan_manager_serialized = nodes[0].node.encode();
 	}
 
-	// Now persist the ChannelMonitor and inform the ChainMonitor that we're done, generating the
-	// payment sent event.
-	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
-	for update in mon_updates {
-		nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(funding_txo, update).unwrap();
-	}
 	if payment_timeout {
 		expect_payment_failed!(nodes[0], payment_hash, false);
 	} else {
@@ -1168,13 +1158,13 @@ fn do_test_dup_htlc_onchain_fails_on_reload(persist_manager_post_event: bool, co
 }
 
 #[test]
-fn test_dup_htlc_onchain_fails_on_reload() {
-	do_test_dup_htlc_onchain_fails_on_reload(true, true, true);
-	do_test_dup_htlc_onchain_fails_on_reload(true, true, false);
-	do_test_dup_htlc_onchain_fails_on_reload(true, false, false);
-	do_test_dup_htlc_onchain_fails_on_reload(false, true, true);
-	do_test_dup_htlc_onchain_fails_on_reload(false, true, false);
-	do_test_dup_htlc_onchain_fails_on_reload(false, false, false);
+fn test_dup_htlc_onchain_doesnt_fail_on_reload() {
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, true);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, true, false);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(true, false, false);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, true, true);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, true, false);
+	do_test_dup_htlc_onchain_doesnt_fail_on_reload(false, false, false);
 }
 
 #[test]
