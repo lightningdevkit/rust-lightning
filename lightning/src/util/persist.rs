@@ -158,7 +158,7 @@ where
 }
 
 
-impl<'a, A: KVStore, CM: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, CM, L, S> for A
+impl<'a, A: KVStore + ?Sized, CM: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, CM, L, S> for A
 where
 	CM::Target: 'static + AChannelManager,
 	L::Target: 'static + Logger,
@@ -185,65 +185,7 @@ where
 	}
 }
 
-impl<'a, CM: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, CM, L, S> for dyn KVStore + Send + Sync
-where
-	CM::Target: 'static + AChannelManager,
-	L::Target: 'static + Logger,
-{
-	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error> {
-		self.write(CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
-			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			&channel_manager.get_cm().encode())
-	}
-
-	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
-		self.write(NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
-			NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
-			NETWORK_GRAPH_PERSISTENCE_KEY,
-			&network_graph.encode())
-	}
-
-	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error> {
-		self.write(SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-			SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-			SCORER_PERSISTENCE_KEY,
-			&scorer.encode())
-	}
-}
-
-impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSigner> for K {
-	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
-	// down once these start returning failure.
-	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
-	// just shut down the node since we're not retrying persistence!
-
-	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
-		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
-		match self.write(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			&key, &monitor.encode())
-		{
-			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
-			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError
-		}
-	}
-
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
-		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
-		match self.write(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			&key, &monitor.encode())
-		{
-			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
-			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError
-		}
-	}
-}
-
-impl<ChannelSigner: WriteableEcdsaChannelSigner> Persist<ChannelSigner> for dyn KVStore + Send + Sync {
+impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSigner> for K {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
 	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
@@ -901,6 +843,8 @@ mod tests {
 	use crate::ln::functional_test_utils::*;
 	use crate::util::test_utils::{self, TestLogger, TestStore};
 	use crate::{check_added_monitors, check_closed_broadcast};
+	use crate::sync::Arc;
+	use crate::util::test_channel_signer::TestChannelSigner;
 
 	const EXPECTED_UPDATES_PER_PAYMENT: u64 = 5;
 
@@ -1240,5 +1184,15 @@ mod tests {
 			.kv_store
 			.read(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str(), UpdateName::from(u64::MAX - 1).as_str())
 			.is_err());
+	}
+
+	fn persist_fn<P: Deref, ChannelSigner: WriteableEcdsaChannelSigner>(_persist: P) -> bool where P::Target: Persist<ChannelSigner> {
+		true
+	}
+
+	#[test]
+	fn kvstore_trait_object_usage() {
+		let store: Arc<dyn KVStore + Send + Sync> = Arc::new(TestStore::new(false));
+		assert!(persist_fn::<_, TestChannelSigner>(store.clone()));
 	}
 }
