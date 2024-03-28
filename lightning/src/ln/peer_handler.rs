@@ -1590,15 +1590,38 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	}
 
 	/// Process an incoming message and return a decision (ok, lightning error, peer handling error) regarding the next action with the peer
+	///
 	/// Returns the message back if it needs to be broadcasted to all other peers.
 	fn handle_message(
 		&self,
 		peer_mutex: &Mutex<Peer>,
-		mut peer_lock: MutexGuard<Peer>,
+		peer_lock: MutexGuard<Peer>,
 		message: wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>
 	) -> Result<Option<wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>>, MessageHandlingError> {
 		let their_node_id = peer_lock.their_node_id.clone().expect("We know the peer's public key by the time we receive messages").0;
 		let logger = WithContext::from(&self.logger, Some(their_node_id), None);
+
+		let message = match self.do_handle_message_holding_peer_lock(peer_lock, message, &their_node_id, &logger)? {
+			Some(processed_message) => processed_message,
+			None => return Ok(None),
+		};
+
+		self.do_handle_message_without_peer_lock(peer_mutex, message, &their_node_id, &logger)
+	}
+
+	// Conducts all message processing that requires us to hold the `peer_lock`.
+	//
+	// Returns `None` if the message was fully processed and otherwise returns the message back via
+	// move semantics to allow it to be subsequently processed by
+	// `do_handle_message_without_peer_lock`.
+	fn do_handle_message_holding_peer_lock<'a>(
+		&self,
+		mut peer_lock: MutexGuard<Peer>,
+		message: wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>,
+		their_node_id: &PublicKey,
+		logger: &WithContext<'a, L>
+	) -> Result<Option<wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>>, MessageHandlingError>
+	{
 		peer_lock.received_message_since_timer_tick = true;
 
 		// Need an Init as first message
@@ -1679,8 +1702,20 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			peer_lock.received_channel_announce_since_backlogged = true;
 		}
 
-		mem::drop(peer_lock);
+		Ok(Some(message))
+	}
 
+	// Conducts all message processing that doesn't require us to hold the `peer_lock`.
+	//
+	// Returns the message back if it needs to be broadcasted to all other peers.
+	fn do_handle_message_without_peer_lock<'a>(
+		&self,
+		peer_mutex: &Mutex<Peer>,
+		message: wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>,
+		their_node_id: &PublicKey,
+		logger: &WithContext<'a, L>
+	) -> Result<Option<wire::Message<<<CMH as core::ops::Deref>::Target as wire::CustomMessageReader>::CustomMessage>>, MessageHandlingError>
+	{
 		if is_gossip_msg(message.type_id()) {
 			log_gossip!(logger, "Received message {:?} from {}", message, log_pubkey!(their_node_id));
 		} else {
