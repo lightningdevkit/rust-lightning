@@ -94,7 +94,9 @@ pub use std::io;
 pub use core2::io;
 
 #[cfg(not(feature = "std"))]
-mod io_extras {
+#[doc(hidden)]
+/// IO utilities public only for use by in-crate macros. These should not be used externally
+pub mod io_extras {
 	use core2::io::{self, Read, Write};
 
 	/// A writer which will move data into the void.
@@ -154,6 +156,8 @@ mod io_extras {
 }
 
 #[cfg(feature = "std")]
+#[doc(hidden)]
+/// IO utilities public only for use by in-crate macros. These should not be used externally
 mod io_extras {
 	pub fn read_to_end<D: ::std::io::Read>(mut d: D) -> Result<Vec<u8>, ::std::io::Error> {
 		let mut buf = Vec::new();
