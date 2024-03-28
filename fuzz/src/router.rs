@@ -157,6 +157,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
 					msgs::DecodeError::Io(e) => panic!("{:?}", e),
 					msgs::DecodeError::UnsupportedCompression => return,
+					msgs::DecodeError::DangerousValue => return,
 				}
 			}
 		}}
