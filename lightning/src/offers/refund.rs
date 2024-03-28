@@ -896,7 +896,7 @@ mod tests {
 	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
 	use core::convert::TryFrom;
 	use core::time::Duration;
-	use crate::blinded_path::{BlindedHop, BlindedPath};
+	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 	use crate::sign::KeyMaterial;
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
@@ -1050,7 +1050,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let blinded_path = BlindedPath {
-			introduction_node_id: pubkey(40),
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
@@ -1139,7 +1139,7 @@ mod tests {
 	fn builds_refund_with_paths() {
 		let paths = vec![
 			BlindedPath {
-				introduction_node_id: pubkey(40),
+				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
@@ -1147,7 +1147,7 @@ mod tests {
 				],
 			},
 			BlindedPath {
-				introduction_node_id: pubkey(40),
+				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
@@ -1356,7 +1356,7 @@ mod tests {
 		let past_expiry = Duration::from_secs(0);
 		let paths = vec![
 			BlindedPath {
-				introduction_node_id: pubkey(40),
+				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
@@ -1364,7 +1364,7 @@ mod tests {
 				],
 			},
 			BlindedPath {
-				introduction_node_id: pubkey(40),
+				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },

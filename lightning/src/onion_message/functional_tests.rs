@@ -9,7 +9,7 @@
 
 //! Onion message testing and test utilities live here.
 
-use crate::blinded_path::BlindedPath;
+use crate::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
 use crate::events::{Event, EventsProvider};
 use crate::ln::features::{ChannelFeatures, InitFeatures};
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
@@ -42,6 +42,7 @@ struct MessengerNode {
 		Arc<test_utils::TestKeysInterface>,
 		Arc<test_utils::TestNodeSigner>,
 		Arc<test_utils::TestLogger>,
+		Arc<EmptyNodeIdLookUp>,
 		Arc<DefaultMessageRouter<
 			Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 			Arc<test_utils::TestLogger>,
@@ -175,6 +176,7 @@ fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
 		let entropy_source = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
 		let node_signer = Arc::new(test_utils::TestNodeSigner::new(secret_key));
 
+		let node_id_lookup = Arc::new(EmptyNodeIdLookUp {});
 		let message_router = Arc::new(
 			DefaultMessageRouter::new(network_graph.clone(), entropy_source.clone())
 		);
@@ -185,7 +187,7 @@ fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
 			node_id: node_signer.get_node_id(Recipient::Node).unwrap(),
 			entropy_source: entropy_source.clone(),
 			messenger: OnionMessenger::new(
-				entropy_source, node_signer, logger.clone(), message_router,
+				entropy_source, node_signer, logger.clone(), node_id_lookup, message_router,
 				offers_message_handler, custom_message_handler.clone()
 			),
 			custom_message_handler,
