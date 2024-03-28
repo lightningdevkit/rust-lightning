@@ -2750,7 +2750,7 @@ fn claim_htlc_outputs_single_tx() {
 		check_added_monitors!(nodes[1], 1);
 		check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 100000);
 		let mut events = nodes[0].node.get_and_clear_pending_events();
-		expect_pending_htlcs_forwardable_from_events!(nodes[0], events[0..1], true);
+		expect_pending_htlcs_forwardable_conditions(events[0..2].to_vec(), &[HTLCDestination::FailedPayment { payment_hash: payment_hash_2 }]);
 		match events.last().unwrap() {
 			Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {}
 			_ => panic!("Unexpected event"),
@@ -3312,13 +3312,13 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);
 		match events[0] {
-			Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event"),
-		};
-		match events[1] {
 			Event::HTLCHandlingFailed { .. } => { },
 			_ => panic!("Unexpected event"),
 		}
+		match events[1] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
 		// Deliberately don't process the pending fail-back so they all fail back at once after
 		// block connection just like the !deliver_bs_raa case
 	}
@@ -5351,7 +5351,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	connect_blocks(&nodes[2], ANTI_REORG_DELAY - 1);
 	check_closed_broadcast!(nodes[2], true);
 	if deliver_last_raa {
-		expect_pending_htlcs_forwardable_from_events!(nodes[2], events[0..1], true);
+		expect_pending_htlcs_forwardable_from_events!(nodes[2], events[1..2], true);
 
 		let expected_destinations: Vec<HTLCDestination> = repeat(HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_2_3.2 }).take(3).collect();
 		expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), expected_destinations);
@@ -6182,7 +6182,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	// nodes[1]'s ChannelManager will now signal that we have HTLC forwards to process.
 	let process_htlc_forwards_event = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(process_htlc_forwards_event.len(), 2);
-	match &process_htlc_forwards_event[0] {
+	match &process_htlc_forwards_event[1] {
 		&Event::PendingHTLCsForwardable { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
@@ -7543,7 +7543,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
 	let route = get_route(&nodes[1].node.get_our_node_id(), &route_params, &nodes[1].network_graph.read_only(), None,
 		nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
-	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);
+	let failed_payment_hash = send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000).1;
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
@@ -7582,7 +7582,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let block_129 = create_dummy_block(block_11.block_hash(), 42, vec![revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()]);
 	connect_block(&nodes[0], &block_129);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	expect_pending_htlcs_forwardable_from_events!(nodes[0], events[0..1], true);
+	expect_pending_htlcs_forwardable_conditions(events[0..2].to_vec(), &[HTLCDestination::FailedPayment { payment_hash: failed_payment_hash }]);
 	match events.last().unwrap() {
 		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {}
 		_ => panic!("Unexpected event"),
