@@ -32,7 +32,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::blinded_path::BlindedPath;
-use crate::blinded_path::payment::{PaymentConstraints, ReceiveTlvs};
+use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -61,7 +61,6 @@ use crate::ln::wire::Encode;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
-use crate::offers::merkle::SignError;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
@@ -156,6 +155,8 @@ pub enum PendingHTLCRouting {
 		/// [`Event::PaymentClaimable::onion_fields`] as
 		/// [`RecipientOnionFields::payment_metadata`].
 		payment_metadata: Option<Vec<u8>>,
+		///
+		payment_context: Option<PaymentContext>,
 		/// CLTV expiry of the received HTLC.
 		///
 		/// Used to track when we should expire pending HTLCs that go unclaimed.
@@ -353,6 +354,8 @@ enum OnionPayload {
 		/// This is only here for backwards-compatibility in serialization, in the future it can be
 		/// removed, breaking clients running 0.0.106 and earlier.
 		_legacy_hop_data: Option<msgs::FinalOnionHopData>,
+		///
+		payment_context: Option<PaymentContext>,
 	},
 	/// Contains the payer-provided preimage.
 	Spontaneous(PaymentPreimage),
@@ -4517,13 +4520,14 @@ where
 								let blinded_failure = routing.blinded_failure();
 								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
 									PendingHTLCRouting::Receive {
-										payment_data, payment_metadata, incoming_cltv_expiry, phantom_shared_secret,
-										custom_tlvs, requires_blinded_error: _
+										payment_data, payment_metadata, payment_context,
+										incoming_cltv_expiry, phantom_shared_secret, custom_tlvs,
+										requires_blinded_error: _
 									} => {
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
 												payment_metadata, custom_tlvs };
-										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
+										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data, payment_context },
 											Some(payment_data), phantom_shared_secret, onion_fields)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
@@ -4701,7 +4705,7 @@ where
 								match payment_secrets.entry(payment_hash) {
 									hash_map::Entry::Vacant(_) => {
 										match claimable_htlc.onion_payload {
-											OnionPayload::Invoice { .. } => {
+											OnionPayload::Invoice { ref payment_context, .. } => {
 												let payment_data = payment_data.unwrap();
 												let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
 													Ok(result) => result,
@@ -4721,6 +4725,7 @@ where
 												let purpose = events::PaymentPurpose::InvoicePayment {
 													payment_preimage: payment_preimage.clone(),
 													payment_secret: payment_data.payment_secret,
+													payment_context: payment_context.clone(),
 												};
 												check_total_value!(purpose);
 											},
@@ -4731,10 +4736,13 @@ where
 										}
 									},
 									hash_map::Entry::Occupied(inbound_payment) => {
-										if let OnionPayload::Spontaneous(_) = claimable_htlc.onion_payload {
-											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", &payment_hash);
-											fail_htlc!(claimable_htlc, payment_hash);
-										}
+										let payment_context = match claimable_htlc.onion_payload {
+											OnionPayload::Spontaneous(_) => {
+												log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", &payment_hash);
+												fail_htlc!(claimable_htlc, payment_hash);
+											},
+											OnionPayload::Invoice { ref payment_context, .. } => payment_context,
+										};
 										let payment_data = payment_data.unwrap();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", &payment_hash);
@@ -4747,6 +4755,7 @@ where
 											let purpose = events::PaymentPurpose::InvoicePayment {
 												payment_preimage: inbound_payment.get().payment_preimage,
 												payment_secret: payment_data.payment_secret,
+												payment_context: payment_context.clone(),
 											};
 											let payment_claimable_generated = check_total_value!(purpose);
 											if payment_claimable_generated {
@@ -7935,7 +7944,7 @@ where
 	///
 	/// The resulting invoice uses a [`PaymentHash`] recognized by the [`ChannelManager`] and a
 	/// [`BlindedPath`] containing the [`PaymentSecret`] needed to reconstruct the corresponding
-	/// [`PaymentPreimage`].
+	/// [`PaymentPreimage`]. It is returned purely for informational purposes.
 	///
 	/// # Limitations
 	///
@@ -7952,7 +7961,9 @@ where
 	///   the invoice.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn request_refund_payment(&self, refund: &Refund) -> Result<(), Bolt12SemanticError> {
+	pub fn request_refund_payment(
+		&self, refund: &Refund
+	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
@@ -7968,7 +7979,10 @@ where
 
 		match self.create_inbound_payment(Some(amount_msats), relative_expiry, None) {
 			Ok((payment_hash, payment_secret)) => {
-				let payment_paths = self.create_blinded_payment_paths(amount_msats, payment_secret)
+				let payment_context = PaymentContext::Bolt12Refund {};
+				let payment_paths = self.create_blinded_payment_paths(
+					amount_msats, payment_secret, Some(payment_context)
+				)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 				#[cfg(feature = "std")]
@@ -7991,7 +8005,7 @@ where
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 				if refund.paths().is_empty() {
 					let message = new_pending_onion_message(
-						OffersMessage::Invoice(invoice),
+						OffersMessage::Invoice(invoice.clone()),
 						Destination::Node(refund.payer_id()),
 						Some(reply_path),
 					);
@@ -8007,7 +8021,7 @@ where
 					}
 				}
 
-				Ok(())
+				Ok(invoice)
 			},
 			Err(()) => Err(Bolt12SemanticError::InvalidAmount),
 		}
@@ -8134,7 +8148,8 @@ where
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
 	fn create_blinded_payment_paths(
-		&self, amount_msats: u64, payment_secret: PaymentSecret
+		&self, amount_msats: u64, payment_secret: PaymentSecret,
+		payment_context: Option<PaymentContext>
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		let secp_ctx = &self.secp_ctx;
 
@@ -8148,6 +8163,7 @@ where
 				max_cltv_expiry,
 				htlc_minimum_msat: 1,
 			},
+			payment_context,
 		};
 		self.router.create_blinded_payment_paths(
 			payee_node_id, first_hops, payee_tlvs, amount_msats, secp_ctx
@@ -9481,8 +9497,11 @@ where
 					},
 				};
 
+				let payment_context = PaymentContext::Bolt12Offer {
+					offer_id: invoice_request.offer_id,
+				};
 				let payment_paths = match self.create_blinded_payment_paths(
-					amount_msats, payment_secret
+					amount_msats, payment_secret, Some(payment_context)
 				) {
 					Ok(payment_paths) => payment_paths,
 					Err(()) => {
@@ -9496,7 +9515,7 @@ where
 					self.highest_seen_timestamp.load(Ordering::Acquire) as u64
 				);
 
-				if invoice_request.keys.is_some() {
+				let response = if invoice_request.keys.is_some() {
 					#[cfg(feature = "std")]
 					let builder = invoice_request.respond_using_derived_keys(
 						payment_paths, payment_hash
@@ -9505,12 +9524,10 @@ where
 					let builder = invoice_request.respond_using_derived_keys_no_std(
 						payment_paths, payment_hash, created_at
 					);
-					let builder: Result<InvoiceBuilder<DerivedSigningPubkey>, _> =
-						builder.map(|b| b.into());
-					match builder.and_then(|b| b.allow_mpp().build_and_sign(secp_ctx)) {
-						Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
-						Err(error) => Some(OffersMessage::InvoiceError(error.into())),
-					}
+					builder
+						.map(InvoiceBuilder::<DerivedSigningPubkey>::from)
+						.and_then(|builder| builder.allow_mpp().build_and_sign(secp_ctx))
+						.map_err(InvoiceError::from)
 				} else {
 					#[cfg(feature = "std")]
 					let builder = invoice_request.respond_with(payment_paths, payment_hash);
@@ -9518,47 +9535,46 @@ where
 					let builder = invoice_request.respond_with_no_std(
 						payment_paths, payment_hash, created_at
 					);
-					let builder: Result<InvoiceBuilder<ExplicitSigningPubkey>, _> =
-						builder.map(|b| b.into());
-					let response = builder.and_then(|builder| builder.allow_mpp().build())
-						.map_err(|e| OffersMessage::InvoiceError(e.into()))
+					builder
+						.map(InvoiceBuilder::<ExplicitSigningPubkey>::from)
+						.and_then(|builder| builder.allow_mpp().build())
+						.map_err(InvoiceError::from)
 						.and_then(|invoice| {
 							#[cfg(c_bindings)]
 							let mut invoice = invoice;
-							match invoice.sign(|invoice: &UnsignedBolt12Invoice|
-								self.node_signer.sign_bolt12_invoice(invoice)
-							) {
-								Ok(invoice) => Ok(OffersMessage::Invoice(invoice)),
-								Err(SignError::Signing) => Err(OffersMessage::InvoiceError(
-										InvoiceError::from_string("Failed signing invoice".to_string())
-								)),
-								Err(SignError::Verification(_)) => Err(OffersMessage::InvoiceError(
-										InvoiceError::from_string("Failed invoice signature verification".to_string())
-								)),
-							}
-						});
-					match response {
-						Ok(invoice) => Some(invoice),
-						Err(error) => Some(error),
-					}
+							invoice
+								.sign(|invoice: &UnsignedBolt12Invoice|
+									self.node_signer.sign_bolt12_invoice(invoice)
+								)
+								.map_err(InvoiceError::from)
+						})
+				};
+
+				match response {
+					Ok(invoice) => Some(OffersMessage::Invoice(invoice)),
+					Err(error) => Some(OffersMessage::InvoiceError(error.into())),
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				match invoice.verify(expanded_key, secp_ctx) {
-					Err(()) => {
-						Some(OffersMessage::InvoiceError(InvoiceError::from_string("Unrecognized invoice".to_owned())))
-					},
-					Ok(_) if invoice.invoice_features().requires_unknown_bits_from(&self.bolt12_invoice_features()) => {
-						Some(OffersMessage::InvoiceError(Bolt12SemanticError::UnknownRequiredFeatures.into()))
-					},
-					Ok(payment_id) => {
-						if let Err(e) = self.send_payment_for_bolt12_invoice(&invoice, payment_id) {
-							log_trace!(self.logger, "Failed paying invoice: {:?}", e);
-							Some(OffersMessage::InvoiceError(InvoiceError::from_string(format!("{:?}", e))))
+				let response = invoice
+					.verify(expanded_key, secp_ctx)
+					.map_err(|()| InvoiceError::from_string("Unrecognized invoice".to_owned()))
+					.and_then(|payment_id| {
+						let features = self.bolt12_invoice_features();
+						if invoice.invoice_features().requires_unknown_bits_from(&features) {
+							Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
 						} else {
-							None
+							self.send_payment_for_bolt12_invoice(&invoice, payment_id)
+								.map_err(|e| {
+									log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+									InvoiceError::from_string(format!("{:?}", e))
+								})
 						}
-					},
+					});
+
+				match response {
+					Ok(()) => None,
+					Err(e) => Some(OffersMessage::InvoiceError(e)),
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
@@ -9795,6 +9811,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(3, payment_metadata, option),
 		(5, custom_tlvs, optional_vec),
 		(7, requires_blinded_error, (default_value, false)),
+		(9, payment_context, upgradable_option),
 	},
 	(2, ReceiveKeysend) => {
 		(0, payment_preimage, required),
@@ -9909,9 +9926,11 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 
 impl Writeable for ClaimableHTLC {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let (payment_data, keysend_preimage) = match &self.onion_payload {
-			OnionPayload::Invoice { _legacy_hop_data } => (_legacy_hop_data.as_ref(), None),
-			OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
+		let (payment_data, keysend_preimage, payment_context) = match &self.onion_payload {
+			OnionPayload::Invoice { _legacy_hop_data, payment_context } => {
+				(_legacy_hop_data.as_ref(), None, payment_context.as_ref())
+			},
+			OnionPayload::Spontaneous(preimage) => (None, Some(preimage), None),
 		};
 		write_tlv_fields!(writer, {
 			(0, self.prev_hop, required),
@@ -9923,6 +9942,7 @@ impl Writeable for ClaimableHTLC {
 			(6, self.cltv_expiry, required),
 			(8, keysend_preimage, option),
 			(10, self.counterparty_skimmed_fee_msat, option),
+			(11, payment_context, option),
 		});
 		Ok(())
 	}
@@ -9940,6 +9960,7 @@ impl Readable for ClaimableHTLC {
 			(6, cltv_expiry, required),
 			(8, keysend_preimage, option),
 			(10, counterparty_skimmed_fee_msat, option),
+			(11, payment_context, upgradable_option),
 		});
 		let payment_data: Option<msgs::FinalOnionHopData> = payment_data_opt;
 		let value = value_ser.0.unwrap();
@@ -9960,7 +9981,7 @@ impl Readable for ClaimableHTLC {
 					}
 					total_msat = Some(payment_data.as_ref().unwrap().total_msat);
 				}
-				OnionPayload::Invoice { _legacy_hop_data: payment_data }
+				OnionPayload::Invoice { _legacy_hop_data: payment_data, payment_context }
 			},
 		};
 		Ok(Self {
@@ -11175,7 +11196,7 @@ where
 					return Err(DecodeError::InvalidValue);
 				}
 				let purpose = match &htlcs[0].onion_payload {
-					OnionPayload::Invoice { _legacy_hop_data } => {
+					OnionPayload::Invoice { _legacy_hop_data, payment_context } => {
 						if let Some(hop_data) = _legacy_hop_data {
 							events::PaymentPurpose::InvoicePayment {
 								payment_preimage: match pending_inbound_payments.get(&payment_hash) {
@@ -11189,6 +11210,7 @@ where
 									}
 								},
 								payment_secret: hop_data.payment_secret,
+								payment_context: payment_context.clone(),
 							}
 						} else { return Err(DecodeError::InvalidValue); }
 					},

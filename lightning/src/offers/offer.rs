@@ -91,11 +91,11 @@ use crate::blinded_path::BlindedPath;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
-use crate::ln::msgs::MAX_VALUE_MSAT;
+use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::merkle::TlvStream;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
-use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
+use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
@@ -114,6 +114,23 @@ use std::time::SystemTime;
 
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 
+/// An identifier for an [`Offer`] built using [`DerivedMetadata`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OfferId(Nonce);
+
+impl Writeable for OfferId {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.0.write(w)
+	}
+}
+
+impl Readable for OfferId {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let buf: [u8; Nonce::LENGTH] = Readable::read(r)?;
+		Ok(OfferId(Nonce(buf)))
+	}
+}
+
 /// Builds an [`Offer`] for the "offer to be paid" flow.
 ///
 /// See [module-level documentation] for usage.
@@ -123,7 +140,7 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 /// [module-level documentation]: self
 pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 	offer: OfferContents,
-	metadata_strategy: core::marker::PhantomData<M>,
+	metadata_strategy: M,
 	secp_ctx: Option<&'a Secp256k1<T>>,
 }
 
@@ -151,7 +168,7 @@ pub struct OfferWithExplicitMetadataBuilder<'a> {
 #[cfg(c_bindings)]
 pub struct OfferWithDerivedMetadataBuilder<'a> {
 	offer: OfferContents,
-	metadata_strategy: core::marker::PhantomData<DerivedMetadata>,
+	metadata_strategy: DerivedMetadata,
 	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
 }
 
@@ -163,12 +180,13 @@ pub trait MetadataStrategy {}
 /// [`Offer::metadata`] may be explicitly set or left empty.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+#[derive(Default)]
 pub struct ExplicitMetadata {}
 
 /// [`Offer::metadata`] will be derived.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub struct DerivedMetadata {}
+pub struct DerivedMetadata(OfferId);
 
 impl MetadataStrategy for ExplicitMetadata {}
 
@@ -197,7 +215,7 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
 				supported_quantity: Quantity::One, signing_pubkey,
 			},
-			metadata_strategy: core::marker::PhantomData,
+			metadata_strategy: Default::default(),
 			secp_ctx: None,
 		}
 	}
@@ -211,7 +229,9 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 	}
 } }
 
-macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
+macro_rules! offer_derived_metadata_builder_methods { (
+	$secp_context: ty, $self: ident, $self_type: ty
+) => {
 	/// Similar to [`OfferBuilder::new`] except, if [`OfferBuilder::path`] is called, the signing
 	/// pubkey is derived from the given [`ExpandedKey`] and [`EntropySource`]. This provides
 	/// recipient privacy by using a different signing pubkey for each offer. Otherwise, the
@@ -236,9 +256,16 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
 				supported_quantity: Quantity::One, signing_pubkey: node_id,
 			},
-			metadata_strategy: core::marker::PhantomData,
+			metadata_strategy: DerivedMetadata(OfferId(nonce)),
 			secp_ctx: Some(secp_ctx),
 		}
+	}
+
+	/// Builds an [`Offer`] from the builder's settings. Returns both the offer and its [`OfferId`].
+	pub fn build_with_id($self: $self_type) -> Result<(OfferId, Offer), Bolt12SemanticError> {
+		let offer_id = $self.metadata_strategy.0;
+		let offer = $self.build()?;
+		Ok((offer_id, offer))
 	}
 } }
 
@@ -420,7 +447,7 @@ impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
 }
 
 impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
-	offer_derived_metadata_builder_methods!(T);
+	offer_derived_metadata_builder_methods!(T, self, Self);
 }
 
 #[cfg(all(c_bindings, not(test)))]
@@ -438,13 +465,13 @@ impl<'a> OfferWithExplicitMetadataBuilder<'a> {
 
 #[cfg(all(c_bindings, not(test)))]
 impl<'a> OfferWithDerivedMetadataBuilder<'a> {
-	offer_derived_metadata_builder_methods!(secp256k1::All);
+	offer_derived_metadata_builder_methods!(secp256k1::All, self, &mut Self);
 	offer_builder_methods!(self, &mut Self, (), ());
 }
 
 #[cfg(all(c_bindings, test))]
 impl<'a> OfferWithDerivedMetadataBuilder<'a> {
-	offer_derived_metadata_builder_methods!(secp256k1::All);
+	offer_derived_metadata_builder_methods!(secp256k1::All, self, &mut Self);
 	offer_builder_methods!(self, &mut Self, &mut Self, self);
 	offer_builder_test_methods!(self, &mut Self, &mut Self, self);
 }
@@ -843,7 +870,7 @@ impl OfferContents {
 	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
 	pub(super) fn verify<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> Result<Option<KeyPair>, ()> {
+	) -> Result<(OfferId, Option<KeyPair>), ()> {
 		match self.metadata() {
 			Some(metadata) => {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
@@ -855,9 +882,11 @@ impl OfferContents {
 						_ => true,
 					}
 				});
-				signer::verify_recipient_metadata(
+				let (keys, nonce) = signer::verify_recipient_metadata(
 					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
-				)
+				)?;
+				let offer_id = OfferId(nonce);
+				Ok((offer_id, keys))
 			},
 			None => Err(()),
 		}
@@ -1192,16 +1221,19 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
+		let (offer_id, offer) = OfferBuilder
 			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
-			.build().unwrap();
+			.build_with_id().unwrap();
 		assert_eq!(offer.signing_pubkey(), node_id);
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer_id),
+			Err(_) => panic!("unexpected error"),
+		}
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1250,17 +1282,20 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
+		let (offer_id, offer) = OfferBuilder
 			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
 			.path(blinded_path)
-			.build().unwrap();
+			.build_with_id().unwrap();
 		assert_ne!(offer.signing_pubkey(), node_id);
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer_id),
+			Err(_) => panic!("unexpected error"),
+		}
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
