@@ -1033,7 +1033,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 					$($variant_id => {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
-						let f = || {
+						let mut f = || {
 							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});
@@ -1087,7 +1087,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 					$($variant_id => {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
-						let f = || {
+						let mut f = || {
 							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});

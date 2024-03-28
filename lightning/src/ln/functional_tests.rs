@@ -1518,6 +1518,8 @@ fn test_fee_spike_violation_fails_htlc() {
 		next_local_nonce: None,
 	};
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &raa_msg);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -1532,7 +1534,7 @@ fn test_fee_spike_violation_fails_htlc() {
 	nodes[1].logger.assert_log("lightning::ln::channel",
 		format!("Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", raa_msg.channel_id), 1);
 
-	check_added_monitors!(nodes[1], 2);
+	check_added_monitors!(nodes[1], 3);
 }
 
 #[test]
@@ -2750,7 +2752,7 @@ fn claim_htlc_outputs_single_tx() {
 		check_added_monitors!(nodes[1], 1);
 		check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 100000);
 		let mut events = nodes[0].node.get_and_clear_pending_events();
-		expect_pending_htlcs_forwardable_from_events!(nodes[0], events[0..1], true);
+		expect_pending_htlcs_forwardable_conditions(events[0..2].to_vec(), &[HTLCDestination::FailedPayment { payment_hash: payment_hash_2 }]);
 		match events.last().unwrap() {
 			Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {}
 			_ => panic!("Unexpected event"),
@@ -3312,13 +3314,13 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 		let events = nodes[1].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);
 		match events[0] {
-			Event::PendingHTLCsForwardable { .. } => { },
-			_ => panic!("Unexpected event"),
-		};
-		match events[1] {
 			Event::HTLCHandlingFailed { .. } => { },
 			_ => panic!("Unexpected event"),
 		}
+		match events[1] {
+			Event::PendingHTLCsForwardable { .. } => { },
+			_ => panic!("Unexpected event"),
+		};
 		// Deliberately don't process the pending fail-back so they all fail back at once after
 		// block connection just like the !deliver_bs_raa case
 	}
@@ -5351,7 +5353,7 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	connect_blocks(&nodes[2], ANTI_REORG_DELAY - 1);
 	check_closed_broadcast!(nodes[2], true);
 	if deliver_last_raa {
-		expect_pending_htlcs_forwardable_from_events!(nodes[2], events[0..1], true);
+		expect_pending_htlcs_forwardable_from_events!(nodes[2], events[1..2], true);
 
 		let expected_destinations: Vec<HTLCDestination> = repeat(HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_2_3.2 }).take(3).collect();
 		expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), expected_destinations);
@@ -6182,7 +6184,7 @@ fn test_fail_holding_cell_htlc_upon_free_multihop() {
 	// nodes[1]'s ChannelManager will now signal that we have HTLC forwards to process.
 	let process_htlc_forwards_event = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(process_htlc_forwards_event.len(), 2);
-	match &process_htlc_forwards_event[0] {
+	match &process_htlc_forwards_event[1] {
 		&Event::PendingHTLCsForwardable { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
@@ -6822,6 +6824,9 @@ fn test_update_fulfill_htlc_bolt2_missing_badonion_bit_for_malformed_htlc_messag
 	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
 	check_added_monitors!(nodes[1], 0);
 	commitment_signed_dance!(nodes[1], nodes[0], updates.commitment_signed, false, true);
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	expect_htlc_handling_failed_destinations!(nodes[1].node.get_and_clear_pending_events(), &[HTLCDestination::InvalidOnion]);
+	check_added_monitors(&nodes[1], 1);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 
@@ -6886,6 +6891,9 @@ fn test_update_fulfill_htlc_bolt2_after_malformed_htlc_message_must_forward_upda
 	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
 	check_added_monitors!(nodes[2], 0);
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCDestination::InvalidOnion]);
+	check_added_monitors(&nodes[2], 1);
 
 	let events_3 = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_3.len(), 1);
@@ -6957,6 +6965,9 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
 	check_added_monitors!(nodes[2], 0);
 	commitment_signed_dance!(nodes[2], nodes[1], payment_event.commitment_msg, false, true);
+	expect_pending_htlcs_forwardable!(nodes[2]);
+	expect_htlc_handling_failed_destinations!(nodes[2].node.get_and_clear_pending_events(), &[HTLCDestination::InvalidOnion]);
+	check_added_monitors(&nodes[2], 1);
 
 	let events_3 = nodes[2].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_3.len(), 1);
@@ -7543,7 +7554,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 3_000_000);
 	let route = get_route(&nodes[1].node.get_our_node_id(), &route_params, &nodes[1].network_graph.read_only(), None,
 		nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes).unwrap();
-	send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000);
+	let failed_payment_hash = send_along_route(&nodes[1], route, &[&nodes[0]], 3_000_000).1;
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
@@ -7582,7 +7593,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 	let block_129 = create_dummy_block(block_11.block_hash(), 42, vec![revoked_htlc_txn[0].clone(), revoked_htlc_txn[1].clone()]);
 	connect_block(&nodes[0], &block_129);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	expect_pending_htlcs_forwardable_from_events!(nodes[0], events[0..1], true);
+	expect_pending_htlcs_forwardable_conditions(events[0..2].to_vec(), &[HTLCDestination::FailedPayment { payment_hash: failed_payment_hash }]);
 	match events.last().unwrap() {
 		Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. } => {}
 		_ => panic!("Unexpected event"),
@@ -9962,9 +9973,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			// Outbound dust balance: 4372 sats
 			// Note, we need sent payment to be above outbound dust threshold on counterparty_tx of 2132 sats
 			for _ in 0..dust_outbound_htlc_on_holder_tx {
-				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_outbound_htlc_on_holder_tx_msat);
-				nodes[0].node.send_payment_with_route(&route, payment_hash,
-					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+				route_payment(&nodes[0], &[&nodes[1]], dust_outbound_htlc_on_holder_tx_msat);
 			}
 		} else {
 			// Inbound dust threshold: 2324 sats (`dust_buffer_feerate` * HTLC_SUCCESS_TX_WEIGHT / 1000 + holder's `dust_limit_satoshis`)
@@ -9979,9 +9988,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			// Outbound dust threshold: 2132 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
 			// Outbound dust balance: 5000 sats
 			for _ in 0..dust_htlc_on_counterparty_tx - 1 {
-				let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], dust_htlc_on_counterparty_tx_msat);
-				nodes[0].node.send_payment_with_route(&route, payment_hash,
-					RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+				route_payment(&nodes[0], &[&nodes[1]], dust_htlc_on_counterparty_tx_msat);
 			}
 		} else {
 			// Inbound dust threshold: 2031 sats (`dust_buffer_feerate` * HTLC_TIMEOUT_TX_WEIGHT / 1000 + counteparty's `dust_limit_satoshis`)
@@ -10014,6 +10021,9 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		assert_eq!(events.len(), 1);
 		let payment_event = SendEvent::from_event(events.remove(0));
 		nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &payment_event.msgs[0]);
+		commitment_signed_dance!(nodes[0], nodes[1], payment_event.commitment_msg, false);
+		expect_pending_htlcs_forwardable!(nodes[0]);
+		expect_htlc_handling_failed_destinations!(nodes[0].node.get_and_clear_pending_events(), &[HTLCDestination::FailedPayment { payment_hash }]);
 		// With default dust exposure: 5000 sats
 		if on_holder_tx {
 			// Outbound dust balance: 6399 sats

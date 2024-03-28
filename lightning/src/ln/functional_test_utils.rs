@@ -1811,15 +1811,18 @@ macro_rules! expect_pending_htlcs_forwardable_conditions {
 #[macro_export]
 macro_rules! expect_htlc_handling_failed_destinations {
 	($events: expr, $expected_failures: expr) => {{
+		let mut num_expected_failures = $expected_failures.len();
 		for event in $events {
 			match event {
 				$crate::events::Event::PendingHTLCsForwardable { .. } => { },
 				$crate::events::Event::HTLCHandlingFailed { ref failed_next_destination, .. } => {
-					assert!($expected_failures.contains(&failed_next_destination))
+					assert!($expected_failures.contains(&failed_next_destination));
+					num_expected_failures -= 1;
 				},
 				_ => panic!("Unexpected destination"),
 			}
 		}
+		assert_eq!(num_expected_failures, 0);
 	}}
 }
 
@@ -1827,14 +1830,9 @@ macro_rules! expect_htlc_handling_failed_destinations {
 /// there are any [`Event::HTLCHandlingFailed`] events their [`HTLCDestination`] is included in the
 /// `expected_failures` set.
 pub fn expect_pending_htlcs_forwardable_conditions(events: Vec<Event>, expected_failures: &[HTLCDestination]) {
-	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event {:?}", events),
-	};
-
 	let count = expected_failures.len() + 1;
 	assert_eq!(events.len(), count);
-
+	assert!(events.iter().find(|event| matches!(event, Event::PendingHTLCsForwardable { .. })).is_some());
 	if expected_failures.len() > 0 {
 		expect_htlc_handling_failed_destinations!(events, expected_failures)
 	}
@@ -2568,6 +2566,8 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 
 		if is_last_hop && is_probe {
 			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, true, true);
+			expect_pending_htlcs_forwardable!(node);
+			check_added_monitors(node, 1);
 		} else {
 			commitment_signed_dance!(node, prev_node, payment_event.commitment_msg, false);
 			expect_pending_htlcs_forwardable!(node);
@@ -2634,22 +2634,26 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 	do_pass_along_path(args)
 }
 
-pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]]) {
+pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[(&[&Node<'a, 'b, 'c>], PaymentHash)]) {
 	let mut events = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_route.len());
 
 	check_added_monitors!(origin_node, expected_route.len());
 
-	for path in expected_route.iter() {
+	for (path, payment_hash) in expected_route.iter() {
 		let ev = remove_first_msg_event_to_node(&path[0].node.get_our_node_id(), &mut events);
 
-		do_pass_along_path(PassAlongPathArgs::new(origin_node, path, 0, PaymentHash([0_u8; 32]), ev)
+		do_pass_along_path(PassAlongPathArgs::new(origin_node, path, 0, *payment_hash, ev)
 			.is_probe()
 			.without_clearing_recipient_events());
 
 		let nodes_to_fail_payment: Vec<_> = vec![origin_node].into_iter().chain(path.iter().cloned()).collect();
 
 		fail_payment_along_path(nodes_to_fail_payment.as_slice());
+		expect_htlc_handling_failed_destinations!(
+			path.last().unwrap().node.get_and_clear_pending_events(),
+			&[HTLCDestination::FailedPayment { payment_hash: *payment_hash }]
+		);
 	}
 }
 
