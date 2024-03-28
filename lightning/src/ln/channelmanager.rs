@@ -10927,7 +10927,7 @@ where
 						}
 					}
 					if chan.get_latest_unblocked_monitor_update_id() > max_in_flight_update_id {
-						// If the channel is ahead of the monitor, return InvalidValue:
+						// If the channel is ahead of the monitor, return DangerousValue:
 						log_error!(logger, "A ChannelMonitor is stale compared to the current ChannelManager! This indicates a potentially-critical violation of the chain::Watch API!");
 						log_error!(logger, " The ChannelMonitor for channel {} is at update_id {} with update_id through {} in-flight",
 							chan.context.channel_id(), monitor.get_latest_update_id(), max_in_flight_update_id);
@@ -10936,7 +10936,7 @@ where
 						log_error!(logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
 						log_error!(logger, " Without the latest ChannelMonitor we cannot continue without risking funds.");
 						log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
-						return Err(DecodeError::InvalidValue);
+						return Err(DecodeError::DangerousValue);
 					}
 				} else {
 					// We shouldn't have persisted (or read) any unfunded channel types so none should have been

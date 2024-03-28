@@ -412,7 +412,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
-	if let Err(msgs::DecodeError::InvalidValue) =
+	if let Err(msgs::DecodeError::DangerousValue) =
 		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		entropy_source: keys_manager,
