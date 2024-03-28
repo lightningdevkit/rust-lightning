@@ -354,25 +354,25 @@ macro_rules! _check_missing_tlv {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! _decode_tlv {
-	($reader: expr, $field: ident, (default_value, $default: expr)) => {{
-		$crate::_decode_tlv!($reader, $field, required)
+	($outer_reader: expr, $reader: expr, $field: ident, (default_value, $default: expr)) => {{
+		$crate::_decode_tlv!($outer_reader, $reader, $field, required)
 	}};
-	($reader: expr, $field: ident, (static_value, $value: expr)) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, (static_value, $value: expr)) => {{
 	}};
-	($reader: expr, $field: ident, required) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, required) => {{
 		$field = $crate::util::ser::Readable::read(&mut $reader)?;
 	}};
-	($reader: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
 		$field = $trait::read(&mut $reader $(, $read_arg)*)?;
 	}};
-	($reader: expr, $field: ident, required_vec) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, required_vec) => {{
 		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
 		$field = f.0;
 	}};
-	($reader: expr, $field: ident, option) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, option) => {{
 		$field = Some($crate::util::ser::Readable::read(&mut $reader)?);
 	}};
-	($reader: expr, $field: ident, optional_vec) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, optional_vec) => {{
 		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
 		$field = Some(f.0);
 	}};
@@ -380,32 +380,41 @@ macro_rules! _decode_tlv {
 	// without backwards compat. We'll error if the field is missing, and return `Ok(None)` if the
 	// field is present but we can no longer understand it.
 	// Note that this variant can only be used within a `MaybeReadable` read.
-	($reader: expr, $field: ident, upgradable_required) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, upgradable_required) => {{
 		$field = match $crate::util::ser::MaybeReadable::read(&mut $reader)? {
 			Some(res) => res,
-			_ => return Ok(None)
+			None => {
+				// If we successfully read a value but we don't know how to parse it, we give up
+				// and immediately return `None`. However, we need to make sure we read the correct
+				// number of bytes for this TLV stream, which is implicitly the end of the stream.
+				// Thus, we consume everything left in the `$outer_reader` here, ensuring that if
+				// we're being read as a part of another TLV stream we don't spuriously fail to
+				// deserialize the outer object due to a TLV length mismatch.
+				$crate::io_extras::copy($outer_reader, &mut $crate::io_extras::sink()).unwrap();
+				return Ok(None)
+			},
 		};
 	}};
 	// `upgradable_option` indicates we're reading an Option-al TLV that may have been upgraded
 	// without backwards compat. $field will be None if the TLV is missing or if the field is present
 	// but we can no longer understand it.
-	($reader: expr, $field: ident, upgradable_option) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, upgradable_option) => {{
 		$field = $crate::util::ser::MaybeReadable::read(&mut $reader)?;
 	}};
-	($reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
 		$field = Some($trait::read(&mut $reader $(, $read_arg)*)?);
 	}};
-	($reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident, $encoder:ty))) => {{
-		$crate::_decode_tlv!($reader, $field, (option, encoding: ($fieldty, $encoding)));
+	($outer_reader: expr, $reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident, $encoder:ty))) => {{
+		$crate::_decode_tlv!($outer_reader, $reader, $field, (option, encoding: ($fieldty, $encoding)));
 	}};
-	($reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {{
 		$field = {
 			let field: $encoding<$fieldty> = ser::Readable::read(&mut $reader)?;
 			Some(field.0)
 		};
 	}};
-	($reader: expr, $field: ident, (option, encoding: $fieldty: ty)) => {{
-		$crate::_decode_tlv!($reader, $field, option);
+	($outer_reader: expr, $reader: expr, $field: ident, (option, encoding: $fieldty: ty)) => {{
+		$crate::_decode_tlv!($outer_reader, $reader, $field, option);
 	}};
 }
 
@@ -539,7 +548,7 @@ macro_rules! _decode_tlv_stream_range {
 			let mut s = ser::FixedLengthReader::new(&mut stream_ref, length.0);
 			match typ.0 {
 				$(_t if $crate::_decode_tlv_stream_match_check!(_t, $type, $fieldty) => {
-					$crate::_decode_tlv!(s, $field, $fieldty);
+					$crate::_decode_tlv!($stream, s, $field, $fieldty);
 					if s.bytes_remain() {
 						s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
 						return Err(DecodeError::InvalidValue);
