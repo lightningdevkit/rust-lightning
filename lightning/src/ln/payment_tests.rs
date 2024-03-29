@@ -3813,14 +3813,11 @@ fn test_retry_custom_tlvs() {
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	let payment_claimable = pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000,
-		payment_hash, Some(payment_secret), events.pop().unwrap(), true, None).unwrap();
-	match payment_claimable {
-		Event::PaymentClaimable { onion_fields, .. } => {
-			assert_eq!(&onion_fields.unwrap().custom_tlvs()[..], &custom_tlvs[..]);
-		},
-		_ => panic!("Unexpected event"),
-	};
+	let path = &[&nodes[1], &nodes[2]];
+	let args = PassAlongPathArgs::new(&nodes[0], path, 1_000_000, payment_hash, events.pop().unwrap())
+		.with_payment_secret(payment_secret)
+		.with_custom_tlvs(custom_tlvs);
+	do_pass_along_path(args);
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
 }
 
