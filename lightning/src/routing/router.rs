@@ -1874,6 +1874,9 @@ where L::Target: Logger {
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
+	let introduction_node_id_cache = payment_params.payee.blinded_route_hints().iter()
+		.map(|(_, path)| path.public_introduction_node_id(network_graph))
+		.collect::<Vec<_>>();
 	match &payment_params.payee {
 		Payee::Clear { route_hints, node_id, .. } => {
 			for route in route_hints.iter() {
@@ -1885,17 +1888,19 @@ where L::Target: Logger {
 			}
 		},
 		Payee::Blinded { route_hints, .. } => {
-			if route_hints.iter().all(|(_, path)| path.public_introduction_node_id(network_graph) == Some(&our_node_id)) {
+			if introduction_node_id_cache.iter().all(|introduction_node_id| *introduction_node_id == Some(&our_node_id)) {
 				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
 			}
-			for (_, blinded_path) in route_hints.iter() {
+			for ((_, blinded_path), introduction_node_id) in route_hints.iter().zip(introduction_node_id_cache.iter()) {
 				if blinded_path.blinded_hops.len() == 0 {
 					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
-				} else if blinded_path.public_introduction_node_id(network_graph) == Some(&our_node_id) {
+				} else if *introduction_node_id == Some(&our_node_id) {
 					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
 				} else if blinded_path.blinded_hops.len() == 1 &&
-					route_hints.iter().any( |(_, p)| p.blinded_hops.len() == 1
-						&& p.public_introduction_node_id(network_graph) != blinded_path.public_introduction_node_id(network_graph))
+					route_hints
+						.iter().zip(introduction_node_id_cache.iter())
+						.filter(|((_, p), _)| p.blinded_hops.len() == 1)
+						.any(|(_, p_introduction_node_id)| p_introduction_node_id != introduction_node_id)
 				{
 					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
 				}
@@ -2540,7 +2545,7 @@ where L::Target: Logger {
 			// Only add the hops in this route to our candidate set if either
 			// we have a direct channel to the first hop or the first hop is
 			// in the regular network graph.
-			let source_node_id = match hint.1.public_introduction_node_id(network_graph) {
+			let source_node_id = match introduction_node_id_cache[hint_idx] {
 				Some(node_id) => node_id,
 				None => match &hint.1.introduction_node {
 					IntroductionNode::NodeId(pubkey) => {
