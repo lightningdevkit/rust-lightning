@@ -46,11 +46,12 @@ use crate::blinded_path::{BlindedPath, IntroductionNode};
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
 use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, Retry, self};
+use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::InvoiceRequest;
+use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::PeeledOnion;
 use crate::onion_message::offers::OffersMessage;
@@ -385,7 +386,6 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext { offer_id: offer.id() });
 	assert_ne!(offer.signing_pubkey(), alice_id);
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -408,6 +408,16 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_id: invoice_request.payer_id(),
+			amount_msats: None,
+			features: InvoiceRequestFeatures::empty(),
+			quantity: None,
+			payer_note_truncated: None,
+		},
+	});
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), david_id);
 	assert_eq!(reply_path.unwrap().introduction_node, IntroductionNode::NodeId(charlie_id));
@@ -537,7 +547,6 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 		.create_offer_builder("coffee".to_string()).unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext { offer_id: offer.id() });
 	assert_ne!(offer.signing_pubkey(), alice_id);
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
@@ -552,6 +561,16 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_id: invoice_request.payer_id(),
+			amount_msats: None,
+			features: InvoiceRequestFeatures::empty(),
+			quantity: None,
+			payer_note_truncated: None,
+		},
+	});
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), bob_id);
 	assert_eq!(reply_path.unwrap().introduction_node, IntroductionNode::NodeId(bob_id));
@@ -653,7 +672,6 @@ fn pays_for_offer_without_blinded_paths() {
 		.clear_paths()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext { offer_id: offer.id() });
 	assert_eq!(offer.signing_pubkey(), alice_id);
 	assert!(offer.paths().is_empty());
 
@@ -663,6 +681,18 @@ fn pays_for_offer_without_blinded_paths() {
 
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_id: invoice_request.payer_id(),
+			amount_msats: None,
+			features: InvoiceRequestFeatures::empty(),
+			quantity: None,
+			payer_note_truncated: None,
+		},
+	});
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);

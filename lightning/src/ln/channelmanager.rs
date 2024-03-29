@@ -10367,6 +10367,7 @@ where
 
 				let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 					offer_id: invoice_request.offer_id,
+					invoice_request: invoice_request.fields(),
 				});
 				let payment_paths = match self.create_blinded_payment_paths(
 					amount_msats, payment_secret, payment_context

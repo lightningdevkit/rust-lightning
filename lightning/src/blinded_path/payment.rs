@@ -12,6 +12,7 @@ use crate::ln::channelmanager::CounterpartyForwardingInfo;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
+use crate::offers::invoice_request::InvoiceRequestFields;
 use crate::offers::offer::OfferId;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, Writeable, Writer};
 
@@ -140,6 +141,12 @@ pub struct Bolt12OfferContext {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	pub offer_id: OfferId,
+
+	/// Fields from an [`InvoiceRequest`] sent for a [`Bolt12Invoice`].
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub invoice_request: InvoiceRequestFields,
 }
 
 /// The context of a payment made for an invoice sent for a BOLT 12 [`Refund`].
@@ -409,6 +416,7 @@ impl Readable for UnknownPaymentContext {
 
 impl_writeable_tlv_based!(Bolt12OfferContext, {
 	(0, offer_id, required),
+	(2, invoice_request, required),
 });
 
 impl_writeable_tlv_based!(Bolt12RefundContext, {});

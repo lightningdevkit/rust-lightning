@@ -76,8 +76,8 @@ use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferT
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
-use crate::util::ser::{HighZeroBytesDroppedBigSize, SeekReadable, WithoutLength, Writeable, Writer};
-use crate::util::string::PrintableString;
+use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, SeekReadable, WithoutLength, Writeable, Writer};
+use crate::util::string::{PrintableString, UntrustedString};
 
 #[cfg(not(c_bindings))]
 use {
@@ -872,6 +872,24 @@ impl VerifiedInvoiceRequest {
 	invoice_request_respond_with_derived_signing_pubkey_methods!(self, self.inner, InvoiceBuilder<DerivedSigningPubkey>);
 	#[cfg(c_bindings)]
 	invoice_request_respond_with_derived_signing_pubkey_methods!(self, self.inner, InvoiceWithDerivedSigningPubkeyBuilder);
+
+	pub(crate) fn fields(&self) -> InvoiceRequestFields {
+		let InvoiceRequestContents {
+			payer_id,
+			inner: InvoiceRequestContentsWithoutPayerId {
+				payer: _, offer: _, chain: _, amount_msats, features, quantity, payer_note
+			},
+		} = &self.inner.contents;
+
+		InvoiceRequestFields {
+			payer_id: *payer_id,
+			amount_msats: *amount_msats,
+			features: features.clone(),
+			quantity: *quantity,
+			payer_note_truncated: payer_note.clone()
+				.map(|mut s| { s.truncate(PAYER_NOTE_LIMIT); UntrustedString(s) }),
+		}
+	}
 }
 
 impl InvoiceRequestContents {
@@ -1100,9 +1118,68 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 	}
 }
 
+/// Fields sent in an [`InvoiceRequest`] message to include in [`PaymentContext::Bolt12Offer`].
+///
+/// [`PaymentContext::Bolt12Offer`]: crate::blinded_path::payment::PaymentContext::Bolt12Offer
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InvoiceRequestFields {
+	/// A possibly transient pubkey used to sign the invoice request.
+	pub payer_id: PublicKey,
+
+	/// The amount to pay in msats (i.e., the minimum lightning-payable unit for [`chain`]), which
+	/// must be greater than or equal to [`Offer::amount`], converted if necessary.
+	///
+	/// [`chain`]: InvoiceRequest::chain
+	pub amount_msats: Option<u64>,
+
+	/// Features pertaining to requesting an invoice.
+	pub features: InvoiceRequestFeatures,
+
+	/// The quantity of the offer's item conforming to [`Offer::is_valid_quantity`].
+	pub quantity: Option<u64>,
+
+	/// A payer-provided note which will be seen by the recipient and reflected back in the invoice
+	/// response. Truncated to [`PAYER_NOTE_LIMIT`] characters.
+	pub payer_note_truncated: Option<UntrustedString>,
+}
+
+/// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
+pub const PAYER_NOTE_LIMIT: usize = 512;
+
+impl Writeable for InvoiceRequestFields {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.payer_id, required),
+			(2, self.amount_msats.map(|v| HighZeroBytesDroppedBigSize(v)), option),
+			(4, WithoutLength(&self.features), required),
+			(6, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
+			(8, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for InvoiceRequestFields {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(0, payer_id, required),
+			(2, amount_msats, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(4, features, (option, encoding: (InvoiceRequestFeatures, WithoutLength))),
+			(6, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(8, payer_note_truncated, (option, encoding: (String, WithoutLength))),
+		});
+		let features = features.unwrap_or(InvoiceRequestFeatures::empty());
+
+		Ok(InvoiceRequestFields {
+			payer_id: payer_id.0.unwrap(), amount_msats, features, quantity,
+			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
+		})
+	}
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{InvoiceRequest, InvoiceRequestTlvStreamRef, SIGNATURE_TAG, UnsignedInvoiceRequest};
+	use super::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestTlvStreamRef, PAYER_NOTE_LIMIT, SIGNATURE_TAG, UnsignedInvoiceRequest};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
@@ -1129,8 +1206,8 @@ mod tests {
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
-	use crate::util::ser::{BigSize, Writeable};
-	use crate::util::string::PrintableString;
+	use crate::util::ser::{BigSize, Readable, Writeable};
+	use crate::util::string::{PrintableString, UntrustedString};
 
 	#[test]
 	fn builds_invoice_request_with_defaults() {
@@ -2164,6 +2241,57 @@ mod tests {
 		match InvoiceRequest::try_from(encoded_invoice_request) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		}
+	}
+
+	#[test]
+	fn copies_verified_invoice_request_fields() {
+		let desc = "foo".to_string();
+		let node_id = recipient_pubkey();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		#[cfg(c_bindings)]
+		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
+		let offer = OfferBuilder
+			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
+			.chain(Network::Testnet)
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap();
+		assert_eq!(offer.signing_pubkey(), node_id);
+
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.chain(Network::Testnet).unwrap()
+			.amount_msats(1001).unwrap()
+			.quantity(1).unwrap()
+			.payer_note("0".repeat(PAYER_NOTE_LIMIT * 2))
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => {
+				let fields = invoice_request.fields();
+				assert_eq!(invoice_request.offer_id, offer.id());
+				assert_eq!(
+					fields,
+					InvoiceRequestFields {
+						payer_id: payer_pubkey(),
+						amount_msats: Some(1001),
+						features: InvoiceRequestFeatures::empty(),
+						quantity: Some(1),
+						payer_note_truncated: Some(UntrustedString("0".repeat(PAYER_NOTE_LIMIT))),
+					}
+				);
+
+				let mut buffer = Vec::new();
+				fields.write(&mut buffer).unwrap();
+
+				let deserialized_fields: InvoiceRequestFields =
+					Readable::read(&mut buffer.as_slice()).unwrap();
+				assert_eq!(deserialized_fields, fields);
+			},
+			Err(_) => panic!("unexpected error"),
 		}
 	}
 }
