@@ -8726,7 +8726,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
-			(45, self.context.local_initiated_shutdown, option), // Added in 0.0.122
+			// 45 and 47 are reserved for async signing
+			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 		});
 
 		Ok(())
@@ -9066,7 +9067,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(39, pending_outbound_blinding_points_opt, optional_vec),
 			(41, holding_cell_blinding_points_opt, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
-			(45, local_initiated_shutdown, option),
+			// 45 and 47 are reserved for async signing
+			(49, local_initiated_shutdown, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
