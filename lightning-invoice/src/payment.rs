@@ -17,7 +17,7 @@ use lightning::ln::channelmanager::RecipientOnionFields;
 use lightning::routing::router::{PaymentParameters, RouteParameters};
 
 /// Builds the necessary parameters to pay or pre-flight probe the given zero-amount
-/// [`Bolt11Invoice`] using [`ChannelManager::send_payment`] or
+/// amountless (sometimes referred to as zero-amount) [`Bolt11Invoice`] using [`ChannelManager::send_payment`] or
 /// [`ChannelManager::send_preflight_probes`].
 ///
 /// Prior to paying, you must ensure that the [`Bolt11Invoice::payment_hash`] is unique and the
@@ -28,7 +28,7 @@ use lightning::routing::router::{PaymentParameters, RouteParameters};
 ///
 /// [`ChannelManager::send_payment`]: lightning::ln::channelmanager::ChannelManager::send_payment
 /// [`ChannelManager::send_preflight_probes`]: lightning::ln::channelmanager::ChannelManager::send_preflight_probes
-pub fn payment_parameters_from_zero_amount_invoice(invoice: &Bolt11Invoice, amount_msat: u64)
+pub fn payment_parameters_from_amountless_invoice(invoice: &Bolt11Invoice, amount_msat: u64)
 -> Result<(PaymentHash, RecipientOnionFields, RouteParameters), ()> {
 	if invoice.amount_milli_satoshis().is_some() {
 		Err(())
@@ -44,7 +44,7 @@ pub fn payment_parameters_from_zero_amount_invoice(invoice: &Bolt11Invoice, amou
 /// same [`PaymentHash`] has never been paid before.
 ///
 /// Will always succeed unless the invoice has no amount specified, in which case
-/// [`payment_parameters_from_zero_amount_invoice`] should be used.
+/// [`payment_parameters_from_amountless_invoice`] should be used.
 ///
 /// [`ChannelManager::send_payment`]: lightning::ln::channelmanager::ChannelManager::send_payment
 /// [`ChannelManager::send_preflight_probes`]: lightning::ln::channelmanager::ChannelManager::send_preflight_probes
@@ -120,7 +120,7 @@ mod tests {
 			})
 			.unwrap();
 
-		assert!(payment_parameters_from_zero_amount_invoice(&invoice, 42).is_err());
+		assert!(payment_parameters_from_amountless_invoice(&invoice, 42).is_err());
 
 		let (hash, onion, params) = payment_parameters_from_invoice(&invoice).unwrap();
 		assert_eq!(&hash.0[..], &payment_hash[..]);
@@ -154,7 +154,7 @@ mod tests {
 
 		assert!(payment_parameters_from_invoice(&invoice).is_err());
 
-		let (hash, onion, params) = payment_parameters_from_zero_amount_invoice(&invoice, 42).unwrap();
+		let (hash, onion, params) = payment_parameters_from_amountless_invoice(&invoice, 42).unwrap();
 		assert_eq!(&hash.0[..], &payment_hash[..]);
 		assert_eq!(onion.payment_secret, Some(PaymentSecret([0; 32])));
 		assert_eq!(params.final_value_msat, 42);
