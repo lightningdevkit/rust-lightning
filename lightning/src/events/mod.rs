@@ -1186,11 +1186,10 @@ pub enum Event {
 		pre_channel_value_satoshis: u64,
 		/// The post-splice channel value, in satoshis.
 		post_channel_value_satoshis: u64,
-		/// The value, in satoshis, that we commited to contribute to the channel value during
-		/// establishment.
+		/// The value, in satoshis, that we commited to contribute to the new funding transaction during splicing.
 		holder_funding_satoshis: u64,
-		/// The value, in satoshis, that the counterparty commited to contribute to the channel value
-		/// during channel establishment.
+		/// The value, in satoshis, that the counterparty commited to contribute to the new funding transaction
+		/// during splicing.
 		counterparty_funding_satoshis: u64,
 	}
 }

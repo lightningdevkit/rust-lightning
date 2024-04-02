@@ -932,7 +932,7 @@ fn test_v2_splice_in() {
 			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 			assert_eq!(pre_channel_value_satoshis, channel_value_sat);
 			assert_eq!(post_channel_value_satoshis, post_splice_channel_value);
-			assert_eq!(holder_funding_satoshis, post_splice_channel_value);
+			assert_eq!(holder_funding_satoshis, post_splice_channel_value - channel_value_sat);
 			assert_eq!(counterparty_funding_satoshis, 0);
 		},
 		_ => panic!("SpliceAckedInputsContributionReady event missing {:?}", events[0]),

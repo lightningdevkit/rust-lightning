@@ -8480,7 +8480,7 @@ where
 						counterparty_node_id: *counterparty_node_id,
 						pre_channel_value_satoshis: pre_channel_value,
 						post_channel_value_satoshis: post_channel_value,
-						holder_funding_satoshis: post_channel_value,
+						holder_funding_satoshis: if post_channel_value < pre_channel_value { 0 } else { post_channel_value.saturating_sub(pre_channel_value) },
 						counterparty_funding_satoshis: 0,
 					} , None));
 				} else {
