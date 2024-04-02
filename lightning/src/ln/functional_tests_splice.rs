@@ -19,6 +19,7 @@ use crate::ln::msgs::ChannelMessageHandler;
 use crate::util::ser::Writeable;
 use crate::util::config::{ChannelHandshakeConfig, UserConfig};
 use crate::prelude::*;
+use crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator};
 
 use bitcoin::{Transaction, TxOut, Witness};
 use bitcoin::blockdata::opcodes;
@@ -316,7 +317,7 @@ fn test_channel_open_v2_and_close() {
 
 	// First output, the funding tx
 	let tx_add_output_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
-	// assert!(tx_add_output_msg.script.is_v0_p2wpkh()); // TODO check
+	assert!(tx_add_output_msg.script.is_v0_p2wsh());
 	assert_eq!(tx_add_output_msg.sats, channel_value_sat); 
 
 	let _res = acceptor_node.node.handle_tx_add_output(&initiator_node.node.get_our_node_id(), &tx_add_output_msg);
@@ -324,9 +325,9 @@ fn test_channel_open_v2_and_close() {
 
 	let _res = initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 	let tx_add_output_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
-
 	// Second output, change
-	// assert!(tx_add_output_msg.script.is_v0_p2wsh()); // TODO check
+	let actual_change_output = tx_add_output_msg.sats;
+	assert!(tx_add_output_msg.script.is_v0_p2wpkh());
 
 	let _res = acceptor_node.node.handle_tx_add_output(&initiator_node.node.get_our_node_id(), &tx_add_output_msg);
 	let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
@@ -357,8 +358,9 @@ fn test_channel_open_v2_and_close() {
 		assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 		assert_eq!(counterparty_node_id, acceptor_node.node.get_our_node_id());
 
+		// placeholder signature
 		let mut witness = Witness::new();
-		witness.push(vec![0]);
+		witness.push([7; 72]);
 		unsigned_transaction.input[0].witness = witness;
 
 		let _res = initiator_node.node.funding_transaction_signed(&channel_id1, &counterparty_node_id, unsigned_transaction).unwrap();
@@ -373,7 +375,7 @@ fn test_channel_open_v2_and_close() {
 			assert_eq!(*node_id, initiator_node.node.get_our_node_id());
 			updates.commitment_signed.clone()
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", msg_events[0]),
 	};
 
 	// Handle the initial commitment_signed exchange. Order is not important here.
@@ -412,14 +414,26 @@ fn test_channel_open_v2_and_close() {
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	let broadcasted_funding_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
-	let expected_funding_tx = "020000000001019c76affec45612929f824230eacc67dc7b3db1072c39d0e62f4f557a34e141fc000000000000000000023788000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665fa08601000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c01010000000000";
-	assert_eq!(broadcasted_funding_tx.encode().len(), 130);
+	let expected_funding_tx = "020000000001019c76affec45612929f824230eacc67dc7b3db1072c39d0e62f4f557a34e141fc000000000000000000022588000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665fa08601000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c014807070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070700000000";
+	assert_eq!(broadcasted_funding_tx.encode().len(), 201);
 	assert_eq!(&broadcasted_funding_tx.encode().as_hex().to_string(), expected_funding_tx);
 	// Check that funding transaction has been broadcasted on the acceptor side as well
 	assert_eq!(chanmon_cfgs[acceptor_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	let broadcasted_funding_tx_acc = chanmon_cfgs[acceptor_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
-	assert_eq!(broadcasted_funding_tx_acc.encode().len(), 130);
+	assert_eq!(broadcasted_funding_tx_acc.encode().len(), 201);
 	assert_eq!(&broadcasted_funding_tx_acc.encode().as_hex().to_string(), expected_funding_tx);
+
+	// check fees
+	let total_input = extra_funding_input_sats;
+	assert_eq!(broadcasted_funding_tx.output.len(), 2);
+	let total_output = broadcasted_funding_tx.output[0].value + broadcasted_funding_tx.output[1].value;
+	assert!(total_input > total_output);
+	let fee = total_input - total_output;
+	let fee_rate = chanmon_cfgs[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee); // target is irrelevant
+	assert_eq!(fee_rate, 253);
+	assert_eq!(broadcasted_funding_tx.weight().to_wu(), 576);
+	let expected_minimum_fee = (broadcasted_funding_tx.weight().to_wu() as f64 * fee_rate as f64 / 1000 as f64).ceil() as u64;
+	assert!(fee >= expected_minimum_fee);
 
 	// Simulate confirmation of the funding tx
 	confirm_transaction(&initiator_node, &broadcasted_funding_tx);
@@ -805,7 +819,7 @@ fn test_v2_splice_in() {
 		MessageSendEvent::UpdateHTLCs { ref updates, .. } => {
 			updates.commitment_signed.clone()
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", msg_events[0]),
 	};
 
 	// Handle the initial commitment_signed exchange. Order is not important here.
@@ -830,7 +844,7 @@ fn test_v2_splice_in() {
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	let broadcasted_funding_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
 	assert_eq!(broadcasted_funding_tx.encode().len(), 130);
-	assert_eq!(broadcasted_funding_tx.txid().to_string(), "4f2c5194647fa299f0fcac6f4611651fcf2badf58927203398d7cb7cbf8c21e8");
+	assert_eq!(broadcasted_funding_tx.txid().to_string(), "684be2e5a50020f27a6d4d2802e1c9d9ca5e6b64f6098075ec873e04f62a70ee");
 
 	// Simulate confirmation of the funding tx
 	confirm_transaction(&initiator_node, &broadcasted_funding_tx);
@@ -962,7 +976,7 @@ fn test_v2_splice_in() {
 	// First TxAddOutput is for the change output
 	let tx_add_output_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
 	assert!(tx_add_output_msg.script.is_v0_p2wpkh());
-	assert_eq!(tx_add_output_msg.sats, 14314); // extra_splice_input_sats - splice_in_sats - fee
+	assert_eq!(tx_add_output_msg.sats, 14167); // extra_splice_input_sats - splice_in_sats - fee
 
 	let _res = acceptor_node.node.handle_tx_add_output(&initiator_node.node.get_our_node_id(), &tx_add_output_msg);
 	let tx_complete_msg = get_event_msg!(&acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
@@ -1017,7 +1031,7 @@ fn test_v2_splice_in() {
 		let _res = initiator_node.node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
 	} else { panic!(); }
 
-	let expected_splice_funding_txid = "1fdcee0e53a59a5457b40c8fcf4de29caba871ae7cb4bf8416d81437a2ffa4ed";
+	let expected_splice_funding_txid = "e8b39faf45fb520bfe1fca16d394446814080761c0f536cb6184cc2af95d2848";
 	// check new funding tx
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
 	{
@@ -1101,7 +1115,7 @@ fn test_v2_splice_in() {
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
 	let broadcasted_splice_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
-	let expected_funding_tx = "02000000000102e8218cbf7ccbd79833202789f5ad2bcf1f6511466facfcf099a27f6494512c4f010000000000000000a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b7900000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025cea37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f0400473044022071280f2a4768843328412d412b4d7c977604fe0d1c38ef57c6a5aa7cee159d41022000b5ae62d200c8caf1d268b3fa4da2c54a3241b849600215991fc9405a92e42401473044022022158b2e994b8479577f3537964085eebabfef950732566d028236f460827efb02201e94759fd145a7f614d20c7a7d68de2a26d409e250619c73dd84ab149873b5b3014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae01010000000000";
+	let expected_funding_tx = "02000000000102ee702af6043e87ec758009f6646b5ecad9c9e102284d6d7af22000a5e5e24b68010000000000000000a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b7900000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c5737000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f040047304402200133d8eb11f22c92e8be02c3513fce6d16d2aefa40779d487cdc6e97b4d24a3602206a3caf951836e2399e1b67f761e8e7360b961ad6fac00ac4bfdcabd7e4de823101473044022035ba0e32aaddebea4bb2386fe7aaada3bb4f33c7bf2f8e15bd372659f15717ff02206d9f7f17cb27cdc1d2d181110e685d54f9c826bdbc1ec39ac29f47527f896324014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae01010000000000";
 	assert_eq!(broadcasted_splice_tx.encode().len(), 389);
 	assert_eq!(broadcasted_splice_tx.encode().as_hex().to_string(), expected_funding_tx);
 	let initiator_funding_key = get_funding_key(&initiator_node, &acceptor_node, &channel_id1);

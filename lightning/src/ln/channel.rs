@@ -4010,7 +4010,9 @@ pub(super) fn maybe_add_funding_change_output<SP: Deref>(signer_provider: &SP, i
 	SP::Target: SignerProvider,
 {
 	let our_funding_inputs_weight = funding_inputs.iter().fold(0u64, |weight, (txin, _) | {
-		weight + BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + txin.witness.serialized_len() as u64
+		// estimate witness size, size is minimum a signature size. TODO improve estimation, potentially based on script
+		let witness_weight = core::cmp::max(txin.witness.serialized_len(), 73);
+		weight + BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + witness_weight as u64
 	});
 	let calculate_output_weight = |txout: &TxOut| {
 		(8 /* value */ + txout.script_pubkey.consensus_encode(&mut sink()).unwrap() as u64) *

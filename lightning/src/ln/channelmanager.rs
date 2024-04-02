@@ -14020,8 +14020,9 @@ mod tests {
 		} = get_event!(nodes[0], Event::FundingTransactionReadyForSigning) {
 			assert_eq!(counterparty_node_id, nodes[1].node.get_our_node_id());
 
+			// placeholder signature
 			let mut witness = Witness::new();
-			witness.push(vec![0]);
+			witness.push([7; 72]);
 			unsigned_transaction.input[0].witness = witness;
 
 			nodes[0].node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
