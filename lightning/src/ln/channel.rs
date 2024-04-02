@@ -2291,7 +2291,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
 	pub fn get_holder_htlc_maximum_msat(&self) -> Option<u64> {
-		self.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
+		if self.should_announce() == true {
+			self.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
+		} else {
+			Some(self.holder_max_htlc_value_in_flight_msat)
+		}
 	}
 
 	/// Allowed in any state (including after shutdown)
