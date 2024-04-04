@@ -2371,13 +2371,13 @@ fn channel_monitor_network_test() {
 		connect_blocks(&nodes[3], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 		let events = nodes[3].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
-		let close_chan_update_1 = match events[0] {
+		let close_chan_update_1 = match events[1] {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 				msg.clone()
 			},
 			_ => panic!("Unexpected event"),
 		};
-		match events[1] {
+		match events[0] {
 			MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id } => {
 				assert_eq!(node_id, nodes[4].node.get_our_node_id());
 			},
@@ -2403,13 +2403,13 @@ fn channel_monitor_network_test() {
 		connect_blocks(&nodes[4], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
 		let events = nodes[4].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
-		let close_chan_update_2 = match events[0] {
+		let close_chan_update_2 = match events[1] {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 				msg.clone()
 			},
 			_ => panic!("Unexpected event"),
 		};
-		match events[1] {
+		match events[0] {
 			MessageSendEvent::HandleError { action: ErrorAction::DisconnectPeer { .. }, node_id } => {
 				assert_eq!(node_id, nodes[3].node.get_our_node_id());
 			},
@@ -4616,7 +4616,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 		MessageSendEvent::UpdateHTLCs { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
-	match events[1] {
+	match events[2] {
 		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 		_ => panic!("Unexepected event"),
 	}
@@ -4659,7 +4659,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 	mine_transaction(&nodes[1], &commitment_tx[0]);
 	check_added_monitors!(nodes[1], 1);
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
-	match events[0] {
+	match events[1] {
 		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
@@ -5075,7 +5075,7 @@ fn test_duplicate_payment_hash_one_failure_one_success() {
 		MessageSendEvent::UpdateHTLCs { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
-	match events[1] {
+	match events[2] {
 		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 		_ => panic!("Unexepected event"),
 	}
@@ -5153,7 +5153,7 @@ fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 		MessageSendEvent::UpdateHTLCs { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
-	match events[1] {
+	match events[2] {
 		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 		_ => panic!("Unexepected event"),
 	}
@@ -7333,6 +7333,9 @@ fn test_announce_disable_channels() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Connect a dummy node for proper future events broadcasting
+	connect_dummy_node(&nodes[0]);
 
 	create_announced_chan_between_nodes(&nodes, 0, 1);
 	create_announced_chan_between_nodes(&nodes, 1, 0);

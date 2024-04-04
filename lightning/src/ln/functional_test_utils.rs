@@ -1553,11 +1553,29 @@ macro_rules! check_warn_msg {
 	}}
 }
 
+/// Checks if at least one peer is connected.
+fn is_any_peer_connected(node: &Node) -> bool {
+	let peer_state = node.node.per_peer_state.read().unwrap();
+	for (_, peer_mutex) in peer_state.iter() {
+		let peer = peer_mutex.lock().unwrap();
+		if peer.is_connected { return true; }
+	}
+	false
+}
+
 /// Check that a channel's closing channel update has been broadcasted, and optionally
 /// check whether an error message event has occurred.
 pub fn check_closed_broadcast(node: &Node, num_channels: usize, with_error_msg: bool) -> Vec<msgs::ErrorMessage> {
+	let mut dummy_connected = false;
+	if !is_any_peer_connected(node) {
+		connect_dummy_node(&node);
+		dummy_connected = true;
+	}
 	let msg_events = node.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), if with_error_msg { num_channels * 2 } else { num_channels });
+	if dummy_connected {
+		disconnect_dummy_node(&node);
+	}
 	msg_events.into_iter().filter_map(|msg_event| {
 		match msg_event {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
@@ -3230,6 +3248,28 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	nodes
 }
 
+pub fn connect_dummy_node<'a, 'b: 'a, 'c: 'b>(node: &Node<'a, 'b, 'c>) {
+	let node_id_dummy = PublicKey::from_slice(&[2; 33]).unwrap();
+
+	let mut dummy_init_features = InitFeatures::empty();
+	dummy_init_features.set_static_remote_key_required();
+
+	let init_dummy = msgs::Init {
+		features: dummy_init_features,
+		networks: None,
+		remote_network_address: None
+	};
+
+	node.node.peer_connected(&node_id_dummy, &init_dummy, true).unwrap();
+	node.onion_messenger.peer_connected(&node_id_dummy, &init_dummy, true).unwrap();
+}
+
+pub fn disconnect_dummy_node<'a, 'b: 'a, 'c: 'b>(node: &Node<'a, 'b, 'c>) {
+	let node_id_dummy = PublicKey::from_slice(&[2; 33]).unwrap();
+	node.node.peer_disconnected(&node_id_dummy);
+	node.onion_messenger.peer_disconnected(&node_id_dummy);
+}
+
 // Note that the following only works for CLTV values up to 128
 pub const ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 137; // Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
 pub const ACCEPTED_HTLC_SCRIPT_WEIGHT_ANCHORS: usize = 140; // Here we have a diff due to HTLC CLTV expiry being < 2^15 in test
@@ -3341,15 +3381,21 @@ pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<
 }
 
 pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize, needs_err_handle: bool, expected_error: &str)  {
+	let mut dummy_connected = false;
+	if !is_any_peer_connected(&nodes[a]) {
+		connect_dummy_node(&nodes[a]);
+		dummy_connected = true
+	}
+
 	let events_1 = nodes[a].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 2);
-	let as_update = match events_1[0] {
+	let as_update = match events_1[1] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
-	match events_1[1] {
+	match events_1[0] {
 		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 			assert_eq!(node_id, nodes[b].node.get_our_node_id());
 			assert_eq!(msg.data, expected_error);
@@ -3366,17 +3412,24 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, '
 		},
 		_ => panic!("Unexpected event"),
 	}
-
+	if dummy_connected {
+		disconnect_dummy_node(&nodes[a]);
+		dummy_connected = false;
+	}
+	if !is_any_peer_connected(&nodes[b]) {
+		connect_dummy_node(&nodes[b]);
+		dummy_connected = true;
+	}
 	let events_2 = nodes[b].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), if needs_err_handle { 1 } else { 2 });
-	let bs_update = match events_2[0] {
+	let bs_update = match events_2.last().unwrap() {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
 	if !needs_err_handle {
-		match events_2[1] {
+		match events_2[0] {
 			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 				assert_eq!(node_id, nodes[a].node.get_our_node_id());
 				assert_eq!(msg.data, expected_error);
@@ -3388,7 +3441,9 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, '
 			_ => panic!("Unexpected event"),
 		}
 	}
-
+	if dummy_connected {
+		disconnect_dummy_node(&nodes[b]);
+	}
 	for node in nodes {
 		node.gossip_sync.handle_channel_update(&as_update).unwrap();
 		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
