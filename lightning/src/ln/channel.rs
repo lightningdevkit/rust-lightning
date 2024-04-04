@@ -5668,6 +5668,10 @@ impl<SP: Deref> Channel<SP> where
 				return Err(ChannelError::Close("The txid for the transaction does not match".to_string()));
 			}
 
+			if signing_session.counterparty_tx_signatures().is_some() {
+				log_warn!(logger, "Warning: counterparty_tx_signatures already set!  {:?}", signing_session.counterparty_tx_signatures());
+				// TODO check if to handle as error
+			}
 			let (tx_signatures_opt, mut funding_tx_opt) = signing_session.received_tx_signatures(msg.clone());
 			if let Some(funding_tx) = &funding_tx_opt {
 				if self.context.pending_splice_post.is_some() {
@@ -8775,7 +8779,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			signing_session.constructed_transaction.clone()
 		};
 
-		// Clear our the interactive tx constructor.
+		// Clear out the interactive tx constructor.
 		self.context.interactive_tx_constructor = None;
 		self.context.channel_state = ChannelState::FundingNegotiated;
 

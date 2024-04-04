@@ -109,11 +109,13 @@ impl InteractiveTxSigningSession {
 		}
 	}
 
+	pub fn counterparty_tx_signatures(&self) -> Option<TxSignatures> { self.counterparty_tx_signatures.clone() }
+
 	pub fn received_tx_signatures(
 		&mut self, tx_signatures: TxSignatures,
 	) -> (Option<TxSignatures>, Option<Transaction>) {
 		if self.counterparty_tx_signatures.is_some() {
-			return (None, None);
+			// It looks like this is called the 2nd time, do it nonetheless, otherwise we have problems at the call site
 		};
 		self.counterparty_tx_signatures = Some(tx_signatures.clone());
 		self.inputs
