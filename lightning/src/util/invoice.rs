@@ -1,6 +1,8 @@
 //! Low level invoice utilities.
 
 use bitcoin::bech32::{u5, FromBase32};
+
+#[allow(unused)]
 use crate::prelude::*;
 
 /// Construct the invoice's HRP and signatureless data into a preimage to be hashed.

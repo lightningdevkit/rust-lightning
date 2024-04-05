@@ -21,6 +21,7 @@ use crate::ln::ChannelId;
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 pub mod chaininterface;

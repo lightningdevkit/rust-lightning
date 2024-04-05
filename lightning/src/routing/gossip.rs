@@ -38,7 +38,6 @@ use crate::io;
 use crate::io_extras::{copy, sink};
 use crate::prelude::*;
 use core::{cmp, fmt};
-use core::convert::TryFrom;
 use crate::sync::{RwLock, RwLockReadGuard, LockTestExt};
 #[cfg(feature = "std")]
 use core::sync::atomic::{AtomicUsize, Ordering};

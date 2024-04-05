@@ -14,7 +14,9 @@ use crate::ln::{msgs, PaymentPreimage};
 use crate::sign::{InMemorySigner, ChannelSigner};
 use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 use core::cmp;
 use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;

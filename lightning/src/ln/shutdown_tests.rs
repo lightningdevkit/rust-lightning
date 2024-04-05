@@ -25,6 +25,7 @@ use crate::util::test_utils::OnGetShutdownScriptpubkey;
 use crate::util::errors::APIError;
 use crate::util::config::UserConfig;
 use crate::util::string::UntrustedString;
+use crate::prelude::*;
 
 use bitcoin::{Transaction, TxOut};
 use bitcoin::blockdata::locktime::absolute::LockTime;
@@ -32,11 +33,6 @@ use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
 use bitcoin::network::constants::Network;
 use bitcoin::address::{WitnessProgram, WitnessVersion};
-
-use regex;
-
-use core::default::Default;
-use std::convert::TryFrom;
 
 use crate::ln::functional_test_utils::*;
 

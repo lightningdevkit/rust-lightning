@@ -165,10 +165,16 @@ mod io_extras {
 }
 
 mod prelude {
+	#![allow(unused_imports)]
+
 	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque, boxed::Box};
 
 	pub use alloc::borrow::ToOwned;
 	pub use alloc::string::ToString;
+
+	pub use core::convert::{AsMut, AsRef, TryFrom, TryInto};
+	pub use core::default::Default;
+	pub use core::marker::Sized;
 
 	pub(crate) use crate::util::hash_tables::*;
 }

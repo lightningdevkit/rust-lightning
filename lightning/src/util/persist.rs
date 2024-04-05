@@ -11,13 +11,11 @@
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 
 use core::cmp;
-use core::convert::{TryFrom, TryInto};
 use core::ops::Deref;
 use core::str::FromStr;
 use bitcoin::{BlockHash, Txid};
 
 use crate::{io, log_error};
-use crate::alloc::string::ToString;
 use crate::prelude::*;
 
 use crate::chain;
@@ -837,7 +835,6 @@ impl From<u64> for UpdateName {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::chain::chainmonitor::Persist;
 	use crate::chain::ChannelMonitorUpdateStatus;
 	use crate::events::{ClosureReason, MessageSendEventsProvider};
 	use crate::ln::functional_test_utils::*;

@@ -563,7 +563,6 @@ mod tests {
 	use super::*;
 	use crate::routing::gossip::tests::*;
 	use crate::util::test_utils::{TestChainSource, TestLogger};
-	use crate::ln::msgs;
 
 	use bitcoin::secp256k1::{Secp256k1, SecretKey};
 

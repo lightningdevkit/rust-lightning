@@ -36,9 +36,10 @@ use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::string::PrintableString;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 use crate::io;
-use alloc::collections::VecDeque;
 use crate::sync::{Mutex, MutexGuard, FairRwLock};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicI32, Ordering};
 use core::{cmp, hash, fmt, mem};
@@ -2682,10 +2683,12 @@ mod tests {
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 
-	use crate::prelude::*;
 	use crate::sync::{Arc, Mutex};
 	use core::convert::Infallible;
 	use core::sync::atomic::{AtomicBool, Ordering};
+
+	#[allow(unused_imports)]
+	use crate::prelude::*;
 
 	#[derive(Clone)]
 	struct FileDescriptor {

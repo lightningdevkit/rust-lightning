@@ -79,7 +79,6 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
-use core::convert::TryFrom;
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroU64;
 use core::ops::Deref;
@@ -107,6 +106,7 @@ use {
 	crate::offers::invoice_request::{InvoiceRequestWithDerivedPayerIdBuilder, InvoiceRequestWithExplicitPayerIdBuilder},
 };
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 #[cfg(feature = "std")]
@@ -1066,7 +1066,6 @@ mod tests {
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::Secp256k1;
-	use core::convert::TryFrom;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
 	use crate::blinded_path::{BlindedHop, BlindedPath};

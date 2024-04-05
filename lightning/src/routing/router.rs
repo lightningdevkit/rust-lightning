@@ -3259,8 +3259,6 @@ mod tests {
 	use crate::prelude::*;
 	use crate::sync::Arc;
 
-	use core::convert::TryInto;
-
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
 			features: InitFeatures, outbound_capacity_msat: u64) -> channelmanager::ChannelDetails {
 		channelmanager::ChannelDetails {
@@ -8344,17 +8342,14 @@ pub(crate) mod bench_utils {
 	use std::time::Duration;
 
 	use bitcoin::hashes::Hash;
-	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::SecretKey;
 
 	use crate::chain::transaction::OutPoint;
 	use crate::routing::scoring::ScoreUpdate;
-	use crate::sign::{EntropySource, KeysManager};
+	use crate::sign::KeysManager;
 	use crate::ln::ChannelId;
-	use crate::ln::channelmanager::{self, ChannelCounterparty, ChannelDetails};
-	use crate::ln::features::Bolt11InvoiceFeatures;
-	use crate::routing::gossip::NetworkGraph;
+	use crate::ln::channelmanager::{self, ChannelCounterparty};
 	use crate::util::config::UserConfig;
-	use crate::util::ser::ReadableArgs;
 	use crate::util::test_utils::TestLogger;
 
 	/// Tries to open a network graph file, or panics with a URL to fetch it.

@@ -11,11 +11,11 @@
 
 use bitcoin::bech32;
 use bitcoin::secp256k1;
-use core::convert::TryFrom;
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::SeekReadable;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 #[cfg(not(fuzzing))]
@@ -27,10 +27,10 @@ pub use sealed::Bech32Encode;
 mod sealed {
 	use bitcoin::bech32;
 	use bitcoin::bech32::{FromBase32, ToBase32};
-	use core::convert::TryFrom;
 	use core::fmt;
 	use super::Bolt12ParseError;
 
+	#[allow(unused_imports)]
 	use crate::prelude::*;
 
 	/// Indicates a message can be encoded using bech32.

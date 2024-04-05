@@ -208,7 +208,12 @@ impl Connection {
 						break Disconnect::CloseConnection;
 					}
 				},
-				SelectorOutput::B(_) => {},
+				SelectorOutput::B(some) => {
+					// The mpsc Receiver should only return `None` if the write side has been
+					// dropped, but that shouldn't be possible since its referenced by the Self in
+					// `us`.
+					debug_assert!(some.is_some());
+				},
 				SelectorOutput::C(res) => {
 					if res.is_err() { break Disconnect::PeerDisconnected; }
 					match reader.try_read(&mut buf) {
@@ -556,7 +561,6 @@ mod tests {
 	use lightning::ln::features::*;
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{MessageHandler, PeerManager};
-	use lightning::ln::features::NodeFeatures;
 	use lightning::routing::gossip::NodeId;
 	use lightning::events::*;
 	use lightning::util::test_utils::TestNodeSigner;
