@@ -395,6 +395,69 @@ impl From<&ClaimableHTLC> for events::ClaimedHTLC {
 	}
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct StubChannel {
+	pub channel_id: ChannelId,
+	pub funding_outpoint: OutPoint,
+	pub channel_value_stoshis: u64,
+	pub channel_keys_id: [u8;32],
+	pub commitment_secrets: CounterpartyCommitmentSecrets,
+	pub counterparty_node_id: PublicKey,
+}
+
+impl StubChannel {
+    pub fn new(channel_id: ChannelId, funding_outpoint: OutPoint, channel_value_stoshis: u64, channel_keys_id: [u8; 32], commitment_secrets: CounterpartyCommitmentSecrets, counterparty_node_id: PublicKey) -> Self {
+        StubChannel {
+            channel_id,
+			funding_outpoint,
+			channel_value_stoshis,
+            channel_keys_id,
+            commitment_secrets,
+			counterparty_node_id,
+        }
+    }
+}
+
+impl_writeable_tlv_based!(StubChannel, {
+	(0, channel_id, required),
+	(2, channel_keys_id, required),
+	(4, channel_value_stoshis, required),
+	(6, funding_outpoint, required),
+	(8, commitment_secrets, required),
+	(10, counterparty_node_id, required),
+});
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct OurPeerStorage {
+    pub version: u32,
+    pub timestamp: u32,
+    pub channels: Vec<StubChannel>,
+}
+
+impl OurPeerStorage {
+    pub fn new() -> Self {
+        let duration_since_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("Time must be > 1970");
+
+        Self {
+            version: 1,
+            timestamp: duration_since_epoch.as_secs() as u32,
+            channels: Vec::new(),
+        }
+    }
+
+    pub fn stub_channel(&mut self, chan: StubChannel) {
+        self.channels.push(chan);
+    }
+}
+
+impl_writeable_tlv_based!(OurPeerStorage, {
+	(0, version, (default_value, 1)),
+	(2, timestamp, required),
+	(4, channels, optional_vec),
+});
+
 /// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
 /// a payment and ensure idempotency in LDK.
 ///
@@ -2096,6 +2159,7 @@ where
 	entropy_source: ES,
 	node_signer: NS,
 	signer_provider: SP,
+	our_peer_storage: FairRwLock<OurPeerStorage>,
 
 	logger: L,
 }
@@ -3193,6 +3257,7 @@ where
 			entropy_source,
 			node_signer,
 			signer_provider,
+			our_peer_storage: FairRwLock::new(OurPeerStorage::new()),
 			logger,
 		}
 	}
@@ -7507,7 +7572,11 @@ where
 						let mut pending_events = self.pending_events.lock().unwrap();
 						emit_channel_ready_event!(pending_events, chan);
 					}
-
+					// Update Peer Storage.
+					let stub_chan = StubChannel::new(chan.context.channel_id(), chan.context.get_funding_txo().unwrap(), chan.context.get_value_satoshis(),
+																chan.context.get_channel_keys_id(), chan.context.get_commitment_secret(), 
+																chan.context.get_counterparty_node_id());
+					self.our_peer_storage.write().unwrap().stub_channel(stub_chan);
 					Ok(())
 				} else {
 					try_chan_phase_entry!(self, Err(ChannelError::Close(
@@ -11565,6 +11634,8 @@ where
 		let mut close_background_events = Vec::new();
 		let mut funding_txo_to_channel_id = hash_map_with_capacity(channel_count as usize);
 		let mut peer_storage_dir: HashMap<PublicKey, Vec<u8>> = HashMap::new();
+		let mut our_peer_storage: OurPeerStorage = OurPeerStorage::new();
+
 		for _ in 0..channel_count {
 			let mut channel: Channel<SP> = Channel::read(reader, (
 				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
@@ -11573,6 +11644,15 @@ where
 			let funding_txo = channel.context.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_to_channel_id.insert(funding_txo, channel.context.channel_id());
 			funding_txo_set.insert(funding_txo.clone());
+			let stub_chan = StubChannel::new(
+				channel.context.channel_id(),
+				funding_txo,
+				channel.context.get_value_satoshis(),
+				channel.context.get_channel_keys_id(),
+				channel.context.get_commitment_secret(),
+				channel.context.get_counterparty_node_id(),
+			);
+			our_peer_storage.stub_channel(stub_chan);
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
 				// Load Peer_storage from ChannelMonitor to memory.
 				peer_storage_dir.insert(channel.context.get_counterparty_node_id(), monitor.get_peer_storage());
@@ -12407,6 +12487,7 @@ where
 			entropy_source: args.entropy_source,
 			node_signer: args.node_signer,
 			signer_provider: args.signer_provider,
+			our_peer_storage: FairRwLock::new(our_peer_storage),
 			logger: args.logger,
 			default_configuration: args.default_config,
 		};
