@@ -52,6 +52,7 @@ use crate::ln::features::Bolt11InvoiceFeatures;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
+use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, make_funding_redeemscript};
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
@@ -67,7 +68,7 @@ use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::onion_message::messenger::{Destination, MessageRouter, PendingOnionMessage, new_pending_onion_message};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
-use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
+use crate::sign::{EntropySource, ChannelSigner, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
@@ -3265,6 +3266,14 @@ where
 	/// Gets the current configuration applied to all new channels.
 	pub fn get_current_default_configuration(&self) -> &UserConfig {
 		&self.default_configuration
+	}
+
+	pub fn get_encrypted_our_peer_storage(&self) -> Vec<u8> {
+		let mut peer_storage = VecWriter(Vec::new());
+		self.our_peer_storage.read().unwrap().write(&mut peer_storage).unwrap();
+		let mut encrypted_blob = vec![0;peer_storage.0.len() + 16];
+		self.inbound_payment_key.encrypt_our_peer_storage(&mut encrypted_blob, 0u64, b"", &peer_storage.0[..]);
+		encrypted_blob
 	}
 
 	fn create_and_insert_outbound_scid_alias(&self) -> u64 {
@@ -7470,6 +7479,42 @@ where
 		handle_new_monitor_update!(self, min_funded_chan.context.get_funding_txo().unwrap(), peer_storage_update, peer_state_lock, peer_state, per_peer_state, min_funded_chan);
 	}
 
+	fn internal_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None);
+
+		if msg.data.len() < 16 {
+			log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+			return;
+		}
+
+ 		let mut res = vec![0; msg.data.len() - 16];
+
+		match self.inbound_payment_key.decrypt_our_peer_storage(&mut res, 0u64, b"", msg.data.as_slice()) {
+			Ok(()) => {
+				// Decryption successful, the plaintext is now stored in `res`
+				log_debug!(logger, "Decryption successful");
+				let our_peer_storage = <OurPeerStorage as Readable>::read(&mut ::std::io::Cursor::new(res)).unwrap();
+
+				for ps_channel in &our_peer_storage.channels {
+					let keys: <<SP as Deref>::Target as SignerProvider>::EcdsaSigner = self.signer_provider.derive_channel_signer(ps_channel.channel_value_stoshis, ps_channel.channel_keys_id);
+					let pubkeys: crate::ln::chan_utils::ChannelPublicKeys = keys.pubkeys().clone();
+					let funding_redeemscript = make_funding_redeemscript(&pubkeys.funding_pubkey, counterparty_node_id);
+					let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
+					let monitor = ChannelMonitor::new_stub(self.secp_ctx.clone(), ps_channel, *self.best_block.read().unwrap(), keys, funding_txo_script);
+					let monitor_res =  self.chain_monitor.watch_dummy(ps_channel.funding_outpoint, monitor);
+					if let Ok(_persist_state) = monitor_res {
+						log_trace!(logger, "Dummy channel persisted!");
+					}
+				}
+			}
+			Err(_) => {
+				log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+				return;
+			}
+		}
+		
+	}
+
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -9884,7 +9929,8 @@ where
 	}
 
 	fn handle_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
-		//TODO
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.internal_your_peer_storage(counterparty_node_id, msg);
 	}
 
 	fn handle_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) {
@@ -10232,7 +10278,28 @@ where
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
+				let num_channels = peer_state.total_channel_count();
 				let pending_msg_events = &mut peer_state.pending_msg_events;
+				let peer_storage = peer_state.peer_storage.clone();
+
+				if peer_storage.len() > 0 {
+					pending_msg_events.push(events::MessageSendEvent::SendYourPeerStorageMessage { 
+						node_id: counterparty_node_id.clone(),
+						msg: msgs::YourPeerStorageMessage {
+							data: peer_storage
+						},
+					});
+				}
+
+				if peer_state.latest_features.supports_provide_peer_storage() && num_channels > 0 {
+					let our_peer_storage = self.get_encrypted_our_peer_storage();
+					pending_msg_events.push(events::MessageSendEvent::SendPeerStorageMessage { 
+						node_id: counterparty_node_id.clone(),
+						msg: msgs::PeerStorageMessage {
+							data: our_peer_storage
+						},
+					});
+				}
 
 				for (_, phase) in peer_state.channel_by_id.iter_mut() {
 					match phase {
@@ -10277,15 +10344,6 @@ where
 						},
 					}
 				}
-
-				let peer_storage = peer_state.peer_storage.clone();
-
-				pending_msg_events.push(events::MessageSendEvent::SendYourPeerStorageMessage { 
-					node_id: counterparty_node_id.clone(),
-					msg: msgs::YourPeerStorageMessage {
-						data: peer_storage
-					},
-				});
 			}
 
 			return NotifyOption::SkipPersistHandleEvents;
