@@ -18,7 +18,8 @@ use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::crypto::chacha20::ChaCha20;
-use crate::crypto::utils::hkdf_extract_expand_5x;
+use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
+use crate::crypto::utils::{hkdf_extract_expand_5x, hkdf_extract_expand_twice};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 
@@ -53,6 +54,8 @@ pub struct ExpandedKey {
 	offers_base_key: [u8; 32],
 	/// The key used to encrypt message metadata for BOLT 12 Offers.
 	offers_encryption_key: [u8; 32],
+	/// The key used to encrypt our peer storage that would be sent to our peers.
+	our_peerstorage_encryption_key: [u8;32],
 }
 
 impl ExpandedKey {
@@ -67,12 +70,14 @@ impl ExpandedKey {
 			offers_base_key,
 			offers_encryption_key,
 		) = hkdf_extract_expand_5x(b"LDK Inbound Payment Key Expansion", &key_material.0);
+		let (our_peerstorage_encryption_key, _) = hkdf_extract_expand_twice(b"Peer Storage Encryption Key", &key_material.0);
 		Self {
 			metadata_key,
 			ldk_pmt_hash_key,
 			user_pmt_hash_key,
 			offers_base_key,
 			offers_encryption_key,
+			our_peerstorage_encryption_key
 		}
 	}
 
@@ -93,6 +98,29 @@ impl ExpandedKey {
 	pub(crate) fn crypt_for_offer(&self, mut bytes: [u8; 32], nonce: Nonce) -> [u8; 32] {
 		ChaCha20::encrypt_single_block_in_place(&self.offers_encryption_key, &nonce.0, &mut bytes);
 		bytes
+	}
+
+	/// Encrypt given plaintext using [`ExpandedKey::our_peerstorage_encryption_key`].
+	pub(crate) fn encrypt_our_peer_storage(&self, res: &mut[u8], n: u64, h: &[u8], plaintext: &[u8]) {
+		let mut nonce = [0; 12];
+		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+
+		let mut chacha = ChaCha20Poly1305RFC::new(&self.our_peerstorage_encryption_key, &nonce, h);
+		let mut tag = [0; 16];
+		chacha.encrypt(plaintext, &mut res[0..plaintext.len()], &mut tag);
+		res[plaintext.len()..].copy_from_slice(&tag);
+	}
+
+	/// Decrypt given cyphertext using [`ExpandedKey::our_peerstorage_encryption_key`].
+	pub(crate) fn decrypt_our_peer_storage(&self, res: &mut[u8], n: u64, h: &[u8], cyphertext: &[u8]) -> Result<(), ()> {
+		let mut nonce = [0; 12];
+		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+
+		let mut chacha = ChaCha20Poly1305RFC::new(&self.our_peerstorage_encryption_key, &nonce, h);
+		if chacha.variable_time_decrypt(&cyphertext[0..cyphertext.len() - 16], res, &cyphertext[cyphertext.len() - 16..]).is_err() {
+			return Err(());
+		}
+		Ok(())
 	}
 }
 
