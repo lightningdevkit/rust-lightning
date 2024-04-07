@@ -577,11 +577,42 @@ pub enum PeeledOnion<T: OnionMessageContents> {
 	Receive(ParsedOnionMessageContents<T>, Option<[u8; 32]>, Option<BlindedPath>)
 }
 
+
+/// Creates an [`OnionMessage`] with the given `contents` for sending to the destination of
+/// `path`, first calling [`Destination::resolve`] on `path.destination` with the given
+/// [`ReadOnlyNetworkGraph`].
+///
+/// Returns the node id of the peer to send the message to, the message itself, and any addresses
+/// needed to connect to the first node.
+pub fn create_onion_message_resolving_destination<
+	ES: Deref, NS: Deref, NL: Deref, T: OnionMessageContents
+>(
+	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+	network_graph: &ReadOnlyNetworkGraph, secp_ctx: &Secp256k1<secp256k1::All>,
+	mut path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>,
+) -> Result<(PublicKey, OnionMessage, Option<Vec<SocketAddress>>), SendError>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	NL::Target: NodeIdLookUp,
+{
+	path.destination.resolve(network_graph);
+	create_onion_message(
+		entropy_source, node_signer, node_id_lookup, secp_ctx, path, contents, reply_path,
+	)
+}
+
 /// Creates an [`OnionMessage`] with the given `contents` for sending to the destination of
 /// `path`.
 ///
 /// Returns the node id of the peer to send the message to, the message itself, and any addresses
 /// need to connect to the first node.
+///
+/// Returns [`SendError::UnresolvedIntroductionNode`] if:
+/// - `destination` contains a blinded path with an [`IntroductionNode::DirectedShortChannelId`],
+/// - unless it can be resolved by [`NodeIdLookUp::next_node_id`].
+/// Use [`create_onion_message_resolving_destination`] instead to resolve the introduction node
+/// first with a [`ReadOnlyNetworkGraph`].
 pub fn create_onion_message<ES: Deref, NS: Deref, NL: Deref, T: OnionMessageContents>(
 	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
 	secp_ctx: &Secp256k1<secp256k1::All>, path: OnionMessagePath, contents: T,
