@@ -459,6 +459,16 @@ for OfferWithDerivedMetadataBuilder<'a> {
 	}
 }
 
+#[cfg(c_bindings)]
+impl<'a> From<OfferWithDerivedMetadataBuilder<'a>>
+for OfferBuilder<'a, DerivedMetadata, secp256k1::All> {
+	fn from(builder: OfferWithDerivedMetadataBuilder<'a>) -> Self {
+		let OfferWithDerivedMetadataBuilder { offer, metadata_strategy, secp_ctx } = builder;
+
+		Self { offer, metadata_strategy, secp_ctx }
+	}
+}
+
 /// An `Offer` is a potentially long-lived proposal for payment of a good or service.
 ///
 /// An offer is a precursor to an [`InvoiceRequest`]. A merchant publishes an offer from which a

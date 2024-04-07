@@ -375,6 +375,16 @@ for RefundMaybeWithDerivedMetadataBuilder<'a> {
 	}
 }
 
+#[cfg(c_bindings)]
+impl<'a> From<RefundMaybeWithDerivedMetadataBuilder<'a>>
+for RefundBuilder<'a, secp256k1::All> {
+	fn from(builder: RefundMaybeWithDerivedMetadataBuilder<'a>) -> Self {
+		let RefundMaybeWithDerivedMetadataBuilder { refund, secp_ctx } = builder;
+
+		Self { refund, secp_ctx }
+	}
+}
+
 /// A `Refund` is a request to send an [`Bolt12Invoice`] without a preceding [`Offer`].
 ///
 /// Typically, after an invoice is paid, the recipient may publish a refund allowing the sender to
