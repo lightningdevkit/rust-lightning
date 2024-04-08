@@ -927,6 +927,7 @@ mod tests {
 	}
 
 	struct TestSession {
+		description: &'static str,
 		inputs_a: Vec<(TxIn, TransactionU16LenLimited)>,
 		outputs_a: Vec<TxOut>,
 		inputs_b: Vec<(TxIn, TransactionU16LenLimited)>,
@@ -1016,7 +1017,12 @@ mod tests {
 							},
 							_ => ErrorCulprit::NodeA,
 						};
-						assert_eq!(Some((abort_reason, error_culprit)), session.expect_error);
+						assert_eq!(
+							Some((abort_reason, error_culprit)),
+							session.expect_error,
+							"Test: {}",
+							session.description
+						);
 						assert!(message_send_b.is_none());
 						return;
 					},
@@ -1035,7 +1041,12 @@ mod tests {
 							},
 							_ => ErrorCulprit::NodeB,
 						};
-						assert_eq!(Some((abort_reason, error_culprit)), session.expect_error);
+						assert_eq!(
+							Some((abort_reason, error_culprit)),
+							session.expect_error,
+							"Test: {}",
+							session.description
+						);
 						assert!(message_send_a.is_none());
 						return;
 					},
@@ -1154,48 +1165,48 @@ mod tests {
 
 	#[test]
 	fn test_interactive_tx_constructor() {
-		// No contributions.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "No contributions",
 			inputs_a: vec![],
 			outputs_a: vec![],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 		});
-		// Single contribution, no initiator inputs.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution, no initiator inputs",
 			inputs_a: vec![],
 			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::OutputsValueExceedsInputsValue, ErrorCulprit::NodeA)),
 		});
-		// Single contribution, no initiator outputs.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution, no initiator outputs",
 			inputs_a: generate_inputs(&[1_000_000]),
 			outputs_a: vec![],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: None,
 		});
-		// Single contribution, insufficient fees.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution, insufficient fees",
 			inputs_a: generate_inputs(&[1_000_000]),
 			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 		});
-		// Initiator contributes sufficient fees, but non-initiator does not.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator contributes sufficient fees, but non-initiator does not",
 			inputs_a: generate_inputs(&[1_000_000]),
 			outputs_a: vec![],
 			inputs_b: generate_inputs(&[100_000]),
 			outputs_b: generate_outputs(&[100_000]),
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeB)),
 		});
-		// Multi-input-output contributions from both sides.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Multi-input-output contributions from both sides",
 			inputs_a: generate_inputs(&[1_000_000, 1_000_000]),
 			outputs_a: generate_outputs(&[1_000_000, 200_000]),
 			inputs_b: generate_inputs(&[1_000_000, 500_000]),
@@ -1203,7 +1214,6 @@ mod tests {
 			expect_error: None,
 		});
 
-		// Prevout from initiator is not a witness program
 		let non_segwit_output_tx = {
 			let mut tx = generate_tx(&[1_000_000]);
 			tx.output.push(TxOut {
@@ -1225,6 +1235,7 @@ mod tests {
 			..Default::default()
 		};
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Prevout from initiator is not a witness program",
 			inputs_a: vec![(non_segwit_input, non_segwit_output_tx)],
 			outputs_a: vec![],
 			inputs_b: vec![],
@@ -1232,57 +1243,57 @@ mod tests {
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
 
-		// Invalid input sequence from initiator.
 		let tx = TransactionU16LenLimited::new(generate_tx(&[1_000_000])).unwrap();
 		let invalid_sequence_input = TxIn {
 			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
 			..Default::default()
 		};
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Invalid input sequence from initiator",
 			inputs_a: vec![(invalid_sequence_input, tx.clone())],
 			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::IncorrectInputSequenceValue, ErrorCulprit::NodeA)),
 		});
-		// Duplicate prevout from initiator.
 		let duplicate_input = TxIn {
 			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Duplicate prevout from initiator",
 			inputs_a: vec![(duplicate_input.clone(), tx.clone()), (duplicate_input, tx.clone())],
 			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeB)),
 		});
-		// Non-initiator uses same prevout as initiator.
 		let duplicate_input = TxIn {
 			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Non-initiator uses same prevout as initiator",
 			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
 			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
-		// Initiator sends too many TxAddInputs
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends too many TxAddInputs",
 			inputs_a: generate_fixed_number_of_inputs(MAX_RECEIVED_TX_ADD_INPUT_COUNT + 1),
 			outputs_a: vec![],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::ReceivedTooManyTxAddInputs, ErrorCulprit::NodeA)),
 		});
-		// Attempt to queue up two inputs with duplicate serial ids. We use a deliberately bad
-		// entropy source, `DuplicateEntropySource` to simulate this.
 		do_test_interactive_tx_constructor_with_entropy_source(
 			TestSession {
+				// We use a deliberately bad entropy source, `DuplicateEntropySource` to simulate this.
+				description: "Attempt to queue up two inputs with duplicate serial ids",
 				inputs_a: generate_fixed_number_of_inputs(2),
 				outputs_a: vec![],
 				inputs_b: vec![],
@@ -1291,42 +1302,42 @@ mod tests {
 			},
 			&DuplicateEntropySource,
 		);
-		// Initiator sends too many TxAddOutputs.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends too many TxAddOutputs",
 			inputs_a: vec![],
 			outputs_a: generate_fixed_number_of_outputs(MAX_RECEIVED_TX_ADD_OUTPUT_COUNT + 1),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::ReceivedTooManyTxAddOutputs, ErrorCulprit::NodeA)),
 		});
-		// Initiator sends an output below dust value.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends an output below dust value",
 			inputs_a: vec![],
 			outputs_a: generate_outputs(&[1]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::BelowDustLimit, ErrorCulprit::NodeA)),
 		});
-		// Initiator sends an output above maximum sats allowed.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends an output above maximum sats allowed",
 			inputs_a: vec![],
 			outputs_a: generate_outputs(&[TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::ExceededMaximumSatsAllowed, ErrorCulprit::NodeA)),
 		});
-		// Initiator sends an output without a witness program.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends an output without a witness program",
 			inputs_a: vec![],
 			outputs_a: vec![generate_non_witness_output(1_000_000)],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::InvalidOutputScript, ErrorCulprit::NodeA)),
 		});
-		// Attempt to queue up two outputs with duplicate serial ids. We use a deliberately bad
-		// entropy source, `DuplicateEntropySource` to simulate this.
 		do_test_interactive_tx_constructor_with_entropy_source(
 			TestSession {
+				// We use a deliberately bad entropy source, `DuplicateEntropySource` to simulate this.
+				description: "Attempt to queue up two outputs with duplicate serial ids",
 				inputs_a: vec![],
 				outputs_a: generate_fixed_number_of_outputs(2),
 				inputs_b: vec![],
@@ -1336,8 +1347,8 @@ mod tests {
 			&DuplicateEntropySource,
 		);
 
-		// Peer contributed more output value than inputs
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Peer contributed more output value than inputs",
 			inputs_a: generate_inputs(&[100_000]),
 			outputs_a: generate_outputs(&[1_000_000]),
 			inputs_b: vec![],
@@ -1345,8 +1356,8 @@ mod tests {
 			expect_error: Some((AbortReason::OutputsValueExceedsInputsValue, ErrorCulprit::NodeA)),
 		});
 
-		// Peer contributed more than allowed number of inputs.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Peer contributed more than allowed number of inputs",
 			inputs_a: generate_fixed_number_of_inputs(MAX_INPUTS_OUTPUTS_COUNT as u16 + 1),
 			outputs_a: vec![],
 			inputs_b: vec![],
@@ -1356,8 +1367,8 @@ mod tests {
 				ErrorCulprit::Indeterminate,
 			)),
 		});
-		// Peer contributed more than allowed number of outputs.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Peer contributed more than allowed number of outputs",
 			inputs_a: generate_inputs(&[TOTAL_BITCOIN_SUPPLY_SATOSHIS]),
 			outputs_a: generate_fixed_number_of_outputs(MAX_INPUTS_OUTPUTS_COUNT as u16 + 1),
 			inputs_b: vec![],
