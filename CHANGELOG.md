@@ -1,3 +1,20 @@
+# 0.0.122 - Apr 09, 2024 - "That Which Is Untested Is Broken"
+
+## Bug Fixes
+ * `Route` objects did not successfully round-trip through de/serialization
+   since LDK 0.0.117, which has now been fixed (#2897).
+ * Correct deserialization of unknown future enum variants. This ensures
+   downgrades from future versions of LDK do not result in read failures or
+   corrupt reads in cases where enums are written (#2969).
+ * When hitting lnd bug 6039, our workaround previously resulted in
+   `ChannelManager` persistences on every round-trip with our peer. These
+   useless persistences are now skipped (#2937).
+
+In total, this release features 4 files changed, 99 insertions, 55
+deletions in 6 commits from 1 author, in alphabetical order:
+ * Matt Corallo
+
+
 # 0.0.121 - Jan 22, 2024 - "Unwraps are Bad"
 
 ## Bug Fixes
