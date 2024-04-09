@@ -508,20 +508,20 @@ impl Writeable for Route {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 		(self.paths.len() as u64).write(writer)?;
 		let mut blinded_tails = Vec::new();
-		for path in self.paths.iter() {
+		for (idx, path) in self.paths.iter().enumerate() {
 			(path.hops.len() as u8).write(writer)?;
-			for (idx, hop) in path.hops.iter().enumerate() {
+			for hop in path.hops.iter() {
 				hop.write(writer)?;
-				if let Some(blinded_tail) = &path.blinded_tail {
-					if blinded_tails.is_empty() {
-						blinded_tails = Vec::with_capacity(path.hops.len());
-						for _ in 0..idx {
-							blinded_tails.push(None);
-						}
-					}
-					blinded_tails.push(Some(blinded_tail));
-				} else if !blinded_tails.is_empty() { blinded_tails.push(None); }
 			}
+			if let Some(blinded_tail) = &path.blinded_tail {
+				if blinded_tails.is_empty() {
+					blinded_tails = Vec::with_capacity(path.hops.len());
+					for _ in 0..idx {
+						blinded_tails.push(None);
+					}
+				}
+				blinded_tails.push(Some(blinded_tail));
+			} else if !blinded_tails.is_empty() { blinded_tails.push(None); }
 		}
 		write_tlv_fields!(writer, {
 			// For compatibility with LDK versions prior to 0.0.117, we take the individual
@@ -529,7 +529,7 @@ impl Writeable for Route {
 			(1, self.route_params.as_ref().map(|p| &p.payment_params), option),
 			(2, blinded_tails, optional_vec),
 			(3, self.route_params.as_ref().map(|p| p.final_value_msat), option),
-			(5, self.route_params.as_ref().map(|p| p.max_total_routing_fee_msat), option),
+			(5, self.route_params.as_ref().and_then(|p| p.max_total_routing_fee_msat), option),
 		});
 		Ok(())
 	}
