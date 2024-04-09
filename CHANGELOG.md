@@ -34,6 +34,7 @@ deletions in 4 commits from 2 authors, in alphabetical order:
  * Jeffrey Czyz
  * Matt Corallo
 
+
 # 0.0.120 - Jan 17, 2024 - "Unblinded Fuzzers"
 
 ## API Updates
@@ -81,6 +82,7 @@ deletions in 79 commits from 9 authors, in alphabetical order:
  * benthecarman
  * optout
  * shuoer86
+
 
 # 0.0.119 - Dec 15, 2023 - "Spring Cleaning for Christmas"
 
