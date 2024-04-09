@@ -11,6 +11,7 @@ use bitcoin::secp256k1::{KeyPair, Parity, PublicKey, Secp256k1, SecretKey, self}
 use crate::utils::test_logger;
 use core::convert::TryFrom;
 use lightning::blinded_path::BlindedPath;
+use lightning::blinded_path::message::ForwardNode;
 use lightning::sign::EntropySource;
 use lightning::ln::PaymentHash;
 use lightning::ln::features::BlindedHopFeatures;
@@ -73,9 +74,19 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	invoice_request: &InvoiceRequest, secp_ctx: &Secp256k1<T>
 ) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 	let entropy_source = Randomness {};
+	let intermediate_nodes = [
+		[
+			ForwardNode { node_id: pubkey(43), short_channel_id: None },
+			ForwardNode { node_id: pubkey(44), short_channel_id: None },
+		],
+		[
+			ForwardNode { node_id: pubkey(45), short_channel_id: None },
+			ForwardNode { node_id: pubkey(46), short_channel_id: None },
+		],
+	];
 	let paths = vec![
-		BlindedPath::new_for_message(&[pubkey(43), pubkey(44), pubkey(42)], &entropy_source, secp_ctx).unwrap(),
-		BlindedPath::new_for_message(&[pubkey(45), pubkey(46), pubkey(42)], &entropy_source, secp_ctx).unwrap(),
+		BlindedPath::new_for_message(&intermediate_nodes[0], pubkey(42), &entropy_source, secp_ctx).unwrap(),
+		BlindedPath::new_for_message(&intermediate_nodes[1], pubkey(42), &entropy_source, secp_ctx).unwrap(),
 	];
 
 	let payinfo = vec![
