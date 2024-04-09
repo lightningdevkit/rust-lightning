@@ -771,15 +771,7 @@ impl<T: sealed::Context> Features<T> {
 		// unknown features.
 		self.flags.iter().enumerate().any(|(i, &byte)| {
 			const REQUIRED_FEATURES: u8 = 0b01_01_01_01;
-			const OPTIONAL_FEATURES: u8 = 0b10_10_10_10;
-			let unknown_features = if i < other.flags.len() {
-				// Form a mask similar to !T::KNOWN_FEATURE_MASK only for `other`
-				!(other.flags[i]
-					| ((other.flags[i] >> 1) & REQUIRED_FEATURES)
-					| ((other.flags[i] << 1) & OPTIONAL_FEATURES))
-			} else {
-				0b11_11_11_11
-			};
+			let unknown_features = unset_features_mask_at_position(other, i);
 			(byte & (REQUIRED_FEATURES & unknown_features)) != 0
 		})
 	}
@@ -790,17 +782,7 @@ impl<T: sealed::Context> Features<T> {
 		// Bitwise AND-ing with all even bits set except for known features will select required
 		// unknown features.
 		self.flags.iter().enumerate().for_each(|(i, &byte)| {
-			const REQUIRED_FEATURES: u8 = 0b01_01_01_01;
-			const OPTIONAL_FEATURES: u8 = 0b10_10_10_10;
-			let unknown_features = if i < other.flags.len() {
-				// Form a mask similar to !T::KNOWN_FEATURE_MASK only for `other`
-				!(other.flags[i]
-					| ((other.flags[i] >> 1) & REQUIRED_FEATURES)
-					| ((other.flags[i] << 1) & OPTIONAL_FEATURES))
-			} else {
-				0b11_11_11_11
-			};
-
+			let unknown_features = unset_features_mask_at_position(other, i);
 			if byte & unknown_features != 0 {
 				for bit in (0..8).step_by(2) {
 					if ((byte & unknown_features) >> bit) & 1 == 1 {
@@ -1044,6 +1026,19 @@ impl<T: sealed::Context> Readable for WithoutLength<Features<T>> {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let v = io_extras::read_to_end(r)?;
 		Ok(WithoutLength(Features::<T>::from_be_bytes(v)))
+	}
+}
+
+pub(crate) fn unset_features_mask_at_position<T: sealed::Context>(other: &Features<T>, index: usize) -> u8 {
+	const REQUIRED_FEATURES: u8 = 0b01_01_01_01;
+	const OPTIONAL_FEATURES: u8 = 0b10_10_10_10;
+	if index < other.flags.len() {
+		// Form a mask similar to !T::KNOWN_FEATURE_MASK only for `other`
+		!(other.flags[index]
+			| ((other.flags[index] >> 1) & REQUIRED_FEATURES)
+			| ((other.flags[index] << 1) & OPTIONAL_FEATURES))
+	} else {
+		0b11_11_11_11
 	}
 }
 
