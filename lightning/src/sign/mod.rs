@@ -135,6 +135,10 @@ pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
 	1 /* pubkey length */ +
 	33 /* pubkey */;
 
+/// Witness weight for satisying a P2TR key-path spend.
+pub(crate) const P2TR_KEY_PATH_WITNESS_WEIGHT: u64 = 1 /* witness items */
+	+ 1 /* schnorr sig len */ + 64 /* schnorr sig */;
+
 /// Information about a spendable output to our "payment key".
 ///
 /// See [`SpendableOutputDescriptor::StaticPaymentOutput`] for more details on how to spend this.

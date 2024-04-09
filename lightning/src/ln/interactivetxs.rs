@@ -15,7 +15,7 @@ use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::consensus::Encodable;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::{
-	absolute::LockTime as AbsoluteLockTime, OutPoint, Sequence, Transaction, TxIn, TxOut,
+	absolute::LockTime as AbsoluteLockTime, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
 };
 
 use crate::chain::chaininterface::fee_for_weight;
@@ -23,7 +23,7 @@ use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::msgs::SerialId;
 use crate::ln::{msgs, ChannelId};
-use crate::sign::EntropySource;
+use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::util::ser::TransactionU16LenLimited;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
@@ -37,6 +37,29 @@ const MAX_RECEIVED_TX_ADD_OUTPUT_COUNT: u16 = 4096;
 /// The number of inputs or outputs that the state machine can have, before it MUST fail the
 /// negotiation.
 const MAX_INPUTS_OUTPUTS_COUNT: usize = 252;
+
+/// The total weight of the common fields whose fee is paid by the initiator of the interactive
+/// transaction construction protocol.
+const TX_COMMON_FIELDS_WEIGHT: u64 = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ +
+	1 /* output count */) * WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
+
+// BOLT 3 - Lower bounds for input weights
+
+/// Lower bound for P2WPKH input weight
+pub(crate) const P2WPKH_INPUT_WEIGHT_LOWER_BOUND: u64 =
+	BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + P2WPKH_WITNESS_WEIGHT;
+
+/// Lower bound for P2WSH input weight is chosen as same as P2WPKH input weight in BOLT 3
+pub(crate) const P2WSH_INPUT_WEIGHT_LOWER_BOUND: u64 = P2WPKH_INPUT_WEIGHT_LOWER_BOUND;
+
+/// Lower bound for P2TR input weight is chosen as the key spend path.
+/// Not specified in BOLT 3, but a reasonable lower bound.
+pub(crate) const P2TR_INPUT_WEIGHT_LOWER_BOUND: u64 =
+	BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + P2TR_KEY_PATH_WITNESS_WEIGHT;
+
+/// Lower bound for unknown segwit version input weight is chosen the same as P2WPKH in BOLT 3
+pub(crate) const UNKNOWN_SEGWIT_VERSION_INPUT_WEIGHT_LOWER_BOUND: u64 =
+	P2WPKH_INPUT_WEIGHT_LOWER_BOUND;
 
 trait SerialIdExt {
 	fn is_for_initiator(&self) -> bool;
@@ -90,6 +113,11 @@ struct NegotiationContext {
 	outputs: HashMap<SerialId, TxOut>,
 	tx_locktime: AbsoluteLockTime,
 	feerate_sat_per_kw: u32,
+}
+
+pub(crate) fn get_output_weight(script_pubkey: &ScriptBuf) -> u64 {
+	(8 /* value */ + script_pubkey.consensus_encode(&mut sink()).unwrap() as u64)
+		* WITNESS_SCALE_FACTOR as u64
 }
 
 impl NegotiationContext {
@@ -332,6 +360,48 @@ impl NegotiationContext {
 		Ok(())
 	}
 
+	fn check_counterparty_fees(
+		&self, counterparty_inputs_value: u64, counterparty_outputs_value: u64,
+	) -> Result<(), AbortReason> {
+		let mut counterparty_weight_contributed: u64 = self
+			.counterparty_outputs_contributed()
+			.map(|output| get_output_weight(&output.script_pubkey))
+			.sum();
+		// We don't know the counterparty's witnesses ahead of time obviously, so we use the lower bounds
+		// specified in BOLT 3.
+		let mut total_inputs_weight: u64 = 0;
+		for TxInputWithPrevOutput { prev_output, .. } in self.counterparty_inputs_contributed() {
+			total_inputs_weight =
+				total_inputs_weight.saturating_add(if prev_output.script_pubkey.is_v0_p2wpkh() {
+					P2WPKH_INPUT_WEIGHT_LOWER_BOUND
+				} else if prev_output.script_pubkey.is_v0_p2wsh() {
+					P2WSH_INPUT_WEIGHT_LOWER_BOUND
+				} else if prev_output.script_pubkey.is_v1_p2tr() {
+					P2TR_INPUT_WEIGHT_LOWER_BOUND
+				} else {
+					UNKNOWN_SEGWIT_VERSION_INPUT_WEIGHT_LOWER_BOUND
+				});
+		}
+		counterparty_weight_contributed =
+			counterparty_weight_contributed.saturating_add(total_inputs_weight);
+		let counterparty_fees_contributed =
+			counterparty_inputs_value.saturating_sub(counterparty_outputs_value);
+		let mut required_counterparty_contribution_fee =
+			fee_for_weight(self.feerate_sat_per_kw, counterparty_weight_contributed);
+		if !self.holder_is_initiator {
+			// if is the non-initiator:
+			// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
+			// 		input count, output count, locktime)
+			let tx_common_fields_fee =
+				fee_for_weight(self.feerate_sat_per_kw, TX_COMMON_FIELDS_WEIGHT);
+			required_counterparty_contribution_fee += tx_common_fields_fee;
+		}
+		if counterparty_fees_contributed < required_counterparty_contribution_fee {
+			return Err(AbortReason::InsufficientFees);
+		}
+		Ok(())
+	}
+
 	fn build_transaction(self) -> Result<Transaction, AbortReason> {
 		// The receiving node:
 		// MUST fail the negotiation if:
@@ -358,37 +428,8 @@ impl NegotiationContext {
 			return Err(AbortReason::ExceededNumberOfInputsOrOutputs);
 		}
 
-		// TODO: How do we enforce their fees cover the witness without knowing its expected length?
-		const INPUT_WEIGHT: u64 = BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
-
 		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
-		let mut counterparty_weight_contributed: u64 = self
-			.counterparty_outputs_contributed()
-			.map(|output| {
-				(8 /* value */ + output.script_pubkey.consensus_encode(&mut sink()).unwrap() as u64)
-					* WITNESS_SCALE_FACTOR as u64
-			})
-			.sum();
-		counterparty_weight_contributed +=
-			self.counterparty_inputs_contributed().count() as u64 * INPUT_WEIGHT;
-		let counterparty_fees_contributed =
-			counterparty_inputs_value.saturating_sub(counterparty_outputs_value);
-		let mut required_counterparty_contribution_fee =
-			fee_for_weight(self.feerate_sat_per_kw, counterparty_weight_contributed);
-		if !self.holder_is_initiator {
-			// if is the non-initiator:
-			// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
-			// 		input count, output count, locktime)
-			let tx_common_fields_weight =
-		        (4 /* version */ + 4 /* locktime */ + 1 /* input count */ + 1 /* output count */) *
-		            WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
-			let tx_common_fields_fee =
-				fee_for_weight(self.feerate_sat_per_kw, tx_common_fields_weight);
-			required_counterparty_contribution_fee += tx_common_fields_fee;
-		}
-		if counterparty_fees_contributed < required_counterparty_contribution_fee {
-			return Err(AbortReason::InsufficientFees);
-		}
+		self.check_counterparty_fees(counterparty_inputs_value, counterparty_outputs_value)?;
 
 		// Inputs and outputs must be sorted by serial_id
 		let mut inputs = self.inputs.into_iter().collect::<Vec<_>>();
@@ -868,7 +909,7 @@ impl InteractiveTxConstructor {
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
+	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	use crate::ln::interactivetxs::{
 		generate_holder_serial_id, AbortReason, HandleTxCompleteValue, InteractiveTxConstructor,
@@ -881,10 +922,21 @@ mod tests {
 	use crate::util::ser::TransactionU16LenLimited;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::script::Builder;
+	use bitcoin::hashes::Hash;
+	use bitcoin::key::UntweakedPublicKey;
+	use bitcoin::secp256k1::{KeyPair, Secp256k1};
 	use bitcoin::{
 		absolute::LockTime as AbsoluteLockTime, OutPoint, Sequence, Transaction, TxIn, TxOut,
 	};
+	use bitcoin::{PubkeyHash, ScriptBuf, WPubkeyHash, WScriptHash};
 	use core::ops::Deref;
+
+	use super::{
+		get_output_weight, P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
+		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
+	};
+
+	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
 
 	// A simple entropy source that works based on an atomic counter.
 	struct TestEntropySource(AtomicCounter);
@@ -959,7 +1011,7 @@ mod tests {
 		let (mut constructor_a, first_message_a) = InteractiveTxConstructor::new(
 			entropy_source,
 			channel_id,
-			FEERATE_FLOOR_SATS_PER_KW * 10,
+			TEST_FEERATE_SATS_PER_KW,
 			true,
 			tx_locktime,
 			session.inputs_a,
@@ -968,7 +1020,7 @@ mod tests {
 		let (mut constructor_b, first_message_b) = InteractiveTxConstructor::new(
 			entropy_source,
 			channel_id,
-			FEERATE_FLOOR_SATS_PER_KW * 10,
+			TEST_FEERATE_SATS_PER_KW,
 			false,
 			tx_locktime,
 			session.inputs_b,
@@ -1056,33 +1108,61 @@ mod tests {
 		assert!(message_send_a.is_none());
 		assert!(message_send_b.is_none());
 		assert_eq!(final_tx_a, final_tx_b);
-		assert!(session.expect_error.is_none());
+		assert!(session.expect_error.is_none(), "Test: {}", session.description);
 	}
 
-	fn generate_tx(values: &[u64]) -> Transaction {
-		generate_tx_with_locktime(values, 1337)
+	#[derive(Debug, Clone, Copy)]
+	enum TestOutput {
+		P2WPKH(u64),
+		P2WSH(u64),
+		P2TR(u64),
+		// Non-witness type to test rejection.
+		P2PKH(u64),
 	}
 
-	fn generate_tx_with_locktime(values: &[u64], locktime: u32) -> Transaction {
+	fn generate_tx(outputs: &[TestOutput]) -> Transaction {
+		generate_tx_with_locktime(outputs, 1337)
+	}
+
+	fn generate_txout(output: &TestOutput) -> TxOut {
+		let secp_ctx = Secp256k1::new();
+		let (value, script_pubkey) = match output {
+			TestOutput::P2WPKH(value) => {
+				(*value, ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::from_slice(&[1; 20]).unwrap()))
+			},
+			TestOutput::P2WSH(value) => {
+				(*value, ScriptBuf::new_v0_p2wsh(&WScriptHash::from_slice(&[2; 32]).unwrap()))
+			},
+			TestOutput::P2TR(value) => (
+				*value,
+				ScriptBuf::new_v1_p2tr(
+					&secp_ctx,
+					UntweakedPublicKey::from_keypair(
+						&KeyPair::from_seckey_slice(&secp_ctx, &[3; 32]).unwrap(),
+					)
+					.0,
+					None,
+				),
+			),
+			TestOutput::P2PKH(value) => {
+				(*value, ScriptBuf::new_p2pkh(&PubkeyHash::from_slice(&[4; 20]).unwrap()))
+			},
+		};
+
+		TxOut { value, script_pubkey }
+	}
+
+	fn generate_tx_with_locktime(outputs: &[TestOutput], locktime: u32) -> Transaction {
 		Transaction {
 			version: 2,
 			lock_time: AbsoluteLockTime::from_height(locktime).unwrap(),
 			input: vec![TxIn { ..Default::default() }],
-			output: values
-				.iter()
-				.map(|value| TxOut {
-					value: *value,
-					script_pubkey: Builder::new()
-						.push_opcode(opcodes::OP_TRUE)
-						.into_script()
-						.to_v0_p2wsh(),
-				})
-				.collect(),
+			output: outputs.iter().map(generate_txout).collect(),
 		}
 	}
 
-	fn generate_inputs(values: &[u64]) -> Vec<(TxIn, TransactionU16LenLimited)> {
-		let tx = generate_tx(values);
+	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, TransactionU16LenLimited)> {
+		let tx = generate_tx(outputs);
 		let txid = tx.txid();
 		tx.output
 			.iter()
@@ -1099,17 +1179,16 @@ mod tests {
 			.collect()
 	}
 
-	fn generate_outputs(values: &[u64]) -> Vec<TxOut> {
-		values
-			.iter()
-			.map(|value| TxOut {
-				value: *value,
-				script_pubkey: Builder::new()
-					.push_opcode(opcodes::OP_TRUE)
-					.into_script()
-					.to_v0_p2wsh(),
-			})
-			.collect()
+	fn generate_p2wsh_script_pubkey() -> ScriptBuf {
+		Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_v0_p2wsh()
+	}
+
+	fn generate_p2wpkh_script_pubkey() -> ScriptBuf {
+		ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::from_slice(&[1; 20]).unwrap())
+	}
+
+	fn generate_outputs(outputs: &[TestOutput]) -> Vec<TxOut> {
+		outputs.iter().map(generate_txout).collect()
 	}
 
 	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, TransactionU16LenLimited)> {
@@ -1125,7 +1204,7 @@ mod tests {
 
 			// Use unique locktime for each tx so outpoints are different across transactions
 			let tx = generate_tx_with_locktime(
-				&vec![1_000_000; tx_output_count as usize],
+				&vec![TestOutput::P2WPKH(1_000_000); tx_output_count as usize],
 				(1337 + remaining).into(),
 			);
 			let txid = tx.txid();
@@ -1153,14 +1232,15 @@ mod tests {
 
 	fn generate_fixed_number_of_outputs(count: u16) -> Vec<TxOut> {
 		// Set a constant value for each TxOut
-		generate_outputs(&vec![1_000_000; count as usize])
+		generate_outputs(&vec![TestOutput::P2WPKH(1_000_000); count as usize])
+	}
+
+	fn generate_p2sh_script_pubkey() -> ScriptBuf {
+		Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_p2sh()
 	}
 
 	fn generate_non_witness_output(value: u64) -> TxOut {
-		TxOut {
-			value,
-			script_pubkey: Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_p2sh(),
-		}
+		TxOut { value, script_pubkey: generate_p2sh_script_pubkey() }
 	}
 
 	#[test]
@@ -1176,74 +1256,133 @@ mod tests {
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution, no initiator inputs",
 			inputs_a: vec![],
-			outputs_a: generate_outputs(&[1_000_000]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::OutputsValueExceedsInputsValue, ErrorCulprit::NodeA)),
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Single contribution, no initiator outputs",
-			inputs_a: generate_inputs(&[1_000_000]),
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
 			outputs_a: vec![],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: None,
 		});
 		do_test_interactive_tx_constructor(TestSession {
-			description: "Single contribution, insufficient fees",
-			inputs_a: generate_inputs(&[1_000_000]),
-			outputs_a: generate_outputs(&[1_000_000]),
+			description: "Single contribution, no fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
+		});
+		let p2wpkh_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2WPKH_INPUT_WEIGHT_LOWER_BOUND);
+		let outputs_fee = fee_for_weight(
+			TEST_FEERATE_SATS_PER_KW,
+			get_output_weight(&generate_p2wpkh_script_pubkey()),
+		);
+		let tx_common_fields_fee =
+			fee_for_weight(TEST_FEERATE_SATS_PER_KW, TX_COMMON_FIELDS_WEIGHT);
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution, with P2WPKH input, insufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2wpkh_fee - outputs_fee - tx_common_fields_fee + 1, /* makes fees insuffcient for initiator */
+			)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 		});
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution with P2WPKH input, sufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2wpkh_fee - outputs_fee - tx_common_fields_fee,
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: None,
+		});
+		let p2wsh_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2WSH_INPUT_WEIGHT_LOWER_BOUND);
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution, with P2WSH input, insufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WSH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2wsh_fee - outputs_fee - tx_common_fields_fee + 1, /* makes fees insuffcient for initiator */
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
+		});
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution with P2WSH input, sufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WSH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2wsh_fee - outputs_fee - tx_common_fields_fee,
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: None,
+		});
+		let p2tr_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2TR_INPUT_WEIGHT_LOWER_BOUND);
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution, with P2TR input, insufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2TR(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2tr_fee - outputs_fee - tx_common_fields_fee + 1, /* makes fees insuffcient for initiator */
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
+		});
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution with P2TR input, sufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2TR(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2tr_fee - outputs_fee - tx_common_fields_fee,
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: None,
+		});
+		do_test_interactive_tx_constructor(TestSession {
 			description: "Initiator contributes sufficient fees, but non-initiator does not",
-			inputs_a: generate_inputs(&[1_000_000]),
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
 			outputs_a: vec![],
-			inputs_b: generate_inputs(&[100_000]),
-			outputs_b: generate_outputs(&[100_000]),
+			inputs_b: generate_inputs(&[TestOutput::P2WPKH(100_000)]),
+			outputs_b: generate_outputs(&[TestOutput::P2WPKH(100_000)]),
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeB)),
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Multi-input-output contributions from both sides",
-			inputs_a: generate_inputs(&[1_000_000, 1_000_000]),
-			outputs_a: generate_outputs(&[1_000_000, 200_000]),
-			inputs_b: generate_inputs(&[1_000_000, 500_000]),
-			outputs_b: generate_outputs(&[1_000_000, 400_000]),
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000); 2]),
+			outputs_a: generate_outputs(&[
+				TestOutput::P2WPKH(1_000_000),
+				TestOutput::P2WPKH(200_000),
+			]),
+			inputs_b: generate_inputs(&[
+				TestOutput::P2WPKH(1_000_000),
+				TestOutput::P2WPKH(500_000),
+			]),
+			outputs_b: generate_outputs(&[
+				TestOutput::P2WPKH(1_000_000),
+				TestOutput::P2WPKH(400_000),
+			]),
 			expect_error: None,
 		});
 
-		let non_segwit_output_tx = {
-			let mut tx = generate_tx(&[1_000_000]);
-			tx.output.push(TxOut {
-				script_pubkey: Builder::new()
-					.push_opcode(opcodes::all::OP_RETURN)
-					.into_script()
-					.to_p2sh(),
-				..Default::default()
-			});
-
-			TransactionU16LenLimited::new(tx).unwrap()
-		};
-		let non_segwit_input = TxIn {
-			previous_output: OutPoint {
-				txid: non_segwit_output_tx.as_transaction().txid(),
-				vout: 1,
-			},
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			..Default::default()
-		};
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Prevout from initiator is not a witness program",
-			inputs_a: vec![(non_segwit_input, non_segwit_output_tx)],
+			inputs_a: generate_inputs(&[TestOutput::P2PKH(1_000_000)]),
 			outputs_a: vec![],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
 
-		let tx = TransactionU16LenLimited::new(generate_tx(&[1_000_000])).unwrap();
+		let tx =
+			TransactionU16LenLimited::new(generate_tx(&[TestOutput::P2WPKH(1_000_000)])).unwrap();
 		let invalid_sequence_input = TxIn {
 			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
 			..Default::default()
@@ -1251,7 +1390,7 @@ mod tests {
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Invalid input sequence from initiator",
 			inputs_a: vec![(invalid_sequence_input, tx.clone())],
-			outputs_a: generate_outputs(&[1_000_000]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::IncorrectInputSequenceValue, ErrorCulprit::NodeA)),
@@ -1264,7 +1403,7 @@ mod tests {
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Duplicate prevout from initiator",
 			inputs_a: vec![(duplicate_input.clone(), tx.clone()), (duplicate_input, tx.clone())],
-			outputs_a: generate_outputs(&[1_000_000]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeB)),
@@ -1277,7 +1416,7 @@ mod tests {
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
 			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
-			outputs_a: generate_outputs(&[1_000_000]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
@@ -1313,7 +1452,9 @@ mod tests {
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Initiator sends an output below dust value",
 			inputs_a: vec![],
-			outputs_a: generate_outputs(&[1]),
+			outputs_a: generate_outputs(&[TestOutput::P2WSH(
+				generate_p2wsh_script_pubkey().dust_value().to_sat() - 1,
+			)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::BelowDustLimit, ErrorCulprit::NodeA)),
@@ -1321,7 +1462,7 @@ mod tests {
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Initiator sends an output above maximum sats allowed",
 			inputs_a: vec![],
-			outputs_a: generate_outputs(&[TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::ExceededMaximumSatsAllowed, ErrorCulprit::NodeA)),
@@ -1349,8 +1490,8 @@ mod tests {
 
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Peer contributed more output value than inputs",
-			inputs_a: generate_inputs(&[100_000]),
-			outputs_a: generate_outputs(&[1_000_000]),
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(100_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::OutputsValueExceedsInputsValue, ErrorCulprit::NodeA)),
@@ -1369,7 +1510,7 @@ mod tests {
 		});
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Peer contributed more than allowed number of outputs",
-			inputs_a: generate_inputs(&[TOTAL_BITCOIN_SUPPLY_SATOSHIS]),
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(TOTAL_BITCOIN_SUPPLY_SATOSHIS)]),
 			outputs_a: generate_fixed_number_of_outputs(MAX_INPUTS_OUTPUTS_COUNT as u16 + 1),
 			inputs_b: vec![],
 			outputs_b: vec![],
