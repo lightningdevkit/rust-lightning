@@ -41,6 +41,7 @@
 //! blinded paths are used.
 
 use bitcoin::network::constants::Network;
+use bitcoin::secp256k1::PublicKey;
 use core::time::Duration;
 use crate::blinded_path::{BlindedPath, IntroductionNode};
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
@@ -131,6 +132,12 @@ fn announce_node_address<'a, 'b, 'c>(
 	for peer in peers {
 		peer.gossip_sync.handle_node_announcement(&msg).unwrap();
 	}
+}
+
+fn resolve_introduction_node<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &BlindedPath) -> PublicKey {
+	path.public_introduction_node_id(&node.network_graph.read_only())
+		.and_then(|node_id| node_id.as_pubkey().ok())
+		.unwrap()
 }
 
 fn route_bolt12_payment<'a, 'b, 'c>(
@@ -273,8 +280,9 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	assert_ne!(offer.signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_ne!(path.introduction_node, IntroductionNode::NodeId(bob_id));
-		assert_ne!(path.introduction_node, IntroductionNode::NodeId(charlie_id));
+		let introduction_node_id = resolve_introduction_node(david, &path);
+		assert_ne!(introduction_node_id, bob_id);
+		assert_ne!(introduction_node_id, charlie_id);
 	}
 
 	// Use a one-hop blinded path when Bob is announced and all his peers are Tor-only.
@@ -288,7 +296,8 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	assert_ne!(offer.signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+		let introduction_node_id = resolve_introduction_node(david, &path);
+		assert_eq!(introduction_node_id, bob_id);
 	}
 }
 
@@ -338,7 +347,8 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 	assert_ne!(offer.signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node, IntroductionNode::NodeId(nodes[4].node.get_our_node_id()));
+		let introduction_node_id = resolve_introduction_node(david, &path);
+		assert_eq!(introduction_node_id, nodes[4].node.get_our_node_id());
 	}
 }
 
@@ -388,7 +398,9 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+		let introduction_node_id = resolve_introduction_node(david, &path);
+		assert_eq!(introduction_node_id, bob_id);
+		assert!(matches!(path.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
 	}
 
 	let payment_id = PaymentId([1; 32]);
@@ -415,9 +427,11 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 			payer_note_truncated: None,
 		},
 	});
+	let introduction_node_id = resolve_introduction_node(alice, &reply_path);
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), david_id);
-	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(charlie_id));
+	assert_eq!(introduction_node_id, charlie_id);
+	assert!(matches!(reply_path.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
@@ -489,7 +503,9 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	assert_ne!(refund.payer_id(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.introduction_node, IntroductionNode::NodeId(charlie_id));
+		let introduction_node_id = resolve_introduction_node(alice, &path);
+		assert_eq!(introduction_node_id, charlie_id);
+		assert!(matches!(path.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
 	}
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -545,7 +561,9 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
+		let introduction_node_id = resolve_introduction_node(bob, &path);
+		assert_eq!(introduction_node_id, alice_id);
+		assert!(matches!(path.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
 	}
 
 	let payment_id = PaymentId([1; 32]);
@@ -564,9 +582,11 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 			payer_note_truncated: None,
 		},
 	});
+	let introduction_node_id = resolve_introduction_node(alice, &reply_path);
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), bob_id);
-	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(bob_id));
+	assert_eq!(introduction_node_id, bob_id);
+	assert!(matches!(reply_path.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
@@ -614,7 +634,9 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	assert_ne!(refund.payer_id(), bob_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+		let introduction_node_id = resolve_introduction_node(alice, &path);
+		assert_eq!(introduction_node_id, bob_id);
+		assert!(matches!(path.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
 	}
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 

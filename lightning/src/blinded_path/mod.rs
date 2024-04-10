@@ -21,6 +21,7 @@ use crate::offers::invoice::BlindedPayInfo;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
+use crate::util::scid_utils;
 
 use crate::io;
 use crate::prelude::*;
@@ -215,6 +216,35 @@ impl BlindedPath {
 						Direction::NodeTwo => &c.node_two,
 					})
 			},
+		}
+	}
+
+	/// Attempts to a use a compact representation for the [`IntroductionNode`] by using a directed
+	/// short channel id from a channel in `network_graph` leading to the introduction node.
+	///
+	/// While this may result in a smaller encoding, there is a trade off in that the path may
+	/// become invalid if the channel is closed or hasn't been propagated via gossip. Therefore,
+	/// calling this may not be suitable for long-lived blinded paths.
+	pub fn use_compact_introduction_node(&mut self, network_graph: &ReadOnlyNetworkGraph) {
+		if let IntroductionNode::NodeId(pubkey) = &self.introduction_node {
+			let node_id = NodeId::from_pubkey(pubkey);
+			if let Some(node_info) = network_graph.node(&node_id) {
+				if let Some((scid, channel_info)) = node_info
+					.channels
+					.iter()
+					.filter_map(|scid| network_graph.channel(*scid).map(|info| (*scid, info)))
+					.min_by_key(|(scid, _)| scid_utils::block_from_scid(*scid))
+				{
+					let direction = if node_id == channel_info.node_one {
+						Direction::NodeOne
+					} else {
+						debug_assert_eq!(node_id, channel_info.node_two);
+						Direction::NodeTwo
+					};
+					self.introduction_node =
+						IntroductionNode::DirectedShortChannelId(direction, scid);
+				}
+			}
 		}
 	}
 }

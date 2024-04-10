@@ -445,7 +445,7 @@ where
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
 
-		match paths {
+		let mut paths = match paths {
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if is_recipient_announced {
@@ -455,7 +455,12 @@ where
 					Err(())
 				}
 			},
+		}?;
+		for path in &mut paths {
+			path.use_compact_introduction_node(&network_graph);
 		}
+
+		Ok(paths)
 	}
 }
 
