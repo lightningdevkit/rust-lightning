@@ -178,11 +178,11 @@ fn claim_bolt12_payment<'a, 'b, 'c>(
 
 fn extract_invoice_request<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, message: &OnionMessage
-) -> (InvoiceRequest, Option<BlindedPath>) {
+) -> (InvoiceRequest, BlindedPath) {
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Receive(message, _, reply_path)) => match message {
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
-				OffersMessage::InvoiceRequest(invoice_request) => (invoice_request, reply_path),
+				OffersMessage::InvoiceRequest(invoice_request) => (invoice_request, reply_path.unwrap()),
 				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
 				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 			},
@@ -417,7 +417,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), david_id);
-	assert_eq!(reply_path.unwrap().introduction_node, IntroductionNode::NodeId(charlie_id));
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(charlie_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
@@ -566,7 +566,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), bob_id);
-	assert_eq!(reply_path.unwrap().introduction_node, IntroductionNode::NodeId(bob_id));
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(bob_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
