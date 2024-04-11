@@ -363,8 +363,9 @@ where C::Target: chain::Filter,
 		let mut txn_outputs;
 		{
 			txn_outputs = process(monitor, txdata);
+			let chain_sync_update_id = self.sync_persistence_id.get_increment();
 			let update_id = MonitorUpdateId {
-				contents: UpdateOrigin::ChainSync(self.sync_persistence_id.get_increment()),
+				contents: UpdateOrigin::ChainSync(chain_sync_update_id),
 			};
 			let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 			if let Some(height) = best_height {
@@ -376,10 +377,16 @@ where C::Target: chain::Filter,
 				}
 			}
 
-			log_trace!(logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
+			log_trace!(logger, "Syncing Channel Monitor for channel {} for block-data update_id {}",
+				log_funding_info!(monitor),
+				chain_sync_update_id
+			);
 			match self.persister.update_persisted_channel(*funding_outpoint, None, monitor, update_id) {
 				ChannelMonitorUpdateStatus::Completed =>
-					log_trace!(logger, "Finished syncing Channel Monitor for channel {}", log_funding_info!(monitor)),
+					log_trace!(logger, "Finished syncing Channel Monitor for channel {} for block-data update_id {}",
+						log_funding_info!(monitor),
+						chain_sync_update_id
+					),
 				ChannelMonitorUpdateStatus::InProgress => {
 					log_debug!(logger, "Channel Monitor sync for channel {} in progress, holding events until completion!", log_funding_info!(monitor));
 					pending_monitor_updates.push(update_id);
@@ -526,7 +533,7 @@ where C::Target: chain::Filter,
 		pending_monitor_updates.retain(|update_id| *update_id != completed_update_id);
 
 		match completed_update_id {
-			MonitorUpdateId { contents: UpdateOrigin::OffChain(_) } => {
+			MonitorUpdateId { contents: UpdateOrigin::OffChain(completed_update_id) } => {
 				// Note that we only check for `UpdateOrigin::OffChain` failures here - if
 				// we're being told that a `UpdateOrigin::OffChain` monitor update completed,
 				// we only care about ensuring we don't tell the `ChannelManager` to restore
@@ -537,6 +544,14 @@ where C::Target: chain::Filter,
 				// `MonitorEvent`s from the monitor back to the `ChannelManager` until they
 				// complete.
 				let monitor_is_pending_updates = monitor_data.has_pending_offchain_updates(&pending_monitor_updates);
+				log_debug!(self.logger, "Completed off-chain monitor update {} for channel with funding outpoint {:?}, {}",
+					completed_update_id,
+					funding_txo,
+					if monitor_is_pending_updates {
+						"still have pending off-chain updates"
+					} else {
+						"all off-chain updates complete, returning a MonitorEvent"
+					});
 				if monitor_is_pending_updates {
 					// If there are still monitor updates pending, we cannot yet construct a
 					// Completed event.
@@ -547,8 +562,18 @@ where C::Target: chain::Filter,
 					monitor_update_id: monitor_data.monitor.get_latest_update_id(),
 				}], monitor_data.monitor.get_counterparty_node_id()));
 			},
-			MonitorUpdateId { contents: UpdateOrigin::ChainSync(_) } => {
-				if !monitor_data.has_pending_chainsync_updates(&pending_monitor_updates) {
+			MonitorUpdateId { contents: UpdateOrigin::ChainSync(completed_update_id) } => {
+				let monitor_has_pending_updates =
+					monitor_data.has_pending_chainsync_updates(&pending_monitor_updates);
+				log_debug!(self.logger, "Completed chain sync monitor update {} for channel with funding outpoint {:?}, {}",
+					completed_update_id,
+					funding_txo,
+					if monitor_has_pending_updates {
+						"still have pending chain sync updates"
+					} else {
+						"all chain sync updates complete, releasing pending MonitorEvents"
+					});
+				if !monitor_has_pending_updates {
 					monitor_data.last_chain_persist_height.store(self.highest_chain_height.load(Ordering::Acquire), Ordering::Release);
 					// The next time release_pending_monitor_events is called, any events for this
 					// ChannelMonitor will be returned.
@@ -771,7 +796,7 @@ where C::Target: chain::Filter,
 			Some(monitor_state) => {
 				let monitor = &monitor_state.monitor;
 				let logger = WithChannelMonitor::from(&self.logger, &monitor);
-				log_trace!(logger, "Updating ChannelMonitor for channel {}", log_funding_info!(monitor));
+				log_trace!(logger, "Updating ChannelMonitor to id {} for channel {}", update.update_id, log_funding_info!(monitor));
 				let update_res = monitor.update_monitor(update, &self.broadcaster, &self.fee_estimator, &self.logger);
 
 				let update_id = MonitorUpdateId::from_monitor_update(update);
@@ -790,10 +815,18 @@ where C::Target: chain::Filter,
 				match persist_res {
 					ChannelMonitorUpdateStatus::InProgress => {
 						pending_monitor_updates.push(update_id);
-						log_debug!(logger, "Persistence of ChannelMonitorUpdate for channel {} in progress", log_funding_info!(monitor));
+						log_debug!(logger,
+							"Persistence of ChannelMonitorUpdate id {:?} for channel {} in progress",
+							update_id,
+							log_funding_info!(monitor)
+						);
 					},
 					ChannelMonitorUpdateStatus::Completed => {
-						log_debug!(logger, "Persistence of ChannelMonitorUpdate for channel {} completed", log_funding_info!(monitor));
+						log_debug!(logger,
+							"Persistence of ChannelMonitorUpdate id {:?} for channel {} completed",
+							update_id,
+							log_funding_info!(monitor)
+						);
 					},
 					ChannelMonitorUpdateStatus::UnrecoverableError => {
 						// Take the monitors lock for writing so that we poison it and any future
