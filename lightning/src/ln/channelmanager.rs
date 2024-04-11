@@ -10680,6 +10680,7 @@ where
 					log_error!(logger, " client applications must ensure that ChannelMonitor data is always available and the latest to avoid funds loss!");
 					log_error!(logger, " Without the latest ChannelMonitor we cannot continue without risking funds.");
 					log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
+					log_error!(logger, " Pending in-flight updates are: {:?}", chan_in_flight_updates);
 					return Err(DecodeError::InvalidValue);
 				}
 			}
