@@ -35,7 +35,6 @@ use crate::ln::ChannelId;
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::events;
 use crate::events::{Event, EventHandler};
-use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
@@ -221,10 +220,6 @@ pub struct ChainMonitor<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T:
         P::Target: Persist<ChannelSigner>,
 {
 	monitors: RwLock<HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
-	/// When we generate a monitor update for a chain-event monitor persistence, we need a
-	/// unique ID, which we calculate by simply getting the next value from this counter. Note that
-	/// the ID is never persisted so it's ok that they reset on restart.
-	sync_persistence_id: AtomicCounter,
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
@@ -353,7 +348,6 @@ where C::Target: chain::Filter,
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
-			sync_persistence_id: AtomicCounter::new(),
 			chain_source,
 			broadcaster,
 			logger,
