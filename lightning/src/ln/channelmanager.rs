@@ -1157,7 +1157,8 @@ where
 /// Otherwise, if restarting, construct [`ChannelManagerReadArgs`] with the necessary parameters and
 /// references to any deserialized [`ChannelMonitor`]s that were previously persisted. Use this to
 /// deserialize the [`ChannelManager`] and feed it any new chain data since it was last online, as
-/// detailed in the [`ChannelManagerReadArgs`] documentation.
+/// detailed in the [`ChannelManagerReadArgs`] documentation. Both [`ChannelManager`] and
+/// [`ChannelMonitors`] must be synced to latest chain tip before they are ready for operation.
 ///
 /// ```
 /// use bitcoin::BlockHash;
