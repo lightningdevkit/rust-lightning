@@ -93,6 +93,9 @@ impl MonitorUpdateId {
 /// Persistence can happen in one of two ways - synchronously completing before the trait method
 /// calls return or asynchronously in the background.
 ///
+/// [`ChannelMonitor`]'s and [`ChannelMonitorUpdate`]'s must be persisted sequentially, in the
+/// order they are provided.
+///
 /// # For those implementing synchronous persistence
 ///
 ///  * If persistence completes fully (including any relevant `fsync()` calls), the implementation
