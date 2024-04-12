@@ -443,6 +443,9 @@ mod sealed {
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
 
+const ANY_REQUIRED_FEATURES_MASK: u8 = 0b01_01_01_01;
+const ANY_OPTIONAL_FEATURES_MASK: u8 = 0b10_10_10_10;
+
 /// Tracks the set of features which a node implements, templated by the context in which it
 /// appears.
 ///
@@ -616,8 +619,8 @@ impl ChannelTypeFeatures {
 		// ChannelTypeFeatures must only contain required bits, so we OR the required forms of all
 		// optional bits and then AND out the optional ones.
 		for byte in ret.flags.iter_mut() {
-			*byte |= (*byte & 0b10_10_10_10) >> 1;
-			*byte &= 0b01_01_01_01;
+			*byte |= (*byte & ANY_OPTIONAL_FEATURES_MASK) >> 1;
+			*byte &= ANY_REQUIRED_FEATURES_MASK;
 		}
 		ret
 	}
@@ -762,7 +765,7 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	pub(crate) fn supports_any_optional_bits(&self) -> bool {
-		self.flags.iter().any(|&byte| (byte & 0b10_10_10_10) != 0)
+		self.flags.iter().any(|&byte| (byte & ANY_OPTIONAL_FEATURES_MASK) != 0)
 	}
 
 	/// Returns true if this `Features` object contains required features unknown by `other`.
@@ -770,9 +773,8 @@ impl<T: sealed::Context> Features<T> {
 		// Bitwise AND-ing with all even bits set except for known features will select required
 		// unknown features.
 		self.flags.iter().enumerate().any(|(i, &byte)| {
-			const REQUIRED_FEATURES: u8 = 0b01_01_01_01;
 			let unknown_features = unset_features_mask_at_position(other, i);
-			(byte & (REQUIRED_FEATURES & unknown_features)) != 0
+			(byte & (ANY_REQUIRED_FEATURES_MASK & unknown_features)) != 0
 		})
 	}
 
@@ -802,13 +804,12 @@ impl<T: sealed::Context> Features<T> {
 		// unknown features.
 		let byte_count = T::KNOWN_FEATURE_MASK.len();
 		self.flags.iter().enumerate().any(|(i, &byte)| {
-			let required_features = 0b01_01_01_01;
 			let unknown_features = if i < byte_count {
 				!T::KNOWN_FEATURE_MASK[i]
 			} else {
 				0b11_11_11_11
 			};
-			(byte & (required_features & unknown_features)) != 0
+			(byte & (ANY_REQUIRED_FEATURES_MASK & unknown_features)) != 0
 		})
 	}
 
@@ -1030,13 +1031,11 @@ impl<T: sealed::Context> Readable for WithoutLength<Features<T>> {
 }
 
 pub(crate) fn unset_features_mask_at_position<T: sealed::Context>(other: &Features<T>, index: usize) -> u8 {
-	const REQUIRED_FEATURES: u8 = 0b01_01_01_01;
-	const OPTIONAL_FEATURES: u8 = 0b10_10_10_10;
 	if index < other.flags.len() {
 		// Form a mask similar to !T::KNOWN_FEATURE_MASK only for `other`
 		!(other.flags[index]
-			| ((other.flags[index] >> 1) & REQUIRED_FEATURES)
-			| ((other.flags[index] << 1) & OPTIONAL_FEATURES))
+			| ((other.flags[index] >> 1) & ANY_REQUIRED_FEATURES_MASK)
+			| ((other.flags[index] << 1) & ANY_OPTIONAL_FEATURES_MASK))
 	} else {
 		0b11_11_11_11
 	}
