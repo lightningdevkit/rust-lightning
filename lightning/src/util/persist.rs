@@ -20,7 +20,7 @@ use crate::prelude::*;
 
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use crate::chain::chainmonitor::{Persist, MonitorUpdateId};
+use crate::chain::chainmonitor::Persist;
 use crate::sign::{EntropySource, ecdsa::WriteableEcdsaChannelSigner, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, CLOSED_CHANNEL_UPDATE_ID};
@@ -208,7 +208,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore + ?Sized> Persist<Ch
 	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
 	// just shut down the node since we're not retrying persistence!
 
-	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+	fn persist_new_channel(&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -220,7 +220,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore + ?Sized> Persist<Ch
 		}
 	}
 
-	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>, _update_id: MonitorUpdateId) -> chain::ChannelMonitorUpdateStatus {
+	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
 		let key = format!("{}_{}", funding_txo.txid.to_string(), funding_txo.index);
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -648,8 +648,7 @@ where
 	/// Persists a new channel. This means writing the entire monitor to the
 	/// parametrized [`KVStore`].
 	fn persist_new_channel(
-		&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>,
-		_monitor_update_call_id: MonitorUpdateId,
+		&self, funding_txo: OutPoint, monitor: &ChannelMonitor<ChannelSigner>
 	) -> chain::ChannelMonitorUpdateStatus {
 		// Determine the proper key for this monitor
 		let monitor_name = MonitorName::from(funding_txo);
@@ -693,10 +692,8 @@ where
 	///   - The update is at [`CLOSED_CHANNEL_UPDATE_ID`]
 	fn update_persisted_channel(
 		&self, funding_txo: OutPoint, update: Option<&ChannelMonitorUpdate>,
-		monitor: &ChannelMonitor<ChannelSigner>, monitor_update_call_id: MonitorUpdateId,
+		monitor: &ChannelMonitor<ChannelSigner>
 	) -> chain::ChannelMonitorUpdateStatus {
-		// IMPORTANT: monitor_update_call_id: MonitorUpdateId is not to be confused with
-		// ChannelMonitorUpdate's update_id.
 		if let Some(update) = update {
 			if update.update_id != CLOSED_CHANNEL_UPDATE_ID
 				&& update.update_id % self.maximum_pending_updates != 0
@@ -732,7 +729,7 @@ where
 				};
 
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
-				let monitor_update_status = self.persist_new_channel(funding_txo, monitor, monitor_update_call_id);
+				let monitor_update_status = self.persist_new_channel(funding_txo, monitor);
 
 				if let chain::ChannelMonitorUpdateStatus::Completed = monitor_update_status {
 					let cleanup_range = if monitor.get_latest_update_id() == CLOSED_CHANNEL_UPDATE_ID {
@@ -761,7 +758,7 @@ where
 			}
 		} else {
 			// There is no update given, so we must persist a new monitor.
-			self.persist_new_channel(funding_txo, monitor, monitor_update_call_id)
+			self.persist_new_channel(funding_txo, monitor)
 		}
 	}
 
@@ -1117,8 +1114,6 @@ mod tests {
 		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100000);
 		{
 			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
-			let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
-			let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();
 			let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
 			let cmu = &cmu_map.get(&added_monitors[0].1.channel_id()).unwrap()[0];
 			let test_txo = OutPoint { txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
@@ -1130,7 +1125,7 @@ mod tests {
 				entropy_source: node_cfgs[0].keys_manager,
 				signer_provider: node_cfgs[0].keys_manager,
 			};
-			match ro_persister.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
+			match ro_persister.persist_new_channel(test_txo, &added_monitors[0].1) {
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
 					// correct result
 				}
@@ -1141,7 +1136,7 @@ mod tests {
 					panic!("Returned InProgress when shouldn't have")
 				}
 			}
-			match ro_persister.update_persisted_channel(test_txo, Some(cmu), &added_monitors[0].1, update_id.2) {
+			match ro_persister.update_persisted_channel(test_txo, Some(cmu), &added_monitors[0].1) {
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
 					// correct result
 				}

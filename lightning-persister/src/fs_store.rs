@@ -448,8 +448,6 @@ mod tests {
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id()).unwrap();
 		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
-		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
-		let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();
 
 		// Set the store's directory to read-only, which should result in
 		// returning an unrecoverable failure when we then attempt to persist a
@@ -463,7 +461,7 @@ mod tests {
 			txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(),
 			index: 0
 		};
-		match store.persist_new_channel(test_txo, &added_monitors[0].1, update_id.2) {
+		match store.persist_new_channel(test_txo, &added_monitors[0].1) {
 			ChannelMonitorUpdateStatus::UnrecoverableError => {},
 			_ => panic!("unexpected result from persisting new channel")
 		}
