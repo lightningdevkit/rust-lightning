@@ -43,7 +43,7 @@
 use bitcoin::network::constants::Network;
 use core::time::Duration;
 use crate::blinded_path::{BlindedPath, IntroductionNode};
-use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
+use crate::events::{Event, MessageSendEventsProvider};
 use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, Retry, self};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
@@ -154,12 +154,11 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 fn claim_bolt12_payment<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>]) {
 	let recipient = &path[path.len() - 1];
 	match get_event!(recipient, Event::PaymentClaimable) {
-		Event::PaymentClaimable {
-			purpose: PaymentPurpose::Bolt11InvoicePayment {
-				payment_preimage: Some(payment_preimage), ..
-			}, ..
-		} => claim_payment(node, path, payment_preimage),
-		_ => panic!(),
+		Event::PaymentClaimable { purpose, .. } => match purpose.preimage() {
+			Some(payment_preimage) => claim_payment(node, path, payment_preimage),
+			None => panic!("No preimage in Event::PaymentClaimable"),
+		},
+		_ => panic!("No Event::PaymentClaimable"),
 	};
 }
 

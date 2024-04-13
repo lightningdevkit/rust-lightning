@@ -135,6 +135,34 @@ impl PaymentPurpose {
 			PaymentPurpose::SpontaneousPayment(..) => true,
 		}
 	}
+
+	pub(crate) fn from_parts(
+		payment_preimage: Option<PaymentPreimage>, payment_secret: PaymentSecret,
+		payment_context: Option<PaymentContext>,
+	) -> Self {
+		match payment_context {
+			Some(PaymentContext::Unknown(_)) | None => {
+				PaymentPurpose::Bolt11InvoicePayment {
+					payment_preimage,
+					payment_secret,
+				}
+			},
+			Some(PaymentContext::Bolt12Offer(context)) => {
+				PaymentPurpose::Bolt12OfferPayment {
+					payment_preimage,
+					payment_secret,
+					payment_context: context,
+				}
+			},
+			Some(PaymentContext::Bolt12Refund(context)) => {
+				PaymentPurpose::Bolt12RefundPayment {
+					payment_preimage,
+					payment_secret,
+					payment_context: context,
+				}
+			},
+		}
+	}
 }
 
 impl_writeable_tlv_based_enum!(PaymentPurpose,
@@ -1408,28 +1436,7 @@ impl MaybeReadable for Event {
 						(11, payment_context, option),
 					});
 					let purpose = match payment_secret {
-						Some(secret) => match payment_context {
-							Some(PaymentContext::Unknown(_)) | None => {
-								PaymentPurpose::Bolt11InvoicePayment {
-									payment_preimage,
-									payment_secret: secret,
-								}
-							},
-							Some(PaymentContext::Bolt12Offer(context)) => {
-								PaymentPurpose::Bolt12OfferPayment {
-									payment_preimage,
-									payment_secret: secret,
-									payment_context: context,
-								}
-							},
-							Some(PaymentContext::Bolt12Refund(context)) => {
-								PaymentPurpose::Bolt12RefundPayment {
-									payment_preimage,
-									payment_secret: secret,
-									payment_context: context,
-								}
-							},
-						},
+						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context),
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
