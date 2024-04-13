@@ -5431,10 +5431,7 @@ where
 								macro_rules! check_total_value {
 									($purpose: expr) => {{
 										let mut payment_claimable_generated = false;
-										let is_keysend = match $purpose {
-											events::PaymentPurpose::SpontaneousPayment(_) => true,
-											events::PaymentPurpose::Bolt11InvoicePayment { .. } => false,
-										};
+										let is_keysend = $purpose.is_keysend();
 										let mut claimable_payments = self.claimable_payments.lock().unwrap();
 										if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
 											fail_htlc!(claimable_htlc, payment_hash);

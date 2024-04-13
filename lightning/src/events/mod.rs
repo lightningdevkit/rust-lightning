@@ -83,6 +83,13 @@ impl PaymentPurpose {
 			PaymentPurpose::SpontaneousPayment(preimage) => Some(*preimage),
 		}
 	}
+
+	pub(crate) fn is_keysend(&self) -> bool {
+		match self {
+			PaymentPurpose::Bolt11InvoicePayment { .. } => false,
+			PaymentPurpose::SpontaneousPayment(..) => true,
+		}
+	}
 }
 
 impl_writeable_tlv_based_enum!(PaymentPurpose,
