@@ -121,6 +121,12 @@ pub enum PaymentContext {
 	Bolt12Refund(Bolt12RefundContext),
 }
 
+// Used when writing PaymentContext in Event::PaymentClaimable to avoid cloning.
+pub(crate) enum PaymentContextRef<'a> {
+	Bolt12Offer(&'a Bolt12OfferContext),
+	Bolt12Refund(&'a Bolt12RefundContext),
+}
+
 /// An unknown payment context.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UnknownPaymentContext(());
@@ -371,6 +377,23 @@ impl_writeable_tlv_based_enum!(PaymentContext,
 	(1, Bolt12Offer),
 	(2, Bolt12Refund),
 );
+
+impl<'a> Writeable for PaymentContextRef<'a> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match self {
+			PaymentContextRef::Bolt12Offer(context) => {
+				1u8.write(w)?;
+				context.write(w)?;
+			},
+			PaymentContextRef::Bolt12Refund(context) => {
+				2u8.write(w)?;
+				context.write(w)?;
+			},
+		}
+
+		Ok(())
+	}
+}
 
 impl Writeable for UnknownPaymentContext {
 	fn write<W: Writer>(&self, _w: &mut W) -> Result<(), io::Error> {

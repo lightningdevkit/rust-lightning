@@ -1477,6 +1477,8 @@ where
 ///             println!("Claiming spontaneous payment {}", payment_hash);
 ///             channel_manager.claim_funds(payment_preimage);
 ///         },
+///         // ...
+/// #         _ => {},
 ///     },
 ///     Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
 ///         assert_eq!(payment_hash, known_payment_hash);
@@ -8877,10 +8879,9 @@ where
 	/// This differs from [`create_inbound_payment_for_hash`] only in that it generates the
 	/// [`PaymentHash`] and [`PaymentPreimage`] for you.
 	///
-	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentClaimable`], which
-	/// will have the [`PaymentClaimable::purpose`] be [`PaymentPurpose::Bolt11InvoicePayment`] with
-	/// its [`PaymentPurpose::Bolt11InvoicePayment::payment_preimage`] field filled in. That should
-	/// then be passed directly to [`claim_funds`].
+	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentClaimable`] event, which
+	/// will have the [`PaymentClaimable::purpose`] return `Some` for [`PaymentPurpose::preimage`]. That
+	/// should then be passed directly to [`claim_funds`].
 	///
 	/// See [`create_inbound_payment_for_hash`] for detailed documentation on behavior and requirements.
 	///
@@ -8900,8 +8901,7 @@ where
 	/// [`claim_funds`]: Self::claim_funds
 	/// [`PaymentClaimable`]: events::Event::PaymentClaimable
 	/// [`PaymentClaimable::purpose`]: events::Event::PaymentClaimable::purpose
-	/// [`PaymentPurpose::Bolt11InvoicePayment`]: events::PaymentPurpose::Bolt11InvoicePayment
-	/// [`PaymentPurpose::Bolt11InvoicePayment::payment_preimage`]: events::PaymentPurpose::Bolt11InvoicePayment::payment_preimage
+	/// [`PaymentPurpose::preimage`]: events::PaymentPurpose::preimage
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 		min_final_cltv_expiry_delta: Option<u16>) -> Result<(PaymentHash, PaymentSecret), ()> {

@@ -2133,6 +2133,14 @@ pub fn check_payment_claimable(
 					assert_eq!(&expected_payment_preimage, payment_preimage);
 					assert_eq!(expected_payment_secret, *payment_secret);
 				},
+				PaymentPurpose::Bolt12OfferPayment { payment_preimage, payment_secret, .. } => {
+					assert_eq!(&expected_payment_preimage, payment_preimage);
+					assert_eq!(expected_payment_secret, *payment_secret);
+				},
+				PaymentPurpose::Bolt12RefundPayment { payment_preimage, payment_secret, .. } => {
+					assert_eq!(&expected_payment_preimage, payment_preimage);
+					assert_eq!(expected_payment_secret, *payment_secret);
+				},
 				_ => {},
 			}
 		},
@@ -2611,6 +2619,16 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
 								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
 							},
+							PaymentPurpose::Bolt12OfferPayment { payment_preimage, payment_secret, .. } => {
+								assert_eq!(expected_preimage, *payment_preimage);
+								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
+							},
+							PaymentPurpose::Bolt12RefundPayment { payment_preimage, payment_secret, .. } => {
+								assert_eq!(expected_preimage, *payment_preimage);
+								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
+							},
 							PaymentPurpose::SpontaneousPayment(payment_preimage) => {
 								assert_eq!(expected_preimage.unwrap(), *payment_preimage);
 								assert_eq!(our_payment_secret, onion_fields.as_ref().unwrap().payment_secret);
@@ -2763,14 +2781,12 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 	let mut fwd_amt_msat = 0;
 	match claim_event[0] {
 		Event::PaymentClaimed {
-			purpose: PaymentPurpose::SpontaneousPayment(preimage),
+			purpose: PaymentPurpose::SpontaneousPayment(preimage)
+				| PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(preimage), .. }
+				| PaymentPurpose::Bolt12OfferPayment { payment_preimage: Some(preimage), .. }
+				| PaymentPurpose::Bolt12RefundPayment { payment_preimage: Some(preimage), .. },
 			amount_msat,
 			ref htlcs,
-			.. }
-		| Event::PaymentClaimed {
-			purpose: PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(preimage), ..},
-			ref htlcs,
-			amount_msat,
 			..
 		} => {
 			assert_eq!(preimage, our_payment_preimage);
@@ -2780,7 +2796,9 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 			fwd_amt_msat = amount_msat;
 		},
 		Event::PaymentClaimed {
-			purpose: PaymentPurpose::Bolt11InvoicePayment { .. },
+			purpose: PaymentPurpose::Bolt11InvoicePayment { .. }
+				| PaymentPurpose::Bolt12OfferPayment { .. }
+				| PaymentPurpose::Bolt12RefundPayment { .. },
 			payment_hash,
 			amount_msat,
 			ref htlcs,
