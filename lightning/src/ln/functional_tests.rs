@@ -2039,11 +2039,11 @@ fn test_channel_reserve_holding_cell_htlcs() {
 			assert_eq!(nodes[2].node.get_our_node_id(), receiver_node_id.unwrap());
 			assert_eq!(via_channel_id, Some(chan_2.2));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(our_payment_secret_21, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -2055,11 +2055,11 @@ fn test_channel_reserve_holding_cell_htlcs() {
 			assert_eq!(nodes[2].node.get_our_node_id(), receiver_node_id.unwrap());
 			assert_eq!(via_channel_id, Some(chan_2.2));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(our_payment_secret_22, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -3954,11 +3954,11 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
 			assert_eq!(via_channel_id, Some(channel_id));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_1, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -4319,11 +4319,11 @@ fn test_drop_messages_peer_disconnect_dual_htlc() {
 		Event::PaymentClaimable { ref payment_hash, ref purpose, .. } => {
 			assert_eq!(payment_hash_2, *payment_hash);
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_2, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -8388,10 +8388,10 @@ fn test_preimage_storage() {
 	match events[0] {
 		Event::PaymentClaimable { ref purpose, .. } => {
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, .. } => {
 					claim_payment(&nodes[0], &[&nodes[1]], payment_preimage.unwrap());
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),

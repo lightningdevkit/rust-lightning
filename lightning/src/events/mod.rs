@@ -49,8 +49,8 @@ use crate::prelude::*;
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaymentPurpose {
-	/// Information for receiving a payment that we generated an invoice for.
-	InvoicePayment {
+	/// A payment for a BOLT 11 invoice.
+	Bolt11InvoicePayment {
 		/// The preimage to the payment_hash, if the payment hash (and secret) were fetched via
 		/// [`ChannelManager::create_inbound_payment`]. If provided, this can be handed directly to
 		/// [`ChannelManager::claim_funds`].
@@ -79,14 +79,14 @@ impl PaymentPurpose {
 	/// Returns the preimage for this payment, if it is known.
 	pub fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			PaymentPurpose::InvoicePayment { payment_preimage, .. } => *payment_preimage,
+			PaymentPurpose::Bolt11InvoicePayment { payment_preimage, .. } => *payment_preimage,
 			PaymentPurpose::SpontaneousPayment(preimage) => Some(*preimage),
 		}
 	}
 }
 
 impl_writeable_tlv_based_enum!(PaymentPurpose,
-	(0, InvoicePayment) => {
+	(0, Bolt11InvoicePayment) => {
 		(0, payment_preimage, option),
 		(2, payment_secret, required),
 	};
@@ -1059,7 +1059,9 @@ impl Writeable for Event {
 				let mut payment_secret = None;
 				let payment_preimage;
 				match &purpose {
-					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret } => {
+					PaymentPurpose::Bolt11InvoicePayment {
+						payment_preimage: preimage, payment_secret: secret
+					} => {
 						payment_secret = Some(secret);
 						payment_preimage = *preimage;
 					},
@@ -1325,7 +1327,7 @@ impl MaybeReadable for Event {
 						(10, counterparty_skimmed_fee_msat_opt, option),
 					});
 					let purpose = match payment_secret {
-						Some(secret) => PaymentPurpose::InvoicePayment {
+						Some(secret) => PaymentPurpose::Bolt11InvoicePayment {
 							payment_preimage,
 							payment_secret: secret
 						},

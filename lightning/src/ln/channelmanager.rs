@@ -1464,12 +1464,12 @@ where
 /// // On the event processing thread
 /// channel_manager.process_pending_events(&|event| match event {
 ///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
-///         PaymentPurpose::InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
+///         PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
 ///             assert_eq!(payment_hash, known_payment_hash);
 ///             println!("Claiming payment {}", payment_hash);
 ///             channel_manager.claim_funds(payment_preimage);
 ///         },
-///         PaymentPurpose::InvoicePayment { payment_preimage: None, .. } => {
+///         PaymentPurpose::Bolt11InvoicePayment { payment_preimage: None, .. } => {
 ///             println!("Unknown payment hash: {}", payment_hash);
 ///         },
 ///         PaymentPurpose::SpontaneousPayment(payment_preimage) => {
@@ -1564,11 +1564,11 @@ where
 /// // On the event processing thread
 /// channel_manager.process_pending_events(&|event| match event {
 ///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
-///         PaymentPurpose::InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
+///         PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
 ///             println!("Claiming payment {}", payment_hash);
 ///             channel_manager.claim_funds(payment_preimage);
 ///         },
-///         PaymentPurpose::InvoicePayment { payment_preimage: None, .. } => {
+///         PaymentPurpose::Bolt11InvoicePayment { payment_preimage: None, .. } => {
 ///             println!("Unknown payment hash: {}", payment_hash);
 ///         },
 ///         // ...
@@ -1716,12 +1716,12 @@ where
 /// // On the event processing thread
 /// channel_manager.process_pending_events(&|event| match event {
 ///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
-///     	PaymentPurpose::InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
+///     	PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
 ///             assert_eq!(payment_hash, known_payment_hash);
 ///             println!("Claiming payment {}", payment_hash);
 ///             channel_manager.claim_funds(payment_preimage);
 ///         },
-///     	PaymentPurpose::InvoicePayment { payment_preimage: None, .. } => {
+///     	PaymentPurpose::Bolt11InvoicePayment { payment_preimage: None, .. } => {
 ///             println!("Unknown payment hash: {}", payment_hash);
 ///     	},
 ///         // ...
@@ -5433,7 +5433,7 @@ where
 										let mut payment_claimable_generated = false;
 										let is_keysend = match $purpose {
 											events::PaymentPurpose::SpontaneousPayment(_) => true,
-											events::PaymentPurpose::InvoicePayment { .. } => false,
+											events::PaymentPurpose::Bolt11InvoicePayment { .. } => false,
 										};
 										let mut claimable_payments = self.claimable_payments.lock().unwrap();
 										if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
@@ -5548,7 +5548,7 @@ where
 														fail_htlc!(claimable_htlc, payment_hash);
 													}
 												}
-												let purpose = events::PaymentPurpose::InvoicePayment {
+												let purpose = events::PaymentPurpose::Bolt11InvoicePayment {
 													payment_preimage: payment_preimage.clone(),
 													payment_secret: payment_data.payment_secret,
 												};
@@ -5574,7 +5574,7 @@ where
 												&payment_hash, payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
 											fail_htlc!(claimable_htlc, payment_hash);
 										} else {
-											let purpose = events::PaymentPurpose::InvoicePayment {
+											let purpose = events::PaymentPurpose::Bolt11InvoicePayment {
 												payment_preimage: inbound_payment.get().payment_preimage,
 												payment_secret: payment_data.payment_secret,
 											};
@@ -8881,9 +8881,9 @@ where
 	/// [`PaymentHash`] and [`PaymentPreimage`] for you.
 	///
 	/// The [`PaymentPreimage`] will ultimately be returned to you in the [`PaymentClaimable`], which
-	/// will have the [`PaymentClaimable::purpose`] be [`PaymentPurpose::InvoicePayment`] with
-	/// its [`PaymentPurpose::InvoicePayment::payment_preimage`] field filled in. That should then be
-	/// passed directly to [`claim_funds`].
+	/// will have the [`PaymentClaimable::purpose`] be [`PaymentPurpose::Bolt11InvoicePayment`] with
+	/// its [`PaymentPurpose::Bolt11InvoicePayment::payment_preimage`] field filled in. That should
+	/// then be passed directly to [`claim_funds`].
 	///
 	/// See [`create_inbound_payment_for_hash`] for detailed documentation on behavior and requirements.
 	///
@@ -8903,8 +8903,8 @@ where
 	/// [`claim_funds`]: Self::claim_funds
 	/// [`PaymentClaimable`]: events::Event::PaymentClaimable
 	/// [`PaymentClaimable::purpose`]: events::Event::PaymentClaimable::purpose
-	/// [`PaymentPurpose::InvoicePayment`]: events::PaymentPurpose::InvoicePayment
-	/// [`PaymentPurpose::InvoicePayment::payment_preimage`]: events::PaymentPurpose::InvoicePayment::payment_preimage
+	/// [`PaymentPurpose::Bolt11InvoicePayment`]: events::PaymentPurpose::Bolt11InvoicePayment
+	/// [`PaymentPurpose::Bolt11InvoicePayment::payment_preimage`]: events::PaymentPurpose::Bolt11InvoicePayment::payment_preimage
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
 	pub fn create_inbound_payment(&self, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
 		min_final_cltv_expiry_delta: Option<u16>) -> Result<(PaymentHash, PaymentSecret), ()> {
@@ -12103,7 +12103,7 @@ where
 				let purpose = match &htlcs[0].onion_payload {
 					OnionPayload::Invoice { _legacy_hop_data, payment_context: _ } => {
 						if let Some(hop_data) = _legacy_hop_data {
-							events::PaymentPurpose::InvoicePayment {
+							events::PaymentPurpose::Bolt11InvoicePayment {
 								payment_preimage: match pending_inbound_payments.get(&payment_hash) {
 									Some(inbound_payment) => inbound_payment.payment_preimage,
 									None => match inbound_payment::verify(payment_hash, &hop_data, 0, &expanded_inbound_key, &args.logger) {

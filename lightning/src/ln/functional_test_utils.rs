@@ -2129,7 +2129,7 @@ pub fn check_payment_claimable(
 			assert_eq!(expected_recv_value, *amount_msat);
 			assert_eq!(expected_receiver_node_id, receiver_node_id.unwrap());
 			match purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert_eq!(&expected_payment_preimage, payment_preimage);
 					assert_eq!(expected_payment_secret, *payment_secret);
 				},
@@ -2606,7 +2606,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 						assert!(onion_fields.is_some());
 						assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, custom_tlvs);
 						match &purpose {
-							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+							PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 								assert_eq!(expected_preimage, *payment_preimage);
 								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
 								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
@@ -2768,7 +2768,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 			ref htlcs,
 			.. }
 		| Event::PaymentClaimed {
-			purpose: PaymentPurpose::InvoicePayment { payment_preimage: Some(preimage), ..},
+			purpose: PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(preimage), ..},
 			ref htlcs,
 			amount_msat,
 			..
@@ -2780,7 +2780,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 			fwd_amt_msat = amount_msat;
 		},
 		Event::PaymentClaimed {
-			purpose: PaymentPurpose::InvoicePayment { .. },
+			purpose: PaymentPurpose::Bolt11InvoicePayment { .. },
 			payment_hash,
 			amount_msat,
 			ref htlcs,

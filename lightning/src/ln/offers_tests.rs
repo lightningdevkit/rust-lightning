@@ -155,7 +155,7 @@ fn claim_bolt12_payment<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &[&Node<'a, '
 	let recipient = &path[path.len() - 1];
 	match get_event!(recipient, Event::PaymentClaimable) {
 		Event::PaymentClaimable {
-			purpose: PaymentPurpose::InvoicePayment {
+			purpose: PaymentPurpose::Bolt11InvoicePayment {
 				payment_preimage: Some(payment_preimage), ..
 			}, ..
 		} => claim_payment(node, path, payment_preimage),
