@@ -17,6 +17,7 @@ use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::events::{self, PaymentFailureReason};
 use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSource, PaymentId};
+use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
@@ -421,6 +422,12 @@ pub enum RetryableSendFailure {
 	/// [`Event::PaymentSent`]: crate::events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	DuplicatePayment,
+	/// The [`RecipientOnionFields::payment_metadata`], [`RecipientOnionFields::custom_tlvs`], or
+	/// [`BlindedPath`]s provided are too large and caused us to exceed the maximum onion packet size
+	/// of 1300 bytes.
+	///
+	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
+	OnionPacketSizeExceeded,
 }
 
 /// If a payment fails to send with [`ChannelManager::send_payment_with_route`], it can be in one
@@ -886,7 +893,7 @@ impl OutboundPayments {
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	fn send_payment_internal<R: Deref, NS: Deref, ES: Deref, IH, SP, L: Deref>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
-		keysend_preimage: Option<PaymentPreimage>, retry_strategy: Retry, route_params: RouteParameters,
+		keysend_preimage: Option<PaymentPreimage>, retry_strategy: Retry, mut route_params: RouteParameters,
 		router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES,
 		node_signer: &NS, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, send_payment_along_path: SP,
@@ -906,6 +913,15 @@ impl OutboundPayments {
 				return Err(RetryableSendFailure::PaymentExpired)
 			}
 		}
+
+		onion_utils::set_max_path_length(
+			&mut route_params, &recipient_onion, keysend_preimage, best_block_height
+		)
+			.map_err(|()| {
+				log_error!(logger, "Can't construct an onion packet without exceeding 1300-byte onion \
+					hop_data length for payment with id {} and hash {}", payment_id, payment_hash);
+				RetryableSendFailure::OnionPacketSizeExceeded
+			})?;
 
 		let mut route = router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,

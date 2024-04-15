@@ -10,12 +10,14 @@
 use crate::blinded_path::BlindedHop;
 use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::streams::ChaChaReader;
+use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
+use crate::ln::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::types::{PaymentHash, PaymentPreimage};
 use crate::ln::wire::Encode;
 use crate::routing::gossip::NetworkUpdate;
-use crate::routing::router::{Path, RouteHop};
+use crate::routing::router::{Path, RouteHop, RouteParameters};
 use crate::sign::NodeSigner;
 use crate::util::errors::{self, APIError};
 use crate::util::logger::Logger;
@@ -308,6 +310,77 @@ where
 		last_short_channel_id = hop.short_channel_id;
 	}
 	Ok((cur_value_msat, cur_cltv))
+}
+
+pub(crate) const MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY: u64 = 100_000_000;
+
+pub(crate) fn set_max_path_length(
+	route_params: &mut RouteParameters, recipient_onion: &RecipientOnionFields,
+	keysend_preimage: Option<PaymentPreimage>, best_block_height: u32,
+) -> Result<(), ()> {
+	const PAYLOAD_HMAC_LEN: usize = 32;
+	let unblinded_intermed_payload_len = msgs::OutboundOnionPayload::Forward {
+		short_channel_id: 42,
+		amt_to_forward: TOTAL_BITCOIN_SUPPLY_SATOSHIS,
+		outgoing_cltv_value: route_params.payment_params.max_total_cltv_expiry_delta,
+	}
+	.serialized_length()
+	.saturating_add(PAYLOAD_HMAC_LEN);
+
+	const OVERPAY_ESTIMATE_MULTIPLER: u64 = 3;
+	let final_value_msat_with_overpay_buffer = core::cmp::max(
+		route_params.final_value_msat.saturating_mul(OVERPAY_ESTIMATE_MULTIPLER),
+		MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
+	);
+
+	let blinded_tail_opt = route_params
+		.payment_params
+		.payee
+		.blinded_route_hints()
+		.iter()
+		.map(|(_, path)| path)
+		.max_by_key(|path| path.serialized_length())
+		.map(|largest_path| BlindedTailHopIter {
+			hops: largest_path.blinded_hops.iter(),
+			blinding_point: largest_path.blinding_point,
+			final_value_msat: final_value_msat_with_overpay_buffer,
+			excess_final_cltv_expiry_delta: 0,
+		});
+
+	let unblinded_route_hop = RouteHop {
+		pubkey: PublicKey::from_slice(&[2; 33]).unwrap(),
+		node_features: NodeFeatures::empty(),
+		short_channel_id: 42,
+		channel_features: ChannelFeatures::empty(),
+		fee_msat: final_value_msat_with_overpay_buffer,
+		cltv_expiry_delta: route_params.payment_params.max_total_cltv_expiry_delta,
+		maybe_announced_channel: false,
+	};
+	let mut num_reserved_bytes: usize = 0;
+	let build_payloads_res = build_onion_payloads_callback(
+		core::iter::once(&unblinded_route_hop),
+		blinded_tail_opt,
+		final_value_msat_with_overpay_buffer,
+		&recipient_onion,
+		best_block_height,
+		&keysend_preimage,
+		|_, payload| {
+			num_reserved_bytes = num_reserved_bytes
+				.saturating_add(payload.serialized_length())
+				.saturating_add(PAYLOAD_HMAC_LEN);
+		},
+	);
+	debug_assert!(build_payloads_res.is_ok());
+
+	let max_path_length = 1300usize
+		.checked_sub(num_reserved_bytes)
+		.map(|p| p / unblinded_intermed_payload_len)
+		.and_then(|l| u8::try_from(l.saturating_add(1)).ok())
+		.ok_or(())?;
+
+	route_params.payment_params.max_path_length =
+		core::cmp::min(max_path_length, route_params.payment_params.max_path_length);
+	Ok(())
 }
 
 /// Length of the onion data packet. Before TLV-based onions this was 20 65-byte hops, though now

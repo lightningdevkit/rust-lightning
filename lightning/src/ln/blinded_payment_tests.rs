@@ -282,9 +282,10 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 
 	let amt_msat = 5000;
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
-	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
+	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
+	route_params.payment_params.max_path_length = 18;
 
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
