@@ -19,7 +19,7 @@ use crate::routing::test_utils::{add_channel, add_or_update_node};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
-use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, PendingOnionMessage, Responder, ResponseInstruction, SendError};
+use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, PendingOnionMessage, Responder, ResponseInstruction, SendError, SendSuccess};
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
 
@@ -397,7 +397,11 @@ fn async_response_over_one_blinded_hop() {
 	let response_instruction = nodes[0].custom_message_handler.handle_custom_message(message, responder);
 
 	// 6. Simulate Alice asynchronously responding back to Bob with a response.
-	nodes[0].messenger.handle_onion_message_response(response_instruction);
+	assert_eq!(
+		nodes[0].messenger.handle_onion_message_response(response_instruction),
+		Ok(Some(SendSuccess::Buffered)),
+	);
+
 	bob.custom_message_handler.expect_message(TestCustomMessage::Response);
 
 	pass_along_path(&nodes);
