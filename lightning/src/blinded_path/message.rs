@@ -3,7 +3,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::blinded_path::{BlindedHop, BlindedPath};
+use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
@@ -19,8 +19,8 @@ use core::ops::Deref;
 /// TLVs to encode in an intermediate onion message packet's hop data. When provided in a blinded
 /// route, they are encoded into [`BlindedHop::encrypted_payload`].
 pub(crate) struct ForwardTlvs {
-	/// The node id of the next hop in the onion message's path.
-	pub(crate) next_node_id: PublicKey,
+	/// The next hop in the onion message's path.
+	pub(crate) next_hop: NextHop,
 	/// Senders to a blinded path use this value to concatenate the route they find to the
 	/// introduction node with the blinded path.
 	pub(crate) next_blinding_override: Option<PublicKey>,
@@ -34,11 +34,25 @@ pub(crate) struct ReceiveTlvs {
 	pub(crate) path_id: Option<[u8; 32]>,
 }
 
+/// The next hop to forward the onion message along its path.
+#[derive(Debug)]
+pub enum NextHop {
+	/// The node id of the next hop.
+	NodeId(PublicKey),
+	/// The short channel id leading to the next hop.
+	ShortChannelId(u64),
+}
+
 impl Writeable for ForwardTlvs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let (next_node_id, short_channel_id) = match self.next_hop {
+			NextHop::NodeId(pubkey) => (Some(pubkey), None),
+			NextHop::ShortChannelId(scid) => (None, Some(scid)),
+		};
 		// TODO: write padding
 		encode_tlv_stream!(writer, {
-			(4, self.next_node_id, required),
+			(2, short_channel_id, option),
+			(4, next_node_id, option),
 			(8, self.next_blinding_override, option)
 		});
 		Ok(())
@@ -61,9 +75,8 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let blinded_tlvs = unblinded_path.iter()
 		.skip(1) // The first node's TLVs contains the next node's pubkey
-		.map(|pk| {
-			ControlTlvs::Forward(ForwardTlvs { next_node_id: *pk, next_blinding_override: None })
-		})
+		.map(|pk| ForwardTlvs { next_hop: NextHop::NodeId(*pk), next_blinding_override: None })
+		.map(|tlvs| ControlTlvs::Forward(tlvs))
 		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { path_id: None })));
 
 	utils::construct_blinded_hops(secp_ctx, unblinded_path.iter(), blinded_tlvs, session_priv)
@@ -71,18 +84,30 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 
 // Advance the blinded onion message path by one hop, so make the second hop into the new
 // introduction node.
-pub(crate) fn advance_path_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-	path: &mut BlindedPath, node_signer: &NS, secp_ctx: &Secp256k1<T>
-) -> Result<(), ()> where NS::Target: NodeSigner {
+pub(crate) fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+	path: &mut BlindedPath, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
+) -> Result<(), ()>
+where
+	NS::Target: NodeSigner,
+	NL::Target: NodeIdLookUp,
+	T: secp256k1::Signing + secp256k1::Verification,
+{
 	let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &path.blinding_point, None)?;
 	let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
 	let encrypted_control_tlvs = path.blinded_hops.remove(0).encrypted_payload;
 	let mut s = Cursor::new(&encrypted_control_tlvs);
 	let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
 	match ChaChaPolyReadAdapter::read(&mut reader, rho) {
-		Ok(ChaChaPolyReadAdapter { readable: ControlTlvs::Forward(ForwardTlvs {
-			mut next_node_id, next_blinding_override,
-		})}) => {
+		Ok(ChaChaPolyReadAdapter {
+			readable: ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override })
+		}) => {
+			let next_node_id = match next_hop {
+				NextHop::NodeId(pubkey) => pubkey,
+				NextHop::ShortChannelId(scid) => match node_id_lookup.next_node_id(scid) {
+					Some(pubkey) => pubkey,
+					None => return Err(()),
+				},
+			};
 			let mut new_blinding_point = match next_blinding_override {
 				Some(blinding_point) => blinding_point,
 				None => {
@@ -91,7 +116,7 @@ pub(crate) fn advance_path_by_one<NS: Deref, T: secp256k1::Signing + secp256k1::
 				}
 			};
 			mem::swap(&mut path.blinding_point, &mut new_blinding_point);
-			mem::swap(&mut path.introduction_node_id, &mut next_node_id);
+			path.introduction_node = IntroductionNode::NodeId(next_node_id);
 			Ok(())
 		},
 		_ => Err(())

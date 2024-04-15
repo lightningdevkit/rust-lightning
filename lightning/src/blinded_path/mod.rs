@@ -17,6 +17,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
+use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 
@@ -28,11 +29,11 @@ use crate::prelude::*;
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedPath {
 	/// To send to a blinded path, the sender first finds a route to the unblinded
-	/// `introduction_node_id`, which can unblind its [`encrypted_payload`] to find out the onion
+	/// `introduction_node`, which can unblind its [`encrypted_payload`] to find out the onion
 	/// message or payment's next hop and forward it along.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
-	pub introduction_node_id: PublicKey,
+	pub introduction_node: IntroductionNode,
 	/// Used by the introduction node to decrypt its [`encrypted_payload`] to forward the onion
 	/// message or payment.
 	///
@@ -40,6 +41,52 @@ pub struct BlindedPath {
 	pub blinding_point: PublicKey,
 	/// The hops composing the blinded path.
 	pub blinded_hops: Vec<BlindedHop>,
+}
+
+/// The unblinded node in a [`BlindedPath`].
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum IntroductionNode {
+	/// The node id of the introduction node.
+	NodeId(PublicKey),
+	/// The short channel id of the channel leading to the introduction node. The [`Direction`]
+	/// identifies which side of the channel is the introduction node.
+	DirectedShortChannelId(Direction, u64),
+}
+
+/// The side of a channel that is the [`IntroductionNode`] in a [`BlindedPath`]. [BOLT 7] defines
+/// which nodes is which in the [`ChannelAnnouncement`] message.
+///
+/// [BOLT 7]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
+/// [`ChannelAnnouncement`]: crate::ln::msgs::ChannelAnnouncement
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum Direction {
+	/// The lesser node id when compared lexicographically in ascending order.
+	NodeOne,
+	/// The greater node id when compared lexicographically in ascending order.
+	NodeTwo,
+}
+
+/// An interface for looking up the node id of a channel counterparty for the purpose of forwarding
+/// an [`OnionMessage`].
+///
+/// [`OnionMessage`]: crate::ln::msgs::OnionMessage
+pub trait NodeIdLookUp {
+	/// Returns the node id of the forwarding node's channel counterparty with `short_channel_id`.
+	///
+	/// Here, the forwarding node is referring to the node of the [`OnionMessenger`] parameterized
+	/// by the [`NodeIdLookUp`] and the counterparty to one of that node's peers.
+	///
+	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
+	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey>;
+}
+
+/// A [`NodeIdLookUp`] that always returns `None`.
+pub struct EmptyNodeIdLookUp {}
+
+impl NodeIdLookUp for EmptyNodeIdLookUp {
+	fn next_node_id(&self, _short_channel_id: u64) -> Option<PublicKey> {
+		None
+	}
 }
 
 /// An encrypted payload and node id corresponding to a hop in a payment or onion message path, to
@@ -74,10 +121,10 @@ impl BlindedPath {
 		if node_pks.is_empty() { return Err(()) }
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-		let introduction_node_id = node_pks[0];
+		let introduction_node = IntroductionNode::NodeId(node_pks[0]);
 
 		Ok(BlindedPath {
-			introduction_node_id,
+			introduction_node,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: message::blinded_hops(secp_ctx, node_pks, &blinding_secret).map_err(|_| ())?,
 		})
@@ -111,6 +158,9 @@ impl BlindedPath {
 		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
 		entropy_source: &ES, secp_ctx: &Secp256k1<T>
 	) -> Result<(BlindedPayInfo, Self), ()> {
+		let introduction_node = IntroductionNode::NodeId(
+			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id)
+		);
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 
@@ -118,18 +168,49 @@ impl BlindedPath {
 			intermediate_nodes, &payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
 		)?;
 		Ok((blinded_payinfo, BlindedPath {
-			introduction_node_id: intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
+			introduction_node,
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 			blinded_hops: payment::blinded_hops(
 				secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
 			).map_err(|_| ())?,
 		}))
 	}
+
+	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
+	/// it is found in the network graph).
+	pub fn public_introduction_node_id<'a>(
+		&self, network_graph: &'a ReadOnlyNetworkGraph
+	) -> Option<&'a NodeId> {
+		match &self.introduction_node {
+			IntroductionNode::NodeId(pubkey) => {
+				let node_id = NodeId::from_pubkey(pubkey);
+				network_graph.nodes().get_key_value(&node_id).map(|(key, _)| key)
+			},
+			IntroductionNode::DirectedShortChannelId(direction, scid) => {
+				network_graph
+					.channel(*scid)
+					.map(|c| match direction {
+						Direction::NodeOne => &c.node_one,
+						Direction::NodeTwo => &c.node_two,
+					})
+			},
+		}
+	}
 }
 
 impl Writeable for BlindedPath {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.introduction_node_id.write(w)?;
+		match &self.introduction_node {
+			IntroductionNode::NodeId(pubkey) => pubkey.write(w)?,
+			IntroductionNode::DirectedShortChannelId(direction, scid) => {
+				match direction {
+					Direction::NodeOne => 0u8.write(w)?,
+					Direction::NodeTwo => 1u8.write(w)?,
+				}
+				scid.write(w)?;
+			},
+		}
+
 		self.blinding_point.write(w)?;
 		(self.blinded_hops.len() as u8).write(w)?;
 		for hop in &self.blinded_hops {
@@ -141,7 +222,17 @@ impl Writeable for BlindedPath {
 
 impl Readable for BlindedPath {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let introduction_node_id = Readable::read(r)?;
+		let mut first_byte: u8 = Readable::read(r)?;
+		let introduction_node = match first_byte {
+			0 => IntroductionNode::DirectedShortChannelId(Direction::NodeOne, Readable::read(r)?),
+			1 => IntroductionNode::DirectedShortChannelId(Direction::NodeTwo, Readable::read(r)?),
+			2|3 => {
+				use io::Read;
+				let mut pubkey_read = core::slice::from_mut(&mut first_byte).chain(r.by_ref());
+				IntroductionNode::NodeId(Readable::read(&mut pubkey_read)?)
+			},
+			_ => return Err(DecodeError::InvalidValue),
+		};
 		let blinding_point = Readable::read(r)?;
 		let num_hops: u8 = Readable::read(r)?;
 		if num_hops == 0 { return Err(DecodeError::InvalidValue) }
@@ -150,7 +241,7 @@ impl Readable for BlindedPath {
 			blinded_hops.push(Readable::read(r)?);
 		}
 		Ok(BlindedPath {
-			introduction_node_id,
+			introduction_node,
 			blinding_point,
 			blinded_hops,
 		})
@@ -162,3 +253,25 @@ impl_writeable!(BlindedHop, {
 	encrypted_payload
 });
 
+impl Direction {
+	/// Returns the [`NodeId`] from the inputs corresponding to the direction.
+	pub fn select_node_id<'a>(&self, node_a: &'a NodeId, node_b: &'a NodeId) -> &'a NodeId {
+		match self {
+			Direction::NodeOne => core::cmp::min(node_a, node_b),
+			Direction::NodeTwo => core::cmp::max(node_a, node_b),
+		}
+	}
+
+	/// Returns the [`PublicKey`] from the inputs corresponding to the direction.
+	pub fn select_pubkey<'a>(&self, node_a: &'a PublicKey, node_b: &'a PublicKey) -> &'a PublicKey {
+		let (node_one, node_two) = if NodeId::from_pubkey(node_a) < NodeId::from_pubkey(node_b) {
+			(node_a, node_b)
+		} else {
+			(node_b, node_a)
+		};
+		match self {
+			Direction::NodeOne => node_one,
+			Direction::NodeTwo => node_two,
+		}
+	}
+}

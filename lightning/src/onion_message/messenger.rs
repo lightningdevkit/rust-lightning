@@ -15,15 +15,15 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::blinded_path::BlindedPath;
-use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::{BlindedPath, IntroductionNode, NodeIdLookUp};
+use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, NextHop, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
-use crate::routing::gossip::{NetworkGraph, NodeId};
+use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
 use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
@@ -70,7 +70,7 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
 /// # use bitcoin::hashes::hex::FromHex;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
-/// # use lightning::blinded_path::BlindedPath;
+/// # use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
 /// # use lightning::sign::{EntropySource, KeysManager};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath, OnionMessenger};
@@ -111,14 +111,15 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// # let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
 /// # let (hop_node_id3, hop_node_id4) = (hop_node_id1, hop_node_id1);
 /// # let destination_node_id = hop_node_id1;
+/// # let node_id_lookup = EmptyNodeIdLookUp {};
 /// # let message_router = Arc::new(FakeMessageRouter {});
 /// # let custom_message_handler = IgnoringMessageHandler {};
 /// # let offers_message_handler = IgnoringMessageHandler {};
 /// // Create the onion messenger. This must use the same `keys_manager` as is passed to your
 /// // ChannelManager.
 /// let onion_messenger = OnionMessenger::new(
-///     &keys_manager, &keys_manager, logger, message_router, &offers_message_handler,
-///     &custom_message_handler
+///     &keys_manager, &keys_manager, logger, &node_id_lookup, message_router,
+///     &offers_message_handler, &custom_message_handler
 /// );
 
 /// # #[derive(Debug)]
@@ -155,11 +156,12 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-pub struct OnionMessenger<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref>
+pub struct OnionMessenger<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
+	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
@@ -169,6 +171,7 @@ where
 	logger: L,
 	message_recipients: Mutex<HashMap<PublicKey, OnionMessageRecipient>>,
 	secp_ctx: Secp256k1<secp256k1::All>,
+	node_id_lookup: NL,
 	message_router: MR,
 	offers_handler: OMH,
 	custom_handler: CMH,
@@ -318,15 +321,21 @@ where
 	ES::Target: EntropySource,
 {
 	fn find_path(
-		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+		&self, sender: PublicKey, peers: Vec<PublicKey>, mut destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		let first_node = destination.first_node();
+		let network_graph = self.network_graph.deref().read_only();
+		destination.resolve(&network_graph);
+
+		let first_node = match destination.first_node() {
+			Some(first_node) => first_node,
+			None => return Err(()),
+		};
+
 		if peers.contains(&first_node) || sender == first_node {
 			Ok(OnionMessagePath {
 				intermediate_nodes: vec![], destination, first_node_addresses: None
 			})
 		} else {
-			let network_graph = self.network_graph.deref().read_only();
 			let node_announcement = network_graph
 				.node(&NodeId::from_pubkey(&first_node))
 				.and_then(|node_info| node_info.announcement_info.as_ref())
@@ -416,11 +425,11 @@ pub struct OnionMessagePath {
 
 impl OnionMessagePath {
 	/// Returns the first node in the path.
-	pub fn first_node(&self) -> PublicKey {
+	pub fn first_node(&self) -> Option<PublicKey> {
 		self.intermediate_nodes
 			.first()
 			.copied()
-			.unwrap_or_else(|| self.destination.first_node())
+			.or_else(|| self.destination.first_node())
 	}
 }
 
@@ -434,6 +443,22 @@ pub enum Destination {
 }
 
 impl Destination {
+	/// Attempts to resolve the [`IntroductionNode::DirectedShortChannelId`] of a
+	/// [`Destination::BlindedPath`] to a [`IntroductionNode::NodeId`], if applicable, using the
+	/// provided [`ReadOnlyNetworkGraph`].
+	pub fn resolve(&mut self, network_graph: &ReadOnlyNetworkGraph) {
+		if let Destination::BlindedPath(path) = self {
+			if let IntroductionNode::DirectedShortChannelId(..) = path.introduction_node {
+				if let Some(pubkey) = path
+					.public_introduction_node_id(network_graph)
+					.and_then(|node_id| node_id.as_pubkey().ok())
+				{
+					path.introduction_node = IntroductionNode::NodeId(pubkey);
+				}
+			}
+		}
+	}
+
 	pub(super) fn num_hops(&self) -> usize {
 		match self {
 			Destination::Node(_) => 1,
@@ -441,10 +466,15 @@ impl Destination {
 		}
 	}
 
-	fn first_node(&self) -> PublicKey {
+	fn first_node(&self) -> Option<PublicKey> {
 		match self {
-			Destination::Node(node_id) => *node_id,
-			Destination::BlindedPath(BlindedPath { introduction_node_id: node_id, .. }) => *node_id,
+			Destination::Node(node_id) => Some(*node_id),
+			Destination::BlindedPath(BlindedPath { introduction_node, .. }) => {
+				match introduction_node {
+					IntroductionNode::NodeId(pubkey) => Some(*pubkey),
+					IntroductionNode::DirectedShortChannelId(..) => None,
+				}
+			},
 		}
 	}
 }
@@ -487,6 +517,10 @@ pub enum SendError {
 	///
 	/// [`NodeSigner`]: crate::sign::NodeSigner
 	GetNodeIdFailed,
+	/// The provided [`Destination`] has a blinded path with an unresolved introduction node. An
+	/// attempt to resolve it in the [`MessageRouter`] when finding an [`OnionMessagePath`] likely
+	/// failed.
+	UnresolvedIntroductionNode,
 	/// We attempted to send to a blinded path where we are the introduction node, and failed to
 	/// advance the blinded path to make the second hop the new introduction node. Either
 	/// [`NodeSigner::ecdh`] failed, we failed to tweak the current blinding point to get the
@@ -538,23 +572,56 @@ pub trait CustomOnionMessageHandler {
 #[derive(Debug)]
 pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
-	Forward(PublicKey, OnionMessage),
+	Forward(NextHop, OnionMessage),
 	/// Received onion message, with decrypted contents, path_id, and reply path
 	Receive(ParsedOnionMessageContents<T>, Option<[u8; 32]>, Option<BlindedPath>)
+}
+
+
+/// Creates an [`OnionMessage`] with the given `contents` for sending to the destination of
+/// `path`, first calling [`Destination::resolve`] on `path.destination` with the given
+/// [`ReadOnlyNetworkGraph`].
+///
+/// Returns the node id of the peer to send the message to, the message itself, and any addresses
+/// needed to connect to the first node.
+pub fn create_onion_message_resolving_destination<
+	ES: Deref, NS: Deref, NL: Deref, T: OnionMessageContents
+>(
+	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+	network_graph: &ReadOnlyNetworkGraph, secp_ctx: &Secp256k1<secp256k1::All>,
+	mut path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>,
+) -> Result<(PublicKey, OnionMessage, Option<Vec<SocketAddress>>), SendError>
+where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	NL::Target: NodeIdLookUp,
+{
+	path.destination.resolve(network_graph);
+	create_onion_message(
+		entropy_source, node_signer, node_id_lookup, secp_ctx, path, contents, reply_path,
+	)
 }
 
 /// Creates an [`OnionMessage`] with the given `contents` for sending to the destination of
 /// `path`.
 ///
 /// Returns the node id of the peer to send the message to, the message itself, and any addresses
-/// need to connect to the first node.
-pub fn create_onion_message<ES: Deref, NS: Deref, T: OnionMessageContents>(
-	entropy_source: &ES, node_signer: &NS, secp_ctx: &Secp256k1<secp256k1::All>,
-	path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>,
+/// needed to connect to the first node.
+///
+/// Returns [`SendError::UnresolvedIntroductionNode`] if:
+/// - `destination` contains a blinded path with an [`IntroductionNode::DirectedShortChannelId`],
+/// - unless it can be resolved by [`NodeIdLookUp::next_node_id`].
+/// Use [`create_onion_message_resolving_destination`] instead to resolve the introduction node
+/// first with a [`ReadOnlyNetworkGraph`].
+pub fn create_onion_message<ES: Deref, NS: Deref, NL: Deref, T: OnionMessageContents>(
+	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+	secp_ctx: &Secp256k1<secp256k1::All>, path: OnionMessagePath, contents: T,
+	reply_path: Option<BlindedPath>,
 ) -> Result<(PublicKey, OnionMessage, Option<Vec<SocketAddress>>), SendError>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
+	NL::Target: NodeIdLookUp,
 {
 	let OnionMessagePath { intermediate_nodes, mut destination, first_node_addresses } = path;
 	if let Destination::BlindedPath(BlindedPath { ref blinded_hops, .. }) = destination {
@@ -571,8 +638,17 @@ where
 		if let Destination::BlindedPath(ref mut blinded_path) = destination {
 			let our_node_id = node_signer.get_node_id(Recipient::Node)
 				.map_err(|()| SendError::GetNodeIdFailed)?;
-			if blinded_path.introduction_node_id == our_node_id {
-				advance_path_by_one(blinded_path, node_signer, &secp_ctx)
+			let introduction_node_id = match blinded_path.introduction_node {
+				IntroductionNode::NodeId(pubkey) => pubkey,
+				IntroductionNode::DirectedShortChannelId(direction, scid) => {
+					match node_id_lookup.next_node_id(scid) {
+						Some(next_node_id) => *direction.select_pubkey(&our_node_id, &next_node_id),
+						None => return Err(SendError::UnresolvedIntroductionNode),
+					}
+				},
+			};
+			if introduction_node_id == our_node_id {
+				advance_path_by_one(blinded_path, node_signer, node_id_lookup, &secp_ctx)
 					.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
 			}
 		}
@@ -583,15 +659,21 @@ where
 	let (first_node_id, blinding_point) = if let Some(first_node_id) = intermediate_nodes.first() {
 		(*first_node_id, PublicKey::from_secret_key(&secp_ctx, &blinding_secret))
 	} else {
-		match destination {
-			Destination::Node(pk) => (pk, PublicKey::from_secret_key(&secp_ctx, &blinding_secret)),
-			Destination::BlindedPath(BlindedPath { introduction_node_id, blinding_point, .. }) =>
-				(introduction_node_id, blinding_point),
+		match &destination {
+			Destination::Node(pk) => (*pk, PublicKey::from_secret_key(&secp_ctx, &blinding_secret)),
+			Destination::BlindedPath(BlindedPath { introduction_node, blinding_point, .. }) => {
+				match introduction_node {
+					IntroductionNode::NodeId(pubkey) => (*pubkey, *blinding_point),
+					IntroductionNode::DirectedShortChannelId(..) => {
+						return Err(SendError::UnresolvedIntroductionNode);
+					},
+				}
+			}
 		}
 	};
 	let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-		&secp_ctx, &intermediate_nodes, destination, contents, reply_path, &blinding_secret)
-		.map_err(|e| SendError::Secp256k1(e))?;
+		&secp_ctx, &intermediate_nodes, destination, contents, reply_path, &blinding_secret
+	)?;
 
 	let prng_seed = entropy_source.get_secure_random_bytes();
 	let onion_routing_packet = construct_onion_message_packet(
@@ -647,9 +729,9 @@ where
 			Ok(PeeledOnion::Receive(message, path_id, reply_path))
 		},
 		Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-			next_node_id, next_blinding_override
+			next_hop, next_blinding_override
 		})), Some((next_hop_hmac, new_packet_bytes)))) => {
-			// TODO: we need to check whether `next_node_id` is our node, in which case this is a dummy
+			// TODO: we need to check whether `next_hop` is our node, in which case this is a dummy
 			// blinded hop and this onion message is destined for us. In this situation, we should keep
 			// unwrapping the onion layers to get to the final payload. Since we don't have the option
 			// of creating blinded paths with dummy hops currently, we should be ok to not handle this
@@ -685,7 +767,7 @@ where
 				onion_routing_packet: outgoing_packet,
 			};
 
-			Ok(PeeledOnion::Forward(next_node_id, onion_message))
+			Ok(PeeledOnion::Forward(next_hop, onion_message))
 		},
 		Err(e) => {
 			log_trace!(logger, "Errored decoding onion message packet: {:?}", e);
@@ -698,12 +780,13 @@ where
 	}
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref>
-OnionMessenger<ES, NS, L, MR, OMH, CMH>
+impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref>
+OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
+	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
@@ -711,8 +794,8 @@ where
 	/// Constructs a new `OnionMessenger` to send, forward, and delegate received onion messages to
 	/// their respective handlers.
 	pub fn new(
-		entropy_source: ES, node_signer: NS, logger: L, message_router: MR, offers_handler: OMH,
-		custom_handler: CMH
+		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL, message_router: MR,
+		offers_handler: OMH, custom_handler: CMH
 	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -722,6 +805,7 @@ where
 			message_recipients: Mutex::new(new_hash_map()),
 			secp_ctx,
 			logger,
+			node_id_lookup,
 			message_router,
 			offers_handler,
 			custom_handler,
@@ -804,7 +888,8 @@ where
 		log_trace!(self.logger, "Constructing onion message {}: {:?}", log_suffix, contents);
 
 		let (first_node_id, onion_message, addresses) = create_onion_message(
-			&self.entropy_source, &self.node_signer, &self.secp_ctx, path, contents, reply_path
+			&self.entropy_source, &self.node_signer, &self.node_id_lookup, &self.secp_ctx, path,
+			contents, reply_path,
 		)?;
 
 		let mut message_recipients = self.message_recipients.lock().unwrap();
@@ -900,12 +985,13 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, On
 	false
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> EventsProvider
-for OnionMessenger<ES, NS, L, MR, OMH, CMH>
+impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> EventsProvider
+for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
+	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
@@ -921,12 +1007,13 @@ where
 	}
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler
-for OnionMessenger<ES, NS, L, MR, OMH, CMH>
+impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler
+for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
+	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
@@ -961,7 +1048,18 @@ where
 					},
 				}
 			},
-			Ok(PeeledOnion::Forward(next_node_id, onion_message)) => {
+			Ok(PeeledOnion::Forward(next_hop, onion_message)) => {
+				let next_node_id = match next_hop {
+					NextHop::NodeId(pubkey) => pubkey,
+					NextHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
+						Some(pubkey) => pubkey,
+						None => {
+							log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {}", scid);
+							return
+						},
+					},
+				};
+
 				let mut message_recipients = self.message_recipients.lock().unwrap();
 				if outbound_buffer_full(&next_node_id, &message_recipients) {
 					log_trace!(
@@ -1097,6 +1195,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<L>,
+	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler
@@ -1116,8 +1215,9 @@ pub type SimpleRefOnionMessenger<
 	&'a KeysManager,
 	&'a KeysManager,
 	&'b L,
-	&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L, &'a KeysManager>,
-	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
+	&'i SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
+	&'j DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L, &'a KeysManager>,
+	&'i SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
 	IgnoringMessageHandler
 >;
 
@@ -1126,14 +1226,23 @@ pub type SimpleRefOnionMessenger<
 fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<S>, unblinded_path: &[PublicKey], destination: Destination, message: T,
 	mut reply_path: Option<BlindedPath>, session_priv: &SecretKey
-) -> Result<(Vec<(Payload<T>, [u8; 32])>, Vec<onion_utils::OnionKeys>), secp256k1::Error> {
+) -> Result<(Vec<(Payload<T>, [u8; 32])>, Vec<onion_utils::OnionKeys>), SendError> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
 	let mut payloads = Vec::with_capacity(num_hops);
 	let mut onion_packet_keys = Vec::with_capacity(num_hops);
 
-	let (mut intro_node_id_blinding_pt, num_blinded_hops) = if let Destination::BlindedPath(BlindedPath {
-		introduction_node_id, blinding_point, blinded_hops }) = &destination {
-		(Some((*introduction_node_id, *blinding_point)), blinded_hops.len()) } else { (None, 0) };
+	let (mut intro_node_id_blinding_pt, num_blinded_hops) = match &destination {
+		Destination::Node(_) => (None, 0),
+		Destination::BlindedPath(BlindedPath { introduction_node, blinding_point, blinded_hops }) => {
+			let introduction_node_id = match introduction_node {
+				IntroductionNode::NodeId(pubkey) => pubkey,
+				IntroductionNode::DirectedShortChannelId(..) => {
+					return Err(SendError::UnresolvedIntroductionNode);
+				},
+			};
+			(Some((*introduction_node_id, *blinding_point)), blinded_hops.len())
+		},
+	};
 	let num_unblinded_hops = num_hops - num_blinded_hops;
 
 	let mut unblinded_path_idx = 0;
@@ -1146,7 +1255,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 				if let Some(ss) = prev_control_tlvs_ss.take() {
 					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(
 						ForwardTlvs {
-							next_node_id: unblinded_pk_opt.unwrap(),
+							next_hop: NextHop::NodeId(unblinded_pk_opt.unwrap()),
 							next_blinding_override: None,
 						}
 					)), ss));
@@ -1156,7 +1265,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 			} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
 				if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
 					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-						next_node_id: intro_node_id,
+						next_hop: NextHop::NodeId(intro_node_id),
 						next_blinding_override: Some(blinding_pt),
 					})), control_tlvs_ss));
 				}
@@ -1181,7 +1290,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 				mu,
 			});
 		}
-	)?;
+	).map_err(|e| SendError::Secp256k1(e))?;
 
 	if let Some(control_tlvs) = final_control_tlvs {
 		payloads.push((Payload::Receive {

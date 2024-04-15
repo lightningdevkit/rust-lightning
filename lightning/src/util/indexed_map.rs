@@ -56,6 +56,11 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 		self.map.get_mut(key)
 	}
 
+	/// Fetches the key-value pair corresponding to the supplied key, if one exists.
+	pub fn get_key_value(&self, key: &K) -> Option<(&K, &V)> {
+		self.map.get_key_value(key)
+	}
+
 	#[inline]
 	/// Returns true if an element with the given `key` exists in the map.
 	pub fn contains_key(&self, key: &K) -> bool {

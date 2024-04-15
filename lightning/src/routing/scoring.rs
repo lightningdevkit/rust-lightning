@@ -2152,7 +2152,7 @@ impl Readable for ChannelLiquidity {
 #[cfg(test)]
 mod tests {
 	use super::{ChannelLiquidity, HistoricalBucketRangeTracker, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters, ProbabilisticScorer};
-	use crate::blinded_path::{BlindedHop, BlindedPath};
+	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 	use crate::util::config::UserConfig;
 
 	use crate::ln::channelmanager;
@@ -3567,7 +3567,7 @@ mod tests {
 		let mut path = payment_path_for_amount(768);
 		let recipient_hop = path.hops.pop().unwrap();
 		let blinded_path = BlindedPath {
-			introduction_node_id: path.hops.last().as_ref().unwrap().pubkey,
+			introduction_node: IntroductionNode::NodeId(path.hops.last().as_ref().unwrap().pubkey),
 			blinding_point: test_utils::pubkey(42),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: test_utils::pubkey(44), encrypted_payload: Vec::new() }
