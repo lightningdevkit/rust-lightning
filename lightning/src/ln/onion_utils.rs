@@ -174,10 +174,10 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 }
 
 /// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
-pub(super) fn build_onion_payloads(
-	path: &Path, total_msat: u64, mut recipient_onion: RecipientOnionFields,
+pub(super) fn build_onion_payloads<'a>(
+	path: &'a Path, total_msat: u64, recipient_onion: &'a RecipientOnionFields,
 	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
-) -> Result<(Vec<msgs::OutboundOnionPayload>, u64, u32), APIError> {
+) -> Result<(Vec<msgs::OutboundOnionPayload<'a>>, u64, u32), APIError> {
 	let mut cur_value_msat = 0u64;
 	let mut cur_cltv = starting_htlc_offset;
 	let mut last_short_channel_id = 0;
@@ -212,28 +212,26 @@ pub(super) fn build_onion_payloads(
 							sender_intended_htlc_amt_msat: *final_value_msat,
 							total_msat,
 							cltv_expiry_height: cur_cltv + excess_final_cltv_expiry_delta,
-							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							encrypted_tlvs: &blinded_hop.encrypted_payload,
 							intro_node_blinding_point: blinding_point.take(),
 							keysend_preimage: *keysend_preimage,
-							custom_tlvs: recipient_onion.custom_tlvs.clone(),
+							custom_tlvs: &recipient_onion.custom_tlvs,
 						});
 					} else {
 						res.push(msgs::OutboundOnionPayload::BlindedForward {
-							encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+							encrypted_tlvs: &blinded_hop.encrypted_payload,
 							intro_node_blinding_point: blinding_point.take(),
 						});
 					}
 				}
 			} else {
 				res.push(msgs::OutboundOnionPayload::Receive {
-					payment_data: if let Some(secret) = recipient_onion.payment_secret.take() {
-						Some(msgs::FinalOnionHopData { payment_secret: secret, total_msat })
-					} else {
-						None
-					},
-					payment_metadata: recipient_onion.payment_metadata.take(),
+					payment_data: recipient_onion.payment_secret.map(|payment_secret| {
+						msgs::FinalOnionHopData { payment_secret, total_msat }
+					}),
+					payment_metadata: recipient_onion.payment_metadata.as_ref(),
 					keysend_preimage: *keysend_preimage,
-					custom_tlvs: recipient_onion.custom_tlvs.clone(),
+					custom_tlvs: &recipient_onion.custom_tlvs,
 					sender_intended_htlc_amt_msat: value_msat,
 					cltv_expiry_height: cltv,
 				});
@@ -1133,7 +1131,7 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
 		&path,
 		total_msat,
-		recipient_onion,
+		&recipient_onion,
 		cur_block_height,
 		keysend_preimage,
 	)?;
