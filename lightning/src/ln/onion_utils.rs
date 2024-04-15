@@ -1122,7 +1122,7 @@ where
 /// `cur_block_height` should be set to the best known block height + 1.
 pub fn create_payment_onion<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, total_msat: u64,
-	recipient_onion: RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
+	recipient_onion: &RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
 	keysend_preimage: &Option<PaymentPreimage>, prng_seed: [u8; 32],
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
 	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv).map_err(|_| {
@@ -1131,7 +1131,7 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
 		&path,
 		total_msat,
-		&recipient_onion,
+		recipient_onion,
 		cur_block_height,
 		keysend_preimage,
 	)?;
