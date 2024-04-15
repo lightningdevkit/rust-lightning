@@ -51,7 +51,7 @@ use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
-use crate::events::{ClosureReason, Event, EventHandler};
+use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 
 #[allow(unused_imports)]
@@ -1159,34 +1159,53 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 macro_rules! _process_events_body {
 	($self_opt: expr, $event_to_handle: expr, $handle_event: expr) => {
 		loop {
+			let mut handling_res = Ok(());
 			let (pending_events, repeated_events);
 			if let Some(us) = $self_opt {
 				let mut inner = us.inner.lock().unwrap();
 				if inner.is_processing_pending_events {
-					break;
+					break handling_res;
 				}
 				inner.is_processing_pending_events = true;
 
 				pending_events = inner.pending_events.clone();
 				repeated_events = inner.get_repeated_events();
-			} else { break; }
-			let num_events = pending_events.len();
+			} else { break handling_res; }
 
-			for event in pending_events.into_iter().chain(repeated_events.into_iter()) {
+			let mut num_handled_events = 0;
+			for event in pending_events {
 				$event_to_handle = event;
-				$handle_event;
+				match $handle_event {
+					Ok(()) => num_handled_events += 1,
+					Err(e) => {
+						// If we encounter an error we stop handling events and make sure to replay
+						// any unhandled events on the next invocation.
+						handling_res = Err(e);
+						break;
+					}
+				}
+			}
+
+			if handling_res.is_ok() {
+				for event in repeated_events {
+					// For repeated events we ignore any errors as they will be replayed eventually
+					// anyways.
+					$event_to_handle = event;
+					let _ = $handle_event;
+				}
 			}
 
 			if let Some(us) = $self_opt {
 				let mut inner = us.inner.lock().unwrap();
-				inner.pending_events.drain(..num_events);
+				inner.pending_events.drain(..num_handled_events);
 				inner.is_processing_pending_events = false;
-				if !inner.pending_events.is_empty() {
-					// If there's more events to process, go ahead and do so.
+				if handling_res.is_ok() && !inner.pending_events.is_empty() {
+					// If there's more events to process and we didn't fail so far, go ahead and do
+					// so.
 					continue;
 				}
 			}
-			break;
+			break handling_res;
 		}
 	}
 }
@@ -1498,21 +1517,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// An [`EventHandler`] may safely call back to the provider, though this shouldn't be needed in
 	/// order to handle these events.
 	///
+	/// Will return a [`ReplayEvent`] error if event handling failed and should eventually be retried.
+	///
 	/// [`SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	/// [`BumpTransaction`]: crate::events::Event::BumpTransaction
-	pub fn process_pending_events<H: Deref>(&self, handler: &H) where H::Target: EventHandler {
+	pub fn process_pending_events<H: Deref>(&self, handler: &H) -> Result<(), ReplayEvent> where H::Target: EventHandler {
 		let mut ev;
-		process_events_body!(Some(self), ev, handler.handle_event(ev));
+		process_events_body!(Some(self), ev, handler.handle_event(ev))
 	}
 
 	/// Processes any events asynchronously.
 	///
 	/// See [`Self::process_pending_events`] for more information.
-	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
+	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ReplayEvent>>, H: Fn(Event) -> Future>(
 		&self, handler: &H
-	) {
+	) -> Result<(), ReplayEvent> {
 		let mut ev;
-		process_events_body!(Some(self), ev, { handler(ev).await });
+		process_events_body!(Some(self), ev, { handler(ev).await })
 	}
 
 	#[cfg(test)]

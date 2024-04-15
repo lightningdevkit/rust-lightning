@@ -15,29 +15,62 @@ use core::marker::Unpin;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-pub(crate) struct MultiFuturePoller<F: Future<Output = ()> + Unpin>(pub Vec<Option<F>>);
+pub(crate) enum ResultFuture<F: Future<Output = Result<(), E>>, E: Copy + Unpin> {
+	Pending(F),
+	Ready(Result<(), E>),
+}
 
-impl<F: Future<Output = ()> + Unpin> Future for MultiFuturePoller<F> {
-	type Output = ();
-	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+pub(crate) struct MultiResultFuturePoller<
+	F: Future<Output = Result<(), E>> + Unpin,
+	E: Copy + Unpin,
+> {
+	futures_state: Vec<ResultFuture<F, E>>,
+}
+
+impl<F: Future<Output = Result<(), E>> + Unpin, E: Copy + Unpin> MultiResultFuturePoller<F, E> {
+	pub fn new(futures_state: Vec<ResultFuture<F, E>>) -> Self {
+		Self { futures_state }
+	}
+}
+
+impl<F: Future<Output = Result<(), E>> + Unpin, E: Copy + Unpin> Future
+	for MultiResultFuturePoller<F, E>
+{
+	type Output = Vec<Result<(), E>>;
+	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<Result<(), E>>> {
 		let mut have_pending_futures = false;
-		for fut_option in self.get_mut().0.iter_mut() {
-			let mut fut = match fut_option.take() {
-				None => continue,
-				Some(fut) => fut,
-			};
-			match Pin::new(&mut fut).poll(cx) {
-				Poll::Ready(()) => {},
-				Poll::Pending => {
-					have_pending_futures = true;
-					*fut_option = Some(fut);
+		let futures_state = &mut self.get_mut().futures_state;
+		for state in futures_state.iter_mut() {
+			match state {
+				ResultFuture::Pending(ref mut fut) => match Pin::new(fut).poll(cx) {
+					Poll::Ready(res) => {
+						*state = ResultFuture::Ready(res);
+					},
+					Poll::Pending => {
+						have_pending_futures = true;
+					},
 				},
+				ResultFuture::Ready(_) => continue,
 			}
 		}
+
 		if have_pending_futures {
 			Poll::Pending
 		} else {
-			Poll::Ready(())
+			let results = futures_state
+				.drain(..)
+				.filter_map(|e| match e {
+					ResultFuture::Ready(res) => Some(res),
+					ResultFuture::Pending(_) => {
+						debug_assert!(
+							false,
+							"All futures are expected to be ready if none are pending"
+						);
+						None
+					},
+				})
+				.collect();
+			Poll::Ready(results)
 		}
 	}
 }

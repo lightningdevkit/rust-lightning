@@ -41,7 +41,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, Fee
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::events;
-use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason};
+use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::inbound_payment;
@@ -1395,35 +1395,38 @@ where
 /// }
 ///
 /// // On the event processing thread once the peer has responded
-/// channel_manager.process_pending_events(&|event| match event {
-///     Event::FundingGenerationReady {
-///         temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script,
-///         user_channel_id, ..
-///     } => {
-///         assert_eq!(user_channel_id, 42);
-///         let funding_transaction = wallet.create_funding_transaction(
-///             channel_value_satoshis, output_script
-///         );
-///         match channel_manager.funding_transaction_generated(
-///             &temporary_channel_id, &counterparty_node_id, funding_transaction
-///         ) {
-///             Ok(()) => println!("Funding channel {}", temporary_channel_id),
-///             Err(e) => println!("Error funding channel {}: {:?}", temporary_channel_id, e),
-///         }
-///     },
-///     Event::ChannelPending { channel_id, user_channel_id, former_temporary_channel_id, .. } => {
-///         assert_eq!(user_channel_id, 42);
-///         println!(
-///             "Channel {} now {} pending (funding transaction has been broadcasted)", channel_id,
-///             former_temporary_channel_id.unwrap()
-///         );
-///     },
-///     Event::ChannelReady { channel_id, user_channel_id, .. } => {
-///         assert_eq!(user_channel_id, 42);
-///         println!("Channel {} ready", channel_id);
-///     },
-///     // ...
-/// #     _ => {},
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::FundingGenerationReady {
+///             temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script,
+///             user_channel_id, ..
+///         } => {
+///             assert_eq!(user_channel_id, 42);
+///             let funding_transaction = wallet.create_funding_transaction(
+///                 channel_value_satoshis, output_script
+///             );
+///             match channel_manager.funding_transaction_generated(
+///                 &temporary_channel_id, &counterparty_node_id, funding_transaction
+///             ) {
+///                 Ok(()) => println!("Funding channel {}", temporary_channel_id),
+///                 Err(e) => println!("Error funding channel {}: {:?}", temporary_channel_id, e),
+///             }
+///         },
+///         Event::ChannelPending { channel_id, user_channel_id, former_temporary_channel_id, .. } => {
+///             assert_eq!(user_channel_id, 42);
+///             println!(
+///                 "Channel {} now {} pending (funding transaction has been broadcasted)", channel_id,
+///                 former_temporary_channel_id.unwrap()
+///             );
+///         },
+///         Event::ChannelReady { channel_id, user_channel_id, .. } => {
+///             assert_eq!(user_channel_id, 42);
+///             println!("Channel {} ready", channel_id);
+///         },
+///         // ...
+///     #     _ => {},
+///     }
+///     Ok(())
 /// });
 /// # }
 /// ```
@@ -1447,28 +1450,31 @@ where
 /// # fn example<T: AChannelManager>(channel_manager: T) {
 /// # let channel_manager = channel_manager.get_cm();
 /// # let error_message = "Channel force-closed";
-/// channel_manager.process_pending_events(&|event| match event {
-///     Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, ..  } => {
-///         if !is_trusted(counterparty_node_id) {
-///             match channel_manager.force_close_without_broadcasting_txn(
-///                 &temporary_channel_id, &counterparty_node_id, error_message.to_string()
-///             ) {
-///                 Ok(()) => println!("Rejecting channel {}", temporary_channel_id),
-///                 Err(e) => println!("Error rejecting channel {}: {:?}", temporary_channel_id, e),
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, ..  } => {
+///             if !is_trusted(counterparty_node_id) {
+///                 match channel_manager.force_close_without_broadcasting_txn(
+///                     &temporary_channel_id, &counterparty_node_id, error_message.to_string()
+///                 ) {
+///                     Ok(()) => println!("Rejecting channel {}", temporary_channel_id),
+///                     Err(e) => println!("Error rejecting channel {}: {:?}", temporary_channel_id, e),
+///                 }
+///                 return Ok(());
 ///             }
-///             return;
-///         }
 ///
-///         let user_channel_id = 43;
-///         match channel_manager.accept_inbound_channel(
-///             &temporary_channel_id, &counterparty_node_id, user_channel_id
-///         ) {
-///             Ok(()) => println!("Accepting channel {}", temporary_channel_id),
-///             Err(e) => println!("Error accepting channel {}: {:?}", temporary_channel_id, e),
-///         }
-///     },
-///     // ...
-/// #     _ => {},
+///             let user_channel_id = 43;
+///             match channel_manager.accept_inbound_channel(
+///                 &temporary_channel_id, &counterparty_node_id, user_channel_id
+///             ) {
+///                 Ok(()) => println!("Accepting channel {}", temporary_channel_id),
+///                 Err(e) => println!("Error accepting channel {}: {:?}", temporary_channel_id, e),
+///             }
+///         },
+///         // ...
+///     #     _ => {},
+///     }
+///     Ok(())
 /// });
 /// # }
 /// ```
@@ -1497,13 +1503,16 @@ where
 /// }
 ///
 /// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| match event {
-///     Event::ChannelClosed { channel_id, user_channel_id, ..  } => {
-///         assert_eq!(user_channel_id, 42);
-///         println!("Channel {} closed", channel_id);
-///     },
-///     // ...
-/// #     _ => {},
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::ChannelClosed { channel_id, user_channel_id, ..  } => {
+///             assert_eq!(user_channel_id, 42);
+///             println!("Channel {} closed", channel_id);
+///         },
+///         // ...
+///     #     _ => {},
+///     }
+///     Ok(())
 /// });
 /// # }
 /// ```
@@ -1553,30 +1562,33 @@ where
 /// };
 ///
 /// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| match event {
-///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
-///         PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
+///             PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
+///                 assert_eq!(payment_hash, known_payment_hash);
+///                 println!("Claiming payment {}", payment_hash);
+///                 channel_manager.claim_funds(payment_preimage);
+///             },
+///             PaymentPurpose::Bolt11InvoicePayment { payment_preimage: None, .. } => {
+///                 println!("Unknown payment hash: {}", payment_hash);
+///             },
+///             PaymentPurpose::SpontaneousPayment(payment_preimage) => {
+///                 assert_ne!(payment_hash, known_payment_hash);
+///                 println!("Claiming spontaneous payment {}", payment_hash);
+///                 channel_manager.claim_funds(payment_preimage);
+///             },
+///             // ...
+/// #           _ => {},
+///         },
+///         Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
 ///             assert_eq!(payment_hash, known_payment_hash);
-///             println!("Claiming payment {}", payment_hash);
-///             channel_manager.claim_funds(payment_preimage);
-///         },
-///         PaymentPurpose::Bolt11InvoicePayment { payment_preimage: None, .. } => {
-///             println!("Unknown payment hash: {}", payment_hash);
-///         },
-///         PaymentPurpose::SpontaneousPayment(payment_preimage) => {
-///             assert_ne!(payment_hash, known_payment_hash);
-///             println!("Claiming spontaneous payment {}", payment_hash);
-///             channel_manager.claim_funds(payment_preimage);
+///             println!("Claimed {} msats", amount_msat);
 ///         },
 ///         // ...
-/// #         _ => {},
-///     },
-///     Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
-///         assert_eq!(payment_hash, known_payment_hash);
-///         println!("Claimed {} msats", amount_msat);
-///     },
-///     // ...
-/// #     _ => {},
+/// #       _ => {},
+///     }
+///     Ok(())
 /// });
 /// # }
 /// ```
@@ -1619,11 +1631,14 @@ where
 /// );
 ///
 /// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| match event {
-///     Event::PaymentSent { payment_hash, .. } => println!("Paid {}", payment_hash),
-///     Event::PaymentFailed { payment_hash, .. } => println!("Failed paying {}", payment_hash),
-///     // ...
-/// #     _ => {},
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::PaymentSent { payment_hash, .. } => println!("Paid {}", payment_hash),
+///         Event::PaymentFailed { payment_hash, .. } => println!("Failed paying {}", payment_hash),
+///         // ...
+///     #     _ => {},
+///     }
+///     Ok(())
 /// });
 /// # }
 /// ```
@@ -1657,23 +1672,25 @@ where
 /// let bech32_offer = offer.to_string();
 ///
 /// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| match event {
-///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
-///         PaymentPurpose::Bolt12OfferPayment { payment_preimage: Some(payment_preimage), .. } => {
-///             println!("Claiming payment {}", payment_hash);
-///             channel_manager.claim_funds(payment_preimage);
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
+///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: Some(payment_preimage), .. } => {
+///                 println!("Claiming payment {}", payment_hash);
+///                 channel_manager.claim_funds(payment_preimage);
+///             },
+///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: None, .. } => {
+///                 println!("Unknown payment hash: {}", payment_hash);
+///             }
+/// #           _ => {},
 ///         },
-///         PaymentPurpose::Bolt12OfferPayment { payment_preimage: None, .. } => {
-///             println!("Unknown payment hash: {}", payment_hash);
+///         Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
+///             println!("Claimed {} msats", amount_msat);
 ///         },
 ///         // ...
-/// #         _ => {},
-///     },
-///     Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
-///         println!("Claimed {} msats", amount_msat);
-///     },
-///     // ...
-/// #     _ => {},
+///     #     _ => {},
+///     }
+///     Ok(())
 /// });
 /// # Ok(())
 /// # }
@@ -1719,12 +1736,15 @@ where
 /// );
 ///
 /// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| match event {
-///     Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
-///     Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
-///     Event::InvoiceRequestFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
-///     // ...
-/// #     _ => {},
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
+///         Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
+///         Event::InvoiceRequestFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
+///         // ...
+///     #     _ => {},
+///     }
+///     Ok(())
 /// });
 /// # }
 /// ```
@@ -1779,11 +1799,14 @@ where
 /// );
 ///
 /// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| match event {
-///     Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
-///     Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
-///     // ...
-/// #     _ => {},
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
+///         Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
+///         // ...
+///     #     _ => {},
+///     }
+///     Ok(())
 /// });
 /// # Ok(())
 /// # }
@@ -1809,18 +1832,19 @@ where
 /// };
 ///
 /// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| match event {
-///     Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
-///     	PaymentPurpose::Bolt12RefundPayment { payment_preimage: Some(payment_preimage), .. } => {
-///             assert_eq!(payment_hash, known_payment_hash);
-///             println!("Claiming payment {}", payment_hash);
-///             channel_manager.claim_funds(payment_preimage);
-///         },
-///     	PaymentPurpose::Bolt12RefundPayment { payment_preimage: None, .. } => {
-///             println!("Unknown payment hash: {}", payment_hash);
-///     	},
-///         // ...
-/// #         _ => {},
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
+///             PaymentPurpose::Bolt12RefundPayment { payment_preimage: Some(payment_preimage), .. } => {
+///                 assert_eq!(payment_hash, known_payment_hash);
+///                 println!("Claiming payment {}", payment_hash);
+///                 channel_manager.claim_funds(payment_preimage);
+///             },
+///             PaymentPurpose::Bolt12RefundPayment { payment_preimage: None, .. } => {
+///                 println!("Unknown payment hash: {}", payment_hash);
+///             },
+///             // ...
+/// #           _ => {},
 ///     },
 ///     Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
 ///         assert_eq!(payment_hash, known_payment_hash);
@@ -1828,6 +1852,8 @@ where
 ///     },
 ///     // ...
 /// #     _ => {},
+///     }
+///     Ok(())
 /// });
 /// # }
 /// ```
@@ -2831,8 +2857,9 @@ macro_rules! handle_new_monitor_update {
 
 macro_rules! process_events_body {
 	($self: expr, $event_to_handle: expr, $handle_event: expr) => {
+		let mut handling_failed = false;
 		let mut processed_all_events = false;
-		while !processed_all_events {
+		while !handling_failed && !processed_all_events {
 			if $self.pending_events_processor.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
 				return;
 			}
@@ -2856,24 +2883,34 @@ macro_rules! process_events_body {
 			}
 
 			let pending_events = $self.pending_events.lock().unwrap().clone();
-			let num_events = pending_events.len();
 			if !pending_events.is_empty() {
 				result = NotifyOption::DoPersist;
 			}
 
 			let mut post_event_actions = Vec::new();
 
+			let mut num_handled_events = 0;
 			for (event, action_opt) in pending_events {
 				$event_to_handle = event;
-				$handle_event;
-				if let Some(action) = action_opt {
-					post_event_actions.push(action);
+				match $handle_event {
+					Ok(()) => {
+						if let Some(action) = action_opt {
+							post_event_actions.push(action);
+						}
+						num_handled_events += 1;
+					}
+					Err(_e) => {
+						// If we encounter an error we stop handling events and make sure to replay
+						// any unhandled events on the next invocation.
+						handling_failed = true;
+						break;
+					}
 				}
 			}
 
 			{
 				let mut pending_events = $self.pending_events.lock().unwrap();
-				pending_events.drain(..num_events);
+				pending_events.drain(..num_handled_events);
 				processed_all_events = pending_events.is_empty();
 				// Note that `push_pending_forwards_ev` relies on `pending_events_processor` being
 				// updated here with the `pending_events` lock acquired.
@@ -9240,7 +9277,7 @@ where
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		let events = core::cell::RefCell::new(Vec::new());
-		let event_handler = |event: events::Event| events.borrow_mut().push(event);
+		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
 		self.process_pending_events(&event_handler);
 		events.into_inner()
 	}
@@ -9347,7 +9384,7 @@ where
 	/// using the given event handler.
 	///
 	/// See the trait-level documentation of [`EventsProvider`] for requirements.
-	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
+	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ReplayEvent>>, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
 		let mut ev;

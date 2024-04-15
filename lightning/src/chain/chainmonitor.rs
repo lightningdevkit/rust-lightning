@@ -33,8 +33,7 @@ use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::events;
-use crate::events::{Event, EventHandler};
+use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
@@ -533,7 +532,7 @@ where C::Target: chain::Filter,
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		use crate::events::EventsProvider;
 		let events = core::cell::RefCell::new(Vec::new());
-		let event_handler = |event: events::Event| events.borrow_mut().push(event);
+		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
 		self.process_pending_events(&event_handler);
 		events.into_inner()
 	}
@@ -544,7 +543,7 @@ where C::Target: chain::Filter,
 	/// See the trait-level documentation of [`EventsProvider`] for requirements.
 	///
 	/// [`EventsProvider`]: crate::events::EventsProvider
-	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
+	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ReplayEvent>>, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
 		// Sadly we can't hold the monitors read lock through an async call. Thus we have to do a
@@ -552,8 +551,13 @@ where C::Target: chain::Filter,
 		let mons_to_process = self.monitors.read().unwrap().keys().cloned().collect::<Vec<_>>();
 		for funding_txo in mons_to_process {
 			let mut ev;
-			super::channelmonitor::process_events_body!(
-				self.monitors.read().unwrap().get(&funding_txo).map(|m| &m.monitor), ev, handler(ev).await);
+			match super::channelmonitor::process_events_body!(
+				self.monitors.read().unwrap().get(&funding_txo).map(|m| &m.monitor), ev, handler(ev).await) {
+				Ok(()) => {},
+				Err(ReplayEvent ()) => {
+					self.event_notifier.notify();
+				}
+			}
 		}
 	}
 
@@ -880,7 +884,12 @@ impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, 
 	/// [`BumpTransaction`]: events::Event::BumpTransaction
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
 		for monitor_state in self.monitors.read().unwrap().values() {
-			monitor_state.monitor.process_pending_events(&handler);
+			match monitor_state.monitor.process_pending_events(&handler) {
+				Ok(()) => {},
+				Err(ReplayEvent ()) => {
+					self.event_notifier.notify();
+				}
+			}
 		}
 	}
 }

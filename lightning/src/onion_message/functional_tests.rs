@@ -307,7 +307,7 @@ fn disconnect_peers(node_a: &MessengerNode, node_b: &MessengerNode) {
 
 fn release_events(node: &MessengerNode) -> Vec<Event> {
 	let events = core::cell::RefCell::new(Vec::new());
-	node.messenger.process_pending_events(&|e| events.borrow_mut().push(e));
+	node.messenger.process_pending_events(&|e| Ok(events.borrow_mut().push(e)));
 	events.into_inner()
 }
 
