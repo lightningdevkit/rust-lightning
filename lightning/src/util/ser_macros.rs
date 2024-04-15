@@ -1148,7 +1148,7 @@ mod tests {
 
 	use crate::io::{self, Cursor};
 	use crate::ln::msgs::DecodeError;
-	use crate::util::ser::{Writeable, HighZeroBytesDroppedBigSize, VecWriter};
+	use crate::util::ser::{MaybeReadable, Readable, Writeable, HighZeroBytesDroppedBigSize, VecWriter};
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::PublicKey;
 
@@ -1256,6 +1256,131 @@ mod tests {
 			concat!("0100", "03041bad1dea")
 		).unwrap()[..]) {
 		} else { panic!(); }
+	}
+
+	/// A "V1" enum with only one variant
+	enum InnerEnumV1 {
+		StructVariantA {
+			field: u32,
+		},
+	}
+
+	impl_writeable_tlv_based_enum_upgradable!(InnerEnumV1,
+		(0, StructVariantA) => {
+			(0, field, required),
+		},
+	);
+
+	struct OuterStructOptionalEnumV1 {
+		inner_enum: Option<InnerEnumV1>,
+		other_field: u32,
+	}
+
+	impl_writeable_tlv_based!(OuterStructOptionalEnumV1, {
+		(0, inner_enum, upgradable_option),
+		(2, other_field, required),
+	});
+
+	/// An upgraded version of [`InnerEnumV1`] that added a second variant
+	enum InnerEnumV2 {
+		StructVariantA {
+			field: u32,
+		},
+		StructVariantB {
+			field2: u64,
+		}
+	}
+
+	impl_writeable_tlv_based_enum_upgradable!(InnerEnumV2,
+		(0, StructVariantA) => {
+			(0, field, required),
+		},
+		(1, StructVariantB) => {
+			(0, field2, required),
+		},
+	);
+
+	struct OuterStructOptionalEnumV2 {
+		inner_enum: Option<InnerEnumV2>,
+		other_field: u32,
+	}
+
+	impl_writeable_tlv_based!(OuterStructOptionalEnumV2, {
+		(0, inner_enum, upgradable_option),
+		(2, other_field, required),
+	});
+
+	#[test]
+	fn upgradable_enum_option() {
+		// Test downgrading from `OuterStructOptionalEnumV2` to `OuterStructOptionalEnumV1` and
+		// ensure we still read the `other_field` just fine.
+		let serialized_bytes = OuterStructOptionalEnumV2 {
+			inner_enum: Some(InnerEnumV2::StructVariantB { field2: 64 }),
+			other_field: 0x1bad1dea,
+		}.encode();
+		let mut s = Cursor::new(serialized_bytes);
+
+		let outer_struct: OuterStructOptionalEnumV1 = Readable::read(&mut s).unwrap();
+		assert!(outer_struct.inner_enum.is_none());
+		assert_eq!(outer_struct.other_field, 0x1bad1dea);
+	}
+
+	/// A struct that is read with an [`InnerEnumV1`] but is written with an [`InnerEnumV2`].
+	struct OuterStructRequiredEnum {
+		#[allow(unused)]
+		inner_enum: InnerEnumV1,
+	}
+
+	impl MaybeReadable for OuterStructRequiredEnum {
+		fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+			let mut inner_enum = crate::util::ser::UpgradableRequired(None);
+			read_tlv_fields!(reader, {
+				(0, inner_enum, upgradable_required),
+			});
+			Ok(Some(Self {
+				inner_enum: inner_enum.0.unwrap(),
+			}))
+		}
+	}
+
+	impl Writeable for OuterStructRequiredEnum {
+		fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+			write_tlv_fields!(writer, {
+				(0, InnerEnumV2::StructVariantB { field2: 0xdeadbeef }, required),
+			});
+			Ok(())
+		}
+	}
+
+	struct OuterOuterStruct {
+		outer_struct: Option<OuterStructRequiredEnum>,
+		other_field: u32,
+	}
+
+	impl_writeable_tlv_based!(OuterOuterStruct, {
+		(0, outer_struct, upgradable_option),
+		(2, other_field, required),
+	});
+
+
+	#[test]
+	fn upgradable_enum_required() {
+		// Test downgrading from an `OuterOuterStruct` (i.e. test downgrading an
+		// `upgradable_required` `InnerEnumV2` to an `InnerEnumV1`).
+		//
+		// Note that `OuterStructRequiredEnum` has a split write/read implementation that writes an
+		// `InnerEnumV2::StructVariantB` irrespective of the value of `inner_enum`.
+
+		let dummy_inner_enum = InnerEnumV1::StructVariantA { field: 42 };
+		let serialized_bytes = OuterOuterStruct {
+			outer_struct: Some(OuterStructRequiredEnum { inner_enum: dummy_inner_enum }),
+			other_field: 0x1bad1dea,
+		}.encode();
+		let mut s = Cursor::new(serialized_bytes);
+
+		let outer_outer_struct: OuterOuterStruct = Readable::read(&mut s).unwrap();
+		assert!(outer_outer_struct.outer_struct.is_none());
+		assert_eq!(outer_outer_struct.other_field, 0x1bad1dea);
 	}
 
 	// BOLT TLV test cases
