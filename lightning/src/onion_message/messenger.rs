@@ -606,7 +606,7 @@ where
 /// `path`.
 ///
 /// Returns the node id of the peer to send the message to, the message itself, and any addresses
-/// need to connect to the first node.
+/// needed to connect to the first node.
 ///
 /// Returns [`SendError::UnresolvedIntroductionNode`] if:
 /// - `destination` contains a blinded path with an [`IntroductionNode::DirectedShortChannelId`],

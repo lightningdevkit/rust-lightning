@@ -1144,11 +1144,11 @@ pub struct FirstHopCandidate<'a> {
 	///
 	/// [`find_route`] validates this prior to constructing a [`CandidateRouteHop`].
 	///
-	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
+	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	pub details: &'a ChannelDetails,
 	/// The node id of the payer, which is also the source side of this candidate route hop.
 	///
-	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
+	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	pub payer_node_id: &'a NodeId,
 }
 
@@ -1158,7 +1158,7 @@ pub struct PublicHopCandidate<'a> {
 	/// Information about the channel, including potentially its capacity and
 	/// direction-specific information.
 	///
-	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
+	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	pub info: DirectedChannelInfo<'a>,
 	/// The short channel ID of the channel, i.e. the identifier by which we refer to this
 	/// channel.
@@ -1170,11 +1170,11 @@ pub struct PublicHopCandidate<'a> {
 pub struct PrivateHopCandidate<'a> {
 	/// Information about the private hop communicated via BOLT 11.
 	///
-	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
+	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	pub hint: &'a RouteHintHop,
 	/// Node id of the next hop in BOLT 11 route hint.
 	///
-	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
+	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	pub target_node_id: &'a NodeId
 }
 
@@ -1189,7 +1189,7 @@ pub struct BlindedPathCandidate<'a> {
 	/// Information about the blinded path including the fee, HTLC amount limits, and
 	/// cryptographic material required to build an HTLC through the given path.
 	///
-	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
+	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	pub hint: &'a (BlindedPayInfo, BlindedPath),
 	/// Index of the hint in the original list of blinded hints.
 	///
@@ -1211,7 +1211,7 @@ pub struct OneHopBlindedPathCandidate<'a> {
 	///
 	/// Note that the [`BlindedPayInfo`] is ignored here.
 	///
-	/// This is not exported to bindings users as lifetimes are not expressable in most languages.
+	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	pub hint: &'a (BlindedPayInfo, BlindedPath),
 	/// Index of the hint in the original list of blinded hints.
 	///
