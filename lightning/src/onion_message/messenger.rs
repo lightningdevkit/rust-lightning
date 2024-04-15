@@ -264,7 +264,7 @@ pub struct Responder {
 
 impl Responder {
 	/// Creates a new [`Responder`] instance with the provided reply path.
-	fn new(reply_path: BlindedPath, path_id: Option<[u8; 32]>) -> Self {
+	pub(super) fn new(reply_path: BlindedPath, path_id: Option<[u8; 32]>) -> Self {
 		Responder {
 			reply_path,
 			path_id,
@@ -1053,7 +1053,16 @@ where
 		)
 	}
 
-	fn handle_onion_message_response<T: OnionMessageContents>(
+	/// Handles the response to an [`OnionMessage`] based on its [`ResponseInstruction`],
+	/// enqueueing any response for sending.
+	///
+	/// This function is useful for asynchronous handling of [`OnionMessage`]s.
+	/// Handlers have the option to return [`ResponseInstruction::NoResponse`], indicating that
+	/// no immediate response should be sent. Then, they can transfer the associated [`Responder`]
+	/// to another task responsible for generating the response asynchronously. Subsequently, when
+	/// the response is prepared and ready for sending, that task can invoke this method to enqueue
+	/// the response for delivery.
+	pub fn handle_onion_message_response<T: OnionMessageContents>(
 		&self, response: ResponseInstruction<T>
 	) {
 		if let ResponseInstruction::WithoutReplyPath(response) = response {
