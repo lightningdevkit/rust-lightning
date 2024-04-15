@@ -1317,7 +1317,7 @@ where
 	/// have an ordering requirement.
 	///
 	/// See the trait-level documentation of [`EventsProvider`] for requirements.
-	pub async fn process_pending_events_async<Future: core::future::Future<Output = ()> + core::marker::Unpin, H: Fn(Event) -> Future>(
+	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ()>> + core::marker::Unpin, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
 		let mut intercepted_msgs = Vec::new();
@@ -1398,7 +1398,7 @@ where
 		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
 			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
 				if let Some(addresses) = addresses.take() {
-					handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses });
+					handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses }).ok();
 				}
 			}
 		}

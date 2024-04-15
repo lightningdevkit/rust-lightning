@@ -33,8 +33,7 @@ use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::events;
-use crate::events::{Event, EventHandler};
+use crate::events::{self, Event, EventHandler, ReplayEvent};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
@@ -533,7 +532,7 @@ where C::Target: chain::Filter,
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		use crate::events::EventsProvider;
 		let events = core::cell::RefCell::new(Vec::new());
-		let event_handler = |event: events::Event| events.borrow_mut().push(event);
+		let event_handler = |event: events::Event| Ok(events.borrow_mut().push(event));
 		self.process_pending_events(&event_handler);
 		events.into_inner()
 	}
@@ -544,7 +543,7 @@ where C::Target: chain::Filter,
 	/// See the trait-level documentation of [`EventsProvider`] for requirements.
 	///
 	/// [`EventsProvider`]: crate::events::EventsProvider
-	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
+	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(),ReplayEvent>>, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
 		// Sadly we can't hold the monitors read lock through an async call. Thus we have to do a
