@@ -69,7 +69,8 @@ impl TrackedSpendableOutput {
 		}
 	}
 
-	fn is_spent_in(&self, tx: &Transaction) -> bool {
+	/// Returns whether the output is spent in the given transaction.
+	pub fn is_spent_in(&self, tx: &Transaction) -> bool {
 		let prev_outpoint = match &self.descriptor {
 			SpendableOutputDescriptor::StaticOutput { outpoint, .. } => *outpoint,
 			SpendableOutputDescriptor::DelayedPaymentOutput(output) => output.outpoint,
@@ -92,7 +93,10 @@ impl_writeable_tlv_based!(TrackedSpendableOutput, {
 pub enum OutputSpendStatus {
 	/// The output is tracked but an initial spending transaction hasn't been generated and
 	/// broadcasted yet.
-	PendingInitialBroadcast,
+	PendingInitialBroadcast {
+		/// The height at which we will first generate and broadcast a spending transaction.
+		delayed_until_height: Option<u32>,
+	},
 	/// A transaction spending the output has been broadcasted but is pending its first confirmation on-chain.
 	PendingFirstConfirmation {
 		/// The hash of the chain tip when we first broadcast a transaction spending this output.
@@ -121,7 +125,13 @@ pub enum OutputSpendStatus {
 impl OutputSpendStatus {
 	fn broadcast(&mut self, cur_hash: BlockHash, cur_height: u32, latest_spending_tx: Transaction) {
 		match self {
-			Self::PendingInitialBroadcast => {
+			Self::PendingInitialBroadcast { delayed_until_height } => {
+				if let Some(delayed_until_height) = delayed_until_height {
+					debug_assert!(
+						cur_height >= *delayed_until_height,
+						"We should never broadcast before the required height is reached."
+					);
+				}
 				*self = Self::PendingFirstConfirmation {
 					first_broadcast_hash: cur_hash,
 					latest_broadcast_height: cur_height,
@@ -146,7 +156,7 @@ impl OutputSpendStatus {
 		latest_spending_tx: Transaction,
 	) {
 		match self {
-			Self::PendingInitialBroadcast => {
+			Self::PendingInitialBroadcast { .. } => {
 				// Generally we can't see any of our transactions confirmed if they haven't been
 				// broadcasted yet, so this should never be reachable via `transactions_confirmed`.
 				debug_assert!(false, "We should never confirm when we haven't broadcasted. This a bug and should never happen, please report.");
@@ -190,7 +200,7 @@ impl OutputSpendStatus {
 
 	fn unconfirmed(&mut self) {
 		match self {
-			Self::PendingInitialBroadcast => {
+			Self::PendingInitialBroadcast { .. } => {
 				debug_assert!(
 					false,
 					"We should only mark a spend as unconfirmed if it used to be confirmed."
@@ -217,9 +227,19 @@ impl OutputSpendStatus {
 		}
 	}
 
+	fn is_delayed(&self, cur_height: u32) -> bool {
+		match self {
+			Self::PendingInitialBroadcast { delayed_until_height } => {
+				delayed_until_height.map_or(false, |req_height| cur_height < req_height)
+			},
+			Self::PendingFirstConfirmation { .. } => false,
+			Self::PendingThresholdConfirmations { .. } => false,
+		}
+	}
+
 	fn first_broadcast_hash(&self) -> Option<BlockHash> {
 		match self {
-			Self::PendingInitialBroadcast => None,
+			Self::PendingInitialBroadcast { .. } => None,
 			Self::PendingFirstConfirmation { first_broadcast_hash, .. } => {
 				Some(*first_broadcast_hash)
 			},
@@ -231,7 +251,7 @@ impl OutputSpendStatus {
 
 	fn latest_broadcast_height(&self) -> Option<u32> {
 		match self {
-			Self::PendingInitialBroadcast => None,
+			Self::PendingInitialBroadcast { .. } => None,
 			Self::PendingFirstConfirmation { latest_broadcast_height, .. } => {
 				Some(*latest_broadcast_height)
 			},
@@ -243,7 +263,7 @@ impl OutputSpendStatus {
 
 	fn confirmation_height(&self) -> Option<u32> {
 		match self {
-			Self::PendingInitialBroadcast => None,
+			Self::PendingInitialBroadcast { .. } => None,
 			Self::PendingFirstConfirmation { .. } => None,
 			Self::PendingThresholdConfirmations { confirmation_height, .. } => {
 				Some(*confirmation_height)
@@ -253,7 +273,7 @@ impl OutputSpendStatus {
 
 	fn confirmation_hash(&self) -> Option<BlockHash> {
 		match self {
-			Self::PendingInitialBroadcast => None,
+			Self::PendingInitialBroadcast { .. } => None,
 			Self::PendingFirstConfirmation { .. } => None,
 			Self::PendingThresholdConfirmations { confirmation_hash, .. } => {
 				Some(*confirmation_hash)
@@ -263,7 +283,7 @@ impl OutputSpendStatus {
 
 	fn latest_spending_tx(&self) -> Option<&Transaction> {
 		match self {
-			Self::PendingInitialBroadcast => None,
+			Self::PendingInitialBroadcast { .. } => None,
 			Self::PendingFirstConfirmation { latest_spending_tx, .. } => Some(latest_spending_tx),
 			Self::PendingThresholdConfirmations { latest_spending_tx, .. } => {
 				Some(latest_spending_tx)
@@ -273,7 +293,7 @@ impl OutputSpendStatus {
 
 	fn is_confirmed(&self) -> bool {
 		match self {
-			Self::PendingInitialBroadcast => false,
+			Self::PendingInitialBroadcast { .. } => false,
 			Self::PendingFirstConfirmation { .. } => false,
 			Self::PendingThresholdConfirmations { .. } => true,
 		}
@@ -281,7 +301,9 @@ impl OutputSpendStatus {
 }
 
 impl_writeable_tlv_based_enum!(OutputSpendStatus,
-	(0, PendingInitialBroadcast) => {},
+	(0, PendingInitialBroadcast) => {
+		(0, delayed_until_height, option),
+	},
 	(2, PendingFirstConfirmation) => {
 		(0, first_broadcast_hash, required),
 		(2, latest_broadcast_height, required),
@@ -372,10 +394,13 @@ where
 	/// [`SpendableOutputDescriptor::StaticOutput`]s, which may be handled directly by the on-chain
 	/// wallet implementation.
 	///
+	/// If `delay_until_height` is set, we will delay the spending until the respective block
+	/// height is reached. This can be used to batch spends, e.g., to reduce on-chain fees.
+	///
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	pub fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
-		exclude_static_ouputs: bool,
+		exclude_static_ouputs: bool, delay_until_height: Option<u32>,
 	) {
 		let mut relevant_descriptors = output_descriptors
 			.into_iter()
@@ -396,7 +421,9 @@ where
 				let output_info = TrackedSpendableOutput {
 					descriptor,
 					channel_id,
-					status: OutputSpendStatus::PendingInitialBroadcast,
+					status: OutputSpendStatus::PendingInitialBroadcast {
+						delayed_until_height: delay_until_height,
+					},
 				};
 
 				if state_lock
@@ -442,6 +469,11 @@ where
 		let filter_fn = |o: &TrackedSpendableOutput| {
 			if o.status.is_confirmed() {
 				// Don't rebroadcast confirmed txs.
+				return false;
+			}
+
+			if o.status.is_delayed(cur_height) {
+				// Don't generate and broadcast if still delayed
 				return false;
 			}
 
@@ -725,6 +757,23 @@ impl_writeable_tlv_based!(SweeperState, {
 	(0, outputs, required_vec),
 	(2, best_block, required),
 });
+
+/// A `enum` signalling to the [`OutputSweeper`] that it should delay spending an output until a
+/// future block height is reached.
+#[derive(Debug, Clone)]
+pub enum SpendingDelay {
+	/// A relative delay indicating we shouldn't spend the output before `cur_height + num_blocks`
+	/// is reached.
+	Relative {
+		/// The number of blocks until we'll generate and broadcast the spending transaction.
+		num_blocks: u32,
+	},
+	/// An absolute delay indicating we shouldn't spend the output before `height` is reached.
+	Absolute {
+		/// The height at which we'll generate and broadcast the spending transaction.
+		height: u32,
+	},
+}
 
 impl<B: Deref, D: Deref, E: Deref, F: Deref, K: Deref, L: Deref, O: Deref>
 	ReadableArgs<(B, E, Option<F>, O, D, K, L)> for OutputSweeper<B, D, E, F, K, L, O>
