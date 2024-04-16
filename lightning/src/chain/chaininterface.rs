@@ -124,6 +124,8 @@ pub enum ConfirmationTarget {
 	///
 	/// [`ChannelManager::close_channel_with_feerate_and_script`]: crate::ln::channelmanager::ChannelManager::close_channel_with_feerate_and_script
 	ChannelCloseMinimum,
+	/// XXX
+	OutputSpendingFee,
 }
 
 /// A trait which should be implemented to provide feerate information on a number of time
