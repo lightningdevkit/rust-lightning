@@ -15,6 +15,7 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
 use crate::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestination, MessageSendEvent};
 use crate::ln::msgs::{ChannelMessageHandler, Init};
+use crate::sign::OutputSpender;
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
 use crate::util::string::UntrustedString;

@@ -9,7 +9,7 @@
 
 //! Further functional tests which test blockchain reorganizations.
 
-use crate::sign::{ecdsa::EcdsaChannelSigner, SpendableOutputDescriptor};
+use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SpendableOutputDescriptor};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
