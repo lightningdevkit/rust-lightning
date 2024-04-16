@@ -904,6 +904,17 @@ pub trait SignerProvider {
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()>;
 }
 
+/// A helper trait that describes an on-chain wallet capable of returning a (change) destination
+/// script.
+pub trait ChangeDestinationSource {
+	/// Returns a script pubkey which can be used as a change destination for
+	/// [`OutputSpender::spend_spendable_outputs`].
+	///
+	/// This method should return a different value each time it is called, to avoid linking
+	/// on-chain funds controlled to the same user.
+	fn get_change_destination_script(&self) -> Result<ScriptBuf, ()>;
+}
+
 /// A simple implementation of [`WriteableEcdsaChannelSigner`] that just keeps the private keys in memory.
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
