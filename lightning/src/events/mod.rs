@@ -792,9 +792,15 @@ pub enum Event {
 	},
 	/// Used to indicate that an output which you should know how to spend was confirmed on chain
 	/// and is now spendable.
-	/// Such an output will *not* ever be spent by rust-lightning, and are not at risk of your
+	///
+	/// Such an output will *never* be spent directly by LDK, and are not at risk of your
 	/// counterparty spending them due to some kind of timeout. Thus, you need to store them
 	/// somewhere and spend them when you create on-chain transactions.
+	///
+	/// You may hand them to the [`OutputSweeper`] utility which will store and (re-)generate spending
+	/// transactions for you.
+	///
+	/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
 	SpendableOutputs {
 		/// The outputs which you should store as spendable by you.
 		outputs: Vec<SpendableOutputDescriptor>,
