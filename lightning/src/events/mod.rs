@@ -53,8 +53,9 @@ pub enum PaymentPurpose {
 	/// A payment for a BOLT 11 invoice.
 	Bolt11InvoicePayment {
 		/// The preimage to the payment_hash, if the payment hash (and secret) were fetched via
-		/// [`ChannelManager::create_inbound_payment`]. If provided, this can be handed directly to
-		/// [`ChannelManager::claim_funds`].
+		/// [`ChannelManager::create_inbound_payment`]. When handling [`Event::PaymentClaimable`],
+		/// this can be passed directly to [`ChannelManager::claim_funds`] to claim the payment. No
+		/// action is needed when seen in [`Event::PaymentClaimed`].
 		///
 		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
@@ -75,8 +76,9 @@ pub enum PaymentPurpose {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	Bolt12OfferPayment {
-		/// The preimage to the payment hash. If provided, this can be handed directly to
-		/// [`ChannelManager::claim_funds`].
+		/// The preimage to the payment hash. When handling [`Event::PaymentClaimable`], this can be
+		/// passed directly to [`ChannelManager::claim_funds`], if provided. No action is needed
+		/// when seen in [`Event::PaymentClaimed`].
 		///
 		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
 		payment_preimage: Option<PaymentPreimage>,
@@ -96,8 +98,9 @@ pub enum PaymentPurpose {
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	Bolt12RefundPayment {
-		/// The preimage to the payment hash. If provided, this can be handed directly to
-		/// [`ChannelManager::claim_funds`].
+		/// The preimage to the payment hash. When handling [`Event::PaymentClaimable`], this can be
+		/// passed directly to [`ChannelManager::claim_funds`], if provided. No action is needed
+		/// when seen in [`Event::PaymentClaimed`].
 		///
 		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
 		payment_preimage: Option<PaymentPreimage>,
