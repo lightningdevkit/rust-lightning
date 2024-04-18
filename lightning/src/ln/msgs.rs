@@ -1746,9 +1746,9 @@ pub struct FinalOnionHopData {
 
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, PaymentRelay};
+	use crate::blinded_path::payment::{BlindedPaymentPath, PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::types::payment::{PaymentPreimage, PaymentSecret};
-	use crate::types::features::BlindedHopFeatures;
+	use crate::types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
 
 	#[allow(unused_imports)]
@@ -1836,9 +1836,21 @@ mod fuzzy_internal_msgs {
 			/// The value, in msat, of the payment after this hop's fee is deducted.
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
-			/// The node id to which the trampoline node must find a route
+			/// The node id to which the trampoline node must find a route.
 			outgoing_node_id: PublicKey,
-		}
+		},
+		#[allow(unused)]
+		/// This is the last Trampoline hop, whereupon the Trampoline forward mechanism is exited,
+		/// and payment data is relayed using non-Trampoline blinded hops
+		LegacyBlindedPathEntry {
+			/// The value, in msat, of the payment after this hop's fee is deducted.
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			/// List of blinded path options the last trampoline hop may choose to route through.
+			payment_paths: Vec<BlindedPaymentPath>,
+			/// If applicable, features of the BOLT12 invoice being paid.
+			invoice_features: Option<Bolt12InvoiceFeatures>,
+		},
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -2763,7 +2775,26 @@ impl Writeable for OutboundTrampolinePayload {
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(14, outgoing_node_id, required)
 				});
-			}
+			},
+			Self::LegacyBlindedPathEntry { amt_to_forward, outgoing_cltv_value, payment_paths, invoice_features } => {
+				let mut blinded_path_serialization = [0u8; 2048]; // Fixed-length buffer on the stack
+				let serialization_length = {
+					let buffer_size = blinded_path_serialization.len();
+					let mut blinded_path_slice = &mut blinded_path_serialization[..];
+					for current_payment_path in payment_paths {
+						current_payment_path.inner_blinded_path().write(&mut blinded_path_slice)?;
+						current_payment_path.payinfo.write(&mut blinded_path_slice)?;
+					}
+					buffer_size - blinded_path_slice.len()
+				};
+				let blinded_path_serialization = &blinded_path_serialization[..serialization_length];
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(21, invoice_features.as_ref().map(|m| WithoutLength(m)), option),
+					(22, WithoutLength(blinded_path_serialization), required)
+				});
+			},
 		}
 		Ok(())
 	}
