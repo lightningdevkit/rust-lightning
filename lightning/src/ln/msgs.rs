@@ -1677,9 +1677,10 @@ pub struct FinalOnionHopData {
 
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
+	use crate::blinded_path::BlindedPath;
 	use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::ln::types::{PaymentPreimage, PaymentSecret};
-	use crate::ln::features::BlindedHopFeatures;
+	use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
 
 	#[allow(unused_imports)]
@@ -1766,9 +1767,19 @@ mod fuzzy_internal_msgs {
 			/// The value, in msat, of the payment after this hop's fee is deducted.
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
-			/// The node id to which the trampoline node must find a route
+			/// The node id to which the trampoline node must find a route.
 			outgoing_node_id: PublicKey,
-		}
+		},
+		#[allow(unused)]
+		BlindedForward {
+			/// The value, in msat, of the payment after this hop's fee is deducted.
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			/// List of blinded path options the last trampoline hop may choose to route through.
+			payment_paths: Vec<BlindedPath>,
+			/// If applicable, features of the BOLT12 invoice being paid.
+			invoice_features: Option<Bolt12InvoiceFeatures>
+		},
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -2665,7 +2676,15 @@ impl Writeable for OutboundTrampolinePayload {
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(14, outgoing_node_id, required)
 				});
-			}
+			},
+			Self::BlindedForward { amt_to_forward, outgoing_cltv_value, payment_paths, invoice_features } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(66097, invoice_features, option),
+					(66102, *payment_paths, required_vec)
+				});
+			},
 		}
 		Ok(())
 	}
