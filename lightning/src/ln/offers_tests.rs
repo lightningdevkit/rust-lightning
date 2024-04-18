@@ -43,13 +43,15 @@
 use bitcoin::network::constants::Network;
 use core::time::Duration;
 use crate::blinded_path::{BlindedPath, IntroductionNode};
+use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
 use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, Retry, self};
+use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::InvoiceRequest;
+use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::PeeledOnion;
 use crate::onion_message::offers::OffersMessage;
@@ -151,16 +153,28 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 	do_pass_along_path(args);
 }
 
-fn claim_bolt12_payment<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>]) {
+fn claim_bolt12_payment<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], expected_payment_context: PaymentContext
+) {
 	let recipient = &path[path.len() - 1];
-	match get_event!(recipient, Event::PaymentClaimable) {
-		Event::PaymentClaimable {
-			purpose: PaymentPurpose::InvoicePayment {
-				payment_preimage: Some(payment_preimage), ..
-			}, ..
-		} => claim_payment(node, path, payment_preimage),
-		_ => panic!(),
+	let payment_purpose = match get_event!(recipient, Event::PaymentClaimable) {
+		Event::PaymentClaimable { purpose, .. } => purpose,
+		_ => panic!("No Event::PaymentClaimable"),
 	};
+	let payment_preimage = match payment_purpose.preimage() {
+		Some(preimage) => preimage,
+		None => panic!("No preimage in Event::PaymentClaimable"),
+	};
+	match payment_purpose {
+		PaymentPurpose::Bolt12OfferPayment { payment_context, .. } => {
+			assert_eq!(PaymentContext::Bolt12Offer(payment_context), expected_payment_context);
+		},
+		PaymentPurpose::Bolt12RefundPayment { payment_context, .. } => {
+			assert_eq!(PaymentContext::Bolt12Refund(payment_context), expected_payment_context);
+		},
+		_ => panic!("Unexpected payment purpose: {:?}", payment_purpose),
+	}
+	claim_payment(node, path, payment_preimage);
 }
 
 fn extract_invoice_request<'a, 'b, 'c>(
@@ -368,7 +382,8 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder("coffee".to_string())
+		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.signing_pubkey(), alice_id);
@@ -393,6 +408,16 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_id: invoice_request.payer_id(),
+			amount_msats: None,
+			features: InvoiceRequestFeatures::empty(),
+			quantity: None,
+			payer_note_truncated: None,
+		},
+	});
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), david_id);
 	assert_eq!(reply_path.unwrap().introduction_node, IntroductionNode::NodeId(charlie_id));
@@ -414,7 +439,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(david, &[charlie, bob, alice]);
+	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context);
 	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -473,7 +498,8 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	}
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	alice.node.request_refund_payment(&refund).unwrap();
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	connect_peers(alice, charlie);
 
@@ -484,6 +510,8 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
 
 	let invoice = extract_invoice(david, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+
 	assert_eq!(invoice.amount_msats(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
@@ -494,7 +522,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(david, &[charlie, bob, alice]);
+	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context);
 	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -533,6 +561,16 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_id: invoice_request.payer_id(),
+			amount_msats: None,
+			features: InvoiceRequestFeatures::empty(),
+			quantity: None,
+			payer_note_truncated: None,
+		},
+	});
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), bob_id);
 	assert_eq!(reply_path.unwrap().introduction_node, IntroductionNode::NodeId(bob_id));
@@ -551,7 +589,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice]);
+	claim_bolt12_payment(bob, &[alice], payment_context);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -589,12 +627,15 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	}
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	alice.node.request_refund_payment(&refund).unwrap();
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
 	let invoice = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+
 	assert_eq!(invoice.amount_msats(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
@@ -605,7 +646,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice]);
+	claim_bolt12_payment(bob, &[alice], payment_context);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -641,6 +682,18 @@ fn pays_for_offer_without_blinded_paths() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_id: invoice_request.payer_id(),
+			amount_msats: None,
+			features: InvoiceRequestFeatures::empty(),
+			quantity: None,
+			payer_note_truncated: None,
+		},
+	});
+
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
@@ -648,7 +701,7 @@ fn pays_for_offer_without_blinded_paths() {
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice]);
+	claim_bolt12_payment(bob, &[alice], payment_context);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -681,16 +734,19 @@ fn pays_for_refund_without_blinded_paths() {
 	assert!(refund.paths().is_empty());
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	alice.node.request_refund_payment(&refund).unwrap();
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
 	let invoice = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(bob, &[alice]);
+	claim_bolt12_payment(bob, &[alice], payment_context);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -1063,12 +1119,13 @@ fn fails_paying_invoice_more_than_once() {
 	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
 
 	// David pays the first invoice
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
 	let invoice1 = extract_invoice(david, &onion_message);
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice1);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
 
-	claim_bolt12_payment(david, &[charlie, bob, alice]);
+	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context);
 	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 
 	disconnect_peers(alice, &[charlie]);

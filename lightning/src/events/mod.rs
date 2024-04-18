@@ -18,6 +18,7 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
+use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef};
 use crate::sign::SpendableOutputDescriptor;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
@@ -49,11 +50,12 @@ use crate::prelude::*;
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaymentPurpose {
-	/// Information for receiving a payment that we generated an invoice for.
-	InvoicePayment {
+	/// A payment for a BOLT 11 invoice.
+	Bolt11InvoicePayment {
 		/// The preimage to the payment_hash, if the payment hash (and secret) were fetched via
-		/// [`ChannelManager::create_inbound_payment`]. If provided, this can be handed directly to
-		/// [`ChannelManager::claim_funds`].
+		/// [`ChannelManager::create_inbound_payment`]. When handling [`Event::PaymentClaimable`],
+		/// this can be passed directly to [`ChannelManager::claim_funds`] to claim the payment. No
+		/// action is needed when seen in [`Event::PaymentClaimed`].
 		///
 		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
@@ -70,6 +72,48 @@ pub enum PaymentPurpose {
 		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 		payment_secret: PaymentSecret,
 	},
+	/// A payment for a BOLT 12 [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	Bolt12OfferPayment {
+		/// The preimage to the payment hash. When handling [`Event::PaymentClaimable`], this can be
+		/// passed directly to [`ChannelManager::claim_funds`], if provided. No action is needed
+		/// when seen in [`Event::PaymentClaimed`].
+		///
+		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+		payment_preimage: Option<PaymentPreimage>,
+		/// The secret used to authenticate the sender to the recipient, preventing a number of
+		/// de-anonymization attacks while routing a payment.
+		///
+		/// See [`PaymentPurpose::Bolt11InvoicePayment::payment_secret`] for further details.
+		payment_secret: PaymentSecret,
+		/// The context of the payment such as information about the corresponding [`Offer`] and
+		/// [`InvoiceRequest`].
+		///
+		/// [`Offer`]: crate::offers::offer::Offer
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		payment_context: Bolt12OfferContext,
+	},
+	/// A payment for a BOLT 12 [`Refund`].
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	Bolt12RefundPayment {
+		/// The preimage to the payment hash. When handling [`Event::PaymentClaimable`], this can be
+		/// passed directly to [`ChannelManager::claim_funds`], if provided. No action is needed
+		/// when seen in [`Event::PaymentClaimed`].
+		///
+		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+		payment_preimage: Option<PaymentPreimage>,
+		/// The secret used to authenticate the sender to the recipient, preventing a number of
+		/// de-anonymization attacks while routing a payment.
+		///
+		/// See [`PaymentPurpose::Bolt11InvoicePayment::payment_secret`] for further details.
+		payment_secret: PaymentSecret,
+		/// The context of the payment such as information about the corresponding [`Refund`].
+		///
+		/// [`Refund`]: crate::offers::refund::Refund
+		payment_context: Bolt12RefundContext,
+	},
 	/// Because this is a spontaneous payment, the payer generated their own preimage rather than us
 	/// (the payee) providing a preimage.
 	SpontaneousPayment(PaymentPreimage),
@@ -79,17 +123,67 @@ impl PaymentPurpose {
 	/// Returns the preimage for this payment, if it is known.
 	pub fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			PaymentPurpose::InvoicePayment { payment_preimage, .. } => *payment_preimage,
+			PaymentPurpose::Bolt11InvoicePayment { payment_preimage, .. } => *payment_preimage,
+			PaymentPurpose::Bolt12OfferPayment { payment_preimage, .. } => *payment_preimage,
+			PaymentPurpose::Bolt12RefundPayment { payment_preimage, .. } => *payment_preimage,
 			PaymentPurpose::SpontaneousPayment(preimage) => Some(*preimage),
+		}
+	}
+
+	pub(crate) fn is_keysend(&self) -> bool {
+		match self {
+			PaymentPurpose::Bolt11InvoicePayment { .. } => false,
+			PaymentPurpose::Bolt12OfferPayment { .. } => false,
+			PaymentPurpose::Bolt12RefundPayment { .. } => false,
+			PaymentPurpose::SpontaneousPayment(..) => true,
+		}
+	}
+
+	pub(crate) fn from_parts(
+		payment_preimage: Option<PaymentPreimage>, payment_secret: PaymentSecret,
+		payment_context: Option<PaymentContext>,
+	) -> Self {
+		match payment_context {
+			Some(PaymentContext::Unknown(_)) | None => {
+				PaymentPurpose::Bolt11InvoicePayment {
+					payment_preimage,
+					payment_secret,
+				}
+			},
+			Some(PaymentContext::Bolt12Offer(context)) => {
+				PaymentPurpose::Bolt12OfferPayment {
+					payment_preimage,
+					payment_secret,
+					payment_context: context,
+				}
+			},
+			Some(PaymentContext::Bolt12Refund(context)) => {
+				PaymentPurpose::Bolt12RefundPayment {
+					payment_preimage,
+					payment_secret,
+					payment_context: context,
+				}
+			},
 		}
 	}
 }
 
 impl_writeable_tlv_based_enum!(PaymentPurpose,
-	(0, InvoicePayment) => {
+	(0, Bolt11InvoicePayment) => {
 		(0, payment_preimage, option),
 		(2, payment_secret, required),
-	};
+	},
+	(4, Bolt12OfferPayment) => {
+		(0, payment_preimage, option),
+		(2, payment_secret, required),
+		(4, payment_context, required),
+	},
+	(6, Bolt12RefundPayment) => {
+		(0, payment_preimage, option),
+		(2, payment_secret, required),
+		(4, payment_context, required),
+	},
+	;
 	(2, SpontaneousPayment)
 );
 
@@ -1058,10 +1152,27 @@ impl Writeable for Event {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
 				let payment_preimage;
+				let mut payment_context = None;
 				match &purpose {
-					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret } => {
+					PaymentPurpose::Bolt11InvoicePayment {
+						payment_preimage: preimage, payment_secret: secret
+					} => {
 						payment_secret = Some(secret);
 						payment_preimage = *preimage;
+					},
+					PaymentPurpose::Bolt12OfferPayment {
+						payment_preimage: preimage, payment_secret: secret, payment_context: context
+					} => {
+						payment_secret = Some(secret);
+						payment_preimage = *preimage;
+						payment_context = Some(PaymentContextRef::Bolt12Offer(context));
+					},
+					PaymentPurpose::Bolt12RefundPayment {
+						payment_preimage: preimage, payment_secret: secret, payment_context: context
+					} => {
+						payment_secret = Some(secret);
+						payment_preimage = *preimage;
+						payment_context = Some(PaymentContextRef::Bolt12Refund(context));
 					},
 					PaymentPurpose::SpontaneousPayment(preimage) => {
 						payment_preimage = Some(*preimage);
@@ -1081,6 +1192,7 @@ impl Writeable for Event {
 					(8, payment_preimage, option),
 					(9, onion_fields, option),
 					(10, skimmed_fee_opt, option),
+					(11, payment_context, option),
 				});
 			},
 			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
@@ -1311,6 +1423,7 @@ impl MaybeReadable for Event {
 					let mut claim_deadline = None;
 					let mut via_user_channel_id = None;
 					let mut onion_fields = None;
+					let mut payment_context = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
@@ -1323,12 +1436,10 @@ impl MaybeReadable for Event {
 						(8, payment_preimage, option),
 						(9, onion_fields, option),
 						(10, counterparty_skimmed_fee_msat_opt, option),
+						(11, payment_context, option),
 					});
 					let purpose = match payment_secret {
-						Some(secret) => PaymentPurpose::InvoicePayment {
-							payment_preimage,
-							payment_secret: secret
-						},
+						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context),
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};

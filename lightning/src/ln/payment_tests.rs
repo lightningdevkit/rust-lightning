@@ -2142,9 +2142,11 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 			assert_eq!(skimmed_fee_msat * num_mpp_parts as u64, counterparty_skimmed_fee_msat);
 			assert_eq!(nodes[2].node.get_our_node_id(), receiver_node_id.unwrap());
 			match purpose {
-				crate::events::PaymentPurpose::InvoicePayment { payment_preimage: ev_payment_preimage,
-					payment_secret: ev_payment_secret, .. } =>
-				{
+				crate::events::PaymentPurpose::Bolt11InvoicePayment {
+					payment_preimage: ev_payment_preimage,
+					payment_secret: ev_payment_secret,
+					..
+				} => {
 					assert_eq!(payment_preimage, ev_payment_preimage.unwrap());
 					assert_eq!(payment_secret, *ev_payment_secret);
 				},

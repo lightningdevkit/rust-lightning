@@ -90,11 +90,11 @@ use crate::blinded_path::BlindedPath;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
-use crate::ln::msgs::MAX_VALUE_MSAT;
-use crate::offers::merkle::TlvStream;
+use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::merkle::{TaggedHash, TlvStream};
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
-use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
+use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
@@ -113,6 +113,37 @@ use crate::prelude::*;
 use std::time::SystemTime;
 
 pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
+
+/// An identifier for an [`Offer`] built using [`DerivedMetadata`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OfferId(pub [u8; 32]);
+
+impl OfferId {
+	const ID_TAG: &'static str = "LDK Offer ID";
+
+	fn from_valid_offer_tlv_stream(bytes: &[u8]) -> Self {
+		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(Self::ID_TAG, bytes);
+		Self(tagged_hash.to_bytes())
+	}
+
+	fn from_valid_invreq_tlv_stream(bytes: &[u8]) -> Self {
+		let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES);
+		let tagged_hash = TaggedHash::from_tlv_stream(Self::ID_TAG, tlv_stream);
+		Self(tagged_hash.to_bytes())
+	}
+}
+
+impl Writeable for OfferId {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for OfferId {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(OfferId(Readable::read(r)?))
+	}
+}
 
 /// Builds an [`Offer`] for the "offer to be paid" flow.
 ///
@@ -370,12 +401,15 @@ macro_rules! offer_builder_methods { (
 		let mut bytes = Vec::new();
 		$self.offer.write(&mut bytes).unwrap();
 
+		let id = OfferId::from_valid_offer_tlv_stream(&bytes);
+
 		Offer {
 			bytes,
 			#[cfg(not(c_bindings))]
 			contents: $self.offer,
 			#[cfg(c_bindings)]
-			contents: $self.offer.clone()
+			contents: $self.offer.clone(),
+			id,
 		}
 	}
 } }
@@ -488,6 +522,7 @@ pub struct Offer {
 	// fields.
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: OfferContents,
+	id: OfferId,
 }
 
 /// The contents of an [`Offer`], which may be shared with an [`InvoiceRequest`] or a
@@ -576,6 +611,11 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 
 impl Offer {
 	offer_accessors!(self, self.contents);
+
+	/// Returns the id of the offer.
+	pub fn id(&self) -> OfferId {
+		self.id
+	}
 
 	pub(super) fn implied_chain(&self) -> ChainHash {
 		self.contents.implied_chain()
@@ -853,7 +893,7 @@ impl OfferContents {
 	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
 	pub(super) fn verify<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> Result<Option<KeyPair>, ()> {
+	) -> Result<(OfferId, Option<KeyPair>), ()> {
 		match self.metadata() {
 			Some(metadata) => {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
@@ -865,9 +905,13 @@ impl OfferContents {
 						_ => true,
 					}
 				});
-				signer::verify_recipient_metadata(
+				let keys = signer::verify_recipient_metadata(
 					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
-				)
+				)?;
+
+				let offer_id = OfferId::from_valid_invreq_tlv_stream(bytes);
+
+				Ok((offer_id, keys))
 			},
 			None => Err(()),
 		}
@@ -1002,7 +1046,9 @@ impl TryFrom<Vec<u8>> for Offer {
 		let offer = ParsedMessage::<OfferTlvStream>::try_from(bytes)?;
 		let ParsedMessage { bytes, tlv_stream } = offer;
 		let contents = OfferContents::try_from(tlv_stream)?;
-		Ok(Offer { bytes, contents })
+		let id = OfferId::from_valid_offer_tlv_stream(&bytes);
+
+		Ok(Offer { bytes, contents, id })
 	}
 }
 
@@ -1210,7 +1256,10 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
+			Err(_) => panic!("unexpected error"),
+		}
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1269,7 +1318,10 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_ok());
+		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
+			Err(_) => panic!("unexpected error"),
+		}
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
