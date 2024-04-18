@@ -259,6 +259,80 @@ pub(super) fn build_onion_payloads(
 	Ok((res, cur_value_msat, cur_cltv))
 }
 
+/// returns the hop data, as well as the first-hop value_msat and CLTV value we should send.
+pub(super) fn build_trampoline_payloads(
+	path: &Path, total_msat: u64, recipient_onion: RecipientOnionFields,
+	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
+) -> Result<(Vec<msgs::OutboundTrampolinePayload>, u64, u32), APIError> {
+	let mut cur_value_msat = 0u64;
+	let mut cur_cltv = starting_htlc_offset;
+	let mut last_node_id = None;
+	let mut res: Vec<msgs::OutboundTrampolinePayload> = Vec::with_capacity(
+		path.trampoline_hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
+	);
+
+	for (idx, hop) in path.trampoline_hops.iter().rev().enumerate() {
+		// First hop gets special values so that it can check, on receipt, that everything is
+		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
+		// the intended recipient).
+		let value_msat = if cur_value_msat == 0 { hop.fee_msat } else { cur_value_msat };
+		let cltv = if cur_cltv == starting_htlc_offset {
+			hop.cltv_expiry_delta + starting_htlc_offset
+		} else {
+			cur_cltv
+		};
+		if idx == 0 {
+			let BlindedTail {
+				blinding_point,
+				hops,
+				final_value_msat,
+				excess_final_cltv_expiry_delta,
+				..
+			} = path.blinded_tail.as_ref().ok_or(APIError::InvalidRoute {
+				err: "Trampoline payments must terminate in blinded tails.".to_owned(),
+			})?;
+			let mut blinding_point = Some(*blinding_point);
+			for (i, blinded_hop) in hops.iter().enumerate() {
+				if i == hops.len() - 1 {
+					cur_value_msat += final_value_msat;
+					res.push(msgs::OutboundTrampolinePayload::BlindedReceive {
+						sender_intended_htlc_amt_msat: *final_value_msat,
+						total_msat,
+						cltv_expiry_height: cur_cltv + excess_final_cltv_expiry_delta,
+						encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+						intro_node_blinding_point: blinding_point.take(),
+						keysend_preimage: *keysend_preimage,
+						custom_tlvs: recipient_onion.custom_tlvs.clone(),
+					});
+				} else {
+					res.push(msgs::OutboundTrampolinePayload::BlindedForward {
+						encrypted_tlvs: blinded_hop.encrypted_payload.clone(),
+						intro_node_blinding_point: blinding_point.take(),
+					});
+				}
+			}
+		} else {
+			let payload = msgs::OutboundTrampolinePayload::Forward {
+				amt_to_forward: value_msat,
+				outgoing_cltv_value: cltv,
+				outgoing_node_id: last_node_id
+					.expect("outgoing node id cannot be None after last hop"),
+			};
+			res.insert(0, payload);
+		}
+		cur_value_msat += hop.fee_msat;
+		if cur_value_msat >= 21000000 * 100000000 * 1000 {
+			return Err(APIError::InvalidRoute { err: "Channel fees overflowed?".to_owned() });
+		}
+		cur_cltv += hop.cltv_expiry_delta as u32;
+		if cur_cltv >= 500000000 {
+			return Err(APIError::InvalidRoute { err: "Channel CLTV overflowed?".to_owned() });
+		}
+		last_node_id = Some(hop.pubkey);
+	}
+	Ok((res, cur_value_msat, cur_cltv))
+}
+
 /// Length of the onion data packet. Before TLV-based onions this was 20 65-byte hops, though now
 /// the hops can be of variable length.
 pub(crate) const ONION_DATA_LEN: usize = 20 * 65;
