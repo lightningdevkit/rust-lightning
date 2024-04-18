@@ -135,6 +135,7 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// 		# let your_custom_message_type = 42;
 /// 		your_custom_message_type
 /// 	}
+/// 	fn msg_type(&self) -> &'static str { "YourCustomMessageType" }
 /// }
 /// // Send a custom onion message to a node id.
 /// let destination = Destination::Node(destination_node_id);
@@ -275,7 +276,6 @@ impl Responder {
 }
 
 /// This struct contains the information needed to reply to a received message.
-#[allow(unused)]
 pub struct OnionMessageResponse<T: OnionMessageContents> {
 	message: T,
 	reply_path: BlindedPath,
@@ -591,7 +591,7 @@ pub trait CustomOnionMessageHandler {
 	/// Called with the custom message that was received, returning a response to send, if any.
 	///
 	/// The returned [`Self::CustomMessage`], if any, is enqueued to be sent by [`OnionMessenger`].
-	fn handle_custom_message(&self, msg: Self::CustomMessage) -> Option<Self::CustomMessage>;
+	fn handle_custom_message(&self, message: Self::CustomMessage, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage>;
 
 	/// Read a custom message of type `message_type` from `buffer`, returning `Ok(None)` if the
 	/// message type is unknown.
@@ -978,19 +978,18 @@ where
 	}
 
 	fn handle_onion_message_response<T: OnionMessageContents>(
-		&self, response: Option<T>, reply_path: Option<BlindedPath>, log_suffix: fmt::Arguments
+		&self, response: ResponseInstruction<T>
 	) {
-		if let Some(response) = response {
-			match reply_path {
-				Some(reply_path) => {
-					let _ = self.find_path_and_enqueue_onion_message(
-						response, Destination::BlindedPath(reply_path), None, log_suffix
-					);
-				},
-				None => {
-					log_trace!(self.logger, "Missing reply path {}", log_suffix);
-				},
-			}
+		if let ResponseInstruction::WithoutReplyPath(response) = response {
+			let message_type = response.message.msg_type();
+			let _ = self.find_path_and_enqueue_onion_message(
+				response.message, Destination::BlindedPath(response.reply_path), None,
+				format_args!(
+					"when responding with {} to an onion message with path_id {:02x?}",
+					message_type,
+					response.path_id
+				)
+			);
 		}
 	}
 
@@ -1074,22 +1073,18 @@ where
 
 				match message {
 					ParsedOnionMessageContents::Offers(msg) => {
-						let response = self.offers_handler.handle_message(msg);
-						self.handle_onion_message_response(
-							response, reply_path, format_args!(
-								"when responding to Offers onion message with path_id {:02x?}",
-								path_id
-							)
+						let responder = reply_path.map(
+							|reply_path| Responder::new(reply_path, path_id)
 						);
+						let response_instructions = self.offers_handler.handle_message(msg, responder);
+						self.handle_onion_message_response(response_instructions);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
-						let response = self.custom_handler.handle_custom_message(msg);
-						self.handle_onion_message_response(
-							response, reply_path, format_args!(
-								"when responding to Custom onion message with path_id {:02x?}",
-								path_id
-							)
+						let responder = reply_path.map(
+							|reply_path| Responder::new(reply_path, path_id)
 						);
+						let response_instructions = self.custom_handler.handle_custom_message(msg, responder);
+						self.handle_onion_message_response(response_instructions);
 					},
 				}
 			},
