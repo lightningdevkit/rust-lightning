@@ -98,6 +98,8 @@ def check_cfg_tag(cfg):
         pass
     elif cfg == "dual_funding":
         pass
+    elif cfg == "splicing":
+        pass
     else:
         print("Bad cfg tag: " + cfg)
         assert False
