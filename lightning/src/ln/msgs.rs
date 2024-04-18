@@ -1768,6 +1768,19 @@ mod fuzzy_internal_msgs {
 			outgoing_cltv_value: u32,
 			/// The node id to which the trampoline node must find a route
 			outgoing_node_id: PublicKey,
+		},
+		BlindedForward {
+			encrypted_tlvs: Vec<u8>,
+			intro_node_blinding_point: Option<PublicKey>,
+		},
+		BlindedReceive {
+			sender_intended_htlc_amt_msat: u64,
+			total_msat: u64,
+			cltv_expiry_height: u32,
+			encrypted_tlvs: Vec<u8>,
+			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
+			keysend_preimage: Option<PaymentPreimage>,
+			custom_tlvs: Vec<(u64, Vec<u8>)>,
 		}
 	}
 
@@ -2673,7 +2686,31 @@ impl Writeable for OutboundTrampolinePayload {
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(14, outgoing_node_id, required)
 				});
-			}
+			},
+			Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(10, *encrypted_tlvs, required_vec),
+					(12, intro_node_blinding_point, option)
+				});
+			},
+			Self::BlindedReceive {
+				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
+				intro_node_blinding_point, keysend_preimage, ref custom_tlvs,
+			} => {
+				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
+				// to reject any reserved types in the experimental range if new ones are ever
+				// standardized.
+				let keysend_tlv = keysend_preimage.map(|preimage| (5482373484, preimage.encode()));
+				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
+				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
+					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
+					(10, *encrypted_tlvs, required_vec),
+					(12, intro_node_blinding_point, option),
+					(18, HighZeroBytesDroppedBigSize(*total_msat), required)
+				}, custom_tlvs.iter());
+			},
 		}
 		Ok(())
 	}
