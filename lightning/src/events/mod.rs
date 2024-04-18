@@ -1012,8 +1012,8 @@ pub enum Event {
 		/// The features that this channel will operate with.
 		channel_type: ChannelTypeFeatures,
 	},
-	/// Used to indicate that a previously opened channel with the given `channel_id` is in the
-	/// process of closure.
+	/// Used to indicate that a channel that got past the initial handshake with the given `channel_id` is in the
+	/// process of closure. This includes previously opened channels, and channels that time out from not being funded.
 	///
 	/// Note that this event is only triggered for accepted channels: if the
 	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true and the channel is
