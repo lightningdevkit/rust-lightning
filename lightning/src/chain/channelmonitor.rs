@@ -1878,10 +1878,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			}
 		}
 
+		const BLOCKS_THRESHOLD: u32 = 4032; // ~four weeks
 		match (inner.balances_empty_height, is_all_funds_claimed) {
 			(Some(balances_empty_height), true) => {
 				// Claimed all funds, check if reached the blocks threshold.
-				const BLOCKS_THRESHOLD: u32 = 4032; // ~four weeks
 				return current_height >= balances_empty_height + BLOCKS_THRESHOLD;
 			},
 			(Some(_), false) => {
@@ -1897,6 +1897,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			(None, true) => {
 				// Claimed all funds but `balances_empty_height` is None. It is set to the
 				// current block height.
+				log_debug!(logger,
+					"ChannelMonitor funded at {} is now fully resolved. It will become archivable in {} blocks",
+					inner.get_funding_txo().0, BLOCKS_THRESHOLD);
 				inner.balances_empty_height = Some(current_height);
 				false
 			},
