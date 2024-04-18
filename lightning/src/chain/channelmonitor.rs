@@ -935,6 +935,9 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	/// Ordering of tuple data: (their_per_commitment_point, feerate_per_kw, to_broadcaster_sats,
 	/// to_countersignatory_sats)
 	initial_counterparty_commitment_info: Option<(PublicKey, u32, u64, u64)>,
+
+	/// The first block height at which we had no remaining claimable balances.
+	balances_empty_height: Option<u32>,
 }
 
 /// Transaction outputs to watch for on-chain spends.
@@ -1145,6 +1148,7 @@ impl<Signer: WriteableEcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signe
 			(15, self.counterparty_fulfilled_htlcs, required),
 			(17, self.initial_counterparty_commitment_info, option),
 			(19, self.channel_id, required),
+			(21, self.balances_empty_height, option),
 		});
 
 		Ok(())
@@ -1328,6 +1332,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			best_block,
 			counterparty_node_id: Some(counterparty_node_id),
 			initial_counterparty_commitment_info: None,
+			balances_empty_height: None,
 		})
 	}
 
@@ -1854,6 +1859,52 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			conf_threshold >= confirmation_height
 		});
 		spendable_outputs
+	}
+
+	/// Checks if the monitor is fully resolved. Resolved monitor is one that has claimed all of
+	/// its outputs and balances (i.e. [`Self::get_claimable_balances`] returns an empty set).
+	///
+	/// This function returns true only if [`Self::get_claimable_balances`] has been empty for at least
+	/// 2016 blocks as an additional protection against any bugs resulting in spuriously empty balance sets.
+	pub fn is_fully_resolved<L: Logger>(&self, logger: &L) -> bool {
+		let mut is_all_funds_claimed = self.get_claimable_balances().is_empty();
+		let current_height = self.current_best_block().height;
+		let mut inner = self.inner.lock().unwrap();
+
+		if is_all_funds_claimed {
+			if !inner.funding_spend_seen {
+				debug_assert!(false, "We should see funding spend by the time a monitor clears out");
+				is_all_funds_claimed = false;
+			}
+		}
+
+		match (inner.balances_empty_height, is_all_funds_claimed) {
+			(Some(balances_empty_height), true) => {
+				// Claimed all funds, check if reached the blocks threshold.
+				const BLOCKS_THRESHOLD: u32 = 4032; // ~four weeks
+				return current_height >= balances_empty_height + BLOCKS_THRESHOLD;
+			},
+			(Some(_), false) => {
+				// previously assumed we claimed all funds, but we have new funds to claim.
+				// Should not happen in practice.
+				debug_assert!(false, "Thought we were done claiming funds, but claimable_balances now has entries");
+				log_error!(logger,
+					"WARNING: LDK thought it was done claiming all the available funds in the ChannelMonitor for channel {}, but later decided it had more to claim. This is potentially an important bug in LDK, please report it at https://github.com/lightningdevkit/rust-lightning/issues/new",
+					inner.get_funding_txo().0);
+				inner.balances_empty_height = None;
+				false
+			},
+			(None, true) => {
+				// Claimed all funds but `balances_empty_height` is None. It is set to the
+				// current block height.
+				inner.balances_empty_height = Some(current_height);
+				false
+			},
+			(None, false) => {
+				// Have funds to claim.
+				false
+			},
+		}
 	}
 
 	#[cfg(test)]
@@ -4632,6 +4683,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut spendable_txids_confirmed = Some(Vec::new());
 		let mut counterparty_fulfilled_htlcs = Some(new_hash_map());
 		let mut initial_counterparty_commitment_info = None;
+		let mut balances_empty_height = None;
 		let mut channel_id = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
@@ -4644,6 +4696,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(15, counterparty_fulfilled_htlcs, option),
 			(17, initial_counterparty_commitment_info, option),
 			(19, channel_id, option),
+			(21, balances_empty_height, option),
 		});
 
 		// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. If we have both
@@ -4722,6 +4775,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			best_block,
 			counterparty_node_id,
 			initial_counterparty_commitment_info,
+			balances_empty_height,
 		})))
 	}
 }

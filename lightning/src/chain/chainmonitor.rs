@@ -194,6 +194,11 @@ pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
 	///
 	/// [`Writeable::write`]: crate::util::ser::Writeable::write
 	fn update_persisted_channel(&self, channel_funding_outpoint: OutPoint, update: Option<&ChannelMonitorUpdate>, data: &ChannelMonitor<ChannelSigner>, update_id: MonitorUpdateId) -> ChannelMonitorUpdateStatus;
+	/// Prevents the channel monitor from being loaded on startup.
+	///
+	/// Archiving the data in a backup location (rather than deleting it fully) is useful for
+	/// hedging against data loss in case of unexpected failure.
+	fn archive_persisted_channel(&self, channel_funding_outpoint: OutPoint);
 }
 
 struct MonitorHolder<ChannelSigner: WriteableEcdsaChannelSigner> {
@@ -654,6 +659,41 @@ where C::Target: chain::Filter,
 					&*self.broadcaster, &*self.fee_estimator, &self.logger
 				)
 			}
+		}
+	}
+
+	/// Archives fully resolved channel monitors by calling [`Persist::archive_persisted_channel`].
+	///
+	/// This is useful for pruning fully resolved monitors from the monitor set and primary
+	/// storage so they are not kept in memory and reloaded on restart.
+	///
+	/// Should be called occasionally (once every handful of blocks or on startup).
+	///
+	/// Depending on the implementation of [`Persist::archive_persisted_channel`] the monitor
+	/// data could be moved to an archive location or removed entirely.
+	pub fn archive_fully_resolved_channel_monitors(&self) {
+		let mut have_monitors_to_prune = false;
+		for (_, monitor_holder) in self.monitors.read().unwrap().iter() {
+			let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor);
+			if monitor_holder.monitor.is_fully_resolved(&logger) {
+				have_monitors_to_prune = true;
+			}
+		}
+		if have_monitors_to_prune {
+			let mut monitors = self.monitors.write().unwrap();
+			monitors.retain(|funding_txo, monitor_holder| {
+				let logger = WithChannelMonitor::from(&self.logger, &monitor_holder.monitor);
+				if monitor_holder.monitor.is_fully_resolved(&logger) {
+					log_info!(logger,
+						"Archiving fully resolved ChannelMonitor for funding txo {}",
+						funding_txo
+					);
+					self.persister.archive_persisted_channel(*funding_txo);
+					false
+				} else {
+					true
+				}
+			});
 		}
 	}
 }
