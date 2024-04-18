@@ -11065,9 +11065,10 @@ where
 			best_block.block_hash.write(writer)?;
 		}
 
+		let per_peer_state = self.per_peer_state.write().unwrap();
+
 		let mut serializable_peer_count: u64 = 0;
 		{
-			let per_peer_state = self.per_peer_state.read().unwrap();
 			let mut number_of_funded_channels = 0;
 			for (_, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -11113,8 +11114,6 @@ where
 		if !decode_update_add_htlcs.is_empty() {
 			decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
 		}
-
-		let per_peer_state = self.per_peer_state.write().unwrap();
 
 		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		let claimable_payments = self.claimable_payments.lock().unwrap();
