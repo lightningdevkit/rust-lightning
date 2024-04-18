@@ -1865,7 +1865,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// its outputs and balances (i.e. [`Self::get_claimable_balances`] returns an empty set).
 	///
 	/// This function returns true only if [`Self::get_claimable_balances`] has been empty for at least
-	/// 2016 blocks as an additional protection against any bugs resulting in spuriously empty balance sets.
+	/// 4032 blocks as an additional protection against any bugs resulting in spuriously empty balance sets.
 	pub fn is_fully_resolved<L: Logger>(&self, logger: &L) -> bool {
 		let mut is_all_funds_claimed = self.get_claimable_balances().is_empty();
 		let current_height = self.current_best_block().height;
