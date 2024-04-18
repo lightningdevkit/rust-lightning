@@ -70,6 +70,20 @@ pub const SCORER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The key under which the [`WriteableScore`] will be persisted.
 pub const SCORER_PERSISTENCE_KEY: &str = "scorer";
 
+/// The primary namespace under which [`OutputSweeper`] state will be persisted.
+///
+/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+pub const OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
+/// The secondary namespace under which [`OutputSweeper`] state will be persisted.
+///
+/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+pub const OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
+/// The secondary namespace under which [`OutputSweeper`] state will be persisted.
+/// The key under which [`OutputSweeper`] state will be persisted.
+///
+/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+pub const OUTPUT_SWEEPER_PERSISTENCE_KEY: &str = "output_sweeper";
+
 /// A sentinel value to be prepended to monitors persisted by the [`MonitorUpdatingPersister`].
 ///
 /// This serves to prevent someone from accidentally loading such monitors (which may need

@@ -919,14 +919,16 @@ impl Drop for BackgroundProcessor {
 
 #[cfg(all(feature = "std", test))]
 mod tests {
+	use bitcoin::{ScriptBuf, Txid};
 	use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1};
-	use lightning::chain::{BestBlock, Confirm, chainmonitor};
+	use lightning::chain::{BestBlock, Confirm, chainmonitor, Filter};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
-	use lightning::sign::{InMemorySigner, KeysManager};
+	use lightning::sign::{InMemorySigner, KeysManager, ChangeDestinationSource};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::{get_event_msg, get_event};
@@ -947,6 +949,7 @@ mod tests {
 		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_KEY,
 		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
 		SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY};
+	use lightning::util::sweep::{OutputSweeper, OutputSpendStatus};
 	use lightning_persister::fs_store::FilesystemStore;
 	use std::collections::VecDeque;
 	use std::{fs, env};
@@ -1009,6 +1012,9 @@ mod tests {
 		logger: Arc<test_utils::TestLogger>,
 		best_block: BestBlock,
 		scorer: Arc<LockingWrapper<TestScorer>>,
+		sweeper: Arc<OutputSweeper<Arc<test_utils::TestBroadcaster>, Arc<TestWallet>,
+			Arc<test_utils::TestFeeEstimator>, Arc<dyn Filter + Sync + Send>, Arc<FilesystemStore>,
+			Arc<test_utils::TestLogger>, Arc<KeysManager>>>,
 	}
 
 	impl Node {
@@ -1247,6 +1253,14 @@ mod tests {
 		}
 	}
 
+	struct TestWallet {}
+
+	impl ChangeDestinationSource for TestWallet {
+		fn get_change_destination_script(&self) -> Result<ScriptBuf, ()> {
+			Ok(ScriptBuf::new())
+		}
+	}
+
 	fn get_full_filepath(filepath: String, filename: String) -> String {
 		let mut path = PathBuf::from(filepath);
 		path.push(filename);
@@ -1271,10 +1285,15 @@ mod tests {
 			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), Arc::clone(&keys_manager), scorer.clone(), Default::default()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store = Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
+			let now = Duration::from_secs(genesis_block.header.time as u64);
+			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), kv_store.clone()));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
 			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), router.clone(), logger.clone(), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), UserConfig::default(), params, genesis_block.header.time));
+			let wallet = Arc::new(TestWallet {});
+			let sweeper = Arc::new(OutputSweeper::new(best_block, Arc::clone(&tx_broadcaster), Arc::clone(&fee_estimator),
+				None::<Arc<dyn Filter + Sync + Send>>, Arc::clone(&keys_manager), wallet, Arc::clone(&kv_store), Arc::clone(&logger)));
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
 			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone(), logger.clone()));
 			let msg_handler = MessageHandler {
@@ -1283,7 +1302,7 @@ mod tests {
 				onion_message_handler: IgnoringMessageHandler{}, custom_message_handler: IgnoringMessageHandler{}
 			};
 			let peer_manager = Arc::new(PeerManager::new(msg_handler, 0, &seed, logger.clone(), keys_manager.clone()));
-			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, kv_store, tx_broadcaster, network_graph, logger, best_block, scorer };
+			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, kv_store, tx_broadcaster, network_graph, logger, best_block, scorer, sweeper };
 			nodes.push(node);
 		}
 
@@ -1352,15 +1371,40 @@ mod tests {
 				1 => {
 					node.node.transactions_confirmed(&header, &txdata, height);
 					node.chain_monitor.transactions_confirmed(&header, &txdata, height);
+					node.sweeper.transactions_confirmed(&header, &txdata, height);
 				},
 				x if x == depth => {
+					// We need the TestBroadcaster to know about the new height so that it doesn't think
+					// we're violating the time lock requirements of transactions broadcasted at that
+					// point.
+					node.tx_broadcaster.blocks.lock().unwrap().push((genesis_block(Network::Bitcoin), height));
 					node.node.best_block_updated(&header, height);
 					node.chain_monitor.best_block_updated(&header, height);
+					node.sweeper.best_block_updated(&header, height);
 				},
 				_ => {},
 			}
 		}
 	}
+
+	fn advance_chain(node: &mut Node, num_blocks: u32) {
+		for i in 1..=num_blocks {
+			let prev_blockhash = node.best_block.block_hash;
+			let height = node.best_block.height + 1;
+			let header = create_dummy_header(prev_blockhash, height);
+			node.best_block = BestBlock::new(header.block_hash(), height);
+			if i == num_blocks {
+				// We need the TestBroadcaster to know about the new height so that it doesn't think
+				// we're violating the time lock requirements of transactions broadcasted at that
+				// point.
+				node.tx_broadcaster.blocks.lock().unwrap().push((genesis_block(Network::Bitcoin), height));
+				node.node.best_block_updated(&header, height);
+				node.chain_monitor.best_block_updated(&header, height);
+				node.sweeper.best_block_updated(&header, height);
+			}
+		}
+	}
+
 	fn confirm_transaction(node: &mut Node, tx: &Transaction) {
 		confirm_transaction_depth(node, tx, ANTI_REORG_DELAY);
 	}
@@ -1592,6 +1636,9 @@ mod tests {
 		let _as_channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_funding);
 		let _bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
+		let broadcast_funding = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+		assert_eq!(broadcast_funding.txid(), funding_tx.txid());
+		assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();
@@ -1617,9 +1664,94 @@ mod tests {
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
 			.expect("Events not handled within deadline");
 		match event {
-			Event::SpendableOutputs { .. } => {},
+			Event::SpendableOutputs { outputs, channel_id } => {
+				nodes[0].sweeper.track_spendable_outputs(outputs, channel_id, false, Some(153));
+			},
 			_ => panic!("Unexpected event: {:?}", event),
 		}
+
+		// Check we don't generate an initial sweeping tx until we reach the required height.
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		if let Some(sweep_tx_0) = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop() {
+			assert!(!tracked_output.is_spent_in(&sweep_tx_0));
+			match tracked_output.status {
+				OutputSpendStatus::PendingInitialBroadcast { delayed_until_height } => {
+					assert_eq!(delayed_until_height, Some(153));
+				}
+				_ => panic!("Unexpected status"),
+			}
+		}
+
+		advance_chain(&mut nodes[0], 3);
+
+		// Check we generate an initial sweeping tx.
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		let sweep_tx_0 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+		match tracked_output.status {
+			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_0.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+
+		// Check we regenerate and rebroadcast the sweeping tx each block.
+		advance_chain(&mut nodes[0], 1);
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		let sweep_tx_1 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+		match tracked_output.status {
+			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_1.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+		assert_ne!(sweep_tx_0, sweep_tx_1);
+
+		advance_chain(&mut nodes[0], 1);
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		let sweep_tx_2 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+		match tracked_output.status {
+			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_2.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+		assert_ne!(sweep_tx_0, sweep_tx_2);
+		assert_ne!(sweep_tx_1, sweep_tx_2);
+
+		// Check we still track the spendable outputs up to ANTI_REORG_DELAY confirmations.
+		confirm_transaction_depth(&mut nodes[0], &sweep_tx_2, 5);
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		match tracked_output.status {
+			OutputSpendStatus::PendingThresholdConfirmations { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_2.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+
+		// Check we still see the transaction as confirmed if we unconfirm any untracked
+		// transaction. (We previously had a bug that would mark tracked transactions as
+		// unconfirmed if any transaction at an unknown block height would be unconfirmed.)
+		let unconf_txid = Txid::from_slice(&[0; 32]).unwrap();
+		nodes[0].sweeper.transaction_unconfirmed(&unconf_txid);
+
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		match tracked_output.status {
+			OutputSpendStatus::PendingThresholdConfirmations { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_2.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+
+		// Check we stop tracking the spendable outputs when one of the txs reaches
+		// ANTI_REORG_DELAY confirmations.
+		confirm_transaction_depth(&mut nodes[0], &sweep_tx_0, ANTI_REORG_DELAY);
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 0);
 
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();

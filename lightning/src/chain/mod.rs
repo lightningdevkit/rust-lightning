@@ -20,6 +20,7 @@ use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Monitor
 use crate::ln::ChannelId;
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
+use crate::impl_writeable_tlv_based;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -55,6 +56,11 @@ impl BestBlock {
 		BestBlock { block_hash, height }
 	}
 }
+
+impl_writeable_tlv_based!(BestBlock, {
+	(0, block_hash, required),
+	(2, height, required),
+});
 
 
 /// The `Listen` trait is used to notify when blocks have been connected or disconnected from the

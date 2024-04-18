@@ -84,7 +84,7 @@ impl FeeEstimator for FuzzEstimator {
 		// Background feerate which is <= the minimum Normal feerate.
 		match conf_target {
 			ConfirmationTarget::OnChainSweep => MAX_FEE,
-			ConfirmationTarget::ChannelCloseMinimum|ConfirmationTarget::AnchorChannelFee|ConfirmationTarget::MinAllowedAnchorChannelRemoteFee|ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee => 253,
+			ConfirmationTarget::ChannelCloseMinimum|ConfirmationTarget::AnchorChannelFee|ConfirmationTarget::MinAllowedAnchorChannelRemoteFee|ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee|ConfirmationTarget::OutputSpendingFee => 253,
 			ConfirmationTarget::NonAnchorChannelFee => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
 		}
 	}

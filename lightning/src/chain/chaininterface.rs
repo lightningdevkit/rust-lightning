@@ -124,6 +124,17 @@ pub enum ConfirmationTarget {
 	///
 	/// [`ChannelManager::close_channel_with_feerate_and_script`]: crate::ln::channelmanager::ChannelManager::close_channel_with_feerate_and_script
 	ChannelCloseMinimum,
+	/// The feerate [`OutputSweeper`] will use on transactions spending
+	/// [`SpendableOutputDescriptor`]s after a channel closure.
+	///
+	/// Generally spending these outputs is safe as long as they eventually confirm, so a value
+	/// (slightly above) the mempool minimum should suffice. However, as this value will influence
+	/// how long funds will be unavailable after channel closure, [`FeeEstimator`] implementors
+	/// might want to choose a higher feerate to regain control over funds faster.
+	///
+	/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+	/// [`SpendableOutputDescriptor`]: crate::sign::SpendableOutputDescriptor
+	OutputSpendingFee,
 }
 
 /// A trait which should be implemented to provide feerate information on a number of time
