@@ -3209,7 +3209,7 @@ mod tests {
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{BigSize, Hostname, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
+	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 
 	use bitcoin::hashes::hex::FromHex;
@@ -4524,6 +4524,13 @@ mod tests {
 		};
 		let encoded_trampoline_packet = trampoline_packet.encode();
 		assert_eq!(encoded_trampoline_packet.len(), 716);
+
+		{ // verify that a codec round trip works
+			let mut reader = Cursor::new(&encoded_trampoline_packet);
+			let mut trampoline_packet_reader = FixedLengthReader::new(&mut reader, encoded_trampoline_packet.len() as u64);
+			let decoded_trampoline_packet: TrampolineOnionPacket = <TrampolineOnionPacket as LengthReadable>::read(&mut trampoline_packet_reader).unwrap();
+			assert_eq!(decoded_trampoline_packet.encode(), encoded_trampoline_packet);
+		}
 
 		let msg = msgs::OutboundOnionPayload::TrampolineEntrypoint {
 			multipath_trampoline_data: None,
