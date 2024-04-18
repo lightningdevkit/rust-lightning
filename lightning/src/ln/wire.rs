@@ -60,11 +60,11 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
 	Stfu(msgs::Stfu),
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	Splice(msgs::Splice),
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	SpliceAck(msgs::SpliceAck),
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	SpliceLocked(msgs::SpliceLocked),
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
@@ -118,11 +118,11 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::FundingCreated(ref msg) => msg.write(writer),
 			&Message::FundingSigned(ref msg) => msg.write(writer),
 			&Message::Stfu(ref msg) => msg.write(writer),
-			#[cfg(dual_funding)]
+			#[cfg(splicing)]
 			&Message::Splice(ref msg) => msg.write(writer),
-			#[cfg(dual_funding)]
+			#[cfg(splicing)]
 			&Message::SpliceAck(ref msg) => msg.write(writer),
-			#[cfg(dual_funding)]
+			#[cfg(splicing)]
 			&Message::SpliceLocked(ref msg) => msg.write(writer),
 			&Message::TxAddInput(ref msg) => msg.write(writer),
 			&Message::TxAddOutput(ref msg) => msg.write(writer),
@@ -176,11 +176,11 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
 			&Message::Stfu(ref msg) => msg.type_id(),
-			#[cfg(dual_funding)]
+			#[cfg(splicing)]
 			&Message::Splice(ref msg) => msg.type_id(),
-			#[cfg(dual_funding)]
+			#[cfg(splicing)]
 			&Message::SpliceAck(ref msg) => msg.type_id(),
-			#[cfg(dual_funding)]
+			#[cfg(splicing)]
 			&Message::SpliceLocked(ref msg) => msg.type_id(),
 			&Message::TxAddInput(ref msg) => msg.type_id(),
 			&Message::TxAddOutput(ref msg) => msg.type_id(),
@@ -279,18 +279,18 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::FundingSigned::TYPE => {
 			Ok(Message::FundingSigned(Readable::read(buffer)?))
 		},
-		#[cfg(dual_funding)]
+		#[cfg(splicing)]
 		msgs::Splice::TYPE => {
 			Ok(Message::Splice(Readable::read(buffer)?))
 		},
 		msgs::Stfu::TYPE => {
 			Ok(Message::Stfu(Readable::read(buffer)?))
 		},
-		#[cfg(dual_funding)]
+		#[cfg(splicing)]
 		msgs::SpliceAck::TYPE => {
 			Ok(Message::SpliceAck(Readable::read(buffer)?))
 		},
-		#[cfg(dual_funding)]
+		#[cfg(splicing)]
 		msgs::SpliceLocked::TYPE => {
 			Ok(Message::SpliceLocked(Readable::read(buffer)?))
 		},

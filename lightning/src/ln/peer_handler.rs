@@ -248,15 +248,15 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_stfu(&self, their_node_id: &PublicKey, msg: &msgs::Stfu) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	fn handle_splice(&self, their_node_id: &PublicKey, msg: &msgs::Splice) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &msgs::SpliceAck) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
@@ -1787,16 +1787,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				self.message_handler.chan_handler.handle_stfu(&their_node_id, &msg);
 			}
 
-			#[cfg(dual_funding)]
+			#[cfg(splicing)]
 			// Splicing messages:
 			wire::Message::Splice(msg) => {
 				self.message_handler.chan_handler.handle_splice(&their_node_id, &msg);
 			}
-			#[cfg(dual_funding)]
+			#[cfg(splicing)]
 			wire::Message::SpliceAck(msg) => {
 				self.message_handler.chan_handler.handle_splice_ack(&their_node_id, &msg);
 			}
-			#[cfg(dual_funding)]
+			#[cfg(splicing)]
 			wire::Message::SpliceLocked(msg) => {
 				self.message_handler.chan_handler.handle_splice_locked(&their_node_id, &msg);
 			}

@@ -624,11 +624,11 @@ mod tests {
 		fn handle_open_channel_v2(&self, _their_node_id: &PublicKey, _msg: &OpenChannelV2) {}
 		fn handle_accept_channel_v2(&self, _their_node_id: &PublicKey, _msg: &AcceptChannelV2) {}
 		fn handle_stfu(&self, _their_node_id: &PublicKey, _msg: &Stfu) {}
-		#[cfg(dual_funding)]
+		#[cfg(splicing)]
 		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
-		#[cfg(dual_funding)]
+		#[cfg(splicing)]
 		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
-		#[cfg(dual_funding)]
+		#[cfg(splicing)]
 		fn handle_splice_locked(&self, _their_node_id: &PublicKey, _msg: &SpliceLocked) {}
 		fn handle_tx_add_input(&self, _their_node_id: &PublicKey, _msg: &TxAddInput) {}
 		fn handle_tx_add_output(&self, _their_node_id: &PublicKey, _msg: &TxAddOutput) {}
