@@ -55,7 +55,7 @@ use crate::io_extras::read_to_end;
 use crate::events::{EventsProvider, MessageSendEventsProvider};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::logger;
-use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
+use crate::util::ser::{BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited, WithoutLength, Writeable, Writer};
 use crate::util::base32;
 
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -1853,6 +1853,26 @@ impl Writeable for TrampolineOnionPacket {
 		w.write_all(&self.hop_data)?;
 		self.hmac.write(w)?;
 		Ok(())
+	}
+}
+
+impl LengthReadable for TrampolineOnionPacket {
+	fn read<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let version = Readable::read(r)?;
+		let public_key = Readable::read(r)?;
+
+		let hop_data_len = r.total_bytes().saturating_sub(66); // 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
+		let mut rd = FixedLengthReader::new(r, hop_data_len);
+		let hop_data = WithoutLength::<Vec<u8>>::read(&mut rd)?.0;
+
+		let hmac = Readable::read(r)?;
+
+		Ok(TrampolineOnionPacket {
+			version,
+			public_key,
+			hop_data,
+			hmac,
+		})
 	}
 }
 
