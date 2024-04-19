@@ -1769,10 +1769,12 @@ mod fuzzy_internal_msgs {
 			/// The node id to which the trampoline node must find a route
 			outgoing_node_id: PublicKey,
 		},
+		#[allow(unused)]
 		BlindedForward {
 			encrypted_tlvs: Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>,
 		},
+		#[allow(unused)]
 		BlindedReceive {
 			sender_intended_htlc_amt_msat: u64,
 			total_msat: u64,
