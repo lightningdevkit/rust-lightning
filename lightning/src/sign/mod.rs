@@ -401,7 +401,7 @@ impl SpendableOutputDescriptor {
 									subtype: 0,
 									key: "add_tweak".as_bytes().to_vec(),
 								},
-								add_tweak.to_vec(),
+								add_tweak.as_byte_array().to_vec(),
 							)]
 							.into_iter()
 							.collect()
