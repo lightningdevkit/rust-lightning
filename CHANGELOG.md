@@ -1,3 +1,143 @@
+# 0.0.123 - May 08, 2024 - "BOLT12 Dust Sweeping"
+
+## API Updates
+
+ * To reduce risk of force-closures and improve HTLC reliability the default
+   dust exposure limit has been increased to
+   `MaxDustHTLCExposure::FeeRateMultiplier(10_000)`. Users with existing
+   channels might want to consider using
+   `ChannelManager::update_channel_config` to apply the new default (#3045).
+ * `ChainMonitor::archive_fully_resolved_channel_monitors` is now provided to
+   remove from memory `ChannelMonitor`s that have been fully resolved on-chain
+   and are now not needed. It uses the new `Persist::archive_persisted_channel`
+   to inform the storage layer that such a monitor should be archived (#2964).
+ * An `OutputSweeper` is now provided which will automatically sweep
+   `SpendableOutputDescriptor`s, retrying until the sweep confirms (#2825).
+ * After initiating an outbound channel, a peer disconnection no longer results
+   in immediate channel closure. Rather, if the peer is reconnected before the
+   channel times out LDK will automatically retry opening it (#2725).
+ * `PaymentPurpose` now has separate variants for BOLT12 payments, which
+   include fields from the `invoice_request` as well as the `OfferId` (#2970).
+ * `ChannelDetails` now includes a list of in-flight HTLCs (#2442).
+ * `Event::PaymentForwarded` now includes `skimmed_fee_msat` (#2858).
+ * The `hashbrown` dependency has been upgraded and the use of `ahash` as the
+   no-std hash table hash function has been removed. As a consequence, LDK's
+   `Hash{Map,Set}`s no longer feature several constructors when LDK is built
+   with no-std; see the `util::hash_tables` module instead. On platforms that
+   `getrandom` supports, setting the `possiblyrandom/getrandom` feature flag
+   will ensure hash tables are resistant to HashDoS attacks, though the
+   `possiblyrandom` crate should detect most common platforms (#2810, #2891).
+ * `ChannelMonitor`-originated requests to the `ChannelSigner` can now fail and
+   be retried using `ChannelMonitor::signer_unblocked` (#2816).
+ * `SpendableOutputDescriptor::to_psbt_input` now includes the `witness_script`
+   where available as well as new proprietary data which can be used to
+   re-derive some spending keys from the base key (#2761, #3004).
+ * `OutPoint::to_channel_id` has been removed in favor of
+   `ChannelId::v1_from_funding_outpoint` in preparation for v2 channels with a
+   different `ChannelId` derivation scheme (#2797).
+ * `PeerManager::get_peer_node_ids` has been replaced with `list_peers` and
+   `peer_by_node_id`, which provide more details (#2905).
+ * `Bolt11Invoice::get_payee_pub_key` is now provided (#2909).
+ * `Default[Message]Router` now take an `entropy_source` argument (#2847).
+ * `ClosureReason::HTLCsTimedOut` has been separated out from
+   `ClosureReason::HolderForceClosed` as it is the most common case (#2887).
+ * `ClosureReason::CooperativeClosure` is now split into
+   `{Counterparty,Locally}Initiated` variants (#2863).
+ * `Event::ChannelPending::channel_type` is now provided (#2872).
+ * `PaymentForwarded::{prev,next}_user_channel_id` are now provided (#2924).
+ * Channel init messages have been refactored towards V2 channels (#2871).
+ * `BumpTransactionEvent` now contains the channel and counterparty (#2873).
+ * `util::scid_utils` is now public, with some trivial utilities to examine
+   short channel ids (#2694).
+ * `DirectedChannelInfo::{source,target}` are now public (#2870).
+ * Bounds in `lightning-background-processor` were simplified by using
+   `AChannelManager` (#2963).
+ * The `Persist` impl for `KVStore` no longer requires `Sized`, allowing for
+   the use of `dyn KVStore` as `Persist` (#2883, #2976).
+ * `From<PaymentPreimage>` is now implemented for `PaymentHash` (#2918).
+ * `NodeId::from_slice` is now provided (#2942).
+ * `ChannelManager` deserialization may now fail with `DangerousValue` when
+    LDK's persistence API was violated (#2974).
+
+## Bug Fixes
+ * Excess fees on counterparty commitment transactions are now included in the
+   dust exposure calculation. This lines behavior up with some cases where
+   transaction fees can be burnt, making them effectively dust exposure (#3045).
+ * `Future`s used as an `std::...::Future` could grow in size unbounded if it
+   was never woken. For those not using async persistence and using the async
+   `lightning-background-processor`, this could cause a memory leak in the
+   `ChainMonitor` (#2894).
+ * Inbound channel requests that fail in
+   `ChannelManager::accept_inbound_channel` would previously have stalled from
+   the peer's perspective as no `error` message was sent (#2953).
+ * Blinded path construction has been tuned to select paths more likely to
+   succeed, improving BOLT12 payment reliability (#2911, #2912).
+ * After a reorg, `lightning-transaction-sync` could have failed to follow a
+   transaction that LDK needed information about (#2946).
+ * `RecipientOnionFields`' `custom_tlvs` are now propagated to recipients when
+   paying with blinded paths (#2975).
+ * `Event::ChannelClosed` is now properly generated and peers are properly
+   notified for all channels that as a part of a batch channel open fail to be
+   funded (#3029).
+ * In cases where user event processing is substantially delayed such that we
+   complete multiple round-trips with our peers before a `PaymentSent` event is
+   handled and then restart without persisting the `ChannelManager` after having
+   persisted a `ChannelMonitor[Update]`, on startup we may have `Err`d trying to
+   deserialize the `ChannelManager` (#3021).
+ * If a peer has relatively high latency, `PeerManager` may have failed to
+   establish a connection (#2993).
+ * `ChannelUpdate` messages broadcasted for our own channel closures are now
+   slightly more robust (#2731).
+ * Deserializing malformed BOLT11 invoices may have resulted in an integer
+   overflow panic in debug builds (#3032).
+ * In exceedingly rare cases (no cases of this are known), LDK may have created
+   an invalid serialization for a `ChannelManager` (#2998).
+ * Message processing latency handling BOLT12 payments has been reduced (#2881).
+ * Latency in processing `Event::SpendableOutputs` may be reduced (#3033).
+
+## Node Compatibility
+ * LDK's blinded paths were inconsistent with other implementations in several
+   ways, which have been addressed (#2856, #2936, #2945).
+ * LDK's messaging blinded paths now support the latest features which some
+   nodes may begin relying on soon (#2961).
+ * LDK's BOLT12 structs have been updated to support some last-minute changes to
+   the spec (#3017, #3018).
+ * CLN v24.02 requires the `gossip_queries` feature for all peers, however LDK
+   by default does not set it for those not using a `P2PGossipSync` (e.g. those
+   using RGS). This change was reverted in CLN v24.02.2 however for now LDK
+   always sets the `gossip_queries` feature. This change is expected to be
+   reverted in a future LDK release (#2959).
+
+## Security
+0.0.123 fixes a denial-of-service vulnerability which we believe to be reachable
+from untrusted input when parsing invalid BOLT11 invoices containing non-ASCII
+characters.
+ * BOLT11 invoices with non-ASCII characters in the human-readable-part may
+   cause an out-of-bounds read attempt leading to a panic (#3054). Note that all
+   BOLT11 invoices containing non-ASCII characters are invalid.
+
+In total, this release features 150 files changed, 19307 insertions, 6306
+deletions in 360 commits since 0.0.121 from 17 authors, in alphabetical order:
+
+ * Arik Sosman
+ * Duncan Dean
+ * Elias Rohrer
+ * Evan Feenstra
+ * Jeffrey Czyz
+ * Keyue Bao
+ * Matt Corallo
+ * Orbital
+ * Sergi Delgado Segura
+ * Valentine Wallace
+ * Willem Van Lint
+ * Wilmer Paulino
+ * benthecarman
+ * jbesraa
+ * olegkubrakov
+ * optout
+ * shaavan
+
+
 # 0.0.122 - Apr 09, 2024 - "That Which Is Untested Is Broken"
 
 ## Bug Fixes
