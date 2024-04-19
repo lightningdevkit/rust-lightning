@@ -2291,11 +2291,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Allowed in any state (including after shutdown), but will return none before TheirInitSent
 	pub fn get_holder_htlc_maximum_msat(&self) -> Option<u64> {
-		if self.should_announce() == true {
-			self.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
-		} else {
-			Some(self.holder_max_htlc_value_in_flight_msat)
-		}
+		self.get_htlc_maximum_msat(self.holder_max_htlc_value_in_flight_msat)
 	}
 
 	/// Allowed in any state (including after shutdown)
@@ -3474,7 +3470,11 @@ fn get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis: u64, config:
 	} else {
 		config.max_inbound_htlc_value_in_flight_percent_of_channel as u64
 	};
-	channel_value_satoshis * 10 * configured_percent
+	if config.announced_channel == true {
+		channel_value_satoshis * 10 * configured_percent
+	} else {
+		channel_value_satoshis * 10
+	}
 }
 
 /// Returns a minimum channel reserve value the remote needs to maintain,
@@ -5423,7 +5423,7 @@ impl<SP: Deref> Channel<SP> where
 		if !self.context.channel_state.is_peer_disconnected() {
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
-			// just close here instead of trying to recover.
+			// just close here instead of trying to recover.1
 			return Err(ChannelError::Close("Peer sent a loose channel_reestablish not after reconnect".to_owned()));
 		}
 
@@ -9690,12 +9690,12 @@ mod tests {
 		// which is set to the lower bound + 1 (2%) of the `channel_value`.
 		let chan_1 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_2_percent), 10000000, 100000, 42, &config_2_percent, 0, 42, None).unwrap();
 		let chan_1_value_msat = chan_1.context.channel_value_satoshis * 1000;
-		assert_eq!(chan_1.context.holder_max_htlc_value_in_flight_msat, (chan_1_value_msat as f64 * 0.02) as u64);
+		assert_eq!(chan_1.context.holder_max_htlc_value_in_flight_msat, (chan_1_value_msat as f64 * 0.01) as u64);
 
 		// Test with the upper bound - 1 of valid values (99%).
 		let chan_2 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_99_percent), 10000000, 100000, 42, &config_99_percent, 0, 42, None).unwrap();
 		let chan_2_value_msat = chan_2.context.channel_value_satoshis * 1000;
-		assert_eq!(chan_2.context.holder_max_htlc_value_in_flight_msat, (chan_2_value_msat as f64 * 0.99) as u64);
+		assert_eq!(chan_2.context.holder_max_htlc_value_in_flight_msat, (chan_2_value_msat as f64 * 0.01) as u64);
 
 		let chan_1_open_channel_msg = chan_1.get_open_channel(ChainHash::using_genesis_block(network));
 
@@ -9704,12 +9704,12 @@ mod tests {
 		// which is set to the lower bound - 1 (2%) of the `channel_value`.
 		let chan_3 = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_2_percent), &channelmanager::provided_init_features(&config_2_percent), &chan_1_open_channel_msg, 7, &config_2_percent, 0, &&logger, /*is_0conf=*/false).unwrap();
 		let chan_3_value_msat = chan_3.context.channel_value_satoshis * 1000;
-		assert_eq!(chan_3.context.holder_max_htlc_value_in_flight_msat, (chan_3_value_msat as f64 * 0.02) as u64);
+		assert_eq!(chan_3.context.holder_max_htlc_value_in_flight_msat, (chan_3_value_msat as f64 * 0.01) as u64);
 
 		// Test with the upper bound - 1 of valid values (99%).
 		let chan_4 = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_99_percent), &channelmanager::provided_init_features(&config_99_percent), &chan_1_open_channel_msg, 7, &config_99_percent, 0, &&logger, /*is_0conf=*/false).unwrap();
 		let chan_4_value_msat = chan_4.context.channel_value_satoshis * 1000;
-		assert_eq!(chan_4.context.holder_max_htlc_value_in_flight_msat, (chan_4_value_msat as f64 * 0.99) as u64);
+		assert_eq!(chan_4.context.holder_max_htlc_value_in_flight_msat, (chan_4_value_msat as f64 * 0.01) as u64);
 
 		// Test that `OutboundV1Channel::new` uses the lower bound of the configurable percentage values (1%)
 		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
@@ -9722,7 +9722,7 @@ mod tests {
 		// than 100.
 		let chan_6 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_101_percent), 10000000, 100000, 42, &config_101_percent, 0, 42, None).unwrap();
 		let chan_6_value_msat = chan_6.context.channel_value_satoshis * 1000;
-		assert_eq!(chan_6.context.holder_max_htlc_value_in_flight_msat, chan_6_value_msat);
+		assert_eq!(chan_6.context.holder_max_htlc_value_in_flight_msat, (chan_6_value_msat as f64 * 0.01) as u64);
 
 		// Test that `InboundV1Channel::new` uses the lower bound of the configurable percentage values (1%)
 		// if `max_inbound_htlc_value_in_flight_percent_of_channel` is set to a value less than 1.
@@ -9735,7 +9735,7 @@ mod tests {
 		// than 100.
 		let chan_8 = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&config_101_percent), &channelmanager::provided_init_features(&config_101_percent), &chan_1_open_channel_msg, 7, &config_101_percent, 0, &&logger, /*is_0conf=*/false).unwrap();
 		let chan_8_value_msat = chan_8.context.channel_value_satoshis * 1000;
-		assert_eq!(chan_8.context.holder_max_htlc_value_in_flight_msat, chan_8_value_msat);
+		assert_eq!(chan_8.context.holder_max_htlc_value_in_flight_msat, (chan_8_value_msat as f64 * 0.01) as u64);
 	}
 
 	#[test]
