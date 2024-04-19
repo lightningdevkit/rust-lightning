@@ -1,6 +1,6 @@
 [package]
 name = "lightning-custom-message"
-version = "0.0.121"
+version = "0.0.123-beta"
 authors = ["Jeffrey Czyz"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
@@ -15,4 +15,4 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 bitcoin = "0.30.2"
-lightning = { version = "0.0.121", path = "../lightning" }
+lightning = { version = "0.0.123-beta", path = "../lightning" }
