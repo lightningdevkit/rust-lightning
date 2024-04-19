@@ -102,12 +102,11 @@
 //!
 //! ```
 
-use bitcoin::{WitnessProgram, Network, WitnessVersion, WPubkeyHash, WScriptHash};
+use bitcoin::{WitnessProgram, Network, WitnessVersion};
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::address::{Address, Payload};
-use bitcoin::key::TweakedPublicKey;
 use core::time::Duration;
 use core::hash::{Hash, Hasher};
 use crate::io;
@@ -117,6 +116,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
+use crate::offers::invoice_macros::invoice_builder_methods_common;
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
 use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
@@ -371,65 +371,6 @@ macro_rules! invoice_builder_methods { (
 
 		Ok(Self { invreq_bytes, invoice: contents, signing_pubkey_strategy })
 	}
-
-	/// Sets the [`Bolt12Invoice::relative_expiry`] as seconds since [`Bolt12Invoice::created_at`].
-	/// Any expiry that has already passed is valid and can be checked for using
-	/// [`Bolt12Invoice::is_expired`].
-	///
-	/// Successive calls to this method will override the previous setting.
-	pub fn relative_expiry($($self_mut)* $self: $self_type, relative_expiry_secs: u32) -> $return_type {
-		let relative_expiry = Duration::from_secs(relative_expiry_secs as u64);
-		$self.invoice.fields_mut().relative_expiry = Some(relative_expiry);
-		$return_value
-	}
-
-	/// Adds a P2WSH address to [`Bolt12Invoice::fallbacks`].
-	///
-	/// Successive calls to this method will add another address. Caller is responsible for not
-	/// adding duplicate addresses and only calling if capable of receiving to P2WSH addresses.
-	pub fn fallback_v0_p2wsh($($self_mut)* $self: $self_type, script_hash: &WScriptHash) -> $return_type {
-		use bitcoin::hashes::Hash;
-		let address = FallbackAddress {
-			version: WitnessVersion::V0.to_num(),
-			program: Vec::from(script_hash.to_byte_array()),
-		};
-		$self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
-		$return_value
-	}
-
-	/// Adds a P2WPKH address to [`Bolt12Invoice::fallbacks`].
-	///
-	/// Successive calls to this method will add another address. Caller is responsible for not
-	/// adding duplicate addresses and only calling if capable of receiving to P2WPKH addresses.
-	pub fn fallback_v0_p2wpkh($($self_mut)* $self: $self_type, pubkey_hash: &WPubkeyHash) -> $return_type {
-		use bitcoin::hashes::Hash;
-		let address = FallbackAddress {
-			version: WitnessVersion::V0.to_num(),
-			program: Vec::from(pubkey_hash.to_byte_array()),
-		};
-		$self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
-		$return_value
-	}
-
-	/// Adds a P2TR address to [`Bolt12Invoice::fallbacks`].
-	///
-	/// Successive calls to this method will add another address. Caller is responsible for not
-	/// adding duplicate addresses and only calling if capable of receiving to P2TR addresses.
-	pub fn fallback_v1_p2tr_tweaked($($self_mut)* $self: $self_type, output_key: &TweakedPublicKey) -> $return_type {
-		let address = FallbackAddress {
-			version: WitnessVersion::V1.to_num(),
-			program: Vec::from(&output_key.serialize()[..]),
-		};
-		$self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
-		$return_value
-	}
-
-	/// Sets [`Bolt12Invoice::invoice_features`] to indicate MPP may be used. Otherwise, MPP is
-	/// disallowed.
-	pub fn allow_mpp($($self_mut)* $self: $self_type) -> $return_type {
-		$self.invoice.fields_mut().features.set_basic_mpp_optional();
-		$return_value
-	}
 } }
 
 impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
@@ -442,30 +383,35 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 
 impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	invoice_builder_methods!(self, Self, Self, self, S, mut);
+	invoice_builder_methods_common!(self, Self, self.invoice.fields_mut(), Self, self, S, mut);
 }
 
 #[cfg(all(c_bindings, not(test)))]
 impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, (), (), ExplicitSigningPubkey);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), (), (), ExplicitSigningPubkey);
 }
 
 #[cfg(all(c_bindings, test))]
 impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, ExplicitSigningPubkey);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, ExplicitSigningPubkey);
 }
 
 #[cfg(all(c_bindings, not(test)))]
 impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
 	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, (), (), DerivedSigningPubkey);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), (), (), DerivedSigningPubkey);
 }
 
 #[cfg(all(c_bindings, test))]
 impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
 	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, DerivedSigningPubkey);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, DerivedSigningPubkey);
 }
 
 #[cfg(c_bindings)]

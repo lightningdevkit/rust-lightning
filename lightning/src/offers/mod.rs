@@ -17,6 +17,7 @@ pub mod offer;
 
 pub mod invoice;
 pub mod invoice_error;
+mod invoice_macros;
 pub mod invoice_request;
 pub mod merkle;
 pub mod parse;
