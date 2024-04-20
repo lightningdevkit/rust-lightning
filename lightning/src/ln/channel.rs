@@ -2295,14 +2295,21 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Allowed in any state (including after shutdown)
 	pub fn get_announced_htlc_max_msat(&self) -> u64 {
-		return cmp::min(
-			// Upper bound by capacity. We make it a bit less than full capacity to prevent attempts
-			// to use full capacity. This is an effort to reduce routing failures, because in many cases
-			// channel might have been used to route very small values (either by honest users or as DoS).
-			self.channel_value_satoshis * 1000 * 9 / 10,
+		if self.should_announce() == true {
+			return cmp::min(
+				// Upper bound by capacity. We make it a bit less than full capacity to prevent attempts
+				// to use full capacity. This is an effort to reduce routing failures, because in many cases
+				// channel might have been used to route very small values (either by honest users or as DoS).
+				self.channel_value_satoshis * 1000 * 9 / 10,
 
-			self.counterparty_max_htlc_value_in_flight_msat
-		);
+				self.counterparty_max_htlc_value_in_flight_msat
+			);
+		} else {
+			return cmp::min(
+				self.channel_value_satoshis * 1000,
+				self.counterparty_max_htlc_value_in_flight_msat
+			);
+		}
 	}
 
 	/// Allowed in any state (including after shutdown)
