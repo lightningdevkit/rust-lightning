@@ -31,26 +31,30 @@ macro_rules! doc_comment {
 	};
 }
 macro_rules! basepoint_impl {
-	($BasepointT:ty) => {
+	($BasepointT:ty $(, $KeyName: expr)?) => {
 		impl $BasepointT {
 			/// Get inner Public Key
 			pub fn to_public_key(&self) -> PublicKey {
 				self.0
 			}
 
-			/// Derives the "tweak" used to calculate the per-commitment private key.
-			///
-			/// The per-commitment private key is calculates a private key as:
-			/// `privkey = basepoint_secret + SHA256(per_commitment_point || basepoint)`
-			///
-			/// This calculates the hash part in the tweak derivation process, which is used to
-			/// ensure that each key is unique and cannot be guessed by an external party.
-			pub fn derive_add_tweak(&self, per_commitment_point: &PublicKey) -> Sha256 {
-				let mut sha = Sha256::engine();
-				sha.input(&per_commitment_point.serialize());
-				sha.input(&self.to_public_key().serialize());
-				Sha256::from_engine(sha)
-			}
+			$(doc_comment!(
+				concat!(
+				"Derives the \"tweak\" used in calculate [`", $KeyName, "::from_basepoint`].\n",
+				"\n",
+				"[`", $KeyName, "::from_basepoint`] calculates a private key as:\n",
+				"`privkey = basepoint_secret + SHA256(per_commitment_point || basepoint)`\n",
+				"\n",
+				"This calculates the hash part in the tweak derivation process, which is used to\n",
+				"ensure that each key is unique and cannot be guessed by an external party."
+				),
+				pub fn derive_add_tweak(&self, per_commitment_point: &PublicKey) -> Sha256 {
+					let mut sha = Sha256::engine();
+					sha.input(&per_commitment_point.serialize());
+					sha.input(&self.to_public_key().serialize());
+					Sha256::from_engine(sha)
+				});
+			)?
 		}
 
 		impl From<PublicKey> for $BasepointT {
@@ -110,7 +114,7 @@ macro_rules! key_read_write {
 /// state broadcasted was previously revoked.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct DelayedPaymentBasepoint(pub PublicKey);
-basepoint_impl!(DelayedPaymentBasepoint);
+basepoint_impl!(DelayedPaymentBasepoint, "DelayedPaymentKey");
 key_read_write!(DelayedPaymentBasepoint);
 
 /// A derived key built from a [`DelayedPaymentBasepoint`] and `per_commitment_point`.
@@ -137,7 +141,7 @@ key_read_write!(DelayedPaymentKey);
 /// Thus, both channel counterparties' HTLC keys will appears in each HTLC output's script.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct HtlcBasepoint(pub PublicKey);
-basepoint_impl!(HtlcBasepoint);
+basepoint_impl!(HtlcBasepoint, "HtlcKey");
 key_read_write!(HtlcBasepoint);
 
 /// A derived key built from a [`HtlcBasepoint`] and `per_commitment_point`.
