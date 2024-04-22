@@ -390,7 +390,7 @@ where
 	/// Usually, this should be called based on the values emitted by the
 	/// [`Event::SpendableOutputs`].
 	///
-	/// The given `exclude_static_ouputs` flag controls whether the sweeper will filter out
+	/// The given `exclude_static_outputs` flag controls whether the sweeper will filter out
 	/// [`SpendableOutputDescriptor::StaticOutput`]s, which may be handled directly by the on-chain
 	/// wallet implementation.
 	///
@@ -400,12 +400,12 @@ where
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	pub fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
-		exclude_static_ouputs: bool, delay_until_height: Option<u32>,
+		exclude_static_outputs: bool, delay_until_height: Option<u32>,
 	) {
 		let mut relevant_descriptors = output_descriptors
 			.into_iter()
 			.filter(|desc| {
-				!(exclude_static_ouputs
+				!(exclude_static_outputs
 					&& matches!(desc, SpendableOutputDescriptor::StaticOutput { .. }))
 			})
 			.peekable();
