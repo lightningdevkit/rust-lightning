@@ -15,7 +15,8 @@ use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::consensus::Encodable;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::{
-	absolute::LockTime as AbsoluteLockTime, OutPoint, Sequence, Transaction, TxIn, TxOut,
+	absolute::LockTime as AbsoluteLockTime, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
+	TxOut, Weight,
 };
 
 use crate::chain::chaininterface::fee_for_weight;
@@ -23,7 +24,7 @@ use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::msgs::SerialId;
 use crate::ln::{msgs, ChannelId};
-use crate::sign::EntropySource;
+use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::util::ser::TransactionU16LenLimited;
 
 /// The number of received `tx_add_input` messages during a negotiation at which point the
@@ -37,6 +38,29 @@ const MAX_RECEIVED_TX_ADD_OUTPUT_COUNT: u16 = 4096;
 /// The number of inputs or outputs that the state machine can have, before it MUST fail the
 /// negotiation.
 const MAX_INPUTS_OUTPUTS_COUNT: usize = 252;
+
+/// The total weight of the common fields whose fee is paid by the initiator of the interactive
+/// transaction construction protocol.
+const TX_COMMON_FIELDS_WEIGHT: u64 = (4 /* version */ + 4 /* locktime */ + 1 /* input count */ +
+	1 /* output count */) * WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
+
+// BOLT 3 - Lower bounds for input weights
+
+/// Lower bound for P2WPKH input weight
+pub(crate) const P2WPKH_INPUT_WEIGHT_LOWER_BOUND: u64 =
+	BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + P2WPKH_WITNESS_WEIGHT;
+
+/// Lower bound for P2WSH input weight is chosen as same as P2WPKH input weight in BOLT 3
+pub(crate) const P2WSH_INPUT_WEIGHT_LOWER_BOUND: u64 = P2WPKH_INPUT_WEIGHT_LOWER_BOUND;
+
+/// Lower bound for P2TR input weight is chosen as the key spend path.
+/// Not specified in BOLT 3, but a reasonable lower bound.
+pub(crate) const P2TR_INPUT_WEIGHT_LOWER_BOUND: u64 =
+	BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT + P2TR_KEY_PATH_WITNESS_WEIGHT;
+
+/// Lower bound for unknown segwit version input weight is chosen the same as P2WPKH in BOLT 3
+pub(crate) const UNKNOWN_SEGWIT_VERSION_INPUT_WEIGHT_LOWER_BOUND: u64 =
+	P2WPKH_INPUT_WEIGHT_LOWER_BOUND;
 
 trait SerialIdExt {
 	fn is_for_initiator(&self) -> bool;
@@ -54,7 +78,7 @@ impl SerialIdExt for SerialId {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum AbortReason {
+pub(crate) enum AbortReason {
 	InvalidStateTransition,
 	UnexpectedCounterpartyMessage,
 	ReceivedTooManyTxAddInputs,
@@ -74,10 +98,102 @@ pub enum AbortReason {
 	InvalidTx,
 }
 
-#[derive(Debug)]
-pub struct TxInputWithPrevOutput {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InteractiveTxInput {
+	serial_id: SerialId,
 	input: TxIn,
 	prev_output: TxOut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InteractiveTxOutput {
+	serial_id: SerialId,
+	tx_out: TxOut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConstructedTransaction {
+	holder_is_initiator: bool,
+
+	inputs: Vec<InteractiveTxInput>,
+	outputs: Vec<InteractiveTxOutput>,
+
+	local_inputs_value_satoshis: u64,
+	local_outputs_value_satoshis: u64,
+
+	remote_inputs_value_satoshis: u64,
+	remote_outputs_value_satoshis: u64,
+
+	lock_time: AbsoluteLockTime,
+}
+
+impl ConstructedTransaction {
+	fn new(context: NegotiationContext) -> Self {
+		let local_inputs_value_satoshis = context
+			.inputs
+			.iter()
+			.filter(|(serial_id, _)| {
+				!is_serial_id_valid_for_counterparty(context.holder_is_initiator, serial_id)
+			})
+			.fold(0u64, |value, (_, input)| value.saturating_add(input.prev_output.value));
+
+		let local_outputs_value_satoshis = context
+			.outputs
+			.iter()
+			.filter(|(serial_id, _)| {
+				!is_serial_id_valid_for_counterparty(context.holder_is_initiator, serial_id)
+			})
+			.fold(0u64, |value, (_, output)| value.saturating_add(output.tx_out.value));
+
+		Self {
+			holder_is_initiator: context.holder_is_initiator,
+
+			local_inputs_value_satoshis,
+			local_outputs_value_satoshis,
+
+			remote_inputs_value_satoshis: context.remote_inputs_value(),
+			remote_outputs_value_satoshis: context.remote_outputs_value(),
+
+			inputs: context.inputs.into_values().collect(),
+			outputs: context.outputs.into_values().collect(),
+
+			lock_time: context.tx_locktime,
+		}
+	}
+
+	pub fn weight(&self) -> Weight {
+		let inputs_weight = self.inputs.iter().fold(
+			Weight::from_wu(0),
+			|weight, InteractiveTxInput { prev_output, .. }| {
+				weight.checked_add(estimate_input_weight(prev_output)).unwrap_or(Weight::MAX)
+			},
+		);
+		let outputs_weight = self.outputs.iter().fold(
+			Weight::from_wu(0),
+			|weight, InteractiveTxOutput { tx_out, .. }| {
+				weight.checked_add(get_output_weight(&tx_out.script_pubkey)).unwrap_or(Weight::MAX)
+			},
+		);
+		Weight::from_wu(TX_COMMON_FIELDS_WEIGHT)
+			.checked_add(inputs_weight)
+			.and_then(|weight| weight.checked_add(outputs_weight))
+			.unwrap_or(Weight::MAX)
+	}
+
+	pub fn into_unsigned_tx(self) -> Transaction {
+		// Inputs and outputs must be sorted by serial_id
+		let ConstructedTransaction { mut inputs, mut outputs, .. } = self;
+
+		inputs.sort_unstable_by_key(|InteractiveTxInput { serial_id, .. }| *serial_id);
+		outputs.sort_unstable_by_key(|InteractiveTxOutput { serial_id, .. }| *serial_id);
+
+		let input: Vec<TxIn> =
+			inputs.into_iter().map(|InteractiveTxInput { input, .. }| input).collect();
+		let output: Vec<TxOut> =
+			outputs.into_iter().map(|InteractiveTxOutput { tx_out, .. }| tx_out).collect();
+
+		Transaction { version: 2, lock_time: self.lock_time, input, output }
+	}
 }
 
 #[derive(Debug)]
@@ -85,38 +201,80 @@ struct NegotiationContext {
 	holder_is_initiator: bool,
 	received_tx_add_input_count: u16,
 	received_tx_add_output_count: u16,
-	inputs: HashMap<SerialId, TxInputWithPrevOutput>,
+	inputs: HashMap<SerialId, InteractiveTxInput>,
 	prevtx_outpoints: HashSet<OutPoint>,
-	outputs: HashMap<SerialId, TxOut>,
+	outputs: HashMap<SerialId, InteractiveTxOutput>,
 	tx_locktime: AbsoluteLockTime,
 	feerate_sat_per_kw: u32,
-	to_remote_value_satoshis: u64,
+}
+
+pub(crate) fn estimate_input_weight(prev_output: &TxOut) -> Weight {
+	Weight::from_wu(if prev_output.script_pubkey.is_v0_p2wpkh() {
+		P2WPKH_INPUT_WEIGHT_LOWER_BOUND
+	} else if prev_output.script_pubkey.is_v0_p2wsh() {
+		P2WSH_INPUT_WEIGHT_LOWER_BOUND
+	} else if prev_output.script_pubkey.is_v1_p2tr() {
+		P2TR_INPUT_WEIGHT_LOWER_BOUND
+	} else {
+		UNKNOWN_SEGWIT_VERSION_INPUT_WEIGHT_LOWER_BOUND
+	})
+}
+
+pub(crate) fn get_output_weight(script_pubkey: &ScriptBuf) -> Weight {
+	Weight::from_wu(
+		(8 /* value */ + script_pubkey.consensus_encode(&mut sink()).unwrap() as u64)
+			* WITNESS_SCALE_FACTOR as u64,
+	)
+}
+
+fn is_serial_id_valid_for_counterparty(holder_is_initiator: bool, serial_id: &SerialId) -> bool {
+	// A received `SerialId`'s parity must match the role of the counterparty.
+	holder_is_initiator == serial_id.is_for_non_initiator()
 }
 
 impl NegotiationContext {
 	fn is_serial_id_valid_for_counterparty(&self, serial_id: &SerialId) -> bool {
-		// A received `SerialId`'s parity must match the role of the counterparty.
-		self.holder_is_initiator == serial_id.is_for_non_initiator()
+		is_serial_id_valid_for_counterparty(self.holder_is_initiator, serial_id)
 	}
 
-	fn total_input_and_output_count(&self) -> usize {
-		self.inputs.len().saturating_add(self.outputs.len())
-	}
-
-	fn counterparty_inputs_contributed(
-		&self,
-	) -> impl Iterator<Item = &TxInputWithPrevOutput> + Clone {
+	fn remote_inputs_value(&self) -> u64 {
 		self.inputs
 			.iter()
-			.filter(move |(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
-			.map(|(_, input_with_prevout)| input_with_prevout)
+			.filter(|(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
+			.fold(0u64, |acc, (_, InteractiveTxInput { prev_output, .. })| {
+				acc.saturating_add(prev_output.value)
+			})
 	}
 
-	fn counterparty_outputs_contributed(&self) -> impl Iterator<Item = &TxOut> + Clone {
+	fn remote_outputs_value(&self) -> u64 {
 		self.outputs
 			.iter()
-			.filter(move |(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
-			.map(|(_, output)| output)
+			.filter(|(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
+			.fold(0u64, |acc, (_, InteractiveTxOutput { tx_out, .. })| {
+				acc.saturating_add(tx_out.value)
+			})
+	}
+
+	fn remote_inputs_weight(&self) -> Weight {
+		Weight::from_wu(
+			self.inputs
+				.iter()
+				.filter(|(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
+				.fold(0u64, |weight, (_, InteractiveTxInput { prev_output, .. })| {
+					weight.saturating_add(estimate_input_weight(prev_output).to_wu())
+				}),
+		)
+	}
+
+	fn remote_outputs_weight(&self) -> Weight {
+		Weight::from_wu(
+			self.outputs
+				.iter()
+				.filter(|(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
+				.fold(0u64, |weight, (_, InteractiveTxOutput { tx_out, .. })| {
+					weight.saturating_add(get_output_weight(&tx_out.script_pubkey).to_wu())
+				}),
+		)
 	}
 
 	fn received_tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<(), AbortReason> {
@@ -177,23 +335,28 @@ impl NegotiationContext {
 		} else {
 			return Err(AbortReason::PrevTxOutInvalid);
 		};
-		if self.inputs.iter().any(|(serial_id, _)| *serial_id == msg.serial_id) {
-			// The receiving node:
-			//  - MUST fail the negotiation if:
-			//    - the `serial_id` is already included in the transaction
-			return Err(AbortReason::DuplicateSerialId);
-		}
-		let prev_outpoint = OutPoint { txid, vout: msg.prevtx_out };
-		self.inputs.entry(msg.serial_id).or_insert_with(|| TxInputWithPrevOutput {
-			input: TxIn {
-				previous_output: prev_outpoint.clone(),
-				sequence: Sequence(msg.sequence),
-				..Default::default()
+		match self.inputs.entry(msg.serial_id) {
+			hash_map::Entry::Occupied(_) => {
+				// The receiving node:
+				//  - MUST fail the negotiation if:
+				//    - the `serial_id` is already included in the transaction
+				Err(AbortReason::DuplicateSerialId)
 			},
-			prev_output: prev_out,
-		});
-		self.prevtx_outpoints.insert(prev_outpoint);
-		Ok(())
+			hash_map::Entry::Vacant(entry) => {
+				let prev_outpoint = OutPoint { txid, vout: msg.prevtx_out };
+				entry.insert(InteractiveTxInput {
+					serial_id: msg.serial_id,
+					input: TxIn {
+						previous_output: prev_outpoint,
+						sequence: Sequence(msg.sequence),
+						..Default::default()
+					},
+					prev_output: prev_out,
+				});
+				self.prevtx_outpoints.insert(prev_outpoint);
+				Ok(())
+			},
+		}
 	}
 
 	fn received_tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> Result<(), AbortReason> {
@@ -238,7 +401,7 @@ impl NegotiationContext {
 		// bitcoin supply.
 		let mut outputs_value: u64 = 0;
 		for output in self.outputs.iter() {
-			outputs_value = outputs_value.saturating_add(output.1.value);
+			outputs_value = outputs_value.saturating_add(output.1.tx_out.value);
 		}
 		if outputs_value.saturating_add(msg.sats) > TOTAL_BITCOIN_SUPPLY_SATOSHIS {
 			// The receiving node:
@@ -256,30 +419,39 @@ impl NegotiationContext {
 		// with witness versions V1 and up are always considered standard. Yes, the scripts can be
 		// anyone-can-spend-able, but if our counterparty wants to add an output like that then it's none
 		// of our concern really ¯\_(ツ)_/¯
-		if !msg.script.is_v0_p2wpkh()
-			&& !msg.script.is_v0_p2wsh()
-			&& msg.script.witness_version().map(|v| v.to_num() < 1).unwrap_or(true)
+		//
+		// TODO: The last check would be simplified when https://github.com/rust-bitcoin/rust-bitcoin/commit/1656e1a09a1959230e20af90d20789a4a8f0a31b
+		// hits the next release of rust-bitcoin.
+		if !(msg.script.is_v0_p2wpkh()
+			|| msg.script.is_v0_p2wsh()
+			|| (msg.script.is_witness_program()
+				&& msg.script.witness_version().map(|v| v.to_num() >= 1).unwrap_or(false)))
 		{
 			return Err(AbortReason::InvalidOutputScript);
 		}
 
-		if self.outputs.iter().any(|(serial_id, _)| *serial_id == msg.serial_id) {
-			// The receiving node:
-			//  - MUST fail the negotiation if:
-			//    - the `serial_id` is already included in the transaction
-			return Err(AbortReason::DuplicateSerialId);
+		match self.outputs.entry(msg.serial_id) {
+			hash_map::Entry::Occupied(_) => {
+				// The receiving node:
+				//  - MUST fail the negotiation if:
+				//    - the `serial_id` is already included in the transaction
+				Err(AbortReason::DuplicateSerialId)
+			},
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(InteractiveTxOutput {
+					serial_id: msg.serial_id,
+					tx_out: TxOut { value: msg.sats, script_pubkey: msg.script.clone() },
+				});
+				Ok(())
+			},
 		}
-
-		let output = TxOut { value: msg.sats, script_pubkey: msg.script.clone() };
-		self.outputs.entry(msg.serial_id).or_insert(output);
-		Ok(())
 	}
 
 	fn received_tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> Result<(), AbortReason> {
 		if !self.is_serial_id_valid_for_counterparty(&msg.serial_id) {
 			return Err(AbortReason::IncorrectSerialIdParity);
 		}
-		if let Some(_) = self.outputs.remove(&msg.serial_id) {
+		if self.outputs.remove(&msg.serial_id).is_some() {
 			Ok(())
 		} else {
 			// The receiving node:
@@ -290,54 +462,78 @@ impl NegotiationContext {
 		}
 	}
 
-	fn sent_tx_add_input(&mut self, msg: &msgs::TxAddInput) {
+	fn sent_tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<(), AbortReason> {
 		let tx = msg.prevtx.as_transaction();
 		let input = TxIn {
 			previous_output: OutPoint { txid: tx.txid(), vout: msg.prevtx_out },
 			sequence: Sequence(msg.sequence),
 			..Default::default()
 		};
-		debug_assert!((msg.prevtx_out as usize) < tx.output.len());
-		let prev_output = &tx.output[msg.prevtx_out as usize];
-		self.prevtx_outpoints.insert(input.previous_output.clone());
+		let prev_output =
+			tx.output.get(msg.prevtx_out as usize).ok_or(AbortReason::PrevTxOutInvalid)?.clone();
+		if !self.prevtx_outpoints.insert(input.previous_output) {
+			// We have added an input that already exists
+			return Err(AbortReason::PrevTxOutInvalid);
+		}
 		self.inputs.insert(
 			msg.serial_id,
-			TxInputWithPrevOutput { input, prev_output: prev_output.clone() },
+			InteractiveTxInput { serial_id: msg.serial_id, input, prev_output },
 		);
+		Ok(())
 	}
 
-	fn sent_tx_add_output(&mut self, msg: &msgs::TxAddOutput) {
-		self.outputs
-			.insert(msg.serial_id, TxOut { value: msg.sats, script_pubkey: msg.script.clone() });
+	fn sent_tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> Result<(), AbortReason> {
+		self.outputs.insert(
+			msg.serial_id,
+			InteractiveTxOutput {
+				serial_id: msg.serial_id,
+				tx_out: TxOut { value: msg.sats, script_pubkey: msg.script.clone() },
+			},
+		);
+		Ok(())
 	}
 
-	fn sent_tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) {
+	fn sent_tx_remove_input(&mut self, msg: &msgs::TxRemoveInput) -> Result<(), AbortReason> {
 		self.inputs.remove(&msg.serial_id);
+		Ok(())
 	}
 
-	fn sent_tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) {
+	fn sent_tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput) -> Result<(), AbortReason> {
 		self.outputs.remove(&msg.serial_id);
+		Ok(())
 	}
 
-	fn build_transaction(self) -> Result<Transaction, AbortReason> {
+	fn check_counterparty_fees(
+		&self, counterparty_fees_contributed: u64,
+	) -> Result<(), AbortReason> {
+		let counterparty_weight_contributed = self
+			.remote_inputs_weight()
+			.to_wu()
+			.saturating_add(self.remote_outputs_weight().to_wu());
+		let mut required_counterparty_contribution_fee =
+			fee_for_weight(self.feerate_sat_per_kw, counterparty_weight_contributed);
+		if !self.holder_is_initiator {
+			// if is the non-initiator:
+			// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
+			// 		input count, output count, locktime)
+			let tx_common_fields_fee =
+				fee_for_weight(self.feerate_sat_per_kw, TX_COMMON_FIELDS_WEIGHT);
+			required_counterparty_contribution_fee += tx_common_fields_fee;
+		}
+		if counterparty_fees_contributed < required_counterparty_contribution_fee {
+			return Err(AbortReason::InsufficientFees);
+		}
+		Ok(())
+	}
+
+	fn validate_tx(self) -> Result<ConstructedTransaction, AbortReason> {
 		// The receiving node:
 		// MUST fail the negotiation if:
 
 		// - the peer's total input satoshis is less than their outputs
-		let mut counterparty_inputs_value: u64 = 0;
-		let mut counterparty_outputs_value: u64 = 0;
-		for input in self.counterparty_inputs_contributed() {
-			counterparty_inputs_value =
-				counterparty_inputs_value.saturating_add(input.prev_output.value);
-		}
-		for output in self.counterparty_outputs_contributed() {
-			counterparty_outputs_value = counterparty_outputs_value.saturating_add(output.value);
-		}
-		// ...actually the counterparty might be splicing out, so that their balance also contributes
-		// to the total input value.
-		if counterparty_inputs_value.saturating_add(self.to_remote_value_satoshis)
-			< counterparty_outputs_value
-		{
+		let remote_inputs_value = self.remote_inputs_value();
+		let remote_outputs_value = self.remote_outputs_value();
+		if remote_inputs_value < remote_outputs_value {
 			return Err(AbortReason::OutputsValueExceedsInputsValue);
 		}
 
@@ -349,55 +545,16 @@ impl NegotiationContext {
 			return Err(AbortReason::ExceededNumberOfInputsOrOutputs);
 		}
 
-		// TODO: How do we enforce their fees cover the witness without knowing its expected length?
-		const INPUT_WEIGHT: u64 = BASE_INPUT_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
-
 		// - the peer's paid feerate does not meet or exceed the agreed feerate (based on the minimum fee).
-		let counterparty_output_weight_contributed: u64 = self
-			.counterparty_outputs_contributed()
-			.map(|output| {
-				(8 /* value */ + output.script_pubkey.consensus_encode(&mut sink()).unwrap() as u64)
-					* WITNESS_SCALE_FACTOR as u64
-			})
-			.sum();
-		let counterparty_weight_contributed = counterparty_output_weight_contributed
-			+ self.counterparty_inputs_contributed().count() as u64 * INPUT_WEIGHT;
-		let counterparty_fees_contributed =
-			counterparty_inputs_value.saturating_sub(counterparty_outputs_value);
-		let mut required_counterparty_contribution_fee =
-			fee_for_weight(self.feerate_sat_per_kw, counterparty_weight_contributed);
-		if !self.holder_is_initiator {
-			// if is the non-initiator:
-			// 	- the initiator's fees do not cover the common fields (version, segwit marker + flag,
-			// 		input count, output count, locktime)
-			let tx_common_fields_weight =
-		        (4 /* version */ + 4 /* locktime */ + 1 /* input count */ + 1 /* output count */) *
-		            WITNESS_SCALE_FACTOR as u64 + 2 /* segwit marker + flag */;
-			let tx_common_fields_fee =
-				fee_for_weight(self.feerate_sat_per_kw, tx_common_fields_weight);
-			required_counterparty_contribution_fee += tx_common_fields_fee;
-		}
-		if counterparty_fees_contributed < required_counterparty_contribution_fee {
-			return Err(AbortReason::InsufficientFees);
-		}
+		self.check_counterparty_fees(remote_inputs_value.saturating_sub(remote_outputs_value))?;
 
-		// Inputs and outputs must be sorted by serial_id
-		let mut inputs = self.inputs.into_iter().collect::<Vec<_>>();
-		let mut outputs = self.outputs.into_iter().collect::<Vec<_>>();
-		inputs.sort_unstable_by_key(|(serial_id, _)| *serial_id);
-		outputs.sort_unstable_by_key(|(serial_id, _)| *serial_id);
+		let constructed_tx = ConstructedTransaction::new(self);
 
-		let tx_to_validate = Transaction {
-			version: 2,
-			lock_time: self.tx_locktime,
-			input: inputs.into_iter().map(|(_, input)| input.input).collect(),
-			output: outputs.into_iter().map(|(_, output)| output).collect(),
-		};
-		if tx_to_validate.weight().to_wu() > MAX_STANDARD_TX_WEIGHT as u64 {
+		if constructed_tx.weight().to_wu() > MAX_STANDARD_TX_WEIGHT as u64 {
 			return Err(AbortReason::TransactionTooLarge);
 		}
 
-		Ok(tx_to_validate)
+		Ok(constructed_tx)
 	}
 }
 
@@ -485,7 +642,7 @@ define_state!(
 	ReceivedTxComplete,
 	"We have received a `tx_complete` message and the counterparty is awaiting ours."
 );
-define_state!(NegotiationComplete, Transaction, "We have exchanged consecutive `tx_complete` messages with the counterparty and the transaction negotiation is complete.");
+define_state!(NegotiationComplete, ConstructedTransaction, "We have exchanged consecutive `tx_complete` messages with the counterparty and the transaction negotiation is complete.");
 define_state!(
 	NegotiationAborted,
 	AbortReason,
@@ -517,7 +674,7 @@ macro_rules! define_state_transitions {
 			impl<S: ReceivedMsgState> StateTransition<SentChangeMsg, $data> for S {
 				fn transition(self, data: $data) -> StateTransitionResult<SentChangeMsg> {
 					let mut context = self.into_negotiation_context();
-					context.$transition(data);
+					context.$transition(data)?;
 					Ok(SentChangeMsg(context))
 				}
 			}
@@ -527,7 +684,7 @@ macro_rules! define_state_transitions {
 		impl StateTransition<NegotiationComplete, &msgs::TxComplete> for $tx_complete_state {
 			fn transition(self, _data: &msgs::TxComplete) -> StateTransitionResult<NegotiationComplete> {
 				let context = self.into_negotiation_context();
-				let tx = context.build_transaction()?;
+				let tx = context.validate_tx()?;
 				Ok(NegotiationComplete(tx))
 			}
 		}
@@ -596,10 +753,7 @@ macro_rules! define_state_machine_transitions {
 }
 
 impl StateMachine {
-	fn new(
-		feerate_sat_per_kw: u32, is_initiator: bool, tx_locktime: AbsoluteLockTime,
-		to_remote_value_satoshis: u64,
-	) -> Self {
+	fn new(feerate_sat_per_kw: u32, is_initiator: bool, tx_locktime: AbsoluteLockTime) -> Self {
 		let context = NegotiationContext {
 			tx_locktime,
 			holder_is_initiator: is_initiator,
@@ -609,7 +763,6 @@ impl StateMachine {
 			prevtx_outpoints: new_hash_set(),
 			outputs: new_hash_map(),
 			feerate_sat_per_kw,
-			to_remote_value_satoshis,
 		};
 		if is_initiator {
 			Self::ReceivedChangeMsg(ReceivedChangeMsg(context))
@@ -669,14 +822,14 @@ impl StateMachine {
 	]);
 }
 
-pub struct InteractiveTxConstructor {
+pub(crate) struct InteractiveTxConstructor {
 	state_machine: StateMachine,
 	channel_id: ChannelId,
 	inputs_to_contribute: Vec<(SerialId, TxIn, TransactionU16LenLimited)>,
 	outputs_to_contribute: Vec<(SerialId, TxOut)>,
 }
 
-pub enum InteractiveTxMessageSend {
+pub(crate) enum InteractiveTxMessageSend {
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
 	TxComplete(msgs::TxComplete),
@@ -708,17 +861,14 @@ where
 	serial_id
 }
 
-pub enum HandleTxCompleteValue {
+pub(crate) enum HandleTxCompleteValue {
 	SendTxMessage(InteractiveTxMessageSend),
-	SendTxComplete(InteractiveTxMessageSend, Transaction),
-	NegotiationComplete(Transaction),
+	SendTxComplete(InteractiveTxMessageSend, ConstructedTransaction),
+	NegotiationComplete(ConstructedTransaction),
 }
 
 impl InteractiveTxConstructor {
 	/// Instantiates a new `InteractiveTxConstructor`.
-	///
-	/// If this is for a dual_funded channel then the `to_remote_value_satoshis` parameter should be set
-	/// to zero.
 	///
 	/// A tuple is returned containing the newly instantiate `InteractiveTxConstructor` and optionally
 	/// an initial wrapped `Tx_` message which the holder needs to send to the counterparty.
@@ -726,17 +876,13 @@ impl InteractiveTxConstructor {
 		entropy_source: &ES, channel_id: ChannelId, feerate_sat_per_kw: u32, is_initiator: bool,
 		funding_tx_locktime: AbsoluteLockTime,
 		inputs_to_contribute: Vec<(TxIn, TransactionU16LenLimited)>,
-		outputs_to_contribute: Vec<TxOut>, to_remote_value_satoshis: u64,
+		outputs_to_contribute: Vec<TxOut>,
 	) -> (Self, Option<InteractiveTxMessageSend>)
 	where
 		ES::Target: EntropySource,
 	{
-		let state_machine = StateMachine::new(
-			feerate_sat_per_kw,
-			is_initiator,
-			funding_tx_locktime,
-			to_remote_value_satoshis,
-		);
+		let state_machine =
+			StateMachine::new(feerate_sat_per_kw, is_initiator, funding_tx_locktime);
 		let mut inputs_to_contribute: Vec<(SerialId, TxIn, TransactionU16LenLimited)> =
 			inputs_to_contribute
 				.into_iter()
@@ -841,7 +987,7 @@ impl InteractiveTxConstructor {
 		match &self.state_machine {
 			StateMachine::ReceivedTxComplete(_) => {
 				let msg_send = self.maybe_send_message()?;
-				return match &self.state_machine {
+				match &self.state_machine {
 					StateMachine::NegotiationComplete(s) => {
 						Ok(HandleTxCompleteValue::SendTxComplete(msg_send, s.0.clone()))
 					},
@@ -850,9 +996,9 @@ impl InteractiveTxConstructor {
 					}, // We either had an input or output to contribute.
 					_ => {
 						debug_assert!(false, "We cannot transition to any other states after receiving `tx_complete` and responding");
-						return Err(AbortReason::InvalidStateTransition);
+						Err(AbortReason::InvalidStateTransition)
 					},
-				};
+				}
 			},
 			StateMachine::NegotiationComplete(s) => {
 				Ok(HandleTxCompleteValue::NegotiationComplete(s.0.clone()))
@@ -870,7 +1016,7 @@ impl InteractiveTxConstructor {
 
 #[cfg(test)]
 mod tests {
-	use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
+	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	use crate::ln::interactivetxs::{
 		generate_holder_serial_id, AbortReason, HandleTxCompleteValue, InteractiveTxConstructor,
@@ -883,10 +1029,21 @@ mod tests {
 	use crate::util::ser::TransactionU16LenLimited;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::script::Builder;
+	use bitcoin::hashes::Hash;
+	use bitcoin::key::UntweakedPublicKey;
+	use bitcoin::secp256k1::{KeyPair, Secp256k1};
 	use bitcoin::{
 		absolute::LockTime as AbsoluteLockTime, OutPoint, Sequence, Transaction, TxIn, TxOut,
 	};
+	use bitcoin::{PubkeyHash, ScriptBuf, WPubkeyHash, WScriptHash};
 	use core::ops::Deref;
+
+	use super::{
+		get_output_weight, P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
+		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
+	};
+
+	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
 
 	// A simple entropy source that works based on an atomic counter.
 	struct TestEntropySource(AtomicCounter);
@@ -929,6 +1086,7 @@ mod tests {
 	}
 
 	struct TestSession {
+		description: &'static str,
 		inputs_a: Vec<(TxIn, TransactionU16LenLimited)>,
 		outputs_a: Vec<TxOut>,
 		inputs_b: Vec<(TxIn, TransactionU16LenLimited)>,
@@ -960,22 +1118,20 @@ mod tests {
 		let (mut constructor_a, first_message_a) = InteractiveTxConstructor::new(
 			entropy_source,
 			channel_id,
-			FEERATE_FLOOR_SATS_PER_KW * 10,
+			TEST_FEERATE_SATS_PER_KW,
 			true,
 			tx_locktime,
 			session.inputs_a,
 			session.outputs_a,
-			0,
 		);
 		let (mut constructor_b, first_message_b) = InteractiveTxConstructor::new(
 			entropy_source,
 			channel_id,
-			FEERATE_FLOOR_SATS_PER_KW * 10,
+			TEST_FEERATE_SATS_PER_KW,
 			false,
 			tx_locktime,
 			session.inputs_b,
 			session.outputs_b,
-			0,
 		);
 
 		let handle_message_send =
@@ -1020,7 +1176,12 @@ mod tests {
 							},
 							_ => ErrorCulprit::NodeA,
 						};
-						assert_eq!(Some((abort_reason, error_culprit)), session.expect_error);
+						assert_eq!(
+							Some((abort_reason, error_culprit)),
+							session.expect_error,
+							"Test: {}",
+							session.description
+						);
 						assert!(message_send_b.is_none());
 						return;
 					},
@@ -1039,7 +1200,12 @@ mod tests {
 							},
 							_ => ErrorCulprit::NodeB,
 						};
-						assert_eq!(Some((abort_reason, error_culprit)), session.expect_error);
+						assert_eq!(
+							Some((abort_reason, error_culprit)),
+							session.expect_error,
+							"Test: {}",
+							session.description
+						);
 						assert!(message_send_a.is_none());
 						return;
 					},
@@ -1048,34 +1214,62 @@ mod tests {
 		}
 		assert!(message_send_a.is_none());
 		assert!(message_send_b.is_none());
-		assert_eq!(final_tx_a, final_tx_b);
-		assert!(session.expect_error.is_none());
+		assert_eq!(final_tx_a.unwrap().into_unsigned_tx(), final_tx_b.unwrap().into_unsigned_tx());
+		assert!(session.expect_error.is_none(), "Test: {}", session.description);
 	}
 
-	fn generate_tx(values: &[u64]) -> Transaction {
-		generate_tx_with_locktime(values, 1337)
+	#[derive(Debug, Clone, Copy)]
+	enum TestOutput {
+		P2WPKH(u64),
+		P2WSH(u64),
+		P2TR(u64),
+		// Non-witness type to test rejection.
+		P2PKH(u64),
 	}
 
-	fn generate_tx_with_locktime(values: &[u64], locktime: u32) -> Transaction {
+	fn generate_tx(outputs: &[TestOutput]) -> Transaction {
+		generate_tx_with_locktime(outputs, 1337)
+	}
+
+	fn generate_txout(output: &TestOutput) -> TxOut {
+		let secp_ctx = Secp256k1::new();
+		let (value, script_pubkey) = match output {
+			TestOutput::P2WPKH(value) => {
+				(*value, ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::from_slice(&[1; 20]).unwrap()))
+			},
+			TestOutput::P2WSH(value) => {
+				(*value, ScriptBuf::new_v0_p2wsh(&WScriptHash::from_slice(&[2; 32]).unwrap()))
+			},
+			TestOutput::P2TR(value) => (
+				*value,
+				ScriptBuf::new_v1_p2tr(
+					&secp_ctx,
+					UntweakedPublicKey::from_keypair(
+						&KeyPair::from_seckey_slice(&secp_ctx, &[3; 32]).unwrap(),
+					)
+					.0,
+					None,
+				),
+			),
+			TestOutput::P2PKH(value) => {
+				(*value, ScriptBuf::new_p2pkh(&PubkeyHash::from_slice(&[4; 20]).unwrap()))
+			},
+		};
+
+		TxOut { value, script_pubkey }
+	}
+
+	fn generate_tx_with_locktime(outputs: &[TestOutput], locktime: u32) -> Transaction {
 		Transaction {
 			version: 2,
 			lock_time: AbsoluteLockTime::from_height(locktime).unwrap(),
 			input: vec![TxIn { ..Default::default() }],
-			output: values
-				.iter()
-				.map(|value| TxOut {
-					value: *value,
-					script_pubkey: Builder::new()
-						.push_opcode(opcodes::OP_TRUE)
-						.into_script()
-						.to_v0_p2wsh(),
-				})
-				.collect(),
+			output: outputs.iter().map(generate_txout).collect(),
 		}
 	}
 
-	fn generate_inputs(values: &[u64]) -> Vec<(TxIn, TransactionU16LenLimited)> {
-		let tx = generate_tx(values);
+	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, TransactionU16LenLimited)> {
+		let tx = generate_tx(outputs);
 		let txid = tx.txid();
 		tx.output
 			.iter()
@@ -1092,17 +1286,16 @@ mod tests {
 			.collect()
 	}
 
-	fn generate_outputs(values: &[u64]) -> Vec<TxOut> {
-		values
-			.iter()
-			.map(|value| TxOut {
-				value: *value,
-				script_pubkey: Builder::new()
-					.push_opcode(opcodes::OP_TRUE)
-					.into_script()
-					.to_v0_p2wsh(),
-			})
-			.collect()
+	fn generate_p2wsh_script_pubkey() -> ScriptBuf {
+		Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_v0_p2wsh()
+	}
+
+	fn generate_p2wpkh_script_pubkey() -> ScriptBuf {
+		ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::from_slice(&[1; 20]).unwrap())
+	}
+
+	fn generate_outputs(outputs: &[TestOutput]) -> Vec<TxOut> {
+		outputs.iter().map(generate_txout).collect()
 	}
 
 	fn generate_fixed_number_of_inputs(count: u16) -> Vec<(TxIn, TransactionU16LenLimited)> {
@@ -1118,7 +1311,7 @@ mod tests {
 
 			// Use unique locktime for each tx so outpoints are different across transactions
 			let tx = generate_tx_with_locktime(
-				&vec![1_000_000; tx_output_count as usize],
+				&vec![TestOutput::P2WPKH(1_000_000); tx_output_count as usize],
 				(1337 + remaining).into(),
 			);
 			let txid = tx.txid();
@@ -1146,147 +1339,207 @@ mod tests {
 
 	fn generate_fixed_number_of_outputs(count: u16) -> Vec<TxOut> {
 		// Set a constant value for each TxOut
-		generate_outputs(&vec![1_000_000; count as usize])
+		generate_outputs(&vec![TestOutput::P2WPKH(1_000_000); count as usize])
+	}
+
+	fn generate_p2sh_script_pubkey() -> ScriptBuf {
+		Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_p2sh()
 	}
 
 	fn generate_non_witness_output(value: u64) -> TxOut {
-		TxOut {
-			value,
-			script_pubkey: Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_p2sh(),
-		}
+		TxOut { value, script_pubkey: generate_p2sh_script_pubkey() }
 	}
 
 	#[test]
 	fn test_interactive_tx_constructor() {
-		// No contributions.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "No contributions",
 			inputs_a: vec![],
 			outputs_a: vec![],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 		});
-		// Single contribution, no initiator inputs.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution, no initiator inputs",
 			inputs_a: vec![],
-			outputs_a: generate_outputs(&[1_000_000]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::OutputsValueExceedsInputsValue, ErrorCulprit::NodeA)),
 		});
-		// Single contribution, no initiator outputs.
 		do_test_interactive_tx_constructor(TestSession {
-			inputs_a: generate_inputs(&[1_000_000]),
+			description: "Single contribution, no initiator outputs",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
 			outputs_a: vec![],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: None,
 		});
-		// Single contribution, insufficient fees.
 		do_test_interactive_tx_constructor(TestSession {
-			inputs_a: generate_inputs(&[1_000_000]),
-			outputs_a: generate_outputs(&[1_000_000]),
+			description: "Single contribution, no fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
 		});
-		// Initiator contributes sufficient fees, but non-initiator does not.
+		let p2wpkh_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2WPKH_INPUT_WEIGHT_LOWER_BOUND);
+		let outputs_fee = fee_for_weight(
+			TEST_FEERATE_SATS_PER_KW,
+			get_output_weight(&generate_p2wpkh_script_pubkey()).to_wu(),
+		);
+		let tx_common_fields_fee =
+			fee_for_weight(TEST_FEERATE_SATS_PER_KW, TX_COMMON_FIELDS_WEIGHT);
 		do_test_interactive_tx_constructor(TestSession {
-			inputs_a: generate_inputs(&[1_000_000]),
+			description: "Single contribution, with P2WPKH input, insufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2wpkh_fee - outputs_fee - tx_common_fields_fee + 1, /* makes fees insuffcient for initiator */
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
+		});
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution with P2WPKH input, sufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2wpkh_fee - outputs_fee - tx_common_fields_fee,
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: None,
+		});
+		let p2wsh_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2WSH_INPUT_WEIGHT_LOWER_BOUND);
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution, with P2WSH input, insufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WSH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2wsh_fee - outputs_fee - tx_common_fields_fee + 1, /* makes fees insuffcient for initiator */
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
+		});
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution with P2WSH input, sufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2WSH(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2wsh_fee - outputs_fee - tx_common_fields_fee,
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: None,
+		});
+		let p2tr_fee = fee_for_weight(TEST_FEERATE_SATS_PER_KW, P2TR_INPUT_WEIGHT_LOWER_BOUND);
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution, with P2TR input, insufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2TR(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2tr_fee - outputs_fee - tx_common_fields_fee + 1, /* makes fees insuffcient for initiator */
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeA)),
+		});
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Single contribution with P2TR input, sufficient fees",
+			inputs_a: generate_inputs(&[TestOutput::P2TR(1_000_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(
+				1_000_000 - p2tr_fee - outputs_fee - tx_common_fields_fee,
+			)]),
+			inputs_b: vec![],
+			outputs_b: vec![],
+			expect_error: None,
+		});
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator contributes sufficient fees, but non-initiator does not",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000)]),
 			outputs_a: vec![],
-			inputs_b: generate_inputs(&[100_000]),
-			outputs_b: generate_outputs(&[100_000]),
+			inputs_b: generate_inputs(&[TestOutput::P2WPKH(100_000)]),
+			outputs_b: generate_outputs(&[TestOutput::P2WPKH(100_000)]),
 			expect_error: Some((AbortReason::InsufficientFees, ErrorCulprit::NodeB)),
 		});
-		// Multi-input-output contributions from both sides.
 		do_test_interactive_tx_constructor(TestSession {
-			inputs_a: generate_inputs(&[1_000_000, 1_000_000]),
-			outputs_a: generate_outputs(&[1_000_000, 200_000]),
-			inputs_b: generate_inputs(&[1_000_000, 500_000]),
-			outputs_b: generate_outputs(&[1_000_000, 400_000]),
+			description: "Multi-input-output contributions from both sides",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(1_000_000); 2]),
+			outputs_a: generate_outputs(&[
+				TestOutput::P2WPKH(1_000_000),
+				TestOutput::P2WPKH(200_000),
+			]),
+			inputs_b: generate_inputs(&[
+				TestOutput::P2WPKH(1_000_000),
+				TestOutput::P2WPKH(500_000),
+			]),
+			outputs_b: generate_outputs(&[
+				TestOutput::P2WPKH(1_000_000),
+				TestOutput::P2WPKH(400_000),
+			]),
 			expect_error: None,
 		});
 
-		// Prevout from initiator is not a witness program
-		let non_segwit_output_tx = {
-			let mut tx = generate_tx(&[1_000_000]);
-			tx.output.push(TxOut {
-				script_pubkey: Builder::new()
-					.push_opcode(opcodes::all::OP_RETURN)
-					.into_script()
-					.to_p2sh(),
-				..Default::default()
-			});
-
-			TransactionU16LenLimited::new(tx).unwrap()
-		};
-		let non_segwit_input = TxIn {
-			previous_output: OutPoint {
-				txid: non_segwit_output_tx.as_transaction().txid(),
-				vout: 1,
-			},
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			..Default::default()
-		};
 		do_test_interactive_tx_constructor(TestSession {
-			inputs_a: vec![(non_segwit_input, non_segwit_output_tx)],
+			description: "Prevout from initiator is not a witness program",
+			inputs_a: generate_inputs(&[TestOutput::P2PKH(1_000_000)]),
 			outputs_a: vec![],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
 
-		// Invalid input sequence from initiator.
-		let tx = TransactionU16LenLimited::new(generate_tx(&[1_000_000])).unwrap();
+		let tx =
+			TransactionU16LenLimited::new(generate_tx(&[TestOutput::P2WPKH(1_000_000)])).unwrap();
 		let invalid_sequence_input = TxIn {
 			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
 			..Default::default()
 		};
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Invalid input sequence from initiator",
 			inputs_a: vec![(invalid_sequence_input, tx.clone())],
-			outputs_a: generate_outputs(&[1_000_000]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::IncorrectInputSequenceValue, ErrorCulprit::NodeA)),
 		});
-		// Duplicate prevout from initiator.
 		let duplicate_input = TxIn {
 			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Duplicate prevout from initiator",
 			inputs_a: vec![(duplicate_input.clone(), tx.clone()), (duplicate_input, tx.clone())],
-			outputs_a: generate_outputs(&[1_000_000]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![],
-			outputs_b: vec![],
-			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
-		});
-		// Non-initiator uses same prevout as initiator.
-		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
-			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-			..Default::default()
-		};
-		do_test_interactive_tx_constructor(TestSession {
-			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
-			outputs_a: generate_outputs(&[1_000_000]),
-			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeB)),
 		});
-		// Initiator sends too many TxAddInputs
+		let duplicate_input = TxIn {
+			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
+			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+			..Default::default()
+		};
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Non-initiator uses same prevout as initiator",
+			inputs_a: vec![(duplicate_input.clone(), tx.clone())],
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
+			inputs_b: vec![(duplicate_input.clone(), tx.clone())],
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
+		});
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends too many TxAddInputs",
 			inputs_a: generate_fixed_number_of_inputs(MAX_RECEIVED_TX_ADD_INPUT_COUNT + 1),
 			outputs_a: vec![],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::ReceivedTooManyTxAddInputs, ErrorCulprit::NodeA)),
 		});
-		// Attempt to queue up two inputs with duplicate serial ids. We use a deliberately bad
-		// entropy source, `DuplicateEntropySource` to simulate this.
 		do_test_interactive_tx_constructor_with_entropy_source(
 			TestSession {
+				// We use a deliberately bad entropy source, `DuplicateEntropySource` to simulate this.
+				description: "Attempt to queue up two inputs with duplicate serial ids",
 				inputs_a: generate_fixed_number_of_inputs(2),
 				outputs_a: vec![],
 				inputs_b: vec![],
@@ -1295,42 +1548,44 @@ mod tests {
 			},
 			&DuplicateEntropySource,
 		);
-		// Initiator sends too many TxAddOutputs.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends too many TxAddOutputs",
 			inputs_a: vec![],
 			outputs_a: generate_fixed_number_of_outputs(MAX_RECEIVED_TX_ADD_OUTPUT_COUNT + 1),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::ReceivedTooManyTxAddOutputs, ErrorCulprit::NodeA)),
 		});
-		// Initiator sends an output below dust value.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends an output below dust value",
 			inputs_a: vec![],
-			outputs_a: generate_outputs(&[1]),
+			outputs_a: generate_outputs(&[TestOutput::P2WSH(
+				generate_p2wsh_script_pubkey().dust_value().to_sat() - 1,
+			)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::BelowDustLimit, ErrorCulprit::NodeA)),
 		});
-		// Initiator sends an output above maximum sats allowed.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends an output above maximum sats allowed",
 			inputs_a: vec![],
-			outputs_a: generate_outputs(&[TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(TOTAL_BITCOIN_SUPPLY_SATOSHIS + 1)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::ExceededMaximumSatsAllowed, ErrorCulprit::NodeA)),
 		});
-		// Initiator sends an output without a witness program.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Initiator sends an output without a witness program",
 			inputs_a: vec![],
 			outputs_a: vec![generate_non_witness_output(1_000_000)],
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::InvalidOutputScript, ErrorCulprit::NodeA)),
 		});
-		// Attempt to queue up two outputs with duplicate serial ids. We use a deliberately bad
-		// entropy source, `DuplicateEntropySource` to simulate this.
 		do_test_interactive_tx_constructor_with_entropy_source(
 			TestSession {
+				// We use a deliberately bad entropy source, `DuplicateEntropySource` to simulate this.
+				description: "Attempt to queue up two outputs with duplicate serial ids",
 				inputs_a: vec![],
 				outputs_a: generate_fixed_number_of_outputs(2),
 				inputs_b: vec![],
@@ -1340,17 +1595,17 @@ mod tests {
 			&DuplicateEntropySource,
 		);
 
-		// Peer contributed more output value than inputs
 		do_test_interactive_tx_constructor(TestSession {
-			inputs_a: generate_inputs(&[100_000]),
-			outputs_a: generate_outputs(&[1_000_000]),
+			description: "Peer contributed more output value than inputs",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(100_000)]),
+			outputs_a: generate_outputs(&[TestOutput::P2WPKH(1_000_000)]),
 			inputs_b: vec![],
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::OutputsValueExceedsInputsValue, ErrorCulprit::NodeA)),
 		});
 
-		// Peer contributed more than allowed number of inputs.
 		do_test_interactive_tx_constructor(TestSession {
+			description: "Peer contributed more than allowed number of inputs",
 			inputs_a: generate_fixed_number_of_inputs(MAX_INPUTS_OUTPUTS_COUNT as u16 + 1),
 			outputs_a: vec![],
 			inputs_b: vec![],
@@ -1360,9 +1615,9 @@ mod tests {
 				ErrorCulprit::Indeterminate,
 			)),
 		});
-		// Peer contributed more than allowed number of outputs.
 		do_test_interactive_tx_constructor(TestSession {
-			inputs_a: generate_inputs(&[TOTAL_BITCOIN_SUPPLY_SATOSHIS]),
+			description: "Peer contributed more than allowed number of outputs",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(TOTAL_BITCOIN_SUPPLY_SATOSHIS)]),
 			outputs_a: generate_fixed_number_of_outputs(MAX_INPUTS_OUTPUTS_COUNT as u16 + 1),
 			inputs_b: vec![],
 			outputs_b: vec![],
