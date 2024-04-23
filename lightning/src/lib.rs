@@ -95,7 +95,9 @@ pub use core2::io;
 
 #[cfg(not(feature = "std"))]
 #[doc(hidden)]
-/// IO utilities public only for use by in-crate macros. These should not be used externally
+/// IO utilities public only for use by in-crate macros. These should not be used externally.
+///
+/// This is not exported to bindings users as its not intended for public consumption.
 pub mod io_extras {
 	use core2::io::{self, Read, Write};
 
