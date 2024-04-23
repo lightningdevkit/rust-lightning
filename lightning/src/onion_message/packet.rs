@@ -12,8 +12,8 @@
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
-use crate::blinded_path::BlindedPath;
-use crate::blinded_path::message::{ForwardTlvs, NextHop, ReceiveTlvs};
+use crate::blinded_path::{BlindedPath, NextMessageHop};
+use crate::blinded_path::message::{ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils::Padding;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
@@ -293,8 +293,8 @@ impl Readable for ControlTlvs {
 
 		let next_hop = match (short_channel_id, next_node_id) {
 			(Some(_), Some(_)) => return Err(DecodeError::InvalidValue),
-			(Some(scid), None) => Some(NextHop::ShortChannelId(scid)),
-			(None, Some(pubkey)) => Some(NextHop::NodeId(pubkey)),
+			(Some(scid), None) => Some(NextMessageHop::ShortChannelId(scid)),
+			(None, Some(pubkey)) => Some(NextMessageHop::NodeId(pubkey)),
 			(None, None) => None,
 		};
 

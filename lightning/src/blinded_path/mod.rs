@@ -24,6 +24,17 @@ use crate::util::ser::{Readable, Writeable, Writer};
 use crate::io;
 use crate::prelude::*;
 
+/// The next hop to forward an onion message along its path.
+///
+/// Note that payment blinded paths always specify their next hop using an explicit node id.
+#[derive(Debug)]
+pub enum NextMessageHop {
+	/// The node id of the next hop.
+	NodeId(PublicKey),
+	/// The short channel id leading to the next hop.
+	ShortChannelId(u64),
+}
+
 /// Onion messages and payments can be sent and received to blinded paths, which serve to hide the
 /// identity of the recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
