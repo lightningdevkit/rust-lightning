@@ -754,6 +754,21 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 
 		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
 	}
+
+	#[cfg(test)]
+	#[allow(dead_code)]
+	pub(super) fn respond_with_no_std_using_signing_pubkey(
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
+		created_at: core::time::Duration, signing_pubkey: PublicKey
+	) -> Result<$builder, Bolt12SemanticError> {
+		debug_assert!($contents.contents.inner.offer.signing_pubkey().is_none());
+
+		if $contents.invoice_request_features().requires_unknown_bits() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
+		}
+
+		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+	}
 } }
 
 macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
