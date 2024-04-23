@@ -8765,14 +8765,7 @@ where
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
-		if offer.paths().is_empty() {
-			let message = new_pending_onion_message(
-				OffersMessage::InvoiceRequest(invoice_request),
-				Destination::Node(offer.signing_pubkey()),
-				Some(reply_path),
-			);
-			pending_offers_messages.push(message);
-		} else {
+		if !offer.paths().is_empty() {
 			// Send as many invoice requests as there are paths in the offer (with an upper bound).
 			// Using only one path could result in a failure if the path no longer exists. But only
 			// one invoice for a given payment id will be paid, even if more than one is received.
@@ -8785,6 +8778,16 @@ where
 				);
 				pending_offers_messages.push(message);
 			}
+		} else if let Some(signing_pubkey) = offer.signing_pubkey() {
+			let message = new_pending_onion_message(
+				OffersMessage::InvoiceRequest(invoice_request),
+				Destination::Node(signing_pubkey),
+				Some(reply_path),
+			);
+			pending_offers_messages.push(message);
+		} else {
+			debug_assert!(false);
+			return Err(Bolt12SemanticError::MissingSigningPubkey);
 		}
 
 		Ok(())

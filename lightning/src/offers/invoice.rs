@@ -210,10 +210,9 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods { ($self: ident, $s
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_offer(
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
-		created_at: Duration, payment_hash: PaymentHash
+		created_at: Duration, payment_hash: PaymentHash, signing_pubkey: PublicKey
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = Self::amount_msats(invoice_request)?;
-		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
 			fields: Self::fields(
@@ -272,7 +271,7 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 		created_at: Duration, payment_hash: PaymentHash, keys: KeyPair
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = Self::amount_msats(invoice_request)?;
-		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
+		let signing_pubkey = keys.public_key();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
 			fields: Self::fields(

@@ -747,7 +747,12 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash)
+		let signing_pubkey = match $contents.contents.inner.offer.signing_pubkey() {
+			Some(signing_pubkey) => signing_pubkey,
+			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
+		};
+
+		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
 	}
 } }
 
@@ -854,6 +859,11 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 			None => return Err(Bolt12SemanticError::InvalidMetadata),
 			Some(keys) => keys,
 		};
+
+		match $contents.contents.inner.offer.signing_pubkey() {
+			Some(signing_pubkey) => debug_assert_eq!(signing_pubkey, keys.public_key()),
+			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
+		}
 
 		<$builder>::for_offer_using_keys(
 			&$self.inner, payment_paths, created_at, payment_hash, keys
@@ -1233,7 +1243,7 @@ mod tests {
 		assert_eq!(unsigned_invoice_request.paths(), &[]);
 		assert_eq!(unsigned_invoice_request.issuer(), None);
 		assert_eq!(unsigned_invoice_request.supported_quantity(), Quantity::One);
-		assert_eq!(unsigned_invoice_request.signing_pubkey(), recipient_pubkey());
+		assert_eq!(unsigned_invoice_request.signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(unsigned_invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(unsigned_invoice_request.amount_msats(), None);
 		assert_eq!(unsigned_invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
@@ -1265,7 +1275,7 @@ mod tests {
 		assert_eq!(invoice_request.paths(), &[]);
 		assert_eq!(invoice_request.issuer(), None);
 		assert_eq!(invoice_request.supported_quantity(), Quantity::One);
-		assert_eq!(invoice_request.signing_pubkey(), recipient_pubkey());
+		assert_eq!(invoice_request.signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(invoice_request.amount_msats(), None);
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
@@ -2260,7 +2270,7 @@ mod tests {
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build().unwrap();
-		assert_eq!(offer.signing_pubkey(), node_id);
+		assert_eq!(offer.signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.chain(Network::Testnet).unwrap()

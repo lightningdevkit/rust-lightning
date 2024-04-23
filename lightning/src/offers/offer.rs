@@ -226,7 +226,7 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 			offer: OfferContents {
 				chains: None, metadata: None, amount: None, description,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
-				supported_quantity: Quantity::One, signing_pubkey,
+				supported_quantity: Quantity::One, signing_pubkey: Some(signing_pubkey),
 			},
 			metadata_strategy: core::marker::PhantomData,
 			secp_ctx: None,
@@ -265,7 +265,7 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 			offer: OfferContents {
 				chains: None, metadata: Some(metadata), amount: None, description,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
-				supported_quantity: Quantity::One, signing_pubkey: node_id,
+				supported_quantity: Quantity::One, signing_pubkey: Some(node_id),
 			},
 			metadata_strategy: core::marker::PhantomData,
 			secp_ctx: Some(secp_ctx),
@@ -391,7 +391,7 @@ macro_rules! offer_builder_methods { (
 				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
 				metadata = derived_metadata;
 				if let Some(keys) = keys {
-					$self.offer.signing_pubkey = keys.public_key();
+					$self.offer.signing_pubkey = Some(keys.public_key());
 				}
 			}
 
@@ -542,7 +542,7 @@ pub(super) struct OfferContents {
 	issuer: Option<String>,
 	paths: Option<Vec<BlindedPath>>,
 	supported_quantity: Quantity,
-	signing_pubkey: PublicKey,
+	signing_pubkey: Option<PublicKey>,
 }
 
 macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
@@ -604,7 +604,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// The public key used by the recipient to sign invoices.
-	pub fn signing_pubkey(&$self) -> bitcoin::secp256k1::PublicKey {
+	pub fn signing_pubkey(&$self) -> Option<bitcoin::secp256k1::PublicKey> {
 		$contents.signing_pubkey()
 	}
 } }
@@ -886,7 +886,7 @@ impl OfferContents {
 		}
 	}
 
-	pub(super) fn signing_pubkey(&self) -> PublicKey {
+	pub(super) fn signing_pubkey(&self) -> Option<PublicKey> {
 		self.signing_pubkey
 	}
 
@@ -905,8 +905,12 @@ impl OfferContents {
 						_ => true,
 					}
 				});
+				let signing_pubkey = match self.signing_pubkey() {
+					Some(signing_pubkey) => signing_pubkey,
+					None => return Err(()),
+				};
 				let keys = signer::verify_recipient_metadata(
-					metadata, key, IV_BYTES, self.signing_pubkey(), tlv_stream, secp_ctx
+					metadata, key, IV_BYTES, signing_pubkey, tlv_stream, secp_ctx
 				)?;
 
 				let offer_id = OfferId::from_valid_invreq_tlv_stream(bytes);
@@ -941,7 +945,7 @@ impl OfferContents {
 			paths: self.paths.as_ref(),
 			issuer: self.issuer.as_ref(),
 			quantity_max: self.supported_quantity.to_tlv_record(),
-			node_id: Some(&self.signing_pubkey),
+			node_id: self.signing_pubkey.as_ref(),
 		}
 	}
 }
@@ -1091,7 +1095,7 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 
 		let signing_pubkey = match node_id {
 			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
-			Some(node_id) => node_id,
+			Some(node_id) => Some(node_id),
 		};
 
 		Ok(OfferContents {
@@ -1154,7 +1158,7 @@ mod tests {
 		assert_eq!(offer.paths(), &[]);
 		assert_eq!(offer.issuer(), None);
 		assert_eq!(offer.supported_quantity(), Quantity::One);
-		assert_eq!(offer.signing_pubkey(), pubkey(42));
+		assert_eq!(offer.signing_pubkey(), Some(pubkey(42)));
 
 		assert_eq!(
 			offer.as_tlv_stream(),
@@ -1251,7 +1255,7 @@ mod tests {
 			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
 			.build().unwrap();
-		assert_eq!(offer.signing_pubkey(), node_id);
+		assert_eq!(offer.signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -1313,7 +1317,7 @@ mod tests {
 			.amount_msats(1000)
 			.path(blinded_path)
 			.build().unwrap();
-		assert_ne!(offer.signing_pubkey(), node_id);
+		assert_ne!(offer.signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -1471,7 +1475,7 @@ mod tests {
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
 		assert_eq!(offer.paths(), paths.as_slice());
-		assert_eq!(offer.signing_pubkey(), pubkey(42));
+		assert_eq!(offer.signing_pubkey(), Some(pubkey(42)));
 		assert_ne!(pubkey(42), pubkey(44));
 		assert_eq!(tlv_stream.paths, Some(&paths));
 		assert_eq!(tlv_stream.node_id, Some(&pubkey(42)));
