@@ -91,12 +91,10 @@ impl Level {
 	}
 }
 
-macro_rules! impl_record {
-	($($args: lifetime)?, $($nonstruct_args: lifetime)?) => {
 /// A Record, unit of logging output with Metadata to enable filtering
 /// Module_path, file, line to inform on log's source
 #[derive(Clone, Debug)]
-pub struct Record<$($args)?> {
+pub struct Record<'a> {
 	/// The verbosity level of the message.
 	pub level: Level,
 	/// The node id of the peer pertaining to the logged record.
@@ -120,17 +118,22 @@ pub struct Record<$($args)?> {
 	pub file: &'static str,
 	/// The line containing the message.
 	pub line: u32,
+
+	#[cfg(c_bindings)]
+	/// We don't actually use the lifetime parameter in C bindings (as there is no good way to
+	/// communicate a lifetime to a C, or worse, Java user).
+	_phantom: core::marker::PhantomData<&'a ()>,
 }
 
-impl<$($args)?> Record<$($args)?> {
+impl<'a> Record<'a> {
 	/// Returns a new Record.
 	///
 	/// This is not exported to bindings users as fmt can't be used in C
 	#[inline]
-	pub fn new<$($nonstruct_args)?>(
+	pub fn new(
 		level: Level, peer_id: Option<PublicKey>, channel_id: Option<ChannelId>,
 		args: fmt::Arguments<'a>, module_path: &'static str, file: &'static str, line: u32
-	) -> Record<$($args)?> {
+	) -> Record<'a> {
 		Record {
 			level,
 			peer_id,
@@ -142,14 +145,11 @@ impl<$($args)?> Record<$($args)?> {
 			module_path,
 			file,
 			line,
+			#[cfg(c_bindings)]
+			_phantom: core::marker::PhantomData,
 		}
 	}
 }
-} }
-#[cfg(not(c_bindings))]
-impl_record!('a, );
-#[cfg(c_bindings)]
-impl_record!(, 'a);
 
 /// A trait encapsulating the operations required of a logger.
 pub trait Logger {
@@ -158,9 +158,6 @@ pub trait Logger {
 }
 
 /// Adds relevant context to a [`Record`] before passing it to the wrapped [`Logger`].
-///
-/// This is not exported to bindings users as lifetimes are problematic and there's little reason
-/// for this to be used downstream anyway.
 pub struct WithContext<'a, L: Deref> where L::Target: Logger {
 	/// The logger to delegate to after adding context to the record.
 	logger: &'a L,

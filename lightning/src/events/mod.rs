@@ -184,20 +184,8 @@ pub enum ClosureReason {
 	HolderForceClosed,
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
-	///
-	/// This was only set in versions of LDK prior to 0.0.122.
-	// Can be removed once we disallow downgrading to 0.0.121
-	LegacyCooperativeClosure,
-	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
-	/// the cooperative close transaction. This indicates that the shutdown was initiated by our
-	/// counterparty.
-	///
-	/// In rare cases where we initiated closure immediately prior to shutting down without
-	/// persisting, this value may be provided for channels we initiated closure for.
-	CounterpartyInitiatedCooperativeClosure,
-	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
-	/// the cooperative close transaction. This indicates that the shutdown was initiated by us.
-	LocallyInitiatedCooperativeClosure,
+	//TODO: split between CounterpartyInitiated/LocallyInitiated
+	CooperativeClosure,
 	/// A commitment transaction was confirmed on chain, closing the channel. Most likely this
 	/// commitment transaction came from our counterparty, but it may also have come from
 	/// a copy of our own `ChannelMonitor`.
@@ -242,9 +230,7 @@ impl core::fmt::Display for ClosureReason {
 				f.write_fmt(format_args!("counterparty force-closed with message: {}", peer_msg))
 			},
 			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
-			ClosureReason::LegacyCooperativeClosure => f.write_str("the channel was cooperatively closed"),
-			ClosureReason::CounterpartyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by our peer"),
-			ClosureReason::LocallyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by us"),
+			ClosureReason::CooperativeClosure => f.write_str("the channel was cooperatively closed"),
 			ClosureReason::CommitmentTxConfirmed => f.write_str("commitment or closing transaction was confirmed on chain."),
 			ClosureReason::FundingTimedOut => write!(f, "funding transaction failed to confirm within {} blocks", FUNDING_CONF_DEADLINE_BLOCKS),
 			ClosureReason::ProcessingError { err } => {
@@ -264,14 +250,12 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(1, FundingTimedOut) => {},
 	(2, HolderForceClosed) => {},
 	(6, CommitmentTxConfirmed) => {},
-	(4, LegacyCooperativeClosure) => {},
+	(4, CooperativeClosure) => {},
 	(8, ProcessingError) => { (1, err, required) },
 	(10, DisconnectedPeer) => {},
 	(12, OutdatedChannelManager) => {},
 	(13, CounterpartyCoopClosedUnfundedChannel) => {},
-	(15, FundingBatchClosure) => {},
-	(17, CounterpartyInitiatedCooperativeClosure) => {},
-	(19, LocallyInitiatedCooperativeClosure) => {},
+	(15, FundingBatchClosure) => {}
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
@@ -865,10 +849,6 @@ pub enum Event {
 		counterparty_node_id: PublicKey,
 		/// The outpoint of the channel's funding transaction.
 		funding_txo: OutPoint,
-		/// The features that this channel will operate with.
-		///
-		/// Will be `None` for channels created prior to LDK version 0.0.122.
-		channel_type: Option<ChannelTypeFeatures>,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is ready to
 	/// be used. This event is emitted either when the funding transaction has been confirmed
@@ -1410,14 +1390,10 @@ impl Writeable for Event {
 					(6, channel_type, required),
 				});
 			},
-			&Event::ChannelPending { ref channel_id, ref user_channel_id,
-				ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo,
-				ref channel_type
-			} => {
+			&Event::ChannelPending { ref channel_id, ref user_channel_id, ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo } => {
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
-					(1, channel_type, option),
 					(2, user_channel_id, required),
 					(4, former_temporary_channel_id, required),
 					(6, counterparty_node_id, required),
@@ -1840,10 +1816,8 @@ impl MaybeReadable for Event {
 					let mut former_temporary_channel_id = None;
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut funding_txo = RequiredWrapper(None);
-					let mut channel_type = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
-						(1, channel_type, option),
 						(2, user_channel_id, required),
 						(4, former_temporary_channel_id, required),
 						(6, counterparty_node_id, required),
@@ -1855,8 +1829,7 @@ impl MaybeReadable for Event {
 						user_channel_id,
 						former_temporary_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						funding_txo: funding_txo.0.unwrap(),
-						channel_type,
+						funding_txo: funding_txo.0.unwrap()
 					}))
 				};
 				f()

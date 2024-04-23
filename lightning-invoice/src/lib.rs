@@ -79,7 +79,14 @@ mod tb;
 
 #[allow(unused_imports)]
 mod prelude {
+	#[cfg(feature = "hashbrown")]
+	extern crate hashbrown;
+
 	pub use alloc::{vec, vec::Vec, string::String};
+	#[cfg(not(feature = "hashbrown"))]
+	pub use std::collections::{HashMap, hash_map};
+	#[cfg(feature = "hashbrown")]
+	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 
 	pub use alloc::string::ToString;
 }
@@ -543,7 +550,7 @@ impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False, tb::False, tb::F
 			amount: None,
 			si_prefix: None,
 			timestamp: None,
-			tagged_fields: Vec::with_capacity(8),
+			tagged_fields: Vec::new(),
 			error: None,
 
 			phantom_d: core::marker::PhantomData,
@@ -1346,15 +1353,6 @@ impl Bolt11Invoice {
 	/// Recover the payee's public key (only to be used if none was included in the invoice)
 	pub fn recover_payee_pub_key(&self) -> PublicKey {
 		self.signed_invoice.recover_payee_pub_key().expect("was checked by constructor").0
-	}
-
-	/// Recover the payee's public key if one was included in the invoice, otherwise return the
-	/// recovered public key from the signature
-	pub fn get_payee_pub_key(&self) -> PublicKey {
-		match self.payee_pub_key() {
-			Some(pk) => *pk,
-			None => self.recover_payee_pub_key()
-		}
 	}
 
 	/// Returns the Duration since the Unix epoch at which the invoice expires.

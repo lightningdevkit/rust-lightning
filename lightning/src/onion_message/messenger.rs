@@ -20,6 +20,8 @@ use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
+#[cfg(not(c_bindings))]
+use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
@@ -40,7 +42,6 @@ use crate::prelude::*;
 #[cfg(not(c_bindings))]
 use {
 	crate::sign::KeysManager,
-	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
 	crate::ln::peer_handler::IgnoringMessageHandler,
 	crate::sync::Arc,
 };
@@ -96,8 +97,8 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// #             first_node_addresses: None,
 /// #         })
 /// #     }
-/// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
+/// #     fn create_blinded_paths<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
+/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedPath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -285,37 +286,34 @@ pub trait MessageRouter {
 	/// Creates [`BlindedPath`]s to the `recipient` node. The nodes in `peers` are assumed to be
 	/// direct peers with the `recipient`.
 	fn create_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPath>, ()>;
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
-pub struct DefaultMessageRouter<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref>
+pub struct DefaultMessageRouter<G: Deref<Target=NetworkGraph<L>>, L: Deref>
 where
 	L::Target: Logger,
-	ES::Target: EntropySource,
 {
 	network_graph: G,
-	entropy_source: ES,
 }
 
-impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref> DefaultMessageRouter<G, L>
 where
 	L::Target: Logger,
-	ES::Target: EntropySource,
 {
 	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
-	pub fn new(network_graph: G, entropy_source: ES) -> Self {
-		Self { network_graph, entropy_source }
+	pub fn new(network_graph: G) -> Self {
+		Self { network_graph }
 	}
 }
 
-impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter for DefaultMessageRouter<G, L, ES>
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref> MessageRouter for DefaultMessageRouter<G, L>
 where
 	L::Target: Logger,
-	ES::Target: EntropySource,
 {
 	fn find_path(
 		&self, _sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
@@ -346,9 +344,10 @@ where
 	}
 
 	fn create_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -358,37 +357,25 @@ where
 		const MIN_PEER_CHANNELS: usize = 3;
 
 		let network_graph = self.network_graph.deref().read_only();
-		let is_recipient_announced =
-			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
-
-		let mut peer_info = peers.iter()
+		let paths = peers.iter()
 			// Limit to peers with announced channels
-			.filter_map(|pubkey|
+			.filter(|pubkey|
 				network_graph
 					.node(&NodeId::from_pubkey(pubkey))
-					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
-					.map(|info| (*pubkey, info.is_tor_only(), info.channels.len()))
+					.map(|info| &info.channels[..])
+					.map(|channels| channels.len() >= MIN_PEER_CHANNELS)
+					.unwrap_or(false)
 			)
-			// Exclude Tor-only nodes when the recipient is announced.
-			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
-			.collect::<Vec<_>>();
-
-		// Prefer using non-Tor nodes with the most channels as the introduction node.
-		peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
-			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
-		});
-
-		let paths = peer_info.into_iter()
-			.map(|(pubkey, _, _)| vec![pubkey, recipient])
-			.map(|node_pks| BlindedPath::new_for_message(&node_pks, &*self.entropy_source, secp_ctx))
+			.map(|pubkey| vec![*pubkey, recipient])
+			.map(|node_pks| BlindedPath::new_for_message(&node_pks, entropy_source, secp_ctx))
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
 
 		match paths {
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
-				if is_recipient_announced {
-					BlindedPath::one_hop_for_message(recipient, &*self.entropy_source, secp_ctx)
+				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
+					BlindedPath::one_hop_for_message(recipient, entropy_source, secp_ctx)
 						.map(|path| vec![path])
 				} else {
 					Err(())
@@ -425,7 +412,7 @@ impl OnionMessagePath {
 }
 
 /// The destination of an onion message.
-#[derive(Clone, Hash, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum Destination {
 	/// We're sending this onion message to a node.
 	Node(PublicKey),
@@ -452,7 +439,7 @@ impl Destination {
 /// Result of successfully [sending an onion message].
 ///
 /// [sending an onion message]: OnionMessenger::send_onion_message
-#[derive(Clone, Hash, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SendSuccess {
 	/// The message was buffered and will be sent once it is processed by
 	/// [`OnionMessageHandler::next_onion_message_for_peer`].
@@ -465,7 +452,7 @@ pub enum SendSuccess {
 /// Errors that may occur when [sending an onion message].
 ///
 /// [sending an onion message]: OnionMessenger::send_onion_message
-#[derive(Clone, Hash, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SendError {
 	/// Errored computing onion message packet keys.
 	Secp256k1(secp256k1::Error),
@@ -535,7 +522,6 @@ pub trait CustomOnionMessageHandler {
 
 /// A processed incoming onion message, containing either a Forward (another onion message)
 /// or a Receive payload with decrypted contents.
-#[derive(Debug)]
 pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
 	Forward(PublicKey, OnionMessage),
@@ -719,18 +705,13 @@ where
 		OnionMessenger {
 			entropy_source,
 			node_signer,
-			message_recipients: Mutex::new(new_hash_map()),
+			message_recipients: Mutex::new(HashMap::new()),
 			secp_ctx,
 			logger,
 			message_router,
 			offers_handler,
 			custom_handler,
 		}
-	}
-
-	#[cfg(test)]
-	pub(crate) fn set_offers_handler(&mut self, offers_handler: OMH) {
-		self.offers_handler = offers_handler;
 	}
 
 	/// Sends an [`OnionMessage`] with the given `contents` to `destination`.
@@ -826,19 +807,11 @@ where
 		}
 	}
 
-	#[cfg(any(test, feature = "_test_utils"))]
-	pub fn send_onion_message_using_path<T: OnionMessageContents>(
+	#[cfg(test)]
+	pub(super) fn send_onion_message_using_path<T: OnionMessageContents>(
 		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
 	) -> Result<SendSuccess, SendError> {
 		self.enqueue_onion_message(path, contents, reply_path, format_args!(""))
-	}
-
-	pub(crate) fn peel_onion_message(
-		&self, msg: &OnionMessage
-	) -> Result<PeeledOnion<<<CMH>::Target as CustomOnionMessageHandler>::CustomMessage>, ()> {
-		peel_onion_message(
-			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
-		)
 	}
 
 	fn handle_onion_message_response<T: OnionMessageContents>(
@@ -861,7 +834,7 @@ where
 	#[cfg(test)]
 	pub(super) fn release_pending_msgs(&self) -> HashMap<PublicKey, VecDeque<OnionMessage>> {
 		let mut message_recipients = self.message_recipients.lock().unwrap();
-		let mut msgs = new_hash_map();
+		let mut msgs = HashMap::new();
 		// We don't want to disconnect the peers by removing them entirely from the original map, so we
 		// release the pending message buffers individually.
 		for (node_id, recipient) in &mut *message_recipients {
@@ -926,7 +899,9 @@ where
 	CMH::Target: CustomOnionMessageHandler,
 {
 	fn handle_onion_message(&self, _peer_node_id: &PublicKey, msg: &OnionMessage) {
-		match self.peel_onion_message(msg) {
+		match peel_onion_message(
+			msg, &self.secp_ctx, &*self.node_signer, &*self.logger, &*self.custom_handler
+		) {
 			Ok(PeeledOnion::Receive(message, path_id, reply_path)) => {
 				log_trace!(
 					self.logger,
@@ -1084,7 +1059,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<KeysManager>,
 	Arc<KeysManager>,
 	Arc<L>,
-	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
+	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler
 >;
@@ -1103,7 +1078,7 @@ pub type SimpleRefOnionMessenger<
 	&'a KeysManager,
 	&'a KeysManager,
 	&'b L,
-	&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L, &'a KeysManager>,
+	&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L>,
 	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
 	IgnoringMessageHandler
 >;

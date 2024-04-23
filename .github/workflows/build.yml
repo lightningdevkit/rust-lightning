@@ -176,7 +176,7 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.63
+      TOOLCHAIN: 1.58
     steps:
       - name: Checkout source code
         uses: actions/checkout@v3
@@ -188,10 +188,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get -y install build-essential binutils-dev libunwind-dev
-      - name: Pin the regex dependency
-        run: |
-          cd fuzz && cargo update -p regex --precise "1.9.6" --verbose && cd ..
-          cd lightning-invoice/fuzz && cargo update -p regex --precise "1.9.6" --verbose
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: cd fuzz && RUSTFLAGS="--cfg=fuzzing" cargo test --verbose --color always
       - name: Run fuzzers
@@ -216,20 +212,3 @@ jobs:
       - name: Run default clippy linting
         run: |
           cargo clippy -- -Aclippy::erasing_op -Aclippy::never_loop -Aclippy::if_same_then_else -Dclippy::try_err
-
-  rustfmt:
-    runs-on: ubuntu-latest
-    env:
-      TOOLCHAIN: 1.63.0
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v3
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
-          rustup override set ${{ env.TOOLCHAIN }}
-      - name: Install rustfmt
-        run: |
-          rustup component add rustfmt
-      - name: Run rustfmt checks
-        run: ci/rustfmt.sh

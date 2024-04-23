@@ -9,7 +9,7 @@
 
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 use crate::utils::test_logger;
-use core::convert::TryFrom;
+use core::convert::{Infallible, TryFrom};
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::offers::offer::{Amount, Offer, Quantity};
 use lightning::offers::parse::Bolt12SemanticError;
@@ -29,8 +29,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 
 		if let Ok(invoice_request) = build_response(&offer, pubkey) {
 			invoice_request
-				.sign(|message: &UnsignedInvoiceRequest|
-					Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+				.sign::<_, Infallible>(
+					|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 				)
 				.unwrap()
 				.write(&mut buffer)

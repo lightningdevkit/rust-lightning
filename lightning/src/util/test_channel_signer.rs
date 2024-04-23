@@ -118,6 +118,7 @@ impl TestChannelSigner {
 	/// When `true`, methods are forwarded to the underlying signer as normal. When `false`, some
 	/// methods will return `Err` indicating that the signer is unavailable. Intended to be used for
 	/// testing asynchronous signing.
+	#[cfg(test)]
 	pub fn set_available(&self, available: bool) {
 		*self.available.lock().unwrap() = available;
 	}
@@ -187,7 +188,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			// Ensure that the counterparty doesn't get more than two broadcastable commitments -
 			// the last and the one we are trying to sign
 			assert!(actual_commitment_number >= state.last_counterparty_revoked_commitment - 2, "cannot sign a commitment if second to last wasn't revoked - signing {} revoked {}", actual_commitment_number, state.last_counterparty_revoked_commitment);
-			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number);
+			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number)
 		}
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, inbound_htlc_preimages, outbound_htlc_preimages, secp_ctx).unwrap())
@@ -215,16 +216,10 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		if !*self.available.lock().unwrap() {
-			return Err(());
-		}
 		Ok(EcdsaChannelSigner::sign_justice_revoked_output(&self.inner, justice_tx, input, amount, per_commitment_key, secp_ctx).unwrap())
 	}
 
 	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		if !*self.available.lock().unwrap() {
-			return Err(());
-		}
 		Ok(EcdsaChannelSigner::sign_justice_revoked_htlc(&self.inner, justice_tx, input, amount, per_commitment_key, htlc, secp_ctx).unwrap())
 	}
 
@@ -232,9 +227,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()> {
-		if !*self.available.lock().unwrap() {
-			return Err(());
-		}
 		let state = self.state.lock().unwrap();
 		if state.last_holder_revoked_commitment - 1 != htlc_descriptor.per_commitment_number &&
 			state.last_holder_revoked_commitment - 2 != htlc_descriptor.per_commitment_number
@@ -268,9 +260,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		if !*self.available.lock().unwrap() {
-			return Err(());
-		}
 		Ok(EcdsaChannelSigner::sign_counterparty_htlc_transaction(&self.inner, htlc_tx, input, amount, per_commitment_point, htlc, secp_ctx).unwrap())
 	}
 
@@ -287,9 +276,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		// As long as our minimum dust limit is enforced and is greater than our anchor output
 		// value, an anchor output can only have an index within [0, 1].
 		assert!(anchor_tx.input[input].previous_output.vout == 0 || anchor_tx.input[input].previous_output.vout == 1);
-		if !*self.available.lock().unwrap() {
-			return Err(());
-		}
 		EcdsaChannelSigner::sign_holder_anchor_input(&self.inner, anchor_tx, input, secp_ctx)
 	}
 

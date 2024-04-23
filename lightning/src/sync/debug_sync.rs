@@ -14,7 +14,7 @@ use std::sync::Condvar as StdCondvar;
 
 pub use std::sync::WaitTimeoutResult;
 
-use crate::prelude::*;
+use crate::prelude::HashMap;
 
 use super::{LockTestExt, LockHeldState};
 
@@ -57,7 +57,7 @@ impl Condvar {
 
 thread_local! {
 	/// We track the set of locks currently held by a reference to their `LockMetadata`
-	static LOCKS_HELD: RefCell<HashMap<u64, Arc<LockMetadata>>> = RefCell::new(new_hash_map());
+	static LOCKS_HELD: RefCell<HashMap<u64, Arc<LockMetadata>>> = RefCell::new(HashMap::new());
 }
 static LOCK_IDX: AtomicUsize = AtomicUsize::new(0);
 
@@ -113,7 +113,7 @@ impl LockMetadata {
 		let lock_idx = LOCK_IDX.fetch_add(1, Ordering::Relaxed) as u64;
 
 		let res = Arc::new(LockMetadata {
-			locked_before: StdMutex::new(new_hash_map()),
+			locked_before: StdMutex::new(HashMap::new()),
 			lock_idx,
 			_lock_construction_bt: backtrace,
 		});
@@ -122,7 +122,7 @@ impl LockMetadata {
 		{
 			let (lock_constr_location, lock_constr_colno) =
 				locate_call_symbol(&res._lock_construction_bt);
-			LOCKS_INIT.call_once(|| { unsafe { LOCKS = Some(StdMutex::new(new_hash_map())); } });
+			LOCKS_INIT.call_once(|| { unsafe { LOCKS = Some(StdMutex::new(HashMap::new())); } });
 			let mut locks = unsafe { LOCKS.as_ref() }.unwrap().lock().unwrap();
 			match locks.entry(lock_constr_location) {
 				hash_map::Entry::Occupied(e) => {

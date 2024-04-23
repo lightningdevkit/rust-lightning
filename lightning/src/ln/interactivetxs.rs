@@ -764,9 +764,9 @@ impl StateMachine {
 			holder_is_initiator: is_initiator,
 			received_tx_add_input_count: 0,
 			received_tx_add_output_count: 0,
-			inputs: new_hash_map(),
-			prevtx_outpoints: new_hash_set(),
-			outputs: new_hash_map(),
+			inputs: HashMap::new(),
+			prevtx_outpoints: HashSet::new(),
+			outputs: HashMap::new(),
 			feerate_sat_per_kw,
 			to_remote_value,
 		};

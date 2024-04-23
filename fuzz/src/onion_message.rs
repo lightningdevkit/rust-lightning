@@ -86,8 +86,11 @@ impl MessageRouter for TestMessageRouter {
 		})
 	}
 
-	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
+	fn create_blinded_paths<
+		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
+		_secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPath>, ()> {
 		unreachable!()
 	}

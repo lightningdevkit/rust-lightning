@@ -85,15 +85,14 @@ impl BlindedPath {
 
 	/// Create a one-hop blinded path for a payment.
 	pub fn one_hop_for_payment<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
-		payee_node_id: PublicKey, payee_tlvs: payment::ReceiveTlvs, min_final_cltv_expiry_delta: u16,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>
+		payee_node_id: PublicKey, payee_tlvs: payment::ReceiveTlvs, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
 	) -> Result<(BlindedPayInfo, Self), ()> {
 		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
 		// be in relation to a specific channel.
 		let htlc_maximum_msat = u64::max_value();
 		Self::new_for_payment(
-			&[], payee_node_id, payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta,
-			entropy_source, secp_ctx
+			&[], payee_node_id, payee_tlvs, htlc_maximum_msat, entropy_source, secp_ctx
 		)
 	}
 
@@ -108,15 +107,13 @@ impl BlindedPath {
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new_for_payment<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[payment::ForwardNode], payee_node_id: PublicKey,
-		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>
+		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>
 	) -> Result<(BlindedPayInfo, Self), ()> {
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 
-		let blinded_payinfo = payment::compute_payinfo(
-			intermediate_nodes, &payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
-		)?;
+		let blinded_payinfo = payment::compute_payinfo(intermediate_nodes, &payee_tlvs, htlc_maximum_msat)?;
 		Ok((blinded_payinfo, BlindedPath {
 			introduction_node_id: intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
 			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),

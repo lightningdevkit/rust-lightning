@@ -307,7 +307,7 @@ pub(super) struct PendingChecks {
 impl PendingChecks {
 	pub(super) fn new() -> Self {
 		PendingChecks { internal: Mutex::new(PendingChecksContext {
-			channels: new_hash_map(), nodes: new_hash_map(),
+			channels: HashMap::new(), nodes: HashMap::new(),
 		}) }
 	}
 

@@ -83,9 +83,6 @@ mod shutdown_tests;
 #[cfg(all(test, async_signing))]
 #[allow(unused_mut)]
 mod async_signer_tests;
-#[cfg(test)]
-#[allow(unused_mut)]
-mod offers_tests;
 #[allow(dead_code)] // TODO(dual_funding): Exchange for dual_funding cfg
 pub(crate) mod interactivetxs;
 

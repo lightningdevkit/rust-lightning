@@ -326,7 +326,7 @@ fn test_channel_open_v2_and_close() {
 	let _res = initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 	let tx_add_output_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
 	// Second output, change
-	let actual_change_output = tx_add_output_msg.sats;
+	let _actual_change_output = tx_add_output_msg.sats;
 	assert!(tx_add_output_msg.script.is_v0_p2wpkh());
 
 	let _res = acceptor_node.node.handle_tx_add_output(&initiator_node.node.get_our_node_id(), &tx_add_output_msg);

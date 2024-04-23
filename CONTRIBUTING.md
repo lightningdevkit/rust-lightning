@@ -120,15 +120,7 @@ Coding Conventions
 ------------------
 
 Use tabs. If you want to align lines, use spaces. Any desired alignment should
-display fine at any tab-length display setting. We use `rustfmt` to establish
-uniform coding standards throughout the codebase. Please run
-
-```bash
-./ci/rustfmt.sh
-```
-
-before committing and pushing any changes, as compliance will also be checked
-and enforced by our CI scripts.
+display fine at any tab-length display setting.
 
 Our CI enforces [clippy's](https://github.com/rust-lang/rust-clippy) default
 linting

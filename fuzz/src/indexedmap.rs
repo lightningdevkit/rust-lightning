@@ -9,7 +9,7 @@
 
 use lightning::util::indexed_map::{IndexedMap, self};
 use std::collections::{BTreeMap, btree_map};
-use lightning::util::hash_tables::*;
+use hashbrown::HashSet;
 
 use crate::utils::test_logger;
 
@@ -80,23 +80,23 @@ fn check_eq(btree: &BTreeMap<u8, u8>, mut indexed: IndexedMap<u8, u8>) {
 		}
 	}
 
-	let mut key_set = hash_map_with_capacity(1024);
+	let mut key_set = HashSet::with_capacity(256);
 	for k in indexed.unordered_keys() {
-		assert!(key_set.insert(*k, ()).is_none());
+		assert!(key_set.insert(*k));
 		assert!(btree.contains_key(k));
 	}
 	assert_eq!(key_set.len(), btree.len());
 
 	key_set.clear();
 	for (k, v) in indexed.unordered_iter() {
-		assert!(key_set.insert(*k, ()).is_none());
+		assert!(key_set.insert(*k));
 		assert_eq!(btree.get(k).unwrap(), v);
 	}
 	assert_eq!(key_set.len(), btree.len());
 
 	key_set.clear();
 	for (k, v) in indexed_clone.unordered_iter_mut() {
-		assert!(key_set.insert(*k, ()).is_none());
+		assert!(key_set.insert(*k));
 		assert_eq!(btree.get(k).unwrap(), v);
 	}
 	assert_eq!(key_set.len(), btree.len());

@@ -80,7 +80,6 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
 use core::convert::TryFrom;
-use core::hash::{Hash, Hasher};
 use core::num::NonZeroU64;
 use core::ops::Deref;
 use core::str::FromStr;
@@ -92,20 +91,12 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
 use crate::ln::msgs::MAX_VALUE_MSAT;
+use crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder};
 use crate::offers::merkle::TlvStream;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
-
-#[cfg(not(c_bindings))]
-use {
-	crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder},
-};
-#[cfg(c_bindings)]
-use {
-	crate::offers::invoice_request::{InvoiceRequestWithDerivedPayerIdBuilder, InvoiceRequestWithExplicitPayerIdBuilder},
-};
 
 use crate::prelude::*;
 
@@ -127,34 +118,6 @@ pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 	secp_ctx: Option<&'a Secp256k1<T>>,
 }
 
-/// Builds an [`Offer`] for the "offer to be paid" flow.
-///
-/// See [module-level documentation] for usage.
-///
-/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-///
-/// [module-level documentation]: self
-#[cfg(c_bindings)]
-pub struct OfferWithExplicitMetadataBuilder<'a> {
-	offer: OfferContents,
-	metadata_strategy: core::marker::PhantomData<ExplicitMetadata>,
-	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
-}
-
-/// Builds an [`Offer`] for the "offer to be paid" flow.
-///
-/// See [module-level documentation] for usage.
-///
-/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-///
-/// [module-level documentation]: self
-#[cfg(c_bindings)]
-pub struct OfferWithDerivedMetadataBuilder<'a> {
-	offer: OfferContents,
-	metadata_strategy: core::marker::PhantomData<DerivedMetadata>,
-	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
-}
-
 /// Indicates how [`Offer::metadata`] may be set.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
@@ -171,12 +134,9 @@ pub struct ExplicitMetadata {}
 pub struct DerivedMetadata {}
 
 impl MetadataStrategy for ExplicitMetadata {}
-
 impl MetadataStrategy for DerivedMetadata {}
 
-macro_rules! offer_explicit_metadata_builder_methods { (
-	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
-) => {
+impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
 	/// Creates a new builder for an offer setting the [`Offer::description`] and using the
 	/// [`Offer::signing_pubkey`] for signing invoices. The associated secret key must be remembered
 	/// while the offer is valid.
@@ -191,7 +151,7 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
 	pub fn new(description: String, signing_pubkey: PublicKey) -> Self {
-		Self {
+		OfferBuilder {
 			offer: OfferContents {
 				chains: None, metadata: None, amount: None, description,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
@@ -205,13 +165,13 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 	/// Sets the [`Offer::metadata`] to the given bytes.
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn metadata(mut $self: $self_type, metadata: Vec<u8>) -> Result<$return_type, Bolt12SemanticError> {
-		$self.offer.metadata = Some(Metadata::Bytes(metadata));
-		Ok($return_value)
+	pub fn metadata(mut self, metadata: Vec<u8>) -> Result<Self, Bolt12SemanticError> {
+		self.offer.metadata = Some(Metadata::Bytes(metadata));
+		Ok(self)
 	}
-} }
+}
 
-macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
+impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
 	/// Similar to [`OfferBuilder::new`] except, if [`OfferBuilder::path`] is called, the signing
 	/// pubkey is derived from the given [`ExpandedKey`] and [`EntropySource`]. This provides
 	/// recipient privacy by using a different signing pubkey for each offer. Otherwise, the
@@ -225,12 +185,12 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn deriving_signing_pubkey<ES: Deref>(
 		description: String, node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
-		secp_ctx: &'a Secp256k1<$secp_context>
+		secp_ctx: &'a Secp256k1<T>
 	) -> Self where ES::Target: EntropySource {
 		let nonce = Nonce::from_entropy_source(entropy_source);
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, None);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
-		Self {
+		OfferBuilder {
 			offer: OfferContents {
 				chains: None, metadata: Some(metadata), amount: None, description,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
@@ -240,19 +200,17 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 			secp_ctx: Some(secp_ctx),
 		}
 	}
-} }
+}
 
-macro_rules! offer_builder_methods { (
-	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr $(, $self_mut: tt)?
-) => {
+impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
 	/// Adds the chain hash of the given [`Network`] to [`Offer::chains`]. If not called,
 	/// the chain hash of [`Network::Bitcoin`] is assumed to be the only one supported.
 	///
 	/// See [`Offer::chains`] on how this relates to the payment currency.
 	///
 	/// Successive calls to this method will add another chain hash.
-	pub fn chain($self: $self_type, network: Network) -> $return_type {
-		$self.chain_hash(ChainHash::using_genesis_block(network))
+	pub fn chain(self, network: Network) -> Self {
+		self.chain_hash(ChainHash::using_genesis_block(network))
 	}
 
 	/// Adds the [`ChainHash`] to [`Offer::chains`]. If not called, the chain hash of
@@ -261,45 +219,45 @@ macro_rules! offer_builder_methods { (
 	/// See [`Offer::chains`] on how this relates to the payment currency.
 	///
 	/// Successive calls to this method will add another chain hash.
-	pub(crate) fn chain_hash($($self_mut)* $self: $self_type, chain: ChainHash) -> $return_type {
-		let chains = $self.offer.chains.get_or_insert_with(Vec::new);
+	pub(crate) fn chain_hash(mut self, chain: ChainHash) -> Self {
+		let chains = self.offer.chains.get_or_insert_with(Vec::new);
 		if !chains.contains(&chain) {
 			chains.push(chain);
 		}
 
-		$return_value
+		self
 	}
 
 	/// Sets the [`Offer::amount`] as an [`Amount::Bitcoin`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn amount_msats($self: $self_type, amount_msats: u64) -> $return_type {
-		$self.amount(Amount::Bitcoin { amount_msats })
+	pub fn amount_msats(self, amount_msats: u64) -> Self {
+		self.amount(Amount::Bitcoin { amount_msats })
 	}
 
 	/// Sets the [`Offer::amount`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub(super) fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
-		$self.offer.amount = Some(amount);
-		$return_value
+	pub(super) fn amount(mut self, amount: Amount) -> Self {
+		self.offer.amount = Some(amount);
+		self
 	}
 
 	/// Sets the [`Offer::absolute_expiry`] as seconds since the Unix epoch. Any expiry that has
 	/// already passed is valid and can be checked for using [`Offer::is_expired`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn absolute_expiry($($self_mut)* $self: $self_type, absolute_expiry: Duration) -> $return_type {
-		$self.offer.absolute_expiry = Some(absolute_expiry);
-		$return_value
+	pub fn absolute_expiry(mut self, absolute_expiry: Duration) -> Self {
+		self.offer.absolute_expiry = Some(absolute_expiry);
+		self
 	}
 
 	/// Sets the [`Offer::issuer`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn issuer($($self_mut)* $self: $self_type, issuer: String) -> $return_type {
-		$self.offer.issuer = Some(issuer);
-		$return_value
+	pub fn issuer(mut self, issuer: String) -> Self {
+		self.offer.issuer = Some(issuer);
+		self
 	}
 
 	/// Adds a blinded path to [`Offer::paths`]. Must include at least one path if only connected by
@@ -307,23 +265,23 @@ macro_rules! offer_builder_methods { (
 	///
 	/// Successive calls to this method will add another blinded path. Caller is responsible for not
 	/// adding duplicate paths.
-	pub fn path($($self_mut)* $self: $self_type, path: BlindedPath) -> $return_type {
-		$self.offer.paths.get_or_insert_with(Vec::new).push(path);
-		$return_value
+	pub fn path(mut self, path: BlindedPath) -> Self {
+		self.offer.paths.get_or_insert_with(Vec::new).push(path);
+		self
 	}
 
 	/// Sets the quantity of items for [`Offer::supported_quantity`]. If not called, defaults to
 	/// [`Quantity::One`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub fn supported_quantity($($self_mut)* $self: $self_type, quantity: Quantity) -> $return_type {
-		$self.offer.supported_quantity = quantity;
-		$return_value
+	pub fn supported_quantity(mut self, quantity: Quantity) -> Self {
+		self.offer.supported_quantity = quantity;
+		self
 	}
 
 	/// Builds an [`Offer`] from the builder's settings.
-	pub fn build($($self_mut)* $self: $self_type) -> Result<Offer, Bolt12SemanticError> {
-		match $self.offer.amount {
+	pub fn build(mut self) -> Result<Offer, Bolt12SemanticError> {
+		match self.offer.amount {
 			Some(Amount::Bitcoin { amount_msats }) => {
 				if amount_msats > MAX_VALUE_MSAT {
 					return Err(Bolt12SemanticError::InvalidAmount);
@@ -333,123 +291,56 @@ macro_rules! offer_builder_methods { (
 			None => {},
 		}
 
-		if let Some(chains) = &$self.offer.chains {
-			if chains.len() == 1 && chains[0] == $self.offer.implied_chain() {
-				$self.offer.chains = None;
+		if let Some(chains) = &self.offer.chains {
+			if chains.len() == 1 && chains[0] == self.offer.implied_chain() {
+				self.offer.chains = None;
 			}
 		}
 
-		Ok($self.build_without_checks())
+		Ok(self.build_without_checks())
 	}
 
-	fn build_without_checks($($self_mut)* $self: $self_type) -> Offer {
+	fn build_without_checks(mut self) -> Offer {
 		// Create the metadata for stateless verification of an InvoiceRequest.
-		if let Some(mut metadata) = $self.offer.metadata.take() {
+		if let Some(mut metadata) = self.offer.metadata.take() {
 			if metadata.has_derivation_material() {
-				if $self.offer.paths.is_none() {
+				if self.offer.paths.is_none() {
 					metadata = metadata.without_keys();
 				}
 
-				let mut tlv_stream = $self.offer.as_tlv_stream();
+				let mut tlv_stream = self.offer.as_tlv_stream();
 				debug_assert_eq!(tlv_stream.metadata, None);
 				tlv_stream.metadata = None;
 				if metadata.derives_recipient_keys() {
 					tlv_stream.node_id = None;
 				}
 
-				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
+				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, self.secp_ctx);
 				metadata = derived_metadata;
 				if let Some(keys) = keys {
-					$self.offer.signing_pubkey = keys.public_key();
+					self.offer.signing_pubkey = keys.public_key();
 				}
 			}
 
-			$self.offer.metadata = Some(metadata);
+			self.offer.metadata = Some(metadata);
 		}
 
 		let mut bytes = Vec::new();
-		$self.offer.write(&mut bytes).unwrap();
+		self.offer.write(&mut bytes).unwrap();
 
-		Offer {
-			bytes,
-			#[cfg(not(c_bindings))]
-			contents: $self.offer,
-			#[cfg(c_bindings)]
-			contents: $self.offer.clone()
-		}
+		Offer { bytes, contents: self.offer }
 	}
-} }
+}
 
 #[cfg(test)]
-macro_rules! offer_builder_test_methods { (
-	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr $(, $self_mut: tt)?
-) => {
-	#[cfg_attr(c_bindings, allow(dead_code))]
-	fn features_unchecked($($self_mut)* $self: $self_type, features: OfferFeatures) -> $return_type {
-		$self.offer.features = features;
-		$return_value
-	}
-
-	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(crate) fn clear_paths($($self_mut)* $self: $self_type) -> $return_type {
-		$self.offer.paths = None;
-		$return_value
-	}
-
-	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(super) fn build_unchecked($self: $self_type) -> Offer {
-		$self.build_without_checks()
-	}
-} }
-
 impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
-	offer_builder_methods!(self, Self, Self, self, mut);
+	fn features_unchecked(mut self, features: OfferFeatures) -> Self {
+		self.offer.features = features;
+		self
+	}
 
-	#[cfg(test)]
-	offer_builder_test_methods!(self, Self, Self, self, mut);
-}
-
-impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
-	offer_explicit_metadata_builder_methods!(self, Self, Self, self);
-}
-
-impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
-	offer_derived_metadata_builder_methods!(T);
-}
-
-#[cfg(all(c_bindings, not(test)))]
-impl<'a> OfferWithExplicitMetadataBuilder<'a> {
-	offer_explicit_metadata_builder_methods!(self, &mut Self, (), ());
-	offer_builder_methods!(self, &mut Self, (), ());
-}
-
-#[cfg(all(c_bindings, test))]
-impl<'a> OfferWithExplicitMetadataBuilder<'a> {
-	offer_explicit_metadata_builder_methods!(self, &mut Self, &mut Self, self);
-	offer_builder_methods!(self, &mut Self, &mut Self, self);
-	offer_builder_test_methods!(self, &mut Self, &mut Self, self);
-}
-
-#[cfg(all(c_bindings, not(test)))]
-impl<'a> OfferWithDerivedMetadataBuilder<'a> {
-	offer_derived_metadata_builder_methods!(secp256k1::All);
-	offer_builder_methods!(self, &mut Self, (), ());
-}
-
-#[cfg(all(c_bindings, test))]
-impl<'a> OfferWithDerivedMetadataBuilder<'a> {
-	offer_derived_metadata_builder_methods!(secp256k1::All);
-	offer_builder_methods!(self, &mut Self, &mut Self, self);
-	offer_builder_test_methods!(self, &mut Self, &mut Self, self);
-}
-
-#[cfg(c_bindings)]
-impl<'a> From<OfferBuilder<'a, DerivedMetadata, secp256k1::All>>
-for OfferWithDerivedMetadataBuilder<'a> {
-	fn from(builder: OfferBuilder<'a, DerivedMetadata, secp256k1::All>) -> Self {
-		let OfferBuilder { offer, metadata_strategy, secp_ctx } = builder;
-
-		Self { offer, metadata_strategy, secp_ctx }
+	pub(super) fn build_unchecked(self) -> Offer {
+		self.build_without_checks()
 	}
 }
 
@@ -467,6 +358,7 @@ for OfferWithDerivedMetadataBuilder<'a> {
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct Offer {
 	// The serialized offer. Needed when creating an `InvoiceRequest` if the offer contains unknown
 	// fields.
@@ -592,9 +484,7 @@ impl Offer {
 	pub fn expects_quantity(&self) -> bool {
 		self.contents.expects_quantity()
 	}
-}
 
-macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => {
 	/// Similar to [`Offer::request_invoice`] except it:
 	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
 	///   request,
@@ -606,52 +496,50 @@ macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => 
 	///
 	/// Useful to protect the sender's privacy.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	/// [`InvoiceRequest::payer_metadata`]: crate::offers::invoice_request::InvoiceRequest::payer_metadata
 	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-	pub fn request_invoice_deriving_payer_id<
-		'a, 'b, ES: Deref,
-		#[cfg(not(c_bindings))]
-		T: secp256k1::Signing
-	>(
-		&'a $self, expanded_key: &ExpandedKey, entropy_source: ES,
-		#[cfg(not(c_bindings))]
-		secp_ctx: &'b Secp256k1<T>,
-		#[cfg(c_bindings)]
-		secp_ctx: &'b Secp256k1<secp256k1::All>,
+	pub fn request_invoice_deriving_payer_id<'a, 'b, ES: Deref, T: secp256k1::Signing>(
+		&'a self, expanded_key: &ExpandedKey, entropy_source: ES, secp_ctx: &'b Secp256k1<T>,
 		payment_id: PaymentId
-	) -> Result<$builder, Bolt12SemanticError>
+	) -> Result<InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
-		if $self.offer_features().requires_unknown_bits() {
+		if self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(<$builder>::deriving_payer_id($self, expanded_key, entropy_source, secp_ctx, payment_id))
+		Ok(InvoiceRequestBuilder::deriving_payer_id(
+			self, expanded_key, entropy_source, secp_ctx, payment_id
+		))
 	}
-} }
 
-macro_rules! request_invoice_explicit_payer_id { ($self: ident, $builder: ty) => {
 	/// Similar to [`Offer::request_invoice_deriving_payer_id`] except uses `payer_id` for the
 	/// [`InvoiceRequest::payer_id`] instead of deriving a different key for each request.
 	///
 	/// Useful for recurring payments using the same `payer_id` with different invoices.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	pub fn request_invoice_deriving_metadata<ES: Deref>(
-		&$self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+		&self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
 		payment_id: PaymentId
-	) -> Result<$builder, Bolt12SemanticError>
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, Bolt12SemanticError>
 	where
 		ES::Target: EntropySource,
 	{
-		if $self.offer_features().requires_unknown_bits() {
+		if self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(<$builder>::deriving_metadata($self, payer_id, expanded_key, entropy_source, payment_id))
+		Ok(InvoiceRequestBuilder::deriving_metadata(
+			self, payer_id, expanded_key, entropy_source, payment_id
+		))
 	}
 
 	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and `payer_id`,
@@ -666,32 +554,20 @@ macro_rules! request_invoice_explicit_payer_id { ($self: ident, $builder: ty) =>
 	///
 	/// Errors if the offer contains unknown required features.
 	///
+	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
-		&$self, metadata: Vec<u8>, payer_id: PublicKey
-	) -> Result<$builder, Bolt12SemanticError> {
-		if $self.offer_features().requires_unknown_bits() {
+		&self, metadata: Vec<u8>, payer_id: PublicKey
+	) -> Result<InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>, Bolt12SemanticError> {
+		if self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(<$builder>::new($self, metadata, payer_id))
+		Ok(InvoiceRequestBuilder::new(self, metadata, payer_id))
 	}
-} }
 
-#[cfg(not(c_bindings))]
-impl Offer {
-	request_invoice_derived_payer_id!(self, InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>);
-	request_invoice_explicit_payer_id!(self, InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>);
-}
-
-#[cfg(c_bindings)]
-impl Offer {
-	request_invoice_derived_payer_id!(self, InvoiceRequestWithDerivedPayerIdBuilder<'a, 'b>);
-	request_invoice_explicit_payer_id!(self, InvoiceRequestWithExplicitPayerIdBuilder);
-}
-
-#[cfg(test)]
-impl Offer {
+	#[cfg(test)]
 	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
 		self.contents.as_tlv_stream()
 	}
@@ -700,20 +576,6 @@ impl Offer {
 impl AsRef<[u8]> for Offer {
 	fn as_ref(&self) -> &[u8] {
 		&self.bytes
-	}
-}
-
-impl PartialEq for Offer {
-	fn eq(&self, other: &Self) -> bool {
-		self.bytes.eq(&other.bytes)
-	}
-}
-
-impl Eq for Offer {}
-
-impl Hash for Offer {
-	fn hash<H: Hasher>(&self, state: &mut H) {
-		self.bytes.hash(state);
 	}
 }
 
@@ -1047,15 +909,7 @@ impl core::fmt::Display for Offer {
 
 #[cfg(test)]
 mod tests {
-	use super::{Amount, Offer, OfferTlvStreamRef, Quantity};
-	#[cfg(not(c_bindings))]
-	use {
-		super::OfferBuilder,
-	};
-	#[cfg(c_bindings)]
-	use {
-		super::OfferWithExplicitMetadataBuilder as OfferBuilder,
-	};
+	use super::{Amount, Offer, OfferBuilder, OfferTlvStreamRef, Quantity};
 
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::network::constants::Network;
@@ -1184,8 +1038,6 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
 
-		#[cfg(c_bindings)]
-		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
 		let offer = OfferBuilder
 			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
@@ -1242,8 +1094,6 @@ mod tests {
 			],
 		};
 
-		#[cfg(c_bindings)]
-		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
 		let offer = OfferBuilder
 			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
@@ -1298,13 +1148,8 @@ mod tests {
 		assert_eq!(tlv_stream.amount, Some(1000));
 		assert_eq!(tlv_stream.currency, None);
 
-		#[cfg(not(c_bindings))]
 		let builder = OfferBuilder::new("foo".into(), pubkey(42))
 			.amount(currency_amount.clone());
-		#[cfg(c_bindings)]
-		let mut builder = OfferBuilder::new("foo".into(), pubkey(42));
-		#[cfg(c_bindings)]
-		builder.amount(currency_amount.clone());
 		let tlv_stream = builder.offer.as_tlv_stream();
 		assert_eq!(builder.offer.amount, Some(currency_amount.clone()));
 		assert_eq!(tlv_stream.amount, Some(10));

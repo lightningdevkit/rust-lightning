@@ -24,16 +24,20 @@ use crate::ln::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, LightningError, SocketAddress, OnionMessageHandler, RoutingMessageHandler};
+#[cfg(not(c_bindings))]
+use crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager};
 use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
+#[cfg(not(c_bindings))]
+use crate::onion_message::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger};
 use crate::onion_message::messenger::{CustomOnionMessageHandler, PendingOnionMessage};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::gossip::{NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
-use crate::util::logger::{Level, Logger, WithContext};
+use crate::util::logger::{Logger, WithContext};
 use crate::util::string::PrintableString;
 
 use crate::prelude::*;
@@ -48,8 +52,6 @@ use core::convert::Infallible;
 use std::error;
 #[cfg(not(c_bindings))]
 use {
-	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
-	crate::onion_message::messenger::{SimpleArcOnionMessenger, SimpleRefOnionMessenger},
 	crate::routing::gossip::{NetworkGraph, P2PGossipSync},
 	crate::sign::KeysManager,
 	crate::sync::Arc,
@@ -444,26 +446,6 @@ pub trait SocketDescriptor : cmp::Eq + hash::Hash + Clone {
 	/// You do *not* need to call [`PeerManager::socket_disconnected`] with this socket after this
 	/// call (doing so is a noop).
 	fn disconnect_socket(&mut self);
-}
-
-/// Details of a connected peer as returned by [`PeerManager::list_peers`].
-pub struct PeerDetails {
-	/// The node id of the peer.
-	///
-	/// For outbound connections, this [`PublicKey`] will be the same as the `their_node_id` parameter
-	/// passed in to [`PeerManager::new_outbound_connection`].
-	pub counterparty_node_id: PublicKey,
-	/// The socket address the peer provided in the initial handshake.
-	///
-	/// Will only be `Some` if an address had been previously provided to
-	/// [`PeerManager::new_outbound_connection`] or [`PeerManager::new_inbound_connection`].
-	pub socket_address: Option<SocketAddress>,
-	/// The features the peer provided in the initial handshake.
-	pub init_features: InitFeatures,
-	/// Indicates the direction of the peer connection.
-	///
-	/// Will be `true` for inbound connections, and `false` for outbound connections.
-	pub is_inbound_connection: bool,
 }
 
 /// Error for PeerManager errors. If you get one of these, you must disconnect the socket and
@@ -979,8 +961,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 		PeerManager {
 			message_handler,
-			peers: FairRwLock::new(new_hash_map()),
-			node_id_to_descriptor: Mutex::new(new_hash_map()),
+			peers: FairRwLock::new(HashMap::new()),
+			node_id_to_descriptor: Mutex::new(HashMap::new()),
 			event_processing_state: AtomicI32::new(0),
 			ephemeral_key_midstate,
 			peer_counter: AtomicCounter::new(),
@@ -993,58 +975,25 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		}
 	}
 
-	/// Returns a list of [`PeerDetails`] for connected peers that have completed the initial
-	/// handshake.
-	pub fn list_peers(&self) -> Vec<PeerDetails> {
+	/// Get a list of tuples mapping from node id to network addresses for peers which have
+	/// completed the initial handshake.
+	///
+	/// For outbound connections, the [`PublicKey`] will be the same as the `their_node_id` parameter
+	/// passed in to [`Self::new_outbound_connection`], however entries will only appear once the initial
+	/// handshake has completed and we are sure the remote peer has the private key for the given
+	/// [`PublicKey`].
+	///
+	/// The returned `Option`s will only be `Some` if an address had been previously given via
+	/// [`Self::new_outbound_connection`] or [`Self::new_inbound_connection`].
+	pub fn get_peer_node_ids(&self) -> Vec<(PublicKey, Option<SocketAddress>)> {
 		let peers = self.peers.read().unwrap();
 		peers.values().filter_map(|peer_mutex| {
 			let p = peer_mutex.lock().unwrap();
 			if !p.handshake_complete() {
 				return None;
 			}
-			let details = PeerDetails {
-				// unwrap safety: their_node_id is guaranteed to be `Some` after the handshake
-				// completed.
-				counterparty_node_id: p.their_node_id.unwrap().0,
-				socket_address: p.their_socket_address.clone(),
-				// unwrap safety: their_features is guaranteed to be `Some` after the handshake
-				// completed.
-				init_features: p.their_features.clone().unwrap(),
-				is_inbound_connection: p.inbound_connection,
-			};
-			Some(details)
+			Some((p.their_node_id.unwrap().0, p.their_socket_address.clone()))
 		}).collect()
-	}
-
-	/// Returns the [`PeerDetails`] of a connected peer that has completed the initial handshake.
-	///
-	/// Will return `None` if the peer is unknown or it hasn't completed the initial handshake.
-	pub fn peer_by_node_id(&self, their_node_id: &PublicKey) -> Option<PeerDetails> {
-		let peers = self.peers.read().unwrap();
-		peers.values().find_map(|peer_mutex| {
-			let p = peer_mutex.lock().unwrap();
-			if !p.handshake_complete() {
-				return None;
-			}
-
-			// unwrap safety: their_node_id is guaranteed to be `Some` after the handshake
-			// completed.
-			let counterparty_node_id = p.their_node_id.unwrap().0;
-
-			if counterparty_node_id != *their_node_id {
-				return None;
-			}
-
-			let details = PeerDetails {
-				counterparty_node_id,
-				socket_address: p.their_socket_address.clone(),
-				// unwrap safety: their_features is guaranteed to be `Some` after the handshake
-				// completed.
-				init_features: p.their_features.clone().unwrap(),
-				is_inbound_connection: p.inbound_connection,
-			};
-			Some(details)
-		})
 	}
 
 	fn get_ephemeral_key(&self) -> SecretKey {
@@ -1397,9 +1346,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 											return Err(PeerHandleError { });
 										},
 										msgs::ErrorAction::IgnoreAndLog(level) => {
-											log_given_level!(logger, level, "Error handling {}message{}; ignoring: {}",
-												if level == Level::Gossip { "gossip " } else { "" },
-												OptionalFromDebugger(&peer_node_id), e.err);
+											log_given_level!(logger, level, "Error handling message{}; ignoring: {}", OptionalFromDebugger(&peer_node_id), e.err);
 											continue
 										},
 										msgs::ErrorAction::IgnoreDuplicateGossip => continue, // Don't even bother logging these
@@ -2022,7 +1969,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			self.update_gossip_backlogged();
 			let flush_read_disabled = self.gossip_processing_backlog_lifted.swap(false, Ordering::Relaxed);
 
-			let mut peers_to_disconnect = new_hash_map();
+			let mut peers_to_disconnect = HashMap::new();
 
 			{
 				let peers_lock = self.peers.read().unwrap();
@@ -2851,12 +2798,9 @@ mod tests {
 		let a_data = fd_a.outbound_data.lock().unwrap().split_off(0);
 		assert_eq!(peer_b.read_event(&mut fd_b, &a_data).unwrap(), false);
 
-		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().counterparty_node_id, id_b);
-		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().socket_address, Some(addr_b));
-		assert_eq!(peer_a.peer_by_node_id(&id_b).unwrap().init_features, features_b);
-		assert_eq!(peer_b.peer_by_node_id(&id_a).unwrap().counterparty_node_id, id_a);
-		assert_eq!(peer_b.peer_by_node_id(&id_a).unwrap().socket_address, Some(addr_a));
-		assert_eq!(peer_b.peer_by_node_id(&id_a).unwrap().init_features, features_a);
+		assert!(peer_a.get_peer_node_ids().contains(&(id_b, Some(addr_b))));
+		assert!(peer_b.get_peer_node_ids().contains(&(id_a, Some(addr_a))));
+
 		(fd_a.clone(), fd_b.clone())
 	}
 

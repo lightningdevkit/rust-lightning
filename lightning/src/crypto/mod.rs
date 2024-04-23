@@ -1,4 +1,3 @@
-#[cfg(not(fuzzing))]
 use bitcoin::hashes::cmp::fixed_time_eq;
 
 pub(crate) mod chacha20;

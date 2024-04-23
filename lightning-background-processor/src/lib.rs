@@ -854,8 +854,8 @@ impl BackgroundProcessor {
 				peer_manager.onion_message_handler().process_pending_events(&event_handler),
 				gossip_sync, logger, scorer, stop_thread.load(Ordering::Acquire),
 				{ Sleeper::from_two_futures(
-					&channel_manager.get_event_or_persistence_needed_future(),
-					&chain_monitor.get_update_future()
+					channel_manager.get_event_or_persistence_needed_future(),
+					chain_monitor.get_update_future()
 				).wait_timeout(Duration::from_millis(100)); },
 				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur, false,
 				|| {
@@ -929,7 +929,7 @@ mod tests {
 	use lightning::chain::transaction::OutPoint;
 	use lightning::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::{get_event_msg, get_event};
-	use lightning::ln::{PaymentHash, ChannelId};
+	use lightning::ln::PaymentHash;
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures};
@@ -984,7 +984,6 @@ mod tests {
 			Arc<DefaultRouter<
 				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 				Arc<test_utils::TestLogger>,
-				Arc<KeysManager>,
 				Arc<LockingWrapper<TestScorer>>,
 				(),
 				TestScorer>
@@ -1264,12 +1263,12 @@ mod tests {
 			let genesis_block = genesis_block(network);
 			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
 			let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
-			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let seed = [i as u8; 32];
-			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
-			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), Arc::clone(&keys_manager), scorer.clone(), Default::default()));
+			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone(), Default::default()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store = Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
+			let now = Duration::from_secs(genesis_block.header.time as u64);
+			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), kv_store.clone()));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
@@ -1342,8 +1341,8 @@ mod tests {
 
 	fn confirm_transaction_depth(node: &mut Node, tx: &Transaction, depth: u32) {
 		for i in 1..=depth {
-			let prev_blockhash = node.best_block.block_hash;
-			let height = node.best_block.height + 1;
+			let prev_blockhash = node.best_block.block_hash();
+			let height = node.best_block.height() + 1;
 			let header = create_dummy_header(prev_blockhash, height);
 			let txdata = vec![(0, tx)];
 			node.best_block = BestBlock::new(header.block_hash(), height);
@@ -1415,7 +1414,7 @@ mod tests {
 		}
 
 		// Force-close the channel.
-		nodes[0].node.force_close_broadcasting_latest_txn(&ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.txid(), index: 0 }), &nodes[1].node.get_our_node_id()).unwrap();
+		nodes[0].node.force_close_broadcasting_latest_txn(&OutPoint { txid: tx.txid(), index: 0 }.to_channel_id(), &nodes[1].node.get_our_node_id()).unwrap();
 
 		// Check that the force-close updates are persisted.
 		check_persisted_data!(nodes[0].node, filepath.clone());

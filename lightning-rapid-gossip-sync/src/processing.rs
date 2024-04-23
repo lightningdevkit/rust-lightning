@@ -14,7 +14,8 @@ use lightning::{log_debug, log_warn, log_trace, log_given_level, log_gossip};
 use lightning::util::ser::{BigSize, Readable};
 use lightning::io;
 
-use crate::{GraphSyncError, RapidGossipSync};
+use crate::error::GraphSyncError;
+use crate::RapidGossipSync;
 
 #[cfg(all(feature = "std", not(test)))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -268,8 +269,9 @@ mod tests {
 	use lightning::routing::gossip::NetworkGraph;
 	use lightning::util::test_utils::TestLogger;
 
+	use crate::error::GraphSyncError;
 	use crate::processing::STALE_RGS_UPDATE_AGE_LIMIT_SECS;
-	use crate::{GraphSyncError, RapidGossipSync};
+	use crate::RapidGossipSync;
 
 	const VALID_RGS_BINARY: [u8; 300] = [
 		76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,

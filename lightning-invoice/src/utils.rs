@@ -16,7 +16,6 @@ use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop, Router};
 use lightning::util::logger::{Logger, Record};
 use secp256k1::PublicKey;
-use alloc::collections::{btree_map, BTreeMap};
 use core::ops::Deref;
 use core::time::Duration;
 use core::iter::Iterator;
@@ -604,7 +603,7 @@ fn sort_and_filter_channels<L: Deref>(
 where
 	L::Target: Logger,
 {
-	let mut filtered_channels: BTreeMap<PublicKey, ChannelDetails> = BTreeMap::new();
+	let mut filtered_channels: HashMap<PublicKey, ChannelDetails> = HashMap::new();
 	let min_inbound_capacity = min_inbound_capacity_msat.unwrap_or(0);
 	let mut min_capacity_channel_exists = false;
 	let mut online_channel_exists = false;
@@ -665,7 +664,7 @@ where
 		}
 
 		match filtered_channels.entry(channel.counterparty.node_id) {
-			btree_map::Entry::Occupied(mut entry) => {
+			hash_map::Entry::Occupied(mut entry) => {
 				let current_max_capacity = entry.get().inbound_capacity_msat;
 				// If this channel is public and the previous channel is not, ensure we replace the
 				// previous channel to avoid announcing non-public channels.
@@ -698,7 +697,7 @@ where
 						channel.inbound_capacity_msat);
 				}
 			}
-			btree_map::Entry::Vacant(entry) => {
+			hash_map::Entry::Vacant(entry) => {
 				entry.insert(channel);
 			}
 		}

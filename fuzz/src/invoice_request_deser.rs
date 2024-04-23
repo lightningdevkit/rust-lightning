@@ -9,7 +9,7 @@
 
 use bitcoin::secp256k1::{KeyPair, Parity, PublicKey, Secp256k1, SecretKey, self};
 use crate::utils::test_logger;
-use core::convert::TryFrom;
+use core::convert::{Infallible, TryFrom};
 use lightning::blinded_path::BlindedPath;
 use lightning::sign::EntropySource;
 use lightning::ln::PaymentHash;
@@ -37,16 +37,16 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			let even_pubkey = x_only_pubkey.public_key(Parity::Even);
 			if signing_pubkey == odd_pubkey || signing_pubkey == even_pubkey {
 				unsigned_invoice
-					.sign(|message: &UnsignedBolt12Invoice|
-						Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+					.sign::<_, Infallible>(
+						|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 					)
 					.unwrap()
 					.write(&mut buffer)
 					.unwrap();
 			} else {
 				unsigned_invoice
-					.sign(|message: &UnsignedBolt12Invoice|
-						Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+					.sign::<_, Infallible>(
+						|message| Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 					)
 					.unwrap_err();
 			}

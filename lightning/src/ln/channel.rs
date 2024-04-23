@@ -178,72 +178,6 @@ enum InboundHTLCState {
 	LocalRemoved(InboundHTLCRemovalReason),
 }
 
-/// Exposes the state of pending inbound HTLCs.
-///
-/// At a high level, an HTLC being forwarded from one Lightning node to another Lightning node goes
-/// through the following states in the state machine:
-/// - Announced for addition by the originating node through the update_add_htlc message.
-/// - Added to the commitment transaction of the receiving node and originating node in turn
-///   through the exchange of commitment_signed and revoke_and_ack messages.
-/// - Announced for resolution (fulfillment or failure) by the receiving node through either one of
-///   the update_fulfill_htlc, update_fail_htlc, and update_fail_malformed_htlc messages.
-/// - Removed from the commitment transaction of the originating node and receiving node in turn
-///   through the exchange of commitment_signed and revoke_and_ack messages.
-///
-/// This can be used to inspect what next message an HTLC is waiting for to advance its state.
-#[derive(Clone, Debug, PartialEq)]
-pub enum InboundHTLCStateDetails {
-	/// We have added this HTLC in our commitment transaction by receiving commitment_signed and
-	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
-	/// before this HTLC is included on the remote commitment transaction.
-	AwaitingRemoteRevokeToAdd,
-	/// This HTLC has been included in the commitment_signed and revoke_and_ack messages on both sides
-	/// and is included in both commitment transactions.
-	///
-	/// This HTLC is now safe to either forward or be claimed as a payment by us. The HTLC will
-	/// remain in this state until the forwarded upstream HTLC has been resolved and we resolve this
-	/// HTLC correspondingly, or until we claim it as a payment. If it is part of a multipart
-	/// payment, it will only be claimed together with other required parts.
-	Committed,
-	/// We have received the preimage for this HTLC and it is being removed by fulfilling it with
-	/// update_fulfill_htlc. This HTLC is still on both commitment transactions, but we are awaiting
-	/// the appropriate revoke_and_ack's from the remote before this HTLC is removed from the remote
-	/// commitment transaction after update_fulfill_htlc.
-	AwaitingRemoteRevokeToRemoveFulfill,
-	/// The HTLC is being removed by failing it with update_fail_htlc or update_fail_malformed_htlc.
-	/// This HTLC is still on both commitment transactions, but we are awaiting the appropriate
-	/// revoke_and_ack's from the remote before this HTLC is removed from the remote commitment
-	/// transaction.
-	AwaitingRemoteRevokeToRemoveFail,
-}
-
-impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
-	fn from(state: &InboundHTLCState) -> Option<InboundHTLCStateDetails> {
-		match state {
-			InboundHTLCState::RemoteAnnounced(_) => None,
-			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
-			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
-			InboundHTLCState::Committed =>
-				Some(InboundHTLCStateDetails::Committed),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(_)) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
-			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) =>
-				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
-		}
-	}
-}
-
-impl_writeable_tlv_based_enum_upgradable!(InboundHTLCStateDetails,
-	(0, AwaitingRemoteRevokeToAdd) => {},
-	(2, Committed) => {},
-	(4, AwaitingRemoteRevokeToRemoveFulfill) => {},
-	(6, AwaitingRemoteRevokeToRemoveFail) => {};
-);
-
 struct InboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -251,53 +185,6 @@ struct InboundHTLCOutput {
 	payment_hash: PaymentHash,
 	state: InboundHTLCState,
 }
-
-/// Exposes details around pending inbound HTLCs.
-#[derive(Clone, Debug, PartialEq)]
-pub struct InboundHTLCDetails {
-	/// The HTLC ID.
-	/// The IDs are incremented by 1 starting from 0 for each offered HTLC.
-	/// They are unique per channel and inbound/outbound direction, unless an HTLC was only announced
-	/// and not part of any commitment transaction.
-	pub htlc_id: u64,
-	/// The amount in msat.
-	pub amount_msat: u64,
-	/// The block height at which this HTLC expires.
-	pub cltv_expiry: u32,
-	/// The payment hash.
-	pub payment_hash: PaymentHash,
-	/// The state of the HTLC in the state machine.
-	///
-	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
-	/// waiting for to advance to the next state.
-	///
-	/// See [`InboundHTLCStateDetails`] for information on the specific states.
-	///
-	/// LDK will always fill this field in, but when downgrading to prior versions of LDK, new
-	/// states may result in `None` here.
-	pub state: Option<InboundHTLCStateDetails>,
-	/// Whether the HTLC has an output below the local dust limit. If so, the output will be trimmed
-	/// from the local commitment transaction and added to the commitment transaction fee.
-	/// For non-anchor channels, this takes into account the cost of the second-stage HTLC
-	/// transactions as well.
-	///
-	/// When the local commitment transaction is broadcasted as part of a unilateral closure,
-	/// the value of this HTLC will therefore not be claimable but instead burned as a transaction
-	/// fee.
-	///
-	/// Note that dust limits are specific to each party. An HTLC can be dust for the local
-	/// commitment transaction but not for the counterparty's commitment transaction and vice versa.
-	pub is_dust: bool,
-}
-
-impl_writeable_tlv_based!(InboundHTLCDetails, {
-	(0, htlc_id, required),
-	(2, amount_msat, required),
-	(4, cltv_expiry, required),
-	(6, payment_hash, required),
-	(7, state, upgradable_option),
-	(8, is_dust, required),
-});
 
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 enum OutboundHTLCState {
@@ -331,72 +218,6 @@ enum OutboundHTLCState {
 	/// revoke_and_ack to drop completely.
 	AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome),
 }
-
-/// Exposes the state of pending outbound HTLCs.
-///
-/// At a high level, an HTLC being forwarded from one Lightning node to another Lightning node goes
-/// through the following states in the state machine:
-/// - Announced for addition by the originating node through the update_add_htlc message.
-/// - Added to the commitment transaction of the receiving node and originating node in turn
-///   through the exchange of commitment_signed and revoke_and_ack messages.
-/// - Announced for resolution (fulfillment or failure) by the receiving node through either one of
-///   the update_fulfill_htlc, update_fail_htlc, and update_fail_malformed_htlc messages.
-/// - Removed from the commitment transaction of the originating node and receiving node in turn
-///   through the exchange of commitment_signed and revoke_and_ack messages.
-///
-/// This can be used to inspect what next message an HTLC is waiting for to advance its state.
-#[derive(Clone, Debug, PartialEq)]
-pub enum OutboundHTLCStateDetails {
-	/// We are awaiting the appropriate revoke_and_ack's from the remote before the HTLC is added
-	/// on the remote's commitment transaction after update_add_htlc.
-	AwaitingRemoteRevokeToAdd,
-	/// The HTLC has been added to the remote's commitment transaction by sending commitment_signed
-	/// and receiving revoke_and_ack in return.
-	///
-	/// The HTLC will remain in this state until the remote node resolves the HTLC, or until we
-	/// unilaterally close the channel due to a timeout with an uncooperative remote node.
-	Committed,
-	/// The HTLC has been fulfilled successfully by the remote with a preimage in update_fulfill_htlc,
-	/// and we removed the HTLC from our commitment transaction by receiving commitment_signed and
-	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
-	/// for the removal from its commitment transaction.
-	AwaitingRemoteRevokeToRemoveSuccess,
-	/// The HTLC has been failed by the remote with update_fail_htlc or update_fail_malformed_htlc,
-	/// and we removed the HTLC from our commitment transaction by receiving commitment_signed and
-	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
-	/// for the removal from its commitment transaction.
-	AwaitingRemoteRevokeToRemoveFailure,
-}
-
-impl From<&OutboundHTLCState> for OutboundHTLCStateDetails {
-	fn from(state: &OutboundHTLCState) -> OutboundHTLCStateDetails {
-		match state {
-			OutboundHTLCState::LocalAnnounced(_) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd,
-			OutboundHTLCState::Committed =>
-				OutboundHTLCStateDetails::Committed,
-			// RemoteRemoved states are ignored as the state is transient and the remote has not committed to
-			// the state yet.
-			OutboundHTLCState::RemoteRemoved(_) =>
-				OutboundHTLCStateDetails::Committed,
-			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
-			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Failure(_)) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
-			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
-			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Failure(_)) =>
-				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
-		}
-	}
-}
-
-impl_writeable_tlv_based_enum_upgradable!(OutboundHTLCStateDetails,
-	(0, AwaitingRemoteRevokeToAdd) => {},
-	(2, Committed) => {},
-	(4, AwaitingRemoteRevokeToRemoveSuccess) => {},
-	(6, AwaitingRemoteRevokeToRemoveFailure) => {};
-);
 
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
@@ -436,58 +257,6 @@ struct OutboundHTLCOutput {
 	skimmed_fee_msat: Option<u64>,
 }
 
-/// Exposes details around pending outbound HTLCs.
-#[derive(Clone, Debug, PartialEq)]
-pub struct OutboundHTLCDetails {
-	/// The HTLC ID.
-	/// The IDs are incremented by 1 starting from 0 for each offered HTLC.
-	/// They are unique per channel and inbound/outbound direction, unless an HTLC was only announced
-	/// and not part of any commitment transaction.
-	///
-	/// Not present when we are awaiting a remote revocation and the HTLC is not added yet.
-	pub htlc_id: Option<u64>,
-	/// The amount in msat.
-	pub amount_msat: u64,
-	/// The block height at which this HTLC expires.
-	pub cltv_expiry: u32,
-	/// The payment hash.
-	pub payment_hash: PaymentHash,
-	/// The state of the HTLC in the state machine.
-	///
-	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
-	/// waiting for to advance to the next state.
-	///
-	/// See [`OutboundHTLCStateDetails`] for information on the specific states.
-	///
-	/// LDK will always fill this field in, but when downgrading to prior versions of LDK, new
-	/// states may result in `None` here.
-	pub state: Option<OutboundHTLCStateDetails>,
-	/// The extra fee being skimmed off the top of this HTLC.
-	pub skimmed_fee_msat: Option<u64>,
-	/// Whether the HTLC has an output below the local dust limit. If so, the output will be trimmed
-	/// from the local commitment transaction and added to the commitment transaction fee.
-	/// For non-anchor channels, this takes into account the cost of the second-stage HTLC
-	/// transactions as well.
-	///
-	/// When the local commitment transaction is broadcasted as part of a unilateral closure,
-	/// the value of this HTLC will therefore not be claimable but instead burned as a transaction
-	/// fee.
-	///
-	/// Note that dust limits are specific to each party. An HTLC can be dust for the local
-	/// commitment transaction but not for the counterparty's commitment transaction and vice versa.
-	pub is_dust: bool,
-}
-
-impl_writeable_tlv_based!(OutboundHTLCDetails, {
-	(0, htlc_id, required),
-	(2, amount_msat, required),
-	(4, cltv_expiry, required),
-	(6, payment_hash, required),
-	(7, state, upgradable_option),
-	(8, skimmed_fee_msat, required),
-	(10, is_dust, required),
-});
-
 /// See AwaitingRemoteRevoke ChannelState for more info
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 enum HTLCUpdateAwaitingACK {
@@ -518,7 +287,7 @@ enum HTLCUpdateAwaitingACK {
 }
 
 macro_rules! define_state_flags {
-	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr, $get: ident, $set: ident, $clear: ident)),+], $extra_flags: expr) => {
+	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr)),+], $extra_flags: expr) => {
 		#[doc = $flag_type_doc]
 		#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq)]
 		struct $flag_type(u32);
@@ -547,18 +316,15 @@ macro_rules! define_state_flags {
 
 			#[allow(unused)]
 			fn is_empty(&self) -> bool { self.0 == 0 }
+
 			#[allow(unused)]
 			fn is_set(&self, flag: Self) -> bool { *self & flag == flag }
-			#[allow(unused)]
-			fn set(&mut self, flag: Self) { *self |= flag }
-			#[allow(unused)]
-			fn clear(&mut self, flag: Self) -> Self { self.0 &= !flag.0; *self }
 		}
 
-		$(
-			define_state_flags!($flag_type, Self::$flag, $get, $set, $clear);
-		)*
-
+		impl core::ops::Not for $flag_type {
+			type Output = Self;
+			fn not(self) -> Self::Output { Self(!self.0) }
+		}
 		impl core::ops::BitOr for $flag_type {
 			type Output = Self;
 			fn bitor(self, rhs: Self) -> Self::Output { Self(self.0 | rhs.0) }
@@ -577,28 +343,8 @@ macro_rules! define_state_flags {
 	($flag_type_doc: expr, $flag_type: ident, $flags: tt) => {
 		define_state_flags!($flag_type_doc, $flag_type, $flags, 0);
 	};
-	($flag_type: ident, $flag: expr, $get: ident, $set: ident, $clear: ident) => {
-		impl $flag_type {
-			#[allow(unused)]
-			fn $get(&self) -> bool { self.is_set($flag_type::new() | $flag) }
-			#[allow(unused)]
-			fn $set(&mut self) { self.set($flag_type::new() | $flag) }
-			#[allow(unused)]
-			fn $clear(&mut self) -> Self { self.clear($flag_type::new() | $flag) }
-		}
-	};
 	($flag_type_doc: expr, FUNDED_STATE, $flag_type: ident, $flags: tt) => {
 		define_state_flags!($flag_type_doc, $flag_type, $flags, FundedStateFlags::ALL.0);
-
-		define_state_flags!($flag_type, FundedStateFlags::PEER_DISCONNECTED,
-			is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected);
-		define_state_flags!($flag_type, FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS,
-			is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress);
-		define_state_flags!($flag_type, FundedStateFlags::REMOTE_SHUTDOWN_SENT,
-			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent);
-		define_state_flags!($flag_type, FundedStateFlags::LOCAL_SHUTDOWN_SENT,
-			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent);
-
 		impl core::ops::BitOr<FundedStateFlags> for $flag_type {
 			type Output = Self;
 			fn bitor(self, rhs: FundedStateFlags) -> Self::Output { Self(self.0 | rhs.0) }
@@ -645,19 +391,15 @@ define_state_flags!(
 	"Flags that apply to all [`ChannelState`] variants in which the channel is funded.",
 	FundedStateFlags, [
 		("Indicates the remote side is considered \"disconnected\" and no updates are allowed \
-			until after we've done a `channel_reestablish` dance.", PEER_DISCONNECTED, state_flags::PEER_DISCONNECTED,
-			is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected),
+			until after we've done a `channel_reestablish` dance.", PEER_DISCONNECTED, state_flags::PEER_DISCONNECTED),
 		("Indicates the user has told us a `ChannelMonitor` update is pending async persistence \
 			somewhere and we should pause sending any outbound messages until they've managed to \
-			complete it.", MONITOR_UPDATE_IN_PROGRESS, state_flags::MONITOR_UPDATE_IN_PROGRESS,
-			is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress),
+			complete it.", MONITOR_UPDATE_IN_PROGRESS, state_flags::MONITOR_UPDATE_IN_PROGRESS),
 		("Indicates we received a `shutdown` message from the remote end. If set, they may not add \
 			any new HTLCs to the channel, and we are expected to respond with our own `shutdown` \
-			message when possible.", REMOTE_SHUTDOWN_SENT, state_flags::REMOTE_SHUTDOWN_SENT,
-			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent),
+			message when possible.", REMOTE_SHUTDOWN_SENT, state_flags::REMOTE_SHUTDOWN_SENT),
 		("Indicates we sent a `shutdown` message. At this point, we may not add any new HTLCs to \
-			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT,
-			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent)
+			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT)
 	]
 );
 
@@ -665,9 +407,9 @@ define_state_flags!(
 	"Flags that only apply to [`ChannelState::NegotiatingFunding`].",
 	NegotiatingFundingFlags, [
 		("Indicates we have (or are prepared to) send our `open_channel`/`accept_channel` message.",
-			OUR_INIT_SENT, state_flags::OUR_INIT_SENT, is_our_init_sent, set_our_init_sent, clear_our_init_sent),
+			OUR_INIT_SENT, state_flags::OUR_INIT_SENT),
 		("Indicates we have received their `open_channel`/`accept_channel` message.",
-			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT, is_their_init_sent, set_their_init_sent, clear_their_init_sent)
+			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT)
 	]
 );
 
@@ -676,16 +418,13 @@ define_state_flags!(
 	FUNDED_STATE, AwaitingChannelReadyFlags, [
 		("Indicates they sent us a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY,
-			is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready),
+			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY),
 		("Indicates we sent them a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			OUR_CHANNEL_READY, state_flags::OUR_CHANNEL_READY,
-			is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready),
+			OUR_CHANNEL_READY, state_flags::OUR_CHANNEL_READY),
 		("Indicates the channel was funded in a batch and the broadcast of the funding transaction \
 			is being held until all channels in the batch have received `funding_signed` and have \
-			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH,
-			is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch)
+			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH)
 	]
 );
 
@@ -696,8 +435,7 @@ define_state_flags!(
 			`revoke_and_ack` message. During this period, we can't generate new `commitment_signed` \
 			messages as we'd be unable to determine which HTLCs they included in their `revoke_and_ack` \
 			implicit ACK, so instead we have to hold them away temporarily to be sent later.",
-			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE,
-			is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke)
+			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE)
 	]
 );
 
@@ -723,12 +461,12 @@ enum ChannelState {
 }
 
 macro_rules! impl_state_flag {
-	($get: ident, $set: ident, $clear: ident, [$($state: ident),+]) => {
+	($get: ident, $set: ident, $clear: ident, $state_flag: expr, [$($state: ident),+]) => {
 		#[allow(unused)]
 		fn $get(&self) -> bool {
 			match self {
 				$(
-					ChannelState::$state(flags) => flags.$get(),
+					ChannelState::$state(flags) => flags.is_set($state_flag.into()),
 				)*
 				_ => false,
 			}
@@ -737,7 +475,7 @@ macro_rules! impl_state_flag {
 		fn $set(&mut self) {
 			match self {
 				$(
-					ChannelState::$state(flags) => flags.$set(),
+					ChannelState::$state(flags) => *flags |= $state_flag,
 				)*
 				_ => debug_assert!(false, "Attempted to set flag on unexpected ChannelState"),
 			}
@@ -746,17 +484,17 @@ macro_rules! impl_state_flag {
 		fn $clear(&mut self) {
 			match self {
 				$(
-					ChannelState::$state(flags) => { let _ = flags.$clear(); },
+					ChannelState::$state(flags) => *flags &= !($state_flag),
 				)*
 				_ => debug_assert!(false, "Attempted to clear flag on unexpected ChannelState"),
 			}
 		}
 	};
-	($get: ident, $set: ident, $clear: ident, FUNDED_STATES) => {
-		impl_state_flag!($get, $set, $clear, [AwaitingChannelReady, ChannelReady]);
+	($get: ident, $set: ident, $clear: ident, $state_flag: expr, FUNDED_STATES) => {
+		impl_state_flag!($get, $set, $clear, $state_flag, [AwaitingChannelReady, ChannelReady]);
 	};
-	($get: ident, $set: ident, $clear: ident, $state: ident) => {
-		impl_state_flag!($get, $set, $clear, [$state]);
+	($get: ident, $set: ident, $clear: ident, $state_flag: expr, $state: ident) => {
+		impl_state_flag!($get, $set, $clear, $state_flag, [$state]);
 	};
 }
 
@@ -807,27 +545,35 @@ impl ChannelState {
 		}
 	}
 
-	fn can_generate_new_commitment(&self) -> bool {
+	fn should_force_holding_cell(&self) -> bool {
 		match self {
 			ChannelState::ChannelReady(flags) =>
-				!flags.is_set(ChannelReadyFlags::AWAITING_REMOTE_REVOKE) &&
-					!flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into()) &&
-					!flags.is_set(FundedStateFlags::PEER_DISCONNECTED.into()),
+				flags.is_set(ChannelReadyFlags::AWAITING_REMOTE_REVOKE) ||
+					flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into()) ||
+					flags.is_set(FundedStateFlags::PEER_DISCONNECTED.into()),
 			_ => {
-				debug_assert!(false, "Can only generate new commitment within ChannelReady");
+				debug_assert!(false, "The holding cell is only valid within ChannelReady");
 				false
 			},
 		}
 	}
 
-	impl_state_flag!(is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected, FUNDED_STATES);
-	impl_state_flag!(is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress, FUNDED_STATES);
-	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent, FUNDED_STATES);
-	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent, FUNDED_STATES);
-	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready, AwaitingChannelReady);
-	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready, AwaitingChannelReady);
-	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch, AwaitingChannelReady);
-	impl_state_flag!(is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke, ChannelReady);
+	impl_state_flag!(is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected,
+		FundedStateFlags::PEER_DISCONNECTED, FUNDED_STATES);
+	impl_state_flag!(is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress,
+		FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS, FUNDED_STATES);
+	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent,
+		FundedStateFlags::LOCAL_SHUTDOWN_SENT, FUNDED_STATES);
+	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent,
+		FundedStateFlags::REMOTE_SHUTDOWN_SENT, FUNDED_STATES);
+	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready,
+		AwaitingChannelReadyFlags::OUR_CHANNEL_READY, AwaitingChannelReady);
+	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready,
+		AwaitingChannelReadyFlags::THEIR_CHANNEL_READY, AwaitingChannelReady);
+	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch,
+		AwaitingChannelReadyFlags::WAITING_FOR_BATCH, AwaitingChannelReady);
+	impl_state_flag!(is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke,
+		ChannelReadyFlags::AWAITING_REMOTE_REVOKE, ChannelReady);
 }
 
 pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
@@ -1533,15 +1279,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// We track whether we already emitted a `ChannelReady` event.
 	channel_ready_event_emitted: bool,
 
-	/// Some if we initiated to shut down the channel.
-	local_initiated_shutdown: Option<()>,
-
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
-	#[cfg(not(test))]
 	channel_keys_id: [u8; 32],
-	#[cfg(test)]
-	pub channel_keys_id: [u8; 32],
 
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
@@ -1873,12 +1613,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
-			historical_inbound_htlc_fulfills: new_hash_set(),
+			historical_inbound_htlc_fulfills: HashSet::new(),
 
 			channel_type,
 			channel_keys_id,
-
-			local_initiated_shutdown: None,
 
 			blocked_monitor_updates: Vec::new(),
 
@@ -2099,13 +1837,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
-			historical_inbound_htlc_fulfills: new_hash_set(),
+			historical_inbound_htlc_fulfills: HashSet::new(),
 
 			channel_type,
 			channel_keys_id,
 
 			blocked_monitor_updates: Vec::new(),
-			local_initiated_shutdown: None,
 
 			#[cfg(dual_funding)]
 			interactive_tx_constructor: None,
@@ -2973,99 +2710,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		stats
 	}
 
-	/// Returns information on all pending inbound HTLCs.
-	pub fn get_pending_inbound_htlc_details(&self) -> Vec<InboundHTLCDetails> {
-		let mut holding_cell_states = new_hash_map();
-		for holding_cell_update in self.holding_cell_htlc_updates.iter() {
-			match holding_cell_update {
-				HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
-					holding_cell_states.insert(
-						htlc_id,
-						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill,
-					);
-				},
-				HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
-					holding_cell_states.insert(
-						htlc_id,
-						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail,
-					);
-				},
-				HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => {
-					holding_cell_states.insert(
-						htlc_id,
-						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail,
-					);
-				},
-				// Outbound HTLC.
-				HTLCUpdateAwaitingACK::AddHTLC { .. } => {},
-			}
-		}
-		let mut inbound_details = Vec::new();
-		let htlc_success_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			0
-		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
-			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
-		};
-		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
-		for htlc in self.pending_inbound_htlcs.iter() {
-			if let Some(state_details) = (&htlc.state).into() {
-				inbound_details.push(InboundHTLCDetails{
-					htlc_id: htlc.htlc_id,
-					amount_msat: htlc.amount_msat,
-					cltv_expiry: htlc.cltv_expiry,
-					payment_hash: htlc.payment_hash,
-					state: Some(holding_cell_states.remove(&htlc.htlc_id).unwrap_or(state_details)),
-					is_dust: htlc.amount_msat / 1000 < holder_dust_limit_success_sat,
-				});
-			}
-		}
-		inbound_details
-	}
-
-	/// Returns information on all pending outbound HTLCs.
-	pub fn get_pending_outbound_htlc_details(&self) -> Vec<OutboundHTLCDetails> {
-		let mut outbound_details = Vec::new();
-		let htlc_timeout_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			0
-		} else {
-			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
-			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
-		};
-		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
-		for htlc in self.pending_outbound_htlcs.iter() {
-			outbound_details.push(OutboundHTLCDetails{
-				htlc_id: Some(htlc.htlc_id),
-				amount_msat: htlc.amount_msat,
-				cltv_expiry: htlc.cltv_expiry,
-				payment_hash: htlc.payment_hash,
-				skimmed_fee_msat: htlc.skimmed_fee_msat,
-				state: Some((&htlc.state).into()),
-				is_dust: htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat,
-			});
-		}
-		for holding_cell_update in self.holding_cell_htlc_updates.iter() {
-			if let HTLCUpdateAwaitingACK::AddHTLC {
-				amount_msat,
-				cltv_expiry,
-				payment_hash,
-				skimmed_fee_msat,
-				..
-			} = *holding_cell_update {
-				outbound_details.push(OutboundHTLCDetails{
-					htlc_id: None,
-					amount_msat: amount_msat,
-					cltv_expiry: cltv_expiry,
-					payment_hash: payment_hash,
-					skimmed_fee_msat: skimmed_fee_msat,
-					state: Some(OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
-					is_dust: amount_msat / 1000 < holder_dust_limit_timeout_sat,
-				});
-			}
-		}
-		outbound_details
-	}
-
 	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
 	/// Doesn't bother handling the
 	/// if-we-removed-it-already-but-haven't-fully-resolved-they-can-still-send-an-inbound-HTLC
@@ -3488,7 +3132,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			// funding transaction, don't return a funding txo (which prevents providing the
 			// monitor update to the user, even if we return one).
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
-			if !self.channel_state.is_pre_funded_state() {
+			let generate_monitor_update = match self.channel_state {
+				ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_)|ChannelState::ShutdownComplete => true,
+				_ => false,
+			};
+			if generate_monitor_update {
 				self.latest_monitor_update_id = CLOSED_CHANNEL_UPDATE_ID;
 				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
@@ -4005,7 +3653,7 @@ pub(crate) fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_
 pub(super) fn maybe_add_funding_change_output<SP: Deref>(signer_provider: &SP, is_initiator: bool,
 	our_funding_satoshis: u64, funding_inputs: &Vec<(TxIn, TransactionU16LenLimited)>,
 	funding_outputs: &mut Vec<TxOut>, funding_feerate_sat_per_1000_weight: u32,
-	total_input_satoshis: u64, holder_dust_limit_satoshis: u64, channel_keys_id: [u8; 32], 
+	total_input_satoshis: u64, holder_dust_limit_satoshis: u64, channel_keys_id: [u8; 32],
 ) -> Result<Option<TxOut>, ChannelError> where
 	SP::Target: SignerProvider,
 {
@@ -4265,7 +3913,7 @@ impl<SP: Deref> Channel<SP> where
 	where L::Target: Logger {
 		// Assert that we'll add the HTLC claim to the holding cell in `get_update_fulfill_htlc`
 		// (see equivalent if condition there).
-		assert!(!self.context.channel_state.can_generate_new_commitment());
+		assert!(self.context.channel_state.should_force_holding_cell());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
 		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, logger);
 		self.context.latest_monitor_update_id = mon_update_id;
@@ -4336,7 +3984,7 @@ impl<SP: Deref> Channel<SP> where
 			channel_id: Some(self.context.channel_id()),
 		};
 
-		if !self.context.channel_state.can_generate_new_commitment() {
+		if self.context.channel_state.should_force_holding_cell() {
 			// Note that this condition is the same as the assertion in
 			// `claim_htlc_while_disconnected_dropping_mon_update` and must match exactly -
 			// `claim_htlc_while_disconnected_dropping_mon_update` would not work correctly if we
@@ -4510,7 +4158,7 @@ impl<SP: Deref> Channel<SP> where
 			return Ok(None);
 		}
 
-		if !self.context.channel_state.can_generate_new_commitment() {
+		if self.context.channel_state.should_force_holding_cell() {
 			debug_assert!(force_holding_cell, "!force_holding_cell is only called when emptying the holding cell, so we shouldn't end up back in it!");
 			force_holding_cell = true;
 		}
@@ -4606,12 +4254,12 @@ impl<SP: Deref> Channel<SP> where
 		let mut check_reconnection = false;
 		match &self.context.channel_state {
 			ChannelState::AwaitingChannelReady(flags) => {
-				let flags = flags.clone().clear(FundedStateFlags::ALL.into());
+				let flags = *flags & !FundedStateFlags::ALL;
 				debug_assert!(!flags.is_set(AwaitingChannelReadyFlags::OUR_CHANNEL_READY) || !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
-				if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
+				if flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
 					// If we reconnected before sending our `channel_ready` they may still resend theirs.
 					check_reconnection = true;
-				} else if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
+				} else if (flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
 					self.context.channel_state.set_their_channel_ready();
 				} else if flags == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
 					self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
@@ -4656,7 +4304,7 @@ impl<SP: Deref> Channel<SP> where
 
 		log_info!(logger, "Received channel_ready from peer for channel {}", &self.context.channel_id());
 
-		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
+		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger))
 	}
 
 	pub fn update_add_htlc<F, FE: Deref, L: Deref>(
@@ -5218,7 +4866,7 @@ impl<SP: Deref> Channel<SP> where
 	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>)
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
-		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) && self.context.channel_state.can_generate_new_commitment() {
+		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) && !self.context.channel_state.should_force_holding_cell() {
 			self.free_holding_cell_htlcs(fee_estimator, logger)
 		} else { (None, Vec::new()) }
 	}
@@ -5908,8 +5556,8 @@ impl<SP: Deref> Channel<SP> where
 		// first received the funding_signed.
 		let mut funding_broadcastable =
 			if self.context.is_outbound() &&
-				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
-				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
+				matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
+				matches!(self.context.channel_state, ChannelState::ChannelReady(_))
 			{
 				self.context.funding_transaction.take()
 			} else { None };
@@ -6213,7 +5861,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let shutdown_msg = self.get_outbound_shutdown();
 
-		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger);
+		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger);
 
 		if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
 			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.
@@ -6661,17 +6309,11 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 
-		let closure_reason = if self.initiated_shutdown() {
-			ClosureReason::LocallyInitiatedCooperativeClosure
-		} else {
-			ClosureReason::CounterpartyInitiatedCooperativeClosure
-		};
-
 		assert!(self.context.shutdown_scriptpubkey.is_some());
 		if let Some((last_fee, sig)) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
 				let shutdown_result = ShutdownResult {
-					closure_reason,
+					closure_reason: ClosureReason::CooperativeClosure,
 					monitor_update: None,
 					dropped_outbound_htlcs: Vec::new(),
 					unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
@@ -6706,7 +6348,7 @@ impl<SP: Deref> Channel<SP> where
 							.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
 						let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
 							let shutdown_result = ShutdownResult {
-								closure_reason,
+								closure_reason: ClosureReason::CooperativeClosure,
 								monitor_update: None,
 								dropped_outbound_htlcs: Vec::new(),
 								unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
@@ -6926,7 +6568,7 @@ impl<SP: Deref> Channel<SP> where
 		if !self.is_awaiting_monitor_update() { return false; }
 		if matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(flags)
-			if flags.clone().clear(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty()
+			if (flags & !(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH)).is_empty()
 		) {
 			// If we're not a 0conf channel, we'll be waiting on a monitor update with only
 			// AwaitingChannelReady set, though our peer could have sent their channel_ready.
@@ -6971,11 +6613,6 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_state.is_local_shutdown_sent()
 	}
 
-	/// Returns true if we initiated to shut down the channel.
-	pub fn initiated_shutdown(&self) -> bool {
-		self.context.local_initiated_shutdown.is_some()
-	}
-
 	/// Returns true if this channel is fully shut down. True here implies that no further actions
 	/// may/will be taken on this channel, and thus this object should be freed. Any future changes
 	/// will be handled appropriately by the chain monitor.
@@ -7017,14 +6654,14 @@ impl<SP: Deref> Channel<SP> where
 
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
-		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()).is_empty()) {
+		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if (f & !FundedStateFlags::ALL).is_empty()) {
 			self.context.channel_state.set_our_channel_ready();
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
 			self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 			self.context.update_time_counter += 1;
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
@@ -7550,7 +7187,7 @@ impl<SP: Deref> Channel<SP> where
 
 		// TODO move from here, check
 		self.context.channel_state = ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
-		
+
 		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
 		msgs::Splice {
 			chain_hash,
@@ -7647,7 +7284,7 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
 		}
 
-		let need_holding_cell = !self.context.channel_state.can_generate_new_commitment();
+		let need_holding_cell = self.context.channel_state.should_force_holding_cell();
 		log_debug!(logger, "Pushing new outbound HTLC with hash {} for {} msat {}",
 			payment_hash, amount_msat,
 			if force_holding_cell { "into holding cell" }
@@ -7938,7 +7575,6 @@ impl<SP: Deref> Channel<SP> where
 		// From here on out, we may not fail!
 		self.context.target_closing_feerate_sats_per_kw = target_feerate_sats_per_kw;
 		self.context.channel_state.set_local_shutdown_sent();
-		self.context.local_initiated_shutdown = Some(());
 		self.context.update_time_counter += 1;
 
 		let monitor_update = if update_shutdown_script {
@@ -8005,7 +7641,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		outbound_scid_alias: u64, temporary_channel_id: Option<ChannelId>
 	) -> Result<OutboundV1Channel<SP>, APIError>
 	where ES::Target: EntropySource,
-	      F::Target: FeeEstimator
+		F::Target: FeeEstimator
 	{
 		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
@@ -8318,12 +7954,12 @@ pub(super) struct InboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 }
 
 /// Fetches the [`ChannelTypeFeatures`] that will be used for a channel built from a given
-/// [`msgs::CommonOpenChannelFields`].
+/// [`msgs::OpenChannel`].
 pub(super) fn channel_type_from_open_channel(
-	common_fields: &msgs::CommonOpenChannelFields, their_features: &InitFeatures,
+	msg: &msgs::CommonOpenChannelFields, their_features: &InitFeatures,
 	our_supported_features: &ChannelTypeFeatures
 ) -> Result<ChannelTypeFeatures, ChannelError> {
-	if let Some(channel_type) = &common_fields.channel_type {
+	if let Some(channel_type) = &msg.channel_type {
 		if channel_type.supports_any_optional_bits() {
 			return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 		}
@@ -8338,7 +7974,7 @@ pub(super) fn channel_type_from_open_channel(
 		if !channel_type.is_subset(our_supported_features) {
 			return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
 		}
-		let announced_channel = if (common_fields.channel_flags & 1) == 1 { true } else { false };
+		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
 		if channel_type.requires_scid_privacy() && announced_channel {
 			return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
 		}
@@ -9572,7 +9208,6 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
-			(45, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 		});
 
 		Ok(())
@@ -9811,7 +9446,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let channel_update_status = Readable::read(reader)?;
 
 		#[cfg(any(test, fuzzing))]
-		let mut historical_inbound_htlc_fulfills = new_hash_set();
+		let mut historical_inbound_htlc_fulfills = HashSet::new();
 		#[cfg(any(test, fuzzing))]
 		{
 			let htlc_fulfills_len: u64 = Readable::read(reader)?;
@@ -9861,8 +9496,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut is_batch_funding: Option<()> = None;
 
-		let mut local_initiated_shutdown: Option<()> = None;
-
 		let mut pending_outbound_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
@@ -9897,7 +9530,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(39, pending_outbound_blinding_points_opt, optional_vec),
 			(41, holding_cell_blinding_points_opt, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
-			(45, local_initiated_shutdown, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -10128,8 +9760,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				channel_type: channel_type.unwrap(),
 				channel_keys_id,
-
-				local_initiated_shutdown,
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 

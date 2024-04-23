@@ -10,11 +10,10 @@ members = [
     "lightning-background-processor",
     "lightning-rapid-gossip-sync",
     "lightning-custom-message",
-    "lightning-transaction-sync",
-    "possiblyrandom",
 ]
 
 exclude = [
+    "lightning-transaction-sync",
     "no-std-check",
     "msrv-no-dev-deps-check",
     "bench",
@@ -39,6 +38,3 @@ lto = "off"
 opt-level = 3
 lto = true
 panic = "abort"
-
-[patch.crates-io.possiblyrandom]
-path = "possiblyrandom"
