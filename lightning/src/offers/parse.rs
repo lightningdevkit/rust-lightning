@@ -183,6 +183,8 @@ pub enum Bolt12SemanticError {
 	DuplicatePaymentId,
 	/// Blinded paths were expected but were missing.
 	MissingPaths,
+	/// Blinded paths were provided but were not expected.
+	UnexpectedPaths,
 	/// The blinded payinfo given does not match the number of blinded path hops.
 	InvalidPayInfo,
 	/// An invoice creation time was expected but was missing.

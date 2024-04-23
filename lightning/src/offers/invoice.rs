@@ -1632,6 +1632,7 @@ mod tests {
 					quantity: None,
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
+					paths: None,
 				},
 				InvoiceTlvStreamRef {
 					paths: Some(Iterable(payment_paths.iter().map(|(_, path)| path))),
@@ -1724,6 +1725,7 @@ mod tests {
 					quantity: None,
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
+					paths: None,
 				},
 				InvoiceTlvStreamRef {
 					paths: Some(Iterable(payment_paths.iter().map(|(_, path)| path))),

@@ -170,8 +170,8 @@ macro_rules! refund_explicit_metadata_builder_methods { () => {
 		Ok(Self {
 			refund: RefundContents {
 				payer: PayerContents(metadata), description, absolute_expiry: None, issuer: None,
-				paths: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
-				quantity: None, payer_id, payer_note: None,
+				chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
+				quantity: None, payer_id, payer_note: None, paths: None,
 			},
 			secp_ctx: None,
 		})
@@ -209,8 +209,8 @@ macro_rules! refund_builder_methods { (
 		Ok(Self {
 			refund: RefundContents {
 				payer: PayerContents(metadata), description, absolute_expiry: None, issuer: None,
-				paths: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
-				quantity: None, payer_id: node_id, payer_note: None,
+				chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
+				quantity: None, payer_id: node_id, payer_note: None, paths: None,
 			},
 			secp_ctx: Some(secp_ctx),
 		})
@@ -410,7 +410,6 @@ pub(super) struct RefundContents {
 	description: String,
 	absolute_expiry: Option<Duration>,
 	issuer: Option<String>,
-	paths: Option<Vec<BlindedPath>>,
 	// invoice_request fields
 	chain: Option<ChainHash>,
 	amount_msats: u64,
@@ -418,6 +417,7 @@ pub(super) struct RefundContents {
 	quantity: Option<u64>,
 	payer_id: PublicKey,
 	payer_note: Option<String>,
+	paths: Option<Vec<BlindedPath>>,
 }
 
 impl Refund {
@@ -734,7 +734,7 @@ impl RefundContents {
 			description: Some(&self.description),
 			features: None,
 			absolute_expiry: self.absolute_expiry.map(|duration| duration.as_secs()),
-			paths: self.paths.as_ref(),
+			paths: None,
 			issuer: self.issuer.as_ref(),
 			quantity_max: None,
 			node_id: None,
@@ -752,6 +752,7 @@ impl RefundContents {
 			quantity: self.quantity,
 			payer_id: Some(&self.payer_id),
 			payer_note: self.payer_note.as_ref(),
+			paths: self.paths.as_ref(),
 		};
 
 		(payer, offer, invoice_request)
@@ -820,9 +821,12 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			PayerTlvStream { metadata: payer_metadata },
 			OfferTlvStream {
 				chains, metadata, currency, amount: offer_amount, description,
-				features: offer_features, absolute_expiry, paths, issuer, quantity_max, node_id,
+				features: offer_features, absolute_expiry, paths: offer_paths, issuer, quantity_max,
+				node_id,
 			},
-			InvoiceRequestTlvStream { chain, amount, features, quantity, payer_id, payer_note },
+			InvoiceRequestTlvStream {
+				chain, amount, features, quantity, payer_id, payer_note, paths
+			},
 		) = tlv_stream;
 
 		let payer = match payer_metadata {
@@ -853,6 +857,10 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 
 		let absolute_expiry = absolute_expiry.map(Duration::from_secs);
 
+		if offer_paths.is_some() {
+			return Err(Bolt12SemanticError::UnexpectedPaths);
+		}
+
 		if quantity_max.is_some() {
 			return Err(Bolt12SemanticError::UnexpectedQuantity);
 		}
@@ -877,8 +885,8 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 		};
 
 		Ok(RefundContents {
-			payer, description, absolute_expiry, issuer, paths, chain, amount_msats, features,
-			quantity, payer_id, payer_note,
+			payer, description, absolute_expiry, issuer, chain, amount_msats, features, quantity,
+			payer_id, payer_note, paths,
 		})
 	}
 }
@@ -980,6 +988,7 @@ mod tests {
 					quantity: None,
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
+					paths: None,
 				},
 			),
 		);
@@ -1173,12 +1182,12 @@ mod tests {
 			.path(paths[1].clone())
 			.build()
 			.unwrap();
-		let (_, offer_tlv_stream, invoice_request_tlv_stream) = refund.as_tlv_stream();
-		assert_eq!(refund.paths(), paths.as_slice());
+		let (_, _, invoice_request_tlv_stream) = refund.as_tlv_stream();
 		assert_eq!(refund.payer_id(), pubkey(42));
+		assert_eq!(refund.paths(), paths.as_slice());
 		assert_ne!(pubkey(42), pubkey(44));
-		assert_eq!(offer_tlv_stream.paths, Some(&paths));
 		assert_eq!(invoice_request_tlv_stream.payer_id, Some(&pubkey(42)));
+		assert_eq!(invoice_request_tlv_stream.paths, Some(&paths));
 	}
 
 	#[test]

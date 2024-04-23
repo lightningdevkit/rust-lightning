@@ -971,6 +971,7 @@ impl InvoiceRequestContentsWithoutPayerId {
 			quantity: self.quantity,
 			payer_id: None,
 			payer_note: self.payer_note.as_ref(),
+			paths: None,
 		};
 
 		(payer, offer, invoice_request)
@@ -1003,6 +1004,8 @@ pub(super) const INVOICE_REQUEST_TYPES: core::ops::Range<u64> = 80..160;
 /// [`Refund::payer_id`]: crate::offers::refund::Refund::payer_id
 pub(super) const INVOICE_REQUEST_PAYER_ID_TYPE: u64 = 88;
 
+// This TLV stream is used for both InvoiceRequest and Refund, but not all TLV records are valid for
+// InvoiceRequest as noted below.
 tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, INVOICE_REQUEST_TYPES, {
 	(80, chain: ChainHash),
 	(82, amount: (u64, HighZeroBytesDroppedBigSize)),
@@ -1010,6 +1013,8 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, INVOICE_REQUEST
 	(86, quantity: (u64, HighZeroBytesDroppedBigSize)),
 	(INVOICE_REQUEST_PAYER_ID_TYPE, payer_id: PublicKey),
 	(89, payer_note: (String, WithoutLength)),
+	// Only used for Refund since the onion message of an InvoiceRequest has a reply path.
+	(90, paths: (Vec<BlindedPath>, WithoutLength)),
 });
 
 type FullInvoiceRequestTlvStream =
@@ -1092,7 +1097,9 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		let (
 			PayerTlvStream { metadata },
 			offer_tlv_stream,
-			InvoiceRequestTlvStream { chain, amount, features, quantity, payer_id, payer_note },
+			InvoiceRequestTlvStream {
+				chain, amount, features, quantity, payer_id, payer_note, paths,
+			},
 		) = tlv_stream;
 
 		let payer = match metadata {
@@ -1118,6 +1125,10 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 			None => return Err(Bolt12SemanticError::MissingPayerId),
 			Some(payer_id) => payer_id,
 		};
+
+		if paths.is_some() {
+			return Err(Bolt12SemanticError::UnexpectedPaths);
+		}
 
 		Ok(InvoiceRequestContents {
 			inner: InvoiceRequestContentsWithoutPayerId {
@@ -1310,6 +1321,7 @@ mod tests {
 					quantity: None,
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
+					paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice_request.signature()) },
 			),
