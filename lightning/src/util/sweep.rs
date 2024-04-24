@@ -397,11 +397,13 @@ where
 	/// If `delay_until_height` is set, we will delay the spending until the respective block
 	/// height is reached. This can be used to batch spends, e.g., to reduce on-chain fees.
 	///
+	/// Returns `Err` on persistence failure, in which case the call may be safely retried.
+	///
 	/// [`Event::SpendableOutputs`]: crate::events::Event::SpendableOutputs
 	pub fn track_spendable_outputs(
 		&self, output_descriptors: Vec<SpendableOutputDescriptor>, channel_id: Option<ChannelId>,
 		exclude_static_outputs: bool, delay_until_height: Option<u32>,
-	) {
+	) -> Result<(), ()> {
 		let mut relevant_descriptors = output_descriptors
 			.into_iter()
 			.filter(|desc| {
@@ -411,10 +413,10 @@ where
 			.peekable();
 
 		if relevant_descriptors.peek().is_none() {
-			return;
+			return Ok(());
 		}
 
-		let mut spending_tx_opt;
+		let spending_tx_opt;
 		{
 			let mut state_lock = self.sweeper_state.lock().unwrap();
 			for descriptor in relevant_descriptors {
@@ -438,16 +440,16 @@ where
 				state_lock.outputs.push(output_info);
 			}
 			spending_tx_opt = self.regenerate_spend_if_necessary(&mut *state_lock);
-			self.persist_state(&*state_lock).unwrap_or_else(|e| {
+			self.persist_state(&*state_lock).map_err(|e| {
 				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
-				// Skip broadcasting if the persist failed.
-				spending_tx_opt = None;
-			});
+			})?;
 		}
 
 		if let Some(spending_tx) = spending_tx_opt {
 			self.broadcaster.broadcast_transactions(&[&spending_tx]);
 		}
+
+		Ok(())
 	}
 
 	/// Returns a list of the currently tracked spendable outputs.
