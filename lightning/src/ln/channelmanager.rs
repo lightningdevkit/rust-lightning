@@ -75,6 +75,8 @@ use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
+use super::channel::TransactionEnum;
+
 #[cfg(not(c_bindings))]
 use {
 	crate::offers::offer::DerivedMetadata,
@@ -4500,8 +4502,9 @@ where
 			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
 				funding_txo = find_funding_output(&chan, &funding_transaction)?;
 
-				let logger = WithChannelContext::from(&self.logger, &chan.context);
-				let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger)
+				let logger: WithChannelContext<'_, L> = WithChannelContext::from(&self.logger, &chan.context);
+				let transaction = TransactionEnum::new_funding_transaction(funding_transaction, funding_txo, is_batch_funding);
+				let funding_res = chan.get_funding_created(transaction, &&logger)
 					.map_err(|(mut chan, e)| if let ChannelError::Close(msg) = e {
 						let channel_id = chan.context.channel_id();
 						let reason = ClosureReason::ProcessingError { err: msg.clone() };

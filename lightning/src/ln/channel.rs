@@ -1276,7 +1276,9 @@ impl OutboundContext {
 	}
 }
 
-struct FundingTransaction {
+/// Represents a funding transaction used in the establishment [`Channel`]
+#[derive(Clone)]
+pub struct FundingTransaction {
 	funding_transaction: Transaction,
 	outpoint: OutPoint,
 	is_batch_funding: bool,
@@ -7316,6 +7318,27 @@ impl<SP: Deref> Channel<SP> where
 	}
 }
 
+/// Represents whether the associated [`FundingTransaction`] instance is newly created
+/// or was generated during a previous channel handshake.
+#[allow(unused)]
+pub enum TransactionEnum {
+	New(FundingTransaction),
+	Old(FundingTransaction),
+}
+
+impl TransactionEnum {
+	/// Creates a new `TransactionEnum::New` variant representing a newly created funding transaction.
+	pub fn new_funding_transaction(transaction: Transaction, txo: OutPoint, is_batch_funding: bool) -> Self {
+		TransactionEnum::New(
+			FundingTransaction {
+				funding_transaction: transaction,
+				outpoint: txo,
+				is_batch_funding
+			}
+		)
+	}
+}
+
 /// A not-yet-funded outbound (from holder) channel using V1 channel establishment.
 pub(super) struct OutboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
@@ -7408,7 +7431,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// Note that channel_id changes during this call!
 	/// Do NOT broadcast the funding transaction until after a successful funding_signed call!
 	/// If an Err is returned, it is a ChannelError::Close.
-	pub fn get_funding_created<L: Deref>(&mut self, funding_transaction: Transaction, funding_txo: OutPoint, is_batch_funding: bool, logger: &L)
+	pub fn get_funding_created<L: Deref>(&mut self, transaction: TransactionEnum, logger: &L)
 	-> Result<Option<msgs::FundingCreated>, (Self, ChannelError)> where L::Target: Logger {
 		if !self.context.is_outbound() {
 			panic!("Tried to create outbound funding_created message on an inbound channel!");
@@ -7424,6 +7447,39 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
+
+		let (funding_transaction, funding_txo, is_batch_funding) = match transaction {
+			TransactionEnum::New(tx) => {
+				self.outbound_context.created_funding_transaction = Some(tx.clone());
+				(tx.funding_transaction, tx.outpoint, tx.is_batch_funding)
+			},
+			TransactionEnum::Old(tx) => {
+				// Sanity checks
+				if self.context.channel_id != ChannelId::v1_from_funding_outpoint(tx.outpoint) {
+					panic!("Previously saved funding_transaction in channel parameter does not match funding_txo saved in outbound channel parameters.")
+				}
+				if self.context.funding_transaction != Some(tx.funding_transaction) {
+					panic!("Previously saved funding_transaction in channel parameter does not match funding_transaction saved in outbound channel parameters.")
+				}
+				if self.context.is_batch_funding != Some(()).filter(|_| tx.is_batch_funding) {
+					panic!("Previously saved funding_transaction in channel parameter does not match is_batch_funding saved in outbound channel parameters.")
+				}
+
+				let funding_created = self.get_funding_created_msg(logger);
+				if funding_created.is_none() {
+					#[cfg(not(async_signing))] {
+						panic!("Failed to get signature for new funding creation");
+					}
+					#[cfg(async_signing)] {
+						if !self.context.signer_pending_funding {
+							log_trace!(logger, "funding_created awaiting signer; setting signer_pending_funding");
+							self.context.signer_pending_funding = true;
+						}
+					}
+				}
+				return Ok(funding_created);
+			}
+		};
 
 		self.context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
@@ -9382,7 +9438,7 @@ mod tests {
 	use crate::ln::{PaymentHash, PaymentPreimage};
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
-	use crate::ln::channel::InitFeatures;
+	use crate::ln::channel::{InitFeatures, TransactionEnum};
 	use crate::ln::channel::{AwaitingChannelReadyFlags, Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_msat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
@@ -9568,7 +9624,9 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
+
+		let funding_transaction = TransactionEnum::new_funding_transaction(tx, funding_outpoint, false);
+		let funding_created_msg = node_a_chan.get_funding_created(funding_transaction, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg.unwrap(), best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -9697,7 +9755,8 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
+		let transaction = TransactionEnum::new_funding_transaction(tx, funding_outpoint, false);
+		let funding_created_msg = node_a_chan.get_funding_created(transaction, &&logger).map_err(|_| ()).unwrap();
 		let (mut node_b_chan, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg.unwrap(), best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -9886,7 +9945,8 @@ mod tests {
 			value: 10000000, script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
+		let transaction = TransactionEnum::new_funding_transaction(tx.clone(), funding_outpoint, false);
+		let funding_created_msg = node_a_chan.get_funding_created(transaction, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg.unwrap(), best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
 		// Node B --> Node A: funding signed
@@ -9953,7 +10013,8 @@ mod tests {
 			value: 10000000, script_pubkey: outbound_chan.context.get_funding_redeemscript(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
-		let funding_created = outbound_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap().unwrap();
+		let transaction = TransactionEnum::new_funding_transaction(tx.clone(), funding_outpoint, false);
+		let funding_created = outbound_chan.get_funding_created(transaction, &&logger).map_err(|_| ()).unwrap().unwrap();
 		let mut chan = match inbound_chan.funding_created(&funding_created, best_block, &&keys_provider, &&logger) {
 			Ok((chan, _, _)) => chan,
 			Err((_, e)) => panic!("{}", e),
@@ -11085,8 +11146,9 @@ mod tests {
 				},
 			]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
+		let transaction = TransactionEnum::new_funding_transaction(tx.clone(), funding_outpoint, true);
 		let funding_created_msg = node_a_chan.get_funding_created(
-			tx.clone(), funding_outpoint, true, &&logger,
+			transaction, &&logger,
 		).map_err(|_| ()).unwrap();
 		let (mut node_b_chan, funding_signed_msg, _) = node_b_chan.funding_created(
 			&funding_created_msg.unwrap(),
