@@ -437,6 +437,12 @@ macro_rules! offer_builder_test_methods { (
 	}
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn clear_signing_pubkey($($self_mut)* $self: $self_type) -> $return_type {
+		$self.offer.signing_pubkey = None;
+		$return_value
+	}
+
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn build_unchecked($self: $self_type) -> Offer {
 		$self.build_without_checks()
 	}
@@ -1093,9 +1099,10 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 			Some(n) => Quantity::Bounded(NonZeroU64::new(n).unwrap()),
 		};
 
-		let signing_pubkey = match node_id {
-			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
-			Some(node_id) => Some(node_id),
+		let (signing_pubkey, paths) = match (node_id, paths) {
+			(None, None) => return Err(Bolt12SemanticError::MissingSigningPubkey),
+			(_, Some(paths)) if paths.is_empty() => return Err(Bolt12SemanticError::MissingPaths),
+			(node_id, paths) => (node_id, paths),
 		};
 
 		Ok(OfferContents {
@@ -1662,12 +1669,31 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
+		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+			.path(BlindedPath {
+				introduction_node: IntroductionNode::NodeId(pubkey(40)),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+				],
+			})
+			.clear_signing_pubkey()
+			.build()
+			.unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
 		let mut builder = OfferBuilder::new("foo".into(), pubkey(42));
 		builder.offer.paths = Some(vec![]);
 
 		let offer = builder.build().unwrap();
-		if let Err(e) = offer.to_string().parse::<Offer>() {
-			panic!("error parsing offer: {:?}", e);
+		match offer.to_string().parse::<Offer>() {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPaths));
+			},
 		}
 	}
 
