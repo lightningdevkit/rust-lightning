@@ -112,7 +112,7 @@ pub struct TestRouter<'a> {
 	>,
 	//pub entropy_source: &'a RandomBytes,
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
-	pub next_routes: Mutex<VecDeque<(RouteParameters, Result<Route, LightningError>)>>,
+	pub next_routes: Mutex<VecDeque<(RouteParameters, Option<Result<Route, LightningError>>)>>,
 	pub scorer: &'a RwLock<TestScorer>,
 }
 
@@ -132,7 +132,12 @@ impl<'a> TestRouter<'a> {
 
 	pub fn expect_find_route(&self, query: RouteParameters, result: Result<Route, LightningError>) {
 		let mut expected_routes = self.next_routes.lock().unwrap();
-		expected_routes.push_back((query, result));
+		expected_routes.push_back((query, Some(result)));
+	}
+
+	pub fn expect_find_route_query(&self, query: RouteParameters) {
+		let mut expected_routes = self.next_routes.lock().unwrap();
+		expected_routes.push_back((query, None));
 	}
 }
 
@@ -145,63 +150,67 @@ impl<'a> Router for TestRouter<'a> {
 		let next_route_opt = self.next_routes.lock().unwrap().pop_front();
 		if let Some((find_route_query, find_route_res)) = next_route_opt {
 			assert_eq!(find_route_query, *params);
-			if let Ok(ref route) = find_route_res {
-				assert_eq!(route.route_params, Some(find_route_query));
-				let scorer = self.scorer.read().unwrap();
-				let scorer = ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs);
-				for path in &route.paths {
-					let mut aggregate_msat = 0u64;
-					let mut prev_hop_node = payer;
-					for (idx, hop) in path.hops.iter().rev().enumerate() {
-						aggregate_msat += hop.fee_msat;
-						let usage = ChannelUsage {
-							amount_msat: aggregate_msat,
-							inflight_htlc_msat: 0,
-							effective_capacity: EffectiveCapacity::Unknown,
-						};
+			if let Some(res) = find_route_res {
+				if let Ok(ref route) = res {
+					assert_eq!(route.route_params, Some(find_route_query));
+					let scorer = self.scorer.read().unwrap();
+					let scorer = ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs);
+					for path in &route.paths {
+						let mut aggregate_msat = 0u64;
+						let mut prev_hop_node = payer;
+						for (idx, hop) in path.hops.iter().rev().enumerate() {
+							aggregate_msat += hop.fee_msat;
+							let usage = ChannelUsage {
+								amount_msat: aggregate_msat,
+								inflight_htlc_msat: 0,
+								effective_capacity: EffectiveCapacity::Unknown,
+							};
 
-						if idx == path.hops.len() - 1 {
-							if let Some(first_hops) = first_hops {
-								if let Some(idx) = first_hops.iter().position(|h| h.get_outbound_payment_scid() == Some(hop.short_channel_id)) {
-									let node_id = NodeId::from_pubkey(payer);
-									let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
-										details: first_hops[idx],
-										payer_node_id: &node_id,
-									});
-									scorer.channel_penalty_msat(&candidate, usage, &Default::default());
-									continue;
+							if idx == path.hops.len() - 1 {
+								if let Some(first_hops) = first_hops {
+									if let Some(idx) = first_hops.iter().position(|h| h.get_outbound_payment_scid() == Some(hop.short_channel_id)) {
+										let node_id = NodeId::from_pubkey(payer);
+										let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
+											details: first_hops[idx],
+											payer_node_id: &node_id,
+										});
+										scorer.channel_penalty_msat(&candidate, usage, &Default::default());
+										continue;
+									}
 								}
 							}
+							let network_graph = self.network_graph.read_only();
+							if let Some(channel) = network_graph.channel(hop.short_channel_id) {
+								let (directed, _) = channel.as_directed_to(&NodeId::from_pubkey(&hop.pubkey)).unwrap();
+								let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
+									info: directed,
+									short_channel_id: hop.short_channel_id,
+								});
+								scorer.channel_penalty_msat(&candidate, usage, &Default::default());
+							} else {
+								let target_node_id = NodeId::from_pubkey(&hop.pubkey);
+								let route_hint = RouteHintHop {
+									src_node_id: *prev_hop_node,
+									short_channel_id: hop.short_channel_id,
+									fees: RoutingFees { base_msat: 0, proportional_millionths: 0 },
+									cltv_expiry_delta: 0,
+									htlc_minimum_msat: None,
+									htlc_maximum_msat: None,
+								};
+								let candidate = CandidateRouteHop::PrivateHop(PrivateHopCandidate {
+									hint: &route_hint,
+									target_node_id: &target_node_id,
+								});
+								scorer.channel_penalty_msat(&candidate, usage, &Default::default());
+							}
+							prev_hop_node = &hop.pubkey;
 						}
-						let network_graph = self.network_graph.read_only();
-						if let Some(channel) = network_graph.channel(hop.short_channel_id) {
-							let (directed, _) = channel.as_directed_to(&NodeId::from_pubkey(&hop.pubkey)).unwrap();
-							let candidate = CandidateRouteHop::PublicHop(PublicHopCandidate {
-								info: directed,
-								short_channel_id: hop.short_channel_id,
-							});
-							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
-						} else {
-							let target_node_id = NodeId::from_pubkey(&hop.pubkey);
-							let route_hint = RouteHintHop {
-								src_node_id: *prev_hop_node,
-								short_channel_id: hop.short_channel_id,
-								fees: RoutingFees { base_msat: 0, proportional_millionths: 0 },
-								cltv_expiry_delta: 0,
-								htlc_minimum_msat: None,
-								htlc_maximum_msat: None,
-							};
-							let candidate = CandidateRouteHop::PrivateHop(PrivateHopCandidate {
-								hint: &route_hint,
-								target_node_id: &target_node_id,
-							});
-							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
-						}
-						prev_hop_node = &hop.pubkey;
 					}
 				}
+				route_res = res;
+			} else {
+				route_res = self.router.find_route(payer, params, first_hops, inflight_htlcs);
 			}
-			route_res = find_route_res;
 		} else {
 			route_res = self.router.find_route(payer, params, first_hops, inflight_htlcs);
 		};
@@ -552,7 +561,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer> for 
 		ret
 	}
 
-	fn archive_persisted_channel(&self, funding_txo: OutPoint) { 
+	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
 		// remove the channel from the offchain_monitor_updates map
 		self.offchain_monitor_updates.lock().unwrap().remove(&funding_txo);
 	}
@@ -1371,7 +1380,7 @@ impl TestChainSource {
 		}
 	}
 	pub fn remove_watched_txn_and_outputs(&self, outpoint: OutPoint, script_pubkey: ScriptBuf) {
-		self.watched_outputs.lock().unwrap().remove(&(outpoint, script_pubkey.clone())); 
+		self.watched_outputs.lock().unwrap().remove(&(outpoint, script_pubkey.clone()));
 		self.watched_txn.lock().unwrap().remove(&(outpoint.txid, script_pubkey));
 	}
 }
