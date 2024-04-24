@@ -7525,8 +7525,15 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		if !self.context.is_outbound() {
 			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer".to_owned()));
 		}
-		if !matches!(self.context.channel_state, ChannelState::NegotiatingFunding(flags) if flags == NegotiatingFundingFlags::OUR_INIT_SENT) {
+		if !matches!(self.context.channel_state, ChannelState::NegotiatingFunding(flags) if flags == NegotiatingFundingFlags::OUR_INIT_SENT) && !self.deja_vu() {
 			return Err(ChannelError::Close("Got an accept_channel message at a strange time".to_owned()));
+		}
+		if self.outbound_context.received_accept_channel() {
+			if self.outbound_context.received_accept_channel_msg.as_ref().unwrap() == msg {
+				return Ok(());
+			} else {
+				return Err(ChannelError::Close("The new accep_channel_msg doesn't match the old one. Should renegotiating channel parameters".to_owned()));
+			}
 		}
 		if msg.common_fields.dust_limit_satoshis > 21000000 * 100000000 {
 			return Err(ChannelError::Close(format!("Peer never wants payout outputs? dust_limit_satoshis was {}", msg.common_fields.dust_limit_satoshis)));
@@ -7613,6 +7620,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				}
 			}
 		} else { None };
+
+
+		// Save the accept channel msg after all the sanity checks to the outbound_context parameters.
+		self.outbound_context.received_accept_channel_msg = Some(msg.clone());
 
 		self.context.counterparty_dust_limit_satoshis = msg.common_fields.dust_limit_satoshis;
 		self.context.counterparty_max_htlc_value_in_flight_msat = cmp::min(msg.common_fields.max_htlc_value_in_flight_msat, self.context.channel_value_satoshis * 1000);
