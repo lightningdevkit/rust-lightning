@@ -91,6 +91,8 @@ mod tests {
 	use core::time::Duration;
 	#[cfg(feature = "std")]
 	use std::time::SystemTime;
+	use bech32::ToBase32;
+	use lightning::sign::{NodeSigner, Recipient};
 
 	fn duration_since_epoch() -> Duration {
 		#[cfg(feature = "std")]
@@ -194,11 +196,10 @@ mod tests {
 			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(50_000)
 			.payment_metadata(payment_metadata.clone())
-			.build_signed(|hash| {
-				Secp256k1::new().sign_ecdsa_recoverable(hash,
-					&nodes[1].keys_manager.backing.get_node_secret_key())
-			})
-			.unwrap();
+			.build_raw().unwrap();
+		let sig = nodes[1].keys_manager.backing.sign_invoice(invoice.hrp.to_string().as_bytes(), &invoice.data.to_base32(), Recipient::Node).unwrap();
+		let invoice = invoice.sign::<_, ()>(|_| Ok(sig)).unwrap();
+		let invoice = Bolt11Invoice::from_signed(invoice).unwrap();
 
 		let (hash, onion, params) = payment_parameters_from_invoice(&invoice).unwrap();
 		nodes[0].node.send_payment(hash, onion, PaymentId(hash.0), params, Retry::Attempts(0)).unwrap();

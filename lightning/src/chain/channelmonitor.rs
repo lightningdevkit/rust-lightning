@@ -4868,7 +4868,7 @@ mod tests {
 		nodes[1].chain_monitor.chain_monitor.transactions_confirmed(&new_header,
 			&[(0, broadcast_tx)], conf_height);
 
-		let (_, pre_update_monitor) = <(BlockHash, ChannelMonitor<InMemorySigner>)>::read(
+		let (_, pre_update_monitor) = <(BlockHash, ChannelMonitor<_>)>::read(
 						&mut io::Cursor::new(&get_monitor!(nodes[1], channel.2).encode()),
 						(&nodes[1].keys_manager.backing, &nodes[1].keys_manager.backing)).unwrap();
 
