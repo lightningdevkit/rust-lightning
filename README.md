@@ -24,13 +24,12 @@ Objective, Restrictions:
 - No quiscence is used/checked
 - Happy path only, no complex combinations, no error scenarios
 - Prototype with minimal changes
-- Semantics of some splicing messages is not fully according to specs
-- TX negotiation messages are skipped, two simpler messages are used instead (splice_created, splice_signed)
+- The message splice_locked is not yet used
 - It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
 - Only a single pending splicing is supported
-- The channel ID is not changed during splicing (which is incorrect)
+- Splice from only V2 channel is supported, channel ID is not changed
 
-Up-to-date with main branch as of v0.0.118 (Oct 24, commit d2242f6; originally branched off v0.0.115).
+Up-to-date with main branch as of v0.0.122 (Apr 9, 27e5519; originally branched off v0.0.115).
 
 See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa2
 
