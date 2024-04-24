@@ -1262,6 +1262,18 @@ impl OutboundContext {
 			created_funding_transaction: None,
 		}
 	}
+
+	/// Determines whether an `AcceptChannel` message has been received during a previous
+	/// channel handshake.
+	pub fn received_accept_channel(&self) -> bool {
+		self.received_accept_channel_msg.is_some()
+	}
+
+	/// Determines whether a Funding Transaction had been created during a previous
+	/// channel handshake.
+	pub fn created_funding_transaction(&self) -> bool {
+		self.created_funding_transaction.is_some()
+	}
 }
 
 struct FundingTransaction {
@@ -7465,8 +7477,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		if !self.context.is_outbound() {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
-		if self.context.have_received_message() {
-			panic!("Cannot generate an open_channel after we've moved forward");
+		if self.context.have_received_message() && !self.deja_vu() {
+			panic!("Cannot generate an open_channel after we've moved forward earlier, but doesn't know the previous accept_channel_msg");
 		}
 
 		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
@@ -7736,6 +7748,19 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 		Ok((channel, channel_monitor))
+	}
+
+	/// Determines if the outbound channel handshake process is being retried.
+	fn deja_vu(&self) -> bool {
+		let negotiating = !matches!(self.context.channel_state, ChannelState::NegotiatingFunding(flags) if flags == NegotiatingFundingFlags::OUR_INIT_SENT);
+		let negotiated = self.context.channel_state == ChannelState::FundingNegotiated;
+		
+		if (negotiated && self.outbound_context.created_funding_transaction()) ||
+			(negotiating && self.outbound_context.received_accept_channel()) {
+			true
+		} else {
+			false
+		}
 	}
 
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
