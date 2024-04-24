@@ -1673,7 +1673,7 @@ mod tests {
 		let payment_paths = payment_paths();
 		let payment_hash = payment_hash();
 		let now = now();
-		let invoice = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+		let invoice = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.build().unwrap()
 			.respond_with_no_std(payment_paths.clone(), payment_hash, recipient_pubkey(), now)
 			.unwrap()
@@ -1688,7 +1688,7 @@ mod tests {
 		assert_eq!(invoice.offer_chains(), None);
 		assert_eq!(invoice.metadata(), None);
 		assert_eq!(invoice.amount(), None);
-		assert_eq!(invoice.description(), PrintableString("foo"));
+		assert_eq!(invoice.description(), PrintableString(""));
 		assert_eq!(invoice.offer_features(), None);
 		assert_eq!(invoice.absolute_expiry(), None);
 		assert_eq!(invoice.message_paths(), &[]);
@@ -1724,7 +1724,7 @@ mod tests {
 					metadata: None,
 					currency: None,
 					amount: None,
-					description: Some(&String::from("foo")),
+					description: Some(&String::from("")),
 					features: None,
 					absolute_expiry: None,
 					paths: None,
@@ -1803,7 +1803,7 @@ mod tests {
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
 
-		if let Err(e) = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+		if let Err(e) = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.absolute_expiry(future_expiry)
 			.build().unwrap()
 			.respond_with(payment_paths(), payment_hash(), recipient_pubkey())
@@ -1813,7 +1813,7 @@ mod tests {
 			panic!("error building invoice: {:?}", e);
 		}
 
-		match RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+		match RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.absolute_expiry(past_expiry)
 			.build().unwrap()
 			.respond_with(payment_paths(), payment_hash(), recipient_pubkey())
@@ -1887,7 +1887,7 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
 
-		let refund = RefundBuilder::new("foo".into(), vec![1; 32], payer_pubkey(), 1000).unwrap()
+		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.build().unwrap();
 
 		if let Err(e) = refund

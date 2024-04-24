@@ -484,9 +484,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = david.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
 	assert_eq!(refund.amount_msats(), 10_000_000);
@@ -613,9 +611,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = bob.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
 	assert_eq!(refund.amount_msats(), 10_000_000);
@@ -724,9 +720,7 @@ fn pays_for_refund_without_blinded_paths() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = bob.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.clear_paths()
 		.build().unwrap();
@@ -780,7 +774,7 @@ fn fails_creating_refund_without_blinded_paths() {
 	let payment_id = PaymentId([1; 32]);
 
 	match nodes[0].node.create_refund_builder(
-		"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
@@ -831,9 +825,7 @@ fn fails_sending_invoice_with_unsupported_chain_for_refund() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = bob.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.chain(Network::Signet)
 		.build().unwrap();
@@ -932,13 +924,13 @@ fn fails_creating_refund_with_duplicate_payment_id() {
 	let payment_id = PaymentId([1; 32]);
 	assert!(
 		nodes[0].node.create_refund_builder(
-			"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+			10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 		).is_ok()
 	);
 	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
 
 	match nodes[0].node.create_refund_builder(
-		"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
@@ -1049,9 +1041,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = david.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
 
@@ -1100,9 +1090,7 @@ fn fails_paying_invoice_more_than_once() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = david.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
