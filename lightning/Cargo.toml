@@ -47,6 +47,7 @@ regex = { version = "1.5.6", optional = true }
 backtrace = { version = "0.3", optional = true }
 
 libm = { version = "0.2", default-features = false }
+delegate = "0.12.0"
 
 [dev-dependencies]
 regex = "1.5.6"
