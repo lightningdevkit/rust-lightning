@@ -1247,6 +1247,29 @@ impl UnfundedChannelContext {
 	}
 }
 
+/// Stores values related to retrying the handshake process for outbound channels
+/// after disconnection and reconnection.
+pub(super) struct OutboundContext {
+	received_accept_channel_msg: Option<msgs::AcceptChannel>,
+	created_funding_transaction: Option<FundingTransaction>
+}
+
+impl OutboundContext {
+	/// Create a new [`OutboundContext`] with blank values.
+	pub fn new() -> Self {
+		OutboundContext {
+			received_accept_channel_msg: None,
+			created_funding_transaction: None,
+		}
+	}
+}
+
+struct FundingTransaction {
+	funding_transaction: Transaction,
+	outpoint: OutPoint,
+	is_batch_funding: bool,
+}
+
 /// Contains everything about the channel including state, and various flags.
 pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	config: LegacyChannelConfig,
@@ -7285,6 +7308,7 @@ impl<SP: Deref> Channel<SP> where
 pub(super) struct OutboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
+	pub outbound_context: OutboundContext,
 }
 
 impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
@@ -7327,7 +7351,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				holder_signer,
 				pubkeys,
 			)?,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			outbound_context: OutboundContext::new(),
 		};
 		Ok(chan)
 	}
