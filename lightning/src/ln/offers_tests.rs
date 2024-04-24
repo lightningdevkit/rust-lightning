@@ -268,7 +268,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	announce_node_address(charlie, &[alice, bob, david, &nodes[4], &nodes[5]], tor.clone());
 
 	let offer = bob.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.signing_pubkey(), Some(bob_id));
@@ -283,7 +283,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	announce_node_address(&nodes[5], &[alice, bob, charlie, david, &nodes[4]], tor.clone());
 
 	let offer = bob.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.signing_pubkey(), Some(bob_id));
@@ -333,7 +333,7 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = bob.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.signing_pubkey(), Some(bob_id));
@@ -382,7 +382,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string())
+		.create_offer_builder()
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
@@ -544,7 +544,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_ne!(offer.signing_pubkey(), Some(alice_id));
@@ -668,7 +668,7 @@ fn pays_for_offer_without_blinded_paths() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.clear_paths()
 		.amount_msats(10_000_000)
 		.build().unwrap();
@@ -760,7 +760,7 @@ fn fails_creating_offer_without_blinded_paths() {
 
 	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
 
-	match nodes[0].node.create_offer_builder("coffee".to_string()) {
+	match nodes[0].node.create_offer_builder() {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
 	}
@@ -803,7 +803,7 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 	let bob = &nodes[1];
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.clear_chains()
 		.chain(Network::Signet)
 		.build().unwrap();
@@ -865,7 +865,7 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -899,7 +899,7 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -985,7 +985,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 

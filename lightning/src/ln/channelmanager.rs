@@ -1554,11 +1554,12 @@ where
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
 /// let offer = channel_manager
-///     .create_offer_builder("coffee".to_string())?
+///     .create_offer_builder()?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
 /// # let offer = builder
+///     .description("coffee".to_string())
 ///     .amount_msats(10_000_000)
 ///     .build()?;
 /// let bech32_offer = offer.to_string();
@@ -8553,9 +8554,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	pub fn create_offer_builder(
-		&$self, description: String
-	) -> Result<$builder, Bolt12SemanticError> {
+	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
 		let entropy = &*$self.entropy_source;
@@ -8563,7 +8562,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 
 		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = OfferBuilder::deriving_signing_pubkey(
-			description, node_id, expanded_key, entropy, secp_ctx
+			node_id, expanded_key, entropy, secp_ctx
 		)
 			.chain_hash($self.chain_hash)
 			.path(path);

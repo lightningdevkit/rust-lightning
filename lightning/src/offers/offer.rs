@@ -43,7 +43,8 @@
 //! let pubkey = PublicKey::from(keys);
 //!
 //! let expiration = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
-//! let offer = OfferBuilder::new("coffee, large".to_string(), pubkey)
+//! let offer = OfferBuilder::new(pubkey)
+//!     .description("coffee, large".to_string())
 //!     .amount_msats(20_000)
 //!     .supported_quantity(Quantity::Unbounded)
 //!     .absolute_expiry(expiration.duration_since(SystemTime::UNIX_EPOCH).unwrap())
@@ -208,7 +209,7 @@ impl MetadataStrategy for DerivedMetadata {}
 macro_rules! offer_explicit_metadata_builder_methods { (
 	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
 ) => {
-	/// Creates a new builder for an offer setting the [`Offer::description`] and using the
+	/// Creates a new builder for an offer setting an empty [`Offer::description`] and using the
 	/// [`Offer::signing_pubkey`] for signing invoices. The associated secret key must be remembered
 	/// while the offer is valid.
 	///
@@ -221,10 +222,10 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
-	pub fn new(description: String, signing_pubkey: PublicKey) -> Self {
+	pub fn new(signing_pubkey: PublicKey) -> Self {
 		Self {
 			offer: OfferContents {
-				chains: None, metadata: None, amount: None, description,
+				chains: None, metadata: None, amount: None, description: String::new(),
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
 				supported_quantity: Quantity::One, signing_pubkey: Some(signing_pubkey),
 			},
@@ -255,7 +256,7 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 	/// [`InvoiceRequest::verify`]: crate::offers::invoice_request::InvoiceRequest::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn deriving_signing_pubkey<ES: Deref>(
-		description: String, node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+		node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
 		secp_ctx: &'a Secp256k1<$secp_context>
 	) -> Self where ES::Target: EntropySource {
 		let nonce = Nonce::from_entropy_source(entropy_source);
@@ -263,7 +264,7 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Self {
 			offer: OfferContents {
-				chains: None, metadata: Some(metadata), amount: None, description,
+				chains: None, metadata: Some(metadata), amount: None, description: String::new(),
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
 				supported_quantity: Quantity::One, signing_pubkey: Some(node_id),
 			},
@@ -322,6 +323,14 @@ macro_rules! offer_builder_methods { (
 	/// Successive calls to this method will override the previous setting.
 	pub fn absolute_expiry($($self_mut)* $self: $self_type, absolute_expiry: Duration) -> $return_type {
 		$self.offer.absolute_expiry = Some(absolute_expiry);
+		$return_value
+	}
+
+	/// Sets the [`Offer::description`].
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn description($($self_mut)* $self: $self_type, description: String) -> $return_type {
+		$self.offer.description = description;
 		$return_value
 	}
 
@@ -1147,7 +1156,7 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_defaults() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
 
 		let mut buffer = Vec::new();
 		offer.write(&mut buffer).unwrap();
@@ -1157,7 +1166,7 @@ mod tests {
 		assert!(offer.supports_chain(ChainHash::using_genesis_block(Network::Bitcoin)));
 		assert_eq!(offer.metadata(), None);
 		assert_eq!(offer.amount(), None);
-		assert_eq!(offer.description(), PrintableString("foo"));
+		assert_eq!(offer.description(), PrintableString(""));
 		assert_eq!(offer.offer_features(), &OfferFeatures::empty());
 		assert_eq!(offer.absolute_expiry(), None);
 		#[cfg(feature = "std")]
@@ -1174,7 +1183,7 @@ mod tests {
 				metadata: None,
 				currency: None,
 				amount: None,
-				description: Some(&String::from("foo")),
+				description: Some(&String::from("")),
 				features: None,
 				absolute_expiry: None,
 				paths: None,
@@ -1194,7 +1203,7 @@ mod tests {
 		let mainnet = ChainHash::using_genesis_block(Network::Bitcoin);
 		let testnet = ChainHash::using_genesis_block(Network::Testnet);
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.chain(Network::Bitcoin)
 			.build()
 			.unwrap();
@@ -1202,7 +1211,7 @@ mod tests {
 		assert_eq!(offer.chains(), vec![mainnet]);
 		assert_eq!(offer.as_tlv_stream().chains, None);
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.chain(Network::Testnet)
 			.build()
 			.unwrap();
@@ -1210,7 +1219,7 @@ mod tests {
 		assert_eq!(offer.chains(), vec![testnet]);
 		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![testnet]));
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.chain(Network::Testnet)
 			.chain(Network::Testnet)
 			.build()
@@ -1219,7 +1228,7 @@ mod tests {
 		assert_eq!(offer.chains(), vec![testnet]);
 		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![testnet]));
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
 			.build()
@@ -1232,14 +1241,14 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_metadata() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.metadata(vec![42; 32]).unwrap()
 			.build()
 			.unwrap();
 		assert_eq!(offer.metadata(), Some(&vec![42; 32]));
 		assert_eq!(offer.as_tlv_stream().metadata, Some(&vec![42; 32]));
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.metadata(vec![42; 32]).unwrap()
 			.metadata(vec![43; 32]).unwrap()
 			.build()
@@ -1250,7 +1259,6 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_metadata_derived() {
-		let desc = "foo".to_string();
 		let node_id = recipient_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
@@ -1259,7 +1267,7 @@ mod tests {
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
 		let offer = OfferBuilder
-			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
+			::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
 			.build().unwrap();
 		assert_eq!(offer.signing_pubkey(), Some(node_id));
@@ -1302,7 +1310,6 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_derived_signing_pubkey() {
-		let desc = "foo".to_string();
 		let node_id = recipient_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
@@ -1320,7 +1327,7 @@ mod tests {
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
 		let offer = OfferBuilder
-			::deriving_signing_pubkey(desc, node_id, &expanded_key, &entropy, &secp_ctx)
+			::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
 			.amount_msats(1000)
 			.path(blinded_path)
 			.build().unwrap();
@@ -1367,7 +1374,7 @@ mod tests {
 		let bitcoin_amount = Amount::Bitcoin { amount_msats: 1000 };
 		let currency_amount = Amount::Currency { iso4217_code: *b"USD", amount: 10 };
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.amount_msats(1000)
 			.build()
 			.unwrap();
@@ -1377,10 +1384,10 @@ mod tests {
 		assert_eq!(tlv_stream.currency, None);
 
 		#[cfg(not(c_bindings))]
-		let builder = OfferBuilder::new("foo".into(), pubkey(42))
+		let builder = OfferBuilder::new(pubkey(42))
 			.amount(currency_amount.clone());
 		#[cfg(c_bindings)]
-		let mut builder = OfferBuilder::new("foo".into(), pubkey(42));
+		let mut builder = OfferBuilder::new(pubkey(42));
 		#[cfg(c_bindings)]
 		builder.amount(currency_amount.clone());
 		let tlv_stream = builder.offer.as_tlv_stream();
@@ -1392,7 +1399,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedCurrency),
 		}
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.amount(currency_amount.clone())
 			.amount(bitcoin_amount.clone())
 			.build()
@@ -1402,22 +1409,40 @@ mod tests {
 		assert_eq!(tlv_stream.currency, None);
 
 		let invalid_amount = Amount::Bitcoin { amount_msats: MAX_VALUE_MSAT + 1 };
-		match OfferBuilder::new("foo".into(), pubkey(42)).amount(invalid_amount).build() {
+		match OfferBuilder::new(pubkey(42)).amount(invalid_amount).build() {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
 	}
 
 	#[test]
+	fn builds_offer_with_description() {
+		let offer = OfferBuilder::new(pubkey(42))
+			.description("foo".into())
+			.build()
+			.unwrap();
+		assert_eq!(offer.description(), PrintableString("foo"));
+		assert_eq!(offer.as_tlv_stream().description, Some(&String::from("foo")));
+
+		let offer = OfferBuilder::new(pubkey(42))
+			.description("foo".into())
+			.description("bar".into())
+			.build()
+			.unwrap();
+		assert_eq!(offer.description(), PrintableString("bar"));
+		assert_eq!(offer.as_tlv_stream().description, Some(&String::from("bar")));
+	}
+
+	#[test]
 	fn builds_offer_with_features() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.features_unchecked(OfferFeatures::unknown())
 			.build()
 			.unwrap();
 		assert_eq!(offer.offer_features(), &OfferFeatures::unknown());
 		assert_eq!(offer.as_tlv_stream().features, Some(&OfferFeatures::unknown()));
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.features_unchecked(OfferFeatures::unknown())
 			.features_unchecked(OfferFeatures::empty())
 			.build()
@@ -1432,7 +1457,7 @@ mod tests {
 		let past_expiry = Duration::from_secs(0);
 		let now = future_expiry - Duration::from_secs(1_000);
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.absolute_expiry(future_expiry)
 			.build()
 			.unwrap();
@@ -1442,7 +1467,7 @@ mod tests {
 		assert_eq!(offer.absolute_expiry(), Some(future_expiry));
 		assert_eq!(offer.as_tlv_stream().absolute_expiry, Some(future_expiry.as_secs()));
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.absolute_expiry(future_expiry)
 			.absolute_expiry(past_expiry)
 			.build()
@@ -1475,7 +1500,7 @@ mod tests {
 			},
 		];
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.path(paths[0].clone())
 			.path(paths[1].clone())
 			.build()
@@ -1490,20 +1515,20 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_issuer() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
+			.issuer("foo".into())
+			.build()
+			.unwrap();
+		assert_eq!(offer.issuer(), Some(PrintableString("foo")));
+		assert_eq!(offer.as_tlv_stream().issuer, Some(&String::from("foo")));
+
+		let offer = OfferBuilder::new(pubkey(42))
+			.issuer("foo".into())
 			.issuer("bar".into())
 			.build()
 			.unwrap();
 		assert_eq!(offer.issuer(), Some(PrintableString("bar")));
 		assert_eq!(offer.as_tlv_stream().issuer, Some(&String::from("bar")));
-
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
-			.issuer("bar".into())
-			.issuer("baz".into())
-			.build()
-			.unwrap();
-		assert_eq!(offer.issuer(), Some(PrintableString("baz")));
-		assert_eq!(offer.as_tlv_stream().issuer, Some(&String::from("baz")));
 	}
 
 	#[test]
@@ -1511,7 +1536,7 @@ mod tests {
 		let one = NonZeroU64::new(1).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::One)
 			.build()
 			.unwrap();
@@ -1519,7 +1544,7 @@ mod tests {
 		assert_eq!(offer.supported_quantity(), Quantity::One);
 		assert_eq!(tlv_stream.quantity_max, None);
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap();
@@ -1527,7 +1552,7 @@ mod tests {
 		assert_eq!(offer.supported_quantity(), Quantity::Unbounded);
 		assert_eq!(tlv_stream.quantity_max, Some(0));
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
 			.unwrap();
@@ -1535,7 +1560,7 @@ mod tests {
 		assert_eq!(offer.supported_quantity(), Quantity::Bounded(ten));
 		assert_eq!(tlv_stream.quantity_max, Some(10));
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Bounded(one))
 			.build()
 			.unwrap();
@@ -1543,7 +1568,7 @@ mod tests {
 		assert_eq!(offer.supported_quantity(), Quantity::Bounded(one));
 		assert_eq!(tlv_stream.quantity_max, Some(1));
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Bounded(ten))
 			.supported_quantity(Quantity::One)
 			.build()
@@ -1555,7 +1580,7 @@ mod tests {
 
 	#[test]
 	fn fails_requesting_invoice_with_unknown_required_features() {
-		match OfferBuilder::new("foo".into(), pubkey(42))
+		match OfferBuilder::new(pubkey(42))
 			.features_unchecked(OfferFeatures::unknown())
 			.build().unwrap()
 			.request_invoice(vec![1; 32], pubkey(43))
@@ -1567,7 +1592,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_chains() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
 			.build()
@@ -1579,7 +1604,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_amount() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.amount(Amount::Bitcoin { amount_msats: 1000 })
 			.build()
 			.unwrap();
@@ -1625,7 +1650,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_description() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
 			panic!("error parsing offer: {:?}", e);
 		}
@@ -1646,7 +1671,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_paths() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.path(BlindedPath {
 				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
@@ -1669,7 +1694,7 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.path(BlindedPath {
 				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
@@ -1685,7 +1710,7 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let mut builder = OfferBuilder::new("foo".into(), pubkey(42));
+		let mut builder = OfferBuilder::new(pubkey(42));
 		builder.offer.paths = Some(vec![]);
 
 		let offer = builder.build().unwrap();
@@ -1699,7 +1724,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_quantity() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::One)
 			.build()
 			.unwrap();
@@ -1707,7 +1732,7 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Unbounded)
 			.build()
 			.unwrap();
@@ -1715,7 +1740,7 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Bounded(NonZeroU64::new(10).unwrap()))
 			.build()
 			.unwrap();
@@ -1723,7 +1748,7 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let offer = OfferBuilder::new("foo".into(), pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Bounded(NonZeroU64::new(1).unwrap()))
 			.build()
 			.unwrap();
@@ -1734,7 +1759,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_node_id() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
 			panic!("error parsing offer: {:?}", e);
 		}
@@ -1755,7 +1780,7 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_offer_with_extra_tlv_records() {
-		let offer = OfferBuilder::new("foo".into(), pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
 
 		let mut encoded_offer = Vec::new();
 		offer.write(&mut encoded_offer).unwrap();
