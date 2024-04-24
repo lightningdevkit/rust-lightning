@@ -429,11 +429,13 @@ fn test_channel_open_v2_and_close() {
 	let total_output = broadcasted_funding_tx.output[0].value + broadcasted_funding_tx.output[1].value;
 	assert!(total_input > total_output);
 	let fee = total_input - total_output;
-	let fee_rate = chanmon_cfgs[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee); // target is irrelevant
-	assert_eq!(fee_rate, 253);
+	let target_fee_rate = chanmon_cfgs[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee); // target is irrelevant
+	assert_eq!(target_fee_rate, 253);
 	assert_eq!(broadcasted_funding_tx.weight().to_wu(), 576);
-	let expected_minimum_fee = (broadcasted_funding_tx.weight().to_wu() as f64 * fee_rate as f64 / 1000 as f64).ceil() as u64;
+	let expected_minimum_fee = (broadcasted_funding_tx.weight().to_wu() as f64 * target_fee_rate as f64 / 1000 as f64).ceil() as u64;
+	let expected_maximum_fee = expected_minimum_fee * 3;
 	assert!(fee >= expected_minimum_fee);
+	assert!(fee <= expected_maximum_fee);
 
 	// Simulate confirmation of the funding tx
 	confirm_transaction(&initiator_node, &broadcasted_funding_tx);
@@ -1127,6 +1129,20 @@ fn test_v2_splice_in() {
 	let broadcasted_splice_tx_acc = chanmon_cfgs[acceptor_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
 	assert_eq!(broadcasted_splice_tx_acc.encode().len(), 389);
 	assert_eq!(broadcasted_splice_tx_acc.encode().as_hex().to_string(), expected_funding_tx);
+
+	// check fees
+	let total_input = channel_value_sat + extra_splice_funding_input_sats;
+	assert_eq!(broadcasted_splice_tx.output.len(), 2);
+	let total_output = broadcasted_splice_tx.output[0].value + broadcasted_splice_tx.output[1].value;
+	assert!(total_input > total_output);
+	let fee = total_input - total_output;
+	let target_fee_rate = chanmon_cfgs[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee); // target is irrelevant
+	assert_eq!(target_fee_rate, 253);
+	assert_eq!(broadcasted_splice_tx.weight().to_wu(), 887);
+	let expected_minimum_fee = (broadcasted_splice_tx.weight().to_wu() as f64 * target_fee_rate as f64 / 1000 as f64).ceil() as u64;
+	let expected_maximum_fee = expected_minimum_fee * 5;  // TODO lower tolerance, e.g. 3
+	assert!(fee >= expected_minimum_fee);
+	assert!(fee <= expected_maximum_fee);
 
 	// Simulate confirmation of the funding tx
 	confirm_transaction(&initiator_node, &broadcasted_splice_tx);
