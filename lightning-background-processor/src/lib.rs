@@ -1665,7 +1665,7 @@ mod tests {
 			.expect("Events not handled within deadline");
 		match event {
 			Event::SpendableOutputs { outputs, channel_id } => {
-				nodes[0].sweeper.track_spendable_outputs(outputs, channel_id, false, Some(153));
+				nodes[0].sweeper.track_spendable_outputs(outputs, channel_id, false, Some(153)).unwrap();
 			},
 			_ => panic!("Unexpected event: {:?}", event),
 		}
