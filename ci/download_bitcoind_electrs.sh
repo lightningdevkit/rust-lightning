@@ -22,7 +22,8 @@ elif [[ "$HOST_PLATFORM" == *darwin* ]]; then
 	BITCOIND_DL_FILE_NAME=bitcoin-"$BITCOIND_VERSION"-x86_64-apple-darwin.tar.gz
 	BITCOIND_DL_HASH="1acfde0ec3128381b83e3e5f54d1c7907871d324549129592144dd12a821eff1"
 else
-	echo "\n\nUnsupported platform: $HOST_PLATFORM Exiting.."
+	printf "\n\n"
+	echo "Unsupported platform: $HOST_PLATFORM Exiting.."
 	exit 1
 fi
 

@@ -6,8 +6,8 @@ set -eox pipefail
 
 # Run fmt
 TMP_FILE=$(mktemp)
-find . -name '*.rs' -type f |sort >$TMP_FILE
-for file in $(comm -23 $TMP_FILE rustfmt_excluded_files); do
+find . -name '*.rs' -type f |sort >"$TMP_FILE"
+for file in $(comm -23 "$TMP_FILE" rustfmt_excluded_files); do
 	echo "Checking formatting of $file"
-	rustfmt +1.63.0 --check $file
+	rustfmt +1.63.0 --check "$file"
 done
