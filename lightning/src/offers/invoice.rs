@@ -314,6 +314,8 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2TR addresses.
+	///
+	/// This is not exported to bindings users as TweakedPublicKey isn't yet mapped.
 	pub fn fallback_v1_p2tr_tweaked(mut self, output_key: &TweakedPublicKey) -> Self {
 		let address = FallbackAddress {
 			version: WitnessVersion::V1.to_num(),
@@ -422,7 +424,7 @@ impl UnsignedBolt12Invoice {
 	/// Note: The hash computation may have included unknown, odd TLV records.
 	///
 	/// This is not exported to bindings users as functions aren't currently mapped.
-	pub fn sign<F, E>(mut self, sign: F) -> Result<Bolt12Invoice, SignError<E>>
+	pub(crate) fn sign<F, E>(mut self, sign: F) -> Result<Bolt12Invoice, SignError<E>>
 	where
 		F: FnOnce(&Self) -> Result<Signature, E>
 	{
@@ -680,6 +682,8 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 
 	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
 	/// least-preferred.
+	///
+	/// This is not exported to bindings users as Address is not yet mapped
 	pub fn fallbacks(&$self) -> Vec<Address> {
 		$contents.fallbacks()
 	}

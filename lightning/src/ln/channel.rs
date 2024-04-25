@@ -5179,6 +5179,26 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	/// On startup, its possible we detect some monitor updates have actually completed (and the
+	/// ChannelManager was simply stale). In that case, we should simply drop them, which we do
+	/// here after logging them.
+	pub fn on_startup_drop_completed_blocked_mon_updates_through<L: Logger>(&mut self, logger: &L, loaded_mon_update_id: u64) {
+		let channel_id = self.context.channel_id();
+		self.context.blocked_monitor_updates.retain(|update| {
+			if update.update.update_id <= loaded_mon_update_id {
+				log_info!(
+					logger,
+					"Dropping completed ChannelMonitorUpdate id {} on channel {} due to a stale ChannelManager",
+					update.update.update_id,
+					channel_id,
+				);
+				false
+			} else {
+				true
+			}
+		});
+	}
+
 	pub fn blocked_monitor_updates_pending(&self) -> usize {
 		self.context.blocked_monitor_updates.len()
 	}
@@ -5604,7 +5624,7 @@ impl<SP: Deref> Channel<SP> where
 				return None;
 			}
 		};
-		let our_node_sig = match node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement)) {
+		let our_node_sig = match node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(announcement.clone())) {
 			Err(_) => {
 				log_error!(logger, "Failed to generate node signature for channel_announcement. Channel will not be announced!");
 				return None;
@@ -5650,7 +5670,7 @@ impl<SP: Deref> Channel<SP> where
 				.map_err(|_| ChannelError::Ignore("Signer failed to retrieve own public key".to_owned()))?);
 			let were_node_one = announcement.node_id_1 == our_node_key;
 
-			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(&announcement))
+			let our_node_sig = node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelAnnouncement(announcement.clone()))
 				.map_err(|_| ChannelError::Ignore("Failed to generate node signature for channel_announcement".to_owned()))?;
 			match &self.context.holder_signer {
 				ChannelSignerType::Ecdsa(ecdsa) => {

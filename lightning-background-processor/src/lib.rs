@@ -694,7 +694,10 @@ where
 		persister, chain_monitor,
 		chain_monitor.process_pending_events_async(async_event_handler).await,
 		channel_manager, channel_manager.process_pending_events_async(async_event_handler).await,
-		peer_manager, process_onion_message_handler_events_async(&peer_manager, async_event_handler).await,
+		peer_manager,
+		for event in onion_message_handler_events(peer_manager) {
+			handler(event).await
+		},
 		gossip_sync, logger, scorer, should_break, {
 			let fut = Selector {
 				a: channel_manager.get_event_or_persistence_needed_future(),
@@ -719,23 +722,11 @@ where
 	)
 }
 
-#[cfg(feature = "futures")]
-async fn process_onion_message_handler_events_async<
-	EventHandlerFuture: core::future::Future<Output = ()>,
-	EventHandler: Fn(Event) -> EventHandlerFuture,
-	PM: 'static + Deref + Send + Sync,
->(
-	peer_manager: &PM, handler: EventHandler
-)
-where
-	PM::Target: APeerManager + Send + Sync,
-{
-	let events = core::cell::RefCell::new(Vec::new());
-	peer_manager.onion_message_handler().process_pending_events(&|e| events.borrow_mut().push(e));
-
-	for event in events.into_inner() {
-		handler(event).await
-	}
+fn onion_message_handler_events<PM: 'static + Deref + Send + Sync>(
+	peer_manager: &PM
+) -> impl Iterator<Item=Event> where PM::Target: APeerManager + Send + Sync {
+	peer_manager.onion_message_handler().get_and_clear_connections_needed()
+		.into_iter().map(|(node_id, addresses)| Event::ConnectionNeeded { node_id, addresses })
 }
 
 #[cfg(feature = "std")]
@@ -851,7 +842,9 @@ impl BackgroundProcessor {
 				persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
 				channel_manager, channel_manager.process_pending_events(&event_handler),
 				peer_manager,
-				peer_manager.onion_message_handler().process_pending_events(&event_handler),
+				for event in onion_message_handler_events(&peer_manager) {
+					event_handler.handle_event(event);
+				},
 				gossip_sync, logger, scorer, stop_thread.load(Ordering::Acquire),
 				{ Sleeper::from_two_futures(
 					channel_manager.get_event_or_persistence_needed_future(),
@@ -984,9 +977,8 @@ mod tests {
 			Arc<DefaultRouter<
 				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 				Arc<test_utils::TestLogger>,
-				Arc<LockingWrapper<TestScorer>>,
-				(),
-				TestScorer>
+				Arc<KeysManager>,
+				Arc<LockingWrapper<TestScorer>>>
 			>,
 			Arc<test_utils::TestLogger>>;
 
@@ -1143,9 +1135,10 @@ mod tests {
 	}
 
 	impl ScoreLookUp for TestScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
 		fn channel_penalty_msat(
-			&self, _candidate: &CandidateRouteHop, _usage: ChannelUsage, _score_params: &Self::ScoreParams
+			&self, _candidate: &CandidateRouteHop, _usage: ChannelUsage, _score_params: &lightning::routing::scoring::ProbabilisticScoringFeeParameters
 		) -> u64 { unimplemented!(); }
 	}
 
@@ -1263,12 +1256,12 @@ mod tests {
 			let genesis_block = genesis_block(network);
 			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
 			let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
+			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let seed = [i as u8; 32];
-			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone(), Default::default()));
+			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
+			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), Arc::clone(&keys_manager), scorer.clone(), Default::default()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store = Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
-			let now = Duration::from_secs(genesis_block.header.time as u64);
-			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(Some(chain_source.clone()), tx_broadcaster.clone(), logger.clone(), fee_estimator.clone(), kv_store.clone()));
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };

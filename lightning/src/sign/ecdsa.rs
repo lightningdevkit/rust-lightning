@@ -167,4 +167,4 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-pub trait WriteableEcdsaChannelSigner: EcdsaChannelSigner + Writeable {}
+pub trait WriteableEcdsaChannelSigner: EcdsaChannelSigner + Writeable + Clone {}

@@ -772,6 +772,9 @@ pub enum Amount {
 	/// An amount of currency specified using ISO 4712.
 	Currency {
 		/// The currency that the amount is denominated in.
+		///
+		/// This is not exported to bindings users as bindings have troubles with type aliases to
+		/// byte arrays.
 		iso4217_code: CurrencyCode,
 		/// The amount in the currency unit adjusted by the ISO 4712 exponent (e.g., USD cents).
 		amount: u64,
@@ -779,7 +782,7 @@ pub enum Amount {
 }
 
 /// An ISO 4712 three-letter currency code (e.g., USD).
-pub type CurrencyCode = [u8; 3];
+pub(crate) type CurrencyCode = [u8; 3];
 
 /// Quantity of items supported by an [`Offer`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -789,7 +792,8 @@ pub enum Quantity {
 	///
 	/// May be used with `NonZeroU64::new(1)` but prefer to use [`Quantity::One`] if only one item
 	/// is supported.
-	Bounded(NonZeroU64),
+	Bounded(/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+		NonZeroU64),
 	/// One or more items. Use when more than one item can be requested without any limit.
 	Unbounded,
 	/// Only one item. Use when only a single item can be requested.
