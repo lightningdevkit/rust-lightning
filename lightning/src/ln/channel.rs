@@ -5179,6 +5179,26 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	/// On startup, its possible we detect some monitor updates have actually completed (and the
+	/// ChannelManager was simply stale). In that case, we should simply drop them, which we do
+	/// here after logging them.
+	pub fn on_startup_drop_completed_blocked_mon_updates_through<L: Logger>(&mut self, logger: &L, loaded_mon_update_id: u64) {
+		let channel_id = self.context.channel_id();
+		self.context.blocked_monitor_updates.retain(|update| {
+			if update.update.update_id <= loaded_mon_update_id {
+				log_info!(
+					logger,
+					"Dropping completed ChannelMonitorUpdate id {} on channel {} due to a stale ChannelManager",
+					update.update.update_id,
+					channel_id,
+				);
+				false
+			} else {
+				true
+			}
+		});
+	}
+
 	pub fn blocked_monitor_updates_pending(&self) -> usize {
 		self.context.blocked_monitor_updates.len()
 	}
