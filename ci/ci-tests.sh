@@ -28,9 +28,6 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 
 export RUST_BACKTRACE=1
 
-# Build `lightning-transaction-sync` in no_download mode.
-export RUSTFLAGS="$RUSTFLAGS --cfg no_download"
-
 echo -e "\n\nBuilding and testing all workspace crates..."
 cargo test --verbose --color always
 cargo check --verbose --color always
