@@ -1164,7 +1164,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 		MaybeSignedTransaction(tx)
 	}
 
-	#[cfg(any(test, feature="unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature="_test_utils", feature="unsafe_revoked_tx_signing"))]
 	pub(crate) fn get_fully_signed_copy_holder_tx(&mut self, funding_redeemscript: &Script) -> Transaction {
 		let sig = self.signer.unsafe_sign_holder_commitment(&self.holder_commitment, &self.secp_ctx).expect("sign holder commitment");
 		self.holder_commitment.add_holder_sig(funding_redeemscript, sig)

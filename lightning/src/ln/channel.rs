@@ -847,9 +847,6 @@ pub(crate) fn commitment_tx_base_weight(channel_type_features: &ChannelTypeFeatu
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
 }
 
-#[cfg(not(test))]
-const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
-#[cfg(test)]
 pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 
 pub const ANCHOR_OUTPUT_VALUE_SATOSHI: u64 = 330;
@@ -1125,9 +1122,9 @@ pub(crate) struct ShutdownResult {
 /// the channel. Sadly, there isn't really a good number for this - if we expect to have no new
 /// HTLCs for days we may need this to suffice for feerate increases across days, but that may
 /// leave the channel less usable as we hold a bigger reserve.
-#[cfg(any(fuzzing, test))]
+#[cfg(any(fuzzing, test, feature = "_test_utils"))]
 pub const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
-#[cfg(not(any(fuzzing, test)))]
+#[cfg(not(any(fuzzing, test, feature = "_test_utils")))]
 const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
 
 /// If we fail to see a funding transaction confirmed on-chain within this many blocks after the
@@ -1373,9 +1370,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	/// The minimum and maximum absolute fee, in satoshis, we are willing to place on the closing
 	/// transaction. These are set once we reach `closing_negotiation_ready`.
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) closing_fee_limits: Option<(u64, u64)>,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	closing_fee_limits: Option<(u64, u64)>,
 
 	/// If we remove an HTLC (or fee update), commit, and receive our counterparty's
@@ -1402,34 +1399,22 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	counterparty_dust_limit_satoshis: u64,
 
-	#[cfg(test)]
 	pub(super) holder_dust_limit_satoshis: u64,
-	#[cfg(not(test))]
-	holder_dust_limit_satoshis: u64,
 
-	#[cfg(test)]
 	pub(super) counterparty_max_htlc_value_in_flight_msat: u64,
-	#[cfg(not(test))]
-	counterparty_max_htlc_value_in_flight_msat: u64,
 
-	#[cfg(test)]
 	pub(super) holder_max_htlc_value_in_flight_msat: u64,
-	#[cfg(not(test))]
-	holder_max_htlc_value_in_flight_msat: u64,
 
 	/// minimum channel reserve for self to maintain - set by them.
 	counterparty_selected_channel_reserve_satoshis: Option<u64>,
 
-	#[cfg(test)]
 	pub(super) holder_selected_channel_reserve_satoshis: u64,
-	#[cfg(not(test))]
-	holder_selected_channel_reserve_satoshis: u64,
 
 	counterparty_htlc_minimum_msat: u64,
 	holder_htlc_minimum_msat: u64,
-	#[cfg(test)]
+	#[cfg(any(test, feature="_test_utils"))]
 	pub counterparty_max_accepted_htlcs: u16,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature="_test_utils")))]
 	counterparty_max_accepted_htlcs: u16,
 	holder_max_accepted_htlcs: u16,
 	minimum_depth: Option<u32>,
@@ -1533,9 +1518,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	channel_keys_id: [u8; 32],
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub channel_keys_id: [u8; 32],
 
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
@@ -2217,7 +2202,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	}
 
 	/// Returns the holder signer for this channel.
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_signer(&self) -> &ChannelSignerType<SP> {
 		return &self.holder_signer
 	}

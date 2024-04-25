@@ -161,7 +161,7 @@ impl EcdsaChannelSigner for DynSigner {
 		self.inner.sign_holder_commitment(commitment_tx, secp_ctx)
 	}
 
-	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment(
 		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {

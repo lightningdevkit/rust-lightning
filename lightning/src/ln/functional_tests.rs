@@ -987,8 +987,8 @@ fn test_update_fee() {
 	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
-#[test]
-fn fake_network_test() {
+#[xtest(feature = "_test_utils")]
+pub fn fake_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
 	// tests that payments get routed and transactions broadcast in semi-reasonable ways.
 	let chanmon_cfgs = create_chanmon_cfgs(4);

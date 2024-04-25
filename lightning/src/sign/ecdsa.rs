@@ -71,7 +71,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// commitment transactions which will be broadcasted later, after the channel has moved on to a
 	/// newer state. Thus, needs its own method as [`sign_holder_commitment`] may enforce that we
 	/// only ever get called once.
-	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment(
 		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;

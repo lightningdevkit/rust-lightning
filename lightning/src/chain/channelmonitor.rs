@@ -1628,7 +1628,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Unsafe test-only version of `broadcast_latest_holder_commitment_txn` used by our test framework
 	/// to bypass HolderCommitmentTransaction state update lockdown after signature and generate
 	/// revoked commitment transaction.
-	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	pub fn unsafe_get_latest_holder_commitment_txn<L: Deref>(&self, logger: &L) -> Vec<Transaction>
 	where L::Target: Logger {
 		let mut inner = self.inner.lock().unwrap();
@@ -1917,7 +1917,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().counterparty_payment_script = script;
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn do_signer_call<F: FnMut(&Signer) -> ()>(&self, mut f: F) {
 		let inner = self.inner.lock().unwrap();
 		f(&inner.onchain_tx_handler.signer);
@@ -3621,7 +3621,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 	}
 
-	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	/// Note that this includes possibly-locktimed-in-the-future transactions!
 	fn unsafe_get_latest_holder_commitment_txn<L: Deref>(
 		&mut self, logger: &WithChannelMonitor<L>
