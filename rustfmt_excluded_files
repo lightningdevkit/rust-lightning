@@ -190,7 +190,6 @@
 ./lightning/src/ln/chanmon_update_fail_tests.rs
 ./lightning/src/ln/channel.rs
 ./lightning/src/ln/channel_id.rs
-./lightning/src/ln/channel_keys.rs
 ./lightning/src/ln/channelmanager.rs
 ./lightning/src/ln/features.rs
 ./lightning/src/ln/functional_test_utils.rs

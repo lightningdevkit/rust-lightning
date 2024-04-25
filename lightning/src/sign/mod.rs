@@ -110,8 +110,8 @@ pub struct DelayedPaymentOutputDescriptor {
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this output originated from, possibly indirectly.
 	pub channel_value_satoshis: u64,
-	/// The channel public keys and other parameters needed to generate a spending transaction or to provide to a re-derived signer through
-	/// [`ChannelSigner::provide_channel_parameters`].
+	/// The channel public keys and other parameters needed to generate a spending transaction or
+	/// to provide to a re-derived signer through [`ChannelSigner::provide_channel_parameters`].
 	///
 	/// Added as optional, but always `Some` if the descriptor was produced in v0.0.123 or later.
 	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
@@ -405,7 +405,7 @@ impl SpendableOutputDescriptor {
 									subtype: 0,
 									key: "add_tweak".as_bytes().to_vec(),
 								},
-								add_tweak.to_vec(),
+								add_tweak.as_byte_array().to_vec(),
 							)]
 							.into_iter()
 							.collect()

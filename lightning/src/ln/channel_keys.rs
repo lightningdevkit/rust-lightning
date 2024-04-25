@@ -31,26 +31,30 @@ macro_rules! doc_comment {
 	};
 }
 macro_rules! basepoint_impl {
-	($BasepointT:ty) => {
+	($BasepointT:ty $(, $KeyName: expr)?) => {
 		impl $BasepointT {
 			/// Get inner Public Key
 			pub fn to_public_key(&self) -> PublicKey {
 				self.0
 			}
 
-			/// Derives a per-commitment-transaction (eg an htlc key or delayed_payment key) private key addition tweak
-			/// from a basepoint and a per_commitment_point:
-			/// `privkey = basepoint_secret + SHA256(per_commitment_point || basepoint)`
-			/// This calculates the hash part in the tweak derivation process, which is used to ensure
-			/// that each key is unique and cannot be guessed by an external party. It is equivalent
-			/// to the `from_basepoint` method, but without the addition operation, providing just the
-			/// tweak from the hash of the per_commitment_point and the basepoint.
-			pub fn derive_add_tweak(&self, per_commitment_point: &PublicKey) -> [u8; 32] {
-				let mut sha = Sha256::engine();
-				sha.input(&per_commitment_point.serialize());
-				sha.input(&self.to_public_key().serialize());
-				Sha256::from_engine(sha).to_byte_array()
-			}
+			$(doc_comment!(
+				concat!(
+				"Derives the \"tweak\" used in calculate [`", $KeyName, "::from_basepoint`].\n",
+				"\n",
+				"[`", $KeyName, "::from_basepoint`] calculates a private key as:\n",
+				"`privkey = basepoint_secret + SHA256(per_commitment_point || basepoint)`\n",
+				"\n",
+				"This calculates the hash part in the tweak derivation process, which is used to\n",
+				"ensure that each key is unique and cannot be guessed by an external party."
+				),
+				pub fn derive_add_tweak(&self, per_commitment_point: &PublicKey) -> Sha256 {
+					let mut sha = Sha256::engine();
+					sha.input(&per_commitment_point.serialize());
+					sha.input(&self.to_public_key().serialize());
+					Sha256::from_engine(sha)
+				});
+			)?
 		}
 
 		impl From<PublicKey> for $BasepointT {
@@ -110,7 +114,7 @@ macro_rules! key_read_write {
 /// state broadcasted was previously revoked.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct DelayedPaymentBasepoint(pub PublicKey);
-basepoint_impl!(DelayedPaymentBasepoint);
+basepoint_impl!(DelayedPaymentBasepoint, "DelayedPaymentKey");
 key_read_write!(DelayedPaymentBasepoint);
 
 /// A derived key built from a [`DelayedPaymentBasepoint`] and `per_commitment_point`.
@@ -137,7 +141,7 @@ key_read_write!(DelayedPaymentKey);
 /// Thus, both channel counterparties' HTLC keys will appears in each HTLC output's script.
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct HtlcBasepoint(pub PublicKey);
-basepoint_impl!(HtlcBasepoint);
+basepoint_impl!(HtlcBasepoint, "HtlcKey");
 key_read_write!(HtlcBasepoint);
 
 /// A derived key built from a [`HtlcBasepoint`] and `per_commitment_point`.
@@ -166,18 +170,20 @@ fn derive_public_key<T: secp256k1::Signing>(
 	let mut sha = Sha256::engine();
 	sha.input(&per_commitment_point.serialize());
 	sha.input(&base_point.serialize());
-	let res = Sha256::from_engine(sha).to_byte_array();
+	let res = Sha256::from_engine(sha);
 
 	add_public_key_tweak(secp_ctx, base_point, &res)
 }
 
 /// Adds a tweak to a public key to derive a new public key.
+///
+/// May panic if `tweak` is not the output of a SHA-256 hash.
 pub fn add_public_key_tweak<T: secp256k1::Signing>(
-	secp_ctx: &Secp256k1<T>, base_point: &PublicKey, tweak: &[u8; 32],
+	secp_ctx: &Secp256k1<T>, base_point: &PublicKey, tweak: &Sha256,
 ) -> PublicKey {
 	let hashkey = PublicKey::from_secret_key(
 		&secp_ctx,
-		&SecretKey::from_slice(tweak)
+		&SecretKey::from_slice(tweak.as_byte_array())
 			.expect("Hashes should always be valid keys unless SHA-256 is broken"),
 	);
 	base_point.combine(&hashkey)
