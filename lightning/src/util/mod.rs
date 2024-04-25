@@ -20,7 +20,9 @@ pub mod ser;
 pub mod message_signing;
 pub mod invoice;
 pub mod persist;
+pub mod scid_utils;
 pub mod string;
+pub mod sweep;
 pub mod wakers;
 #[cfg(fuzzing)]
 pub mod base32;
@@ -30,8 +32,8 @@ pub(crate) mod base32;
 pub(crate) mod atomic_counter;
 pub(crate) mod byte_utils;
 pub(crate) mod transaction_utils;
-pub(crate) mod scid_utils;
 pub(crate) mod time;
+pub mod hash_tables;
 
 pub mod indexed_map;
 

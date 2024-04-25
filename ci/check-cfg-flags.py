@@ -13,6 +13,10 @@ def check_feature(feature):
         pass
     elif feature == "no-std":
         pass
+    elif feature == "possiblyrandom":
+        pass
+    elif feature == "getrandom":
+        pass
     elif feature == "hashbrown":
         pass
     elif feature == "backtrace":
@@ -93,6 +97,8 @@ def check_cfg_tag(cfg):
     elif cfg == "require_route_graph_test":
         pass
     elif cfg == "dual_funding":
+        pass
+    elif cfg == "splicing":
         pass
     else:
         print("Bad cfg tag: " + cfg)

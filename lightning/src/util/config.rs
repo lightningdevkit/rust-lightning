@@ -13,6 +13,9 @@
 use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 
+#[cfg(fuzzing)]
+use crate::util::ser::Readable;
+
 /// Configuration we set when applicable.
 ///
 /// Default::default() provides sane defaults.
@@ -210,6 +213,27 @@ impl Default for ChannelHandshakeConfig {
 	}
 }
 
+// When fuzzing, we want to allow the fuzzer to pick any configuration parameters. Thus, we
+// implement Readable here in a naive way (which is a bit easier for the fuzzer to handle). We
+// don't really want to ever expose this to users (if we did we'd want to use TLVs).
+#[cfg(fuzzing)]
+impl Readable for ChannelHandshakeConfig {
+	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
+		Ok(Self {
+			minimum_depth: Readable::read(reader)?,
+			our_to_self_delay: Readable::read(reader)?,
+			our_htlc_minimum_msat: Readable::read(reader)?,
+			max_inbound_htlc_value_in_flight_percent_of_channel: Readable::read(reader)?,
+			negotiate_scid_privacy: Readable::read(reader)?,
+			announced_channel: Readable::read(reader)?,
+			commit_upfront_shutdown_pubkey: Readable::read(reader)?,
+			their_channel_reserve_proportional_millionths: Readable::read(reader)?,
+			negotiate_anchors_zero_fee_htlc_tx: Readable::read(reader)?,
+			our_max_accepted_htlcs: Readable::read(reader)?,
+		})
+	}
+}
+
 /// Optional channel limits which are applied during channel creation.
 ///
 /// These limits are only applied to our counterparty's limits, not our own.
@@ -312,6 +336,27 @@ impl Default for ChannelHandshakeLimits {
 			force_announced_channel_preference: true,
 			their_to_self_delay: MAX_LOCAL_BREAKDOWN_TIMEOUT,
 		}
+	}
+}
+
+// When fuzzing, we want to allow the fuzzer to pick any configuration parameters. Thus, we
+// implement Readable here in a naive way (which is a bit easier for the fuzzer to handle). We
+// don't really want to ever expose this to users (if we did we'd want to use TLVs).
+#[cfg(fuzzing)]
+impl Readable for ChannelHandshakeLimits {
+	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
+		Ok(Self {
+			min_funding_satoshis: Readable::read(reader)?,
+			max_funding_satoshis: Readable::read(reader)?,
+			max_htlc_minimum_msat: Readable::read(reader)?,
+			min_max_htlc_value_in_flight_msat: Readable::read(reader)?,
+			max_channel_reserve_satoshis: Readable::read(reader)?,
+			min_max_accepted_htlcs: Readable::read(reader)?,
+			trust_own_funding_0conf: Readable::read(reader)?,
+			max_minimum_depth: Readable::read(reader)?,
+			force_announced_channel_preference: Readable::read(reader)?,
+			their_to_self_delay: Readable::read(reader)?,
+		})
 	}
 }
 
@@ -779,5 +824,24 @@ impl Default for UserConfig {
 			accept_intercept_htlcs: false,
 			accept_mpp_keysend: false,
 		}
+	}
+}
+
+// When fuzzing, we want to allow the fuzzer to pick any configuration parameters. Thus, we
+// implement Readable here in a naive way (which is a bit easier for the fuzzer to handle). We
+// don't really want to ever expose this to users (if we did we'd want to use TLVs).
+#[cfg(fuzzing)]
+impl Readable for UserConfig {
+	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
+		Ok(Self {
+			channel_handshake_config: Readable::read(reader)?,
+			channel_handshake_limits: Readable::read(reader)?,
+			channel_config: Readable::read(reader)?,
+			accept_forwards_to_priv_channels: Readable::read(reader)?,
+			accept_inbound_channels: Readable::read(reader)?,
+			manually_accept_inbound_channels: Readable::read(reader)?,
+			accept_intercept_htlcs: Readable::read(reader)?,
+			accept_mpp_keysend: Readable::read(reader)?,
+		})
 	}
 }

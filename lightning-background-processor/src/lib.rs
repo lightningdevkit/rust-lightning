@@ -24,19 +24,17 @@ extern crate lightning_rapid_gossip_sync;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::chain::chainmonitor::{ChainMonitor, Persist};
-use lightning::sign::{EntropySource, NodeSigner, SignerProvider};
 use lightning::events::{Event, PathFailure};
 #[cfg(feature = "std")]
 use lightning::events::EventHandler;
 #[cfg(any(feature = "std", feature = "futures"))]
 use lightning::events::EventsProvider;
 
-use lightning::ln::channelmanager::ChannelManager;
+use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::OnionMessageHandler;
 use lightning::ln::peer_handler::APeerManager;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 use lightning::routing::utxo::UtxoLookup;
-use lightning::routing::router::Router;
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::util::logger::Logger;
 use lightning::util::persist::Persister;
@@ -81,6 +79,8 @@ use alloc::vec::Vec;
 /// However, as long as [`ChannelMonitor`] backups are sound, no funds besides those used for
 /// unilateral chain closure fees are at risk.
 ///
+/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
+/// [`ChannelManager::timer_tick_occurred`]: lightning::ln::channelmanager::ChannelManager::timer_tick_occurred
 /// [`ChannelMonitor`]: lightning::chain::channelmonitor::ChannelMonitor
 /// [`Event`]: lightning::events::Event
 /// [`PeerManager::timer_tick_occurred`]: lightning::ln::peer_handler::PeerManager::timer_tick_occurred
@@ -286,7 +286,7 @@ macro_rules! define_run_body {
 		$timer_elapsed: expr, $check_slow_await: expr, $time_fetch: expr,
 	) => { {
 		log_trace!($logger, "Calling ChannelManager's timer_tick_occurred on startup");
-		$channel_manager.timer_tick_occurred();
+		$channel_manager.get_cm().timer_tick_occurred();
 		log_trace!($logger, "Rebroadcasting monitor's pending claims on startup");
 		$chain_monitor.rebroadcast_pending_claims();
 
@@ -336,14 +336,14 @@ macro_rules! define_run_body {
 				break;
 			}
 
-			if $channel_manager.get_and_clear_needs_persistence() {
+			if $channel_manager.get_cm().get_and_clear_needs_persistence() {
 				log_trace!($logger, "Persisting ChannelManager...");
-				$persister.persist_manager(&*$channel_manager)?;
+				$persister.persist_manager(&$channel_manager)?;
 				log_trace!($logger, "Done persisting ChannelManager.");
 			}
 			if $timer_elapsed(&mut last_freshness_call, FRESHNESS_TIMER) {
 				log_trace!($logger, "Calling ChannelManager's timer_tick_occurred");
-				$channel_manager.timer_tick_occurred();
+				$channel_manager.get_cm().timer_tick_occurred();
 				last_freshness_call = $get_timer(FRESHNESS_TIMER);
 			}
 			if $timer_elapsed(&mut last_onion_message_handler_call, ONION_MESSAGE_HANDLER_TIMER) {
@@ -440,7 +440,7 @@ macro_rules! define_run_body {
 		// After we exit, ensure we persist the ChannelManager one final time - this avoids
 		// some races where users quit while channel updates were in-flight, with
 		// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
-		$persister.persist_manager(&*$channel_manager)?;
+		$persister.persist_manager(&$channel_manager)?;
 
 		// Persist Scorer on exit
 		if let Some(ref scorer) = $scorer {
@@ -539,45 +539,64 @@ use core::task;
 /// # use std::sync::atomic::{AtomicBool, Ordering};
 /// # use std::time::SystemTime;
 /// # use lightning_background_processor::{process_events_async, GossipSync};
-/// # struct MyStore {}
-/// # impl lightning::util::persist::KVStore for MyStore {
+/// # struct Logger {}
+/// # impl lightning::util::logger::Logger for Logger {
+/// #     fn log(&self, _record: lightning::util::logger::Record) {}
+/// # }
+/// # struct Store {}
+/// # impl lightning::util::persist::KVStore for Store {
 /// #     fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> io::Result<Vec<u8>> { Ok(Vec::new()) }
 /// #     fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> io::Result<()> { Ok(()) }
 /// #     fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> io::Result<()> { Ok(()) }
 /// #     fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> io::Result<Vec<String>> { Ok(Vec::new()) }
 /// # }
-/// # struct MyEventHandler {}
-/// # impl MyEventHandler {
+/// # struct EventHandler {}
+/// # impl EventHandler {
 /// #     async fn handle_event(&self, _: lightning::events::Event) {}
 /// # }
 /// # #[derive(Eq, PartialEq, Clone, Hash)]
-/// # struct MySocketDescriptor {}
-/// # impl lightning::ln::peer_handler::SocketDescriptor for MySocketDescriptor {
+/// # struct SocketDescriptor {}
+/// # impl lightning::ln::peer_handler::SocketDescriptor for SocketDescriptor {
 /// #     fn send_data(&mut self, _data: &[u8], _resume_read: bool) -> usize { 0 }
 /// #     fn disconnect_socket(&mut self) {}
 /// # }
-/// # type MyBroadcaster = dyn lightning::chain::chaininterface::BroadcasterInterface + Send + Sync;
-/// # type MyFeeEstimator = dyn lightning::chain::chaininterface::FeeEstimator + Send + Sync;
-/// # type MyNodeSigner = dyn lightning::sign::NodeSigner + Send + Sync;
-/// # type MyUtxoLookup = dyn lightning::routing::utxo::UtxoLookup + Send + Sync;
-/// # type MyFilter = dyn lightning::chain::Filter + Send + Sync;
-/// # type MyLogger = dyn lightning::util::logger::Logger + Send + Sync;
-/// # type MyChainMonitor = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<MyFilter>, Arc<MyBroadcaster>, Arc<MyFeeEstimator>, Arc<MyLogger>, Arc<MyStore>>;
-/// # type MyPeerManager = lightning::ln::peer_handler::SimpleArcPeerManager<MySocketDescriptor, MyChainMonitor, MyBroadcaster, MyFeeEstimator, Arc<MyUtxoLookup>, MyLogger>;
-/// # type MyNetworkGraph = lightning::routing::gossip::NetworkGraph<Arc<MyLogger>>;
-/// # type MyGossipSync = lightning::routing::gossip::P2PGossipSync<Arc<MyNetworkGraph>, Arc<MyUtxoLookup>, Arc<MyLogger>>;
-/// # type MyChannelManager = lightning::ln::channelmanager::SimpleArcChannelManager<MyChainMonitor, MyBroadcaster, MyFeeEstimator, MyLogger>;
-/// # type MyScorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<MyNetworkGraph>, Arc<MyLogger>>>;
-///
-/// # async fn setup_background_processing(my_persister: Arc<MyStore>, my_event_handler: Arc<MyEventHandler>, my_chain_monitor: Arc<MyChainMonitor>, my_channel_manager: Arc<MyChannelManager>, my_gossip_sync: Arc<MyGossipSync>, my_logger: Arc<MyLogger>, my_scorer: Arc<MyScorer>, my_peer_manager: Arc<MyPeerManager>) {
-///	let background_persister = Arc::clone(&my_persister);
-///	let background_event_handler = Arc::clone(&my_event_handler);
-///	let background_chain_mon = Arc::clone(&my_chain_monitor);
-///	let background_chan_man = Arc::clone(&my_channel_manager);
-///	let background_gossip_sync = GossipSync::p2p(Arc::clone(&my_gossip_sync));
-///	let background_peer_man = Arc::clone(&my_peer_manager);
-///	let background_logger = Arc::clone(&my_logger);
-///	let background_scorer = Arc::clone(&my_scorer);
+/// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<Store>>;
+/// # type NetworkGraph = lightning::routing::gossip::NetworkGraph<Arc<Logger>>;
+/// # type P2PGossipSync<UL> = lightning::routing::gossip::P2PGossipSync<Arc<NetworkGraph>, Arc<UL>, Arc<Logger>>;
+/// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, FE, Logger>;
+/// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
+/// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger>;
+/// #
+/// # struct Node<
+/// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
+/// #     F: lightning::chain::Filter + Send + Sync + 'static,
+/// #     FE: lightning::chain::chaininterface::FeeEstimator + Send + Sync + 'static,
+/// #     UL: lightning::routing::utxo::UtxoLookup + Send + Sync + 'static,
+/// # > {
+/// #     peer_manager: Arc<PeerManager<B, F, FE, UL>>,
+/// #     event_handler: Arc<EventHandler>,
+/// #     channel_manager: Arc<ChannelManager<B, F, FE>>,
+/// #     chain_monitor: Arc<ChainMonitor<B, F, FE>>,
+/// #     gossip_sync: Arc<P2PGossipSync<UL>>,
+/// #     persister: Arc<Store>,
+/// #     logger: Arc<Logger>,
+/// #     scorer: Arc<Scorer>,
+/// # }
+/// #
+/// # async fn setup_background_processing<
+/// #     B: lightning::chain::chaininterface::BroadcasterInterface + Send + Sync + 'static,
+/// #     F: lightning::chain::Filter + Send + Sync + 'static,
+/// #     FE: lightning::chain::chaininterface::FeeEstimator + Send + Sync + 'static,
+/// #     UL: lightning::routing::utxo::UtxoLookup + Send + Sync + 'static,
+/// # >(node: Node<B, F, FE, UL>) {
+///	let background_persister = Arc::clone(&node.persister);
+///	let background_event_handler = Arc::clone(&node.event_handler);
+///	let background_chain_mon = Arc::clone(&node.chain_monitor);
+///	let background_chan_man = Arc::clone(&node.channel_manager);
+///	let background_gossip_sync = GossipSync::p2p(Arc::clone(&node.gossip_sync));
+///	let background_peer_man = Arc::clone(&node.peer_manager);
+///	let background_logger = Arc::clone(&node.logger);
+///	let background_scorer = Arc::clone(&node.scorer);
 ///
 ///	// Setup the sleeper.
 ///	let (stop_sender, stop_receiver) = tokio::sync::watch::channel(());
@@ -607,9 +626,9 @@ use core::task;
 ///			sleeper,
 ///			mobile_interruptable_platform,
 ///			|| Some(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap())
-///			)
-///			.await
-///			.expect("Failed to process events");
+///		)
+///		.await
+///		.expect("Failed to process events");
 ///	});
 ///
 ///	// Stop the background processing.
@@ -622,21 +641,16 @@ pub async fn process_events_async<
 	'a,
 	UL: 'static + Deref + Send + Sync,
 	CF: 'static + Deref + Send + Sync,
-	CW: 'static + Deref + Send + Sync,
 	T: 'static + Deref + Send + Sync,
-	ES: 'static + Deref + Send + Sync,
-	NS: 'static + Deref + Send + Sync,
-	SP: 'static + Deref + Send + Sync,
 	F: 'static + Deref + Send + Sync,
-	R: 'static + Deref + Send + Sync,
 	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 	L: 'static + Deref + Send + Sync,
 	P: 'static + Deref + Send + Sync,
 	EventHandlerFuture: core::future::Future<Output = ()>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
-	M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::EcdsaSigner, CF, T, F, L, P>> + Send + Sync,
-	CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
+	M: 'static + Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>> + Send + Sync,
+	CM: 'static + Deref + Send + Sync,
 	PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 	RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 	PM: 'static + Deref + Send + Sync,
@@ -653,16 +667,12 @@ pub async fn process_events_async<
 where
 	UL::Target: 'static + UtxoLookup,
 	CF::Target: 'static + chain::Filter,
-	CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 	T::Target: 'static + BroadcasterInterface,
-	ES::Target: 'static + EntropySource,
-	NS::Target: 'static + NodeSigner,
-	SP::Target: 'static + SignerProvider,
 	F::Target: 'static + FeeEstimator,
-	R::Target: 'static + Router,
 	L::Target: 'static + Logger,
-	P::Target: 'static + Persist<<SP::Target as SignerProvider>::EcdsaSigner>,
-	PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
+	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+	PS::Target: 'static + Persister<'a, CM, L, SC>,
+	CM::Target: AChannelManager + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
 {
 	let mut should_break = false;
@@ -693,11 +703,11 @@ where
 	define_run_body!(
 		persister, chain_monitor,
 		chain_monitor.process_pending_events_async(async_event_handler).await,
-		channel_manager, channel_manager.process_pending_events_async(async_event_handler).await,
+		channel_manager, channel_manager.get_cm().process_pending_events_async(async_event_handler).await,
 		peer_manager, process_onion_message_handler_events_async(&peer_manager, async_event_handler).await,
 		gossip_sync, logger, scorer, should_break, {
 			let fut = Selector {
-				a: channel_manager.get_event_or_persistence_needed_future(),
+				a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
 				b: chain_monitor.get_update_future(),
 				c: sleeper(if mobile_interruptable_platform { Duration::from_millis(100) } else { Duration::from_secs(FASTEST_TIMER) }),
 			};
@@ -788,20 +798,15 @@ impl BackgroundProcessor {
 		'a,
 		UL: 'static + Deref + Send + Sync,
 		CF: 'static + Deref + Send + Sync,
-		CW: 'static + Deref + Send + Sync,
 		T: 'static + Deref + Send + Sync,
-		ES: 'static + Deref + Send + Sync,
-		NS: 'static + Deref + Send + Sync,
-		SP: 'static + Deref + Send + Sync,
 		F: 'static + Deref + Send + Sync,
-		R: 'static + Deref + Send + Sync,
 		G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 		L: 'static + Deref + Send + Sync,
 		P: 'static + Deref + Send + Sync,
 		EH: 'static + EventHandler + Send,
 		PS: 'static + Deref + Send,
-		M: 'static + Deref<Target = ChainMonitor<<SP::Target as SignerProvider>::EcdsaSigner, CF, T, F, L, P>> + Send + Sync,
-		CM: 'static + Deref<Target = ChannelManager<CW, T, ES, NS, SP, F, R, L>> + Send + Sync,
+		M: 'static + Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>> + Send + Sync,
+		CM: 'static + Deref + Send + Sync,
 		PGS: 'static + Deref<Target = P2PGossipSync<G, UL, L>> + Send + Sync,
 		RGS: 'static + Deref<Target = RapidGossipSync<G, L>> + Send,
 		PM: 'static + Deref + Send + Sync,
@@ -814,16 +819,12 @@ impl BackgroundProcessor {
 	where
 		UL::Target: 'static + UtxoLookup,
 		CF::Target: 'static + chain::Filter,
-		CW::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
 		T::Target: 'static + BroadcasterInterface,
-		ES::Target: 'static + EntropySource,
-		NS::Target: 'static + NodeSigner,
-		SP::Target: 'static + SignerProvider,
 		F::Target: 'static + FeeEstimator,
-		R::Target: 'static + Router,
 		L::Target: 'static + Logger,
-		P::Target: 'static + Persist<<SP::Target as SignerProvider>::EcdsaSigner>,
-		PS::Target: 'static + Persister<'a, CW, T, ES, NS, SP, F, R, L, SC>,
+		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
+		PS::Target: 'static + Persister<'a, CM, L, SC>,
+		CM::Target: AChannelManager + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
@@ -849,13 +850,13 @@ impl BackgroundProcessor {
 			};
 			define_run_body!(
 				persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
-				channel_manager, channel_manager.process_pending_events(&event_handler),
+				channel_manager, channel_manager.get_cm().process_pending_events(&event_handler),
 				peer_manager,
 				peer_manager.onion_message_handler().process_pending_events(&event_handler),
 				gossip_sync, logger, scorer, stop_thread.load(Ordering::Acquire),
 				{ Sleeper::from_two_futures(
-					channel_manager.get_event_or_persistence_needed_future(),
-					chain_monitor.get_update_future()
+					&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+					&chain_monitor.get_update_future()
 				).wait_timeout(Duration::from_millis(100)); },
 				|_| Instant::now(), |time: &Instant, dur| time.elapsed().as_secs() > dur, false,
 				|| {
@@ -918,18 +919,20 @@ impl Drop for BackgroundProcessor {
 
 #[cfg(all(feature = "std", test))]
 mod tests {
+	use bitcoin::{ScriptBuf, Txid};
 	use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
 	use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1};
-	use lightning::chain::{BestBlock, Confirm, chainmonitor};
+	use lightning::chain::{BestBlock, Confirm, chainmonitor, Filter};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
-	use lightning::sign::{InMemorySigner, KeysManager};
+	use lightning::sign::{InMemorySigner, KeysManager, ChangeDestinationSource};
 	use lightning::chain::transaction::OutPoint;
 	use lightning::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::{get_event_msg, get_event};
-	use lightning::ln::PaymentHash;
+	use lightning::ln::{PaymentHash, ChannelId};
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures};
@@ -946,6 +949,7 @@ mod tests {
 		CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_KEY,
 		NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
 		SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY};
+	use lightning::util::sweep::{OutputSweeper, OutputSpendStatus};
 	use lightning_persister::fs_store::FilesystemStore;
 	use std::collections::VecDeque;
 	use std::{fs, env};
@@ -984,6 +988,7 @@ mod tests {
 			Arc<DefaultRouter<
 				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 				Arc<test_utils::TestLogger>,
+				Arc<KeysManager>,
 				Arc<LockingWrapper<TestScorer>>,
 				(),
 				TestScorer>
@@ -1007,6 +1012,9 @@ mod tests {
 		logger: Arc<test_utils::TestLogger>,
 		best_block: BestBlock,
 		scorer: Arc<LockingWrapper<TestScorer>>,
+		sweeper: Arc<OutputSweeper<Arc<test_utils::TestBroadcaster>, Arc<TestWallet>,
+			Arc<test_utils::TestFeeEstimator>, Arc<dyn Filter + Sync + Send>, Arc<FilesystemStore>,
+			Arc<test_utils::TestLogger>, Arc<KeysManager>>>,
 	}
 
 	impl Node {
@@ -1245,6 +1253,14 @@ mod tests {
 		}
 	}
 
+	struct TestWallet {}
+
+	impl ChangeDestinationSource for TestWallet {
+		fn get_change_destination_script(&self) -> Result<ScriptBuf, ()> {
+			Ok(ScriptBuf::new())
+		}
+	}
+
 	fn get_full_filepath(filepath: String, filename: String) -> String {
 		let mut path = PathBuf::from(filepath);
 		path.push(filename);
@@ -1263,8 +1279,10 @@ mod tests {
 			let genesis_block = genesis_block(network);
 			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
 			let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
+			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let seed = [i as u8; 32];
-			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), seed, scorer.clone(), Default::default()));
+			let keys_manager = Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos()));
+			let router = Arc::new(DefaultRouter::new(network_graph.clone(), logger.clone(), Arc::clone(&keys_manager), scorer.clone(), Default::default()));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
 			let kv_store = Arc::new(FilesystemStore::new(format!("{}_persister_{}", &persist_dir, i).into()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
@@ -1273,6 +1291,9 @@ mod tests {
 			let best_block = BestBlock::from_network(network);
 			let params = ChainParameters { network, best_block };
 			let manager = Arc::new(ChannelManager::new(fee_estimator.clone(), chain_monitor.clone(), tx_broadcaster.clone(), router.clone(), logger.clone(), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), UserConfig::default(), params, genesis_block.header.time));
+			let wallet = Arc::new(TestWallet {});
+			let sweeper = Arc::new(OutputSweeper::new(best_block, Arc::clone(&tx_broadcaster), Arc::clone(&fee_estimator),
+				None::<Arc<dyn Filter + Sync + Send>>, Arc::clone(&keys_manager), wallet, Arc::clone(&kv_store), Arc::clone(&logger)));
 			let p2p_gossip_sync = Arc::new(P2PGossipSync::new(network_graph.clone(), Some(chain_source.clone()), logger.clone()));
 			let rapid_gossip_sync = Arc::new(RapidGossipSync::new(network_graph.clone(), logger.clone()));
 			let msg_handler = MessageHandler {
@@ -1281,7 +1302,7 @@ mod tests {
 				onion_message_handler: IgnoringMessageHandler{}, custom_message_handler: IgnoringMessageHandler{}
 			};
 			let peer_manager = Arc::new(PeerManager::new(msg_handler, 0, &seed, logger.clone(), keys_manager.clone()));
-			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, kv_store, tx_broadcaster, network_graph, logger, best_block, scorer };
+			let node = Node { node: manager, p2p_gossip_sync, rapid_gossip_sync, peer_manager, chain_monitor, kv_store, tx_broadcaster, network_graph, logger, best_block, scorer, sweeper };
 			nodes.push(node);
 		}
 
@@ -1341,8 +1362,8 @@ mod tests {
 
 	fn confirm_transaction_depth(node: &mut Node, tx: &Transaction, depth: u32) {
 		for i in 1..=depth {
-			let prev_blockhash = node.best_block.block_hash();
-			let height = node.best_block.height() + 1;
+			let prev_blockhash = node.best_block.block_hash;
+			let height = node.best_block.height + 1;
 			let header = create_dummy_header(prev_blockhash, height);
 			let txdata = vec![(0, tx)];
 			node.best_block = BestBlock::new(header.block_hash(), height);
@@ -1350,15 +1371,40 @@ mod tests {
 				1 => {
 					node.node.transactions_confirmed(&header, &txdata, height);
 					node.chain_monitor.transactions_confirmed(&header, &txdata, height);
+					node.sweeper.transactions_confirmed(&header, &txdata, height);
 				},
 				x if x == depth => {
+					// We need the TestBroadcaster to know about the new height so that it doesn't think
+					// we're violating the time lock requirements of transactions broadcasted at that
+					// point.
+					node.tx_broadcaster.blocks.lock().unwrap().push((genesis_block(Network::Bitcoin), height));
 					node.node.best_block_updated(&header, height);
 					node.chain_monitor.best_block_updated(&header, height);
+					node.sweeper.best_block_updated(&header, height);
 				},
 				_ => {},
 			}
 		}
 	}
+
+	fn advance_chain(node: &mut Node, num_blocks: u32) {
+		for i in 1..=num_blocks {
+			let prev_blockhash = node.best_block.block_hash;
+			let height = node.best_block.height + 1;
+			let header = create_dummy_header(prev_blockhash, height);
+			node.best_block = BestBlock::new(header.block_hash(), height);
+			if i == num_blocks {
+				// We need the TestBroadcaster to know about the new height so that it doesn't think
+				// we're violating the time lock requirements of transactions broadcasted at that
+				// point.
+				node.tx_broadcaster.blocks.lock().unwrap().push((genesis_block(Network::Bitcoin), height));
+				node.node.best_block_updated(&header, height);
+				node.chain_monitor.best_block_updated(&header, height);
+				node.sweeper.best_block_updated(&header, height);
+			}
+		}
+	}
+
 	fn confirm_transaction(node: &mut Node, tx: &Transaction) {
 		confirm_transaction_depth(node, tx, ANTI_REORG_DELAY);
 	}
@@ -1414,7 +1460,7 @@ mod tests {
 		}
 
 		// Force-close the channel.
-		nodes[0].node.force_close_broadcasting_latest_txn(&OutPoint { txid: tx.txid(), index: 0 }.to_channel_id(), &nodes[1].node.get_our_node_id()).unwrap();
+		nodes[0].node.force_close_broadcasting_latest_txn(&ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.txid(), index: 0 }), &nodes[1].node.get_our_node_id()).unwrap();
 
 		// Check that the force-close updates are persisted.
 		check_persisted_data!(nodes[0].node, filepath.clone());
@@ -1590,6 +1636,9 @@ mod tests {
 		let _as_channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_funding);
 		let _bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
+		let broadcast_funding = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+		assert_eq!(broadcast_funding.txid(), funding_tx.txid());
+		assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();
@@ -1615,9 +1664,94 @@ mod tests {
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
 			.expect("Events not handled within deadline");
 		match event {
-			Event::SpendableOutputs { .. } => {},
+			Event::SpendableOutputs { outputs, channel_id } => {
+				nodes[0].sweeper.track_spendable_outputs(outputs, channel_id, false, Some(153)).unwrap();
+			},
 			_ => panic!("Unexpected event: {:?}", event),
 		}
+
+		// Check we don't generate an initial sweeping tx until we reach the required height.
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		if let Some(sweep_tx_0) = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop() {
+			assert!(!tracked_output.is_spent_in(&sweep_tx_0));
+			match tracked_output.status {
+				OutputSpendStatus::PendingInitialBroadcast { delayed_until_height } => {
+					assert_eq!(delayed_until_height, Some(153));
+				}
+				_ => panic!("Unexpected status"),
+			}
+		}
+
+		advance_chain(&mut nodes[0], 3);
+
+		// Check we generate an initial sweeping tx.
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		let sweep_tx_0 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+		match tracked_output.status {
+			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_0.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+
+		// Check we regenerate and rebroadcast the sweeping tx each block.
+		advance_chain(&mut nodes[0], 1);
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		let sweep_tx_1 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+		match tracked_output.status {
+			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_1.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+		assert_ne!(sweep_tx_0, sweep_tx_1);
+
+		advance_chain(&mut nodes[0], 1);
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		let sweep_tx_2 = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
+		match tracked_output.status {
+			OutputSpendStatus::PendingFirstConfirmation { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_2.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+		assert_ne!(sweep_tx_0, sweep_tx_2);
+		assert_ne!(sweep_tx_1, sweep_tx_2);
+
+		// Check we still track the spendable outputs up to ANTI_REORG_DELAY confirmations.
+		confirm_transaction_depth(&mut nodes[0], &sweep_tx_2, 5);
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		match tracked_output.status {
+			OutputSpendStatus::PendingThresholdConfirmations { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_2.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+
+		// Check we still see the transaction as confirmed if we unconfirm any untracked
+		// transaction. (We previously had a bug that would mark tracked transactions as
+		// unconfirmed if any transaction at an unknown block height would be unconfirmed.)
+		let unconf_txid = Txid::from_slice(&[0; 32]).unwrap();
+		nodes[0].sweeper.transaction_unconfirmed(&unconf_txid);
+
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 1);
+		let tracked_output = nodes[0].sweeper.tracked_spendable_outputs().first().unwrap().clone();
+		match tracked_output.status {
+			OutputSpendStatus::PendingThresholdConfirmations { latest_spending_tx, .. } => {
+				assert_eq!(sweep_tx_2.txid(), latest_spending_tx.txid());
+			}
+			_ => panic!("Unexpected status"),
+		}
+
+		// Check we stop tracking the spendable outputs when one of the txs reaches
+		// ANTI_REORG_DELAY confirmations.
+		confirm_transaction_depth(&mut nodes[0], &sweep_tx_0, ANTI_REORG_DELAY);
+		assert_eq!(nodes[0].sweeper.tracked_spendable_outputs().len(), 0);
 
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();

@@ -23,7 +23,7 @@ use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::time::Time;
-#[cfg(all(not(feature = "no-std"), test))]
+#[cfg(all(feature = "std", test))]
 use crate::util::time::tests::SinceEpoch;
 use crate::util::ser::ReadableArgs;
 
@@ -171,7 +171,7 @@ impl PendingOutboundPayment {
 	}
 
 	fn mark_fulfilled(&mut self) {
-		let mut session_privs = HashSet::new();
+		let mut session_privs = new_hash_set();
 		core::mem::swap(&mut session_privs, match self {
 			PendingOutboundPayment::Legacy { session_privs } |
 				PendingOutboundPayment::Retryable { session_privs, .. } |
@@ -186,7 +186,7 @@ impl PendingOutboundPayment {
 
 	fn mark_abandoned(&mut self, reason: PaymentFailureReason) {
 		if let PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } = self {
-			let mut our_session_privs = HashSet::new();
+			let mut our_session_privs = new_hash_set();
 			core::mem::swap(&mut our_session_privs, session_privs);
 			*self = PendingOutboundPayment::Abandoned {
 				session_privs: our_session_privs,
@@ -195,7 +195,7 @@ impl PendingOutboundPayment {
 			};
 		} else if let PendingOutboundPayment::InvoiceReceived { payment_hash, .. } = self {
 			*self = PendingOutboundPayment::Abandoned {
-				session_privs: HashSet::new(),
+				session_privs: new_hash_set(),
 				payment_hash: *payment_hash,
 				reason: Some(reason)
 			};
@@ -287,7 +287,7 @@ pub enum Retry {
 	/// retry, and may retry multiple failed HTLCs at once if they failed around the same time and
 	/// were retried along a route from a single call to [`Router::find_route_with_id`].
 	Attempts(u32),
-	#[cfg(not(feature = "no-std"))]
+	#[cfg(feature = "std")]
 	/// Time elapsed before abandoning retries for a payment. At least one attempt at payment is made;
 	/// see [`PaymentParameters::expiry_time`] to avoid any attempt at payment after a specific time.
 	///
@@ -295,13 +295,13 @@ pub enum Retry {
 	Timeout(core::time::Duration),
 }
 
-#[cfg(feature = "no-std")]
+#[cfg(not(feature = "std"))]
 impl_writeable_tlv_based_enum!(Retry,
 	;
 	(0, Attempts)
 );
 
-#[cfg(not(feature = "no-std"))]
+#[cfg(feature = "std")]
 impl_writeable_tlv_based_enum!(Retry,
 	;
 	(0, Attempts),
@@ -314,10 +314,10 @@ impl Retry {
 			(Retry::Attempts(max_retry_count), PaymentAttempts { count, .. }) => {
 				max_retry_count > count
 			},
-			#[cfg(all(not(feature = "no-std"), not(test)))]
+			#[cfg(all(feature = "std", not(test)))]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
 				*max_duration >= crate::util::time::MonotonicTime::now().duration_since(*first_attempted_at),
-			#[cfg(all(not(feature = "no-std"), test))]
+			#[cfg(all(feature = "std", test))]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
 				*max_duration >= SinceEpoch::now().duration_since(*first_attempted_at),
 		}
@@ -343,27 +343,27 @@ pub(crate) struct PaymentAttemptsUsingTime<T: Time> {
 	/// it means the result of the first attempt is not known yet.
 	pub(crate) count: u32,
 	/// This field is only used when retry is `Retry::Timeout` which is only build with feature std
-	#[cfg(not(feature = "no-std"))]
+	#[cfg(feature = "std")]
 	first_attempted_at: T,
-	#[cfg(feature = "no-std")]
+	#[cfg(not(feature = "std"))]
 	phantom: core::marker::PhantomData<T>,
 
 }
 
-#[cfg(not(any(feature = "no-std", test)))]
-type ConfiguredTime = crate::util::time::MonotonicTime;
-#[cfg(feature = "no-std")]
+#[cfg(not(feature = "std"))]
 type ConfiguredTime = crate::util::time::Eternity;
-#[cfg(all(not(feature = "no-std"), test))]
+#[cfg(all(feature = "std", not(test)))]
+type ConfiguredTime = crate::util::time::MonotonicTime;
+#[cfg(all(feature = "std", test))]
 type ConfiguredTime = SinceEpoch;
 
 impl<T: Time> PaymentAttemptsUsingTime<T> {
 	pub(crate) fn new() -> Self {
 		PaymentAttemptsUsingTime {
 			count: 0,
-			#[cfg(not(feature = "no-std"))]
+			#[cfg(feature = "std")]
 			first_attempted_at: T::now(),
-			#[cfg(feature = "no-std")]
+			#[cfg(not(feature = "std"))]
 			phantom: core::marker::PhantomData,
 		}
 	}
@@ -371,9 +371,9 @@ impl<T: Time> PaymentAttemptsUsingTime<T> {
 
 impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
-		#[cfg(feature = "no-std")]
+		#[cfg(not(feature = "std"))]
 		return write!(f, "attempts: {}", self.count);
-		#[cfg(not(feature = "no-std"))]
+		#[cfg(feature = "std")]
 		return write!(
 			f,
 			"attempts: {}, duration: {}s",
@@ -675,7 +675,7 @@ pub(super) struct OutboundPayments {
 impl OutboundPayments {
 	pub(super) fn new() -> Self {
 		Self {
-			pending_outbound_payments: Mutex::new(HashMap::new()),
+			pending_outbound_payments: Mutex::new(new_hash_map()),
 			retry_lock: Mutex::new(()),
 		}
 	}
@@ -1268,7 +1268,7 @@ impl OutboundPayments {
 			retry_strategy,
 			attempts: PaymentAttempts::new(),
 			payment_params,
-			session_privs: HashSet::new(),
+			session_privs: new_hash_set(),
 			pending_amt_msat: 0,
 			pending_fee_msat: Some(0),
 			payment_hash,
@@ -1888,7 +1888,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
@@ -1932,7 +1932,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
@@ -1971,7 +1971,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
@@ -2178,7 +2178,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2229,7 +2229,7 @@ mod tests {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2284,70 +2284,11 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_paying_for_bolt12_invoice() {
-		let logger = test_utils::TestLogger::new();
-		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
-		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
-		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
-
-		let pending_events = Mutex::new(VecDeque::new());
-		let outbound_payments = OutboundPayments::new();
-		let payment_id = PaymentId([0; 32]);
-		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
-
-		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
-			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
-			.build().unwrap()
-			.sign(recipient_sign).unwrap();
-
-		assert!(
-			outbound_payments.add_new_awaiting_invoice(
-				payment_id, expiration, Retry::Attempts(0),
-				Some(invoice.amount_msats() / 100 + 50_000)
-			).is_ok()
-		);
-		assert!(outbound_payments.has_pending_payments());
-
-		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_bolt12_invoice(&invoice),
-			invoice.amount_msats(),
-		);
-		router.expect_find_route(
-			route_params.clone(), Ok(Route { paths: vec![], route_params: Some(route_params) })
-		);
-
-		assert_eq!(
-			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
-			),
-			Ok(()),
-		);
-		assert!(!outbound_payments.has_pending_payments());
-
-		let payment_hash = invoice.payment_hash();
-		let reason = Some(PaymentFailureReason::UnexpectedError);
-
-		assert!(!pending_events.lock().unwrap().is_empty());
-		assert_eq!(
-			pending_events.lock().unwrap().pop_front(),
-			Some((Event::PaymentFailed { payment_id, payment_hash, reason }, None)),
-		);
-		assert!(pending_events.lock().unwrap().is_empty());
-	}
-
-	#[test]
 	fn sends_payment_for_bolt12_invoice() {
 		let logger = test_utils::TestLogger::new();
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
-		let router = test_utils::TestRouter::new(network_graph, &scorer);
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());

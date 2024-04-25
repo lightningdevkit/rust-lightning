@@ -31,7 +31,6 @@ pub mod utils;
 
 extern crate bech32;
 #[macro_use] extern crate lightning;
-extern crate num_traits;
 extern crate secp256k1;
 extern crate alloc;
 #[cfg(any(test, feature = "std"))]
@@ -79,14 +78,7 @@ mod tb;
 
 #[allow(unused_imports)]
 mod prelude {
-	#[cfg(feature = "hashbrown")]
-	extern crate hashbrown;
-
 	pub use alloc::{vec, vec::Vec, string::String};
-	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{HashMap, hash_map};
-	#[cfg(feature = "hashbrown")]
-	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 
 	pub use alloc::string::ToString;
 }
@@ -550,7 +542,7 @@ impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False, tb::False, tb::F
 			amount: None,
 			si_prefix: None,
 			timestamp: None,
-			tagged_fields: Vec::new(),
+			tagged_fields: Vec::with_capacity(8),
 			error: None,
 
 			phantom_d: core::marker::PhantomData,
@@ -1355,6 +1347,15 @@ impl Bolt11Invoice {
 		self.signed_invoice.recover_payee_pub_key().expect("was checked by constructor").0
 	}
 
+	/// Recover the payee's public key if one was included in the invoice, otherwise return the
+	/// recovered public key from the signature
+	pub fn get_payee_pub_key(&self) -> PublicKey {
+		match self.payee_pub_key() {
+			Some(pk) => *pk,
+			None => self.recover_payee_pub_key()
+		}
+	}
+
 	/// Returns the Duration since the Unix epoch at which the invoice expires.
 	/// Returning None if overflow occurred.
 	pub fn expires_at(&self) -> Option<Duration> {
@@ -2062,7 +2063,7 @@ mod test {
 		let route_1 = RouteHint(vec![
 			RouteHintHop {
 				src_node_id: public_key,
-				short_channel_id: de::parse_int_be(&[123; 8], 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes([123; 8]),
 				fees: RoutingFees {
 					base_msat: 2,
 					proportional_millionths: 1,
@@ -2073,7 +2074,7 @@ mod test {
 			},
 			RouteHintHop {
 				src_node_id: public_key,
-				short_channel_id: de::parse_int_be(&[42; 8], 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes([42; 8]),
 				fees: RoutingFees {
 					base_msat: 3,
 					proportional_millionths: 2,
@@ -2098,7 +2099,7 @@ mod test {
 			},
 			RouteHintHop {
 				src_node_id: public_key,
-				short_channel_id: de::parse_int_be(&[1; 8], 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes([1; 8]),
 				fees: RoutingFees {
 					base_msat: 5,
 					proportional_millionths: 4,

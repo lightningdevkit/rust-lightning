@@ -11,7 +11,9 @@
 
 use crate::ln::script::ShutdownScript;
 
-use alloc::string::String;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use core::fmt;
 
 /// Indicates an error on the client's part (usually some variant of attempting to use too-low or

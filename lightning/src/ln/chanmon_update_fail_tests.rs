@@ -173,11 +173,11 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
 			assert_eq!(via_channel_id, Some(channel_id));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_1, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -554,11 +554,11 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
 			assert_eq!(via_channel_id, Some(channel_id));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_2, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -672,11 +672,11 @@ fn test_monitor_update_fail_cs() {
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
 			assert_eq!(via_channel_id, Some(channel_id));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(our_payment_secret, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -1683,11 +1683,11 @@ fn test_monitor_update_fail_claim() {
 			assert_eq!(via_channel_id, Some(channel_id));
 			assert_eq!(via_user_channel_id, Some(42));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_2, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -1699,11 +1699,11 @@ fn test_monitor_update_fail_claim() {
 			assert_eq!(receiver_node_id.unwrap(), nodes[0].node.get_our_node_id());
 			assert_eq!(via_channel_id, Some(channel_id));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_3, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -1955,8 +1955,8 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2634,8 +2634,8 @@ fn test_temporary_error_during_shutdown() {
 	assert_eq!(txn_a, txn_b);
 	assert_eq!(txn_a.len(), 1);
 	check_spends!(txn_a[0], funding_tx);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]

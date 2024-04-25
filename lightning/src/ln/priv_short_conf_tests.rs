@@ -26,7 +26,6 @@ use crate::util::ser::Writeable;
 use crate::util::test_utils;
 
 use crate::prelude::*;
-use core::default::Default;
 
 use crate::ln::functional_test_utils::*;
 

@@ -38,9 +38,9 @@ use crate::ln::onion_utils;
 use crate::onion_message;
 use crate::sign::{NodeSigner, Recipient};
 
+#[allow(unused_imports)]
 use crate::prelude::*;
-#[cfg(feature = "std")]
-use core::convert::TryFrom;
+
 use core::fmt;
 use core::fmt::Debug;
 use core::ops::Deref;
@@ -91,6 +91,16 @@ pub enum DecodeError {
 	Io(io::ErrorKind),
 	/// The message included zlib-compressed values, which we don't support.
 	UnsupportedCompression,
+	/// Value is validly encoded but is dangerous to use.
+	///
+	/// This is used for things like [`ChannelManager`] deserialization where we want to ensure
+	/// that we don't use a [`ChannelManager`] which is in out of sync with the [`ChannelMonitor`].
+	/// This indicates that there is a critical implementation flaw in the storage implementation
+	/// and it's unsafe to continue.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	DangerousValue,
 }
 
 /// An [`init`] message to be sent to or received from a peer.
@@ -533,8 +543,8 @@ pub struct TxSignatures {
 	pub tx_hash: Txid,
 	/// The list of witnesses
 	pub witnesses: Vec<Witness>,
-	/// Optional signature for shared funding outpoint input (signed by both parties)
-	pub tlvs: Option<Signature>,
+	/// Optional signature for the shared input -- the previous funding outpoint -- signed by both peers
+	pub funding_outpoint_sig: Option<Signature>,
 }
 
 /// A tx_init_rbf message which initiates a replacement of the transaction after it's been
@@ -1142,8 +1152,16 @@ pub struct UnsignedNodeAnnouncement {
 	pub alias: NodeAlias,
 	/// List of addresses on which this node is reachable
 	pub addresses: Vec<SocketAddress>,
-	pub(crate) excess_address_data: Vec<u8>,
-	pub(crate) excess_data: Vec<u8>,
+	/// Excess address data which was signed as a part of the message which we do not (yet) understand how
+	/// to decode.
+	///
+	/// This is stored to ensure forward-compatibility as new address types are added to the lightning gossip protocol.
+	pub excess_address_data: Vec<u8>,
+	/// Excess data which was signed as a part of the message which we do not (yet) understand how
+	/// to decode.
+	///
+	/// This is stored to ensure forward-compatibility as new fields are added to the lightning gossip protocol.
+	pub excess_data: Vec<u8>,
 }
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 /// A [`node_announcement`] message to be sent to or received from a peer.
@@ -1420,13 +1438,13 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// Handle an incoming `open_channel` message from the given peer.
 	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel);
 	/// Handle an incoming `open_channel2` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_open_channel_v2(&self, their_node_id: &PublicKey, msg: &OpenChannelV2);
 	/// Handle an incoming `accept_channel` message from the given peer.
 	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel);
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	/// Handle an incoming `accept_channel2` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_accept_channel_v2(&self, their_node_id: &PublicKey, msg: &AcceptChannelV2);
 	/// Handle an incoming `funding_created` message from the given peer.
 	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated);
@@ -1447,42 +1465,42 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 
 	// Splicing
 	/// Handle an incoming `splice` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	fn handle_splice(&self, their_node_id: &PublicKey, msg: &Splice);
 	/// Handle an incoming `splice_ack` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
 	/// Handle an incoming `splice_locked` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &SpliceLocked);
 
 	// Interactive channel construction
 	/// Handle an incoming `tx_add_input message` from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &TxAddInput);
 	/// Handle an incoming `tx_add_output` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_tx_add_output(&self, their_node_id: &PublicKey, msg: &TxAddOutput);
 	/// Handle an incoming `tx_remove_input` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_tx_remove_input(&self, their_node_id: &PublicKey, msg: &TxRemoveInput);
 	/// Handle an incoming `tx_remove_output` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_tx_remove_output(&self, their_node_id: &PublicKey, msg: &TxRemoveOutput);
 	/// Handle an incoming `tx_complete message` from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_tx_complete(&self, their_node_id: &PublicKey, msg: &TxComplete);
 	/// Handle an incoming `tx_signatures` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_tx_signatures(&self, their_node_id: &PublicKey, msg: &TxSignatures);
 	/// Handle an incoming `tx_init_rbf` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_tx_init_rbf(&self, their_node_id: &PublicKey, msg: &TxInitRbf);
 	/// Handle an incoming `tx_ack_rbf` message from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_tx_ack_rbf(&self, their_node_id: &PublicKey, msg: &TxAckRbf);
 	/// Handle an incoming `tx_abort message` from the given peer.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn handle_tx_abort(&self, their_node_id: &PublicKey, msg: &TxAbort);
 
 	// HTLC handling:
@@ -1671,11 +1689,13 @@ pub struct FinalOnionHopData {
 
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
-	use crate::prelude::*;
+	use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::ln::{PaymentPreimage, PaymentSecret};
 	use crate::ln::features::BlindedHopFeatures;
-	use super::FinalOnionHopData;
+	use super::{FinalOnionHopData, TrampolineOnionPacket};
+
+	#[allow(unused_imports)]
+	use crate::prelude::*;
 
 	// These types aren't intended to be pub, but are exposed for direct fuzzing (as we deserialize
 	// them from untrusted input):
@@ -1708,7 +1728,10 @@ mod fuzzy_internal_msgs {
 			cltv_expiry_height: u32,
 			payment_secret: PaymentSecret,
 			payment_constraints: PaymentConstraints,
+			payment_context: PaymentContext,
 			intro_node_blinding_point: Option<PublicKey>,
+			keysend_preimage: Option<PaymentPreimage>,
+			custom_tlvs: Vec<(u64, Vec<u8>)>,
 		}
 	}
 
@@ -1718,6 +1741,13 @@ mod fuzzy_internal_msgs {
 			/// The value, in msat, of the payment after this hop's fee is deducted.
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
+		},
+		#[allow(unused)]
+		TrampolineEntrypoint {
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			multipath_trampoline_data: Option<FinalOnionHopData>,
+			trampoline_packet: TrampolineOnionPacket,
 		},
 		Receive {
 			payment_data: Option<FinalOnionHopData>,
@@ -1737,6 +1767,19 @@ mod fuzzy_internal_msgs {
 			cltv_expiry_height: u32,
 			encrypted_tlvs: Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
+			keysend_preimage: Option<PaymentPreimage>,
+			custom_tlvs: Vec<(u64, Vec<u8>)>,
+		}
+	}
+
+	pub(crate) enum OutboundTrampolinePayload {
+		#[allow(unused)]
+		Forward {
+			/// The value, in msat, of the payment after this hop's fee is deducted.
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			/// The node id to which the trampoline node must find a route
+			outgoing_node_id: PublicKey,
 		}
 	}
 
@@ -1786,6 +1829,52 @@ impl fmt::Debug for OnionPacket {
 	}
 }
 
+/// BOLT 4 onion packet including hop data for the next peer.
+#[derive(Clone, Hash, PartialEq, Eq)]
+pub struct TrampolineOnionPacket {
+	/// Bolt 04 version number
+	pub version: u8,
+	/// A random sepc256k1 point, used to build the ECDH shared secret to decrypt hop_data
+	pub public_key: PublicKey,
+	/// Encrypted payload for the next hop
+	//
+	// Unlike the onion packets used for payments, Trampoline onion packets have to be shorter than
+	// 1300 bytes. The expected default is 650 bytes.
+	// TODO: if 650 ends up being the most common size, optimize this to be:
+	// enum { SixFifty([u8; 650]), VarLen(Vec<u8>) }
+	pub hop_data: Vec<u8>,
+	/// HMAC to verify the integrity of hop_data
+	pub hmac: [u8; 32],
+}
+
+impl onion_utils::Packet for TrampolineOnionPacket {
+	type Data = Vec<u8>;
+	fn new(public_key: PublicKey, hop_data: Vec<u8>, hmac: [u8; 32]) -> Self {
+		Self {
+			version: 0,
+			public_key,
+			hop_data,
+			hmac,
+		}
+	}
+}
+
+impl Writeable for TrampolineOnionPacket {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.version.write(w)?;
+		self.public_key.write(w)?;
+		w.write_all(&self.hop_data)?;
+		self.hmac.write(w)?;
+		Ok(())
+	}
+}
+
+impl Debug for TrampolineOnionPacket {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		f.write_fmt(format_args!("TrampolineOnionPacket version {} with hmac {:?}", self.version, &self.hmac[..]))
+	}
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct OnionErrorPacket {
 	// This really should be a constant size slice, but the spec lets these things be up to 128KB?
@@ -1803,6 +1892,7 @@ impl fmt::Display for DecodeError {
 			DecodeError::BadLengthDescriptor => f.write_str("A length descriptor in the packet didn't describe the later data correctly"),
 			DecodeError::Io(ref e) => fmt::Debug::fmt(e, f),
 			DecodeError::UnsupportedCompression => f.write_str("We don't support receiving messages with zlib-compressed fields"),
+			DecodeError::DangerousValue => f.write_str("Value would be dangerous to continue execution with"),
 		}
 	}
 }
@@ -2044,7 +2134,7 @@ impl_writeable_msg!(TxSignatures, {
 	tx_hash,
 	witnesses,
 }, {
-	(0, tlvs, option),
+	(0, funding_outpoint_sig, option),
 });
 
 impl_writeable_msg!(TxInitRbf, {
@@ -2501,6 +2591,17 @@ impl Writeable for OutboundOnionPayload {
 					(6, short_channel_id, required)
 				});
 			},
+			Self::TrampolineEntrypoint {
+				amt_to_forward, outgoing_cltv_value, ref multipath_trampoline_data,
+				ref trampoline_packet
+			} => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(8, multipath_trampoline_data, option),
+					(20, trampoline_packet, required)
+				});
+			},
 			Self::Receive {
 				ref payment_data, ref payment_metadata, ref keysend_preimage, sender_intended_htlc_amt_msat,
 				cltv_expiry_height, ref custom_tlvs,
@@ -2526,20 +2627,42 @@ impl Writeable for OutboundOnionPayload {
 			},
 			Self::BlindedReceive {
 				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
-				intro_node_blinding_point,
+				intro_node_blinding_point, keysend_preimage, ref custom_tlvs,
 			} => {
+				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
+				// to reject any reserved types in the experimental range if new ones are ever
+				// standardized.
+				let keysend_tlv = keysend_preimage.map(|preimage| (5482373484, preimage.encode()));
+				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
+				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(10, *encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option),
 					(18, HighZeroBytesDroppedBigSize(*total_msat), required)
-				});
+				}, custom_tlvs.iter());
 			},
 		}
 		Ok(())
 	}
 }
+
+impl Writeable for OutboundTrampolinePayload {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match self {
+			Self::Forward { amt_to_forward, outgoing_cltv_value, outgoing_node_id } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(14, outgoing_node_id, required)
+				});
+			}
+		}
+		Ok(())
+	}
+}
+
 
 impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload where NS::Target: NodeSigner {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, &NS)) -> Result<Self, DecodeError> {
@@ -2583,9 +2706,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 		}
 
 		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
-			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() ||
-				keysend_preimage.is_some()
-			{
+			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue)
 			}
 			let enc_tlvs = encrypted_tlvs_opt.ok_or(DecodeError::InvalidValue)?.0;
@@ -2598,7 +2719,9 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
 					short_channel_id, payment_relay, payment_constraints, features
 				})} => {
-					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() {
+					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
+						keysend_preimage.is_some()
+					{
 						return Err(DecodeError::InvalidValue)
 					}
 					Ok(Self::BlindedForward {
@@ -2610,7 +2733,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
-					payment_secret, payment_constraints
+					payment_secret, payment_constraints, payment_context
 				})} => {
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {
@@ -2619,7 +2742,10 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						cltv_expiry_height: cltv_value.ok_or(DecodeError::InvalidValue)?,
 						payment_secret,
 						payment_constraints,
+						payment_context,
 						intro_node_blinding_point,
+						keysend_preimage,
+						custom_tlvs,
 					})
 				},
 			}
@@ -3060,16 +3186,15 @@ impl_writeable_msg!(GossipTimestampFilter, {
 
 #[cfg(test)]
 mod tests {
-	use std::convert::TryFrom;
 	use bitcoin::{Transaction, TxIn, ScriptBuf, Sequence, Witness, TxOut};
 	use hex::DisplayHex;
 	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::ChannelId;
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields};
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{Writeable, Readable, ReadableArgs, Hostname, TransactionU16LenLimited};
+	use crate::util::ser::{BigSize, Hostname, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 
 	use bitcoin::hashes::hex::FromHex;
@@ -3863,7 +3988,7 @@ mod tests {
 					<Vec<u8>>::from_hex("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap(),
 					<Vec<u8>>::from_hex("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap()]),
 			],
-			tlvs: Some(sig_1),
+			funding_outpoint_sig: Some(sig_1),
 		};
 		let encoded_value = tx_signatures.encode();
 		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
@@ -4366,6 +4491,64 @@ mod tests {
 			assert_eq!(sender_intended_htlc_amt_msat, 0x0badf00d01020304);
 			assert_eq!(outgoing_cltv_value, 0xffffffff);
 		} else { panic!(); }
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_trampoline_packet() {
+		let secp_ctx = Secp256k1::new();
+		let (_private_key, public_key) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
+
+		let compressed_public_key = public_key.serialize();
+		assert_eq!(compressed_public_key.len(), 33);
+
+		let trampoline_packet = TrampolineOnionPacket {
+			version: 0,
+			public_key,
+			hop_data: vec![1; 650], // this should be the standard encoded length
+			hmac: [2; 32],
+		};
+		let encoded_trampoline_packet = trampoline_packet.encode();
+		assert_eq!(encoded_trampoline_packet.len(), 716);
+
+		let msg = msgs::OutboundOnionPayload::TrampolineEntrypoint {
+			multipath_trampoline_data: None,
+			amt_to_forward: 0x0badf00d01020304,
+			outgoing_cltv_value: 0xffffffff,
+			trampoline_packet,
+		};
+		let encoded_payload = msg.encode();
+
+		let trampoline_type_bytes = &encoded_payload[19..=19];
+		let mut trampoline_type_cursor = Cursor::new(trampoline_type_bytes);
+		let trampoline_type_big_size: BigSize = Readable::read(&mut trampoline_type_cursor).unwrap();
+		assert_eq!(trampoline_type_big_size.0, 20);
+
+		let trampoline_length_bytes = &encoded_payload[20..=22];
+		let mut trampoline_length_cursor = Cursor::new(trampoline_length_bytes);
+		let trampoline_length_big_size: BigSize = Readable::read(&mut trampoline_length_cursor).unwrap();
+		assert_eq!(trampoline_length_big_size.0, encoded_trampoline_packet.len() as u64);
+	}
+
+	#[test]
+	fn encoding_final_onion_hop_data_with_eclair_trampoline_packet() {
+		let public_key = PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()).unwrap();
+		let hop_data = <Vec<u8>>::from_hex("cff34152f3a36e52ca94e74927203a560392b9cc7ce3c45809c6be52166c24a595716880f95f178bf5b30ca63141f74db6e92795c6130877cfdac3d4bd3087ee73c65d627ddd709112a848cc99e303f3706509aa43ba7c8a88cba175fccf9a8f5016ef06d3b935dbb15196d7ce16dc1a7157845566901d7b2197e52cab4ce487014b14816e5805f9fcacb4f8f88b8ff176f1b94f6ce6b00bc43221130c17d20ef629db7c5f7eafaa166578c720619561dd14b3277db557ec7dcdb793771aef0f2f667cfdbeae3ac8d331c5994779dffb31e5fc0dbdedc0c592ca6d21c18e47fe3528d6975c19517d7e2ea8c5391cf17d0fe30c80913ed887234ccb48808f7ef9425bcd815c3b586210979e3bb286ef2851bf9ce04e28c40a203df98fd648d2f1936fd2f1def0e77eecb277229b4b682322371c0a1dbfcd723a991993df8cc1f2696b84b055b40a1792a29f710295a18fbd351b0f3ff34cd13941131b8278ba79303c89117120eea691738a9954908195143b039dbeed98f26a92585f3d15cf742c953799d3272e0545e9b744be9d3b4c").unwrap();
+		let hmac_vector = <Vec<u8>>::from_hex("bb079bfc4b35190eee9f59a1d7b41ba2f773179f322dafb4b1af900c289ebd6c").unwrap();
+		let mut hmac = [0; 32];
+		hmac.copy_from_slice(&hmac_vector);
+
+		let compressed_public_key = public_key.serialize();
+		assert_eq!(compressed_public_key.len(), 33);
+
+		let trampoline_packet = TrampolineOnionPacket {
+			version: 0,
+			public_key,
+			hop_data,
+			hmac,
+		};
+		let encoded_trampoline_packet = trampoline_packet.encode();
+		let expected_eclair_trampoline_packet = <Vec<u8>>::from_hex("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619cff34152f3a36e52ca94e74927203a560392b9cc7ce3c45809c6be52166c24a595716880f95f178bf5b30ca63141f74db6e92795c6130877cfdac3d4bd3087ee73c65d627ddd709112a848cc99e303f3706509aa43ba7c8a88cba175fccf9a8f5016ef06d3b935dbb15196d7ce16dc1a7157845566901d7b2197e52cab4ce487014b14816e5805f9fcacb4f8f88b8ff176f1b94f6ce6b00bc43221130c17d20ef629db7c5f7eafaa166578c720619561dd14b3277db557ec7dcdb793771aef0f2f667cfdbeae3ac8d331c5994779dffb31e5fc0dbdedc0c592ca6d21c18e47fe3528d6975c19517d7e2ea8c5391cf17d0fe30c80913ed887234ccb48808f7ef9425bcd815c3b586210979e3bb286ef2851bf9ce04e28c40a203df98fd648d2f1936fd2f1def0e77eecb277229b4b682322371c0a1dbfcd723a991993df8cc1f2696b84b055b40a1792a29f710295a18fbd351b0f3ff34cd13941131b8278ba79303c89117120eea691738a9954908195143b039dbeed98f26a92585f3d15cf742c953799d3272e0545e9b744be9d3b4cbb079bfc4b35190eee9f59a1d7b41ba2f773179f322dafb4b1af900c289ebd6c").unwrap();
+		assert_eq!(encoded_trampoline_packet, expected_eclair_trampoline_packet);
 	}
 
 	#[test]

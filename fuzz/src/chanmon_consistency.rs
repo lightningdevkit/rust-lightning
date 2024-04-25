@@ -51,6 +51,7 @@ use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState};
 use lightning::util::errors::APIError;
+use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
 use lightning::util::config::UserConfig;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -66,7 +67,6 @@ use bitcoin::secp256k1::schnorr;
 
 use std::mem;
 use std::cmp::{self, Ordering};
-use hashbrown::{HashSet, hash_map, HashMap};
 use std::sync::{Arc,Mutex};
 use std::sync::atomic;
 use std::io::Cursor;
@@ -84,7 +84,7 @@ impl FeeEstimator for FuzzEstimator {
 		// Background feerate which is <= the minimum Normal feerate.
 		match conf_target {
 			ConfirmationTarget::OnChainSweep => MAX_FEE,
-			ConfirmationTarget::ChannelCloseMinimum|ConfirmationTarget::AnchorChannelFee|ConfirmationTarget::MinAllowedAnchorChannelRemoteFee|ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee => 253,
+			ConfirmationTarget::ChannelCloseMinimum|ConfirmationTarget::AnchorChannelFee|ConfirmationTarget::MinAllowedAnchorChannelRemoteFee|ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee|ConfirmationTarget::OutputSpendingFee => 253,
 			ConfirmationTarget::NonAnchorChannelFee => cmp::min(self.ret_val.load(atomic::Ordering::Acquire), MAX_FEE),
 		}
 	}
@@ -103,11 +103,9 @@ impl Router for FuzzRouter {
 		})
 	}
 
-	fn create_blinded_payment_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
-	>(
+	fn create_blinded_payment_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: u64, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
+		_amount_msats: u64, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
 		unreachable!()
 	}
@@ -120,11 +118,8 @@ impl MessageRouter for FuzzRouter {
 		unreachable!()
 	}
 
-	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
-	>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
-		_secp_ctx: &Secp256k1<T>
+	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		unreachable!()
 	}
@@ -162,7 +157,7 @@ impl TestChainMonitor {
 			logger,
 			keys,
 			persister,
-			latest_monitors: Mutex::new(HashMap::new()),
+			latest_monitors: Mutex::new(new_hash_map()),
 		}
 	}
 }
@@ -178,16 +173,13 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 
 	fn update_channel(&self, funding_txo: OutPoint, update: &channelmonitor::ChannelMonitorUpdate) -> chain::ChannelMonitorUpdateStatus {
 		let mut map_lock = self.latest_monitors.lock().unwrap();
-		let mut map_entry = match map_lock.entry(funding_txo) {
-			hash_map::Entry::Occupied(entry) => entry,
-			hash_map::Entry::Vacant(_) => panic!("Didn't have monitor on update call"),
-		};
+		let map_entry = map_lock.get_mut(&funding_txo).expect("Didn't have monitor on update call");
 		let deserialized_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::
-			read(&mut Cursor::new(&map_entry.get().1), (&*self.keys, &*self.keys)).unwrap().1;
+			read(&mut Cursor::new(&map_entry.1), (&*self.keys, &*self.keys)).unwrap().1;
 		deserialized_monitor.update_monitor(update, &&TestBroadcaster{}, &&FuzzEstimator { ret_val: atomic::AtomicU32::new(253) }, &self.logger).unwrap();
 		let mut ser = VecWriter(Vec::new());
 		deserialized_monitor.write(&mut ser).unwrap();
-		map_entry.insert((update.update_id, ser.0));
+		*map_entry = (update.update_id, ser.0);
 		self.chain_monitor.update_channel(funding_txo, update)
 	}
 
@@ -472,7 +464,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 		($node_id: expr, $fee_estimator: expr) => { {
 			let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new($node_id.to_string(), out.clone()));
 			let node_secret = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, $node_id]).unwrap();
-			let keys_manager = Arc::new(KeyProvider { node_secret, rand_bytes_id: atomic::AtomicU32::new(0), enforcement_states: Mutex::new(HashMap::new()) });
+			let keys_manager = Arc::new(KeyProvider { node_secret, rand_bytes_id: atomic::AtomicU32::new(0), enforcement_states: Mutex::new(new_hash_map()) });
 			let monitor = Arc::new(TestChainMonitor::new(broadcast.clone(), logger.clone(), $fee_estimator.clone(),
 				Arc::new(TestPersister {
 					update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed)
@@ -513,13 +505,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				config.manually_accept_inbound_channels = true;
 			}
 
-			let mut monitors = HashMap::new();
+			let mut monitors = new_hash_map();
 			let mut old_monitors = $old_monitors.latest_monitors.lock().unwrap();
 			for (outpoint, (update_id, monitor_ser)) in old_monitors.drain() {
 				monitors.insert(outpoint, <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(&mut Cursor::new(&monitor_ser), (&*$keys_manager, &*$keys_manager)).expect("Failed to read monitor").1);
 				chain_monitor.latest_monitors.lock().unwrap().insert(outpoint, (update_id, monitor_ser));
 			}
-			let mut monitor_refs = HashMap::new();
+			let mut monitor_refs = new_hash_map();
 			for (outpoint, monitor) in monitors.iter_mut() {
 				monitor_refs.insert(*outpoint, monitor);
 			}
@@ -986,7 +978,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				// In case we get 256 payments we may have a hash collision, resulting in the
 				// second claim/fail call not finding the duplicate-hash HTLC, so we have to
 				// deduplicate the calls here.
-				let mut claim_set = HashSet::new();
+				let mut claim_set = new_hash_map();
 				let mut events = nodes[$node].get_and_clear_pending_events();
 				// Sort events so that PendingHTLCsForwardable get processed last. This avoids a
 				// case where we first process a PendingHTLCsForwardable, then claim/fail on a
@@ -1008,7 +1000,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				for event in events.drain(..) {
 					match event {
 						events::Event::PaymentClaimable { payment_hash, .. } => {
-							if claim_set.insert(payment_hash.0) {
+							if claim_set.insert(payment_hash.0, ()).is_none() {
 								if $fail {
 									nodes[$node].fail_htlc_backwards(&payment_hash);
 								} else {

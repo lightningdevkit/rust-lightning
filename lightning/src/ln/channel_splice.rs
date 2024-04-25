@@ -36,6 +36,7 @@ pub(crate) struct PendingSpliceInfoPost {
 	/// The pre splice value (a bit redundant)
 	pub pre_channel_value: u64,
 	/// Reference to the pre-splice channel (may be missing if channel_id was the same)
+	#[allow(unused)]
 	pub pre_channel_id: Option<ChannelId>,
 
 	/// Save here the previous funding transaction

@@ -11,7 +11,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
 
-use lightning::blinded_path::{BlindedHop, BlindedPath};
+use lightning::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::ChannelId;
 use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
@@ -23,6 +23,7 @@ use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResu
 use lightning::routing::router::{find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
 use lightning::util::config::UserConfig;
+use lightning::util::hash_tables::*;
 use lightning::util::ser::Readable;
 
 use bitcoin::hashes::Hash;
@@ -32,7 +33,6 @@ use bitcoin::network::constants::Network;
 use crate::utils::test_logger;
 
 use std::convert::TryInto;
-use hashbrown::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -157,6 +157,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					msgs::DecodeError::ShortRead => panic!("We picked the length..."),
 					msgs::DecodeError::Io(e) => panic!("{:?}", e),
 					msgs::DecodeError::UnsupportedCompression => return,
+					msgs::DecodeError::DangerousValue => return,
 				}
 			}
 		}}
@@ -198,7 +199,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		net_graph: &net_graph,
 	};
 
-	let mut node_pks = HashSet::new();
+	let mut node_pks = new_hash_map();
 	let mut scid = 42;
 
 	macro_rules! first_hops {
@@ -208,7 +209,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				count => {
 					for _ in 0..count {
 						scid += 1;
-						let rnid = node_pks.iter().skip(u16::from_be_bytes(get_slice!(2).try_into().unwrap()) as usize % node_pks.len()).next().unwrap();
+						let (rnid, _) =
+							node_pks.iter().skip(u16::from_be_bytes(get_slice!(2).try_into().unwrap()) as usize % node_pks.len()).next().unwrap();
 						let capacity = u64::from_be_bytes(get_slice!(8).try_into().unwrap());
 						$first_hops_vec.push(ChannelDetails {
 							channel_id: ChannelId::new_zero(),
@@ -242,6 +244,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							config: None,
 							feerate_sat_per_1000_weight: None,
 							channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
+							pending_inbound_htlcs: Vec::new(),
+							pending_outbound_htlcs: Vec::new(),
 						});
 					}
 					Some(&$first_hops_vec[..])
@@ -255,7 +259,8 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 			let count = get_slice!(1)[0];
 			for _ in 0..count {
 				scid += 1;
-				let rnid = node_pks.iter().skip(slice_to_be16(get_slice!(2))as usize % node_pks.len()).next().unwrap();
+				let (rnid, _) =
+					node_pks.iter().skip(slice_to_be16(get_slice!(2)) as usize % node_pks.len()).next().unwrap();
 				$last_hops.push(RouteHint(vec![RouteHintHop {
 					src_node_id: *rnid,
 					short_channel_id: scid,
@@ -275,7 +280,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		($first_hops: expr, $node_pks: expr, $route_params: expr) => {
 			let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &net_graph, &logger);
 			let random_seed_bytes: [u8; 32] = [get_slice!(1)[0]; 32];
-			for target in $node_pks {
+			for (target, ()) in $node_pks {
 				let final_value_msat = slice_to_be64(get_slice!(8));
 				let final_cltv_expiry_delta = slice_to_be32(get_slice!(4));
 				let route_params = $route_params(final_value_msat, final_cltv_expiry_delta, target);
@@ -295,20 +300,20 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 					return;
 				}
 				let msg = decode_msg_with_len16!(msgs::UnsignedNodeAnnouncement, 288);
-				node_pks.insert(get_pubkey_from_node_id!(msg.node_id));
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id), ());
 				let _ = net_graph.update_node_from_unsigned_announcement(&msg);
 			},
 			1 => {
 				let msg = decode_msg_with_len16!(msgs::UnsignedChannelAnnouncement, 32+8+33*4);
-				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_1));
-				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_2));
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_1), ());
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_2), ());
 				let _ = net_graph.update_channel_from_unsigned_announcement::
 					<&FuzzChainSource<'_, '_, Out>>(&msg, &None);
 			},
 			2 => {
 				let msg = decode_msg_with_len16!(msgs::UnsignedChannelAnnouncement, 32+8+33*4);
-				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_1));
-				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_2));
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_1), ());
+				node_pks.insert(get_pubkey_from_node_id!(msg.node_id_2), ());
 				let _ = net_graph.update_channel_from_unsigned_announcement(&msg, &Some(&chain_source));
 			},
 			3 => {
@@ -358,14 +363,14 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 						});
 					}
 					(payinfo, BlindedPath {
-						introduction_node_id: hop.src_node_id,
+						introduction_node: IntroductionNode::NodeId(hop.src_node_id),
 						blinding_point: dummy_pk,
 						blinded_hops,
 					})
 				}).collect();
 				let mut features = Bolt12InvoiceFeatures::empty();
 				features.set_basic_mpp_optional();
-				find_routes!(first_hops, vec![dummy_pk].iter(), |final_amt, _, _| {
+				find_routes!(first_hops, [(dummy_pk, ())].iter(), |final_amt, _, _| {
 					RouteParameters::from_payment_params_and_value(PaymentParameters::blinded(last_hops.clone())
 						.with_bolt12_features(features.clone()).unwrap(),
 					final_amt)

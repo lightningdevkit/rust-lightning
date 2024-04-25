@@ -4,8 +4,9 @@ Rust-Lightning
 [![Crate](https://img.shields.io/crates/v/lightning.svg?logo=rust)](https://crates.io/crates/lightning)
 [![Documentation](https://img.shields.io/static/v1?logo=read-the-docs&label=docs.rs&message=lightning&color=informational)](https://docs.rs/lightning/)
 [![Safety Dance](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
+[![Security Audit](https://github.com/lightningdevkit/rust-lightning/actions/workflows/audit.yml/badge.svg)](https://github.com/lightningdevkit/rust-lightning/actions/workflows/audit.yml)
 
-[LDK](https://lightningdevkit.org)/`rust-lightning` is a highly performant and flexible 
+[LDK](https://lightningdevkit.org)/`rust-lightning` is a highly performant and flexible
 implementation of the Lightning Network protocol.
 
 The primary crate, `lightning`, is runtime-agnostic. Data persistence, chain interactions,
@@ -33,7 +34,7 @@ Up-to-date with main branch as of v0.0.122 (Apr 9, 27e5519; originally branched 
 
 See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa2
 
-To test: `RUSTFLAGS="--cfg=dual_funding" cargo test -p lightning splic`
+To test: `RUSTFLAGS="--cfg=splicing" cargo test -p lightning splic`
 
 Detailed steps
 --------------

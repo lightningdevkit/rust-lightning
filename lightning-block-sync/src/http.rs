@@ -288,7 +288,7 @@ impl HttpClient {
 			HttpMessageLength::Empty => { Vec::new() },
 			HttpMessageLength::ContentLength(length) => {
 				if length == 0 || length > MAX_HTTP_MESSAGE_BODY_SIZE {
-					return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "out of range"))
+					return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("invalid response length: {} bytes", length)));
 				} else {
 					let mut content = vec![0; length];
 					#[cfg(feature = "tokio")]
@@ -727,7 +727,7 @@ pub(crate) mod client_tests {
 		match client.get::<BinaryResponse>("/foo", "foo.com").await {
 			Err(e) => {
 				assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
-				assert_eq!(e.get_ref().unwrap().to_string(), "out of range");
+				assert_eq!(e.get_ref().unwrap().to_string(), "invalid response length: 8032001 bytes");
 			},
 			Ok(_) => panic!("Expected error"),
 		}

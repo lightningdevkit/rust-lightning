@@ -18,6 +18,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, fee_for_weight};
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
+use crate::ln::ChannelId;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,
@@ -37,7 +38,7 @@ use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::consensus::Encodable;
 use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::secp256k1;
-use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::secp256k1::ecdsa::Signature;
 
 pub(crate) const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
@@ -147,6 +148,10 @@ pub enum BumpTransactionEvent {
 	/// [`EcdsaChannelSigner::sign_holder_anchor_input`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_anchor_input
 	/// [`build_anchor_input_witness`]: crate::ln::chan_utils::build_anchor_input_witness
 	ChannelClose {
+		/// The `channel_id` of the channel which has been closed.
+		channel_id: ChannelId,
+		/// Counterparty in the closed channel.
+		counterparty_node_id: PublicKey,
 		/// The unique identifier for the claim of the anchor output in the commitment transaction.
 		///
 		/// The identifier must map to the set of external UTXOs assigned to the claim, such that
@@ -200,6 +205,10 @@ pub enum BumpTransactionEvent {
 	/// [`EcdsaChannelSigner`]: crate::sign::ecdsa::EcdsaChannelSigner
 	/// [`EcdsaChannelSigner::sign_holder_htlc_transaction`]: crate::sign::ecdsa::EcdsaChannelSigner::sign_holder_htlc_transaction
 	HTLCResolution {
+		/// The `channel_id` of the channel which has been closed.
+		channel_id: ChannelId,
+		/// Counterparty in the closed channel.
+		counterparty_node_id: PublicKey,
 		/// The unique identifier for the claim of the HTLCs in the confirmed commitment
 		/// transaction.
 		///
@@ -391,7 +400,7 @@ where
 	/// Returns a new instance backed by the given [`WalletSource`] that serves as an implementation
 	/// of [`CoinSelectionSource`].
 	pub fn new(source: W, logger: L) -> Self {
-		Self { source, logger, locked_utxos: Mutex::new(HashMap::new()) }
+		Self { source, logger, locked_utxos: Mutex::new(new_hash_map()) }
 	}
 
 	/// Performs coin selection on the set of UTXOs obtained from
@@ -797,7 +806,7 @@ where
 				}
 			}
 			BumpTransactionEvent::HTLCResolution {
-				claim_id, target_feerate_sat_per_1000_weight, htlc_descriptors, tx_lock_time,
+				claim_id, target_feerate_sat_per_1000_weight, htlc_descriptors, tx_lock_time, ..
 			} => {
 				log_info!(self.logger, "Handling HTLC bump (claim_id = {}, htlcs_to_claim = {})",
 					log_bytes!(claim_id.0), log_iter!(htlc_descriptors.iter().map(|d| d.outpoint())));

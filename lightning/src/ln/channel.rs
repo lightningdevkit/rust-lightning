@@ -8,13 +8,13 @@
 // licenses.
 
 use bitcoin::blockdata::constants::ChainHash;
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::blockdata::script::{Script, ScriptBuf, Builder};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::sighash::{self, EcdsaSighashType};
 use bitcoin::consensus::encode;
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 use bitcoin::consensus::Encodable as _;
 
 use bitcoin::hashes::Hash;
@@ -26,18 +26,19 @@ use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
 use bitcoin::secp256k1;
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 use bitcoin::{TxIn, TxOut, Witness};
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 use bitcoin::locktime::absolute::LockTime;
 
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash};
+#[cfg(splicing)]
 use crate::ln::channel_splice::{PendingSpliceInfoPre, PendingSpliceInfoPost};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
-#[cfg(dual_funding)]
-use crate::ln::interactivetxs::{AbortReason, InteractiveTxConstructor, InteractiveTxMessageSend, InteractiveTxSigningSession};
+#[cfg(any(dual_funding, splicing))]
+use crate::ln::interactivetxs::{AbortReason, ConstructedTransaction, HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxMessageSend, InteractiveTxSigningSession};
 use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
@@ -47,18 +48,18 @@ use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 use crate::chain::chaininterface::fee_for_weight;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
 use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
 use crate::events::ClosureReason;
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 use crate::events::Event;
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 use crate::util::ser::TransactionU16LenLimited;
 use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::errors::APIError;
@@ -66,11 +67,10 @@ use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, Channe
 use crate::util::scid_utils::scid_from_parts;
 
 use crate::io;
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 use crate::io_extras::sink;
 use crate::prelude::*;
 use core::{cmp,mem,fmt};
-use core::convert::TryInto;
 use core::ops::Deref;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
@@ -124,10 +124,38 @@ enum InboundHTLCRemovalReason {
 	Fulfill(PaymentPreimage),
 }
 
+/// Represents the resolution status of an inbound HTLC.
+#[derive(Clone)]
+enum InboundHTLCResolution {
+	/// Resolved implies the action we must take with the inbound HTLC has already been determined,
+	/// i.e., we already know whether it must be failed back or forwarded.
+	//
+	// TODO: Once this variant is removed, we should also clean up
+	// [`MonitorRestoreUpdates::accepted_htlcs`] as the path will be unreachable.
+	Resolved {
+		pending_htlc_status: PendingHTLCStatus,
+	},
+	/// Pending implies we will attempt to resolve the inbound HTLC once it has been fully committed
+	/// to by both sides of the channel, i.e., once a `revoke_and_ack` has been processed by both
+	/// nodes for the state update in which it was proposed.
+	Pending {
+		update_add_htlc: msgs::UpdateAddHTLC,
+	},
+}
+
+impl_writeable_tlv_based_enum!(InboundHTLCResolution,
+	(0, Resolved) => {
+		(0, pending_htlc_status, required),
+	},
+	(2, Pending) => {
+		(0, update_add_htlc, required),
+	};
+);
+
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
-	RemoteAnnounced(PendingHTLCStatus),
+	RemoteAnnounced(InboundHTLCResolution),
 	/// Included in a received commitment_signed message (implying we've
 	/// revoke_and_ack'd it), but the remote hasn't yet revoked their previous
 	/// state (see the example below). We have not yet included this HTLC in a
@@ -157,13 +185,13 @@ enum InboundHTLCState {
 	/// Implies AwaitingRemoteRevoke.
 	///
 	/// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
-	AwaitingRemoteRevokeToAnnounce(PendingHTLCStatus),
+	AwaitingRemoteRevokeToAnnounce(InboundHTLCResolution),
 	/// Included in a received commitment_signed message (implying we've revoke_and_ack'd it).
 	/// We have also included this HTLC in our latest commitment_signed and are now just waiting
 	/// on the remote's revoke_and_ack to make this HTLC an irrevocable part of the state of the
 	/// channel (before it can then get forwarded and/or removed).
 	/// Implies AwaitingRemoteRevoke.
-	AwaitingAnnouncedRemoteRevoke(PendingHTLCStatus),
+	AwaitingAnnouncedRemoteRevoke(InboundHTLCResolution),
 	Committed,
 	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -178,6 +206,72 @@ enum InboundHTLCState {
 	LocalRemoved(InboundHTLCRemovalReason),
 }
 
+/// Exposes the state of pending inbound HTLCs.
+///
+/// At a high level, an HTLC being forwarded from one Lightning node to another Lightning node goes
+/// through the following states in the state machine:
+/// - Announced for addition by the originating node through the update_add_htlc message.
+/// - Added to the commitment transaction of the receiving node and originating node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+/// - Announced for resolution (fulfillment or failure) by the receiving node through either one of
+///   the update_fulfill_htlc, update_fail_htlc, and update_fail_malformed_htlc messages.
+/// - Removed from the commitment transaction of the originating node and receiving node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+///
+/// This can be used to inspect what next message an HTLC is waiting for to advance its state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InboundHTLCStateDetails {
+	/// We have added this HTLC in our commitment transaction by receiving commitment_signed and
+	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
+	/// before this HTLC is included on the remote commitment transaction.
+	AwaitingRemoteRevokeToAdd,
+	/// This HTLC has been included in the commitment_signed and revoke_and_ack messages on both sides
+	/// and is included in both commitment transactions.
+	///
+	/// This HTLC is now safe to either forward or be claimed as a payment by us. The HTLC will
+	/// remain in this state until the forwarded upstream HTLC has been resolved and we resolve this
+	/// HTLC correspondingly, or until we claim it as a payment. If it is part of a multipart
+	/// payment, it will only be claimed together with other required parts.
+	Committed,
+	/// We have received the preimage for this HTLC and it is being removed by fulfilling it with
+	/// update_fulfill_htlc. This HTLC is still on both commitment transactions, but we are awaiting
+	/// the appropriate revoke_and_ack's from the remote before this HTLC is removed from the remote
+	/// commitment transaction after update_fulfill_htlc.
+	AwaitingRemoteRevokeToRemoveFulfill,
+	/// The HTLC is being removed by failing it with update_fail_htlc or update_fail_malformed_htlc.
+	/// This HTLC is still on both commitment transactions, but we are awaiting the appropriate
+	/// revoke_and_ack's from the remote before this HTLC is removed from the remote commitment
+	/// transaction.
+	AwaitingRemoteRevokeToRemoveFail,
+}
+
+impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
+	fn from(state: &InboundHTLCState) -> Option<InboundHTLCStateDetails> {
+		match state {
+			InboundHTLCState::RemoteAnnounced(_) => None,
+			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+			InboundHTLCState::Committed =>
+				Some(InboundHTLCStateDetails::Committed),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(_)) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum_upgradable!(InboundHTLCStateDetails,
+	(0, AwaitingRemoteRevokeToAdd) => {},
+	(2, Committed) => {},
+	(4, AwaitingRemoteRevokeToRemoveFulfill) => {},
+	(6, AwaitingRemoteRevokeToRemoveFail) => {};
+);
+
 struct InboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -185,6 +279,53 @@ struct InboundHTLCOutput {
 	payment_hash: PaymentHash,
 	state: InboundHTLCState,
 }
+
+/// Exposes details around pending inbound HTLCs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InboundHTLCDetails {
+	/// The HTLC ID.
+	/// The IDs are incremented by 1 starting from 0 for each offered HTLC.
+	/// They are unique per channel and inbound/outbound direction, unless an HTLC was only announced
+	/// and not part of any commitment transaction.
+	pub htlc_id: u64,
+	/// The amount in msat.
+	pub amount_msat: u64,
+	/// The block height at which this HTLC expires.
+	pub cltv_expiry: u32,
+	/// The payment hash.
+	pub payment_hash: PaymentHash,
+	/// The state of the HTLC in the state machine.
+	///
+	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
+	/// waiting for to advance to the next state.
+	///
+	/// See [`InboundHTLCStateDetails`] for information on the specific states.
+	///
+	/// LDK will always fill this field in, but when downgrading to prior versions of LDK, new
+	/// states may result in `None` here.
+	pub state: Option<InboundHTLCStateDetails>,
+	/// Whether the HTLC has an output below the local dust limit. If so, the output will be trimmed
+	/// from the local commitment transaction and added to the commitment transaction fee.
+	/// For non-anchor channels, this takes into account the cost of the second-stage HTLC
+	/// transactions as well.
+	///
+	/// When the local commitment transaction is broadcasted as part of a unilateral closure,
+	/// the value of this HTLC will therefore not be claimable but instead burned as a transaction
+	/// fee.
+	///
+	/// Note that dust limits are specific to each party. An HTLC can be dust for the local
+	/// commitment transaction but not for the counterparty's commitment transaction and vice versa.
+	pub is_dust: bool,
+}
+
+impl_writeable_tlv_based!(InboundHTLCDetails, {
+	(0, htlc_id, required),
+	(2, amount_msat, required),
+	(4, cltv_expiry, required),
+	(6, payment_hash, required),
+	(7, state, upgradable_option),
+	(8, is_dust, required),
+});
 
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 enum OutboundHTLCState {
@@ -218,6 +359,72 @@ enum OutboundHTLCState {
 	/// revoke_and_ack to drop completely.
 	AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome),
 }
+
+/// Exposes the state of pending outbound HTLCs.
+///
+/// At a high level, an HTLC being forwarded from one Lightning node to another Lightning node goes
+/// through the following states in the state machine:
+/// - Announced for addition by the originating node through the update_add_htlc message.
+/// - Added to the commitment transaction of the receiving node and originating node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+/// - Announced for resolution (fulfillment or failure) by the receiving node through either one of
+///   the update_fulfill_htlc, update_fail_htlc, and update_fail_malformed_htlc messages.
+/// - Removed from the commitment transaction of the originating node and receiving node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+///
+/// This can be used to inspect what next message an HTLC is waiting for to advance its state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OutboundHTLCStateDetails {
+	/// We are awaiting the appropriate revoke_and_ack's from the remote before the HTLC is added
+	/// on the remote's commitment transaction after update_add_htlc.
+	AwaitingRemoteRevokeToAdd,
+	/// The HTLC has been added to the remote's commitment transaction by sending commitment_signed
+	/// and receiving revoke_and_ack in return.
+	///
+	/// The HTLC will remain in this state until the remote node resolves the HTLC, or until we
+	/// unilaterally close the channel due to a timeout with an uncooperative remote node.
+	Committed,
+	/// The HTLC has been fulfilled successfully by the remote with a preimage in update_fulfill_htlc,
+	/// and we removed the HTLC from our commitment transaction by receiving commitment_signed and
+	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
+	/// for the removal from its commitment transaction.
+	AwaitingRemoteRevokeToRemoveSuccess,
+	/// The HTLC has been failed by the remote with update_fail_htlc or update_fail_malformed_htlc,
+	/// and we removed the HTLC from our commitment transaction by receiving commitment_signed and
+	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
+	/// for the removal from its commitment transaction.
+	AwaitingRemoteRevokeToRemoveFailure,
+}
+
+impl From<&OutboundHTLCState> for OutboundHTLCStateDetails {
+	fn from(state: &OutboundHTLCState) -> OutboundHTLCStateDetails {
+		match state {
+			OutboundHTLCState::LocalAnnounced(_) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd,
+			OutboundHTLCState::Committed =>
+				OutboundHTLCStateDetails::Committed,
+			// RemoteRemoved states are ignored as the state is transient and the remote has not committed to
+			// the state yet.
+			OutboundHTLCState::RemoteRemoved(_) =>
+				OutboundHTLCStateDetails::Committed,
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Failure(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Failure(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum_upgradable!(OutboundHTLCStateDetails,
+	(0, AwaitingRemoteRevokeToAdd) => {},
+	(2, Committed) => {},
+	(4, AwaitingRemoteRevokeToRemoveSuccess) => {},
+	(6, AwaitingRemoteRevokeToRemoveFailure) => {};
+);
 
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
@@ -257,6 +464,58 @@ struct OutboundHTLCOutput {
 	skimmed_fee_msat: Option<u64>,
 }
 
+/// Exposes details around pending outbound HTLCs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutboundHTLCDetails {
+	/// The HTLC ID.
+	/// The IDs are incremented by 1 starting from 0 for each offered HTLC.
+	/// They are unique per channel and inbound/outbound direction, unless an HTLC was only announced
+	/// and not part of any commitment transaction.
+	///
+	/// Not present when we are awaiting a remote revocation and the HTLC is not added yet.
+	pub htlc_id: Option<u64>,
+	/// The amount in msat.
+	pub amount_msat: u64,
+	/// The block height at which this HTLC expires.
+	pub cltv_expiry: u32,
+	/// The payment hash.
+	pub payment_hash: PaymentHash,
+	/// The state of the HTLC in the state machine.
+	///
+	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
+	/// waiting for to advance to the next state.
+	///
+	/// See [`OutboundHTLCStateDetails`] for information on the specific states.
+	///
+	/// LDK will always fill this field in, but when downgrading to prior versions of LDK, new
+	/// states may result in `None` here.
+	pub state: Option<OutboundHTLCStateDetails>,
+	/// The extra fee being skimmed off the top of this HTLC.
+	pub skimmed_fee_msat: Option<u64>,
+	/// Whether the HTLC has an output below the local dust limit. If so, the output will be trimmed
+	/// from the local commitment transaction and added to the commitment transaction fee.
+	/// For non-anchor channels, this takes into account the cost of the second-stage HTLC
+	/// transactions as well.
+	///
+	/// When the local commitment transaction is broadcasted as part of a unilateral closure,
+	/// the value of this HTLC will therefore not be claimable but instead burned as a transaction
+	/// fee.
+	///
+	/// Note that dust limits are specific to each party. An HTLC can be dust for the local
+	/// commitment transaction but not for the counterparty's commitment transaction and vice versa.
+	pub is_dust: bool,
+}
+
+impl_writeable_tlv_based!(OutboundHTLCDetails, {
+	(0, htlc_id, required),
+	(2, amount_msat, required),
+	(4, cltv_expiry, required),
+	(6, payment_hash, required),
+	(7, state, upgradable_option),
+	(8, skimmed_fee_msat, required),
+	(10, is_dust, required),
+});
+
 /// See AwaitingRemoteRevoke ChannelState for more info
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 enum HTLCUpdateAwaitingACK {
@@ -287,7 +546,7 @@ enum HTLCUpdateAwaitingACK {
 }
 
 macro_rules! define_state_flags {
-	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr)),+], $extra_flags: expr) => {
+	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr, $get: ident, $set: ident, $clear: ident)),+], $extra_flags: expr) => {
 		#[doc = $flag_type_doc]
 		#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq)]
 		struct $flag_type(u32);
@@ -316,15 +575,18 @@ macro_rules! define_state_flags {
 
 			#[allow(unused)]
 			fn is_empty(&self) -> bool { self.0 == 0 }
-
 			#[allow(unused)]
 			fn is_set(&self, flag: Self) -> bool { *self & flag == flag }
+			#[allow(unused)]
+			fn set(&mut self, flag: Self) { *self |= flag }
+			#[allow(unused)]
+			fn clear(&mut self, flag: Self) -> Self { self.0 &= !flag.0; *self }
 		}
 
-		impl core::ops::Not for $flag_type {
-			type Output = Self;
-			fn not(self) -> Self::Output { Self(!self.0) }
-		}
+		$(
+			define_state_flags!($flag_type, Self::$flag, $get, $set, $clear);
+		)*
+
 		impl core::ops::BitOr for $flag_type {
 			type Output = Self;
 			fn bitor(self, rhs: Self) -> Self::Output { Self(self.0 | rhs.0) }
@@ -343,8 +605,28 @@ macro_rules! define_state_flags {
 	($flag_type_doc: expr, $flag_type: ident, $flags: tt) => {
 		define_state_flags!($flag_type_doc, $flag_type, $flags, 0);
 	};
+	($flag_type: ident, $flag: expr, $get: ident, $set: ident, $clear: ident) => {
+		impl $flag_type {
+			#[allow(unused)]
+			fn $get(&self) -> bool { self.is_set($flag_type::new() | $flag) }
+			#[allow(unused)]
+			fn $set(&mut self) { self.set($flag_type::new() | $flag) }
+			#[allow(unused)]
+			fn $clear(&mut self) -> Self { self.clear($flag_type::new() | $flag) }
+		}
+	};
 	($flag_type_doc: expr, FUNDED_STATE, $flag_type: ident, $flags: tt) => {
 		define_state_flags!($flag_type_doc, $flag_type, $flags, FundedStateFlags::ALL.0);
+
+		define_state_flags!($flag_type, FundedStateFlags::PEER_DISCONNECTED,
+			is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected);
+		define_state_flags!($flag_type, FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS,
+			is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress);
+		define_state_flags!($flag_type, FundedStateFlags::REMOTE_SHUTDOWN_SENT,
+			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent);
+		define_state_flags!($flag_type, FundedStateFlags::LOCAL_SHUTDOWN_SENT,
+			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent);
+
 		impl core::ops::BitOr<FundedStateFlags> for $flag_type {
 			type Output = Self;
 			fn bitor(self, rhs: FundedStateFlags) -> Self::Output { Self(self.0 | rhs.0) }
@@ -391,15 +673,19 @@ define_state_flags!(
 	"Flags that apply to all [`ChannelState`] variants in which the channel is funded.",
 	FundedStateFlags, [
 		("Indicates the remote side is considered \"disconnected\" and no updates are allowed \
-			until after we've done a `channel_reestablish` dance.", PEER_DISCONNECTED, state_flags::PEER_DISCONNECTED),
+			until after we've done a `channel_reestablish` dance.", PEER_DISCONNECTED, state_flags::PEER_DISCONNECTED,
+			is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected),
 		("Indicates the user has told us a `ChannelMonitor` update is pending async persistence \
 			somewhere and we should pause sending any outbound messages until they've managed to \
-			complete it.", MONITOR_UPDATE_IN_PROGRESS, state_flags::MONITOR_UPDATE_IN_PROGRESS),
+			complete it.", MONITOR_UPDATE_IN_PROGRESS, state_flags::MONITOR_UPDATE_IN_PROGRESS,
+			is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress),
 		("Indicates we received a `shutdown` message from the remote end. If set, they may not add \
 			any new HTLCs to the channel, and we are expected to respond with our own `shutdown` \
-			message when possible.", REMOTE_SHUTDOWN_SENT, state_flags::REMOTE_SHUTDOWN_SENT),
+			message when possible.", REMOTE_SHUTDOWN_SENT, state_flags::REMOTE_SHUTDOWN_SENT,
+			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent),
 		("Indicates we sent a `shutdown` message. At this point, we may not add any new HTLCs to \
-			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT)
+			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT,
+			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent)
 	]
 );
 
@@ -407,9 +693,9 @@ define_state_flags!(
 	"Flags that only apply to [`ChannelState::NegotiatingFunding`].",
 	NegotiatingFundingFlags, [
 		("Indicates we have (or are prepared to) send our `open_channel`/`accept_channel` message.",
-			OUR_INIT_SENT, state_flags::OUR_INIT_SENT),
+			OUR_INIT_SENT, state_flags::OUR_INIT_SENT, is_our_init_sent, set_our_init_sent, clear_our_init_sent),
 		("Indicates we have received their `open_channel`/`accept_channel` message.",
-			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT)
+			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT, is_their_init_sent, set_their_init_sent, clear_their_init_sent)
 	]
 );
 
@@ -418,13 +704,16 @@ define_state_flags!(
 	FUNDED_STATE, AwaitingChannelReadyFlags, [
 		("Indicates they sent us a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY),
+			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY,
+			is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready),
 		("Indicates we sent them a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			OUR_CHANNEL_READY, state_flags::OUR_CHANNEL_READY),
+			OUR_CHANNEL_READY, state_flags::OUR_CHANNEL_READY,
+			is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready),
 		("Indicates the channel was funded in a batch and the broadcast of the funding transaction \
 			is being held until all channels in the batch have received `funding_signed` and have \
-			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH)
+			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH,
+			is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch)
 	]
 );
 
@@ -435,7 +724,8 @@ define_state_flags!(
 			`revoke_and_ack` message. During this period, we can't generate new `commitment_signed` \
 			messages as we'd be unable to determine which HTLCs they included in their `revoke_and_ack` \
 			implicit ACK, so instead we have to hold them away temporarily to be sent later.",
-			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE)
+			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE,
+			is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke)
 	]
 );
 
@@ -461,12 +751,12 @@ enum ChannelState {
 }
 
 macro_rules! impl_state_flag {
-	($get: ident, $set: ident, $clear: ident, $state_flag: expr, [$($state: ident),+]) => {
+	($get: ident, $set: ident, $clear: ident, [$($state: ident),+]) => {
 		#[allow(unused)]
 		fn $get(&self) -> bool {
 			match self {
 				$(
-					ChannelState::$state(flags) => flags.is_set($state_flag.into()),
+					ChannelState::$state(flags) => flags.$get(),
 				)*
 				_ => false,
 			}
@@ -475,7 +765,7 @@ macro_rules! impl_state_flag {
 		fn $set(&mut self) {
 			match self {
 				$(
-					ChannelState::$state(flags) => *flags |= $state_flag,
+					ChannelState::$state(flags) => flags.$set(),
 				)*
 				_ => debug_assert!(false, "Attempted to set flag on unexpected ChannelState"),
 			}
@@ -484,17 +774,17 @@ macro_rules! impl_state_flag {
 		fn $clear(&mut self) {
 			match self {
 				$(
-					ChannelState::$state(flags) => *flags &= !($state_flag),
+					ChannelState::$state(flags) => { let _ = flags.$clear(); },
 				)*
 				_ => debug_assert!(false, "Attempted to clear flag on unexpected ChannelState"),
 			}
 		}
 	};
-	($get: ident, $set: ident, $clear: ident, $state_flag: expr, FUNDED_STATES) => {
-		impl_state_flag!($get, $set, $clear, $state_flag, [AwaitingChannelReady, ChannelReady]);
+	($get: ident, $set: ident, $clear: ident, FUNDED_STATES) => {
+		impl_state_flag!($get, $set, $clear, [AwaitingChannelReady, ChannelReady]);
 	};
-	($get: ident, $set: ident, $clear: ident, $state_flag: expr, $state: ident) => {
-		impl_state_flag!($get, $set, $clear, $state_flag, [$state]);
+	($get: ident, $set: ident, $clear: ident, $state: ident) => {
+		impl_state_flag!($get, $set, $clear, [$state]);
 	};
 }
 
@@ -545,35 +835,27 @@ impl ChannelState {
 		}
 	}
 
-	fn should_force_holding_cell(&self) -> bool {
+	fn can_generate_new_commitment(&self) -> bool {
 		match self {
 			ChannelState::ChannelReady(flags) =>
-				flags.is_set(ChannelReadyFlags::AWAITING_REMOTE_REVOKE) ||
-					flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into()) ||
-					flags.is_set(FundedStateFlags::PEER_DISCONNECTED.into()),
+				!flags.is_set(ChannelReadyFlags::AWAITING_REMOTE_REVOKE) &&
+					!flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into()) &&
+					!flags.is_set(FundedStateFlags::PEER_DISCONNECTED.into()),
 			_ => {
-				debug_assert!(false, "The holding cell is only valid within ChannelReady");
+				debug_assert!(false, "Can only generate new commitment within ChannelReady");
 				false
 			},
 		}
 	}
 
-	impl_state_flag!(is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected,
-		FundedStateFlags::PEER_DISCONNECTED, FUNDED_STATES);
-	impl_state_flag!(is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress,
-		FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS, FUNDED_STATES);
-	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent,
-		FundedStateFlags::LOCAL_SHUTDOWN_SENT, FUNDED_STATES);
-	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent,
-		FundedStateFlags::REMOTE_SHUTDOWN_SENT, FUNDED_STATES);
-	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready,
-		AwaitingChannelReadyFlags::OUR_CHANNEL_READY, AwaitingChannelReady);
-	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready,
-		AwaitingChannelReadyFlags::THEIR_CHANNEL_READY, AwaitingChannelReady);
-	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch,
-		AwaitingChannelReadyFlags::WAITING_FOR_BATCH, AwaitingChannelReady);
-	impl_state_flag!(is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke,
-		ChannelReadyFlags::AWAITING_REMOTE_REVOKE, ChannelReady);
+	impl_state_flag!(is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected, FUNDED_STATES);
+	impl_state_flag!(is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress, FUNDED_STATES);
+	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent, FUNDED_STATES);
+	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent, FUNDED_STATES);
+	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready, AwaitingChannelReady);
+	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready, AwaitingChannelReady);
+	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch, AwaitingChannelReady);
+	impl_state_flag!(is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke, ChannelReady);
 }
 
 pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
@@ -810,6 +1092,7 @@ pub(super) struct MonitorRestoreUpdates {
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<HTLCSource>,
+	pub pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	pub funding_broadcastable: Option<Transaction>,
 	pub channel_ready: Option<msgs::ChannelReady>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
@@ -927,9 +1210,9 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	UnfundedOutboundV2(OutboundV2Channel<SP>),
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	UnfundedInboundV2(InboundV2Channel<SP>),
 	Funded(Channel<SP>),
 }
@@ -943,9 +1226,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::Funded(chan) => &chan.context,
 			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedOutboundV2(chan) => &chan.context,
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
 		}
 	}
@@ -955,9 +1238,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::Funded(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedOutboundV1(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedInboundV1(ref mut chan) => &mut chan.context,
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedOutboundV2(ref mut chan) => &mut chan.context,
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
 		}
 	}
@@ -984,6 +1267,7 @@ impl UnfundedChannelContext {
 		self.unfunded_channel_age_ticks >= UNFUNDED_CHANNEL_AGE_LIMIT_TICKS
 	}
 
+	#[cfg(any(dual_funding, splicing))]
 	pub fn default() -> Self { Self { unfunded_channel_age_ticks: 0 } }
 }
 
@@ -1022,11 +1306,11 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	channel_value_satoshis: u64,
 
-	/// #SPLICING
 	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
+	#[cfg(splicing)]
 	pub(crate) pending_splice_pre: Option<PendingSpliceInfoPre>,
-	/// #SPLICING
 	/// Info about an in-progress, pending splice (if any), on the post-splice channel
+	#[cfg(splicing)]
 	pub(crate) pending_splice_post: Option<PendingSpliceInfoPost>,
 
 	latest_monitor_update_id: u64,
@@ -1066,6 +1350,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
+	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 
 	/// If we went to send a commitment update (ie some messages then [`msgs::CommitmentSigned`])
 	/// but our signer (initially) refused to give us a signature, we should retry at some point in
@@ -1188,6 +1473,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	funding_transaction: Option<Transaction>,
 	/// The funding transaction, similar to `funding_transaction` field, but stored here for the full lifecycle of the channel.
 	/// Being set does not necessarily mean that is's already locked.
+	#[cfg(splicing)]
 	funding_transaction_saved: Option<Transaction>,
 	is_batch_funding: Option<()>,
 
@@ -1279,16 +1565,22 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// We track whether we already emitted a `ChannelReady` event.
 	channel_ready_event_emitted: bool,
 
+	/// Some if we initiated to shut down the channel.
+	local_initiated_shutdown: Option<()>,
+
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
+	#[cfg(not(test))]
 	channel_keys_id: [u8; 32],
+	#[cfg(test)]
+	pub channel_keys_id: [u8; 32],
 
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
 
 	/// The current interactive transaction construction session under negotiation.
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
 }
 
@@ -1533,6 +1825,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
+			monitor_pending_update_adds: Vec::new(),
 
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
@@ -1582,6 +1875,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				channel_type_features: channel_type.clone()
 			},
 			funding_transaction: None,
+			#[cfg(splicing)]
 			funding_transaction_saved: None,
 			is_batch_funding: None,
 
@@ -1613,17 +1907,21 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
-			historical_inbound_htlc_fulfills: HashSet::new(),
+			historical_inbound_htlc_fulfills: new_hash_set(),
 
 			channel_type,
 			channel_keys_id,
 
-			blocked_monitor_updates: Vec::new(),
-
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			interactive_tx_constructor: None,
+			#[cfg(splicing)]
 			pending_splice_pre: None,
+			#[cfg(splicing)]
 			pending_splice_post: None,
+
+			local_initiated_shutdown: None,
+
+			blocked_monitor_updates: Vec::new(),
 		};
 
 		Ok(channel_context)
@@ -1758,6 +2056,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			monitor_pending_forwards: Vec::new(),
 			monitor_pending_failures: Vec::new(),
 			monitor_pending_finalized_fulfills: Vec::new(),
+			monitor_pending_update_adds: Vec::new(),
 
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
@@ -1806,6 +2105,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				channel_type_features: channel_type.clone()
 			},
 			funding_transaction: None,
+			#[cfg(splicing)]
 			funding_transaction_saved: None,
 			is_batch_funding: None,
 
@@ -1837,17 +2137,20 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			channel_ready_event_emitted: false,
 
 			#[cfg(any(test, fuzzing))]
-			historical_inbound_htlc_fulfills: HashSet::new(),
+			historical_inbound_htlc_fulfills: new_hash_set(),
 
 			channel_type,
 			channel_keys_id,
 
 			blocked_monitor_updates: Vec::new(),
 
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			interactive_tx_constructor: None,
+			#[cfg(splicing)]
 			pending_splice_pre: None,
+			#[cfg(splicing)]
 			pending_splice_post: None,
+			local_initiated_shutdown: None,
 		})
 	}
 
@@ -2620,7 +2923,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
 		}
 		let feerate_plus_quarter = feerate_per_kw.checked_mul(1250).map(|v| v / 1000);
-		cmp::max(2530, feerate_plus_quarter.unwrap_or(u32::max_value()))
+		cmp::max(feerate_per_kw + 2530, feerate_plus_quarter.unwrap_or(u32::max_value()))
 	}
 
 	/// Get forwarding information for the counterparty.
@@ -2708,6 +3011,99 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 		}
 		stats
+	}
+
+	/// Returns information on all pending inbound HTLCs.
+	pub fn get_pending_inbound_htlc_details(&self) -> Vec<InboundHTLCDetails> {
+		let mut holding_cell_states = new_hash_map();
+		for holding_cell_update in self.holding_cell_htlc_updates.iter() {
+			match holding_cell_update {
+				HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
+					holding_cell_states.insert(
+						htlc_id,
+						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill,
+					);
+				},
+				HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
+					holding_cell_states.insert(
+						htlc_id,
+						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail,
+					);
+				},
+				HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => {
+					holding_cell_states.insert(
+						htlc_id,
+						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail,
+					);
+				},
+				// Outbound HTLC.
+				HTLCUpdateAwaitingACK::AddHTLC { .. } => {},
+			}
+		}
+		let mut inbound_details = Vec::new();
+		let htlc_success_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			0
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
+		};
+		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
+		for htlc in self.pending_inbound_htlcs.iter() {
+			if let Some(state_details) = (&htlc.state).into() {
+				inbound_details.push(InboundHTLCDetails{
+					htlc_id: htlc.htlc_id,
+					amount_msat: htlc.amount_msat,
+					cltv_expiry: htlc.cltv_expiry,
+					payment_hash: htlc.payment_hash,
+					state: Some(holding_cell_states.remove(&htlc.htlc_id).unwrap_or(state_details)),
+					is_dust: htlc.amount_msat / 1000 < holder_dust_limit_success_sat,
+				});
+			}
+		}
+		inbound_details
+	}
+
+	/// Returns information on all pending outbound HTLCs.
+	pub fn get_pending_outbound_htlc_details(&self) -> Vec<OutboundHTLCDetails> {
+		let mut outbound_details = Vec::new();
+		let htlc_timeout_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			0
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
+		};
+		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
+		for htlc in self.pending_outbound_htlcs.iter() {
+			outbound_details.push(OutboundHTLCDetails{
+				htlc_id: Some(htlc.htlc_id),
+				amount_msat: htlc.amount_msat,
+				cltv_expiry: htlc.cltv_expiry,
+				payment_hash: htlc.payment_hash,
+				skimmed_fee_msat: htlc.skimmed_fee_msat,
+				state: Some((&htlc.state).into()),
+				is_dust: htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat,
+			});
+		}
+		for holding_cell_update in self.holding_cell_htlc_updates.iter() {
+			if let HTLCUpdateAwaitingACK::AddHTLC {
+				amount_msat,
+				cltv_expiry,
+				payment_hash,
+				skimmed_fee_msat,
+				..
+			} = *holding_cell_update {
+				outbound_details.push(OutboundHTLCDetails{
+					htlc_id: None,
+					amount_msat: amount_msat,
+					cltv_expiry: cltv_expiry,
+					payment_hash: payment_hash,
+					skimmed_fee_msat: skimmed_fee_msat,
+					state: Some(OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+					is_dust: amount_msat / 1000 < holder_dust_limit_timeout_sat,
+				});
+			}
+		}
+		outbound_details
 	}
 
 	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
@@ -3132,11 +3528,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			// funding transaction, don't return a funding txo (which prevents providing the
 			// monitor update to the user, even if we return one).
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
-			let generate_monitor_update = match self.channel_state {
-				ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_)|ChannelState::ShutdownComplete => true,
-				_ => false,
-			};
-			if generate_monitor_update {
+			if !self.channel_state.is_pre_funded_state() {
 				self.latest_monitor_update_id = CLOSED_CHANNEL_UPDATE_ID;
 				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
@@ -3254,7 +3646,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	// Interactive transaction construction
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, dual_funding_context: &DualFundingChannelContext, signer_provider: &SP,
 		entropy_source: &ES, holder_node_id: PublicKey, is_initiator: bool,
@@ -3272,6 +3664,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 
 		let mut funding_inputs_with_extra = funding_inputs;
+		#[cfg(splicing)]
 		if let Some(pending_splice) = &self.pending_splice_post {
 			// #SPLICING
 			if is_initiator {
@@ -3309,15 +3702,15 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 		let (tx_constructor, msg) = InteractiveTxConstructor::new(
 			entropy_source, self.channel_id(), dual_funding_context.funding_feerate_sat_per_1000_weight,
-			holder_node_id, self.counterparty_node_id, is_initiator, dual_funding_context.funding_tx_locktime,
-			funding_inputs_with_extra, funding_outputs, 0
+			holder_node_id, self.counterparty_node_id, is_initiator, LockTime::from_consensus(dual_funding_context.funding_tx_locktime),
+			funding_inputs_with_extra, funding_outputs,
 		);
 		self.interactive_tx_constructor = Some(tx_constructor);
 
 		Ok(msg)
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	fn get_tx_abort_msg_from_abort_reason(&self, reason: AbortReason) -> msgs::TxAbort {
 		let msg = match reason {
 			AbortReason::InvalidStateTransition => "State transition was invalid",
@@ -3345,7 +3738,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSend, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
@@ -3357,7 +3750,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_output(msg).map_err(
@@ -3369,7 +3762,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_input(msg).map_err(
@@ -3381,7 +3774,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_output(msg).map_err(
@@ -3393,9 +3786,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_complete(&mut self, msg: &msgs::TxComplete)
-	-> Result<(Option<InteractiveTxMessageSend>, Option<InteractiveTxSigningSession>), msgs::TxAbort> {
+	-> Result<HandleTxCompleteValue, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_complete(msg).map_err(
 				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
@@ -3406,18 +3799,27 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_abort(&self, _msg: &msgs::TxAbort)-> Result<InteractiveTxMessageSend, ChannelError> {
 		todo!();
 	}
 
+	#[cfg(any(dual_funding, splicing))]
+	pub fn is_splice_pending(&self) -> bool {
+		#[cfg(splicing)]
+		return self.pending_splice_post.is_some();
+		#[cfg(not(splicing))]
+		return false;
+	}
+
+	#[cfg(splicing)]
 	pub fn generate_v2_channel_id_from_revocation_basepoints(&self) -> ChannelId {
 		ChannelId::v2_from_revocation_basepoints(&self.get_holder_pubkeys().revocation_basepoint, &self.get_counterparty_pubkeys().revocation_basepoint)
 	}
 
-	/// #SPLICING
 	/// Update channel capacity to a new value
 	/// It is assumed that the increase is coming to A's side
+	#[cfg(splicing)]
 	fn update_channel_value<L: Deref>(&mut self, new_value_sats: u64, belongs_to_local: bool, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
 		let old_value = self.channel_value_satoshis;
 		let old_to_self = self.value_to_self_msat;
@@ -3440,8 +3842,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		Ok(())
 	}
 
-	/// #SPLICING
 	/// Splice process starting; update state; update capacity, state, reset funding tx
+	#[cfg(splicing)]
 	pub(crate) fn splice_start<L: Deref>(&mut self, is_outgoing: bool, relative_satoshis: i64, logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger
 	{
@@ -3488,9 +3890,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		Ok(())
 	}
 
-	/// #SPLICING
 	/// Splice process finished, new funding transaction locked.
 	/// At this point the old funding transaction is spent.
+	#[cfg(splicing)]
 	pub(crate) fn splice_locked<L: Deref>(&mut self, logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger
 	{
@@ -3510,8 +3912,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		Ok(())
 	}
 
-	/// #SPLICING
 	/// Create signature for the current funding tx input, used in the splicing case.
+	#[cfg(splicing)]
 	fn prev_funding_tx_create_holder_sig(&self, transaction: &Transaction, input_index: u16, input_value: u64, redeem_script: &ScriptBuf) -> Result<Signature, ChannelError> {
 		// #SPLICE-SIG
 		match &self.holder_signer {
@@ -3525,10 +3927,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 	}
 
-	/// #SPLICING
 	/// Prepare the witness on the current funding tx input (used in the splicing case),
 	/// containing our holder signature, and optionally the counterparty signature, or its empty placholder.
-	#[cfg(dual_funding)]
+	#[cfg(splicing)]
 	fn prev_funding_tx_sign<L: Deref>(
 		&self, transaction: &Transaction, counterparty_sig: Option<Signature>, logger: &L
 	) -> Result<(Transaction, Signature), ChannelError> where L::Target: Logger {
@@ -3627,7 +4028,7 @@ pub(crate) fn get_legacy_default_holder_selected_channel_reserve_satoshis(channe
 ///
 /// This is used both for outbound and inbound channels and has lower bound
 /// of `dust_limit_satoshis`.
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satoshis: u64) -> u64 {
 	// Fixed at 1% of channel value by spec.
 	let (q, _) = channel_value_satoshis.overflowing_div(100);
@@ -3649,7 +4050,7 @@ pub(crate) fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_
 	(commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
 }
 
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 pub(super) fn maybe_add_funding_change_output<SP: Deref>(signer_provider: &SP, is_initiator: bool,
 	our_funding_satoshis: u64, funding_inputs: &Vec<(TxIn, TransactionU16LenLimited)>,
 	funding_outputs: &mut Vec<TxOut>, funding_feerate_sat_per_1000_weight: u32,
@@ -3709,7 +4110,7 @@ pub(super) fn maybe_add_funding_change_output<SP: Deref>(signer_provider: &SP, i
 }
 
 /// Context for dual-funded channels.
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 pub(super) struct DualFundingChannelContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
@@ -3717,7 +4118,7 @@ pub(super) struct DualFundingChannelContext {
 	pub their_funding_satoshis: u64,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
-	pub funding_tx_locktime: LockTime,
+	pub funding_tx_locktime: u32,
 	/// The feerate set by the initiator to be used for the funding transaction.
 	pub funding_feerate_sat_per_1000_weight: u32,
 }
@@ -3726,9 +4127,9 @@ pub(super) struct DualFundingChannelContext {
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub dual_funding_channel_context: Option<DualFundingChannelContext>,
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
@@ -3913,7 +4314,7 @@ impl<SP: Deref> Channel<SP> where
 	where L::Target: Logger {
 		// Assert that we'll add the HTLC claim to the holding cell in `get_update_fulfill_htlc`
 		// (see equivalent if condition there).
-		assert!(self.context.channel_state.should_force_holding_cell());
+		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
 		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, logger);
 		self.context.latest_monitor_update_id = mon_update_id;
@@ -3984,7 +4385,7 @@ impl<SP: Deref> Channel<SP> where
 			channel_id: Some(self.context.channel_id()),
 		};
 
-		if self.context.channel_state.should_force_holding_cell() {
+		if !self.context.channel_state.can_generate_new_commitment() {
 			// Note that this condition is the same as the assertion in
 			// `claim_htlc_while_disconnected_dropping_mon_update` and must match exactly -
 			// `claim_htlc_while_disconnected_dropping_mon_update` would not work correctly if we
@@ -4158,7 +4559,7 @@ impl<SP: Deref> Channel<SP> where
 			return Ok(None);
 		}
 
-		if self.context.channel_state.should_force_holding_cell() {
+		if !self.context.channel_state.can_generate_new_commitment() {
 			debug_assert!(force_holding_cell, "!force_holding_cell is only called when emptying the holding cell, so we shouldn't end up back in it!");
 			force_holding_cell = true;
 		}
@@ -4254,12 +4655,12 @@ impl<SP: Deref> Channel<SP> where
 		let mut check_reconnection = false;
 		match &self.context.channel_state {
 			ChannelState::AwaitingChannelReady(flags) => {
-				let flags = *flags & !FundedStateFlags::ALL;
+				let flags = flags.clone().clear(FundedStateFlags::ALL.into());
 				debug_assert!(!flags.is_set(AwaitingChannelReadyFlags::OUR_CHANNEL_READY) || !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
-				if flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
+				if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
 					// If we reconnected before sending our `channel_ready` they may still resend theirs.
 					check_reconnection = true;
-				} else if (flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
+				} else if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
 					self.context.channel_state.set_their_channel_ready();
 				} else if flags == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
 					self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
@@ -4304,22 +4705,14 @@ impl<SP: Deref> Channel<SP> where
 
 		log_info!(logger, "Received channel_ready from peer for channel {}", &self.context.channel_id());
 
-		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger))
+		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
 	}
 
-	pub fn update_add_htlc<F, FE: Deref, L: Deref>(
-		&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus,
-		create_pending_htlc_status: F, fee_estimator: &LowerBoundedFeeEstimator<FE>, logger: &L
-	) -> Result<(), ChannelError>
-	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus,
-		FE::Target: FeeEstimator, L::Target: Logger,
-	{
+	pub fn update_add_htlc(
+		&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_status: PendingHTLCStatus,
+	) -> Result<(), ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state".to_owned()));
-		}
-		// We can't accept HTLCs sent after we've sent a shutdown.
-		if self.context.channel_state.is_local_shutdown_sent() {
-			pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x4000|8);
 		}
 		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
 		if self.context.channel_state.is_remote_shutdown_sent() {
@@ -4339,7 +4732,6 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
-		let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
 		if inbound_stats.pending_htlcs + 1 > self.context.holder_max_accepted_htlcs as u32 {
 			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.context.holder_max_accepted_htlcs)));
 		}
@@ -4365,34 +4757,6 @@ impl<SP: Deref> Channel<SP> where
 				removed_outbound_total_msat += htlc.amount_msat;
 			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
 				removed_outbound_total_msat += htlc.amount_msat;
-			}
-		}
-
-		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			(0, 0)
-		} else {
-			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(self.context.get_channel_type()) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(self.context.get_channel_type()) / 1000)
-		};
-		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
-		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
-			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
-			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
-				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
-					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
-				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
-			}
-		}
-
-		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
-		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
-			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
-			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
-				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
-					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
-				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
 			}
 		}
 
@@ -4429,23 +4793,7 @@ impl<SP: Deref> Channel<SP> where
 		} else {
 			0
 		};
-		if !self.context.is_outbound() {
-			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
-			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
-			// side, only on the sender's. Note that with anchor outputs we are no longer as
-			// sensitive to fee spikes, so we need to account for them.
-			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
-			if !self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
-			}
-			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
-				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
-				// the HTLC, i.e. its status is already set to failing.
-				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
-				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
-			}
-		} else {
+		if self.context.is_outbound() {
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
@@ -4473,7 +4821,9 @@ impl<SP: Deref> Channel<SP> where
 			amount_msat: msg.amount_msat,
 			payment_hash: msg.payment_hash,
 			cltv_expiry: msg.cltv_expiry,
-			state: InboundHTLCState::RemoteAnnounced(pending_forward_status),
+			state: InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Resolved {
+				pending_htlc_status: pending_forward_status
+			}),
 		});
 		Ok(())
 	}
@@ -4544,7 +4894,7 @@ impl<SP: Deref> Channel<SP> where
 		Ok(())
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn commitment_signed_initial_v2<L: Deref>(&mut self, msg: &msgs::CommitmentSigned,
 		best_block: BestBlock, signer_provider: &SP, logger: &L
 	) -> Result<ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>, ChannelError>
@@ -4553,7 +4903,7 @@ impl<SP: Deref> Channel<SP> where
 		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
 			return Err(ChannelError::Close("Received initial commitment_signed before funding transaction constructed!".to_owned()));
 		}
-		let is_splice = self.context.pending_splice_post.is_some();
+		let is_splice = self.context.is_splice_pending();
 		if !is_splice {
 			if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 					self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
@@ -4769,13 +5119,13 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
-			let new_forward = if let &InboundHTLCState::RemoteAnnounced(ref forward_info) = &htlc.state {
-				Some(forward_info.clone())
+			let htlc_resolution = if let &InboundHTLCState::RemoteAnnounced(ref resolution) = &htlc.state {
+				Some(resolution.clone())
 			} else { None };
-			if let Some(forward_info) = new_forward {
+			if let Some(htlc_resolution) = htlc_resolution {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
-				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info);
+				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution);
 				need_commitment = true;
 			}
 		}
@@ -4866,7 +5216,7 @@ impl<SP: Deref> Channel<SP> where
 	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>)
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
-		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) && !self.context.channel_state.should_force_holding_cell() {
+		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) && self.context.channel_state.can_generate_new_commitment() {
 			self.free_holding_cell_htlcs(fee_estimator, logger)
 		} else { (None, Vec::new()) }
 	}
@@ -5085,6 +5435,7 @@ impl<SP: Deref> Channel<SP> where
 
 		log_trace!(logger, "Updating HTLCs on receipt of RAA in channel {}...", &self.context.channel_id());
 		let mut to_forward_infos = Vec::new();
+		let mut pending_update_adds = Vec::new();
 		let mut revoked_htlcs = Vec::new();
 		let mut finalized_claimed_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
@@ -5132,29 +5483,37 @@ impl<SP: Deref> Channel<SP> where
 					let mut state = InboundHTLCState::Committed;
 					mem::swap(&mut state, &mut htlc.state);
 
-					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info) = state {
+					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution) = state {
 						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
-						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info);
+						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution);
 						require_commitment = true;
-					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info) = state {
-						match forward_info {
-							PendingHTLCStatus::Fail(fail_msg) => {
-								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
-								require_commitment = true;
-								match fail_msg {
-									HTLCFailureMsg::Relay(msg) => {
-										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
-										update_fail_htlcs.push(msg)
+					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) = state {
+						match resolution {
+							InboundHTLCResolution::Resolved { pending_htlc_status } =>
+								match pending_htlc_status {
+									PendingHTLCStatus::Fail(fail_msg) => {
+										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
+										require_commitment = true;
+										match fail_msg {
+											HTLCFailureMsg::Relay(msg) => {
+												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
+												update_fail_htlcs.push(msg)
+											},
+											HTLCFailureMsg::Malformed(msg) => {
+												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
+												update_fail_malformed_htlcs.push(msg)
+											},
+										}
 									},
-									HTLCFailureMsg::Malformed(msg) => {
-										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
-										update_fail_malformed_htlcs.push(msg)
-									},
+									PendingHTLCStatus::Forward(forward_info) => {
+										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
+										to_forward_infos.push((forward_info, htlc.htlc_id));
+										htlc.state = InboundHTLCState::Committed;
+									}
 								}
-							},
-							PendingHTLCStatus::Forward(forward_info) => {
+							InboundHTLCResolution::Pending { update_add_htlc } => {
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
-								to_forward_infos.push((forward_info, htlc.htlc_id));
+								pending_update_adds.push(update_add_htlc);
 								htlc.state = InboundHTLCState::Committed;
 							}
 						}
@@ -5214,6 +5573,8 @@ impl<SP: Deref> Channel<SP> where
 				}
 			}
 		}
+
+		self.context.monitor_pending_update_adds.append(&mut pending_update_adds);
 
 		if self.context.channel_state.is_monitor_update_in_progress() {
 			// We can't actually generate a new commitment transaction (incl by freeing holding
@@ -5277,7 +5638,7 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn verify_interactive_tx_signatures(&mut self, _witnesses: &Vec<Witness>) {
 		if let Some(ref mut _signing_session) = self.interactive_tx_signing_session {
 			// Check that sighash_all was used:
@@ -5285,20 +5646,20 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_signatures<L: Deref>(&mut self, msg: &msgs::TxSignatures, logger: &L) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), ChannelError>
 	where L::Target: Logger {
 		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
-			let expected_witness_count = signing_session.counterparty_inputs_count();
+			let expected_witness_count = signing_session.remote_inputs_count();
 			if msg.witnesses.len() != expected_witness_count {
 				return Err(ChannelError::Close(format!("Witness count does not match contributed input count, {} {}",
 					msg.witnesses.len(), expected_witness_count)));
 			}
-			let expected_shared = if self.context.pending_splice_post.is_some() { 1 } else { 0 };
-			let tlvs_count = if msg.tlvs.is_some() { 1 } else { 0 };
-			if tlvs_count != expected_shared {
-				return Err(ChannelError::Close(format!("Shared signature count (tlvs) presence does not match expected, {} {}",
-					tlvs_count, expected_shared)));
+			let expected_shared = if self.context.is_splice_pending() { 1 } else { 0 };
+			let funding_sig_count = if msg.funding_outpoint_sig.is_some() { 1 } else { 0 };
+			if funding_sig_count != expected_shared {
+				return Err(ChannelError::Close(format!("Shared signature count (funding_outpoint_sig) presence does not match expected, {} {}",
+				funding_sig_count, expected_shared)));
 			}
 
 			for witness in &msg.witnesses {
@@ -5312,7 +5673,7 @@ impl<SP: Deref> Channel<SP> where
 				// for spending. Doesn't seem to be anything in rust-bitcoin.
 			}
 
-			if msg.tx_hash != signing_session.constructed_transaction.txid() {
+			if msg.tx_hash != signing_session.unsigned_tx.txid() {
 				return Err(ChannelError::Close("The txid for the transaction does not match".to_string()));
 			}
 
@@ -5321,12 +5682,13 @@ impl<SP: Deref> Channel<SP> where
 				// TODO check if to handle as error
 			}
 			let (tx_signatures_opt, mut funding_tx_opt) = signing_session.received_tx_signatures(msg.clone());
+			#[cfg(splicing)]
 			if let Some(funding_tx) = &funding_tx_opt {
-				if self.context.pending_splice_post.is_some() {
-					if let Some(cp_sig) = &msg.tlvs {
+				if self.context.is_splice_pending() {
+					if let Some(cp_sig) = &msg.funding_outpoint_sig {
 						// Update signature on previous funding input:
 						// - our signature is (re)generated (was overwritten by witness received in tx_signatures)
-						// - counterparty signature is set, taken from tx_signatures tlvs field
+						// - counterparty signature is set, taken from tx_signatures funding_outpoint_sig field
 						let (updated_funding_tx, _) = self.context.prev_funding_tx_sign(funding_tx, Some(cp_sig.clone()), logger)?;
 						funding_tx_opt = Some(updated_funding_tx);
 					}
@@ -5335,7 +5697,10 @@ impl<SP: Deref> Channel<SP> where
 				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
 			self.context.funding_transaction = funding_tx_opt.clone();
-			self.context.funding_transaction_saved = funding_tx_opt.clone();
+			#[cfg(splicing)]
+			{
+				self.context.funding_transaction_saved = funding_tx_opt.clone();
+			}
 			// Note: cannot mark interactive tx session is complete as of yet, funding_transaction_signed() can come later from the client
 
 			Ok((tx_signatures_opt, funding_tx_opt))
@@ -5345,12 +5710,12 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_init_rbf(&self, _msg: &msgs::TxInitRbf)-> Result<InteractiveTxMessageSend, ChannelError> {
 		todo!();
 	}
 
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_ack_rbf(&self, _msg: &msgs::TxAckRbf)-> Result<InteractiveTxMessageSend, ChannelError> {
 		todo!();
 	}
@@ -5556,8 +5921,8 @@ impl<SP: Deref> Channel<SP> where
 		// first received the funding_signed.
 		let mut funding_broadcastable =
 			if self.context.is_outbound() &&
-				matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
-				matches!(self.context.channel_state, ChannelState::ChannelReady(_))
+				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
+				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
 			{
 				self.context.funding_transaction.take()
 			} else { None };
@@ -5593,13 +5958,16 @@ impl<SP: Deref> Channel<SP> where
 		mem::swap(&mut failed_htlcs, &mut self.context.monitor_pending_failures);
 		let mut finalized_claimed_htlcs = Vec::new();
 		mem::swap(&mut finalized_claimed_htlcs, &mut self.context.monitor_pending_finalized_fulfills);
+		let mut pending_update_adds = Vec::new();
+		mem::swap(&mut pending_update_adds, &mut self.context.monitor_pending_update_adds);
 
 		if self.context.channel_state.is_peer_disconnected() {
 			self.context.monitor_pending_revoke_and_ack = false;
 			self.context.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, order: RAACommitmentOrder::RevokeAndACKFirst,
-				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, channel_ready, announcement_sigs
+				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
+				funding_broadcastable, channel_ready, announcement_sigs
 			};
 		}
 
@@ -5621,7 +5989,8 @@ impl<SP: Deref> Channel<SP> where
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, channel_ready, announcement_sigs
+			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
+			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs
 		}
 	}
 
@@ -5861,7 +6230,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let shutdown_msg = self.get_outbound_shutdown();
 
-		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger);
+		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger);
 
 		if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
 			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.
@@ -6309,11 +6678,17 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 
+		let closure_reason = if self.initiated_shutdown() {
+			ClosureReason::LocallyInitiatedCooperativeClosure
+		} else {
+			ClosureReason::CounterpartyInitiatedCooperativeClosure
+		};
+
 		assert!(self.context.shutdown_scriptpubkey.is_some());
 		if let Some((last_fee, sig)) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
 				let shutdown_result = ShutdownResult {
-					closure_reason: ClosureReason::CooperativeClosure,
+					closure_reason,
 					monitor_update: None,
 					dropped_outbound_htlcs: Vec::new(),
 					unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
@@ -6348,7 +6723,7 @@ impl<SP: Deref> Channel<SP> where
 							.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
 						let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
 							let shutdown_result = ShutdownResult {
-								closure_reason: ClosureReason::CooperativeClosure,
+								closure_reason,
 								monitor_update: None,
 								dropped_outbound_htlcs: Vec::new(),
 								unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
@@ -6479,6 +6854,86 @@ impl<SP: Deref> Channel<SP> where
 			})
 	}
 
+	pub fn can_accept_incoming_htlc<F: Deref, L: Deref>(
+		&self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: L
+	) -> Result<(), (&'static str, u16)>
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger
+	{
+		if self.context.channel_state.is_local_shutdown_sent() {
+			return Err(("Shutdown was already sent", 0x4000|8))
+		}
+
+		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
+		let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
+		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(self.context.get_channel_type()) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(self.context.get_channel_type()) / 1000)
+		};
+		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
+		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
+			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
+			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
+				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
+					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
+				return Err(("Exceeded our dust exposure limit on counterparty commitment tx", 0x1000|7))
+			}
+		}
+
+		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
+		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
+			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
+			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
+				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
+					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
+				return Err(("Exceeded our dust exposure limit on holder commitment tx", 0x1000|7))
+			}
+		}
+
+		let anchor_outputs_value_msat = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
+		} else {
+			0
+		};
+
+		let mut removed_outbound_total_msat = 0;
+		for ref htlc in self.context.pending_outbound_htlcs.iter() {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
+				removed_outbound_total_msat += htlc.amount_msat;
+			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+				removed_outbound_total_msat += htlc.amount_msat;
+			}
+		}
+
+		let pending_value_to_self_msat =
+			self.context.value_to_self_msat + inbound_stats.pending_htlcs_value_msat - removed_outbound_total_msat;
+		let pending_remote_value_msat =
+			self.context.channel_value_satoshis * 1000 - pending_value_to_self_msat;
+
+		if !self.context.is_outbound() {
+			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
+			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
+			// side, only on the sender's. Note that with anchor outputs we are no longer as
+			// sensitive to fee spikes, so we need to account for them.
+			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
+			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
+			if !self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
+			}
+			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
+				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
+				return Err(("Fee spike buffer violation", 0x1000|7));
+			}
+		}
+
+		Ok(())
+	}
+
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
 		self.context.cur_holder_commitment_transaction_number + 1
 	}
@@ -6568,7 +7023,7 @@ impl<SP: Deref> Channel<SP> where
 		if !self.is_awaiting_monitor_update() { return false; }
 		if matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(flags)
-			if (flags & !(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH)).is_empty()
+			if flags.clone().clear(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty()
 		) {
 			// If we're not a 0conf channel, we'll be waiting on a monitor update with only
 			// AwaitingChannelReady set, though our peer could have sent their channel_ready.
@@ -6613,6 +7068,11 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_state.is_local_shutdown_sent()
 	}
 
+	/// Returns true if we initiated to shut down the channel.
+	pub fn initiated_shutdown(&self) -> bool {
+		self.context.local_initiated_shutdown.is_some()
+	}
+
 	/// Returns true if this channel is fully shut down. True here implies that no further actions
 	/// may/will be taken on this channel, and thus this object should be freed. Any future changes
 	/// will be handled appropriately by the chain monitor.
@@ -6654,14 +7114,14 @@ impl<SP: Deref> Channel<SP> where
 
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
-		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if (f & !FundedStateFlags::ALL).is_empty()) {
+		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()).is_empty()) {
 			self.context.channel_state.set_our_channel_ready();
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
 			self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 			self.context.update_time_counter += 1;
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
@@ -6751,14 +7211,14 @@ impl<SP: Deref> Channel<SP> where
 								Ok(scid) => Some(scid),
 								Err(_) => panic!("Block was bogus - either height was > 16 million, had > 16 million transactions, or had > 65k outputs"),
 							};
-							#[cfg(dual_funding)]
+							#[cfg(any(dual_funding, splicing))]
 							if self.interactive_tx_signing_session.is_some() {
 								// Mark that the interactive tx session is complete
 								self.interactive_tx_signing_session = None;
 								log_info!(logger, "Interactive transaction signing session closed for channel {}", &self.context.channel_id);
 							}
 
-							// #SPLICING
+							#[cfg(splicing)]
 							if self.context.pending_splice_post.is_some() {
 								self.context.splice_locked(logger).ok();
 							}
@@ -7164,6 +7624,7 @@ impl<SP: Deref> Channel<SP> where
 	/// #SPLICING STEP2 I
 	/// Inspired by get_open_channel()
 	/// Get the splice message that can be sent during splice initiation
+	#[cfg(splicing)]
 	pub fn get_splice(&mut self, chain_hash: ChainHash,
 		// TODO; should this be a param, or stored in the channel?
 		relative_satoshis: i64, funding_feerate_perkw: u32, locktime: u32
@@ -7284,7 +7745,7 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
 		}
 
-		let need_holding_cell = self.context.channel_state.should_force_holding_cell();
+		let need_holding_cell = !self.context.channel_state.can_generate_new_commitment();
 		log_debug!(logger, "Pushing new outbound HTLC with hash {} for {} msat {}",
 			payment_hash, amount_msat,
 			if force_holding_cell { "into holding cell" }
@@ -7575,6 +8036,7 @@ impl<SP: Deref> Channel<SP> where
 		// From here on out, we may not fail!
 		self.context.target_closing_feerate_sats_per_kw = target_feerate_sats_per_kw;
 		self.context.channel_state.set_local_shutdown_sent();
+		self.context.local_initiated_shutdown = Some(());
 		self.context.update_time_counter += 1;
 
 		let monitor_update = if update_shutdown_script {
@@ -7752,7 +8214,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 
 		self.context.funding_transaction = Some(funding_transaction.clone());
-		self.context.funding_transaction_saved = Some(funding_transaction);
+		#[cfg(splicing)]
+		{
+			self.context.funding_transaction_saved = Some(funding_transaction);
+		}
 		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
 
 		let funding_created = self.get_funding_created_msg(logger);
@@ -7925,9 +8390,9 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let mut channel = Channel {
 			context: self.context,
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			interactive_tx_signing_session: None,
 		};
 
@@ -7954,12 +8419,12 @@ pub(super) struct InboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 }
 
 /// Fetches the [`ChannelTypeFeatures`] that will be used for a channel built from a given
-/// [`msgs::OpenChannel`].
+/// [`msgs::CommonOpenChannelFields`].
 pub(super) fn channel_type_from_open_channel(
-	msg: &msgs::CommonOpenChannelFields, their_features: &InitFeatures,
+	common_fields: &msgs::CommonOpenChannelFields, their_features: &InitFeatures,
 	our_supported_features: &ChannelTypeFeatures
 ) -> Result<ChannelTypeFeatures, ChannelError> {
-	if let Some(channel_type) = &msg.channel_type {
+	if let Some(channel_type) = &common_fields.channel_type {
 		if channel_type.supports_any_optional_bits() {
 			return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 		}
@@ -7974,7 +8439,7 @@ pub(super) fn channel_type_from_open_channel(
 		if !channel_type.is_subset(our_supported_features) {
 			return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
 		}
-		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
+		let announced_channel = if (common_fields.channel_flags & 1) == 1 { true } else { false };
 		if channel_type.requires_scid_privacy() && announced_channel {
 			return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
 		}
@@ -8217,9 +8682,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// `ChannelMonitor`.
 		let mut channel = Channel {
 			context: self.context,
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			interactive_tx_signing_session: None,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
@@ -8230,15 +8695,15 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 }
 
 // A not-yet-funded outbound (from holder) channel using V2 channel establishment.
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
-	#[cfg(dual_funding)]
+	#[cfg(any(dual_funding, splicing))]
 	pub dual_funding_context: DualFundingChannelContext,
 }
 
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	pub fn new<ES: Deref, F: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
@@ -8259,11 +8724,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 
 		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
-		let funding_tx_locktime = LockTime::from_height(current_chain_height)
-			.map_err(|_| APIError::APIMisuseError {
-				err: format!(
-					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
-					current_chain_height) })?;
+		let funding_tx_locktime = current_chain_height;
 
 		let chan = Self {
 			context: ChannelContext::new_for_outbound_channel(
@@ -8351,7 +8812,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			},
 			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
 			second_per_commitment_point,
-			locktime: self.dual_funding_context.funding_tx_locktime.to_consensus_u32(),
+			locktime: self.dual_funding_context.funding_tx_locktime,
 			require_confirmed_inputs: None,
 		}
 	}
@@ -8371,16 +8832,13 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	where
 		L::Target: Logger
 	{
-		let pending_splice_opt = match &self.context.pending_splice_post {
-			Some(ps) => Some(ps.clone()),
-			None => None, // note: simpler map() is not used here due to partial borrow
-		};
+		let is_splice_pending = self.context.is_splice_pending();
 
 		let mut output_index = None;
 		let expected_spk = self.context.get_funding_redeemscript().to_v0_p2wsh();
 		// Splicing note: the channel value at this time is already the post-splice value, so no special handling is needed
-		for (idx, outp) in signing_session.constructed_transaction.output.iter().enumerate() {
-			if outp.script_pubkey == expected_spk && outp.value == self.context.get_value_satoshis() {
+		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
+			if outp.tx_out().script_pubkey == expected_spk && outp.tx_out().value == self.context.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err((self, ChannelError::Close("Multiple outputs matched the expected script and value".to_owned())));
 				}
@@ -8390,30 +8848,30 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		if output_index.is_none() {
 			return Err((self, ChannelError::Close("No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned())));
 		}
-		let outpoint = OutPoint { txid: signing_session.constructed_transaction.txid(), index: output_index.unwrap() };
+		let outpoint = OutPoint { txid: signing_session.unsigned_tx.txid(), index: output_index.unwrap() };
 		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
 
-		let commitment_signed = get_initial_commitment_signed(&mut self.context, signing_session.constructed_transaction.clone(),
-			pending_splice_opt.is_some(), logger);
+		let commitment_signed = get_initial_commitment_signed(&mut self.context, signing_session.unsigned_tx.clone(),
+			is_splice_pending, logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => commitment_signed,
 			Err(err) => return Err((self, err)),
 		};
 
-		let partly_signed_transaction = if pending_splice_opt.is_some() {
+		let mut partly_signed_transaction = signing_session.unsigned_tx.clone().into_unsigned_tx();
+		#[cfg(splicing)]
+		if is_splice_pending {
 			// #SPLICING
 			// #SPLICE-SIG
 			// Add signature for prev funding input
-			let (partly_signed_transaction, holder_signature) = match self.context.prev_funding_tx_sign(&signing_session.constructed_transaction, None, logger) {
+			let (partly_signed_tx, holder_signature) = match self.context.prev_funding_tx_sign(&signing_session.unsigned_tx.clone().into_unsigned_tx(), None, logger) {
 				Err(e) => return Err((self, e)), // simpler map_err() could not be used here due to move issue
 				Ok(t) => t,
 			};
 			signing_session.shared_signature = Some(holder_signature);
-			partly_signed_transaction
-		} else {
-			signing_session.constructed_transaction.clone()
-		};
+			partly_signed_transaction = partly_signed_tx;
+		}
 
 		// Clear out the interactive tx constructor.
 		self.context.interactive_tx_constructor = None;
@@ -8435,6 +8893,37 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		Ok((channel, commitment_signed, Some(funding_ready_for_sig_event)))
 	}
 
+	/*
+	/// #SPLICING STEP4 A
+	/// Get the splice_ack message that can be sent in response to splice initiation
+	/// TODO move to ChannelContext
+	#[cfg(splicing)]
+	pub fn get_splice_ack(&mut self, chain_hash: ChainHash) -> Result<msgs::SpliceAck, ChannelError> {
+		if self.context.is_outbound() {
+			panic!("Tried to accept a splice on an outound channel?");
+		}
+
+		let pending_splice = match &self.context.pending_splice_post {
+			None => return Err(ChannelError::Close("get_splice_ack() is invalid on a channel with no active splice".to_owned())),
+			Some(ps) => ps.clone(),
+		};
+
+		// TODO checks
+
+		// TODO check
+		// self.context.channel_state = ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
+
+		let keys = self.context.get_holder_pubkeys();
+		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
+		Ok(msgs::SpliceAck {
+			chain_hash,
+			channel_id: self.context.channel_id, // pending_splice.pre_channel_id.unwrap(), // TODO
+			relative_satoshis: pending_splice.relative_satoshis(), //self.context.get_value_satoshis()),
+			funding_pubkey: keys.funding_pubkey,
+		})
+	}
+	*/
+	
 	pub fn accept_channel_v2(&mut self, msg: &msgs::AcceptChannelV2, default_limits: &ChannelHandshakeLimits,
 		their_features: &InitFeatures) -> Result<(), ChannelError> {
 		// According to the spec we MUST fail the negotiation if `require_confirmed_inputs` is set in
@@ -8453,14 +8942,14 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 }
 
 // A not-yet-funded inbound (from counterparty) channel using V2 channel establishment.
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
 	pub dual_funding_context: DualFundingChannelContext,
 }
 
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// Creates a new dual-funded channel from a remote side's request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
@@ -8528,7 +9017,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			dual_funding_context: DualFundingChannelContext {
 				our_funding_satoshis: funding_satoshis,
 				their_funding_satoshis: msg.common_fields.funding_satoshis,
-				funding_tx_locktime: LockTime::from_consensus(msg.locktime),
+				funding_tx_locktime: msg.locktime,
 				funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
 			}
 		};
@@ -8600,10 +9089,10 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// inbound channel without accepting it.
 	///
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
-	#[cfg(test)]
-	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
-		self.generate_accept_channel_v2_message()
-	}
+	// #[cfg(all(test, any(dual_funding, splicing)))]
+	// pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
+	// 	self.generate_accept_channel_v2_message()
+	// }
 
 	pub fn begin_interactive_funding_tx_construction<ES: Deref>(&mut self, signer_provider: &SP,
 		entropy_source: &ES, holder_node_id: PublicKey, funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>
@@ -8620,15 +9109,12 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	where
 		L::Target: Logger
 	{
-		let pending_splice_opt = match &self.context.pending_splice_post {
-			Some(ps) => Some(ps.clone()),
-			None => None, // note: simpler map() is not used here due to partial borrow
-		};
+		let is_splice_pending = self.context.is_splice_pending();
 
 		let mut output_index = None;
 		let expected_spk = self.context.get_funding_redeemscript().to_v0_p2wsh();
-		for (idx, outp) in signing_session.constructed_transaction.output.iter().enumerate() {
-			if outp.script_pubkey == expected_spk && outp.value == self.context.get_value_satoshis() {
+		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
+			if outp.tx_out().script_pubkey == expected_spk && outp.tx_out().value == self.context.get_value_satoshis() {
 				if output_index.is_some() {
 					return Err((self, ChannelError::Close("Multiple outputs matched the expected script and value".to_owned())));
 				}
@@ -8636,33 +9122,35 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			}
 		}
 		if output_index.is_none() {
-			// if output_index.is_some() {
-				return Err((self, ChannelError::Close("No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned())));
-			// }
+			return Err((self, ChannelError::Close("No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned())));
 		}
-		let outpoint = OutPoint { txid: signing_session.constructed_transaction.txid(), index: output_index.unwrap() };
+		let outpoint = OutPoint { txid: signing_session.unsigned_tx.txid(), index: output_index.unwrap() };
 		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
 
-		let commitment_signed = get_initial_commitment_signed(&mut self.context, signing_session.constructed_transaction.clone(), pending_splice_opt.is_some(), logger);
+		let commitment_signed = get_initial_commitment_signed(&mut self.context, signing_session.unsigned_tx.clone(), is_splice_pending, logger);
 		let commitment_signed = match commitment_signed {
 			Ok(commitment_signed) => commitment_signed,
 			Err(err) => return Err((self, ChannelError::Close(err.to_string()))),
 		};
 
-		let (partly_signed_transaction, shared_signature) = if pending_splice_opt.is_some() {
+		let (mut partly_signed_transaction, mut shared_signature) = (signing_session.unsigned_tx.clone().into_unsigned_tx(), None);
+		#[cfg(splicing)]
+		if is_splice_pending {
 			// #SPLICING
 			// #SPLICE-SIG
 			// Add signature for prev funding input
-			let (partly_signed_transaction, holder_signature) = match self.context.prev_funding_tx_sign(&signing_session.constructed_transaction, None, logger) {
+			let (partly_signed_tx, holder_signature) = match self.context.prev_funding_tx_sign(&signing_session.unsigned_tx.clone().into_unsigned_tx(), None, logger) {
 				Err(e) => return Err((self, e)), // simpler map_err() could not be used here due to move issue
 				Ok(t) => t,
 			};
 			signing_session.shared_signature = Some(holder_signature);
-			(partly_signed_transaction, Some(holder_signature))
-		} else {
-			(signing_session.constructed_transaction.clone(), None)
-		};
+			(partly_signed_transaction, shared_signature) = (partly_signed_tx, Some(holder_signature));
+		}
+
+		// Clear out the interactive tx constructor.
+		self.context.interactive_tx_constructor = None;
+		self.context.channel_state = ChannelState::FundingNegotiated;
 
 		let mut funding_ready_for_sig_event = None;
 		if self.dual_funding_context.our_funding_satoshis == 0 {
@@ -8676,10 +9164,6 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			});
 		}
 
-		// Replace tx constructor session with signing session
-		self.context.interactive_tx_constructor = None;
-		self.context.channel_state = ChannelState::FundingNegotiated;
-
 		let channel = Channel {
 			context: self.context,
 			dual_funding_channel_context: Some(self.dual_funding_context),
@@ -8692,6 +9176,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// #SPLICING STEP4 A
 	/// Get the splice_ack message that can be sent in response to splice initiation
 	/// TODO move to ChannelContext
+	#[cfg(splicing)]
 	pub fn get_splice_ack(&mut self, chain_hash: ChainHash) -> Result<msgs::SpliceAck, ChannelError> {
 		if self.context.is_outbound() {
 			panic!("Tried to accept a splice on an outound channel?");
@@ -8743,7 +9228,7 @@ fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) 
 	ret
 }
 
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 fn get_initial_counterparty_commitment_signature<SP:Deref, L: Deref>(
 	context: &mut ChannelContext<SP>, logger: &L
 ) -> Result<Signature, ChannelError>
@@ -8766,9 +9251,9 @@ where
 	}
 }
 
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 fn get_initial_commitment_signed<SP:Deref, L: Deref>(
-	context: &mut ChannelContext<SP>, transaction: Transaction, is_splice: bool, logger: &L
+	context: &mut ChannelContext<SP>, transaction: ConstructedTransaction, is_splice: bool, logger: &L
 ) -> Result<msgs::CommitmentSigned, ChannelError>
 where
 	SP::Target: SignerProvider,
@@ -8788,9 +9273,9 @@ where
 	}
 
 	let funding_redeemscript = context.get_funding_redeemscript().to_v0_p2wsh();
-	let funding_outpoint_index = transaction.output.iter().enumerate().find_map(
+	let funding_outpoint_index = transaction.outputs().enumerate().find_map(
 		|(idx, output)| {
-			if output.script_pubkey == funding_redeemscript { Some(idx as u16) } else { None }
+			if output.tx_out().script_pubkey == funding_redeemscript { Some(idx as u16) } else { None }
 		}).expect("funding transaction contains funding output");
 	let funding_txo = OutPoint { txid: transaction.txid(), index: funding_outpoint_index };
 	context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
@@ -8821,7 +9306,7 @@ where
 	})
 }
 
-const SERIALIZATION_VERSION: u8 = 3;
+const SERIALIZATION_VERSION: u8 = 4;
 const MIN_SERIALIZATION_VERSION: u8 = 3;
 
 impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
@@ -8883,7 +9368,18 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
 
-		write_ver_prefix!(writer, MIN_SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+		let version_to_write = if self.context.pending_inbound_htlcs.iter().any(|htlc| match htlc.state {
+			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution)|
+				InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
+				matches!(htlc_resolution, InboundHTLCResolution::Pending { .. })
+			},
+			_ => false,
+		}) {
+			SERIALIZATION_VERSION
+		} else {
+			MIN_SERIALIZATION_VERSION
+		};
+		write_ver_prefix!(writer, version_to_write, MIN_SERIALIZATION_VERSION);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We write
@@ -8939,13 +9435,29 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			htlc.payment_hash.write(writer)?;
 			match &htlc.state {
 				&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
-				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_state) => {
+				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution) => {
 					1u8.write(writer)?;
-					htlc_state.write(writer)?;
+					if version_to_write <= 3 {
+						if let InboundHTLCResolution::Resolved { pending_htlc_status } = htlc_resolution {
+							pending_htlc_status.write(writer)?;
+						} else {
+							panic!();
+						}
+					} else {
+						htlc_resolution.write(writer)?;
+					}
 				},
-				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_state) => {
+				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
 					2u8.write(writer)?;
-					htlc_state.write(writer)?;
+					if version_to_write <= 3 {
+						if let InboundHTLCResolution::Resolved { pending_htlc_status } = htlc_resolution {
+							pending_htlc_status.write(writer)?;
+						} else {
+							panic!();
+						}
+					} else {
+						htlc_resolution.write(writer)?;
+					}
 				},
 				&InboundHTLCState::Committed => {
 					3u8.write(writer)?;
@@ -9122,7 +9634,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 
 		self.context.channel_transaction_parameters.write(writer)?;
 		self.context.funding_transaction.write(writer)?;
-		// TODO check BW compatibility; we may go with being non saved; if it is missing, spliceing will not be possible
+		// TODO check BW compatibility; we may go with being non saved; if it is missing, splicing will not be possible
+		#[cfg(splicing)]
 		self.context.funding_transaction_saved.write(writer)?;
 
 		self.context.counterparty_cur_commitment_point.write(writer)?;
@@ -9173,6 +9686,11 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 
 		let holder_max_accepted_htlcs = if self.context.holder_max_accepted_htlcs == DEFAULT_MAX_HTLCS { None } else { Some(self.context.holder_max_accepted_htlcs) };
 
+		let mut monitor_pending_update_adds = None;
+		if !self.context.monitor_pending_update_adds.is_empty() {
+			monitor_pending_update_adds = Some(&self.context.monitor_pending_update_adds);
+		}
+
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -9190,6 +9708,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(7, self.context.shutdown_scriptpubkey, option),
 			(8, self.context.blocked_monitor_updates, optional_vec),
 			(9, self.context.target_closing_feerate_sats_per_kw, option),
+			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, self.context.monitor_pending_finalized_fulfills, required_vec),
 			(13, self.context.channel_creation_height, required),
 			(15, preimages, required_vec),
@@ -9208,6 +9727,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
+			// 45 and 47 are reserved for async signing
+			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 		});
 
 		Ok(())
@@ -9283,8 +9804,22 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				cltv_expiry: Readable::read(reader)?,
 				payment_hash: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
-					1 => InboundHTLCState::AwaitingRemoteRevokeToAnnounce(Readable::read(reader)?),
-					2 => InboundHTLCState::AwaitingAnnouncedRemoteRevoke(Readable::read(reader)?),
+					1 => {
+						let resolution = if ver <= 3 {
+							InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
+						} else {
+							Readable::read(reader)?
+						};
+						InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution)
+					},
+					2 => {
+						let resolution = if ver <= 3 {
+							InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
+						} else {
+							Readable::read(reader)?
+						};
+						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
+					},
 					3 => InboundHTLCState::Committed,
 					4 => InboundHTLCState::LocalRemoved(Readable::read(reader)?),
 					_ => return Err(DecodeError::InvalidValue),
@@ -9433,6 +9968,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut channel_parameters: ChannelTransactionParameters = Readable::read(reader)?;
 		let funding_transaction: Option<Transaction> = Readable::read(reader)?;
+		#[cfg(splicing)]
 		let funding_transaction_saved: Option<Transaction> = Readable::read(reader)?;
 
 		let counterparty_cur_commitment_point = Readable::read(reader)?;
@@ -9446,7 +9982,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let channel_update_status = Readable::read(reader)?;
 
 		#[cfg(any(test, fuzzing))]
-		let mut historical_inbound_htlc_fulfills = HashSet::new();
+		let mut historical_inbound_htlc_fulfills = new_hash_set();
 		#[cfg(any(test, fuzzing))]
 		{
 			let htlc_fulfills_len: u64 = Readable::read(reader)?;
@@ -9496,10 +10032,13 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut is_batch_funding: Option<()> = None;
 
+		let mut local_initiated_shutdown: Option<()> = None;
+
 		let mut pending_outbound_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
+		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -9512,6 +10051,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(7, shutdown_scriptpubkey, option),
 			(8, blocked_monitor_updates, optional_vec),
 			(9, target_closing_feerate_sats_per_kw, option),
+			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, monitor_pending_finalized_fulfills, optional_vec),
 			(13, channel_creation_height, option),
 			(15, preimages_opt, optional_vec),
@@ -9530,6 +10070,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(39, pending_outbound_blinding_points_opt, optional_vec),
 			(41, holding_cell_blinding_points_opt, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
+			// 45 and 47 are reserved for async signing
+			(49, local_initiated_shutdown, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -9682,6 +10224,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				monitor_pending_forwards,
 				monitor_pending_failures,
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
+				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or(Vec::new()),
 
 				signer_pending_commitment_update: false,
 				signer_pending_funding: false,
@@ -9724,6 +10267,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
+				#[cfg(splicing)]
 				funding_transaction_saved,
 				is_batch_funding,
 
@@ -9761,17 +10305,21 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				channel_type: channel_type.unwrap(),
 				channel_keys_id,
 
+				local_initiated_shutdown,
+
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 
-				#[cfg(dual_funding)]
+				#[cfg(any(dual_funding, splicing))]
 				interactive_tx_constructor: None,
 
+				#[cfg(splicing)]
 				pending_splice_pre: None,
+				#[cfg(splicing)]
 				pending_splice_post: None,
 			},
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
-			#[cfg(dual_funding)]
+			#[cfg(any(dual_funding, splicing))]
 			interactive_tx_signing_session: None,
 		})
 	}

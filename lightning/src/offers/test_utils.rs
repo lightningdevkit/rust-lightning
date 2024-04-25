@@ -11,21 +11,28 @@
 
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::convert::{AsRef, Infallible};
+
 use core::time::Duration;
-use crate::blinded_path::{BlindedHop, BlindedPath};
+use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 use crate::sign::EntropySource;
 use crate::ln::PaymentHash;
 use crate::ln::features::BlindedHopFeatures;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::TaggedHash;
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+pub(crate) fn fail_sign<T: AsRef<TaggedHash>>(_message: &T) -> Result<Signature, ()> {
+	Err(())
+}
+
 pub(crate) fn payer_keys() -> KeyPair {
 	let secp_ctx = Secp256k1::new();
 	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
 }
 
-pub(crate) fn payer_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
+pub(crate) fn payer_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, ()> {
 	let secp_ctx = Secp256k1::new();
 	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
@@ -40,7 +47,7 @@ pub(crate) fn recipient_keys() -> KeyPair {
 	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap())
 }
 
-pub(crate) fn recipient_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, Infallible> {
+pub(crate) fn recipient_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, ()> {
 	let secp_ctx = Secp256k1::new();
 	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
@@ -62,7 +69,7 @@ pub(super) fn privkey(byte: u8) -> SecretKey {
 pub(crate) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> {
 	let paths = vec![
 		BlindedPath {
-			introduction_node_id: pubkey(40),
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
@@ -70,7 +77,7 @@ pub(crate) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> {
 			],
 		},
 		BlindedPath {
-			introduction_node_id: pubkey(40),
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },

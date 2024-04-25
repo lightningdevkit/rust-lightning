@@ -169,17 +169,18 @@ mod io_extras {
 }
 
 mod prelude {
-	#[cfg(feature = "hashbrown")]
-	extern crate hashbrown;
+	#![allow(unused_imports)]
 
 	pub use alloc::{vec, vec::Vec, string::String, collections::VecDeque, boxed::Box};
-	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{HashMap, HashSet, hash_map};
-	#[cfg(feature = "hashbrown")]
-	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 
 	pub use alloc::borrow::ToOwned;
 	pub use alloc::string::ToString;
+
+	pub use core::convert::{AsMut, AsRef, TryFrom, TryInto};
+	pub use core::default::Default;
+	pub use core::marker::Sized;
+
+	pub(crate) use crate::util::hash_tables::*;
 }
 
 #[cfg(all(not(ldk_bench), feature = "backtrace", feature = "std", test))]

@@ -42,10 +42,12 @@ use crate::prelude::*;
 use crate::ln::functional_test_utils;
 use crate::ln::functional_test_utils::*;
 use crate::routing::gossip::NodeId;
+
 #[cfg(feature = "std")]
-use std::time::{SystemTime, Instant, Duration};
-#[cfg(not(feature = "no-std"))]
-use crate::util::time::tests::SinceEpoch;
+use {
+	crate::util::time::tests::SinceEpoch,
+	std::time::{SystemTime, Instant, Duration},
+};
 
 #[test]
 fn mpp_failure() {
@@ -275,10 +277,12 @@ fn mpp_retry_overpay() {
 
 	// Can't use claim_payment_along_route as it doesn't support overpayment, so we break out the
 	// individual steps here.
+	nodes[3].node.claim_funds(payment_preimage);
 	let extra_fees = vec![0, total_overpaid_amount];
-	let expected_total_fee_msat = do_claim_payment_along_route_with_extra_penultimate_hop_fees(
-		&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], &extra_fees[..], false,
-		payment_preimage);
+	let expected_route = &[&[&nodes[1], &nodes[3]][..], &[&nodes[2], &nodes[3]][..]];
+	let args = ClaimAlongRouteArgs::new(&nodes[0], &expected_route[..], payment_preimage)
+		.with_expected_min_htlc_overpay(extra_fees);
+	let expected_total_fee_msat = pass_claimed_payment_along_route(args);
 	expect_payment_sent!(&nodes[0], payment_preimage, Some(expected_total_fee_msat));
 }
 
@@ -2138,9 +2142,11 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 			assert_eq!(skimmed_fee_msat * num_mpp_parts as u64, counterparty_skimmed_fee_msat);
 			assert_eq!(nodes[2].node.get_our_node_id(), receiver_node_id.unwrap());
 			match purpose {
-				crate::events::PaymentPurpose::InvoicePayment { payment_preimage: ev_payment_preimage,
-					payment_secret: ev_payment_secret, .. } =>
-				{
+				crate::events::PaymentPurpose::Bolt11InvoicePayment {
+					payment_preimage: ev_payment_preimage,
+					payment_secret: ev_payment_secret,
+					..
+				} => {
 					assert_eq!(payment_preimage, ev_payment_preimage.unwrap());
 					assert_eq!(payment_secret, *ev_payment_secret);
 				},
@@ -2153,9 +2159,10 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	let mut expected_paths = Vec::new();
 	for _ in 0..num_mpp_parts { expected_paths_vecs.push(vec!(&nodes[1], &nodes[2])); }
 	for i in 0..num_mpp_parts { expected_paths.push(&expected_paths_vecs[i][..]); }
-	let total_fee_msat = do_claim_payment_along_route_with_extra_penultimate_hop_fees(
-		&nodes[0], &expected_paths[..], &vec![skimmed_fee_msat as u32; num_mpp_parts][..], false,
-		payment_preimage);
+	expected_paths[0].last().unwrap().node.claim_funds(payment_preimage);
+	let args = ClaimAlongRouteArgs::new(&nodes[0], &expected_paths[..], payment_preimage)
+		.with_expected_extra_fees(vec![skimmed_fee_msat as u32; num_mpp_parts]);
+	let total_fee_msat = pass_claimed_payment_along_route(args);
 	// The sender doesn't know that the penultimate hop took an extra fee.
 	expect_payment_sent(&nodes[0], payment_preimage,
 		Some(Some(total_fee_msat - skimmed_fee_msat * num_mpp_parts as u64)), true, true);
@@ -2313,7 +2320,7 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 0);
 	} else if test == AutoRetry::FailTimeout {
-		#[cfg(not(feature = "no-std"))] {
+		#[cfg(feature = "std")] {
 			// Ensure ChannelManager will not retry a payment if it times out due to Retry::Timeout.
 			nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 				PaymentId(payment_hash.0), route_params, Retry::Timeout(Duration::from_secs(60))).unwrap();
@@ -3720,7 +3727,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	match (known_tlvs, even_tlvs) {
 		(true, _) => {
 			nodes[1].node.claim_funds_with_known_custom_tlvs(our_payment_preimage);
-			let expected_total_fee_msat = pass_claimed_payment_along_route(&nodes[0], &[&[&nodes[1]]], &[0; 1], false, our_payment_preimage);
+			let expected_total_fee_msat = pass_claimed_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage));
 			expect_payment_sent!(&nodes[0], our_payment_preimage, Some(expected_total_fee_msat));
 		},
 		(false, false) => {
@@ -3808,14 +3815,11 @@ fn test_retry_custom_tlvs() {
 	check_added_monitors!(nodes[0], 1);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
-	let payment_claimable = pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000,
-		payment_hash, Some(payment_secret), events.pop().unwrap(), true, None).unwrap();
-	match payment_claimable {
-		Event::PaymentClaimable { onion_fields, .. } => {
-			assert_eq!(&onion_fields.unwrap().custom_tlvs()[..], &custom_tlvs[..]);
-		},
-		_ => panic!("Unexpected event"),
-	};
+	let path = &[&nodes[1], &nodes[2]];
+	let args = PassAlongPathArgs::new(&nodes[0], path, 1_000_000, payment_hash, events.pop().unwrap())
+		.with_payment_secret(payment_secret)
+		.with_custom_tlvs(custom_tlvs);
+	do_pass_along_path(args);
 	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
 }
 

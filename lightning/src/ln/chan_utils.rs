@@ -37,7 +37,6 @@ use bitcoin::{secp256k1, Sequence, Witness};
 use bitcoin::PublicKey as BitcoinPublicKey;
 
 use crate::io;
-use crate::prelude::*;
 use core::cmp;
 use crate::ln::chan_utils;
 use crate::util::transaction_utils::sort_outputs;
@@ -47,6 +46,9 @@ use crate::chain;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::crypto::utils::{sign, sign_with_aux_rand};
 use super::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcKey, HtlcBasepoint, RevocationKey, RevocationBasepoint};
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 /// Maximum number of one-way in-flight HTLC (protocol-level value).
 pub const MAX_HTLCS: u16 = 483;
@@ -848,6 +850,11 @@ impl ChannelTransactionParameters {
 	/// Whether the late bound parameters are populated.
 	pub fn is_populated(&self) -> bool {
 		self.counterparty_parameters.is_some() && self.funding_outpoint.is_some()
+	}
+
+	/// Whether the channel supports zero-fee HTLC transaction anchors.
+	pub(crate) fn supports_anchors(&self) -> bool {
+		self.channel_type_features.supports_anchors_zero_fee_htlc_tx()
 	}
 
 	/// Convert the holder/counterparty parameters to broadcaster/countersignatory-organized parameters,
@@ -1812,7 +1819,6 @@ pub fn get_commitment_transaction_number_obscure_factor(
 mod tests {
 	use super::{CounterpartyCommitmentSecrets, ChannelPublicKeys};
 	use crate::chain;
-	use crate::prelude::*;
 	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
@@ -1824,6 +1830,9 @@ mod tests {
 	use bitcoin::address::Payload;
 	use bitcoin::PublicKey as BitcoinPublicKey;
 	use crate::ln::features::ChannelTypeFeatures;
+
+	#[allow(unused_imports)]
+	use crate::prelude::*;
 
 	struct TestCommitmentTxBuilder {
 		commitment_number: u64,

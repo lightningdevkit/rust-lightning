@@ -23,6 +23,7 @@ pub mod chan_utils;
 pub mod features;
 pub mod script;
 mod channel_id;
+#[cfg(splicing)]
 mod channel_splice;
 
 #[cfg(fuzzing)]
@@ -53,7 +54,7 @@ mod blinded_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod functional_tests;
-#[cfg(all(test, dual_funding))]
+#[cfg(all(test, splicing))]
 #[allow(unused_mut)]
 mod functional_tests_splice;
 #[cfg(test)]
@@ -83,6 +84,9 @@ mod shutdown_tests;
 #[cfg(all(test, async_signing))]
 #[allow(unused_mut)]
 mod async_signer_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod offers_tests;
 #[allow(dead_code)] // TODO(dual_funding): Exchange for dual_funding cfg
 pub(crate) mod interactivetxs;
 
@@ -127,7 +131,9 @@ impl From<PaymentPreimage> for PaymentHash {
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
 pub struct PaymentSecret(pub [u8; 32]);
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
 

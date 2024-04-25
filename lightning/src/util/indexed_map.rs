@@ -1,10 +1,8 @@
 //! This module has a map which can be iterated in a deterministic order. See the [`IndexedMap`].
 
-use crate::prelude::{HashMap, hash_map};
-use alloc::vec::Vec;
+use crate::prelude::*;
 use alloc::slice::Iter;
 use core::hash::Hash;
-use core::cmp::Ord;
 use core::ops::{Bound, RangeBounds};
 
 /// A map which can be iterated in a deterministic order.
@@ -34,7 +32,7 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	/// Constructs a new, empty map
 	pub fn new() -> Self {
 		Self {
-			map: HashMap::new(),
+			map: new_hash_map(),
 			keys: Vec::new(),
 		}
 	}
@@ -42,7 +40,7 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	/// Constructs a new, empty map with the given capacity pre-allocated
 	pub fn with_capacity(capacity: usize) -> Self {
 		Self {
-			map: HashMap::with_capacity(capacity),
+			map: hash_map_with_capacity(capacity),
 			keys: Vec::with_capacity(capacity),
 		}
 	}
@@ -56,6 +54,11 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	/// Fetches a mutable reference to the element with the given `key`, if one exists.
 	pub fn get_mut(&mut self, key: &K) -> Option<&mut V> {
 		self.map.get_mut(key)
+	}
+
+	/// Fetches the key-value pair corresponding to the supplied key, if one exists.
+	pub fn get_key_value(&self, key: &K) -> Option<(&K, &V)> {
+		self.map.get_key_value(key)
 	}
 
 	#[inline]
@@ -176,10 +179,7 @@ impl<'a, K: Hash + Ord, V: 'a> Iterator for Range<'a, K, V> {
 ///
 /// This is not exported to bindings users as bindings provide alternate accessors rather than exposing maps directly.
 pub struct VacantEntry<'a, K: Hash + Ord, V> {
-	#[cfg(feature = "hashbrown")]
-	underlying_entry: hash_map::VacantEntry<'a, K, V, hash_map::DefaultHashBuilder>,
-	#[cfg(not(feature = "hashbrown"))]
-	underlying_entry: hash_map::VacantEntry<'a, K, V>,
+	underlying_entry: VacantHashMapEntry<'a, K, V>,
 	key: K,
 	keys: &'a mut Vec<K>,
 }
@@ -188,10 +188,7 @@ pub struct VacantEntry<'a, K: Hash + Ord, V> {
 ///
 /// This is not exported to bindings users as bindings provide alternate accessors rather than exposing maps directly.
 pub struct OccupiedEntry<'a, K: Hash + Ord, V> {
-	#[cfg(feature = "hashbrown")]
-	underlying_entry: hash_map::OccupiedEntry<'a, K, V, hash_map::DefaultHashBuilder>,
-	#[cfg(not(feature = "hashbrown"))]
-	underlying_entry: hash_map::OccupiedEntry<'a, K, V>,
+	underlying_entry: OccupiedHashMapEntry<'a, K, V>,
 	keys: &'a mut Vec<K>,
 }
 

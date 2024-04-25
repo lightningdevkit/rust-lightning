@@ -7,25 +7,24 @@
 //! This module contains a simple key-value store trait [`KVStore`] that
 //! allows one to implement the persistence for [`ChannelManager`], [`NetworkGraph`],
 //! and [`ChannelMonitor`] all in one place.
+//!
+//! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 
 use core::cmp;
-use core::convert::{TryFrom, TryInto};
 use core::ops::Deref;
 use core::str::FromStr;
 use bitcoin::{BlockHash, Txid};
 
 use crate::{io, log_error};
-use crate::alloc::string::ToString;
 use crate::prelude::*;
 
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::{Persist, MonitorUpdateId};
-use crate::sign::{EntropySource, NodeSigner, ecdsa::WriteableEcdsaChannelSigner, SignerProvider};
+use crate::sign::{EntropySource, ecdsa::WriteableEcdsaChannelSigner, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, CLOSED_CHANNEL_UPDATE_ID};
-use crate::ln::channelmanager::ChannelManager;
-use crate::routing::router::Router;
+use crate::ln::channelmanager::AChannelManager;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::scoring::WriteableScore;
 use crate::util::logger::Logger;
@@ -38,10 +37,16 @@ pub const KVSTORE_NAMESPACE_KEY_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyzABCD
 pub const KVSTORE_NAMESPACE_KEY_MAX_LEN: usize = 120;
 
 /// The primary namespace under which the [`ChannelManager`] will be persisted.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 pub const CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
 /// The secondary namespace under which the [`ChannelManager`] will be persisted.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 pub const CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The key under which the [`ChannelManager`] will be persisted.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 pub const CHANNEL_MANAGER_PERSISTENCE_KEY: &str = "manager";
 
 /// The primary namespace under which [`ChannelMonitor`]s will be persisted.
@@ -50,6 +55,11 @@ pub const CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitors";
 pub const CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The primary namespace under which [`ChannelMonitorUpdate`]s will be persisted.
 pub const CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_updates";
+
+/// The primary namespace under which archived [`ChannelMonitor`]s will be persisted.
+pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "archived_monitors";
+/// The secondary namespace under which archived [`ChannelMonitor`]s will be persisted.
+pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 
 /// The primary namespace under which the [`NetworkGraph`] will be persisted.
 pub const NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
@@ -64,6 +74,20 @@ pub const SCORER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
 pub const SCORER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The key under which the [`WriteableScore`] will be persisted.
 pub const SCORER_PERSISTENCE_KEY: &str = "scorer";
+
+/// The primary namespace under which [`OutputSweeper`] state will be persisted.
+///
+/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+pub const OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE: &str = "";
+/// The secondary namespace under which [`OutputSweeper`] state will be persisted.
+///
+/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+pub const OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
+/// The secondary namespace under which [`OutputSweeper`] state will be persisted.
+/// The key under which [`OutputSweeper`] state will be persisted.
+///
+/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
+pub const OUTPUT_SWEEPER_PERSISTENCE_KEY: &str = "output_sweeper";
 
 /// A sentinel value to be prepended to monitors persisted by the [`MonitorUpdatingPersister`].
 ///
@@ -131,18 +155,17 @@ pub trait KVStore {
 }
 
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
-pub trait Persister<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>>
-	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-		T::Target: 'static + BroadcasterInterface,
-		ES::Target: 'static + EntropySource,
-		NS::Target: 'static + NodeSigner,
-		SP::Target: 'static + SignerProvider,
-		F::Target: 'static + FeeEstimator,
-		R::Target: 'static + Router,
-		L::Target: 'static + Logger,
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+pub trait Persister<'a, CM: Deref, L: Deref, S: WriteableScore<'a>>
+where
+	CM::Target: 'static + AChannelManager,
+	L::Target: 'static + Logger,
 {
 	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
-	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error>;
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error>;
 
 	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error>;
@@ -152,25 +175,18 @@ pub trait Persister<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: 
 }
 
 
-impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, ES, NS, SP, F, R, L, S> for A
-	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-		T::Target: 'static + BroadcasterInterface,
-		ES::Target: 'static + EntropySource,
-		NS::Target: 'static + NodeSigner,
-		SP::Target: 'static + SignerProvider,
-		F::Target: 'static + FeeEstimator,
-		R::Target: 'static + Router,
-		L::Target: 'static + Logger,
+impl<'a, A: KVStore + ?Sized, CM: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, CM, L, S> for A
+where
+	CM::Target: 'static + AChannelManager,
+	L::Target: 'static + Logger,
 {
-	/// Persist the given [`ChannelManager`] to disk, returning an error if persistence failed.
-	fn persist_manager(&self, channel_manager: &ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error> {
+	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error> {
 		self.write(CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_KEY,
-			&channel_manager.encode())
+			&channel_manager.get_cm().encode())
 	}
 
-	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error> {
 		self.write(NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
 			NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -178,7 +194,6 @@ impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Der
 			&network_graph.encode())
 	}
 
-	/// Persist the given [`WriteableScore`] to disk, returning an error if persistence failed.
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error> {
 		self.write(SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
 			SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -187,7 +202,7 @@ impl<'a, A: KVStore, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Der
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSigner> for K {
+impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSigner> for K {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
 	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
@@ -215,6 +230,33 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore> Persist<ChannelSign
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError
 		}
+	}
+
+	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+		let monitor_name = MonitorName::from(funding_txo);
+		let monitor = match self.read(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+		) {
+			Ok(monitor) => monitor,
+			Err(_) => return
+		};
+		match self.write(
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+			&monitor,
+		) {
+			Ok(()) => {}
+			Err(_e) => return
+		};
+		let _ = self.remove(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+			true,
+		);
 	}
 }
 
@@ -722,6 +764,29 @@ where
 			self.persist_new_channel(funding_txo, monitor, monitor_update_call_id)
 		}
 	}
+
+	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+		let monitor_name = MonitorName::from(funding_txo);
+		let monitor = match self.read_monitor(&monitor_name) {
+			Ok((_block_hash, monitor)) => monitor,
+			Err(_) => return
+		};
+		match self.kv_store.write(
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+			&monitor.encode()
+		) {
+			Ok(()) => {},
+			Err(_e) => return,
+		};
+		let _ = self.kv_store.remove(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			monitor_name.as_str(),
+			true,
+		);
+	}
 }
 
 impl<K: Deref, L: Deref, ES: Deref, SP: Deref> MonitorUpdatingPersister<K, L, ES, SP>
@@ -839,12 +904,13 @@ impl From<u64> for UpdateName {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::chain::chainmonitor::Persist;
 	use crate::chain::ChannelMonitorUpdateStatus;
 	use crate::events::{ClosureReason, MessageSendEventsProvider};
 	use crate::ln::functional_test_utils::*;
 	use crate::util::test_utils::{self, TestLogger, TestStore};
 	use crate::{check_added_monitors, check_closed_broadcast};
+	use crate::sync::Arc;
+	use crate::util::test_channel_signer::TestChannelSigner;
 
 	const EXPECTED_UPDATES_PER_PAYMENT: u64 = 5;
 
@@ -1052,9 +1118,9 @@ mod tests {
 		{
 			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 			let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
-			let update_id = update_map.get(&added_monitors[0].0.to_channel_id()).unwrap();
+			let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();
 			let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
-			let cmu = &cmu_map.get(&added_monitors[0].0.to_channel_id()).unwrap()[0];
+			let cmu = &cmu_map.get(&added_monitors[0].1.channel_id()).unwrap()[0];
 			let test_txo = OutPoint { txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
 
 			let ro_persister = MonitorUpdatingPersister {
@@ -1184,5 +1250,15 @@ mod tests {
 			.kv_store
 			.read(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str(), UpdateName::from(u64::MAX - 1).as_str())
 			.is_err());
+	}
+
+	fn persist_fn<P: Deref, ChannelSigner: WriteableEcdsaChannelSigner>(_persist: P) -> bool where P::Target: Persist<ChannelSigner> {
+		true
+	}
+
+	#[test]
+	fn kvstore_trait_object_usage() {
+		let store: Arc<dyn KVStore + Send + Sync> = Arc::new(TestStore::new(false));
+		assert!(persist_fn::<_, TestChannelSigner>(store.clone()));
 	}
 }

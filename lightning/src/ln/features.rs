@@ -69,6 +69,8 @@
 //!      for more info).
 //! - `Keysend` - send funds to a node without an invoice
 //!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
+//! - `Trampoline` - supports receiving and forwarding Trampoline payments
+//!     (see the [`Trampoline` feature proposal](https://github.com/lightning/bolts/pull/836) for more information).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -79,8 +81,10 @@
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 //! [messages]: crate::ln::msgs
 
-use crate::{io, io_extras};
+#[allow(unused_imports)]
 use crate::prelude::*;
+
+use crate::{io, io_extras};
 use core::{cmp, fmt};
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
@@ -92,6 +96,7 @@ use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, WithoutLength, Writeable, Writer};
 
 mod sealed {
+	#[allow(unused_imports)]
 	use crate::prelude::*;
 	use crate::ln::features::Features;
 
@@ -155,6 +160,8 @@ mod sealed {
 		ChannelType | SCIDPrivacy,
 		// Byte 6
 		ZeroConf,
+		// Byte 7
+		Trampoline,
 	]);
 	define_context!(NodeContext, [
 		// Byte 0
@@ -171,6 +178,8 @@ mod sealed {
 		ChannelType | SCIDPrivacy,
 		// Byte 6
 		ZeroConf | Keysend,
+		// Byte 7
+		Trampoline,
 	]);
 	define_context!(ChannelContext, []);
 	define_context!(Bolt11InvoiceContext, [
@@ -188,6 +197,8 @@ mod sealed {
 		,
 		// Byte 6
 		PaymentMetadata,
+		// Byte 7
+		Trampoline,
 	]);
 	define_context!(OfferContext, []);
 	define_context!(InvoiceRequestContext, []);
@@ -426,6 +437,9 @@ mod sealed {
 	define_feature!(55, Keysend, [NodeContext],
 		"Feature flags for keysend payments.", set_keysend_optional, set_keysend_required,
 		supports_keysend, requires_keysend);
+	define_feature!(57, Trampoline, [InitContext, NodeContext, Bolt11InvoiceContext],
+		"Feature flags for Trampoline routing.", set_trampoline_routing_optional, set_trampoline_routing_required,
+		supports_trampoline_routing, requires_trampoline_routing);
 	// Note: update the module-level docs when a new feature bit is added!
 
 	#[cfg(test)]

@@ -8,7 +8,8 @@
 // https://github.com/floodyberry/poly1305-donna
 
 use core::cmp::min;
-use core::convert::TryInto;
+
+use crate::prelude::*;
 
 #[derive(Clone, Copy)]
 pub struct Poly1305 {

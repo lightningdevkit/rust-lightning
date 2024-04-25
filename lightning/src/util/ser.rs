@@ -19,7 +19,6 @@ use crate::io_extras::{copy, sink};
 use core::hash::Hash;
 use crate::sync::{Mutex, RwLock};
 use core::cmp;
-use core::convert::TryFrom;
 use core::ops::Deref;
 
 use alloc::collections::BTreeMap;
@@ -35,7 +34,6 @@ use bitcoin::{consensus, Witness};
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
-use core::marker::Sized;
 use core::time::Duration;
 use crate::chain::ClaimId;
 use crate::ln::msgs::DecodeError;
@@ -108,14 +106,14 @@ impl Writer for LengthCalculatingWriter {
 /// forward to ensure we always consume exactly the fixed length specified.
 ///
 /// This is not exported to bindings users as manual TLV building is not currently supported in bindings
-pub struct FixedLengthReader<R: Read> {
-	read: R,
+pub struct FixedLengthReader<'a, R: Read> {
+	read: &'a mut R,
 	bytes_read: u64,
 	total_bytes: u64,
 }
-impl<R: Read> FixedLengthReader<R> {
+impl<'a, R: Read> FixedLengthReader<'a, R> {
 	/// Returns a new [`FixedLengthReader`].
-	pub fn new(read: R, total_bytes: u64) -> Self {
+	pub fn new(read: &'a mut R, total_bytes: u64) -> Self {
 		Self { read, bytes_read: 0, total_bytes }
 	}
 
@@ -136,7 +134,7 @@ impl<R: Read> FixedLengthReader<R> {
 		}
 	}
 }
-impl<R: Read> Read for FixedLengthReader<R> {
+impl<'a, R: Read> Read for FixedLengthReader<'a, R> {
 	#[inline]
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
 		if self.total_bytes == self.bytes_read {
@@ -154,7 +152,7 @@ impl<R: Read> Read for FixedLengthReader<R> {
 	}
 }
 
-impl<R: Read> LengthRead for FixedLengthReader<R> {
+impl<'a, R: Read> LengthRead for FixedLengthReader<'a, R> {
 	#[inline]
 	fn total_bytes(&self) -> u64 {
 		self.total_bytes
@@ -749,7 +747,7 @@ macro_rules! impl_for_map {
 }
 
 impl_for_map!(BTreeMap, Ord, |_| BTreeMap::new());
-impl_for_map!(HashMap, Hash, |len| HashMap::with_capacity(len));
+impl_for_map!(HashMap, Hash, |len| hash_map_with_capacity(len));
 
 // HashSet
 impl<T> Writeable for HashSet<T>
@@ -771,7 +769,7 @@ where T: Readable + Eq + Hash
 	#[inline]
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let len: CollectionLength = Readable::read(r)?;
-		let mut ret = HashSet::with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<T>()));
+		let mut ret = hash_set_with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<T>()));
 		for _ in 0..len.0 {
 			if !ret.insert(T::read(r)?) {
 				return Err(DecodeError::InvalidValue)
@@ -820,6 +818,49 @@ macro_rules! impl_for_vec {
 	}
 }
 
+// Alternatives to impl_writeable_for_vec/impl_readable_for_vec that add a length prefix to each
+// element in the Vec. Intended to be used when elements have variable lengths.
+macro_rules! impl_writeable_for_vec_with_element_length_prefix {
+	($ty: ty $(, $name: ident)*) => {
+		impl<$($name : Writeable),*> Writeable for Vec<$ty> {
+			#[inline]
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				CollectionLength(self.len() as u64).write(w)?;
+				for elem in self.iter() {
+					CollectionLength(elem.serialized_length() as u64).write(w)?;
+					elem.write(w)?;
+				}
+				Ok(())
+			}
+		}
+	}
+}
+macro_rules! impl_readable_for_vec_with_element_length_prefix {
+	($ty: ty $(, $name: ident)*) => {
+		impl<$($name : Readable),*> Readable for Vec<$ty> {
+			#[inline]
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let len: CollectionLength = Readable::read(r)?;
+				let mut ret = Vec::with_capacity(cmp::min(len.0 as usize, MAX_BUF_SIZE / core::mem::size_of::<$ty>()));
+				for _ in 0..len.0 {
+					let elem_len: CollectionLength = Readable::read(r)?;
+					let mut elem_reader = FixedLengthReader::new(r, elem_len.0);
+					if let Some(val) = MaybeReadable::read(&mut elem_reader)? {
+						ret.push(val);
+					}
+				}
+				Ok(ret)
+			}
+		}
+	}
+}
+macro_rules! impl_for_vec_with_element_length_prefix {
+	($ty: ty $(, $name: ident)*) => {
+		impl_writeable_for_vec_with_element_length_prefix!($ty $(, $name)*);
+		impl_readable_for_vec_with_element_length_prefix!($ty $(, $name)*);
+	}
+}
+
 impl Writeable for Vec<u8> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -847,9 +888,12 @@ impl Readable for Vec<u8> {
 impl_for_vec!(ecdsa::Signature);
 impl_for_vec!(crate::chain::channelmonitor::ChannelMonitorUpdate);
 impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
+impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
+impl_for_vec_with_element_length_prefix!(crate::ln::msgs::UpdateAddHTLC);
+impl_writeable_for_vec_with_element_length_prefix!(&crate::ln::msgs::UpdateAddHTLC);
 
 impl Writeable for Vec<Witness> {
 	#[inline]
@@ -1448,10 +1492,10 @@ impl Readable for ClaimId {
 
 #[cfg(test)]
 mod tests {
-	use core::convert::TryFrom;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::ecdsa;
 	use crate::util::ser::{Readable, Hostname, Writeable};
+	use crate::prelude::*;
 
 	#[test]
 	fn hostname_conversion() {

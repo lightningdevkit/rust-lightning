@@ -9,8 +9,7 @@
 
 use crate::routing::gossip::{NetworkGraph, NodeAlias, P2PGossipSync};
 use crate::ln::features::{ChannelFeatures, NodeFeatures};
-use crate::ln::msgs::{UnsignedChannelAnnouncement, ChannelAnnouncement, RoutingMessageHandler,
-	NodeAnnouncement, UnsignedNodeAnnouncement, ChannelUpdate, UnsignedChannelUpdate, MAX_VALUE_MSAT};
+use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAnnouncement, RoutingMessageHandler, SocketAddress, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
 
@@ -22,13 +21,14 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1, All};
 
+#[allow(unused)]
 use crate::prelude::*;
 use crate::sync::{self, Arc};
 
 use crate::routing::gossip::NodeId;
 
 // Using the same keys for LN and BTC ids
-pub(super) fn add_channel(
+pub(crate) fn add_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64
 ) {
@@ -60,7 +60,7 @@ pub(super) fn add_channel(
 	};
 }
 
-pub(super) fn add_or_update_node(
+pub(crate) fn add_or_update_node(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, features: NodeFeatures, timestamp: u32
 ) {
@@ -71,7 +71,7 @@ pub(super) fn add_or_update_node(
 		node_id,
 		rgb: [0; 3],
 		alias: NodeAlias([0; 32]),
-		addresses: Vec::new(),
+		addresses: vec![SocketAddress::TcpIpV4 { addr: [127, 0, 0, 1], port: 1000 }],
 		excess_address_data: Vec::new(),
 		excess_data: Vec::new(),
 	};
@@ -87,7 +87,7 @@ pub(super) fn add_or_update_node(
 	};
 }
 
-pub(super) fn update_channel(
+pub(crate) fn update_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate
 ) {

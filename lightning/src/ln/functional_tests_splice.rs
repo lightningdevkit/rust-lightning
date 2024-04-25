@@ -242,7 +242,7 @@ fn test_channel_open_and_close() {
 
 /// End-to-end V2 open channel flow, with close, and verification checks.
 /// The steps are mostly on ChannelManager level.
-#[cfg(dual_funding)]
+#[cfg(any(dual_funding, splicing))]
 #[test]
 fn test_channel_open_v2_and_close() {
 	// Set up a network of 2 nodes
@@ -1084,7 +1084,7 @@ fn test_v2_splice_in() {
 			assert_eq!(*node_id, initiator_node.node.get_our_node_id());
 			// Here we only get the signature for the shared input
 			assert_eq!(msg.witnesses.len(), 0);
-			assert!(msg.tlvs.is_some());
+			assert!(msg.funding_outpoint_sig.is_some());
 			msg
 		},
 		_ => panic!("Unexpected event {:?}", msg_events[0]),
@@ -1104,7 +1104,7 @@ fn test_v2_splice_in() {
 			assert_eq!(msg.witnesses.len(), 2);
 			assert_eq!(msg.witnesses[0].len(), 4);
 			assert_eq!(msg.witnesses[1].len(), 1);
-			assert!(msg.tlvs.is_some());
+			assert!(msg.funding_outpoint_sig.is_some());
 			msg
 		},
 		_ => panic!("Unexpected event {:?}", msg_events[0]),
@@ -1604,7 +1604,7 @@ fn test_v2_payment_splice_in_payment() {
 			assert_eq!(*node_id, initiator_node.node.get_our_node_id());
 			// Here we only get the signature for the shared input
 			assert_eq!(msg.witnesses.len(), 0);
-			assert!(msg.tlvs.is_some());
+			assert!(msg.funding_outpoint_sig.is_some());
 			msg
 		},
 		_ => panic!("Unexpected event {:?}", msg_events[0]),
@@ -1624,7 +1624,7 @@ fn test_v2_payment_splice_in_payment() {
 			assert_eq!(msg.witnesses.len(), 2);
 			assert_eq!(msg.witnesses[0].len(), 4);
 			assert_eq!(msg.witnesses[1].len(), 1);
-			assert!(msg.tlvs.is_some());
+			assert!(msg.funding_outpoint_sig.is_some());
 			msg
 		},
 		_ => panic!("Unexpected event {:?}", msg_events[0]),
