@@ -7395,12 +7395,15 @@ where
 					MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id)
 				)?;
 			let mut pending_events = self.pending_events.lock().unwrap();
+			let is_public = (msg.common_fields.channel_flags & 1) == 1;
 			pending_events.push_back((events::Event::OpenChannelRequest {
 				temporary_channel_id: msg.common_fields.temporary_channel_id.clone(),
 				counterparty_node_id: counterparty_node_id.clone(),
 				funding_satoshis: msg.common_fields.funding_satoshis,
 				push_msat: msg.push_msat,
 				channel_type,
+				is_public,
+				params: msg.common_fields.channel_parameters(),
 			}, None));
 			peer_state.inbound_channel_request_by_id.insert(channel_id, InboundChannelRequest {
 				open_channel_msg: msg.clone(),

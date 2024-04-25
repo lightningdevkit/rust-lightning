@@ -1308,6 +1308,10 @@ pub enum Event {
 		///
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		channel_type: ChannelTypeFeatures,
+		/// True if this channel is (or will be) publicly-announced.
+		is_public: bool,
+		/// Channel parameters given by the counterparty.
+		params: msgs::ChannelParameters,
 	},
 	/// Indicates that the HTLC was accepted, but could not be processed when or after attempting to
 	/// forward it.
