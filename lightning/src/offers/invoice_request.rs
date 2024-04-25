@@ -877,13 +877,12 @@ impl VerifiedInvoiceRequest {
 		let InvoiceRequestContents {
 			payer_id,
 			inner: InvoiceRequestContentsWithoutPayerId {
-				payer: _, offer: _, chain: _, amount_msats, features, quantity, payer_note
+				payer: _, offer: _, chain: _, amount_msats: _, features, quantity, payer_note
 			},
 		} = &self.inner.contents;
 
 		InvoiceRequestFields {
 			payer_id: *payer_id,
-			amount_msats: *amount_msats,
 			features: features.clone(),
 			quantity: *quantity,
 			payer_note_truncated: payer_note.clone()
@@ -1126,12 +1125,6 @@ pub struct InvoiceRequestFields {
 	/// A possibly transient pubkey used to sign the invoice request.
 	pub payer_id: PublicKey,
 
-	/// The amount to pay in msats (i.e., the minimum lightning-payable unit for [`chain`]), which
-	/// must be greater than or equal to [`Offer::amount`], converted if necessary.
-	///
-	/// [`chain`]: InvoiceRequest::chain
-	pub amount_msats: Option<u64>,
-
 	/// Features pertaining to requesting an invoice.
 	pub features: InvoiceRequestFeatures,
 
@@ -1150,7 +1143,6 @@ impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.payer_id, required),
-			(2, self.amount_msats.map(|v| HighZeroBytesDroppedBigSize(v)), option),
 			(4, WithoutLength(&self.features), required),
 			(6, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
 			(8, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
@@ -1163,7 +1155,6 @@ impl Readable for InvoiceRequestFields {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payer_id, required),
-			(2, amount_msats, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, features, (option, encoding: (InvoiceRequestFeatures, WithoutLength))),
 			(6, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(8, payer_note_truncated, (option, encoding: (String, WithoutLength))),
@@ -1171,7 +1162,7 @@ impl Readable for InvoiceRequestFields {
 		let features = features.unwrap_or(InvoiceRequestFeatures::empty());
 
 		Ok(InvoiceRequestFields {
-			payer_id: payer_id.0.unwrap(), amount_msats, features, quantity,
+			payer_id: payer_id.0.unwrap(), features, quantity,
 			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
 		})
 	}
@@ -2277,7 +2268,6 @@ mod tests {
 					fields,
 					InvoiceRequestFields {
 						payer_id: payer_pubkey(),
-						amount_msats: Some(1001),
 						features: InvoiceRequestFeatures::empty(),
 						quantity: Some(1),
 						payer_note_truncated: Some(UntrustedString("0".repeat(PAYER_NOTE_LIMIT))),
