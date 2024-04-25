@@ -16,6 +16,8 @@ use crate::ln::msgs::{DecodeError, UnsignedChannelAnnouncement, UnsignedGossipMe
 use crate::ln::script::ShutdownScript;
 use crate::ln::PaymentPreimage;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+#[cfg(taproot)]
+use crate::sign::taproot::TaprootChannelSigner;
 use crate::sign::ChannelSigner;
 use crate::sign::InMemorySigner;
 use crate::sign::{
@@ -32,16 +34,28 @@ use bitcoin::absolute::LockTime;
 use bitcoin::bech32::u5;
 use bitcoin::secp256k1::All;
 use bitcoin::{secp256k1, ScriptBuf, Transaction, TxOut};
+#[cfg(taproot)]
+use musig2::types::{PartialSignature, PublicNonce};
 use secp256k1::ecdsa::RecoverableSignature;
 use secp256k1::{ecdh::SharedSecret, ecdsa::Signature, PublicKey, Scalar, Secp256k1, SecretKey};
 
+#[cfg(not(taproot))]
+/// A super-trait for all the traits that a dyn signer backing implements
+pub trait DynSignerTrait: EcdsaChannelSigner + Send + Sync {}
+
+#[cfg(taproot)]
+/// A super-trait for all the traits that a dyn signer backing implements
+pub trait DynSignerTrait: EcdsaChannelSigner + TaprootChannelSigner + Send + Sync {}
+
 /// Helper to allow DynSigner to clone itself
-pub trait InnerSign: EcdsaChannelSigner + Send + Sync {
+pub trait InnerSign: DynSignerTrait {
 	/// Clone into a Box
 	fn box_clone(&self) -> Box<dyn InnerSign>;
 	/// Cast to Any for runtime type checking
 	fn as_any(&self) -> &dyn Any;
-	/// Serialize the signer
+	/// Serialize the signer.
+	/// We can't have a write method with a generic (i.e. `Writeable`) because that would make signers
+	/// dyn object incompatible.
 	fn vwrite(&self, writer: &mut Vec<u8>) -> Result<(), Error>;
 }
 
@@ -60,6 +74,73 @@ impl DynSigner {
 
 impl WriteableEcdsaChannelSigner for DynSigner {}
 
+#[cfg(taproot)]
+#[allow(unused_variables)]
+impl TaprootChannelSigner for DynSigner {
+	fn generate_local_nonce_pair(
+		&self, commitment_number: u64, secp_ctx: &Secp256k1<All>,
+	) -> PublicNonce {
+		todo!()
+	}
+
+	fn partially_sign_counterparty_commitment(
+		&self, counterparty_nonce: PublicNonce, commitment_tx: &CommitmentTransaction,
+		inbound_htlc_preimages: Vec<PaymentPreimage>,
+		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<All>,
+	) -> Result<(crate::ln::msgs::PartialSignatureWithNonce, Vec<secp256k1::schnorr::Signature>), ()>
+	{
+		todo!();
+	}
+
+	fn finalize_holder_commitment(
+		&self, commitment_tx: &HolderCommitmentTransaction,
+		counterparty_partial_signature: crate::ln::msgs::PartialSignatureWithNonce,
+		secp_ctx: &Secp256k1<All>,
+	) -> Result<PartialSignature, ()> {
+		todo!();
+	}
+
+	fn sign_justice_revoked_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<All>,
+	) -> Result<secp256k1::schnorr::Signature, ()> {
+		todo!();
+	}
+
+	fn sign_justice_revoked_htlc(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>,
+	) -> Result<secp256k1::schnorr::Signature, ()> {
+		todo!();
+	}
+
+	fn sign_holder_htlc_transaction(
+		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
+		secp_ctx: &Secp256k1<All>,
+	) -> Result<secp256k1::schnorr::Signature, ()> {
+		todo!();
+	}
+
+	fn sign_counterparty_htlc_transaction(
+		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
+		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<All>,
+	) -> Result<secp256k1::schnorr::Signature, ()> {
+		todo!();
+	}
+
+	fn partially_sign_closing_transaction(
+		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<All>,
+	) -> Result<PartialSignature, ()> {
+		todo!();
+	}
+
+	fn sign_holder_anchor_input(
+		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<All>,
+	) -> Result<secp256k1::schnorr::Signature, ()> {
+		todo!();
+	}
+}
+
 impl Clone for DynSigner {
 	fn clone(&self) -> Self {
 		DynSigner { inner: self.inner.box_clone() }
@@ -74,69 +155,104 @@ impl Readable for DynSigner {
 }
 
 impl EcdsaChannelSigner for DynSigner {
-	delegate! {
-		to self.inner {
-			fn sign_holder_commitment(
-				&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
-			) -> Result<Signature, ()>;
+	fn sign_holder_commitment(
+		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		self.inner.sign_holder_commitment(commitment_tx, secp_ctx)
+	}
 
-			#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
-			fn unsafe_sign_holder_commitment(
-				&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
-			) -> Result<Signature, ()>;
+	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	fn unsafe_sign_holder_commitment(
+		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx)
+	}
 
-			fn sign_counterparty_commitment(
-				&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
-				outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
-			) -> Result<(Signature, Vec<Signature>), ()>;
+	fn sign_counterparty_commitment(
+		&self, commitment_tx: &CommitmentTransaction, inbound_htlc_preimages: Vec<PaymentPreimage>,
+		outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<(Signature, Vec<Signature>), ()> {
+		self.inner.sign_counterparty_commitment(
+			commitment_tx,
+			inbound_htlc_preimages,
+			outbound_htlc_preimages,
+			secp_ctx,
+		)
+	}
 
-			fn sign_justice_revoked_output(
-				&self,
-				justice_tx: &Transaction,
-				input: usize,
-				amount: u64,
-				per_commitment_key: &SecretKey,
-				secp_ctx: &Secp256k1<secp256k1::All>,
-			) -> Result<Signature, ()>;
+	fn sign_justice_revoked_output(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		EcdsaChannelSigner::sign_justice_revoked_output(
+			&*self.inner,
+			justice_tx,
+			input,
+			amount,
+			per_commitment_key,
+			secp_ctx,
+		)
+	}
 
-			fn sign_justice_revoked_htlc(
-				&self,
-				justice_tx: &Transaction,
-				input: usize,
-				amount: u64,
-				per_commitment_key: &SecretKey,
-				htlc: &HTLCOutputInCommitment,
-				secp_ctx: &Secp256k1<secp256k1::All>,
-			) -> Result<Signature, ()>;
+	fn sign_justice_revoked_htlc(
+		&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey,
+		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		EcdsaChannelSigner::sign_justice_revoked_htlc(
+			&*self.inner,
+			justice_tx,
+			input,
+			amount,
+			per_commitment_key,
+			htlc,
+			secp_ctx,
+		)
+	}
 
-			fn sign_counterparty_htlc_transaction(
-				&self,
-				htlc_tx: &Transaction,
-				input: usize,
-				amount: u64,
-				per_commitment_point: &PublicKey,
-				htlc: &HTLCOutputInCommitment,
-				secp_ctx: &Secp256k1<secp256k1::All>,
-			) -> Result<Signature, ()>;
+	fn sign_counterparty_htlc_transaction(
+		&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey,
+		htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		EcdsaChannelSigner::sign_counterparty_htlc_transaction(
+			&*self.inner,
+			htlc_tx,
+			input,
+			amount,
+			per_commitment_point,
+			htlc,
+			secp_ctx,
+		)
+	}
 
-			fn sign_closing_transaction(
-				&self,
-				closing_tx: &ClosingTransaction,
-				secp_ctx: &Secp256k1<secp256k1::All>,
-			) -> Result<Signature, ()>;
+	fn sign_closing_transaction(
+		&self, closing_tx: &ClosingTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		self.inner.sign_closing_transaction(closing_tx, secp_ctx)
+	}
 
-			fn sign_channel_announcement_with_funding_key(
-				&self,
-				msg: &UnsignedChannelAnnouncement,
-				secp_ctx: &Secp256k1<secp256k1::All>,
-			) -> Result<Signature, ()>;
+	fn sign_channel_announcement_with_funding_key(
+		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		self.inner.sign_channel_announcement_with_funding_key(msg, secp_ctx)
+	}
 
-			fn sign_holder_anchor_input(
-				&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-			) -> Result<Signature, ()>;
+	fn sign_holder_anchor_input(
+		&self, anchor_tx: &Transaction, input: usize, secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		EcdsaChannelSigner::sign_holder_anchor_input(&*self.inner, anchor_tx, input, secp_ctx)
+	}
 
-			fn sign_holder_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor, secp_ctx: &Secp256k1<All>) -> Result<Signature, ()>;
-		}
+	fn sign_holder_htlc_transaction(
+		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
+		secp_ctx: &Secp256k1<All>,
+	) -> Result<Signature, ()> {
+		EcdsaChannelSigner::sign_holder_htlc_transaction(
+			&*self.inner,
+			htlc_tx,
+			input,
+			htlc_descriptor,
+			secp_ctx,
+		)
 	}
 }
 
@@ -181,6 +297,8 @@ impl Writeable for DynSigner {
 	}
 }
 
+impl DynSignerTrait for InMemorySigner {}
+
 impl InnerSign for InMemorySigner {
 	fn box_clone(&self) -> Box<dyn InnerSign> {
 		Box::new(self.clone())
@@ -198,12 +316,12 @@ impl InnerSign for InMemorySigner {
 /// A convenience wrapper for DynKeysInterfaceTrait
 pub struct DynKeysInterface {
 	/// The inner dyn keys interface
-	pub inner: Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>,
+	pub inner: Box<dyn DynKeysInterfaceTrait>,
 }
 
 impl DynKeysInterface {
 	/// Create a new DynKeysInterface
-	pub fn new(inner: Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>) -> Self {
+	pub fn new(inner: Box<dyn DynKeysInterfaceTrait>) -> Self {
 		DynKeysInterface { inner }
 	}
 }
@@ -237,6 +355,8 @@ impl NodeSigner for DynKeysInterface {
 
 impl SignerProvider for DynKeysInterface {
 	type EcdsaSigner = DynSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = DynSigner;
 
 	delegate! {
 		to self.inner {
@@ -273,9 +393,22 @@ impl OutputSpender for DynKeysInterface {
 	}
 }
 
+#[cfg(not(taproot))]
 /// A supertrait for all the traits that a keys interface implements
 pub trait DynKeysInterfaceTrait:
 	NodeSigner + OutputSpender + SignerProvider<EcdsaSigner = DynSigner> + EntropySource + Send + Sync
+{
+}
+
+#[cfg(taproot)]
+/// A supertrait for all the traits that a keys interface implements
+pub trait DynKeysInterfaceTrait:
+	NodeSigner
+	+ OutputSpender
+	+ SignerProvider<EcdsaSigner = DynSigner, TaprootSigner = DynSigner>
+	+ EntropySource
+	+ Send
+	+ Sync
 {
 }
 
@@ -320,6 +453,8 @@ impl NodeSigner for DynPhantomKeysInterface {
 
 impl SignerProvider for DynPhantomKeysInterface {
 	type EcdsaSigner = DynSigner;
+	#[cfg(taproot)]
+	type TaprootSigner = DynSigner;
 
 	delegate! {
 		to self.inner {
