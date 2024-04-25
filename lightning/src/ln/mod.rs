@@ -49,7 +49,7 @@ pub use onion_utils::create_payment_onion;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod blinded_payment_tests;
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 #[allow(unused_mut)]
 mod functional_tests;
 #[cfg(test)]

@@ -55,14 +55,15 @@ use alloc::collections::BTreeSet;
 use core::iter::repeat;
 use bitcoin::hashes::Hash;
 use crate::sync::{Arc, Mutex, RwLock};
+use ext_test_macro::xtest;
 
 use crate::ln::functional_test_utils::*;
 use crate::ln::chan_utils::CommitmentTransaction;
 
 use super::channel::UNFUNDED_CHANNEL_AGE_LIMIT_TICKS;
 
-#[test]
-fn test_insane_channel_opens() {
+#[xtest(feature = "_test_utils")]
+pub fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 	let mut cfg = UserConfig::default();
