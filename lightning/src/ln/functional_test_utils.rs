@@ -937,7 +937,7 @@ macro_rules! get_channel_ref {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 macro_rules! get_feerate {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{
@@ -949,7 +949,7 @@ macro_rules! get_feerate {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 macro_rules! get_channel_type_features {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {
 		{
@@ -3473,7 +3473,7 @@ pub fn get_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 
 	handle_announce_close_broadcast_events(nodes, a, b, false, "Channel closed because commitment or closing transaction was confirmed on chain.");
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 macro_rules! get_channel_value_stat {
 	($node: expr, $counterparty_node: expr, $channel_id: expr) => {{
 		let peer_state_lock = $node.node.per_peer_state.read().unwrap();

@@ -732,7 +732,7 @@ impl TestChannelMessageHandler {
 		}
 	}
 
-	#[cfg(any(test, feature = "_test_utils"))]
+	#[cfg(test)]
 	pub(crate) fn expect_receive_msg(&self, ev: wire::Message<()>) {
 		let mut expected_msgs = self.expected_recv_msgs.lock().unwrap();
 		if expected_msgs.is_none() { *expected_msgs = Some(Vec::new()); }

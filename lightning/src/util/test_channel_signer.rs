@@ -19,7 +19,7 @@ use crate::prelude::*;
 
 use core::cmp;
 use crate::sync::{Mutex, Arc};
-#[cfg(test)] use crate::sync::MutexGuard;
+#[cfg(any(test, feature = "_test_utils"))] use crate::sync::MutexGuard;
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hashes::Hash;
@@ -111,7 +111,7 @@ impl TestChannelSigner {
 
 	pub fn channel_type_features(&self) -> &ChannelTypeFeatures { self.inner.channel_type_features().unwrap() }
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
 		self.state.lock().unwrap()
 	}

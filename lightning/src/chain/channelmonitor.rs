@@ -775,10 +775,7 @@ impl Readable for IrrevocablyResolvedHTLC {
 /// returned block hash and the the current chain and then reconnecting blocks to get to the
 /// best chain) upon deserializing the object!
 pub struct ChannelMonitor<Signer: WriteableEcdsaChannelSigner> {
-	#[cfg(test)]
 	pub(crate) inner: Mutex<ChannelMonitorImpl<Signer>>,
-	#[cfg(not(test))]
-	pub(super) inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
 impl<Signer: WriteableEcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: Clone {
@@ -877,9 +874,9 @@ pub(crate) struct ChannelMonitorImpl<Signer: WriteableEcdsaChannelSigner> {
 	// Obviously Correct (tm) if we just keep track of them explicitly.
 	outputs_to_watch: HashMap<Txid, Vec<(u32, ScriptBuf)>>,
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub onchain_tx_handler: OnchainTxHandler<Signer>,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	onchain_tx_handler: OnchainTxHandler<Signer>,
 
 	// This is set when the Channel[Manager] generated a ChannelMonitorUpdate which indicated the
@@ -2498,7 +2495,7 @@ macro_rules! fail_unbroadcast_htlcs {
 // witness length match (ie is 136 bytes long). We generate one here which we also use in some
 // in-line tests later.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 pub fn deliberately_bogus_accepted_htlc_witness_program() -> Vec<u8> {
 	use bitcoin::blockdata::opcodes;
 	let mut ret = [opcodes::all::OP_NOP.to_u8(); 136];
@@ -2510,7 +2507,7 @@ pub fn deliberately_bogus_accepted_htlc_witness_program() -> Vec<u8> {
 	Vec::from(&ret[..])
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 pub fn deliberately_bogus_accepted_htlc_witness() -> Vec<Vec<u8>> {
 	vec![Vec::new(), Vec::new(), Vec::new(), Vec::new(), deliberately_bogus_accepted_htlc_witness_program().into()].into()
 }

@@ -1889,10 +1889,7 @@ where
 	router: R,
 
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	#[cfg(test)]
 	pub(super) best_block: RwLock<BestBlock>,
-	#[cfg(not(test))]
-	best_block: RwLock<BestBlock>,
 	secp_ctx: Secp256k1<secp256k1::All>,
 
 	/// Storage for PaymentSecrets and any requirements on future inbound payments before we will
@@ -1981,9 +1978,6 @@ where
 	/// required to access the channel with the `counterparty_node_id`.
 	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	#[cfg(not(test))]
-	outpoint_to_peer: Mutex<HashMap<OutPoint, PublicKey>>,
-	#[cfg(test)]
 	pub(crate) outpoint_to_peer: Mutex<HashMap<OutPoint, PublicKey>>,
 
 	/// SCIDs (and outbound SCID aliases) -> `counterparty_node_id`s and `channel_id`s.
@@ -4567,7 +4561,7 @@ where
 		Ok(())
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
 		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, false, |_, tx| {
 			Ok(OutPoint { txid: tx.txid(), index: output_index })

@@ -511,7 +511,7 @@ where C::Target: chain::Filter,
 	}
 
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn remove_monitor(&self, funding_txo: &OutPoint) -> ChannelMonitor<ChannelSigner> {
 		self.monitors.write().unwrap().remove(funding_txo).unwrap().monitor
 	}

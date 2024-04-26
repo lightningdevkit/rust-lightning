@@ -57,7 +57,8 @@ use crate::sign::type_resolver::ChannelSignerType;
 
 use super::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
+#[allow(unused)]
 pub struct ChannelValueStat {
 	pub value_to_self_msat: u64,
 	pub channel_value_msat: u64,
@@ -6171,12 +6172,12 @@ impl<SP: Deref> Channel<SP> where
 		self.context.cur_counterparty_commitment_transaction_number + 2
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_signer(&self) -> &ChannelSignerType<SP> {
 		&self.context.holder_signer
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_value_stat(&self) -> ChannelValueStat {
 		ChannelValueStat {
 			value_to_self_msat: self.context.value_to_self_msat,
