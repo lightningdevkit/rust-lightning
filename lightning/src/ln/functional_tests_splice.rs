@@ -808,7 +808,7 @@ fn test_v2_splice_in() {
 	} = get_event!(initiator_node, Event::FundingTransactionReadyForSigning) {
 		assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 		let mut witness = Witness::new();
-		witness.push(vec![0]);
+		witness.push([7; 72]);
 		unsigned_transaction.input[0].witness = witness;
 		let _res = initiator_node.node.funding_transaction_signed(&channel_id1, &counterparty_node_id, unsigned_transaction).unwrap();
 	} else { panic!(); }
@@ -845,7 +845,7 @@ fn test_v2_splice_in() {
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	let broadcasted_funding_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
-	assert_eq!(broadcasted_funding_tx.encode().len(), 130);
+	assert_eq!(broadcasted_funding_tx.encode().len(), 201);
 	assert_eq!(broadcasted_funding_tx.txid().to_string(), "951459a816fd3e1105bd8b623b004c5fdf640e82c306f473b50c42097610dcdf");
 
 	// Simulate confirmation of the funding tx
@@ -1027,7 +1027,7 @@ fn test_v2_splice_in() {
 
 		// Placeholder for signature on the contributed input
 		let mut witness1 = Witness::new();
-		witness1.push(vec![0]);
+		witness1.push([7; 72]);
 		unsigned_transaction.input[1].witness = witness1;
 
 		let _res = initiator_node.node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
@@ -1304,7 +1304,7 @@ fn test_v2_payment_splice_in_payment() {
 	} = get_event!(initiator_node, Event::FundingTransactionReadyForSigning) {
 		assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 		let mut witness = Witness::new();
-		witness.push(vec![0]);
+		witness.push([7; 72]);
 		unsigned_transaction.input[0].witness = witness;
 		let _res = initiator_node.node.funding_transaction_signed(&channel_id1, &counterparty_node_id, unsigned_transaction).unwrap();
 	} else { panic!(); }
