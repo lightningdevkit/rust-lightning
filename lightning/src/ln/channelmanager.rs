@@ -5044,13 +5044,7 @@ where
 						} // TODO error
 						assert!(tlvs.is_some());
 					}
-					if let Some(tx_signatures) = signing_session.provide_holder_witnesses(*channel_id, witnesses, tlvs) {
-						// TODO Check, this is probably not needed here, tx_signature should be sent only after commitment change!
-						peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
-							node_id: *counterparty_node_id,
-							msg: tx_signatures,
-						});
-					}
+					signing_session.provide_holder_witnesses(*channel_id, witnesses, tlvs);
 				} else {
 					return Err(APIError::APIMisuseError {
 						err: format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)
