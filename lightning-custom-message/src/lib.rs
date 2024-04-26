@@ -167,6 +167,16 @@
 //! #     }
 //! }
 //!
+//! #[macro_export]
+//! macro_rules! foo_bar_type_ids {
+//!     () => { foo_type_id!() | bar_type_id!() }
+//! }
+//!
+//! #[macro_export]
+//! macro_rules! foo_bar_baz_type_ids {
+//!     () => { foo_bar_type_ids!() | baz_type_id!() }
+//! }
+//!
 //! # fn main() {
 //! // The first crate may define a handler composing `FooHandler` and `BarHandler` and export the
 //! // corresponding message type ids as a macro to use in further composition.
@@ -183,11 +193,6 @@
 //!     }
 //! );
 //!
-//! #[macro_export]
-//! macro_rules! foo_bar_type_ids {
-//!     () => { foo_type_id!() | bar_type_id!() }
-//! }
-//!
 //! // Another crate can then define a handler further composing `FooBarHandler` with `BazHandler`
 //! // and similarly export the composition of message type ids as a macro.
 //!
@@ -203,10 +208,6 @@
 //!     }
 //! );
 //!
-//! #[macro_export]
-//! macro_rules! foo_bar_baz_type_ids {
-//!     () => { foo_bar_type_ids!() | baz_type_id!() }
-//! }
 //! # }
 //!```
 //!
