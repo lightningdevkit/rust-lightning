@@ -877,13 +877,12 @@ impl VerifiedInvoiceRequest {
 		let InvoiceRequestContents {
 			payer_id,
 			inner: InvoiceRequestContentsWithoutPayerId {
-				payer: _, offer: _, chain: _, amount_msats: _, features, quantity, payer_note
+				payer: _, offer: _, chain: _, amount_msats: _, features: _, quantity, payer_note
 			},
 		} = &self.inner.contents;
 
 		InvoiceRequestFields {
 			payer_id: *payer_id,
-			features: features.clone(),
 			quantity: *quantity,
 			payer_note_truncated: payer_note.clone()
 				.map(|mut s| { s.truncate(PAYER_NOTE_LIMIT); UntrustedString(s) }),
@@ -1125,9 +1124,6 @@ pub struct InvoiceRequestFields {
 	/// A possibly transient pubkey used to sign the invoice request.
 	pub payer_id: PublicKey,
 
-	/// Features pertaining to requesting an invoice.
-	pub features: InvoiceRequestFeatures,
-
 	/// The quantity of the offer's item conforming to [`Offer::is_valid_quantity`].
 	pub quantity: Option<u64>,
 
@@ -1143,9 +1139,8 @@ impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.payer_id, required),
-			(2, WithoutLength(&self.features), required),
-			(4, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
-			(6, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
+			(2, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
+			(4, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
 		});
 		Ok(())
 	}
@@ -1155,14 +1150,13 @@ impl Readable for InvoiceRequestFields {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payer_id, required),
-			(2, features, (option, encoding: (InvoiceRequestFeatures, WithoutLength))),
-			(4, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
-			(6, payer_note_truncated, (option, encoding: (String, WithoutLength))),
+			(2, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(4, payer_note_truncated, (option, encoding: (String, WithoutLength))),
 		});
-		let features = features.unwrap_or(InvoiceRequestFeatures::empty());
 
 		Ok(InvoiceRequestFields {
-			payer_id: payer_id.0.unwrap(), features, quantity,
+			payer_id: payer_id.0.unwrap(),
+			quantity,
 			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
 		})
 	}
@@ -2267,7 +2261,6 @@ mod tests {
 					fields,
 					InvoiceRequestFields {
 						payer_id: payer_pubkey(),
-						features: InvoiceRequestFeatures::empty(),
 						quantity: Some(1),
 						payer_note_truncated: Some(UntrustedString("0".repeat(PAYER_NOTE_LIMIT))),
 					}
