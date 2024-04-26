@@ -207,6 +207,21 @@ impl ConstructedTransaction {
 		self.outputs.iter()
 	}
 
+	/// Return all outputs and their index that match the given script pubkey and optionally value.
+	pub fn find_output_by_script(&self, script_pubkey: &ScriptBuf, value: Option<u64>) -> Vec<(usize, TxOut)> {
+		// Sort outputs by serial_id
+		let mut outputs = self.outputs.clone();
+		outputs.sort_unstable_by_key(|InteractiveTxOutput { serial_id, .. }| *serial_id);
+		outputs.iter()
+			.enumerate()
+			.filter(|(_idx, outp)| 
+				outp.tx_out().script_pubkey == *script_pubkey
+				&& (if let Some(v) = value { outp.tx_out().value == v } else { true }) // optionally match value as well
+			)
+			.map(|(idx, outp)| (idx, outp.tx_out().clone()))
+			.collect()
+	}
+
 	pub fn inputs(&self) -> impl Iterator<Item = &InteractiveTxInput> {
 		self.inputs.iter()
 	}

@@ -8,14 +8,10 @@
 // licenses.
 
 use bitcoin::blockdata::constants::ChainHash;
-#[cfg(any(dual_funding, splicing))]
-use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::blockdata::script::{Script, ScriptBuf, Builder};
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::sighash::{self, EcdsaSighashType};
 use bitcoin::consensus::encode;
-#[cfg(any(dual_funding, splicing))]
-use bitcoin::consensus::Encodable as _;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -31,8 +27,6 @@ use bitcoin::{TxIn, TxOut, Witness};
 #[cfg(any(dual_funding, splicing))]
 use bitcoin::locktime::absolute::LockTime;
 
-#[cfg(any(dual_funding, splicing))]
-use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash};
 #[cfg(splicing)]
 use crate::ln::channel_splice::{PendingSpliceInfoPre, PendingSpliceInfoPost};
@@ -67,8 +61,6 @@ use crate::util::config::{UserConfig, ChannelConfig, LegacyChannelConfig, Channe
 use crate::util::scid_utils::scid_from_parts;
 
 use crate::io;
-#[cfg(any(dual_funding, splicing))]
-use crate::io_extras::sink;
 use crate::prelude::*;
 use core::{cmp,mem,fmt};
 use core::ops::Deref;
@@ -8830,21 +8822,18 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	{
 		let is_splice_pending = self.context.is_splice_pending();
 
-		let mut output_index = None;
-		let expected_spk = self.context.get_funding_redeemscript().to_v0_p2wsh();
+		// Find the funding output
 		// Splicing note: the channel value at this time is already the post-splice value, so no special handling is needed
-		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
-			if outp.tx_out().script_pubkey == expected_spk && outp.tx_out().value == self.context.get_value_satoshis() {
-				if output_index.is_some() {
-					return Err((self, ChannelError::Close("Multiple outputs matched the expected script and value".to_owned())));
-				}
-				output_index = Some(idx as u16);
-			}
-		}
-		if output_index.is_none() {
+		let expected_spk = self.context.get_funding_redeemscript().to_v0_p2wsh();
+		let funding_outputs = signing_session.unsigned_tx.find_output_by_script(&expected_spk, Some(self.context.get_value_satoshis()));
+		let funding_outpoint_index = if funding_outputs.len() == 1 {
+			funding_outputs[0].0 as u16
+		} else if funding_outputs.len() == 0 {
 			return Err((self, ChannelError::Close("No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned())));
-		}
-		let outpoint = OutPoint { txid: signing_session.unsigned_tx.txid(), index: output_index.unwrap() };
+		} else { // > 1
+			return Err((self, ChannelError::Close("Multiple outputs matched the expected script and value".to_owned())));
+		};
+		let outpoint = OutPoint { txid: signing_session.unsigned_tx.txid(), index: funding_outpoint_index };
 		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
 
@@ -9107,20 +9096,18 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	{
 		let is_splice_pending = self.context.is_splice_pending();
 
-		let mut output_index = None;
+		// Find the funding output
+		// Splicing note: the channel value at this time is already the post-splice value, so no special handling is needed
 		let expected_spk = self.context.get_funding_redeemscript().to_v0_p2wsh();
-		for (idx, outp) in signing_session.unsigned_tx.outputs().enumerate() {
-			if outp.tx_out().script_pubkey == expected_spk && outp.tx_out().value == self.context.get_value_satoshis() {
-				if output_index.is_some() {
-					return Err((self, ChannelError::Close("Multiple outputs matched the expected script and value".to_owned())));
-				}
-				output_index = Some(idx as u16);
-			}
-		}
-		if output_index.is_none() {
+		let funding_outputs = signing_session.unsigned_tx.find_output_by_script(&expected_spk, Some(self.context.get_value_satoshis()));
+		let funding_outpoint_index = if funding_outputs.len() == 1 {
+			funding_outputs[0].0 as u16
+		} else if funding_outputs.len() == 0 {
 			return Err((self, ChannelError::Close("No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned())));
-		}
-		let outpoint = OutPoint { txid: signing_session.unsigned_tx.txid(), index: output_index.unwrap() };
+		} else { // > 1
+			return Err((self, ChannelError::Close("Multiple outputs matched the expected script and value".to_owned())));
+		};
+		let outpoint = OutPoint { txid: signing_session.unsigned_tx.txid(), index: funding_outpoint_index };
 		self.context.channel_transaction_parameters.funding_outpoint = Some(outpoint);
 		self.context.holder_signer.as_mut().provide_channel_parameters(&self.context.channel_transaction_parameters);
 
@@ -9268,11 +9255,16 @@ where
 		}
 	}
 
+	// Find the funding output
 	let funding_redeemscript = context.get_funding_redeemscript().to_v0_p2wsh();
-	let funding_outpoint_index = transaction.outputs().enumerate().find_map(
-		|(idx, output)| {
-			if output.tx_out().script_pubkey == funding_redeemscript { Some(idx as u16) } else { None }
-		}).expect("funding transaction contains funding output");
+	let funding_outputs = transaction.find_output_by_script(&funding_redeemscript, None);
+	let funding_outpoint_index = if funding_outputs.len() == 1 {
+		funding_outputs[0].0 as u16
+	} else if funding_outputs.len() == 0 {
+		return Err(ChannelError::Close("No output matched the script_pubkey (get_initial_commitment_signed)".to_owned()));
+	} else { // > 1
+		return Err(ChannelError::Close("Multiple outputs matched the expected script".to_owned()));
+	};
 	let funding_txo = OutPoint { txid: transaction.txid(), index: funding_outpoint_index };
 	context.channel_transaction_parameters.funding_outpoint = Some(funding_txo);
 	context.holder_signer.as_mut().provide_channel_parameters(&context.channel_transaction_parameters);
