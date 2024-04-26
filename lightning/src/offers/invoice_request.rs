@@ -1038,6 +1038,13 @@ impl Writeable for InvoiceRequestContents {
 	}
 }
 
+impl Readable for InvoiceRequest {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
+	}
+}
+
 /// Valid type range for invoice_request TLV records.
 pub(super) const INVOICE_REQUEST_TYPES: core::ops::Range<u64> = 80..160;
 
