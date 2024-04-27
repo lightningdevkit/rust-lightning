@@ -69,6 +69,7 @@ use std::cmp;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
 use bitcoin::bech32::u5;
+use lightning::util::dyn_signer::DynSigner;
 
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
@@ -370,7 +371,7 @@ impl SignerProvider for KeyProvider {
 		let secp_ctx = Secp256k1::signing_only();
 		let ctr = channel_keys_id[0];
 		let (inbound, state) = self.signer_state.borrow().get(&ctr).unwrap().clone();
-		TestChannelSigner::new_with_revoked(if inbound {
+		let inner = if inbound {
 			InMemorySigner::new(
 				&secp_ctx,
 				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ctr]).unwrap(),
@@ -396,12 +397,15 @@ impl SignerProvider for KeyProvider {
 				channel_keys_id,
 				channel_keys_id,
 			)
-		}, state, false)
+		};
+		let inner = DynSigner::new(inner);
+		TestChannelSigner::new_with_revoked(inner, state, false)
 	}
 
 	fn read_chan_signer(&self, mut data: &[u8]) -> Result<TestChannelSigner, DecodeError> {
 		let inner: InMemorySigner = ReadableArgs::read(&mut data, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
+		let inner = DynSigner::new(inner);
 
 		Ok(TestChannelSigner::new_with_revoked(
 			inner,

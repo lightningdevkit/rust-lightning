@@ -71,6 +71,7 @@ use std::sync::{Arc,Mutex};
 use std::sync::atomic;
 use std::io::Cursor;
 use bitcoin::bech32::u5;
+use lightning::util::dyn_signer::DynSigner;
 
 const MAX_FEE: u32 = 10_000;
 struct FuzzEstimator {
@@ -276,6 +277,7 @@ impl SignerProvider for KeyProvider {
 			channel_keys_id,
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
+		let keys = DynSigner::new(keys);
 		TestChannelSigner::new_with_revoked(keys, revoked_commitment, false)
 	}
 
@@ -284,6 +286,7 @@ impl SignerProvider for KeyProvider {
 
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
+		let inner = DynSigner::new(inner);
 
 		Ok(TestChannelSigner {
 			inner,
