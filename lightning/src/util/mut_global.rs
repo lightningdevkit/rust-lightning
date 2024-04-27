@@ -48,7 +48,7 @@ mod tests {
 	#[test]
 	fn test() {
 		let v = MutGlobal::<u8>::new(|| 0);
-		assert_eq!(G.get(), 0);
+		assert_eq!(v.get(), 0);
 		v.set(42);
 		assert_eq!(v.get(), 42);
 		v.set(43);
