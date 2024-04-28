@@ -8850,7 +8850,8 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			// #SPLICING
 			// #SPLICE-SIG
 			// Add signature for prev funding input
-			let (partly_signed_tx, holder_signature) = match self.context.prev_funding_tx_sign(&signing_session.unsigned_tx.clone().into_unsigned_tx(), None, logger) {
+			// Note: here the transaction is used for signing, input&output order matters
+			let (partly_signed_tx, holder_signature) = match self.context.prev_funding_tx_sign(&partly_signed_transaction, None, logger) {
 				Err(e) => return Err((self, e)), // simpler map_err() could not be used here due to move issue
 				Ok(t) => t,
 			};
@@ -8866,6 +8867,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			channel_id: self.context.channel_id,
 			counterparty_node_id: *counterparty_node_id,
 			user_channel_id: self.context.user_id,
+			// Note: here the transaction is used for signing, input&output order matters
 			unsigned_transaction: partly_signed_transaction,
 		};
 
@@ -9123,7 +9125,8 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			// #SPLICING
 			// #SPLICE-SIG
 			// Add signature for prev funding input
-			let (partly_signed_tx, holder_signature) = match self.context.prev_funding_tx_sign(&signing_session.unsigned_tx.clone().into_unsigned_tx(), None, logger) {
+			// Note: here the transaction is used for signing, input&output order matters
+			let (partly_signed_tx, holder_signature) = match self.context.prev_funding_tx_sign(&partly_signed_transaction, None, logger) {
 				Err(e) => return Err((self, e)), // simpler map_err() could not be used here due to move issue
 				Ok(t) => t,
 			};
@@ -9139,6 +9142,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 				channel_id: self.context.channel_id,
 				counterparty_node_id: *counterparty_node_id,
 				user_channel_id: self.context.user_id,
+				// Note: here the transaction is used for signing, input&output order matters
 				unsigned_transaction: partly_signed_transaction,
 			});
 		}

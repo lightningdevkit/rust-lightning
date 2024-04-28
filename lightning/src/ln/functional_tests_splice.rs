@@ -843,10 +843,11 @@ fn test_v2_splice_in() {
 	get_event!(acceptor_node, Event::ChannelPending);
 
 	// Check that funding transaction has been broadcasted
+	let expected_pre_funding_transaction_id = "951459a816fd3e1105bd8b623b004c5fdf640e82c306f473b50c42097610dcdf";
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	let broadcasted_funding_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].clone();
 	assert_eq!(broadcasted_funding_tx.encode().len(), 201);
-	assert_eq!(broadcasted_funding_tx.txid().to_string(), "951459a816fd3e1105bd8b623b004c5fdf640e82c306f473b50c42097610dcdf");
+	assert_eq!(broadcasted_funding_tx.txid().to_string(), expected_pre_funding_transaction_id);
 
 	// Simulate confirmation of the funding tx
 	confirm_transaction(&initiator_node, &broadcasted_funding_tx);
@@ -1020,7 +1021,9 @@ fn test_v2_splice_in() {
 		assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 		assert_eq!(counterparty_node_id, acceptor_node.node.get_our_node_id());
 		assert_eq!(unsigned_transaction.input.len(), 2);
+		// Note: input order may vary (based on SerialId)
 		// This is the previous funding tx input, already signed (partially)
+		assert_eq!(unsigned_transaction.input[0].previous_output.txid.to_string(), expected_pre_funding_transaction_id);
 		assert_eq!(unsigned_transaction.input[0].witness.len(), 4);
 		// This is the extra input, not yet signed
 		assert_eq!(unsigned_transaction.input[1].witness.len(), 0);
@@ -1117,8 +1120,8 @@ fn test_v2_splice_in() {
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
 	let broadcasted_splice_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
-	let expected_funding_tx = "02000000000102dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a8591495010000000000000000a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b7900000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f04004730440220496589c8ab19a2cea70f9204634aa45a642a2a8ba5fb8952a04f4998719f397c02204642179dedd6bf2627f1cd53d2f32832af32fc28504b636fd86a098bfc992acb01473044022050d84dcf82005d21989f0595cd1d38b5e85beb1ab5843ac1323afeeecae33c960220649f00b713ccd15c868d7ebab19f978ae5bd9e25c06ee2849f10a42997a2f8b2014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae040000473044022050d84dcf82005d21989f0595cd1d38b5e85beb1ab5843ac1323afeeecae33c960220649f00b713ccd15c868d7ebab19f978ae5bd9e25c06ee2849f10a42997a2f8b2014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae00000000";
-	assert_eq!(broadcasted_splice_tx.encode().len(), 533);
+	let expected_funding_tx = "02000000000102dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a8591495010000000000000000a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b7900000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f04004730440220496589c8ab19a2cea70f9204634aa45a642a2a8ba5fb8952a04f4998719f397c02204642179dedd6bf2627f1cd53d2f32832af32fc28504b636fd86a098bfc992acb01473044022050d84dcf82005d21989f0595cd1d38b5e85beb1ab5843ac1323afeeecae33c960220649f00b713ccd15c868d7ebab19f978ae5bd9e25c06ee2849f10a42997a2f8b2014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae014807070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070700000000";
+	assert_eq!(broadcasted_splice_tx.encode().len(), 460);
 	assert_eq!(broadcasted_splice_tx.encode().as_hex().to_string(), expected_funding_tx);
 	let initiator_funding_key = get_funding_key(&initiator_node, &acceptor_node, &channel_id1);
 	let acceptor_funding_key = get_funding_key(&acceptor_node, &initiator_node, &channel_id1);
@@ -1127,7 +1130,7 @@ fn test_v2_splice_in() {
 	// Check that funding transaction has been broadcasted on acceptor side as well
 	assert_eq!(chanmon_cfgs[acceptor_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
 	let broadcasted_splice_tx_acc = chanmon_cfgs[acceptor_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
-	assert_eq!(broadcasted_splice_tx_acc.encode().len(), 533);
+	assert_eq!(broadcasted_splice_tx_acc.encode().len(), 460);
 	assert_eq!(broadcasted_splice_tx_acc.encode().as_hex().to_string(), expected_funding_tx);
 
 	// check fees
@@ -1138,7 +1141,7 @@ fn test_v2_splice_in() {
 	let fee = total_input - total_output;
 	let target_fee_rate = chanmon_cfgs[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee); // target is irrelevant
 	assert_eq!(target_fee_rate, 253);
-	assert_eq!(broadcasted_splice_tx.weight().to_wu(), 1031);
+	assert_eq!(broadcasted_splice_tx.weight().to_wu(), 958);
 	let expected_minimum_fee = (broadcasted_splice_tx.weight().to_wu() as f64 * target_fee_rate as f64 / 1000 as f64).ceil() as u64;
 	let expected_maximum_fee = expected_minimum_fee * 5;  // TODO lower tolerance, e.g. 3
 	assert!(fee >= expected_minimum_fee);

@@ -153,6 +153,12 @@ impl ConstructedTransaction {
 			})
 			.fold(0u64, |value, (_, output)| value.saturating_add(output.tx_out.value));
 
+		// Keep the inputs&outputs sorted by SerialId
+		let mut inputs: Vec<_> = context.inputs.clone().into_values().collect();
+		inputs.sort_unstable_by_key(|InteractiveTxInput { serial_id, .. }| *serial_id);
+		let mut outputs: Vec<_> = context.outputs.clone().into_values().collect();
+		outputs.sort_unstable_by_key(|InteractiveTxOutput { serial_id, .. }| *serial_id);
+
 		Self {
 			holder_is_initiator: context.holder_is_initiator,
 
@@ -162,8 +168,8 @@ impl ConstructedTransaction {
 			remote_inputs_value_satoshis: context.remote_inputs_value(),
 			remote_outputs_value_satoshis: context.remote_outputs_value(),
 
-			inputs: context.inputs.into_values().collect(),
-			outputs: context.outputs.into_values().collect(),
+			inputs,
+			outputs,
 
 			lock_time: context.tx_locktime,
 		}
@@ -189,16 +195,14 @@ impl ConstructedTransaction {
 	}
 
 	pub fn into_unsigned_tx(self) -> Transaction {
-		// Inputs and outputs must be sorted by serial_id
-		let ConstructedTransaction { mut inputs, mut outputs, .. } = self;
-
-		inputs.sort_unstable_by_key(|InteractiveTxInput { serial_id, .. }| *serial_id);
-		outputs.sort_unstable_by_key(|InteractiveTxOutput { serial_id, .. }| *serial_id);
-
+		// TODO: remove note
+		// Note: no need to sort any more
 		let input: Vec<TxIn> =
-			inputs.into_iter().map(|InteractiveTxInput { input, .. }| input).collect();
+			self.inputs.into_iter()
+			.map(|InteractiveTxInput { input, .. }| input).collect();
 		let output: Vec<TxOut> =
-			outputs.into_iter().map(|InteractiveTxOutput { tx_out, .. }| tx_out).collect();
+			self.outputs.into_iter()
+			.map(|InteractiveTxOutput { tx_out, .. }| tx_out).collect();
 
 		Transaction { version: 2, lock_time: self.lock_time, input, output }
 	}
@@ -209,10 +213,9 @@ impl ConstructedTransaction {
 
 	/// Return all outputs and their index that match the given script pubkey and optionally value.
 	pub fn find_output_by_script(&self, script_pubkey: &ScriptBuf, value: Option<u64>) -> Vec<(usize, TxOut)> {
-		// Sort outputs by serial_id
-		let mut outputs = self.outputs.clone();
-		outputs.sort_unstable_by_key(|InteractiveTxOutput { serial_id, .. }| *serial_id);
-		outputs.iter()
+		// TODO: remove note
+		// Note: no need to sort any more
+		self.outputs.iter()
 			.enumerate()
 			.filter(|(_idx, outp)| 
 				outp.tx_out().script_pubkey == *script_pubkey
@@ -345,20 +348,18 @@ impl InteractiveTxSigningSession {
 
 	fn finalize_funding_tx(&mut self) -> Transaction {
 		let lock_time = self.unsigned_tx.lock_time;
-		let ConstructedTransaction { inputs, outputs, .. } = &mut self.unsigned_tx;
-
-		inputs.sort_unstable_by_key(|InteractiveTxInput { serial_id, .. }| *serial_id);
-		outputs.sort_unstable_by_key(|InteractiveTxOutput { serial_id, .. }| *serial_id);
+		// TODO: remove note
+		// Note: no need to sort any more
+		let input = self.unsigned_tx.inputs.iter().cloned()
+			.map(|InteractiveTxInput { input, .. }| input).collect();
+		let output = self.unsigned_tx.outputs.iter().cloned()
+			.map(|InteractiveTxOutput { tx_out, .. }| tx_out).collect();
 
 		Transaction {
 			version: 2,
 			lock_time,
-			input: inputs.iter().cloned().map(|InteractiveTxInput { input, .. }| input).collect(),
-			output: outputs
-				.iter()
-				.cloned()
-				.map(|InteractiveTxOutput { tx_out, .. }| tx_out)
-				.collect(),
+			input,
+			output,
 		}
 	}
 
