@@ -1401,8 +1401,8 @@ fn batch_funding_failure() {
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
-	exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
-	exchange_open_accept_chan(&nodes[0], &nodes[2], 1_000_000, 0);
+	let temp_chan_id_a = exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
+	let temp_chan_id_b = exchange_open_accept_chan(&nodes[0], &nodes[2], 1_000_000, 0);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
@@ -1419,14 +1419,35 @@ fn batch_funding_failure() {
 		} else { panic!(); }
 	}
 
-	// We should probably end up with an error for both channels, but currently we don't generate
-	// an error for the failing channel itself.
 	let err = "Error in transaction funding: Misuse error: No output matched the script_pubkey and value in the FundingGenerationReady event".to_string();
-	let close = [ExpectedCloseEvent::from_id_reason(ChannelId::v1_from_funding_txid(tx.txid().as_ref(), 0), true, ClosureReason::ProcessingError { err })];
+	let temp_err = "No output matched the script_pubkey and value in the FundingGenerationReady event".to_string();
+	let post_funding_chan_id_a = ChannelId::v1_from_funding_txid(tx.txid().as_ref(), 0);
+	let close = [
+		ExpectedCloseEvent::from_id_reason(post_funding_chan_id_a, true, ClosureReason::ProcessingError { err: err.clone() }),
+		ExpectedCloseEvent::from_id_reason(temp_chan_id_b, false, ClosureReason::ProcessingError { err: temp_err }),
+	];
 
 	nodes[0].node.batch_funding_transaction_generated(&chans, tx).unwrap_err();
 
-	get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+	let msgs = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msgs.len(), 2);
+	// We currently spuriously send `FundingCreated` for the first channel and then immediately
+	// fail both channels, which isn't ideal but should be fine.
+	assert!(msgs.iter().any(|msg| {
+		if let MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage {
+			msg: msgs::ErrorMessage { channel_id, .. }, ..
+		}, .. } = msg {
+			assert_eq!(*channel_id, temp_chan_id_b);
+			true
+		} else { false }
+	}));
+	assert!(msgs.iter().any(|msg| {
+		if let MessageSendEvent::SendFundingCreated { msg: msgs::FundingCreated { temporary_channel_id, .. }, .. } = msg {
+			assert_eq!(*temporary_channel_id, temp_chan_id_a);
+			true
+		} else { false }
+	}));
+
 	check_closed_events(&nodes[0], &close);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 }

@@ -4480,7 +4480,7 @@ where
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
-	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>, &Transaction) -> Result<OutPoint, APIError>>(
+	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>, &Transaction) -> Result<OutPoint, &'static str>>(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, is_batch_funding: bool,
 		mut find_funding_output: FundingOutput,
 	) -> Result<(), APIError> {
@@ -4493,26 +4493,38 @@ where
 		let funding_txo;
 		let (mut chan, msg_opt) = match peer_state.channel_by_id.remove(temporary_channel_id) {
 			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
-				funding_txo = find_funding_output(&chan, &funding_transaction)?;
+				macro_rules! close_chan { ($err: expr, $api_err: expr, $chan: expr) => { {
+					let counterparty;
+					let err = if let ChannelError::Close(msg) = $err {
+						let channel_id = $chan.context.channel_id();
+						counterparty = chan.context.get_counterparty_node_id();
+						let reason = ClosureReason::ProcessingError { err: msg.clone() };
+						let shutdown_res = $chan.context.force_shutdown(false, reason);
+						MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, None)
+					} else { unreachable!(); };
+
+					mem::drop(peer_state_lock);
+					mem::drop(per_peer_state);
+					let _: Result<(), _> = handle_error!(self, Err(err), counterparty);
+					Err($api_err)
+				} } }
+				match find_funding_output(&chan, &funding_transaction) {
+					Ok(found_funding_txo) => funding_txo = found_funding_txo,
+					Err(err) => {
+						let chan_err = ChannelError::Close(err.to_owned());
+						let api_err = APIError::APIMisuseError { err: err.to_owned() };
+						return close_chan!(chan_err, api_err, chan);
+					},
+				}
 
 				let logger = WithChannelContext::from(&self.logger, &chan.context);
-				let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger)
-					.map_err(|(mut chan, e)| if let ChannelError::Close(msg) = e {
-						let channel_id = chan.context.channel_id();
-						let reason = ClosureReason::ProcessingError { err: msg.clone() };
-						let shutdown_res = chan.context.force_shutdown(false, reason);
-						(chan, MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, None))
-					} else { unreachable!(); });
+				let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger);
 				match funding_res {
 					Ok(funding_msg) => (chan, funding_msg),
-					Err((chan, err)) => {
-						mem::drop(peer_state_lock);
-						mem::drop(per_peer_state);
-						let _: Result<(), _> = handle_error!(self, Err(err), chan.context.get_counterparty_node_id());
-						return Err(APIError::ChannelUnavailable {
-							err: "Signer refused to sign the initial commitment transaction".to_owned()
-						});
-					},
+					Err((mut chan, chan_err)) => {
+						let api_err = APIError::ChannelUnavailable { err: "Signer refused to sign the initial commitment transaction".to_owned() };
+						return close_chan!(chan_err, api_err, chan);
+					}
 				}
 			},
 			Some(phase) => {
@@ -4677,17 +4689,13 @@ where
 					for (idx, outp) in tx.output.iter().enumerate() {
 						if outp.script_pubkey == expected_spk && outp.value == chan.context.get_value_satoshis() {
 							if output_index.is_some() {
-								return Err(APIError::APIMisuseError {
-									err: "Multiple outputs matched the expected script and value".to_owned()
-								});
+								return Err("Multiple outputs matched the expected script and value");
 							}
 							output_index = Some(idx as u16);
 						}
 					}
 					if output_index.is_none() {
-						return Err(APIError::APIMisuseError {
-							err: "No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned()
-						});
+						return Err("No output matched the script_pubkey and value in the FundingGenerationReady event");
 					}
 					let outpoint = OutPoint { txid: tx.txid(), index: output_index.unwrap() };
 					if let Some(funding_batch_state) = funding_batch_state.as_mut() {
