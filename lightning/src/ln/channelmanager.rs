@@ -21,7 +21,7 @@ use bitcoin::blockdata::block::Header;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::key::constants::SECRET_KEY_SIZE;
-#[cfg(any(dual_funding, splicing))]
+#[cfg(splicing)]
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::constants::Network;
 

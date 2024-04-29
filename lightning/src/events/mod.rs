@@ -1291,6 +1291,7 @@ pub enum Event {
 	/// Indicates that the splice negotiation is done, `splice_ack` msg was received, and interactive transaction negotiation can start.
 	/// Similar to FundingInputsContributionReady
 	/// TODO Change name, this should come after tx negotiation, maybe not needed in this form
+	#[cfg(splicing)]
 	SpliceAckedInputsContributionReady {
 		/// The channel_id of the channel that requires funding inputs which you'll need to pass into
 		/// [`ChannelManager::contribute_funding_inputs`].
@@ -1572,6 +1573,7 @@ impl Writeable for Event {
 				})
 			},
 			// #SPLICING
+			#[cfg(splicing)]
 			&Event::SpliceAckedInputsContributionReady { ref channel_id, ref counterparty_node_id, ref pre_channel_value_satoshis, ref post_channel_value_satoshis, ref holder_funding_satoshis, ref counterparty_funding_satoshis } => {
 				33u8.write(writer)?; // TODO value
 				write_tlv_fields!(writer, {

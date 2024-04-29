@@ -1259,7 +1259,7 @@ impl UnfundedChannelContext {
 		self.unfunded_channel_age_ticks >= UNFUNDED_CHANNEL_AGE_LIMIT_TICKS
 	}
 
-	#[cfg(any(dual_funding, splicing))]
+	#[cfg(splicing)]
 	pub fn default() -> Self { Self { unfunded_channel_age_ticks: 0 } }
 }
 
