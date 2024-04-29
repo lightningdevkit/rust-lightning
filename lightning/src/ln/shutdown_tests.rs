@@ -1430,23 +1430,32 @@ fn batch_funding_failure() {
 	nodes[0].node.batch_funding_transaction_generated(&chans, tx).unwrap_err();
 
 	let msgs = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(msgs.len(), 2);
+	assert_eq!(msgs.len(), 3);
 	// We currently spuriously send `FundingCreated` for the first channel and then immediately
 	// fail both channels, which isn't ideal but should be fine.
 	assert!(msgs.iter().any(|msg| {
 		if let MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage {
 			msg: msgs::ErrorMessage { channel_id, .. }, ..
 		}, .. } = msg {
-			assert_eq!(*channel_id, temp_chan_id_b);
-			true
+			*channel_id == temp_chan_id_b
 		} else { false }
 	}));
-	assert!(msgs.iter().any(|msg| {
+	let funding_created_pos = msgs.iter().position(|msg| {
 		if let MessageSendEvent::SendFundingCreated { msg: msgs::FundingCreated { temporary_channel_id, .. }, .. } = msg {
 			assert_eq!(*temporary_channel_id, temp_chan_id_a);
 			true
 		} else { false }
-	}));
+	}).unwrap();
+	let funded_channel_close_pos = msgs.iter().position(|msg| {
+		if let MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage {
+			msg: msgs::ErrorMessage { channel_id, .. }, ..
+		}, .. } = msg {
+			*channel_id == post_funding_chan_id_a
+		} else { false }
+	}).unwrap();
+
+	// The error message uses the funded channel_id so must come after the funding_created
+	assert!(funded_channel_close_pos > funding_created_pos);
 
 	check_closed_events(&nodes[0], &close);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);

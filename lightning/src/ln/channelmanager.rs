@@ -4726,11 +4726,20 @@ where
 				for (channel_id, counterparty_node_id) in channels_to_remove {
 					per_peer_state.get(&counterparty_node_id)
 						.map(|peer_state_mutex| peer_state_mutex.lock().unwrap())
-						.and_then(|mut peer_state| peer_state.channel_by_id.remove(&channel_id))
-						.map(|mut chan| {
+						.and_then(|mut peer_state| peer_state.channel_by_id.remove(&channel_id).map(|chan| (chan, peer_state)))
+						.map(|(mut chan, mut peer_state)| {
 							update_maps_on_chan_removal!(self, &chan.context());
 							let closure_reason = ClosureReason::ProcessingError { err: e.clone() };
 							shutdown_results.push(chan.context_mut().force_shutdown(false, closure_reason));
+							peer_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+								node_id: counterparty_node_id,
+								action: msgs::ErrorAction::SendErrorMessage {
+									msg: msgs::ErrorMessage {
+										channel_id,
+										data: "Failed to fund channel".to_owned(),
+									}
+								},
+							});
 						});
 				}
 			}
