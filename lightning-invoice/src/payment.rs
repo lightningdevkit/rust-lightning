@@ -91,8 +91,6 @@ mod tests {
 	use core::time::Duration;
 	#[cfg(feature = "std")]
 	use std::time::SystemTime;
-	use bech32::ToBase32;
-	use lightning::sign::{NodeSigner, Recipient};
 
 	fn duration_since_epoch() -> Duration {
 		#[cfg(feature = "std")]
@@ -175,6 +173,9 @@ mod tests {
 		use lightning::ln::channelmanager::{Retry, PaymentId};
 		use lightning::ln::msgs::ChannelMessageHandler;
 		use lightning::ln::functional_test_utils::*;
+		use lightning::sign::{NodeSigner, Recipient};
+		use bech32::ToBase32;
+
 		// Test that a payment metadata read from an invoice passed to `pay_invoice` makes it all
 		// the way out through the `PaymentClaimable` event.
 		let chanmon_cfgs = create_chanmon_cfgs(2);
