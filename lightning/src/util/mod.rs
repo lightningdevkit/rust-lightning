@@ -15,6 +15,11 @@ pub(crate) mod fuzz_wrappers;
 #[macro_use]
 pub mod ser_macros;
 
+pub mod dyn_signer;
+
+#[cfg(feature = "std")]
+pub mod mut_global;
+
 pub mod errors;
 pub mod ser;
 pub mod message_signing;

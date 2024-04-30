@@ -927,7 +927,7 @@ impl<T: sealed::ShutdownAnySegwit> Features<T> {
 }
 
 impl<T: sealed::Wumbo> Features<T> {
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) fn clear_wumbo(mut self) -> Self {
 		<T as sealed::Wumbo>::clear_bits(&mut self.flags);
 		self

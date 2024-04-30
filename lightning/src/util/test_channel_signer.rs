@@ -11,7 +11,7 @@ use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSH
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use crate::ln::channel_keys::{HtlcKey};
 use crate::ln::{msgs, PaymentPreimage};
-use crate::sign::{InMemorySigner, ChannelSigner};
+use crate::sign::ChannelSigner;
 use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
 
 #[allow(unused_imports)]
@@ -19,7 +19,7 @@ use crate::prelude::*;
 
 use core::cmp;
 use crate::sync::{Mutex, Arc};
-#[cfg(test)] use crate::sync::MutexGuard;
+#[cfg(any(test, feature = "_test_utils"))] use crate::sync::MutexGuard;
 
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::hashes::Hash;
@@ -32,7 +32,8 @@ use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 #[cfg(taproot)]
-use musig2::types::{PartialSignature, PublicNonce, SecretNonce};
+use musig2::types::{PartialSignature, PublicNonce};
+use crate::chain::transaction::OutPoint;
 use crate::sign::HTLCDescriptor;
 use crate::util::ser::{Writeable, Writer};
 use crate::io::Error;
@@ -41,6 +42,7 @@ use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs::PartialSignatureWithNonce;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
+use crate::util::dyn_signer::DynSigner;
 
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
@@ -66,7 +68,7 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 /// forwards-compatibility prefix/suffixes!
 #[derive(Clone)]
 pub struct TestChannelSigner {
-	pub inner: InMemorySigner,
+	pub inner: DynSigner,
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
@@ -83,7 +85,7 @@ impl PartialEq for TestChannelSigner {
 
 impl TestChannelSigner {
 	/// Construct an TestChannelSigner
-	pub fn new(inner: InMemorySigner) -> Self {
+	pub fn new(inner: DynSigner) -> Self {
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 		Self {
 			inner,
@@ -98,7 +100,7 @@ impl TestChannelSigner {
 	/// Since there are multiple copies of this struct for each channel, some coordination is needed
 	/// so that all copies are aware of enforcement state.  A pointer to this state is provided
 	/// here, usually by an implementation of KeysInterface.
-	pub fn new_with_revoked(inner: InMemorySigner, state: Arc<Mutex<EnforcementState>>, disable_revocation_policy_check: bool) -> Self {
+	pub fn new_with_revoked(inner: DynSigner, state: Arc<Mutex<EnforcementState>>, disable_revocation_policy_check: bool) -> Self {
 		Self {
 			inner,
 			state,
@@ -109,7 +111,7 @@ impl TestChannelSigner {
 
 	pub fn channel_type_features(&self) -> &ChannelTypeFeatures { self.inner.channel_type_features().unwrap() }
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
 		self.state.lock().unwrap()
 	}
@@ -125,6 +127,26 @@ impl TestChannelSigner {
 }
 
 impl ChannelSigner for TestChannelSigner {
+	fn commitment_seed(&self) -> [u8; 32] {
+		todo!()
+	}
+
+	fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
+		todo!()
+	}
+
+	fn funding_outpoint(&self) -> Option<&OutPoint> {
+		todo!()
+	}
+
+	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {
+		todo!()
+	}
+
+	fn channel_type_features(&self) -> Option<&ChannelTypeFeatures> {
+		todo!()
+	}
+
 	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
@@ -199,13 +221,13 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		if state.last_holder_revoked_commitment - 1 != commitment_number && state.last_holder_revoked_commitment - 2 != commitment_number {
 			if !self.disable_revocation_policy_check {
 				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
+				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed()[0])
 			}
 		}
 		Ok(self.inner.sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
 
-	#[cfg(any(test,feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
 		Ok(self.inner.unsafe_sign_holder_commitment(commitment_tx, secp_ctx).unwrap())
 	}
@@ -237,7 +259,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		{
 			if !self.disable_revocation_policy_check {
 				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-				       state.last_holder_revoked_commitment, htlc_descriptor.per_commitment_number, self.inner.commitment_seed[0])
+				       state.last_holder_revoked_commitment, htlc_descriptor.per_commitment_number, self.inner.commitment_seed()[0])
 			}
 		}
 		assert_eq!(htlc_tx.input[input], htlc_descriptor.unsigned_tx_input());

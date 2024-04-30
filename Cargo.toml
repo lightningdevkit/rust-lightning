@@ -12,9 +12,11 @@ members = [
     "lightning-custom-message",
     "lightning-transaction-sync",
     "possiblyrandom",
+    "ext-test-macro",
 ]
 
 exclude = [
+    "ext-functional-test-demo",
     "no-std-check",
     "msrv-no-dev-deps-check",
     "bench",

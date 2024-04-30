@@ -158,7 +158,11 @@ for path in glob.glob(sys.path[0] + "/../**/*.rs", recursive = True):
             line = file.readline()
             if not line:
                 break
-            if "#[cfg(" in line:
+            if "#[cfg(" in line and not "quote!" in line:
                 if not line.strip().startswith("//"):
-                    cfg_part = cfg_regex.match(line.strip()).group(1)
+                    match = cfg_regex.match(line.strip())
+                    if match is None:
+                        print("Bad cfg line: " + line.strip())
+                        continue
+                    cfg_part = match.group(1)
                     check_cfg_args(cfg_part)
