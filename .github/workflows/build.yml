@@ -191,13 +191,10 @@ jobs:
       - name: Pin the regex dependency
         run: |
           cd fuzz && cargo update -p regex --precise "1.9.6" --verbose && cd ..
-          cd lightning-invoice/fuzz && cargo update -p regex --precise "1.9.6" --verbose
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: cd fuzz && RUSTFLAGS="--cfg=fuzzing" cargo test --verbose --color always
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh && cd ..
-      - name: Run lightning-invoice fuzzers
-        run: cd lightning-invoice/fuzz && RUSTFLAGS="--cfg=fuzzing" cargo test --verbose && ./ci-fuzz.sh
 
   linting:
     runs-on: ubuntu-latest
