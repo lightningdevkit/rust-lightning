@@ -12,6 +12,7 @@
 //! `Foo` and `Bar` messages, and further composing it with a handler for `Baz` messages.
 //!
 //!```
+//! # fn main() {} // Avoid #[macro_export] generating an in-function warning
 //! # extern crate bitcoin;
 //! extern crate lightning;
 //! #[macro_use]
@@ -167,7 +168,6 @@
 //! #     }
 //! }
 //!
-//! # fn main() {
 //! // The first crate may define a handler composing `FooHandler` and `BarHandler` and export the
 //! // corresponding message type ids as a macro to use in further composition.
 //!
@@ -207,7 +207,6 @@
 //! macro_rules! foo_bar_baz_type_ids {
 //!     () => { foo_bar_type_ids!() | baz_type_id!() }
 //! }
-//! # }
 //!```
 //!
 //! [BOLT 1]: https://github.com/lightning/bolts/blob/master/01-messaging.md
