@@ -923,6 +923,8 @@ pub trait OutputSpender {
 
 // Primarily needed in doctests because of https://github.com/rust-lang/rust/issues/67295
 /// A dynamic [`SignerProvider`] temporarily needed for doc tests.
+///
+/// This is not exported to bindings users as it is not intended for public consumption.
 #[cfg(taproot)]
 #[doc(hidden)]
 #[deprecated(note = "Remove once taproot cfg is removed")]
@@ -930,6 +932,8 @@ pub type DynSignerProvider =
 	dyn SignerProvider<EcdsaSigner = InMemorySigner, TaprootSigner = InMemorySigner>;
 
 /// A dynamic [`SignerProvider`] temporarily needed for doc tests.
+///
+/// This is not exported to bindings users as it is not intended for public consumption.
 #[cfg(not(taproot))]
 #[doc(hidden)]
 #[deprecated(note = "Remove once taproot cfg is removed")]
