@@ -124,7 +124,8 @@ impl fmt::Display for ChannelId {
 }
 
 
-/// payment_hash type, use to cross-lock hop
+/// The payment hash is the hash of the [`PaymentPreimage`] which is the value used to lock funds
+/// in HTLCs while they transit the lightning network.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
@@ -136,7 +137,8 @@ impl core::fmt::Display for PaymentHash {
 	}
 }
 
-/// payment_preimage type, use to route payment between hop
+/// The payment preimage is the "secret key" which is used to claim the funds of an HTLC on-chain
+/// or in a lightning channel.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
@@ -155,7 +157,8 @@ impl From<PaymentPreimage> for PaymentHash {
 	}
 }
 
-/// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
+/// The payment secret is used to authenticate the sender of an HTLC to the recipient and tie
+/// multi-part HTLCs together into a single payment.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
