@@ -31,7 +31,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::ln::ChannelId;
+use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::events;
 use crate::events::{Event, EventHandler};

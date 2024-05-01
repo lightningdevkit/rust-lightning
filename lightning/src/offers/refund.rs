@@ -91,7 +91,7 @@ use core::time::Duration;
 use crate::sign::EntropySource;
 use crate::io;
 use crate::blinded_path::BlindedPath;
-use crate::ln::PaymentHash;
+use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};

@@ -14,7 +14,7 @@ use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use crate::sign::{KeyMaterial, EntropySource};
-use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::crypto::chacha20::ChaCha20;

@@ -34,7 +34,7 @@ use bitcoin::secp256k1;
 use bitcoin::sighash::EcdsaSighashType;
 
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
-use crate::ln::{PaymentHash, PaymentPreimage, ChannelId};
+use crate::ln::types::{PaymentHash, PaymentPreimage, ChannelId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
 use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
@@ -4811,7 +4811,7 @@ mod tests {
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::InMemorySigner;
-	use crate::ln::{PaymentPreimage, PaymentHash, ChannelId};
+	use crate::ln::types::{PaymentPreimage, PaymentHash, ChannelId};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, RevocationBasepoint, RevocationKey};
 	use crate::ln::chan_utils::{self,HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId, RecipientOnionFields};

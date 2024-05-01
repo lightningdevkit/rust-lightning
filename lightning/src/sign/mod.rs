@@ -39,6 +39,7 @@ use bitcoin::{secp256k1, Sequence, Txid, Witness};
 
 use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
+use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	get_revokeable_redeemscript, make_funding_redeemscript, ChannelPublicKeys,
 	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
@@ -53,7 +54,7 @@ use crate::ln::channel_keys::{
 use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
-use crate::ln::{chan_utils, PaymentPreimage};
+use crate::ln::types::PaymentPreimage;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};

@@ -15,7 +15,7 @@ use bitcoin::address::WitnessVersion;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256;
 use crate::prelude::*;
-use lightning::ln::PaymentSecret;
+use lightning::ln::types::PaymentSecret;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
 

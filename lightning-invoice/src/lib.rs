@@ -65,7 +65,7 @@ use core::str;
 use serde::{Deserialize, Deserializer,Serialize, Serializer, de::Error};
 
 #[doc(no_inline)]
-pub use lightning::ln::PaymentSecret;
+pub use lightning::ln::types::PaymentSecret;
 #[doc(no_inline)]
 pub use lightning::routing::router::{RouteHint, RouteHintHop};
 #[doc(no_inline)]
@@ -162,7 +162,7 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// use secp256k1::Secp256k1;
 /// use secp256k1::SecretKey;
 ///
-/// use lightning::ln::PaymentSecret;
+/// use lightning::ln::types::PaymentSecret;
 ///
 /// use lightning_invoice::{Currency, InvoiceBuilder};
 ///
@@ -1877,7 +1877,7 @@ mod test {
 			 Bolt11SemanticError};
 
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
-		let payment_secret = lightning::ln::PaymentSecret([21; 32]);
+		let payment_secret = lightning::ln::types::PaymentSecret([21; 32]);
 		let invoice_template = RawBolt11Invoice {
 			hrp: RawHrp {
 				currency: Currency::Bitcoin,

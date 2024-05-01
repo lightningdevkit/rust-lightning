@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! ChannelId definition.
+//! Various wrapper types (most around 32-byte arrays) for use in lightning.
 
 use crate::chain::transaction::OutPoint;
 use crate::io;
@@ -15,6 +15,9 @@ use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 use super::channel_keys::RevocationBasepoint;
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 use bitcoin::hashes::{
 	Hash as _,
@@ -120,6 +123,74 @@ impl fmt::Display for ChannelId {
 	}
 }
 
+
+/// payment_hash type, use to cross-lock hop
+///
+/// This is not exported to bindings users as we just use [u8; 32] directly
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
+pub struct PaymentHash(pub [u8; 32]);
+
+impl core::fmt::Display for PaymentHash {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		crate::util::logger::DebugBytes(&self.0).fmt(f)
+	}
+}
+
+/// payment_preimage type, use to route payment between hop
+///
+/// This is not exported to bindings users as we just use [u8; 32] directly
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
+pub struct PaymentPreimage(pub [u8; 32]);
+
+impl core::fmt::Display for PaymentPreimage {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		crate::util::logger::DebugBytes(&self.0).fmt(f)
+	}
+}
+
+/// Converts a `PaymentPreimage` into a `PaymentHash` by hashing the preimage with SHA256.
+impl From<PaymentPreimage> for PaymentHash {
+	fn from(value: PaymentPreimage) -> Self {
+		PaymentHash(Sha256::hash(&value.0).to_byte_array())
+	}
+}
+
+/// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
+///
+/// This is not exported to bindings users as we just use [u8; 32] directly
+#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
+pub struct PaymentSecret(pub [u8; 32]);
+
+use bitcoin::bech32;
+use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
+
+impl FromBase32 for PaymentSecret {
+	type Err = bech32::Error;
+
+	fn from_base32(field_data: &[u5]) -> Result<PaymentSecret, bech32::Error> {
+		if field_data.len() != 52 {
+			return Err(bech32::Error::InvalidLength)
+		} else {
+			let data_bytes = Vec::<u8>::from_base32(field_data)?;
+			let mut payment_secret = [0; 32];
+			payment_secret.copy_from_slice(&data_bytes);
+			Ok(PaymentSecret(payment_secret))
+		}
+	}
+}
+
+impl ToBase32 for PaymentSecret {
+	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err> {
+		(&self.0[..]).write_base32(writer)
+	}
+}
+
+impl Base32Len for PaymentSecret {
+	fn base32_len(&self) -> usize {
+		52
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use bitcoin::hashes::{
@@ -131,7 +202,7 @@ mod tests {
 	use bitcoin::secp256k1::PublicKey;
 	use hex::DisplayHex;
 
-	use crate::ln::ChannelId;
+	use super::ChannelId;
 	use crate::ln::channel_keys::RevocationBasepoint;
 	use crate::util::ser::{Readable, Writeable};
 	use crate::util::test_utils;

@@ -25,7 +25,7 @@ use bitcoin::hash_types::{Txid, PubkeyHash, WPubkeyHash};
 use crate::chain::chaininterface::fee_for_weight;
 use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
 use crate::sign::EntropySource;
-use crate::ln::{PaymentHash, PaymentPreimage};
+use crate::ln::types::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, RequiredWrapper, Writeable, Writer};
 use crate::util::transaction_utils;
@@ -1826,7 +1826,7 @@ mod tests {
 	use bitcoin::{Network, Txid, ScriptBuf};
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::hex::FromHex;
-	use crate::ln::PaymentHash;
+	use crate::ln::types::PaymentHash;
 	use bitcoin::address::Payload;
 	use bitcoin::PublicKey as BitcoinPublicKey;
 	use crate::ln::features::ChannelTypeFeatures;
