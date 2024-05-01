@@ -18,7 +18,6 @@ use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureR
 use crate::ln::{channel, ChannelId};
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
 use crate::ln::msgs::ChannelMessageHandler;
-use crate::util::config::UserConfig;
 use crate::crypto::utils::sign;
 use crate::util::ser::Writeable;
 use crate::util::scid_utils::block_from_scid;
@@ -2249,7 +2248,7 @@ fn test_yield_anchors_events() {
 	// emitted by LDK, such that the consumer can attach fees to the zero fee HTLC transactions.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let mut anchors_config = UserConfig::default();
+	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announced_channel = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;
@@ -2400,7 +2399,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let bob_persister;
 	let bob_chain_monitor;
 
-	let mut anchors_config = UserConfig::default();
+	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announced_channel = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;

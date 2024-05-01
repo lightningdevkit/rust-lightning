@@ -2433,11 +2433,11 @@ fn channel_monitor_network_test() {
 #[test]
 fn test_justice_tx_htlc_timeout() {
 	// Test justice txn built on revoked HTLC-Timeout tx, against both sides
-	let mut alice_config = UserConfig::default();
+	let mut alice_config = test_default_channel_config();
 	alice_config.channel_handshake_config.announced_channel = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
 	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
-	let mut bob_config = UserConfig::default();
+	let mut bob_config = test_default_channel_config();
 	bob_config.channel_handshake_config.announced_channel = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
 	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
@@ -2496,11 +2496,11 @@ fn test_justice_tx_htlc_timeout() {
 #[test]
 fn test_justice_tx_htlc_success() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
-	let mut alice_config = UserConfig::default();
+	let mut alice_config = test_default_channel_config();
 	alice_config.channel_handshake_config.announced_channel = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
 	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
-	let mut bob_config = UserConfig::default();
+	let mut bob_config = test_default_channel_config();
 	bob_config.channel_handshake_config.announced_channel = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
 	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
