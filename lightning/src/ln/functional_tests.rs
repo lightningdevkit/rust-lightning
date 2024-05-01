@@ -62,6 +62,38 @@ use crate::ln::chan_utils::CommitmentTransaction;
 use super::channel::UNFUNDED_CHANNEL_AGE_LIMIT_TICKS;
 
 #[test]
+fn test_channel_resumption_fail_post_funding() {
+	// If we fail to exchange funding with a peer prior to it disconnecting we'll resume the
+	// channel open on reconnect, however if we do exchange funding we do not currently support
+	// replaying it and here test that the channel closes.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 0, 42, None, None).unwrap();
+	let open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_chan);
+	let accept_chan = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_chan);
+
+	let (temp_chan_id, tx, funding_output) =
+		create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
+	let new_chan_id = ChannelId::v1_from_funding_outpoint(funding_output);
+	nodes[0].node.funding_transaction_generated(&temp_chan_id, &nodes[1].node.get_our_node_id(), tx).unwrap();
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(new_chan_id, true, ClosureReason::DisconnectedPeer)]);
+
+	// After ddf75afd16 we'd panic on reconnection if we exchanged funding info, so test that
+	// explicitly here.
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
+}
+
+#[test]
 fn test_insane_channel_opens() {
 	// Stand up a network of 2 nodes
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
@@ -3734,10 +3766,10 @@ fn test_peer_disconnected_before_funding_broadcasted() {
 		nodes[0].node.timer_tick_occurred();
 	}
 
-	// Ensure that the channel is closed with `ClosureReason::HolderForceClosed`
-	// when the peers are disconnected and do not reconnect before the funding
-	// transaction is broadcasted.
-	check_closed_event!(&nodes[0], 2, ClosureReason::HolderForceClosed, true
+	// Ensure that the channel is closed with `ClosureReason::DisconnectedPeer` and a
+	// `DiscardFunding` event when the peers are disconnected and do not reconnect before the
+	// funding transaction is broadcasted.
+	check_closed_event!(&nodes[0], 2, ClosureReason::DisconnectedPeer, true
 		, [nodes[1].node.get_our_node_id()], 1000000);
 	check_closed_event!(&nodes[1], 1, ClosureReason::DisconnectedPeer, false
 		, [nodes[0].node.get_our_node_id()], 1000000);

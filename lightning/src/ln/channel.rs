@@ -7436,6 +7436,12 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		Ok(self.get_open_channel(chain_hash))
 	}
 
+	/// Returns true if we can resume the channel by sending the [`msgs::OpenChannel`] again.
+	pub fn is_resumable(&self) -> bool {
+		!self.context.have_received_message() &&
+			self.context.cur_holder_commitment_transaction_number == INITIAL_COMMITMENT_NUMBER
+	}
+
 	pub fn get_open_channel(&self, chain_hash: ChainHash) -> msgs::OpenChannel {
 		if !self.context.is_outbound() {
 			panic!("Tried to open a channel for an inbound channel?");
