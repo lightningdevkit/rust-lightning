@@ -117,7 +117,7 @@ pub(super) enum Payload<T: OnionMessageContents> {
 /// The contents of an [`OnionMessage`] as read from the wire.
 ///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ParsedOnionMessageContents<T: OnionMessageContents> {
 	/// A message related to BOLT 12 Offers.
 	Offers(OffersMessage),

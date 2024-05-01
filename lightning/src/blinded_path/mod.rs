@@ -27,7 +27,7 @@ use crate::prelude::*;
 /// The next hop to forward an onion message along its path.
 ///
 /// Note that payment blinded paths always specify their next hop using an explicit node id.
-#[derive(Debug)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum NextMessageHop {
 	/// The node id of the next hop.
 	NodeId(PublicKey),
