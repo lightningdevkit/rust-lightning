@@ -209,9 +209,8 @@ impl MetadataStrategy for DerivedMetadata {}
 macro_rules! offer_explicit_metadata_builder_methods { (
 	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
 ) => {
-	/// Creates a new builder for an offer setting an empty [`Offer::description`] and using the
-	/// [`Offer::signing_pubkey`] for signing invoices. The associated secret key must be remembered
-	/// while the offer is valid.
+	/// Creates a new builder for an offer using the [`Offer::signing_pubkey`] for signing invoices.
+	/// The associated secret key must be remembered while the offer is valid.
 	///
 	/// Use a different pubkey per offer to avoid correlating offers.
 	///
@@ -225,7 +224,7 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 	pub fn new(signing_pubkey: PublicKey) -> Self {
 		Self {
 			offer: OfferContents {
-				chains: None, metadata: None, amount: None, description: String::new(),
+				chains: None, metadata: None, amount: None, description: None,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
 				supported_quantity: Quantity::One, signing_pubkey: Some(signing_pubkey),
 			},
@@ -264,7 +263,7 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Self {
 			offer: OfferContents {
-				chains: None, metadata: Some(metadata), amount: None, description: String::new(),
+				chains: None, metadata: Some(metadata), amount: None, description: None,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
 				supported_quantity: Quantity::One, signing_pubkey: Some(node_id),
 			},
@@ -330,7 +329,7 @@ macro_rules! offer_builder_methods { (
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn description($($self_mut)* $self: $self_type, description: String) -> $return_type {
-		$self.offer.description = description;
+		$self.offer.description = Some(description);
 		$return_value
 	}
 
@@ -371,6 +370,10 @@ macro_rules! offer_builder_methods { (
 			},
 			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
 			None => {},
+		}
+
+		if $self.offer.amount.is_some() && $self.offer.description.is_none() {
+			$self.offer.description = Some(String::new());
 		}
 
 		if let Some(chains) = &$self.offer.chains {
@@ -551,7 +554,7 @@ pub(super) struct OfferContents {
 	chains: Option<Vec<ChainHash>>,
 	metadata: Option<Metadata>,
 	amount: Option<Amount>,
-	description: String,
+	description: Option<String>,
 	features: OfferFeatures,
 	absolute_expiry: Option<Duration>,
 	issuer: Option<String>,
@@ -585,7 +588,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 
 	/// A complete description of the purpose of the payment. Intended to be displayed to the user
 	/// but with the caveat that it has not been verified in any way.
-	pub fn description(&$self) -> $crate::util::string::PrintableString {
+	pub fn description(&$self) -> Option<$crate::util::string::PrintableString> {
 		$contents.description()
 	}
 
@@ -809,8 +812,8 @@ impl OfferContents {
 		self.amount.as_ref()
 	}
 
-	pub fn description(&self) -> PrintableString {
-		PrintableString(&self.description)
+	pub fn description(&self) -> Option<PrintableString> {
+		self.description.as_ref().map(|description| PrintableString(description))
 	}
 
 	pub fn features(&self) -> &OfferFeatures {
@@ -954,7 +957,7 @@ impl OfferContents {
 			metadata: self.metadata(),
 			currency,
 			amount,
-			description: Some(&self.description),
+			description: self.description.as_ref(),
 			features,
 			absolute_expiry: self.absolute_expiry.map(|duration| duration.as_secs()),
 			paths: self.paths.as_ref(),
@@ -1092,10 +1095,9 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 			(Some(iso4217_code), Some(amount)) => Some(Amount::Currency { iso4217_code, amount }),
 		};
 
-		let description = match description {
-			None => return Err(Bolt12SemanticError::MissingDescription),
-			Some(description) => description,
-		};
+		if amount.is_some() && description.is_none() {
+			return Err(Bolt12SemanticError::MissingDescription);
+		}
 
 		let features = features.unwrap_or_else(OfferFeatures::empty);
 
@@ -1166,7 +1168,7 @@ mod tests {
 		assert!(offer.supports_chain(ChainHash::using_genesis_block(Network::Bitcoin)));
 		assert_eq!(offer.metadata(), None);
 		assert_eq!(offer.amount(), None);
-		assert_eq!(offer.description(), PrintableString(""));
+		assert_eq!(offer.description(), None);
 		assert_eq!(offer.offer_features(), &OfferFeatures::empty());
 		assert_eq!(offer.absolute_expiry(), None);
 		#[cfg(feature = "std")]
@@ -1183,7 +1185,7 @@ mod tests {
 				metadata: None,
 				currency: None,
 				amount: None,
-				description: Some(&String::from("")),
+				description: None,
 				features: None,
 				absolute_expiry: None,
 				paths: None,
@@ -1421,7 +1423,7 @@ mod tests {
 			.description("foo".into())
 			.build()
 			.unwrap();
-		assert_eq!(offer.description(), PrintableString("foo"));
+		assert_eq!(offer.description(), Some(PrintableString("foo")));
 		assert_eq!(offer.as_tlv_stream().description, Some(&String::from("foo")));
 
 		let offer = OfferBuilder::new(pubkey(42))
@@ -1429,8 +1431,15 @@ mod tests {
 			.description("bar".into())
 			.build()
 			.unwrap();
-		assert_eq!(offer.description(), PrintableString("bar"));
+		assert_eq!(offer.description(), Some(PrintableString("bar")));
 		assert_eq!(offer.as_tlv_stream().description, Some(&String::from("bar")));
+
+		let offer = OfferBuilder::new(pubkey(42))
+			.amount_msats(1000)
+			.build()
+			.unwrap();
+		assert_eq!(offer.description(), Some(PrintableString("")));
+		assert_eq!(offer.as_tlv_stream().description, Some(&String::from("")));
 	}
 
 	#[test]
@@ -1655,6 +1664,14 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
+		let offer = OfferBuilder::new(pubkey(42))
+			.description("foo".to_string())
+			.amount_msats(1000)
+			.build().unwrap();
+		if let Err(e) = offer.to_string().parse::<Offer>() {
+			panic!("error parsing offer: {:?}", e);
+		}
+
 		let mut tlv_stream = offer.as_tlv_stream();
 		tlv_stream.description = None;
 
@@ -1875,7 +1892,7 @@ mod bolt12_tests {
 		// Malformed: empty
 		assert_eq!(
 			"lno1".parse::<Offer>(),
-			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingDescription)),
+			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey)),
 		);
 
 		// Malformed: truncated at type
@@ -2000,7 +2017,8 @@ mod bolt12_tests {
 
 		// Missing offer_description
 		assert_eq!(
-			"lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese".parse::<Offer>(),
+			// TODO: Match the spec once it is updated.
+			"lno1pqpq86qkyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg".parse::<Offer>(),
 			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingDescription)),
 		);
 

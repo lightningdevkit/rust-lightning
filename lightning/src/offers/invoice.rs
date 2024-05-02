@@ -717,7 +717,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// From [`Offer::description`] or [`Refund::description`].
 	///
 	/// [`Offer::description`]: crate::offers::offer::Offer::description
-	pub fn description(&$self) -> PrintableString {
+	pub fn description(&$self) -> Option<PrintableString> {
 		$contents.description()
 	}
 
@@ -952,12 +952,12 @@ impl InvoiceContents {
 		}
 	}
 
-	fn description(&self) -> PrintableString {
+	fn description(&self) -> Option<PrintableString> {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				invoice_request.inner.offer.description()
 			},
-			InvoiceContents::ForRefund { refund, .. } => refund.description(),
+			InvoiceContents::ForRefund { refund, .. } => Some(refund.description()),
 		}
 	}
 
@@ -1546,7 +1546,7 @@ mod tests {
 		assert_eq!(unsigned_invoice.offer_chains(), Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)]));
 		assert_eq!(unsigned_invoice.metadata(), None);
 		assert_eq!(unsigned_invoice.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
-		assert_eq!(unsigned_invoice.description(), PrintableString(""));
+		assert_eq!(unsigned_invoice.description(), Some(PrintableString("")));
 		assert_eq!(unsigned_invoice.offer_features(), Some(&OfferFeatures::empty()));
 		assert_eq!(unsigned_invoice.absolute_expiry(), None);
 		assert_eq!(unsigned_invoice.message_paths(), &[]);
@@ -1590,7 +1590,7 @@ mod tests {
 		assert_eq!(invoice.offer_chains(), Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)]));
 		assert_eq!(invoice.metadata(), None);
 		assert_eq!(invoice.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
-		assert_eq!(invoice.description(), PrintableString(""));
+		assert_eq!(invoice.description(), Some(PrintableString("")));
 		assert_eq!(invoice.offer_features(), Some(&OfferFeatures::empty()));
 		assert_eq!(invoice.absolute_expiry(), None);
 		assert_eq!(invoice.message_paths(), &[]);
@@ -1688,7 +1688,7 @@ mod tests {
 		assert_eq!(invoice.offer_chains(), None);
 		assert_eq!(invoice.metadata(), None);
 		assert_eq!(invoice.amount(), None);
-		assert_eq!(invoice.description(), PrintableString(""));
+		assert_eq!(invoice.description(), Some(PrintableString("")));
 		assert_eq!(invoice.offer_features(), None);
 		assert_eq!(invoice.absolute_expiry(), None);
 		assert_eq!(invoice.message_paths(), &[]);
