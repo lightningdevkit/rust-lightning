@@ -5032,10 +5032,16 @@ where
 
 		match peer_state.channel_by_id.get_mut(channel_id) {
 			Some(ChannelPhase::Funded(chan)) => {
-				let _tx_signatures_opt = chan.funding_transaction_signed(channel_id, witnesses)
+				let tx_signatures_opt = chan.funding_transaction_signed(channel_id, witnesses)
 					.map_err(|_err| APIError::APIMisuseError {
 						err: format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)
 					})?;
+				if let Some(tx_signatures) = tx_signatures_opt {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+						node_id: *counterparty_node_id,
+						msg: tx_signatures,
+					});
+				}
 			},
 			Some(_) => return Err(APIError::APIMisuseError {
 				err: format!("Channel with id {} not expecting funding signatures", channel_id)}),

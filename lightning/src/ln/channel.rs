@@ -5680,10 +5680,12 @@ impl<SP: Deref> Channel<SP> where
 
 				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
-			self.context.funding_transaction = funding_tx_opt.clone();
-			#[cfg(splicing)]
-			{
-				self.context.funding_transaction_saved = funding_tx_opt.clone();
+			if funding_tx_opt.is_some() {
+				self.context.funding_transaction = funding_tx_opt.clone();
+				#[cfg(splicing)]
+				{
+					self.context.funding_transaction_saved = funding_tx_opt.clone();
+				}
 			}
 			// Note: cannot mark interactive tx session is complete as of yet, funding_transaction_signed() can come later from the client
 
@@ -5704,7 +5706,7 @@ impl<SP: Deref> Channel<SP> where
 		todo!();
 	}
 
-	// Called when funding tx is signed (local part).
+	/// Called when funding tx is signed (local part). Save the funding transaction if completely signed.
 	#[cfg(any(dual_funding, splicing))]
 	pub fn funding_transaction_signed(&mut self, channel_id: &ChannelId, witnesses: Vec<Witness>) -> Result<Option<msgs::TxSignatures>, ChannelError> {
 		self.verify_interactive_tx_signatures(&witnesses);
@@ -5719,7 +5721,14 @@ impl<SP: Deref> Channel<SP> where
 				} // TODO error
 				debug_assert!(tlvs.is_some());
 			}
-			let (tx_signatures_opt, _funding_tx_opt) = signing_session.provide_holder_witnesses(*channel_id, witnesses, tlvs);
+			let (tx_signatures_opt, funding_tx_opt) = signing_session.provide_holder_witnesses(*channel_id, witnesses, tlvs);
+			if funding_tx_opt.is_some() {
+				self.context.funding_transaction = funding_tx_opt.clone();
+				#[cfg(splicing)]
+				{
+					self.context.funding_transaction_saved = funding_tx_opt.clone();
+				}
+			}
 			Ok(tx_signatures_opt)
 		} else {
 			return Err(ChannelError::Warn(format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)));
