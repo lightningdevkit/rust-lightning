@@ -3164,7 +3164,7 @@ macro_rules! handle_monitor_update_completion {
 			&mut $peer_state.pending_msg_events, $chan, updates.raa,
 			updates.commitment_update, updates.order, updates.accepted_htlcs, updates.pending_update_adds,
 			updates.funding_broadcastable, updates.channel_ready,
-			updates.announcement_sigs);
+			updates.announcement_sigs, updates.tx_signatures);
 		if let Some(upd) = channel_update {
 			$peer_state.pending_msg_events.push(upd);
 		}
@@ -7445,17 +7445,20 @@ where
 		commitment_update: Option<msgs::CommitmentUpdate>, order: RAACommitmentOrder,
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 		funding_broadcastable: Option<Transaction>,
-		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>)
-	-> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
+		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
+		tx_signatures: Option<msgs::TxSignatures>
+	) -> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement",
+		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures",
 			&channel.context.channel_id(),
 			if raa.is_some() { "an" } else { "no" },
 			if commitment_update.is_some() { "a" } else { "no" },
 			pending_forwards.len(), pending_update_adds.len(),
 			if funding_broadcastable.is_some() { "" } else { "not " },
 			if channel_ready.is_some() { "sending" } else { "without" },
-			if announcement_sigs.is_some() { "sending" } else { "without" });
+			if announcement_sigs.is_some() { "sending" } else { "without" },
+			if tx_signatures.is_some() { "sending" } else { "without" },
+		);
 
 		let counterparty_node_id = channel.context.get_counterparty_node_id();
 		let short_channel_id = channel.context.get_short_channel_id().unwrap_or(channel.context.outbound_scid_alias());
@@ -7478,6 +7481,12 @@ where
 		}
 		if let Some(msg) = announcement_sigs {
 			pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+				node_id: counterparty_node_id,
+				msg,
+			});
+		}
+		if let Some(msg) = tx_signatures {
+			pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
 				node_id: counterparty_node_id,
 				msg,
 			});
@@ -8349,7 +8358,8 @@ where
 				let channel_phase = chan_phase_entry.get_mut();
 				match channel_phase {
 					ChannelPhase::Funded(chan) => {
-						let (tx_signatures_opt, funding_tx_opt) = try_chan_phase_entry!(self, peer_state, chan.tx_signatures(msg), chan_phase_entry);
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						let (tx_signatures_opt, funding_tx_opt) = try_chan_phase_entry!(self, peer_state, chan.tx_signatures(msg, &&logger), chan_phase_entry);
 						if let Some(tx_signatures) = tx_signatures_opt {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
 								node_id: *counterparty_node_id,
@@ -9222,7 +9232,7 @@ where
 						let need_lnd_workaround = chan.context.workaround_lnd_bug_4006.take();
 						let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
 							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.order,
-							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs);
+							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs, None);
 						debug_assert!(htlc_forwards.is_none());
 						debug_assert!(decode_update_add_htlcs.is_none());
 						if let Some(upd) = channel_update {
