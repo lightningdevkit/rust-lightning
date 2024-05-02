@@ -1243,27 +1243,32 @@ mod tests {
 		InteractiveTxMessageSend, MAX_INPUTS_OUTPUTS_COUNT, MAX_RECEIVED_TX_ADD_INPUT_COUNT,
 		MAX_RECEIVED_TX_ADD_OUTPUT_COUNT,
 	};
+	use crate::ln::msgs::{CommitmentSigned, TxSignatures};
 	use crate::ln::ChannelId;
 	use crate::sign::EntropySource;
 	use crate::util::atomic_counter::AtomicCounter;
 	use crate::util::ser::TransactionU16LenLimited;
+	use bitcoin::absolute::LockTime;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::hashes::Hash;
 	use bitcoin::key::UntweakedPublicKey;
+	use bitcoin::secp256k1::ecdsa::Signature;
 	use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
 	use bitcoin::{
-		absolute::LockTime as AbsoluteLockTime, OutPoint, Sequence, Transaction, TxIn, TxOut,
+		absolute::LockTime as AbsoluteLockTime, OutPoint, Sequence, Transaction, TxIn, Txid, TxOut, Witness,
 	};
 	use bitcoin::{PubkeyHash, ScriptBuf, WPubkeyHash, WScriptHash};
 	use core::ops::Deref;
 
 	use super::{
-		get_output_weight, P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
+		get_output_weight, ConstructedTransaction, InteractiveTxSigningSession, NegotiationContext, P2TR_INPUT_WEIGHT_LOWER_BOUND, P2WPKH_INPUT_WEIGHT_LOWER_BOUND,
 		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
 	};
 
 	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
+
+	use crate::prelude::*;
 
 	// A simple entropy source that works based on an atomic counter.
 	struct TestEntropySource(AtomicCounter);
@@ -1869,5 +1874,231 @@ mod tests {
 		// Initiators should have even serial id, non-initiators should have odd serial id.
 		assert_eq!(generate_holder_serial_id(&&entropy_source, true) % 2, 0);
 		assert_eq!(generate_holder_serial_id(&&entropy_source, false) % 2, 1)
+	}
+
+	fn create_signing_session(is_initiator: bool, holder_sends_tx_signatures_first: bool) -> InteractiveTxSigningSession {
+		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
+		let context = NegotiationContext {
+			tx_locktime: LockTime::ZERO,
+			holder_node_id: dummy_pk,
+			counterparty_node_id: dummy_pk,
+			holder_is_initiator: is_initiator,
+			received_tx_add_input_count: 0,
+			received_tx_add_output_count: 0,
+			inputs: new_hash_map(),
+			prevtx_outpoints: new_hash_set(),
+			outputs: new_hash_map(),
+			feerate_sat_per_kw: 1024,
+		};
+		InteractiveTxSigningSession {
+			unsigned_tx: ConstructedTransaction::new(context),
+			holder_sends_tx_signatures_first,
+			sent_commitment_signed: None,
+			received_commitment_signed: None,
+			holder_tx_signatures: None,
+			counterparty_tx_signatures: None,
+			shared_signature: None,
+		}
+	}
+
+	/// Test various combination of event orders on `InteractiveTxSigningSession`.
+	#[test]
+	fn signing_session_receive_orders() {
+		let channel_id = ChannelId::from_bytes([1; 32]);
+		let signature = Signature::from_compact(&[4; 64]).unwrap();
+		let tx_hash = Txid::from_slice(&[5; 32]).unwrap();
+		let dummy_commitment_signed = CommitmentSigned {
+			channel_id,
+			signature,
+			htlc_signatures: vec![],
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+		};
+		let dummy_tx_sigs = TxSignatures {
+			channel_id,
+			tx_hash,
+			witnesses: vec![],
+			funding_outpoint_sig: None,
+		};
+
+		// Order: local signature, received commitment, received signatures; CP sends first
+		{
+			let mut signing_session = create_signing_session(true, false);
+
+			let res1 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert_eq!(res1, None); // because no commitment_signed was received yet
+
+			let res2 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert_eq!(res2, None); // because we don't send it first
+
+			let res3 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert!(res3.0.is_some());
+			assert!(res3.1.is_some());
+		}
+
+		// Order: received commitment, local signature, received signatures; CP sends first
+		{
+			let mut signing_session = create_signing_session(true, false);
+
+			let res1 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert_eq!(res1, None); // because we don't send it first
+
+			let res2 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert_eq!(res2, None); // because we don't send it first and tx_sigs was not yet received
+
+			let res3 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert!(res3.0.is_some());
+			assert!(res3.1.is_some());
+		}
+
+		// Order: received commitment, received signatures, local signature; CP sends first
+		{
+			let mut signing_session = create_signing_session(true, false);
+
+			let res1 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert!(res1.is_none()); // because we don't send it first
+
+			let res2 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert_eq!(res2.0, None); // because there is no local signature yet
+			assert_eq!(res2.1, None); // because there is no local signature yet
+
+			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert!(res3.is_some());
+		}
+
+		// Invalid order: local signature, received signatures, received commitment; CP sends first
+		{
+			let mut signing_session = create_signing_session(true, false);
+
+			let res1 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert_eq!(res1, None); // because no commitment_signed was received yet
+
+			let res2 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert!(res2.1.is_some()); // ???
+			assert!(res2.1.is_some());
+
+			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert_eq!(res3, None); // ???
+		}
+
+		// Invalid order: received signatures, local signature, received commitment; CP sends first
+		{
+			let mut signing_session = create_signing_session(true, false);
+
+			let res1 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert_eq!(res1.0, None); // because there is no local signature yet
+			assert_eq!(res1.1, None); // because there is no local signature yet
+
+			let res2 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert_eq!(res2, None); // because we don't send it first and tx_sigs was not yet received
+
+			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert_eq!(res3, None); // ???
+		}
+
+		// Invalid order: received signatures, received commitment, local signature; CP sends first
+		{
+			let mut signing_session = create_signing_session(true, false);
+
+			let res1 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert_eq!(res1.0, None); // because there is no local signature yet
+			assert_eq!(res1.1, None); // because there is no local signature yet
+
+			let res2 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert!(res2.is_none()); // because we don't send it first
+
+			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert!(res3.is_some());
+		}
+
+		// Order: local signature, received commitment, received signatures; holder sends first
+		{
+			let mut signing_session = create_signing_session(true, true);
+
+			let res1 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert_eq!(res1, None); // because no commitment_signed was received yet
+
+			let res2 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert!(res2.is_some());
+
+			let res3 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert_eq!(res3.0, None); // because we send it first
+			assert!(res3.1.is_some());
+		}
+
+		// Order: received commitment, local signature, received signatures; holder sends first
+		{
+			let mut signing_session = create_signing_session(true, true);
+
+			let res1 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert_eq!(res1, None); // because no tx_sigs was received yet
+
+			let res2 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert!(res2.is_some());
+
+			let res3 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert_eq!(res3.0, None); // because we send it first
+			assert!(res3.1.is_some());
+		}
+
+		// Invalid order: received commitment, received signatures, local signature; holder sends first
+		{
+			let mut signing_session = create_signing_session(true, true);
+
+			let res1 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert_eq!(res1, None); // because tx_sigs was not yet received
+
+			let res2 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert_eq!(res2.0, None); // because there is no local signature yet
+			assert_eq!(res2.1, None); // because there is no local signature yet
+
+			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert!(res3.is_some()); // ???
+		}
+
+		// Invalid order: local signature, received signatures, received commitment; holder sends first
+		{
+			let mut signing_session = create_signing_session(true, true);
+
+			let res1 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert_eq!(res1, None); // because no commitment_signed was received yet
+
+			let res2 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert_eq!(res2.0, None); // because we send it first
+			assert!(res2.1.is_some());
+
+			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert!(res3.is_some()); // ???
+		}
+
+		// Invalid order: received signatures, local signature, received commitment; holder sends first
+		{
+			let mut signing_session = create_signing_session(true, true);
+
+			let res1 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert_eq!(res1.0, None); // because we send it first
+			assert_eq!(res1.1, None); // because there is no local signature yet
+
+			let res2 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert_eq!(res2, None); // because no commitment_signed was received yet
+
+			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert!(res3.is_some()); // ???
+		}
+
+		// Invalid order: received signatures, received commitment, local signature; holder sends first
+		{
+			let mut signing_session = create_signing_session(true, true);
+
+			let res1 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
+			assert_eq!(res1.0, None); // because there is no local signature yet
+			assert_eq!(res1.1, None); // because there is no local signature yet
+
+			let res2 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
+			assert_eq!(res2, None); // because there is no local signature yet
+
+			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
+			assert!(res3.is_some()); // ???
+		}
 	}
 }
