@@ -286,18 +286,12 @@ impl InteractiveTxSigningSession {
 		self.counterparty_tx_signatures = Some(tx_signatures.clone());
 		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
 
-		let funding_tx = if self.holder_tx_signatures.is_some() {
-			Some(self.finalize_funding_tx())
-		} else {
-			None
-		};
-
-		(self.get_tx_signatures(), funding_tx)
+		(self.get_tx_signatures(), self.get_finalized_funding_tx())
 	}
 
 	pub fn provide_holder_witnesses(
 		&mut self, channel_id: ChannelId, witnesses: Vec<Witness>, shared_signature: Option<Signature>,
-	) -> Option<TxSignatures> {
+	) -> (Option<TxSignatures>, Option<Transaction>) {
 		self.unsigned_tx.add_local_witnesses(witnesses.clone());
 		self.holder_tx_signatures = Some(TxSignatures {
 			channel_id,
@@ -306,7 +300,7 @@ impl InteractiveTxSigningSession {
 			funding_outpoint_sig: shared_signature,
 		});
 
-		self.get_tx_signatures()
+		(self.get_tx_signatures(), self.get_finalized_funding_tx())
 	}
 
 	/// Decide if we need to send `TxSignatures` at this stage or not
@@ -325,6 +319,17 @@ impl InteractiveTxSigningSession {
 		} else {
 			None
 		}
+	}
+
+	/// Decide if we have the funding transaction signed from both parties
+	fn get_finalized_funding_tx(&self) -> Option<Transaction> {
+		if self.holder_tx_signatures.is_none() {
+			return None; // no local signature yet
+		}
+		if self.counterparty_tx_signatures.is_none() {
+			return None; // no counterparty signature received yet
+		}
+		Some(self.finalize_funding_tx())
 	}
 
 	pub fn remote_inputs_count(&self) -> usize {
@@ -350,7 +355,7 @@ impl InteractiveTxSigningSession {
 			.count()
 	}
 
-	fn finalize_funding_tx(&mut self) -> Transaction {
+	fn finalize_funding_tx(&self) -> Transaction {
 		let lock_time = self.unsigned_tx.lock_time;
 		// TODO: remove note
 		// Note: no need to sort any more
@@ -1930,7 +1935,8 @@ mod tests {
 			let mut signing_session = create_signing_session(true, false);
 
 			let res1 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert_eq!(res1, None); // because no commitment_signed was received yet
+			assert_eq!(res1.0, None); // because no commitment_signed was received yet
+			assert_eq!(res1.1, None); // because no tx_sigs was received yet
 
 			let res2 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
 			assert_eq!(res2, None); // because we don't send it first
@@ -1948,7 +1954,8 @@ mod tests {
 			assert_eq!(res1, None); // because we don't send it first
 
 			let res2 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert_eq!(res2, None); // because we don't send it first and tx_sigs was not yet received
+			assert_eq!(res2.0, None); // because we don't send it first and tx_sigs was not yet received
+			assert_eq!(res2.1, None); // because no tx_sigs was received yet
 
 			let res3 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
 			assert!(res3.0.is_some());
@@ -1967,7 +1974,8 @@ mod tests {
 			assert_eq!(res2.1, None); // because there is no local signature yet
 
 			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert!(res3.is_some());
+			assert!(res3.0.is_some());
+			assert!(res3.1.is_some());
 		}
 
 		// Invalid order: local signature, received signatures, received commitment; CP sends first
@@ -1975,7 +1983,8 @@ mod tests {
 			let mut signing_session = create_signing_session(true, false);
 
 			let res1 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert_eq!(res1, None); // because no commitment_signed was received yet
+			assert_eq!(res1.0, None); // because no commitment_signed was received yet
+			assert_eq!(res1.1, None); // because no tx_sigs was received yet
 
 			let res2 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
 			assert_eq!(res2.0, None); // because no commitment_signed was received yet
@@ -1994,7 +2003,8 @@ mod tests {
 			assert_eq!(res1.1, None); // because there is no local signature yet
 
 			let res2 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert_eq!(res2, None); // because we don't send it first and tx_sigs was not yet received
+			assert_eq!(res2.0, None); // because we don't send it first and tx_sigs was not yet received
+			assert!(res2.1.is_some());
 
 			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
 			assert!(res3.is_some());
@@ -2012,7 +2022,8 @@ mod tests {
 			assert!(res2.is_none()); // because we don't send it first
 
 			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert!(res3.is_some());
+			assert!(res3.0.is_some());
+			assert!(res3.1.is_some());
 		}
 
 		// Order: local signature, received commitment, received signatures; holder sends first
@@ -2020,7 +2031,8 @@ mod tests {
 			let mut signing_session = create_signing_session(true, true);
 
 			let res1 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert_eq!(res1, None); // because no commitment_signed was received yet
+			assert_eq!(res1.0, None); // because no commitment_signed was received yet
+			assert_eq!(res1.1, None); // because no tx_sigs was received yet
 
 			let res2 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
 			assert!(res2.is_some());
@@ -2038,7 +2050,8 @@ mod tests {
 			assert_eq!(res1, None); // because no tx_sigs was received yet
 
 			let res2 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert!(res2.is_some());
+			assert!(res2.0.is_some());
+			assert_eq!(res2.1, None); // because no tx_sigs was received yet
 
 			let res3 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
 			assert_eq!(res3.0, None); // because we send it first
@@ -2057,7 +2070,8 @@ mod tests {
 			assert_eq!(res2.1, None); // because there is no local signature yet
 
 			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert_eq!(res3, None); // because we wanted to send it first
+			assert_eq!(res3.0, None); // because we wanted to send it first
+			assert!(res3.1.is_some());
 		}
 
 		// Invalid order: local signature, received signatures, received commitment; holder sends first
@@ -2065,7 +2079,8 @@ mod tests {
 			let mut signing_session = create_signing_session(true, true);
 
 			let res1 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert_eq!(res1, None); // because no commitment_signed was received yet
+			assert_eq!(res1.0, None); // because no commitment_signed was received yet
+			assert_eq!(res1.1, None); // because no tx_sigs was received yet
 
 			let res2 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
 			assert_eq!(res2.0, None); // because we wanted to send it first
@@ -2080,11 +2095,12 @@ mod tests {
 			let mut signing_session = create_signing_session(true, true);
 
 			let res1 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
-			assert_eq!(res1.0, None); // because we send it first
+			assert_eq!(res1.0, None); // because we wanted to send it first
 			assert_eq!(res1.1, None); // because there is no local signature yet
 
 			let res2 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert_eq!(res2, None); // because no commitment_signed was received yet
+			assert_eq!(res2.0, None); // because no commitment_signed was received yet
+			assert!(res2.1.is_some());
 
 			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
 			assert_eq!(res3, None); // because we wanted to send it first
@@ -2102,7 +2118,8 @@ mod tests {
 			assert_eq!(res2, None); // because there is no local signature yet
 
 			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert_eq!(res3, None); // because we wanted to send it first
+			assert_eq!(res3.0, None); // because we wanted to send it first
+			assert!(res3.1.is_some());
 		}
 	}
 }

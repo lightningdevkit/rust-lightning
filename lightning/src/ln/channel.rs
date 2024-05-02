@@ -5719,7 +5719,7 @@ impl<SP: Deref> Channel<SP> where
 				} // TODO error
 				debug_assert!(tlvs.is_some());
 			}
-			let tx_signatures_opt = signing_session.provide_holder_witnesses(*channel_id, witnesses, tlvs);
+			let (tx_signatures_opt, _funding_tx_opt) = signing_session.provide_holder_witnesses(*channel_id, witnesses, tlvs);
 			Ok(tx_signatures_opt)
 		} else {
 			return Err(ChannelError::Warn(format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)));
@@ -9159,7 +9159,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 
 		let mut funding_ready_for_sig_event = None;
 		if self.dual_funding_context.our_funding_satoshis == 0 {
-			let _res = signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new(), shared_signature);
+			let (_tx_signatures_opt, _funding_tx_opt) = signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new(), shared_signature);
 		} else {
 			funding_ready_for_sig_event = Some(Event::FundingTransactionReadyForSigning {
 				channel_id: self.context.channel_id,
