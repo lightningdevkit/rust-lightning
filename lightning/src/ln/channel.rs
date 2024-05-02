@@ -5704,6 +5704,29 @@ impl<SP: Deref> Channel<SP> where
 		todo!();
 	}
 
+	// Called when funding tx is signed (local part).
+	#[cfg(any(dual_funding, splicing))]
+	pub fn funding_transaction_signed(&mut self, channel_id: &ChannelId, witnesses: Vec<Witness>) -> Result<Option<msgs::TxSignatures>, ChannelError> {
+		self.verify_interactive_tx_signatures(&witnesses);
+		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
+			// Splicing
+			// Shared signature (used in splicing): holder signature on the prev funding tx input should have been saved.
+			// include it in tlvs field
+			let mut tlvs = None;
+			if self.context.is_splice_pending() {
+				if let Some(s) = signing_session.shared_signature {
+					tlvs = Some(s);
+				} // TODO error
+				debug_assert!(tlvs.is_some());
+			}
+			let tx_signatures_opt = signing_session.provide_holder_witnesses(*channel_id, witnesses, tlvs);
+			Ok(tx_signatures_opt)
+		} else {
+			return Err(ChannelError::Warn(format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)));
+		}
+	}
+
+
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
 	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
 	/// commitment update.

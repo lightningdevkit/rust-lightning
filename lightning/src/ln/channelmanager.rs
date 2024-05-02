@@ -5032,24 +5032,10 @@ where
 
 		match peer_state.channel_by_id.get_mut(channel_id) {
 			Some(ChannelPhase::Funded(chan)) => {
-				chan.verify_interactive_tx_signatures(&witnesses);
-				if let Some(ref mut signing_session) = chan.interactive_tx_signing_session {
-					// Splicing
-					// Shared signature (used in splicing): holder signature on the prev funding tx input should have been saved.
-					// include it in tlvs field
-					let mut tlvs = None;
-					if chan.context.is_splice_pending() {
-						if let Some(s) = signing_session.shared_signature {
-							tlvs = Some(s);
-						} // TODO error
-						assert!(tlvs.is_some());
-					}
-					signing_session.provide_holder_witnesses(*channel_id, witnesses, tlvs);
-				} else {
-					return Err(APIError::APIMisuseError {
+				let _tx_signatures_opt = chan.funding_transaction_signed(channel_id, witnesses)
+					.map_err(|_err| APIError::APIMisuseError {
 						err: format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)
-					});
-				}
+					})?;
 			},
 			Some(_) => return Err(APIError::APIMisuseError {
 				err: format!("Channel with id {} not expecting funding signatures", channel_id)}),
