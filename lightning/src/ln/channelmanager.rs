@@ -9943,11 +9943,14 @@ where
 							}
 							&mut chan.context
 						},
-						// We retain UnfundedOutboundV1 channel for some time in case
-						// peer unexpectedly disconnects, and intends to reconnect again.
-						ChannelPhase::UnfundedOutboundV1(_) => {
-							return true;
-						},
+						// If we get disconnected and haven't yet committed to a funding
+						// transaction, we can replay the `open_channel` on reconnection, so don't
+						// bother dropping the channel here. However, if we already committed to
+						// the funding transaction we don't yet support replaying the funding
+						// handshake (and bailing if the peer rejects it), so we force-close in
+						// that case.
+						ChannelPhase::UnfundedOutboundV1(chan) if chan.is_resumable() => return true,
+						ChannelPhase::UnfundedOutboundV1(chan) => &mut chan.context,
 						// Unfunded inbound channels will always be removed.
 						ChannelPhase::UnfundedInboundV1(chan) => {
 							&mut chan.context
