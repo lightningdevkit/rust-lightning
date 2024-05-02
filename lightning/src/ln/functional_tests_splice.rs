@@ -1071,15 +1071,17 @@ fn test_v2_splice_in() {
 	}
 
 	// Handle the initial commitment_signed exchange. Order is not important here.
-	let _res = acceptor_node.node.handle_commitment_signed(&initiator_node.node.get_our_node_id(), &msg_commitment_signed_from_0);
 	let _res = initiator_node.node.handle_commitment_signed(&acceptor_node.node.get_our_node_id(), &msg_commitment_signed_from_1);
 	check_added_monitors(&initiator_node, 1);
-	check_added_monitors(&acceptor_node, 1);
 
 	// The initiator is the only party that contributed any inputs so they should definitely be the one to send tx_signatures
 	// only after receiving tx_signatures from the non-initiator in this case.
 	let msg_events = initiator_node.node.get_and_clear_pending_msg_events();
 	assert!(msg_events.is_empty());
+
+	let _res = acceptor_node.node.handle_commitment_signed(&initiator_node.node.get_our_node_id(), &msg_commitment_signed_from_0);
+	check_added_monitors(&acceptor_node, 1);
+
 	let msg_events = acceptor_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	let tx_signatures_1 = match msg_events[0] {
@@ -1112,6 +1114,7 @@ fn test_v2_splice_in() {
 		},
 		_ => panic!("Unexpected event {:?}", msg_events[0]),
 	};
+
 	let _res = acceptor_node.node.handle_tx_signatures(&initiator_node.node.get_our_node_id(), &tx_signatures_0);
 
 	let events_1 = acceptor_node.node.get_and_clear_pending_events();

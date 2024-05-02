@@ -24,13 +24,12 @@ Objective, Restrictions:
 - between two LDK instances
 - No quiscence is used/checked
 - Happy path only, no complex combinations, no error scenarios
-- Prototype with minimal changes
 - The message splice_locked is not yet used
 - It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
 - Only a single pending splicing is supported
 - Splice from only V2 channel is supported, channel ID is not changed
 
-Up-to-date with main branch as of v0.0.122 (Apr 9, 27e5519; originally branched off v0.0.115).
+Up-to-date with main branch as of v0.0.123-beta (Apr 24, 9a438eea; originally branched off v0.0.115).
 
 See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa2
 
@@ -38,98 +37,159 @@ To test: `RUSTFLAGS="--cfg=splicing" cargo test -p lightning splic`
 
 Detailed steps
 --------------
-(as of Jan 24, d0b0be1, splicing-hapa6)
+(as of May 2, ac452522a, splicing-hapa8-123beta)
 
-[S1I] splice_channel() - ChannelManager API
-  Do checks, save pending splice parameters
-  get_splice() - Channel
-message out: splice
-[A] handle_splice() - ChannelManager
-[S3A] internal_splice() - ChannelManager
-  Do checks. Check if channel ID would change. Cycle back the channel to UnfundedInboundV2
-  splice_start() -- ChannelContext
-  Start the splice, update capacity, state, reset funding transaction
-  get_splice_ack() -- Channel
-  begin_interactive_funding_tx_construction() - Channel
-  begin_interactive_funding_tx_construction() - ChannelContext
-  Splicing specific: Add the previous funding as an input to the new one.
-  get_input_of_current_funding()
-  InteractiveTxConstructor::new()
-  Start interactive TX negotiation
-message in: splice_ack
-[I] handle_splice_ack() - ChannelManager
-[S5I] internal_splice_ack() - ChannelManager
-  Do checks, check against initial splice()
-  Cycle back the channel to UnfundedOutboundV2
-  splice_start() -- ChannelContext
-  Start the splice, update capacity, state, reset funding transaction
+Client  LDK                                       Counterparty node (acceptor)
+------  ---                                       ----------------------------
+-->
+        splice_channel() - ChannelManager API
+        Do checks, save pending splice parameters
+        get_splice() - Channel
+        message out: splice
+        ---
+                                                  message in: splice
+                                                  handle_splice() - ChannelManager
+                                                  internal_splice() - ChannelManager
+                                                  Do checks. Check if channel ID would change. Cycle back the channel to UnfundedInboundV2
+                                                  splice_start() -- ChannelContext
+                                                  Start the splice, update capacity, state, reset funding transaction
+                                                  get_splice_ack() -- Channel
+                                                  begin_interactive_funding_tx_construction() - Channel
+                                                  begin_interactive_funding_tx_construction() - ChannelContext
+                                                  Splicing specific: Add the previous funding as an input to the new one.
+                                                  get_input_of_current_funding()
+                                                  InteractiveTxConstructor::new()
+                                                  Start interactive TX negotiation
+                                                  message out: splice_ack
+                                                  ---
+        message in: splice_ack
+        handle_splice_ack() - ChannelManager
+        internal_splice_ack() - ChannelManager
+        Do checks, check against initial splice()
+        Cycle back the channel to UnfundedOutboundV2
+        splice_start() -- ChannelContext
+        Start the splice, update capacity, state, reset funding transaction
+        event: SpliceAckedInputsContributionReady
+        contains the pre & post capacities, channel ID
+        ---
 event: SpliceAckedInputsContributionReady
-  contains the pre & post capacities, channel ID
-action by client: provide extra input(s) for new funding
-[I] contribute_funding_inputs() - ChannelManager API
-  begin_interactive_funding_tx_construction() - Channel
-  begin_interactive_funding_tx_construction() - ChannelContext
-  Splicing specific: Add the previous funding as an input to the new one.
-  get_input_of_current_funding()  InteractiveTxConstructor::new()
-Interactive tx construction flow follows (e.g. 2 inputs, 2 outputs)
-message out: tx_add_input
-message in: tx_complete
-message out: tx_add_input, second
-message in: tx_complete
-message out: tx_add_output - for change
-message in: tx_complete
-message out: tx_add_output - for new funding
-message in: tx_complete
-[I] handle_tx_complete() - ChannelManager
-  internal_tx_complete() -- ChannelManager
-  funding_tx_constructed() - Channel
-  get_initial_commitment_signed() - Channel
-  Splicing-specific: Add signature on the previous funding tx input
-  Mark finished interactive tx construction
-  Update channel state (FundingNegotiated)
-message out: tx_complete
-message out: commitment_signed
+action by client:
+provide extra input(s) for new funding
+---
+        contribute_funding_inputs() - ChannelManager API
+        begin_interactive_funding_tx_construction() - Channel
+        begin_interactive_funding_tx_construction() - ChannelContext
+        Splicing specific: Add the previous funding as an input to the new one.
+        get_input_of_current_funding()  InteractiveTxConstructor::new()
+        Interactive tx construction flow follows (e.g. 2 inputs, 2 outputs)
+        message out: tx_add_input
+        ---
+                                                  message out: tx_add_input
+                                                  handle_tx_add_input() -- ChannelManager
+                                                  Interactive tx construction flow follows, details omitted on acceptor side
+        message in: tx_complete
+        message out: tx_add_input, second
+        message in: tx_complete
+        message out: tx_add_output - for change
+        message in: tx_complete
+        message out: tx_add_output - for new funding
+        message in: tx_complete
+        handle_tx_complete() - ChannelManager
+        internal_tx_complete() -- ChannelManager
+        tx_complete() -- Channel
+        message out: tx_complete
+        funding_tx_constructed() -- Channel
+        get_initial_commitment_signed() - Channel
+        Splicing-specific: Add signature on the previous funding tx input
+        Mark finished interactive tx construction
+        Update channel state (FundingNegotiated)
+        event: FundingTransactionReadyForSigning
+        contains the new funding transaction with the signature on the previous tx input
+        message out: commitment_signed (UpdateHTLCs)
+        channel state: Funded
+        ---
 event: FundingTransactionReadyForSigning
-  contains the new funding transaction with the signature on the previous tx input
 action by client: Create and provide signature on the extra inputs
-[I] funding_transaction_signed() - ChannelManager
-  verify_interactive_tx_signatures() - Channel
-  splicing specific: Use the previously saved shared signature (tlvs field)
-  provide_holder_witnesses() - InteractiveTxSigningSession
-[A] handle_tx_complete() - ChannelManager
-  internal_tx_complete() -- ChannelManager
-message in: commitment_signed
-[A] handle_commitment_signed() - ChannelManager
-  internal_commitment_signed() - ChannelManager
-  commitment_signed_initial_v2() - Channel
-  watch_channel() - ChainMonitor
-[I] handle_commitment_signed() - ChannelManager
-  internal_commitment_signed() - ChannelManager
-  commitment_signed_initial_v2() - Channel
-  watch_channel() - ChainMonitor
-message in: tx_signatures
-[I] handle_tx_signatures - ChannelManager
-  internal_tx_signatures -- ChannelManager
-  tx_signatures() -- Channel
-  Check present sigantures, tlvs field
-  Update signature on previous tx input (with shared signature)
-  Update channel state (AwaitingChannelReady)
-message out: tx_signatures
-[A] handle_tx_signatures - ChannelManager
-  internal_tx_signatures -- ChannelManager
-  tx_signatures() -- Channel
+---
+        funding_transaction_signed() - ChannelManager
+        funding_transaction_signed() - Channel
+        verify_interactive_tx_signatures() - Channel
+        splicing specific: Use the previously saved shared signature (tlvs field)
+        provide_holder_witnesses() - InteractiveTxSigningSession
+        (assume CP sigs not yet received; funding tx not yet fully signed)
+        (assume CP sigs not yet received; not yet signing tx_signatures)
+        ---
+                                                  message in: tx_complete
+                                                  handle_tx_complete() - ChannelManager
+                                                  internal_tx_complete() -- ChannelManager
+                                                  tx_complete() -- Channel
+                                                  funding_tx_constructed() -- Channel
+                                                  get_initial_commitment_signed() - Channel
+                                                  Splicing-specific: Add signature on the previous funding tx input
+                                                  Mark finished interactive tx construction
+                                                  Update channel state (FundingNegotiated)
+                                                  message out: commitment_signed (UpdateHTLCs)
+                                                  channel state: Funded
+                                                  ---
+        message in: commitment_signed (UpdateHTLCs)
+        handle_commitment_signed() - ChannelManager
+        internal_commitment_signed() -- ChannelManager
+        commitment_signed_initial_v2() -- Channel
+        Update channel state to AwaitingChannelReadyFlags
+        watch_channel() - ChainMonitor
+        received_commitment_signed() -- InteractiveTxSigningSession
+        ---
+                                                  message in: commitment_signed (UpdateHTLCs) (from earlier)
+                                                  handle_commitment_signed() - ChannelManager
+                                                  internal_commitment_signed() -- ChannelManager
+                                                  commitment_signed_initial_v2() -- Channel
+                                                  Update channel state to AwaitingChannelReady
+                                                  watch_channel() - ChainMonitor
+                                                  received_commitment_signed() -- InteractiveTxSigningSession
+                                                  message out: tx_signatures
+                                                  ---
+        message in: tx_signatures
+        handle_tx_signatures() - ChannelManager
+        internal_tx_signatures() -- ChannelManager
+        tx_signatures() -- Channel
+        Check present signatures, tlvs field, txid match
+        received_tx_signatures() -- InteractiveTxSigningSession
+        Update signature on previous tx input (with shared signature)
+        Update channel state to AwaitingChannelReady
+        Save funding transaction
+        message out: tx_signatures
+        funding transaction is ready, broadcast it
+        ---
+                                                  message in: tx_signatures
+                                                  handle_tx_signatures() - ChannelManager
+                                                  internal_tx_signatures() -- ChannelManager
+                                                  tx_signatures() -- Channel
+                                                  Check present signatures, tlvs field, txid match
+                                                  received_tx_signatures() -- InteractiveTxSigningSession
+                                                  Update signature on previous tx input (with shared signature)
+                                                  Update channel state to AwaitingChannelReady
+                                                  Save funding transaction
+                                                  funding transaction is ready, broadcast it
+                                                  ---
 New funding tx gets broadcasted (both sides)
 Waiting for confirmation
-[I] transactions_confirmed() - Channel
-  splice_locked() -- ChannelContext
-  Mark splicing process as completed
-message out: channel_ready
-message in: channel_ready
-[A] handle_channel_ready() - ChannelManager
-message in: channel_update
-[I] handle_channel_ready() - ChannelManager
-message out: channel_update
-
+        transactions_confirmed() - Channel
+        splice_locked() -- ChannelContext
+        Mark splicing process as completed
+        message out: channel_ready
+        ---
+                                                  transactions_confirmed() - Channel
+                                                  splice_locked() -- ChannelContext
+                                                  Mark splicing process as completed
+                                                  message out: channel_ready
+                                                  ---
+        message in: channel_ready
+        handle_channel_ready() - ChannelManager
+        message out: channel_update
+                                                  message in: channel_ready
+                                                  handle_channel_ready() - ChannelManager
+                                                  message out: channel_update
+/end of sequence/
 
 Status
 ------
