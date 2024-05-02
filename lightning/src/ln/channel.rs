@@ -1494,6 +1494,10 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
+	// If we've sent `commtiment_signed` for an interactive transaction construction,
+	// but have not received `tx_signatures` we MUST set `next_funding_txid` to the
+	// txid of that interactive transaction, else we MUST NOT set it.
+	next_funding_txid: Option<Txid>,
 }
 
 /// A channel struct implementing this trait can receive an initial counterparty commitment
@@ -2159,6 +2163,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			blocked_monitor_updates: Vec::new(),
 
 			is_manual_broadcast: false,
+
+			next_funding_txid: None,
 		};
 
 		Ok(channel_context)
@@ -2390,6 +2396,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			blocked_monitor_updates: Vec::new(),
 			local_initiated_shutdown: None,
 			is_manual_broadcast: false,
+			next_funding_txid: None,
 		})
 	}
 
@@ -4599,6 +4606,14 @@ impl<SP: Deref> Channel<SP> where
 	pub fn set_batch_ready(&mut self) {
 		self.context.is_batch_funding = None;
 		self.context.channel_state.clear_waiting_for_batch();
+	}
+
+	pub fn set_next_funding_txid(&mut self, txid: &Txid) {
+		self.context.next_funding_txid = Some(*txid);
+	}
+
+	pub fn clear_next_funding_txid(&mut self) {
+		self.context.next_funding_txid = None;
 	}
 
 	/// Unsets the existing funding information.
@@ -7680,10 +7695,7 @@ impl<SP: Deref> Channel<SP> where
 			next_remote_commitment_number: INITIAL_COMMITMENT_NUMBER - self.context.cur_counterparty_commitment_transaction_number - 1,
 			your_last_per_commitment_secret: remote_last_secret,
 			my_current_per_commitment_point: dummy_pubkey,
-			// TODO(dual_funding): If we've sent `commtiment_signed` for an interactive transaction
-			// construction but have not received `tx_signatures` we MUST set `next_funding_txid` to the
-			// txid of that interactive transaction, else we MUST NOT set it.
-			next_funding_txid: None,
+			next_funding_txid: self.context.next_funding_txid,
 		}
 	}
 
@@ -9439,7 +9451,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(47, next_holder_commitment_point, option),
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
-			(53, funding_tx_broadcast_safe_event_emitted, option) // Added in 0.0.124
+			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
+			(55, self.context.next_funding_txid, option) // Added in 0.0.125
 		});
 
 		Ok(())
@@ -9729,6 +9742,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut channel_pending_event_emitted = None;
 		let mut channel_ready_event_emitted = None;
 		let mut funding_tx_broadcast_safe_event_emitted = None;
+		let mut next_funding_txid = None;
 
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id: Option<[u8; 32]> = None;
@@ -9789,6 +9803,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
+			(55, next_funding_txid, option) // Added in 0.0.125
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -10048,6 +10063,10 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 				is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
+				// If we've sent `commtiment_signed` for an interactive transaction construction,
+				// but have not received `tx_signatures` we MUST set `next_funding_txid` to the
+				// txid of that interactive transaction, else we MUST NOT set it.
+				next_funding_txid,
 			},
 			interactive_tx_signing_session: None,
 		})
