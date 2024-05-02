@@ -273,11 +273,8 @@ impl InteractiveTxSigningSession {
 		&mut self, commitment_signed: CommitmentSigned,
 	) -> Option<TxSignatures> {
 		self.received_commitment_signed = Some(commitment_signed);
-		if self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		}
+
+		self.get_tx_signatures()
 	}
 
 	pub fn received_tx_signatures(
@@ -289,19 +286,13 @@ impl InteractiveTxSigningSession {
 		self.counterparty_tx_signatures = Some(tx_signatures.clone());
 		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
 
-		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		};
-
 		let funding_tx = if self.holder_tx_signatures.is_some() {
 			Some(self.finalize_funding_tx())
 		} else {
 			None
 		};
 
-		(holder_tx_signatures, funding_tx)
+		(self.get_tx_signatures(), funding_tx)
 	}
 
 	pub fn provide_holder_witnesses(
@@ -314,8 +305,21 @@ impl InteractiveTxSigningSession {
 			witnesses: witnesses.into_iter().map(|witness| witness).collect(),
 			funding_outpoint_sig: shared_signature,
 		});
-		if self.received_commitment_signed.is_some()
-			&& (self.holder_sends_tx_signatures_first || self.counterparty_tx_signatures.is_some())
+
+		self.get_tx_signatures()
+	}
+
+	/// Decide if we need to send `TxSignatures` at this stage or not
+	fn get_tx_signatures(&self) -> Option<TxSignatures> {
+		if self.holder_tx_signatures.is_none() {
+			return None; // no local signature yet
+		}
+		if self.received_commitment_signed.is_none() {
+			return None; // no counterparty commitment received yet
+		}
+		if
+			(!self.holder_sends_tx_signatures_first && self.counterparty_tx_signatures.is_some()) ||
+			(self.holder_sends_tx_signatures_first && self.counterparty_tx_signatures.is_none())
 		{
 			self.holder_tx_signatures.clone()
 		} else {
@@ -1974,11 +1978,11 @@ mod tests {
 			assert_eq!(res1, None); // because no commitment_signed was received yet
 
 			let res2 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
-			assert!(res2.1.is_some()); // ???
+			assert_eq!(res2.0, None); // because no commitment_signed was received yet
 			assert!(res2.1.is_some());
 
 			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
-			assert_eq!(res3, None); // ???
+			assert!(res3.is_some());
 		}
 
 		// Invalid order: received signatures, local signature, received commitment; CP sends first
@@ -1993,7 +1997,7 @@ mod tests {
 			assert_eq!(res2, None); // because we don't send it first and tx_sigs was not yet received
 
 			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
-			assert_eq!(res3, None); // ???
+			assert!(res3.is_some());
 		}
 
 		// Invalid order: received signatures, received commitment, local signature; CP sends first
@@ -2053,7 +2057,7 @@ mod tests {
 			assert_eq!(res2.1, None); // because there is no local signature yet
 
 			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert!(res3.is_some()); // ???
+			assert_eq!(res3, None); // because we wanted to send it first
 		}
 
 		// Invalid order: local signature, received signatures, received commitment; holder sends first
@@ -2064,11 +2068,11 @@ mod tests {
 			assert_eq!(res1, None); // because no commitment_signed was received yet
 
 			let res2 = signing_session.received_tx_signatures(dummy_tx_sigs.clone());
-			assert_eq!(res2.0, None); // because we send it first
+			assert_eq!(res2.0, None); // because we wanted to send it first
 			assert!(res2.1.is_some());
 
 			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
-			assert!(res3.is_some()); // ???
+			assert_eq!(res3, None); // because we wanted to send it first
 		}
 
 		// Invalid order: received signatures, local signature, received commitment; holder sends first
@@ -2083,7 +2087,7 @@ mod tests {
 			assert_eq!(res2, None); // because no commitment_signed was received yet
 
 			let res3 = signing_session.received_commitment_signed(dummy_commitment_signed.clone());
-			assert!(res3.is_some()); // ???
+			assert_eq!(res3, None); // because we wanted to send it first
 		}
 
 		// Invalid order: received signatures, received commitment, local signature; holder sends first
@@ -2098,7 +2102,7 @@ mod tests {
 			assert_eq!(res2, None); // because there is no local signature yet
 
 			let res3 = signing_session.provide_holder_witnesses(channel_id, vec![Witness::new()], None);
-			assert!(res3.is_some()); // ???
+			assert_eq!(res3, None); // because we wanted to send it first
 		}
 	}
 }
