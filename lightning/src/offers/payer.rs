@@ -12,6 +12,7 @@
 use crate::offers::signer::Metadata;
 use crate::util::ser::WithoutLength;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 /// An unpredictable sequence of bytes typically containing information needed to derive

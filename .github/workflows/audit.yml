@@ -1,0 +1,23 @@
+name: Security Audit
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      checks: write
+    steps:
+      - uses: actions/checkout@v3
+      - uses: rustsec/audit-check@v1.4.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ignore: "RUSTSEC-2021-0145"
+              # RUSTSEC-2021-0145 pertains `atty`, which is a depencency of
+              # `criterion`. While the latter removed the depencency in its
+              # newest version, it would also require a higher `rustc`. We
+              # therefore avoid bumping it to allow benchmarking with our
+              # `rustc` 1.63 MSRV.

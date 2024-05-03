@@ -17,9 +17,12 @@ use bitcoin::network::constants::Network;
 use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
+use crate::ln::ChannelId;
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
+use crate::impl_writeable_tlv_based;
 
+#[allow(unused_imports)]
 use crate::prelude::*;
 
 pub mod chaininterface;
@@ -30,10 +33,12 @@ pub(crate) mod onchaintx;
 pub(crate) mod package;
 
 /// The best known block as identified by its hash and height.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct BestBlock {
-	block_hash: BlockHash,
-	height: u32,
+	/// The block's hash
+	pub block_hash: BlockHash,
+	/// The height at which the block was confirmed.
+	pub height: u32,
 }
 
 impl BestBlock {
@@ -50,13 +55,12 @@ impl BestBlock {
 	pub fn new(block_hash: BlockHash, height: u32) -> Self {
 		BestBlock { block_hash, height }
 	}
-
-	/// Returns the best block hash.
-	pub fn block_hash(&self) -> BlockHash { self.block_hash }
-
-	/// Returns the best block height.
-	pub fn height(&self) -> u32 { self.height }
 }
+
+impl_writeable_tlv_based!(BestBlock, {
+	(0, block_hash, required),
+	(2, height, required),
+});
 
 
 /// The `Listen` trait is used to notify when blocks have been connected or disconnected from the
@@ -297,7 +301,7 @@ pub trait Watch<ChannelSigner: WriteableEcdsaChannelSigner> {
 	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)>;
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)>;
 }
 
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to

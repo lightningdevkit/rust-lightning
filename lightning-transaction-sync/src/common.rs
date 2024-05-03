@@ -1,4 +1,5 @@
 use lightning::chain::{Confirm, WatchedOutput};
+use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 use bitcoin::{Txid, BlockHash, Transaction, OutPoint};
 use bitcoin::block::Header;
 
@@ -13,6 +14,9 @@ pub(crate) struct SyncState {
 	// Outputs that were previously processed, but must not be forgotten yet as
 	// as we still need to monitor any spends on-chain.
 	pub watched_outputs: HashMap<OutPoint, WatchedOutput>,
+	// Outputs for which we previously saw a spend on-chain but kept around until the spends reach
+	// sufficient depth.
+	pub outputs_spends_pending_threshold_conf: Vec<(Txid, u32, OutPoint, WatchedOutput)>,
 	// The tip hash observed during our last sync.
 	pub last_sync_hash: Option<BlockHash>,
 	// Indicates whether we need to resync, e.g., after encountering an error.
@@ -24,6 +28,7 @@ impl SyncState {
 		Self {
 			watched_transactions: HashSet::new(),
 			watched_outputs: HashMap::new(),
+			outputs_spends_pending_threshold_conf: Vec::new(),
 			last_sync_hash: None,
 			pending_sync: false,
 		}
@@ -38,6 +43,17 @@ impl SyncState {
 			}
 
 			self.watched_transactions.insert(txid);
+
+			// If a previously-confirmed output spend is unconfirmed, re-add the watched output to
+			// the tracking map.
+			self.outputs_spends_pending_threshold_conf.retain(|(conf_txid, _, prev_outpoint, output)| {
+				if txid == *conf_txid {
+					self.watched_outputs.insert(*prev_outpoint, output.clone());
+					false
+				} else {
+					true
+				}
+			})
 		}
 	}
 
@@ -57,9 +73,17 @@ impl SyncState {
 			self.watched_transactions.remove(&ctx.tx.txid());
 
 			for input in &ctx.tx.input {
-				self.watched_outputs.remove(&input.previous_output);
+				if let Some(output) = self.watched_outputs.remove(&input.previous_output) {
+					self.outputs_spends_pending_threshold_conf.push((ctx.tx.txid(), ctx.block_height, input.previous_output, output));
+				}
 			}
 		}
+	}
+
+	pub fn prune_output_spends(&mut self, cur_height: u32) {
+		self.outputs_spends_pending_threshold_conf.retain(|(_, conf_height, _, _)| {
+			cur_height < conf_height + ANTI_REORG_DELAY - 1
+		});
 	}
 }
 
@@ -104,6 +128,7 @@ impl FilterQueue {
 #[derive(Debug)]
 pub(crate) struct ConfirmedTx {
 	pub tx: Transaction,
+	pub txid: Txid,
 	pub block_header: Header,
 	pub block_height: u32,
 	pub pos: usize,

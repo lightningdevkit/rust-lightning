@@ -354,25 +354,25 @@ macro_rules! _check_missing_tlv {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! _decode_tlv {
-	($reader: expr, $field: ident, (default_value, $default: expr)) => {{
-		$crate::_decode_tlv!($reader, $field, required)
+	($outer_reader: expr, $reader: expr, $field: ident, (default_value, $default: expr)) => {{
+		$crate::_decode_tlv!($outer_reader, $reader, $field, required)
 	}};
-	($reader: expr, $field: ident, (static_value, $value: expr)) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, (static_value, $value: expr)) => {{
 	}};
-	($reader: expr, $field: ident, required) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, required) => {{
 		$field = $crate::util::ser::Readable::read(&mut $reader)?;
 	}};
-	($reader: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, (required: $trait: ident $(, $read_arg: expr)?)) => {{
 		$field = $trait::read(&mut $reader $(, $read_arg)*)?;
 	}};
-	($reader: expr, $field: ident, required_vec) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, required_vec) => {{
 		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
 		$field = f.0;
 	}};
-	($reader: expr, $field: ident, option) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, option) => {{
 		$field = Some($crate::util::ser::Readable::read(&mut $reader)?);
 	}};
-	($reader: expr, $field: ident, optional_vec) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, optional_vec) => {{
 		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
 		$field = Some(f.0);
 	}};
@@ -380,32 +380,52 @@ macro_rules! _decode_tlv {
 	// without backwards compat. We'll error if the field is missing, and return `Ok(None)` if the
 	// field is present but we can no longer understand it.
 	// Note that this variant can only be used within a `MaybeReadable` read.
-	($reader: expr, $field: ident, upgradable_required) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, upgradable_required) => {{
 		$field = match $crate::util::ser::MaybeReadable::read(&mut $reader)? {
 			Some(res) => res,
-			_ => return Ok(None)
+			None => {
+				// If we successfully read a value but we don't know how to parse it, we give up
+				// and immediately return `None`. However, we need to make sure we read the correct
+				// number of bytes for this TLV stream, which is implicitly the end of the stream.
+				// Thus, we consume everything left in the `$outer_reader` here, ensuring that if
+				// we're being read as a part of another TLV stream we don't spuriously fail to
+				// deserialize the outer object due to a TLV length mismatch.
+				$crate::io_extras::copy($outer_reader, &mut $crate::io_extras::sink()).unwrap();
+				return Ok(None)
+			},
 		};
 	}};
 	// `upgradable_option` indicates we're reading an Option-al TLV that may have been upgraded
 	// without backwards compat. $field will be None if the TLV is missing or if the field is present
 	// but we can no longer understand it.
-	($reader: expr, $field: ident, upgradable_option) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, upgradable_option) => {{
 		$field = $crate::util::ser::MaybeReadable::read(&mut $reader)?;
+		if $field.is_none() {
+			#[cfg(not(debug_assertions))] {
+				// In general, MaybeReadable implementations are required to consume all the bytes
+				// of the object even if they don't understand it, but due to a bug in the
+				// serialization format for `impl_writeable_tlv_based_enum_upgradable` we sometimes
+				// don't know how many bytes that is. In such cases, we'd like to spuriously allow
+				// TLV length mismatches, which we do here by calling `eat_remaining` so that the
+				// `s.bytes_remain()` check in `_decode_tlv_stream_range` doesn't fail.
+				$reader.eat_remaining()?;
+			}
+		}
 	}};
-	($reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {{
 		$field = Some($trait::read(&mut $reader $(, $read_arg)*)?);
 	}};
-	($reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident, $encoder:ty))) => {{
-		$crate::_decode_tlv!($reader, $field, (option, encoding: ($fieldty, $encoding)));
+	($outer_reader: expr, $reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident, $encoder:ty))) => {{
+		$crate::_decode_tlv!($outer_reader, $reader, $field, (option, encoding: ($fieldty, $encoding)));
 	}};
-	($reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {{
+	($outer_reader: expr, $reader: expr, $field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {{
 		$field = {
 			let field: $encoding<$fieldty> = ser::Readable::read(&mut $reader)?;
 			Some(field.0)
 		};
 	}};
-	($reader: expr, $field: ident, (option, encoding: $fieldty: ty)) => {{
-		$crate::_decode_tlv!($reader, $field, option);
+	($outer_reader: expr, $reader: expr, $field: ident, (option, encoding: $fieldty: ty)) => {{
+		$crate::_decode_tlv!($outer_reader, $reader, $field, option);
 	}};
 }
 
@@ -539,7 +559,7 @@ macro_rules! _decode_tlv_stream_range {
 			let mut s = ser::FixedLengthReader::new(&mut stream_ref, length.0);
 			match typ.0 {
 				$(_t if $crate::_decode_tlv_stream_match_check!(_t, $type, $fieldty) => {
-					$crate::_decode_tlv!(s, $field, $fieldty);
+					$crate::_decode_tlv!($stream, s, $field, $fieldty);
 					if s.bytes_remain() {
 						s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
 						return Err(DecodeError::InvalidValue);
@@ -1033,7 +1053,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 					$($variant_id => {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
-						let f = || {
+						let mut f = || {
 							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});
@@ -1065,6 +1085,10 @@ macro_rules! impl_writeable_tlv_based_enum {
 /// when [`MaybeReadable`] is practical instead of just [`Readable`] as it provides an upgrade path for
 /// new variants to be added which are simply ignored by existing clients.
 ///
+/// Note that only struct and unit variants (not tuple variants) will support downgrading, thus any
+/// new odd variants MUST be non-tuple (i.e. described using `$variant_id` and `$variant_name` not
+/// `$tuple_variant_id` and `$tuple_variant_name`).
+///
 /// [`MaybeReadable`]: crate::util::ser::MaybeReadable
 /// [`Writeable`]: crate::util::ser::Writeable
 /// [`DecodeError::UnknownRequiredFeature`]: crate::ln::msgs::DecodeError::UnknownRequiredFeature
@@ -1087,7 +1111,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 					$($variant_id => {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
-						let f = || {
+						let mut f = || {
 							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
 								$(($type, $field, $fieldty)),*
 							});
@@ -1102,7 +1126,14 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 					$($($tuple_variant_id => {
 						Ok(Some($st::$tuple_variant_name(Readable::read(reader)?)))
 					}),*)*
-					_ if id % 2 == 1 => Ok(None),
+					_ if id % 2 == 1 => {
+						// Assume that a $variant_id was written, not a $tuple_variant_id, and read
+						// the length prefix and discard the correct number of bytes.
+						let tlv_len: $crate::util::ser::BigSize = $crate::util::ser::Readable::read(reader)?;
+						let mut rd = $crate::util::ser::FixedLengthReader::new(reader, tlv_len.0);
+						rd.eat_remaining().map_err(|_| $crate::ln::msgs::DecodeError::ShortRead)?;
+						Ok(None)
+					},
 					_ => Err($crate::ln::msgs::DecodeError::UnknownRequiredFeature),
 				}
 			}
@@ -1112,10 +1143,12 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 
 #[cfg(test)]
 mod tests {
-	use crate::io::{self, Cursor};
+	#[allow(unused_imports)]
 	use crate::prelude::*;
+
+	use crate::io::{self, Cursor};
 	use crate::ln::msgs::DecodeError;
-	use crate::util::ser::{Writeable, HighZeroBytesDroppedBigSize, VecWriter};
+	use crate::util::ser::{MaybeReadable, Readable, Writeable, HighZeroBytesDroppedBigSize, VecWriter};
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::PublicKey;
 
@@ -1223,6 +1256,131 @@ mod tests {
 			concat!("0100", "03041bad1dea")
 		).unwrap()[..]) {
 		} else { panic!(); }
+	}
+
+	/// A "V1" enum with only one variant
+	enum InnerEnumV1 {
+		StructVariantA {
+			field: u32,
+		},
+	}
+
+	impl_writeable_tlv_based_enum_upgradable!(InnerEnumV1,
+		(0, StructVariantA) => {
+			(0, field, required),
+		},
+	);
+
+	struct OuterStructOptionalEnumV1 {
+		inner_enum: Option<InnerEnumV1>,
+		other_field: u32,
+	}
+
+	impl_writeable_tlv_based!(OuterStructOptionalEnumV1, {
+		(0, inner_enum, upgradable_option),
+		(2, other_field, required),
+	});
+
+	/// An upgraded version of [`InnerEnumV1`] that added a second variant
+	enum InnerEnumV2 {
+		StructVariantA {
+			field: u32,
+		},
+		StructVariantB {
+			field2: u64,
+		}
+	}
+
+	impl_writeable_tlv_based_enum_upgradable!(InnerEnumV2,
+		(0, StructVariantA) => {
+			(0, field, required),
+		},
+		(1, StructVariantB) => {
+			(0, field2, required),
+		},
+	);
+
+	struct OuterStructOptionalEnumV2 {
+		inner_enum: Option<InnerEnumV2>,
+		other_field: u32,
+	}
+
+	impl_writeable_tlv_based!(OuterStructOptionalEnumV2, {
+		(0, inner_enum, upgradable_option),
+		(2, other_field, required),
+	});
+
+	#[test]
+	fn upgradable_enum_option() {
+		// Test downgrading from `OuterStructOptionalEnumV2` to `OuterStructOptionalEnumV1` and
+		// ensure we still read the `other_field` just fine.
+		let serialized_bytes = OuterStructOptionalEnumV2 {
+			inner_enum: Some(InnerEnumV2::StructVariantB { field2: 64 }),
+			other_field: 0x1bad1dea,
+		}.encode();
+		let mut s = Cursor::new(serialized_bytes);
+
+		let outer_struct: OuterStructOptionalEnumV1 = Readable::read(&mut s).unwrap();
+		assert!(outer_struct.inner_enum.is_none());
+		assert_eq!(outer_struct.other_field, 0x1bad1dea);
+	}
+
+	/// A struct that is read with an [`InnerEnumV1`] but is written with an [`InnerEnumV2`].
+	struct OuterStructRequiredEnum {
+		#[allow(unused)]
+		inner_enum: InnerEnumV1,
+	}
+
+	impl MaybeReadable for OuterStructRequiredEnum {
+		fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+			let mut inner_enum = crate::util::ser::UpgradableRequired(None);
+			read_tlv_fields!(reader, {
+				(0, inner_enum, upgradable_required),
+			});
+			Ok(Some(Self {
+				inner_enum: inner_enum.0.unwrap(),
+			}))
+		}
+	}
+
+	impl Writeable for OuterStructRequiredEnum {
+		fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+			write_tlv_fields!(writer, {
+				(0, InnerEnumV2::StructVariantB { field2: 0xdeadbeef }, required),
+			});
+			Ok(())
+		}
+	}
+
+	struct OuterOuterStruct {
+		outer_struct: Option<OuterStructRequiredEnum>,
+		other_field: u32,
+	}
+
+	impl_writeable_tlv_based!(OuterOuterStruct, {
+		(0, outer_struct, upgradable_option),
+		(2, other_field, required),
+	});
+
+
+	#[test]
+	fn upgradable_enum_required() {
+		// Test downgrading from an `OuterOuterStruct` (i.e. test downgrading an
+		// `upgradable_required` `InnerEnumV2` to an `InnerEnumV1`).
+		//
+		// Note that `OuterStructRequiredEnum` has a split write/read implementation that writes an
+		// `InnerEnumV2::StructVariantB` irrespective of the value of `inner_enum`.
+
+		let dummy_inner_enum = InnerEnumV1::StructVariantA { field: 42 };
+		let serialized_bytes = OuterOuterStruct {
+			outer_struct: Some(OuterStructRequiredEnum { inner_enum: dummy_inner_enum }),
+			other_field: 0x1bad1dea,
+		}.encode();
+		let mut s = Cursor::new(serialized_bytes);
+
+		let outer_outer_struct: OuterOuterStruct = Readable::read(&mut s).unwrap();
+		assert!(outer_outer_struct.outer_struct.is_none());
+		assert_eq!(outer_outer_struct.other_field, 0x1bad1dea);
 	}
 
 	// BOLT TLV test cases

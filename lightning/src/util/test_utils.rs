@@ -13,6 +13,7 @@ use crate::chain;
 use crate::chain::WatchedOutput;
 use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
+#[cfg(test)]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor;
 use crate::chain::chainmonitor::{MonitorUpdateId, UpdateOrigin};
@@ -25,6 +26,7 @@ use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
 use crate::ln::ChannelId;
 use crate::ln::channelmanager::{ChannelDetails, self};
+#[cfg(test)]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
@@ -32,10 +34,10 @@ use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
-use crate::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
+use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
-use crate::routing::router::{find_route, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};
+use crate::routing::router::{DefaultRouter, InFlightHtlcs, Path, Route, RouteParameters, RouteHintHop, Router, ScorerAccountingForInFlightHtlcs};
 use crate::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
 use crate::sync::RwLock;
 use crate::util::config::UserConfig;
@@ -59,9 +61,6 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 
-#[cfg(any(test, feature = "_test_utils"))]
-use regex;
-
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
@@ -70,7 +69,7 @@ use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
 use bitcoin::bech32::u5;
-use crate::sign::{InMemorySigner, Recipient, EntropySource, NodeSigner, SignerProvider};
+use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -104,14 +103,32 @@ impl chaininterface::FeeEstimator for TestFeeEstimator {
 }
 
 pub struct TestRouter<'a> {
+	pub router: DefaultRouter<
+		Arc<NetworkGraph<&'a TestLogger>>,
+		&'a TestLogger,
+		Arc<RandomBytes>,
+		&'a RwLock<TestScorer>,
+		(),
+		TestScorer,
+	>,
+	//pub entropy_source: &'a RandomBytes,
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Result<Route, LightningError>)>>,
 	pub scorer: &'a RwLock<TestScorer>,
 }
 
 impl<'a> TestRouter<'a> {
-	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>, scorer: &'a RwLock<TestScorer>) -> Self {
-		Self { network_graph, next_routes: Mutex::new(VecDeque::new()), scorer }
+	pub fn new(
+		network_graph: Arc<NetworkGraph<&'a TestLogger>>, logger: &'a TestLogger,
+		scorer: &'a RwLock<TestScorer>,
+	) -> Self {
+		let entropy_source = Arc::new(RandomBytes::new([42; 32]));
+		Self {
+			router: DefaultRouter::new(network_graph.clone(), logger, entropy_source, scorer, ()),
+			network_graph,
+			next_routes: Mutex::new(VecDeque::new()),
+			scorer,
+		}
 	}
 
 	pub fn expect_find_route(&self, query: RouteParameters, result: Result<Route, LightningError>) {
@@ -125,7 +142,9 @@ impl<'a> Router for TestRouter<'a> {
 		&self, payer: &PublicKey, params: &RouteParameters, first_hops: Option<&[&ChannelDetails]>,
 		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, msgs::LightningError> {
-		if let Some((find_route_query, find_route_res)) = self.next_routes.lock().unwrap().pop_front() {
+		let route_res;
+		let next_route_opt = self.next_routes.lock().unwrap().pop_front();
+		if let Some((find_route_query, find_route_res)) = next_route_opt {
 			assert_eq!(find_route_query, *params);
 			if let Ok(ref route) = find_route_res {
 				assert_eq!(route.route_params, Some(find_route_query));
@@ -150,7 +169,7 @@ impl<'a> Router for TestRouter<'a> {
 										details: first_hops[idx],
 										payer_node_id: &node_id,
 									});
-									scorer.channel_penalty_msat(&candidate, usage, &());
+									scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 									continue;
 								}
 							}
@@ -162,7 +181,7 @@ impl<'a> Router for TestRouter<'a> {
 								info: directed,
 								short_channel_id: hop.short_channel_id,
 							});
-							scorer.channel_penalty_msat(&candidate, usage, &());
+							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 						} else {
 							let target_node_id = NodeId::from_pubkey(&hop.pubkey);
 							let route_hint = RouteHintHop {
@@ -177,46 +196,51 @@ impl<'a> Router for TestRouter<'a> {
 								hint: &route_hint,
 								target_node_id: &target_node_id,
 							});
-							scorer.channel_penalty_msat(&candidate, usage, &());
+							scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 						}
 						prev_hop_node = &hop.pubkey;
 					}
 				}
 			}
-			return find_route_res;
+			route_res = find_route_res;
+		} else {
+			route_res = self.router.find_route(payer, params, first_hops, inflight_htlcs);
+		};
+
+		if let Ok(route) = &route_res {
+			// Previously, `Route`s failed to round-trip through serialization due to a write/read
+			// mismatch. Thus, here we test all test-generated routes round-trip:
+			let ser = route.encode();
+			assert_eq!(Route::read(&mut &ser[..]).unwrap(), *route);
 		}
-		let logger = TestLogger::new();
-		find_route(
-			payer, params, &self.network_graph, first_hops, &logger,
-			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read().unwrap(), &inflight_htlcs), &Default::default(),
-			&[42; 32]
-		)
+		route_res
 	}
 
 	fn create_blinded_payment_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, _recipient: PublicKey, _first_hops: Vec<ChannelDetails>, _tlvs: ReceiveTlvs,
-		_amount_msats: u64, _entropy_source: &ES, _secp_ctx: &Secp256k1<T>
+		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
+		amount_msats: u64, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
-		unreachable!()
+		self.router.create_blinded_payment_paths(
+			recipient, first_hops, tlvs, amount_msats, secp_ctx
+		)
 	}
 }
 
 impl<'a> MessageRouter for TestRouter<'a> {
 	fn find_path(
-		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		unreachable!()
+		self.router.find_path(sender, peers, destination)
 	}
 
 	fn create_blinded_paths<
-		ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification
+		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _entropy_source: &ES,
-		_secp_ctx: &Secp256k1<T>
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		unreachable!()
+		self.router.create_blinded_paths(recipient, peers, secp_ctx)
 	}
 }
 
@@ -228,6 +252,30 @@ impl<'a> Drop for TestRouter<'a> {
 			}
 		}
 		assert!(self.next_routes.lock().unwrap().is_empty());
+	}
+}
+
+pub struct TestMessageRouter<'a> {
+	inner: DefaultMessageRouter<Arc<NetworkGraph<&'a TestLogger>>, &'a TestLogger, &'a TestKeysInterface>,
+}
+
+impl<'a> TestMessageRouter<'a> {
+	pub fn new(network_graph: Arc<NetworkGraph<&'a TestLogger>>, entropy_source: &'a TestKeysInterface) -> Self {
+		Self { inner: DefaultMessageRouter::new(network_graph, entropy_source) }
+	}
+}
+
+impl<'a> MessageRouter for TestMessageRouter<'a> {
+	fn find_path(
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		self.inner.find_path(sender, peers, destination)
+	}
+
+	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		self.inner.create_blinded_paths(recipient, peers, secp_ctx)
 	}
 }
 
@@ -278,8 +326,8 @@ impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a dyn chainmonitor::Persist<TestChannelSigner>, keys_manager: &'a TestKeysInterface) -> Self {
 		Self {
 			added_monitors: Mutex::new(Vec::new()),
-			monitor_updates: Mutex::new(HashMap::new()),
-			latest_monitor_update_id: Mutex::new(HashMap::new()),
+			monitor_updates: Mutex::new(new_hash_map()),
+			latest_monitor_update_id: Mutex::new(new_hash_map()),
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
@@ -301,7 +349,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
 		assert!(new_monitor == monitor);
-		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(),
+		self.latest_monitor_update_id.lock().unwrap().insert(monitor.channel_id(),
 			(funding_txo, monitor.get_latest_update_id(), MonitorUpdateId::from_new_monitor(&monitor)));
 		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
 		self.chain_monitor.watch_channel(funding_txo, new_monitor)
@@ -313,18 +361,19 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		update.write(&mut w).unwrap();
 		assert!(channelmonitor::ChannelMonitorUpdate::read(
 				&mut io::Cursor::new(&w.0)).unwrap() == *update);
+		let channel_id = update.channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(funding_txo));
 
-		self.monitor_updates.lock().unwrap().entry(funding_txo.to_channel_id()).or_insert(Vec::new()).push(update.clone());
+		self.monitor_updates.lock().unwrap().entry(channel_id).or_insert(Vec::new()).push(update.clone());
 
 		if let Some(exp) = self.expect_channel_force_closed.lock().unwrap().take() {
-			assert_eq!(funding_txo.to_channel_id(), exp.0);
+			assert_eq!(channel_id, exp.0);
 			assert_eq!(update.updates.len(), 1);
 			if let channelmonitor::ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
 				assert_eq!(should_broadcast, exp.1);
 			} else { panic!(); }
 		}
 
-		self.latest_monitor_update_id.lock().unwrap().insert(funding_txo.to_channel_id(),
+		self.latest_monitor_update_id.lock().unwrap().insert(channel_id,
 			(funding_txo, update.update_id, MonitorUpdateId::from_monitor_update(update)));
 		let update_res = self.chain_monitor.update_channel(funding_txo, update);
 		// At every point where we get a monitor update, we should be able to send a useful monitor
@@ -335,7 +384,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 			&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap().1;
 		if let Some(chan_id) = self.expect_monitor_round_trip_fail.lock().unwrap().take() {
-			assert_eq!(chan_id, funding_txo.to_channel_id());
+			assert_eq!(chan_id, channel_id);
 			assert!(new_monitor != *monitor);
 		} else {
 			assert!(new_monitor == *monitor);
@@ -344,17 +393,19 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		update_res
 	}
 
-	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, Vec<MonitorEvent>, Option<PublicKey>)> {
+	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
 }
 
+#[cfg(test)]
 struct JusticeTxData {
 	justice_tx: Transaction,
 	value: u64,
 	commitment_number: u64,
 }
 
+#[cfg(test)]
 pub(crate) struct WatchtowerPersister {
 	persister: TestPersister,
 	/// Upon a new commitment_signed, we'll get a
@@ -368,13 +419,14 @@ pub(crate) struct WatchtowerPersister {
 	destination_script: ScriptBuf,
 }
 
+#[cfg(test)]
 impl WatchtowerPersister {
 	#[cfg(test)]
 	pub(crate) fn new(destination_script: ScriptBuf) -> Self {
 		WatchtowerPersister {
 			persister: TestPersister::new(),
-			unsigned_justice_tx_data: Mutex::new(HashMap::new()),
-			watchtower_state: Mutex::new(HashMap::new()),
+			unsigned_justice_tx_data: Mutex::new(new_hash_map()),
+			watchtower_state: Mutex::new(new_hash_map()),
 			destination_script,
 		}
 	}
@@ -398,6 +450,7 @@ impl WatchtowerPersister {
 	}
 }
 
+#[cfg(test)]
 impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(&self, funding_txo: OutPoint,
 		data: &channelmonitor::ChannelMonitor<Signer>, id: MonitorUpdateId
@@ -407,7 +460,7 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 		assert!(self.unsigned_justice_tx_data.lock().unwrap()
 			.insert(funding_txo, VecDeque::new()).is_none());
 		assert!(self.watchtower_state.lock().unwrap()
-			.insert(funding_txo, HashMap::new()).is_none());
+			.insert(funding_txo, new_hash_map()).is_none());
 
 		let initial_counterparty_commitment_tx = data.initial_counterparty_commitment_tx()
 			.expect("First and only call expects Some");
@@ -451,6 +504,10 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 		}
 		res
 	}
+
+	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
+		<TestPersister as chainmonitor::Persist<TestChannelSigner>>::archive_persisted_channel(&self.persister, funding_txo);
+	}
 }
 
 pub struct TestPersister {
@@ -468,8 +525,8 @@ impl TestPersister {
 	pub fn new() -> Self {
 		Self {
 			update_rets: Mutex::new(VecDeque::new()),
-			chain_sync_monitor_persistences: Mutex::new(HashMap::new()),
-			offchain_monitor_updates: Mutex::new(HashMap::new()),
+			chain_sync_monitor_persistences: Mutex::new(new_hash_map()),
+			offchain_monitor_updates: Mutex::new(new_hash_map()),
 		}
 	}
 
@@ -493,11 +550,23 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 		}
 		let is_chain_sync = if let UpdateOrigin::ChainSync(_) = update_id.contents { true } else { false };
 		if is_chain_sync {
-			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
+			self.chain_sync_monitor_persistences.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update_id);
 		} else {
-			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(HashSet::new()).insert(update_id);
+			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update_id);
 		}
 		ret
+	}
+
+	fn archive_persisted_channel(&self, funding_txo: OutPoint) { 
+		// remove the channel from the offchain_monitor_updates map
+		match self.offchain_monitor_updates.lock().unwrap().remove(&funding_txo) {
+			Some(_) => {},
+			None => {
+				// If the channel was not in the offchain_monitor_updates map, it should be in the
+				// chain_sync_monitor_persistences map.
+				assert!(self.chain_sync_monitor_persistences.lock().unwrap().remove(&funding_txo).is_some());
+			}
+		};
 	}
 }
 
@@ -508,7 +577,7 @@ pub struct TestStore {
 
 impl TestStore {
 	pub fn new(read_only: bool) -> Self {
-		let persisted_bytes = Mutex::new(HashMap::new());
+		let persisted_bytes = Mutex::new(new_hash_map());
 		Self { persisted_bytes, read_only }
 	}
 }
@@ -548,7 +617,7 @@ impl KVStore for TestStore {
 		} else {
 			format!("{}/{}", primary_namespace, secondary_namespace)
 		};
-		let outer_e = persisted_lock.entry(prefixed).or_insert(HashMap::new());
+		let outer_e = persisted_lock.entry(prefixed).or_insert(new_hash_map());
 		let mut bytes = Vec::new();
 		bytes.write_all(buf)?;
 		outer_e.insert(key.to_string(), bytes);
@@ -592,6 +661,9 @@ impl KVStore for TestStore {
 	}
 }
 
+unsafe impl Sync for TestStore {}
+unsafe impl Send for TestStore {}
+
 pub struct TestBroadcaster {
 	pub txn_broadcasted: Mutex<Vec<Transaction>>,
 	pub blocks: Arc<Mutex<Vec<(Block, u32)>>>,
@@ -615,7 +687,7 @@ impl TestBroadcaster {
 
 	pub fn unique_txn_broadcast(&self) -> Vec<Transaction> {
 		let mut txn = self.txn_broadcasted.lock().unwrap().split_off(0);
-		let mut seen = HashSet::new();
+		let mut seen = new_hash_set();
 		txn.retain(|tx| seen.insert(tx.txid()));
 		txn
 	}
@@ -652,7 +724,7 @@ impl TestChannelMessageHandler {
 		TestChannelMessageHandler {
 			pending_events: Mutex::new(Vec::new()),
 			expected_recv_msgs: Mutex::new(None),
-			connected_peers: Mutex::new(HashSet::new()),
+			connected_peers: Mutex::new(new_hash_set()),
 			message_fetch_counter: AtomicUsize::new(0),
 			chain_hash,
 		}
@@ -712,12 +784,15 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_stfu(&self, _their_node_id: &PublicKey, msg: &msgs::Stfu) {
 		self.received_msg(wire::Message::Stfu(msg.clone()));
 	}
+	#[cfg(splicing)]
 	fn handle_splice(&self, _their_node_id: &PublicKey, msg: &msgs::Splice) {
 		self.received_msg(wire::Message::Splice(msg.clone()));
 	}
+	#[cfg(splicing)]
 	fn handle_splice_ack(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceAck) {
 		self.received_msg(wire::Message::SpliceAck(msg.clone()));
 	}
+	#[cfg(splicing)]
 	fn handle_splice_locked(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
 		self.received_msg(wire::Message::SpliceLocked(msg.clone()));
 	}
@@ -1004,8 +1079,8 @@ impl TestLogger {
 		TestLogger {
 			level: Level::Trace,
 			id,
-			lines: Mutex::new(HashMap::new()),
-			context: Mutex::new(HashMap::new()),
+			lines: Mutex::new(new_hash_map()),
+			context: Mutex::new(new_hash_map()),
 		}
 	}
 	pub fn enable(&mut self, level: Level) {
@@ -1124,6 +1199,7 @@ pub struct TestKeysInterface {
 	pub disable_revocation_policy_check: bool,
 	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
+	pub unavailable_signers: Mutex<HashSet<[u8; 32]>>,
 }
 
 impl EntropySource for TestKeysInterface {
@@ -1182,7 +1258,11 @@ impl SignerProvider for TestKeysInterface {
 	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
-		TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
+		let signer = TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check);
+		if self.unavailable_signers.lock().unwrap().contains(&channel_keys_id) {
+			signer.set_available(false);
+		}
+		signer
 	}
 
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
@@ -1218,8 +1298,9 @@ impl TestKeysInterface {
 			backing: sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
 			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
-			enforcement_states: Mutex::new(HashMap::new()),
+			enforcement_states: Mutex::new(new_hash_map()),
 			expectations: Mutex::new(None),
+			unavailable_signers: Mutex::new(new_hash_set()),
 		}
 	}
 
@@ -1233,9 +1314,7 @@ impl TestKeysInterface {
 	}
 
 	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> TestChannelSigner {
-		let keys = self.backing.derive_channel_keys(channel_value_satoshis, id);
-		let state = self.make_enforcement_state_cell(keys.commitment_seed);
-		TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check)
+		self.derive_channel_signer(channel_value_satoshis, *id)
 	}
 
 	fn make_enforcement_state_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<EnforcementState>> {
@@ -1299,9 +1378,13 @@ impl TestChainSource {
 			chain_hash: ChainHash::using_genesis_block(network),
 			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut { value: u64::max_value(), script_pubkey }))),
 			get_utxo_call_count: AtomicUsize::new(0),
-			watched_txn: Mutex::new(HashSet::new()),
-			watched_outputs: Mutex::new(HashSet::new()),
+			watched_txn: Mutex::new(new_hash_set()),
+			watched_outputs: Mutex::new(new_hash_set()),
 		}
+	}
+	pub fn remove_watched_txn_and_outputs(&self, outpoint: OutPoint, script_pubkey: ScriptBuf) {
+		self.watched_outputs.lock().unwrap().remove(&(outpoint, script_pubkey.clone())); 
+		self.watched_txn.lock().unwrap().remove(&(outpoint.txid, script_pubkey));
 	}
 }
 
@@ -1389,6 +1472,9 @@ impl ScoreUpdate for TestScorer {
 
 	fn time_passed(&mut self, _duration_since_epoch: Duration) {}
 }
+
+#[cfg(c_bindings)]
+impl crate::routing::scoring::Score for TestScorer {}
 
 impl Drop for TestScorer {
 	fn drop(&mut self) {

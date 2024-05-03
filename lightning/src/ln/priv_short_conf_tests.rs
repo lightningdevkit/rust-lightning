@@ -18,7 +18,7 @@ use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnion
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::ln::features::ChannelTypeFeatures;
-use crate::ln::msgs;
+use crate::ln::{msgs, ChannelId};
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
 use crate::ln::wire::Encode;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
@@ -26,7 +26,6 @@ use crate::util::ser::Writeable;
 use crate::util::test_utils;
 
 use crate::prelude::*;
-use core::default::Default;
 
 use crate::ln::functional_test_utils::*;
 
@@ -293,9 +292,9 @@ fn test_scid_privacy_on_pub_channel() {
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, Some(scid_privacy_cfg)).unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
-	assert!(!open_channel.channel_type.as_ref().unwrap().supports_scid_privacy()); // we ignore `negotiate_scid_privacy` on pub channels
-	open_channel.channel_type.as_mut().unwrap().set_scid_privacy_required();
-	assert_eq!(open_channel.channel_flags & 1, 1); // The `announce_channel` bit is set.
+	assert!(!open_channel.common_fields.channel_type.as_ref().unwrap().supports_scid_privacy()); // we ignore `negotiate_scid_privacy` on pub channels
+	open_channel.common_fields.channel_type.as_mut().unwrap().set_scid_privacy_required();
+	assert_eq!(open_channel.common_fields.channel_flags & 1, 1); // The `announce_channel` bit is set.
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
 	let err = get_err_msg(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -317,19 +316,19 @@ fn test_scid_privacy_negotiation() {
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, Some(scid_privacy_cfg)).unwrap();
 
 	let init_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	assert!(init_open_channel.channel_type.as_ref().unwrap().supports_scid_privacy());
+	assert!(init_open_channel.common_fields.channel_type.as_ref().unwrap().supports_scid_privacy());
 	assert!(nodes[0].node.list_channels()[0].channel_type.is_none()); // channel_type is none until counterparty accepts
 
 	// now simulate nodes[1] responding with an Error message, indicating it doesn't understand
 	// SCID alias.
 	nodes[0].node.handle_error(&nodes[1].node.get_our_node_id(), &msgs::ErrorMessage {
-		channel_id: init_open_channel.temporary_channel_id,
+		channel_id: init_open_channel.common_fields.temporary_channel_id,
 		data: "Yo, no SCID aliases, no privacy here!".to_string()
 	});
 	assert!(nodes[0].node.list_channels()[0].channel_type.is_none()); // channel_type is none until counterparty accepts
 
 	let second_open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	assert!(!second_open_channel.channel_type.as_ref().unwrap().supports_scid_privacy());
+	assert!(!second_open_channel.common_fields.channel_type.as_ref().unwrap().supports_scid_privacy());
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &second_open_channel);
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
 
@@ -363,7 +362,7 @@ fn test_inbound_scid_privacy() {
 	nodes[1].node.create_channel(nodes[2].node.get_our_node_id(), 100_000, 10_000, 42, None, Some(no_announce_cfg)).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[2].node.get_our_node_id());
 
-	assert!(open_channel.channel_type.as_ref().unwrap().requires_scid_privacy());
+	assert!(open_channel.common_fields.channel_type.as_ref().unwrap().requires_scid_privacy());
 
 	nodes[2].node.handle_open_channel(&nodes[1].node.get_our_node_id(), &open_channel);
 	let accept_channel = get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
@@ -605,7 +604,7 @@ fn test_0conf_channel_with_async_monitor() {
 	};
 
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	assert_eq!(accept_channel.minimum_depth, 0);
+	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
@@ -617,7 +616,7 @@ fn test_0conf_channel_with_async_monitor() {
 	check_added_monitors!(nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
-	let channel_id = funding_output.to_channel_id();
+	let channel_id = ChannelId::v1_from_funding_outpoint(funding_output);
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
@@ -885,7 +884,7 @@ fn test_zero_conf_accept_reject() {
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
-	open_channel_msg.channel_type = Some(channel_type_features.clone());
+	open_channel_msg.common_fields.channel_type = Some(channel_type_features.clone());
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
 
@@ -913,7 +912,7 @@ fn test_zero_conf_accept_reject() {
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel,
 		nodes[1].node.get_our_node_id());
 
-	open_channel_msg.channel_type = Some(channel_type_features.clone());
+	open_channel_msg.common_fields.channel_type = Some(channel_type_features.clone());
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
 
@@ -945,7 +944,7 @@ fn test_zero_conf_accept_reject() {
 	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel,
 		nodes[1].node.get_our_node_id());
 
-	open_channel_msg.channel_type = Some(channel_type_features);
+	open_channel_msg.common_fields.channel_type = Some(channel_type_features);
 
 	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel_msg);
 
@@ -996,7 +995,7 @@ fn test_connect_before_funding() {
 	};
 
 	let mut accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
-	assert_eq!(accept_channel.minimum_depth, 0);
+	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 	let events = nodes[0].node.get_and_clear_pending_events();

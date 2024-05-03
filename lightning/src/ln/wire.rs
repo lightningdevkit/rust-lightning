@@ -60,8 +60,11 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	FundingCreated(msgs::FundingCreated),
 	FundingSigned(msgs::FundingSigned),
 	Stfu(msgs::Stfu),
+	#[cfg(splicing)]
 	Splice(msgs::Splice),
+	#[cfg(splicing)]
 	SpliceAck(msgs::SpliceAck),
+	#[cfg(splicing)]
 	SpliceLocked(msgs::SpliceLocked),
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
@@ -115,8 +118,11 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::FundingCreated(ref msg) => msg.write(writer),
 			&Message::FundingSigned(ref msg) => msg.write(writer),
 			&Message::Stfu(ref msg) => msg.write(writer),
+			#[cfg(splicing)]
 			&Message::Splice(ref msg) => msg.write(writer),
+			#[cfg(splicing)]
 			&Message::SpliceAck(ref msg) => msg.write(writer),
+			#[cfg(splicing)]
 			&Message::SpliceLocked(ref msg) => msg.write(writer),
 			&Message::TxAddInput(ref msg) => msg.write(writer),
 			&Message::TxAddOutput(ref msg) => msg.write(writer),
@@ -170,8 +176,11 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::FundingCreated(ref msg) => msg.type_id(),
 			&Message::FundingSigned(ref msg) => msg.type_id(),
 			&Message::Stfu(ref msg) => msg.type_id(),
+			#[cfg(splicing)]
 			&Message::Splice(ref msg) => msg.type_id(),
+			#[cfg(splicing)]
 			&Message::SpliceAck(ref msg) => msg.type_id(),
+			#[cfg(splicing)]
 			&Message::SpliceLocked(ref msg) => msg.type_id(),
 			&Message::TxAddInput(ref msg) => msg.type_id(),
 			&Message::TxAddOutput(ref msg) => msg.type_id(),
@@ -270,15 +279,18 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		msgs::FundingSigned::TYPE => {
 			Ok(Message::FundingSigned(Readable::read(buffer)?))
 		},
+		#[cfg(splicing)]
 		msgs::Splice::TYPE => {
 			Ok(Message::Splice(Readable::read(buffer)?))
 		},
 		msgs::Stfu::TYPE => {
 			Ok(Message::Stfu(Readable::read(buffer)?))
 		},
+		#[cfg(splicing)]
 		msgs::SpliceAck::TYPE => {
 			Ok(Message::SpliceAck(Readable::read(buffer)?))
 		},
+		#[cfg(splicing)]
 		msgs::SpliceLocked::TYPE => {
 			Ok(Message::SpliceLocked(Readable::read(buffer)?))
 		},
@@ -617,7 +629,6 @@ impl Encode for msgs::GossipTimestampFilter {
 mod tests {
 	use super::*;
 	use crate::prelude::*;
-	use core::convert::TryInto;
 	use crate::ln::peer_handler::IgnoringMessageHandler;
 
 	// Big-endian wire encoding of Pong message (type = 19, byteslen = 2).

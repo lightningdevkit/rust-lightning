@@ -14,7 +14,6 @@ use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey, self};
-use core::convert::TryFrom;
 use core::fmt;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};

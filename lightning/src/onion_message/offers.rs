@@ -9,7 +9,6 @@
 
 //! Message handling for BOLT 12 Offers.
 
-use core::convert::TryFrom;
 use core::fmt;
 use crate::io::{self, Read};
 use crate::ln::msgs::DecodeError;

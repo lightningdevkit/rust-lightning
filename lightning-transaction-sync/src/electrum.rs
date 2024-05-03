@@ -157,6 +157,9 @@ where
 					for c in &confirmables {
 						c.best_block_updated(&tip_header, tip_height);
 					}
+
+					// Prune any sufficiently confirmed output spends
+					sync_state.prune_output_spends(tip_height);
 				}
 
 				match self.get_confirmed_transactions(&sync_state) {
@@ -254,7 +257,7 @@ where
 
 		// First, check the confirmation status of registered transactions as well as the
 		// status of dependent transactions of registered outputs.
-		let mut confirmed_txs = Vec::new();
+		let mut confirmed_txs: Vec<ConfirmedTx> = Vec::new();
 		let mut watched_script_pubkeys = Vec::with_capacity(
 			sync_state.watched_transactions.len() + sync_state.watched_outputs.len());
 		let mut watched_txs = Vec::with_capacity(sync_state.watched_transactions.len());
@@ -302,6 +305,9 @@ where
 
 				for (i, script_history) in tx_results.iter().enumerate() {
 					let (txid, tx) = &watched_txs[i];
+					if confirmed_txs.iter().any(|ctx| ctx.txid == **txid) {
+						continue;
+					}
 					let mut filtered_history = script_history.iter().filter(|h| h.tx_hash == **txid);
 					if let Some(history) = filtered_history.next()
 					{
@@ -321,6 +327,10 @@ where
 						}
 
 						let txid = possible_output_spend.tx_hash;
+						if confirmed_txs.iter().any(|ctx| ctx.txid == txid) {
+							continue;
+						}
+
 						match self.client.transaction_get(&txid) {
 							Ok(tx) => {
 								let mut is_spend = false;
@@ -416,6 +426,7 @@ where
 						}
 						let confirmed_tx = ConfirmedTx {
 							tx: tx.clone(),
+							txid,
 							block_header, block_height: prob_conf_height,
 							pos,
 						};

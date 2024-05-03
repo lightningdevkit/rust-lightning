@@ -11,27 +11,29 @@
 //! nodes for functional tests.
 
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
-use crate::sign::EntropySource;
 use crate::chain::channelmonitor::ChannelMonitor;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, PaymentSendFailure, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
-use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
-use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
 use crate::ln::features::InitFeatures;
 use crate::ln::msgs;
-use crate::ln::msgs::{ChannelMessageHandler,RoutingMessageHandler};
-use crate::util::test_channel_signer::TestChannelSigner;
-use crate::util::scid_utils;
-use crate::util::test_utils;
-use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
-use crate::util::errors::APIError;
+use crate::ln::msgs::{ChannelMessageHandler, OnionMessageHandler, RoutingMessageHandler};
+use crate::ln::peer_handler::IgnoringMessageHandler;
+use crate::onion_message::messenger::OnionMessenger;
+use crate::routing::gossip::{P2PGossipSync, NetworkGraph, NetworkUpdate};
+use crate::routing::router::{self, PaymentParameters, Route, RouteParameters};
+use crate::sign::{EntropySource, RandomBytes};
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
-use crate::util::ser::{ReadableArgs, Writeable};
+use crate::util::errors::APIError;
 #[cfg(test)]
 use crate::util::logger::Logger;
+use crate::util::scid_utils;
+use crate::util::test_channel_signer::TestChannelSigner;
+use crate::util::test_utils;
+use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
+use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::blockdata::block::{Block, Header, Version};
 use bitcoin::blockdata::locktime::absolute::LockTime;
@@ -43,13 +45,14 @@ use bitcoin::network::constants::Network;
 use bitcoin::pow::CompactTarget;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 
+use alloc::rc::Rc;
+use core::cell::RefCell;
+use core::iter::repeat;
+use core::mem;
+use core::ops::Deref;
 use crate::io;
 use crate::prelude::*;
-use core::cell::RefCell;
-use alloc::rc::Rc;
 use crate::sync::{Arc, Mutex, LockTestExt, RwLock};
-use core::mem;
-use core::iter::repeat;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
 
@@ -249,7 +252,7 @@ pub fn connect_block<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: &Block) 
 
 fn call_claimable_balances<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>) {
 	// Ensure `get_claimable_balances`' self-tests never panic
-	for funding_outpoint in node.chain_monitor.chain_monitor.list_monitors() {
+	for (funding_outpoint, _channel_id) in node.chain_monitor.chain_monitor.list_monitors() {
 		node.chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances();
 	}
 }
@@ -388,6 +391,7 @@ pub struct NodeCfg<'a> {
 	pub tx_broadcaster: &'a test_utils::TestBroadcaster,
 	pub fee_estimator: &'a test_utils::TestFeeEstimator,
 	pub router: test_utils::TestRouter<'a>,
+	pub message_router: test_utils::TestMessageRouter<'a>,
 	pub chain_monitor: test_utils::TestChainMonitor<'a>,
 	pub keys_manager: &'a test_utils::TestKeysInterface,
 	pub logger: &'a test_utils::TestLogger,
@@ -407,6 +411,27 @@ type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'chan_mon_cfg test_utils::TestLogger,
 >;
 
+type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
+	DedicatedEntropy,
+	&'node_cfg test_utils::TestKeysInterface,
+	&'chan_mon_cfg test_utils::TestLogger,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	IgnoringMessageHandler,
+>;
+
+/// For use with [`OnionMessenger`] otherwise `test_restored_packages_retry` will fail. This is
+/// because that test uses older serialized data produced by calling [`EntropySource`] in a specific
+/// manner. Using the same [`EntropySource`] with [`OnionMessenger`] would introduce another call,
+/// causing the produced data to no longer match.
+pub struct DedicatedEntropy(RandomBytes);
+
+impl Deref for DedicatedEntropy {
+	type Target = RandomBytes;
+	fn deref(&self) -> &Self::Target { &self.0 }
+}
+
 pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 	pub chain_source: &'chan_mon_cfg test_utils::TestChainSource,
 	pub tx_broadcaster: &'chan_mon_cfg test_utils::TestBroadcaster,
@@ -415,6 +440,7 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 	pub chain_monitor: &'node_cfg test_utils::TestChainMonitor<'chan_mon_cfg>,
 	pub keys_manager: &'chan_mon_cfg test_utils::TestKeysInterface,
 	pub node: &'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	pub onion_messenger: TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg>,
 	pub network_graph: &'node_cfg NetworkGraph<&'chan_mon_cfg test_utils::TestLogger>,
 	pub gossip_sync: P2PGossipSync<&'node_cfg NetworkGraph<&'chan_mon_cfg test_utils::TestLogger>, &'chan_mon_cfg test_utils::TestChainSource, &'chan_mon_cfg test_utils::TestLogger>,
 	pub node_seed: [u8; 32],
@@ -432,6 +458,14 @@ pub struct Node<'chan_man, 'node_cfg: 'chan_man, 'chan_mon_cfg: 'node_cfg> {
 		&'chan_mon_cfg test_utils::TestLogger,
 	>,
 }
+
+impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
+	pub fn init_features(&self, peer_node_id: &PublicKey) -> InitFeatures {
+		self.override_init_features.borrow().clone()
+			.unwrap_or_else(|| self.node.init_features() | self.onion_messenger.provided_init_features(peer_node_id))
+	}
+}
+
 #[cfg(feature = "std")]
 impl<'a, 'b, 'c> std::panic::UnwindSafe for Node<'a, 'b, 'c> {}
 #[cfg(feature = "std")]
@@ -454,16 +488,38 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	/// `release_commitment_secret` are affected by this setting.
 	#[cfg(test)]
 	pub fn set_channel_signer_available(&self, peer_id: &PublicKey, chan_id: &ChannelId, available: bool) {
+		use crate::sign::ChannelSigner;
+		log_debug!(self.logger, "Setting channel signer for {} as available={}", chan_id, available);
+
 		let per_peer_state = self.node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(peer_id).unwrap().lock().unwrap();
-		let signer = (|| {
-			match chan_lock.channel_by_id.get(chan_id) {
-				Some(phase) => phase.context().get_signer(),
-				None => panic!("Couldn't find a channel with id {}", chan_id),
+
+		let mut channel_keys_id = None;
+		if let Some(chan) = chan_lock.channel_by_id.get(chan_id).map(|phase| phase.context()) {
+			chan.get_signer().as_ecdsa().unwrap().set_available(available);
+			channel_keys_id = Some(chan.channel_keys_id);
+		}
+
+		let mut monitor = None;
+		for (funding_txo, channel_id) in self.chain_monitor.chain_monitor.list_monitors() {
+			if *chan_id == channel_id {
+				monitor = self.chain_monitor.chain_monitor.get_monitor(funding_txo).ok();
 			}
-		})();
-		log_debug!(self.logger, "Setting channel signer for {} as available={}", chan_id, available);
-		signer.as_ecdsa().unwrap().set_available(available);
+		}
+		if let Some(monitor) = monitor {
+			monitor.do_signer_call(|signer| {
+				channel_keys_id = channel_keys_id.or(Some(signer.inner.channel_keys_id()));
+				signer.set_available(available)
+			});
+		}
+
+		if available {
+			self.keys_manager.unavailable_signers.lock().unwrap()
+				.remove(channel_keys_id.as_ref().unwrap());
+		} else {
+			self.keys_manager.unavailable_signers.lock().unwrap()
+				.insert(channel_keys_id.unwrap());
+		}
 	}
 }
 
@@ -568,7 +624,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let feeest = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
 			let mut deserialized_monitors = Vec::new();
 			{
-				for outpoint in self.chain_monitor.chain_monitor.list_monitors() {
+				for (outpoint, _channel_id) in self.chain_monitor.chain_monitor.list_monitors() {
 					let mut w = test_utils::TestVecWriter(Vec::new());
 					self.chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut w).unwrap();
 					let (_, deserialized_monitor) = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
@@ -585,7 +641,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Before using all the new monitors to check the watch outpoints, use the full set of
 			// them to ensure we can write and reload our ChannelManager.
 			{
-				let mut channel_monitors = HashMap::new();
+				let mut channel_monitors = new_hash_map();
 				for monitor in deserialized_monitors.iter_mut() {
 					channel_monitors.insert(monitor.get_funding_txo().0, monitor);
 				}
@@ -599,7 +655,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					node_signer: self.keys_manager,
 					signer_provider: self.keys_manager,
 					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
-					router: &test_utils::TestRouter::new(Arc::new(network_graph), &scorer),
+					router: &test_utils::TestRouter::new(Arc::new(network_graph), &self.logger, &scorer),
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &broadcaster,
 					logger: &self.logger,
@@ -611,7 +667,8 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 			let chain_monitor = test_utils::TestChainMonitor::new(Some(&chain_source), &broadcaster, &self.logger, &feeest, &persister, &self.keys_manager);
 			for deserialized_monitor in deserialized_monitors.drain(..) {
-				if chain_monitor.watch_channel(deserialized_monitor.get_funding_txo().0, deserialized_monitor) != Ok(ChannelMonitorUpdateStatus::Completed) {
+				let funding_outpoint = deserialized_monitor.get_funding_txo().0;
+				if chain_monitor.watch_channel(funding_outpoint, deserialized_monitor) != Ok(ChannelMonitorUpdateStatus::Completed) {
 					panic!();
 				}
 			}
@@ -1015,7 +1072,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 
 	let mut node_read = &chanman_encoded[..];
 	let (_, node_deserialized) = {
-		let mut channel_monitors = HashMap::new();
+		let mut channel_monitors = new_hash_map();
 		for monitor in monitors_read.iter_mut() {
 			assert!(channel_monitors.insert(monitor.get_funding_txo().0, monitor).is_none());
 		}
@@ -1035,7 +1092,8 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 	assert!(node_read.is_empty());
 
 	for monitor in monitors_read.drain(..) {
-		assert_eq!(node.chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor),
+		let funding_outpoint = monitor.get_funding_txo().0;
+		assert_eq!(node.chain_monitor.watch_channel(funding_outpoint, monitor),
 			Ok(ChannelMonitorUpdateStatus::Completed));
 		check_added_monitors!(node, 1);
 	}
@@ -1054,6 +1112,7 @@ macro_rules! reload_node {
 
 		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);
 		$node.node = &$new_channelmanager;
+		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
 	};
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		reload_node!($node, $crate::util::config::UserConfig::default(), $chanman_encoded, $monitors_encoded, $persister, $new_chain_monitor, $new_channelmanager);
@@ -1167,7 +1226,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 	};
 
 	let accept_channel = get_event_msg!(receiver, MessageSendEvent::SendAcceptChannel, initiator.node.get_our_node_id());
-	assert_eq!(accept_channel.minimum_depth, 0);
+	assert_eq!(accept_channel.common_fields.minimum_depth, 0);
 	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&initiator, &receiver.node.get_our_node_id(), 100_000, 42);
@@ -1221,7 +1280,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 pub fn exchange_open_accept_chan<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, push_msat: u64) -> ChannelId {
 	let create_chan_id = node_a.node.create_channel(node_b.node.get_our_node_id(), channel_value, push_msat, 42, None, None).unwrap();
 	let open_channel_msg = get_event_msg!(node_a, MessageSendEvent::SendOpenChannel, node_b.node.get_our_node_id());
-	assert_eq!(open_channel_msg.temporary_channel_id, create_chan_id);
+	assert_eq!(open_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 	assert_eq!(node_a.node.list_channels().iter().find(|channel| channel.channel_id == create_chan_id).unwrap().user_channel_id, 42);
 	node_b.node.handle_open_channel(&node_a.node.get_our_node_id(), &open_channel_msg);
 	if node_b.node.get_current_default_configuration().manually_accept_inbound_channels {
@@ -1234,7 +1293,7 @@ pub fn exchange_open_accept_chan<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: 
 		};
 	}
 	let accept_channel_msg = get_event_msg!(node_b, MessageSendEvent::SendAcceptChannel, node_a.node.get_our_node_id());
-	assert_eq!(accept_channel_msg.temporary_channel_id, create_chan_id);
+	assert_eq!(accept_channel_msg.common_fields.temporary_channel_id, create_chan_id);
 	node_a.node.handle_accept_channel(&node_b.node.get_our_node_id(), &accept_channel_msg);
 	assert_ne!(node_b.node.list_channels().iter().find(|channel| channel.channel_id == create_chan_id).unwrap().user_channel_id, 0);
 
@@ -1495,11 +1554,29 @@ macro_rules! check_warn_msg {
 	}}
 }
 
+/// Checks if at least one peer is connected.
+fn is_any_peer_connected(node: &Node) -> bool {
+	let peer_state = node.node.per_peer_state.read().unwrap();
+	for (_, peer_mutex) in peer_state.iter() {
+		let peer = peer_mutex.lock().unwrap();
+		if peer.is_connected { return true; }
+	}
+	false
+}
+
 /// Check that a channel's closing channel update has been broadcasted, and optionally
 /// check whether an error message event has occurred.
 pub fn check_closed_broadcast(node: &Node, num_channels: usize, with_error_msg: bool) -> Vec<msgs::ErrorMessage> {
+	let mut dummy_connected = false;
+	if !is_any_peer_connected(node) {
+		connect_dummy_node(&node);
+		dummy_connected = true;
+	}
 	let msg_events = node.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), if with_error_msg { num_channels * 2 } else { num_channels });
+	if dummy_connected {
+		disconnect_dummy_node(&node);
+	}
 	msg_events.into_iter().filter_map(|msg_event| {
 		match msg_event {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
@@ -1769,14 +1846,9 @@ macro_rules! expect_htlc_handling_failed_destinations {
 /// there are any [`Event::HTLCHandlingFailed`] events their [`HTLCDestination`] is included in the
 /// `expected_failures` set.
 pub fn expect_pending_htlcs_forwardable_conditions(events: Vec<Event>, expected_failures: &[HTLCDestination]) {
-	match events[0] {
-		Event::PendingHTLCsForwardable { .. } => { },
-		_ => panic!("Unexpected event {:?}", events),
-	};
-
 	let count = expected_failures.len() + 1;
 	assert_eq!(events.len(), count);
-
+	assert!(events.iter().find(|event| matches!(event, Event::PendingHTLCsForwardable { .. })).is_some());
 	if expected_failures.len() > 0 {
 		expect_htlc_handling_failed_destinations!(events, expected_failures)
 	}
@@ -2057,7 +2129,15 @@ pub fn check_payment_claimable(
 			assert_eq!(expected_recv_value, *amount_msat);
 			assert_eq!(expected_receiver_node_id, receiver_node_id.unwrap());
 			match purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
+					assert_eq!(&expected_payment_preimage, payment_preimage);
+					assert_eq!(expected_payment_secret, *payment_secret);
+				},
+				PaymentPurpose::Bolt12OfferPayment { payment_preimage, payment_secret, .. } => {
+					assert_eq!(&expected_payment_preimage, payment_preimage);
+					assert_eq!(expected_payment_secret, *payment_secret);
+				},
+				PaymentPurpose::Bolt12RefundPayment { payment_preimage, payment_secret, .. } => {
 					assert_eq!(&expected_payment_preimage, payment_preimage);
 					assert_eq!(expected_payment_secret, *payment_secret);
 				},
@@ -2165,38 +2245,74 @@ macro_rules! expect_payment_path_successful {
 	}
 }
 
+/// Returns the total fee earned by this HTLC forward, in msat.
 pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM=CM>>(
 	event: Event, node: &H, prev_node: &H, next_node: &H, expected_fee: Option<u64>,
-	upstream_force_closed: bool, downstream_force_closed: bool
-) {
+	expected_extra_fees_msat: Option<u64>, upstream_force_closed: bool,
+	downstream_force_closed: bool, allow_1_msat_fee_overpay: bool,
+) -> Option<u64> {
 	match event {
 		Event::PaymentForwarded {
-			fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
-			outbound_amount_forwarded_msat: _
+			prev_channel_id, next_channel_id, prev_user_channel_id, next_user_channel_id,
+			total_fee_earned_msat, skimmed_fee_msat, claim_from_onchain_tx, ..
 		} => {
-			assert_eq!(fee_earned_msat, expected_fee);
+			if allow_1_msat_fee_overpay {
+				// Aggregating fees for blinded paths may result in a rounding error, causing slight
+				// overpayment in fees.
+				let actual_fee = total_fee_earned_msat.unwrap();
+				let expected_fee = expected_fee.unwrap();
+				assert!(actual_fee == expected_fee || actual_fee == expected_fee + 1);
+			} else {
+				assert_eq!(total_fee_earned_msat, expected_fee);
+			}
+
+			// Check that the (knowingly) withheld amount is always less or equal to the expected
+			// overpaid amount.
+			assert!(skimmed_fee_msat == expected_extra_fees_msat);
 			if !upstream_force_closed {
 				// Is the event prev_channel_id in one of the channels between the two nodes?
-				assert!(node.node().list_channels().iter().any(|x| x.counterparty.node_id == prev_node.node().get_our_node_id() && x.channel_id == prev_channel_id.unwrap()));
+				assert!(node.node().list_channels().iter().any(|x|
+					x.counterparty.node_id == prev_node.node().get_our_node_id() &&
+					x.channel_id == prev_channel_id.unwrap() &&
+					x.user_channel_id == prev_user_channel_id.unwrap()
+				));
 			}
 			// We check for force closures since a force closed channel is removed from the
 			// node's channel list
 			if !downstream_force_closed {
-				assert!(node.node().list_channels().iter().any(|x| x.counterparty.node_id == next_node.node().get_our_node_id() && x.channel_id == next_channel_id.unwrap()));
+				// As documented, `next_user_channel_id` will only be `Some` if we didn't settle via an
+				// onchain transaction, just as the `total_fee_earned_msat` field. Rather than
+				// introducing yet another variable, we use the latter's state as a flag to detect
+				// this and only check if it's `Some`.
+				if total_fee_earned_msat.is_none() {
+					assert!(node.node().list_channels().iter().any(|x|
+						x.counterparty.node_id == next_node.node().get_our_node_id() &&
+						x.channel_id == next_channel_id.unwrap()
+					));
+				} else {
+					assert!(node.node().list_channels().iter().any(|x|
+						x.counterparty.node_id == next_node.node().get_our_node_id() &&
+						x.channel_id == next_channel_id.unwrap() &&
+						x.user_channel_id == next_user_channel_id.unwrap()
+					));
+				}
 			}
 			assert_eq!(claim_from_onchain_tx, downstream_force_closed);
+			total_fee_earned_msat
 		},
 		_ => panic!("Unexpected event"),
 	}
 }
 
+#[macro_export]
 macro_rules! expect_payment_forwarded {
 	($node: expr, $prev_node: expr, $next_node: expr, $expected_fee: expr, $upstream_force_closed: expr, $downstream_force_closed: expr) => {
 		let mut events = $node.node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		$crate::ln::functional_test_utils::expect_payment_forwarded(
-			events.pop().unwrap(), &$node, &$prev_node, &$next_node, $expected_fee,
-			$upstream_force_closed, $downstream_force_closed);
+			events.pop().unwrap(), &$node, &$prev_node, &$next_node, $expected_fee, None,
+			$upstream_force_closed, $downstream_force_closed, false
+		);
 	}
 }
 
@@ -2407,7 +2523,65 @@ fn fail_payment_along_path<'a, 'b, 'c>(expected_path: &[&Node<'a, 'b, 'c>]) {
 	}
 }
 
-pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, clear_recipient_events: bool, expected_preimage: Option<PaymentPreimage>, is_probe: bool) -> Option<Event> {
+pub struct PassAlongPathArgs<'a, 'b, 'c, 'd> {
+	pub origin_node: &'a Node<'b, 'c, 'd>,
+	pub expected_path: &'a [&'a Node<'b, 'c, 'd>],
+	pub recv_value: u64,
+	pub payment_hash: PaymentHash,
+	pub payment_secret: Option<PaymentSecret>,
+	pub event: MessageSendEvent,
+	pub payment_claimable_expected: bool,
+	pub clear_recipient_events: bool,
+	pub expected_preimage: Option<PaymentPreimage>,
+	pub is_probe: bool,
+	pub custom_tlvs: Vec<(u64, Vec<u8>)>,
+}
+
+impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
+	pub fn new(
+		origin_node: &'a Node<'b, 'c, 'd>, expected_path: &'a [&'a Node<'b, 'c, 'd>], recv_value: u64,
+		payment_hash: PaymentHash, event: MessageSendEvent,
+	) -> Self {
+		Self {
+			origin_node, expected_path, recv_value, payment_hash, payment_secret: None, event,
+			payment_claimable_expected: true, clear_recipient_events: true, expected_preimage: None,
+			is_probe: false, custom_tlvs: Vec::new(),
+		}
+	}
+	pub fn without_clearing_recipient_events(mut self) -> Self {
+		self.clear_recipient_events = false;
+		self
+	}
+	pub fn is_probe(mut self) -> Self {
+		self.payment_claimable_expected = false;
+		self.is_probe = true;
+		self
+	}
+	pub fn without_claimable_event(mut self) -> Self {
+		self.payment_claimable_expected = false;
+		self
+	}
+	pub fn with_payment_secret(mut self, payment_secret: PaymentSecret) -> Self {
+		self.payment_secret = Some(payment_secret);
+		self
+	}
+	pub fn with_payment_preimage(mut self, payment_preimage: PaymentPreimage) -> Self {
+		self.expected_preimage = Some(payment_preimage);
+		self
+	}
+	pub fn with_custom_tlvs(mut self, custom_tlvs: Vec<(u64, Vec<u8>)>) -> Self {
+		self.custom_tlvs = custom_tlvs;
+		self
+	}
+}
+
+pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> {
+	let PassAlongPathArgs {
+		origin_node, expected_path, recv_value, payment_hash: our_payment_hash,
+		payment_secret: our_payment_secret, event: ev, payment_claimable_expected,
+		clear_recipient_events, expected_preimage, is_probe, custom_tlvs
+	} = args;
+
 	let mut payment_event = SendEvent::from_event(ev);
 	let mut prev_node = origin_node;
 	let mut event = None;
@@ -2438,8 +2612,19 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 						assert_eq!(our_payment_hash, *payment_hash);
 						assert_eq!(node.node.get_our_node_id(), receiver_node_id.unwrap());
 						assert!(onion_fields.is_some());
+						assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, custom_tlvs);
 						match &purpose {
-							PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+							PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
+								assert_eq!(expected_preimage, *payment_preimage);
+								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
+							},
+							PaymentPurpose::Bolt12OfferPayment { payment_preimage, payment_secret, .. } => {
+								assert_eq!(expected_preimage, *payment_preimage);
+								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
+								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
+							},
+							PaymentPurpose::Bolt12RefundPayment { payment_preimage, payment_secret, .. } => {
 								assert_eq!(expected_preimage, *payment_preimage);
 								assert_eq!(our_payment_secret.unwrap(), *payment_secret);
 								assert_eq!(Some(*payment_secret), onion_fields.as_ref().unwrap().payment_secret);
@@ -2474,7 +2659,17 @@ pub fn do_pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_p
 }
 
 pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &[&Node<'a, 'b, 'c>], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: Option<PaymentSecret>, ev: MessageSendEvent, payment_claimable_expected: bool, expected_preimage: Option<PaymentPreimage>) -> Option<Event> {
-	do_pass_along_path(origin_node, expected_path, recv_value, our_payment_hash, our_payment_secret, ev, payment_claimable_expected, true, expected_preimage, false)
+	let mut args = PassAlongPathArgs::new(origin_node, expected_path, recv_value, our_payment_hash, ev);
+	if !payment_claimable_expected {
+		args = args.without_claimable_event();
+	}
+	if let Some(payment_secret) = our_payment_secret {
+		args = args.with_payment_secret(payment_secret);
+	}
+	if let Some(payment_preimage) = expected_preimage {
+		args = args.with_payment_preimage(payment_preimage);
+	}
+	do_pass_along_path(args)
 }
 
 pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]]) {
@@ -2486,7 +2681,10 @@ pub fn send_probe_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expect
 	for path in expected_route.iter() {
 		let ev = remove_first_msg_event_to_node(&path[0].node.get_our_node_id(), &mut events);
 
-		do_pass_along_path(origin_node, path, 0, PaymentHash([0_u8; 32]), None, ev, false, false, None, true);
+		do_pass_along_path(PassAlongPathArgs::new(origin_node, path, 0, PaymentHash([0_u8; 32]), ev)
+			.is_probe()
+			.without_clearing_recipient_events());
+
 		let nodes_to_fail_payment: Vec<_> = vec![origin_node].into_iter().chain(path.iter().cloned()).collect();
 
 		fail_payment_along_path(nodes_to_fail_payment.as_slice());
@@ -2516,45 +2714,91 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(
 	origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool,
 	our_payment_preimage: PaymentPreimage
 ) -> u64 {
-	let extra_fees = vec![0; expected_paths.len()];
-	do_claim_payment_along_route_with_extra_penultimate_hop_fees(origin_node, expected_paths,
-		&extra_fees[..], skip_last, our_payment_preimage)
-}
-
-pub fn do_claim_payment_along_route_with_extra_penultimate_hop_fees<'a, 'b, 'c>(
-	origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], expected_extra_fees:
-	&[u32], skip_last: bool, our_payment_preimage: PaymentPreimage
-) -> u64 {
-	assert_eq!(expected_paths.len(), expected_extra_fees.len());
 	for path in expected_paths.iter() {
 		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
 	expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage);
-	pass_claimed_payment_along_route(origin_node, expected_paths, expected_extra_fees, skip_last, our_payment_preimage)
+	pass_claimed_payment_along_route(
+		ClaimAlongRouteArgs::new(origin_node, expected_paths, our_payment_preimage)
+			.skip_last(skip_last)
+	)
 }
 
-pub fn pass_claimed_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], expected_extra_fees: &[u32], skip_last: bool, our_payment_preimage: PaymentPreimage) -> u64 {
+pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
+	pub origin_node: &'a Node<'b, 'c, 'd>,
+	pub expected_paths: &'a [&'a [&'a Node<'b, 'c, 'd>]],
+	pub expected_extra_fees: Vec<u32>,
+	pub expected_min_htlc_overpay: Vec<u32>,
+	pub skip_last: bool,
+	pub payment_preimage: PaymentPreimage,
+	// Allow forwarding nodes to have taken 1 msat more fee than expected based on the downstream
+	// fulfill amount.
+	//
+	// Necessary because our test utils calculate the expected fee for an intermediate node based on
+	// the amount was claimed in their downstream peer's fulfill, but blinded intermediate nodes
+	// calculate their fee based on the inbound amount from their upstream peer, causing a difference
+	// in rounding.
+	pub allow_1_msat_fee_overpay: bool,
+}
+
+impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
+	pub fn new(
+		origin_node: &'a Node<'b, 'c, 'd>, expected_paths: &'a [&'a [&'a Node<'b, 'c, 'd>]],
+		payment_preimage: PaymentPreimage,
+	) -> Self {
+		Self {
+			origin_node, expected_paths, expected_extra_fees: vec![0; expected_paths.len()],
+			expected_min_htlc_overpay: vec![0; expected_paths.len()], skip_last: false, payment_preimage,
+			allow_1_msat_fee_overpay: false,
+		}
+	}
+	pub fn skip_last(mut self, skip_last: bool) -> Self {
+		self.skip_last = skip_last;
+		self
+	}
+	pub fn with_expected_extra_fees(mut self, extra_fees: Vec<u32>) -> Self {
+		self.expected_extra_fees = extra_fees;
+		self
+	}
+	pub fn with_expected_min_htlc_overpay(mut self, extra_fees: Vec<u32>) -> Self {
+		self.expected_min_htlc_overpay = extra_fees;
+		self
+	}
+	pub fn allow_1_msat_fee_overpay(mut self) -> Self {
+		self.allow_1_msat_fee_overpay = true;
+		self
+	}
+}
+
+pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArgs) -> u64 {
+	let ClaimAlongRouteArgs {
+		origin_node, expected_paths, expected_extra_fees, expected_min_htlc_overpay, skip_last,
+		payment_preimage: our_payment_preimage, allow_1_msat_fee_overpay,
+	} = args;
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
+	#[allow(unused)]
+	let mut fwd_amt_msat = 0;
 	match claim_event[0] {
 		Event::PaymentClaimed {
-			purpose: PaymentPurpose::SpontaneousPayment(preimage),
+			purpose: PaymentPurpose::SpontaneousPayment(preimage)
+				| PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(preimage), .. }
+				| PaymentPurpose::Bolt12OfferPayment { payment_preimage: Some(preimage), .. }
+				| PaymentPurpose::Bolt12RefundPayment { payment_preimage: Some(preimage), .. },
 			amount_msat,
 			ref htlcs,
-			.. }
-		| Event::PaymentClaimed {
-			purpose: PaymentPurpose::InvoicePayment { payment_preimage: Some(preimage), ..},
-			ref htlcs,
-			amount_msat,
 			..
 		} => {
 			assert_eq!(preimage, our_payment_preimage);
 			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
 			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
+			fwd_amt_msat = amount_msat;
 		},
 		Event::PaymentClaimed {
-			purpose: PaymentPurpose::InvoicePayment { .. },
+			purpose: PaymentPurpose::Bolt11InvoicePayment { .. }
+				| PaymentPurpose::Bolt12OfferPayment { .. }
+				| PaymentPurpose::Bolt12RefundPayment { .. },
 			payment_hash,
 			amount_msat,
 			ref htlcs,
@@ -2564,6 +2808,7 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, '
 			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
 			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
+			fwd_amt_msat = amount_msat;
 		}
 		_ => panic!(),
 	}
@@ -2595,8 +2840,12 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, '
 		per_path_msgs.push(msgs_from_ev!(&events[0]));
 	} else {
 		for expected_path in expected_paths.iter() {
-			// For MPP payments, we always want the message to the first node in the path.
-			let ev = remove_first_msg_event_to_node(&expected_path[0].node.get_our_node_id(), &mut events);
+			// For MPP payments, we want the fulfill message from the payee to the penultimate hop in the
+			// path.
+			let penultimate_hop_node_id = expected_path.iter().rev().skip(1).next()
+				.map(|n| n.node.get_our_node_id())
+				.unwrap_or(origin_node.node.get_our_node_id());
+			let ev = remove_first_msg_event_to_node(&penultimate_hop_node_id, &mut events);
 			per_path_msgs.push(msgs_from_ev!(&ev));
 		}
 	}
@@ -2620,19 +2869,34 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, '
 				{
 					$node.node.handle_update_fulfill_htlc(&$prev_node.node.get_our_node_id(), &next_msgs.as_ref().unwrap().0);
 					let mut fee = {
-						let per_peer_state = $node.node.per_peer_state.read().unwrap();
-						let peer_state = per_peer_state.get(&$prev_node.node.get_our_node_id())
-							.unwrap().lock().unwrap();
-						let channel = peer_state.channel_by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap();
-						if let Some(prev_config) = channel.context().prev_config() {
-							prev_config.forwarding_fee_base_msat
-						} else {
-							channel.context().config().forwarding_fee_base_msat
-						}
+						let (base_fee, prop_fee) = {
+							let per_peer_state = $node.node.per_peer_state.read().unwrap();
+							let peer_state = per_peer_state.get(&$prev_node.node.get_our_node_id())
+								.unwrap().lock().unwrap();
+							let channel = peer_state.channel_by_id.get(&next_msgs.as_ref().unwrap().0.channel_id).unwrap();
+							if let Some(prev_config) = channel.context().prev_config() {
+								(prev_config.forwarding_fee_base_msat as u64,
+								 prev_config.forwarding_fee_proportional_millionths as u64)
+							} else {
+								(channel.context().config().forwarding_fee_base_msat as u64,
+								 channel.context().config().forwarding_fee_proportional_millionths as u64)
+							}
+						};
+						((fwd_amt_msat * prop_fee / 1_000_000) + base_fee) as u32
 					};
-					if $idx == 1 { fee += expected_extra_fees[i]; }
-					expect_payment_forwarded!(*$node, $next_node, $prev_node, Some(fee as u64), false, false);
-					expected_total_fee_msat += fee as u64;
+
+					let mut expected_extra_fee = None;
+					if $idx == 1 {
+						fee += expected_extra_fees[i];
+						fee += expected_min_htlc_overpay[i];
+						expected_extra_fee = if expected_extra_fees[i] > 0 { Some(expected_extra_fees[i] as u64) } else { None };
+					}
+					let mut events = $node.node.get_and_clear_pending_events();
+					assert_eq!(events.len(), 1);
+					let actual_fee = expect_payment_forwarded(events.pop().unwrap(), *$node, $next_node, $prev_node,
+						Some(fee as u64), expected_extra_fee, false, false, allow_1_msat_fee_overpay);
+					expected_total_fee_msat += actual_fee.unwrap();
+					fwd_amt_msat += actual_fee.unwrap();
 					check_added_monitors!($node, 1);
 					let new_next_msgs = if $new_msgs {
 						let events = $node.node.get_and_clear_pending_msg_events();
@@ -2897,7 +3161,8 @@ pub fn create_node_cfgs_with_persisters<'a>(node_count: usize, chanmon_cfgs: &'a
 			logger: &chanmon_cfgs[i].logger,
 			tx_broadcaster: &chanmon_cfgs[i].tx_broadcaster,
 			fee_estimator: &chanmon_cfgs[i].fee_estimator,
-			router: test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[i].scorer),
+			router: test_utils::TestRouter::new(network_graph.clone(), &chanmon_cfgs[i].logger, &chanmon_cfgs[i].scorer),
+			message_router: test_utils::TestMessageRouter::new(network_graph.clone(), &chanmon_cfgs[i].keys_manager),
 			chain_monitor,
 			keys_manager: &chanmon_cfgs[i].keys_manager,
 			node_seed: seed,
@@ -2951,6 +3216,11 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	let connect_style = Rc::new(RefCell::new(ConnectStyle::random_style()));
 
 	for i in 0..node_count {
+		let dedicated_entropy = DedicatedEntropy(RandomBytes::new([i as u8; 32]));
+		let onion_messenger = OnionMessenger::new(
+			dedicated_entropy, cfgs[i].keys_manager, cfgs[i].logger, &chan_mgrs[i],
+			&cfgs[i].message_router, &chan_mgrs[i], IgnoringMessageHandler {},
+		);
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
 		let wallet_source = Arc::new(test_utils::TestWalletSource::new(SecretKey::from_slice(&[i as u8 + 1; 32]).unwrap()));
 		nodes.push(Node{
@@ -2958,7 +3228,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 			fee_estimator: cfgs[i].fee_estimator, router: &cfgs[i].router,
 			chain_monitor: &cfgs[i].chain_monitor, keys_manager: &cfgs[i].keys_manager,
 			node: &chan_mgrs[i], network_graph: cfgs[i].network_graph.as_ref(), gossip_sync,
-			node_seed: cfgs[i].node_seed, network_chan_count: chan_count.clone(),
+			node_seed: cfgs[i].node_seed, onion_messenger, network_chan_count: chan_count.clone(),
 			network_payment_count: payment_count.clone(), logger: cfgs[i].logger,
 			blocks: Arc::clone(&cfgs[i].tx_broadcaster.blocks),
 			connect_style: Rc::clone(&connect_style),
@@ -2973,20 +3243,50 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 	for i in 0..node_count {
 		for j in (i+1)..node_count {
-			nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &msgs::Init {
-				features: nodes[j].override_init_features.borrow().clone().unwrap_or_else(|| nodes[j].node.init_features()),
+			let node_id_i = nodes[i].node.get_our_node_id();
+			let node_id_j = nodes[j].node.get_our_node_id();
+
+			let init_i = msgs::Init {
+				features: nodes[i].init_features(&node_id_j),
 				networks: None,
 				remote_network_address: None,
-			}, true).unwrap();
-			nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &msgs::Init {
-				features: nodes[i].override_init_features.borrow().clone().unwrap_or_else(|| nodes[i].node.init_features()),
+			};
+			let init_j = msgs::Init {
+				features: nodes[j].init_features(&node_id_i),
 				networks: None,
 				remote_network_address: None,
-			}, false).unwrap();
+			};
+
+			nodes[i].node.peer_connected(&node_id_j, &init_j, true).unwrap();
+			nodes[j].node.peer_connected(&node_id_i, &init_i, false).unwrap();
+			nodes[i].onion_messenger.peer_connected(&node_id_j, &init_j, true).unwrap();
+			nodes[j].onion_messenger.peer_connected(&node_id_i, &init_i, false).unwrap();
 		}
 	}
 
 	nodes
+}
+
+pub fn connect_dummy_node<'a, 'b: 'a, 'c: 'b>(node: &Node<'a, 'b, 'c>) {
+	let node_id_dummy = PublicKey::from_slice(&[2; 33]).unwrap();
+
+	let mut dummy_init_features = InitFeatures::empty();
+	dummy_init_features.set_static_remote_key_required();
+
+	let init_dummy = msgs::Init {
+		features: dummy_init_features,
+		networks: None,
+		remote_network_address: None
+	};
+
+	node.node.peer_connected(&node_id_dummy, &init_dummy, true).unwrap();
+	node.onion_messenger.peer_connected(&node_id_dummy, &init_dummy, true).unwrap();
+}
+
+pub fn disconnect_dummy_node<'a, 'b: 'a, 'c: 'b>(node: &Node<'a, 'b, 'c>) {
+	let node_id_dummy = PublicKey::from_slice(&[2; 33]).unwrap();
+	node.node.peer_disconnected(&node_id_dummy);
+	node.onion_messenger.peer_disconnected(&node_id_dummy);
 }
 
 // Note that the following only works for CLTV values up to 128
@@ -3008,7 +3308,7 @@ pub enum HTLCType { NONE, TIMEOUT, SUCCESS }
 /// also fail.
 pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction), commitment_tx: Option<Transaction>, has_htlc_tx: HTLCType) -> Vec<Transaction>  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
-	let mut txn_seen = HashSet::new();
+	let mut txn_seen = new_hash_set();
 	node_txn.retain(|tx| txn_seen.insert(tx.txid()));
 	assert!(node_txn.len() >= if commitment_tx.is_some() { 0 } else { 1 } + if has_htlc_tx == HTLCType::NONE { 0 } else { 1 });
 
@@ -3073,7 +3373,7 @@ pub fn test_revoked_htlc_claim_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>
 
 pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<Transaction>) -> Vec<Transaction>  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
-	let mut txn_seen = HashSet::new();
+	let mut txn_seen = new_hash_set();
 	node_txn.retain(|tx| txn_seen.insert(tx.txid()));
 
 	let mut found_prev = false;
@@ -3100,15 +3400,21 @@ pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<
 }
 
 pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, 'b, 'c>>, a: usize, b: usize, needs_err_handle: bool, expected_error: &str)  {
+	let mut dummy_connected = false;
+	if !is_any_peer_connected(&nodes[a]) {
+		connect_dummy_node(&nodes[a]);
+		dummy_connected = true
+	}
+
 	let events_1 = nodes[a].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 2);
-	let as_update = match events_1[0] {
+	let as_update = match events_1[1] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
-	match events_1[1] {
+	match events_1[0] {
 		MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 			assert_eq!(node_id, nodes[b].node.get_our_node_id());
 			assert_eq!(msg.data, expected_error);
@@ -3125,17 +3431,24 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, '
 		},
 		_ => panic!("Unexpected event"),
 	}
-
+	if dummy_connected {
+		disconnect_dummy_node(&nodes[a]);
+		dummy_connected = false;
+	}
+	if !is_any_peer_connected(&nodes[b]) {
+		connect_dummy_node(&nodes[b]);
+		dummy_connected = true;
+	}
 	let events_2 = nodes[b].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), if needs_err_handle { 1 } else { 2 });
-	let bs_update = match events_2[0] {
+	let bs_update = match events_2.last().unwrap() {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
 			msg.clone()
 		},
 		_ => panic!("Unexpected event"),
 	};
 	if !needs_err_handle {
-		match events_2[1] {
+		match events_2[0] {
 			MessageSendEvent::HandleError { node_id, action: msgs::ErrorAction::SendErrorMessage { ref msg } } => {
 				assert_eq!(node_id, nodes[a].node.get_our_node_id());
 				assert_eq!(msg.data, expected_error);
@@ -3147,7 +3460,9 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, '
 			_ => panic!("Unexpected event"),
 		}
 	}
-
+	if dummy_connected {
+		disconnect_dummy_node(&nodes[b]);
+	}
 	for node in nodes {
 		node.gossip_sync.handle_channel_update(&as_update).unwrap();
 		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
@@ -3173,7 +3488,7 @@ macro_rules! get_channel_value_stat {
 macro_rules! get_chan_reestablish_msgs {
 	($src_node: expr, $dst_node: expr) => {
 		{
-			let mut announcements = $crate::prelude::HashSet::new();
+			let mut announcements = $crate::prelude::new_hash_set();
 			let mut res = Vec::with_capacity(1);
 			for msg in $src_node.node.get_and_clear_pending_msg_events() {
 				if let MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } = msg {

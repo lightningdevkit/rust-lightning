@@ -379,7 +379,6 @@ mod tests {
 	use lightning::ln::functional_test_utils::*;
 	use lightning::util::test_utils;
 	use lightning::util::persist::read_channel_monitors;
-	use std::fs;
 	use std::str::FromStr;
 
 	impl Drop for FilesystemStore {
@@ -450,7 +449,7 @@ mod tests {
 		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
-		let update_id = update_map.get(&added_monitors[0].0.to_channel_id()).unwrap();
+		let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();
 
 		// Set the store's directory to read-only, which should result in
 		// returning an unrecoverable failure when we then attempt to persist a
@@ -489,7 +488,7 @@ mod tests {
 		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
-		let update_id = update_map.get(&added_monitors[0].0.to_channel_id()).unwrap();
+		let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();
 
 		// Create the store with an invalid directory name and test that the
 		// channel fails to open because the directories fail to be created. There

@@ -18,6 +18,7 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
+use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef};
 use crate::sign::SpendableOutputDescriptor;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
@@ -38,20 +39,23 @@ use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
 use crate::io;
-use crate::prelude::*;
 use core::time::Duration;
 use core::ops::Deref;
 use crate::sync::Arc;
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaymentPurpose {
-	/// Information for receiving a payment that we generated an invoice for.
-	InvoicePayment {
+	/// A payment for a BOLT 11 invoice.
+	Bolt11InvoicePayment {
 		/// The preimage to the payment_hash, if the payment hash (and secret) were fetched via
-		/// [`ChannelManager::create_inbound_payment`]. If provided, this can be handed directly to
-		/// [`ChannelManager::claim_funds`].
+		/// [`ChannelManager::create_inbound_payment`]. When handling [`Event::PaymentClaimable`],
+		/// this can be passed directly to [`ChannelManager::claim_funds`] to claim the payment. No
+		/// action is needed when seen in [`Event::PaymentClaimed`].
 		///
 		/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
@@ -68,6 +72,48 @@ pub enum PaymentPurpose {
 		/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 		payment_secret: PaymentSecret,
 	},
+	/// A payment for a BOLT 12 [`Offer`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	Bolt12OfferPayment {
+		/// The preimage to the payment hash. When handling [`Event::PaymentClaimable`], this can be
+		/// passed directly to [`ChannelManager::claim_funds`], if provided. No action is needed
+		/// when seen in [`Event::PaymentClaimed`].
+		///
+		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+		payment_preimage: Option<PaymentPreimage>,
+		/// The secret used to authenticate the sender to the recipient, preventing a number of
+		/// de-anonymization attacks while routing a payment.
+		///
+		/// See [`PaymentPurpose::Bolt11InvoicePayment::payment_secret`] for further details.
+		payment_secret: PaymentSecret,
+		/// The context of the payment such as information about the corresponding [`Offer`] and
+		/// [`InvoiceRequest`].
+		///
+		/// [`Offer`]: crate::offers::offer::Offer
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		payment_context: Bolt12OfferContext,
+	},
+	/// A payment for a BOLT 12 [`Refund`].
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	Bolt12RefundPayment {
+		/// The preimage to the payment hash. When handling [`Event::PaymentClaimable`], this can be
+		/// passed directly to [`ChannelManager::claim_funds`], if provided. No action is needed
+		/// when seen in [`Event::PaymentClaimed`].
+		///
+		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
+		payment_preimage: Option<PaymentPreimage>,
+		/// The secret used to authenticate the sender to the recipient, preventing a number of
+		/// de-anonymization attacks while routing a payment.
+		///
+		/// See [`PaymentPurpose::Bolt11InvoicePayment::payment_secret`] for further details.
+		payment_secret: PaymentSecret,
+		/// The context of the payment such as information about the corresponding [`Refund`].
+		///
+		/// [`Refund`]: crate::offers::refund::Refund
+		payment_context: Bolt12RefundContext,
+	},
 	/// Because this is a spontaneous payment, the payer generated their own preimage rather than us
 	/// (the payee) providing a preimage.
 	SpontaneousPayment(PaymentPreimage),
@@ -77,17 +123,67 @@ impl PaymentPurpose {
 	/// Returns the preimage for this payment, if it is known.
 	pub fn preimage(&self) -> Option<PaymentPreimage> {
 		match self {
-			PaymentPurpose::InvoicePayment { payment_preimage, .. } => *payment_preimage,
+			PaymentPurpose::Bolt11InvoicePayment { payment_preimage, .. } => *payment_preimage,
+			PaymentPurpose::Bolt12OfferPayment { payment_preimage, .. } => *payment_preimage,
+			PaymentPurpose::Bolt12RefundPayment { payment_preimage, .. } => *payment_preimage,
 			PaymentPurpose::SpontaneousPayment(preimage) => Some(*preimage),
+		}
+	}
+
+	pub(crate) fn is_keysend(&self) -> bool {
+		match self {
+			PaymentPurpose::Bolt11InvoicePayment { .. } => false,
+			PaymentPurpose::Bolt12OfferPayment { .. } => false,
+			PaymentPurpose::Bolt12RefundPayment { .. } => false,
+			PaymentPurpose::SpontaneousPayment(..) => true,
+		}
+	}
+
+	pub(crate) fn from_parts(
+		payment_preimage: Option<PaymentPreimage>, payment_secret: PaymentSecret,
+		payment_context: Option<PaymentContext>,
+	) -> Self {
+		match payment_context {
+			Some(PaymentContext::Unknown(_)) | None => {
+				PaymentPurpose::Bolt11InvoicePayment {
+					payment_preimage,
+					payment_secret,
+				}
+			},
+			Some(PaymentContext::Bolt12Offer(context)) => {
+				PaymentPurpose::Bolt12OfferPayment {
+					payment_preimage,
+					payment_secret,
+					payment_context: context,
+				}
+			},
+			Some(PaymentContext::Bolt12Refund(context)) => {
+				PaymentPurpose::Bolt12RefundPayment {
+					payment_preimage,
+					payment_secret,
+					payment_context: context,
+				}
+			},
 		}
 	}
 }
 
 impl_writeable_tlv_based_enum!(PaymentPurpose,
-	(0, InvoicePayment) => {
+	(0, Bolt11InvoicePayment) => {
 		(0, payment_preimage, option),
 		(2, payment_secret, required),
-	};
+	},
+	(4, Bolt12OfferPayment) => {
+		(0, payment_preimage, option),
+		(2, payment_secret, required),
+		(4, payment_context, required),
+	},
+	(6, Bolt12RefundPayment) => {
+		(0, payment_preimage, option),
+		(2, payment_secret, required),
+		(4, payment_context, required),
+	},
+	;
 	(2, SpontaneousPayment)
 );
 
@@ -184,8 +280,20 @@ pub enum ClosureReason {
 	HolderForceClosed,
 	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
 	/// the cooperative close transaction. Note the shutdown may have been initiated by us.
-	//TODO: split between CounterpartyInitiated/LocallyInitiated
-	CooperativeClosure,
+	///
+	/// This was only set in versions of LDK prior to 0.0.122.
+	// Can be removed once we disallow downgrading to 0.0.121
+	LegacyCooperativeClosure,
+	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
+	/// the cooperative close transaction. This indicates that the shutdown was initiated by our
+	/// counterparty.
+	///
+	/// In rare cases where we initiated closure immediately prior to shutting down without
+	/// persisting, this value may be provided for channels we initiated closure for.
+	CounterpartyInitiatedCooperativeClosure,
+	/// The channel was closed after negotiating a cooperative close and we've now broadcasted
+	/// the cooperative close transaction. This indicates that the shutdown was initiated by us.
+	LocallyInitiatedCooperativeClosure,
 	/// A commitment transaction was confirmed on chain, closing the channel. Most likely this
 	/// commitment transaction came from our counterparty, but it may also have come from
 	/// a copy of our own `ChannelMonitor`.
@@ -220,6 +328,8 @@ pub enum ClosureReason {
 	/// Another channel in the same funding batch closed before the funding transaction
 	/// was ready to be broadcast.
 	FundingBatchClosure,
+	/// One of our HTLCs timed out in a channel, causing us to force close the channel.
+	HTLCsTimedOut,
 }
 
 impl core::fmt::Display for ClosureReason {
@@ -229,8 +339,10 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::CounterpartyForceClosed { peer_msg } => {
 				f.write_fmt(format_args!("counterparty force-closed with message: {}", peer_msg))
 			},
-			ClosureReason::HolderForceClosed => f.write_str("user manually force-closed the channel"),
-			ClosureReason::CooperativeClosure => f.write_str("the channel was cooperatively closed"),
+			ClosureReason::HolderForceClosed => f.write_str("user force-closed the channel"),
+			ClosureReason::LegacyCooperativeClosure => f.write_str("the channel was cooperatively closed"),
+			ClosureReason::CounterpartyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by our peer"),
+			ClosureReason::LocallyInitiatedCooperativeClosure => f.write_str("the channel was cooperatively closed by us"),
 			ClosureReason::CommitmentTxConfirmed => f.write_str("commitment or closing transaction was confirmed on chain."),
 			ClosureReason::FundingTimedOut => write!(f, "funding transaction failed to confirm within {} blocks", FUNDING_CONF_DEADLINE_BLOCKS),
 			ClosureReason::ProcessingError { err } => {
@@ -241,6 +353,7 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::OutdatedChannelManager => f.write_str("the ChannelManager read from disk was stale compared to ChannelMonitor(s)"),
 			ClosureReason::CounterpartyCoopClosedUnfundedChannel => f.write_str("the peer requested the unfunded channel be closed"),
 			ClosureReason::FundingBatchClosure => f.write_str("another channel in the same funding batch closed"),
+			ClosureReason::HTLCsTimedOut => f.write_str("htlcs on the channel timed out"),
 		}
 	}
 }
@@ -250,12 +363,15 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(1, FundingTimedOut) => {},
 	(2, HolderForceClosed) => {},
 	(6, CommitmentTxConfirmed) => {},
-	(4, CooperativeClosure) => {},
+	(4, LegacyCooperativeClosure) => {},
 	(8, ProcessingError) => { (1, err, required) },
 	(10, DisconnectedPeer) => {},
 	(12, OutdatedChannelManager) => {},
 	(13, CounterpartyCoopClosedUnfundedChannel) => {},
-	(15, FundingBatchClosure) => {}
+	(15, FundingBatchClosure) => {},
+	(17, CounterpartyInitiatedCooperativeClosure) => {},
+	(19, LocallyInitiatedCooperativeClosure) => {},
+	(21, HTLCsTimedOut) => {},
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].
@@ -282,6 +398,8 @@ pub enum HTLCDestination {
 		/// Short channel id we are requesting to forward an HTLC to.
 		requested_forward_scid: u64
 	},
+	/// We couldn't decode the incoming onion to obtain the forwarding details.
+	InvalidOnion,
 	/// Failure scenario where an HTLC may have been forwarded to be intended for us,
 	/// but is invalid for some reason, so we reject it.
 	///
@@ -309,6 +427,7 @@ impl_writeable_tlv_based_enum_upgradable!(HTLCDestination,
 	(2, UnknownNextHop) => {
 		(0, requested_forward_scid, required),
 	},
+	(3, InvalidOnion) => {},
 	(4, FailedPayment) => {
 		(0, payment_hash, required),
 	},
@@ -352,6 +471,10 @@ pub enum PaymentFailureReason {
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
 	PaymentExpired,
 	/// We failed to find a route while retrying the payment.
+	///
+	/// Note that this generally indicates that we've exhausted the available set of possible
+	/// routes - we tried the payment over a few routes but were not able to find any further
+	/// candidate routes beyond those.
 	RouteNotFound,
 	/// This error should generally never happen. This likely means that there is a problem with
 	/// your router.
@@ -763,9 +886,15 @@ pub enum Event {
 	},
 	/// Used to indicate that an output which you should know how to spend was confirmed on chain
 	/// and is now spendable.
-	/// Such an output will *not* ever be spent by rust-lightning, and are not at risk of your
+	///
+	/// Such an output will *never* be spent directly by LDK, and are not at risk of your
 	/// counterparty spending them due to some kind of timeout. Thus, you need to store them
 	/// somewhere and spend them when you create on-chain transactions.
+	///
+	/// You may hand them to the [`OutputSweeper`] utility which will store and (re-)generate spending
+	/// transactions for you.
+	///
+	/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
 	SpendableOutputs {
 		/// The outputs which you should store as spendable by you.
 		outputs: Vec<SpendableOutputDescriptor>,
@@ -777,13 +906,25 @@ pub enum Event {
 	/// This event is generated when a payment has been successfully forwarded through us and a
 	/// forwarding fee earned.
 	PaymentForwarded {
-		/// The incoming channel between the previous node and us. This is only `None` for events
-		/// generated or serialized by versions prior to 0.0.107.
+		/// The channel id of the incoming channel between the previous node and us.
+		///
+		/// This is only `None` for events generated or serialized by versions prior to 0.0.107.
 		prev_channel_id: Option<ChannelId>,
-		/// The outgoing channel between the next node and us. This is only `None` for events
-		/// generated or serialized by versions prior to 0.0.107.
+		/// The channel id of the outgoing channel between the next node and us.
+		///
+		/// This is only `None` for events generated or serialized by versions prior to 0.0.107.
 		next_channel_id: Option<ChannelId>,
-		/// The fee, in milli-satoshis, which was earned as a result of the payment.
+		/// The `user_channel_id` of the incoming channel between the previous node and us.
+		///
+		/// This is only `None` for events generated or serialized by versions prior to 0.0.122.
+		prev_user_channel_id: Option<u128>,
+		/// The `user_channel_id` of the outgoing channel between the next node and us.
+		///
+		/// This will be `None` if the payment was settled via an on-chain transaction. See the
+		/// caveat described for the `total_fee_earned_msat` field. Moreover it will be `None` for
+		/// events generated or serialized by versions prior to 0.0.122.
+		next_user_channel_id: Option<u128>,
+		/// The total fee, in milli-satoshis, which was earned as a result of the payment.
 		///
 		/// Note that if we force-closed the channel over which we forwarded an HTLC while the HTLC
 		/// was pending, the amount the next hop claimed will have been rounded down to the nearest
@@ -794,15 +935,29 @@ pub enum Event {
 		/// If the channel which sent us the payment has been force-closed, we will claim the funds
 		/// via an on-chain transaction. In that case we do not yet know the on-chain transaction
 		/// fees which we will spend and will instead set this to `None`. It is possible duplicate
-		/// `PaymentForwarded` events are generated for the same payment iff `fee_earned_msat` is
+		/// `PaymentForwarded` events are generated for the same payment iff `total_fee_earned_msat` is
 		/// `None`.
-		fee_earned_msat: Option<u64>,
+		total_fee_earned_msat: Option<u64>,
+		/// The share of the total fee, in milli-satoshis, which was withheld in addition to the
+		/// forwarding fee.
+		///
+		/// This will only be `Some` if we forwarded an intercepted HTLC with less than the
+		/// expected amount. This means our counterparty accepted to receive less than the invoice
+		/// amount, e.g., by claiming the payment featuring a corresponding
+		/// [`PaymentClaimable::counterparty_skimmed_fee_msat`].
+		///
+		/// Will also always be `None` for events serialized with LDK prior to version 0.0.122.
+		///
+		/// The caveat described above the `total_fee_earned_msat` field applies here as well.
+		///
+		/// [`PaymentClaimable::counterparty_skimmed_fee_msat`]: Self::PaymentClaimable::counterparty_skimmed_fee_msat
+		skimmed_fee_msat: Option<u64>,
 		/// If this is `true`, the forwarded HTLC was claimed by our counterparty via an on-chain
 		/// transaction.
 		claim_from_onchain_tx: bool,
 		/// The final amount forwarded, in milli-satoshis, after the fee is deducted.
 		///
-		/// The caveat described above the `fee_earned_msat` field applies here as well.
+		/// The caveat described above the `total_fee_earned_msat` field applies here as well.
 		outbound_amount_forwarded_msat: Option<u64>,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is being opened and pending
@@ -831,6 +986,10 @@ pub enum Event {
 		counterparty_node_id: PublicKey,
 		/// The outpoint of the channel's funding transaction.
 		funding_txo: OutPoint,
+		/// The features that this channel will operate with.
+		///
+		/// Will be `None` for channels created prior to LDK version 0.0.122.
+		channel_type: Option<ChannelTypeFeatures>,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is ready to
 	/// be used. This event is emitted either when the funding transaction has been confirmed
@@ -853,8 +1012,8 @@ pub enum Event {
 		/// The features that this channel will operate with.
 		channel_type: ChannelTypeFeatures,
 	},
-	/// Used to indicate that a previously opened channel with the given `channel_id` is in the
-	/// process of closure.
+	/// Used to indicate that a channel that got past the initial handshake with the given `channel_id` is in the
+	/// process of closure. This includes previously opened channels, and channels that time out from not being funded.
 	///
 	/// Note that this event is only triggered for accepted channels: if the
 	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true and the channel is
@@ -999,10 +1158,27 @@ impl Writeable for Event {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
 				let payment_preimage;
+				let mut payment_context = None;
 				match &purpose {
-					PaymentPurpose::InvoicePayment { payment_preimage: preimage, payment_secret: secret } => {
+					PaymentPurpose::Bolt11InvoicePayment {
+						payment_preimage: preimage, payment_secret: secret
+					} => {
 						payment_secret = Some(secret);
 						payment_preimage = *preimage;
+					},
+					PaymentPurpose::Bolt12OfferPayment {
+						payment_preimage: preimage, payment_secret: secret, payment_context: context
+					} => {
+						payment_secret = Some(secret);
+						payment_preimage = *preimage;
+						payment_context = Some(PaymentContextRef::Bolt12Offer(context));
+					},
+					PaymentPurpose::Bolt12RefundPayment {
+						payment_preimage: preimage, payment_secret: secret, payment_context: context
+					} => {
+						payment_secret = Some(secret);
+						payment_preimage = *preimage;
+						payment_context = Some(PaymentContextRef::Bolt12Refund(context));
 					},
 					PaymentPurpose::SpontaneousPayment(preimage) => {
 						payment_preimage = Some(*preimage);
@@ -1022,6 +1198,7 @@ impl Writeable for Event {
 					(8, payment_preimage, option),
 					(9, onion_fields, option),
 					(10, skimmed_fee_opt, option),
+					(11, payment_context, option),
 				});
 			},
 			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
@@ -1083,16 +1260,20 @@ impl Writeable for Event {
 				});
 			}
 			&Event::PaymentForwarded {
-				fee_earned_msat, prev_channel_id, claim_from_onchain_tx,
-				next_channel_id, outbound_amount_forwarded_msat
+				prev_channel_id, next_channel_id, prev_user_channel_id, next_user_channel_id,
+				total_fee_earned_msat, skimmed_fee_msat, claim_from_onchain_tx,
+				outbound_amount_forwarded_msat,
 			} => {
 				7u8.write(writer)?;
 				write_tlv_fields!(writer, {
-					(0, fee_earned_msat, option),
+					(0, total_fee_earned_msat, option),
 					(1, prev_channel_id, option),
 					(2, claim_from_onchain_tx, required),
 					(3, next_channel_id, option),
 					(5, outbound_amount_forwarded_msat, option),
+					(7, skimmed_fee_msat, option),
+					(9, prev_user_channel_id, option),
+					(11, next_user_channel_id, option),
 				});
 			},
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason,
@@ -1199,10 +1380,14 @@ impl Writeable for Event {
 					(6, channel_type, required),
 				});
 			},
-			&Event::ChannelPending { ref channel_id, ref user_channel_id, ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo } => {
+			&Event::ChannelPending { ref channel_id, ref user_channel_id,
+				ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo,
+				ref channel_type
+			} => {
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
+					(1, channel_type, option),
 					(2, user_channel_id, required),
 					(4, former_temporary_channel_id, required),
 					(6, counterparty_node_id, required),
@@ -1232,7 +1417,7 @@ impl MaybeReadable for Event {
 			// Note that we do not write a length-prefixed TLV for FundingGenerationReady events.
 			0u8 => Ok(None),
 			1u8 => {
-				let f = || {
+				let mut f = || {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_preimage = None;
 					let mut payment_secret = None;
@@ -1244,6 +1429,7 @@ impl MaybeReadable for Event {
 					let mut claim_deadline = None;
 					let mut via_user_channel_id = None;
 					let mut onion_fields = None;
+					let mut payment_context = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
@@ -1256,12 +1442,10 @@ impl MaybeReadable for Event {
 						(8, payment_preimage, option),
 						(9, onion_fields, option),
 						(10, counterparty_skimmed_fee_msat_opt, option),
+						(11, payment_context, option),
 					});
 					let purpose = match payment_secret {
-						Some(secret) => PaymentPurpose::InvoicePayment {
-							payment_preimage,
-							payment_secret: secret
-						},
+						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context),
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
 					};
@@ -1280,7 +1464,7 @@ impl MaybeReadable for Event {
 				f()
 			},
 			2u8 => {
-				let f = || {
+				let mut f = || {
 					let mut payment_preimage = PaymentPreimage([0; 32]);
 					let mut payment_hash = None;
 					let mut payment_id = None;
@@ -1304,7 +1488,7 @@ impl MaybeReadable for Event {
 				f()
 			},
 			3u8 => {
-				let f = || {
+				let mut f = || {
 					#[cfg(test)]
 					let error_code = Readable::read(reader)?;
 					#[cfg(test)]
@@ -1347,7 +1531,7 @@ impl MaybeReadable for Event {
 			},
 			4u8 => Ok(None),
 			5u8 => {
-				let f = || {
+				let mut f = || {
 					let mut outputs = WithoutLength(Vec::new());
 					let mut channel_id: Option<ChannelId> = None;
 					read_tlv_fields!(reader, {
@@ -1383,28 +1567,35 @@ impl MaybeReadable for Event {
 				}))
 			},
 			7u8 => {
-				let f = || {
-					let mut fee_earned_msat = None;
+				let mut f = || {
 					let mut prev_channel_id = None;
-					let mut claim_from_onchain_tx = false;
 					let mut next_channel_id = None;
+					let mut prev_user_channel_id = None;
+					let mut next_user_channel_id = None;
+					let mut total_fee_earned_msat = None;
+					let mut skimmed_fee_msat = None;
+					let mut claim_from_onchain_tx = false;
 					let mut outbound_amount_forwarded_msat = None;
 					read_tlv_fields!(reader, {
-						(0, fee_earned_msat, option),
+						(0, total_fee_earned_msat, option),
 						(1, prev_channel_id, option),
 						(2, claim_from_onchain_tx, required),
 						(3, next_channel_id, option),
 						(5, outbound_amount_forwarded_msat, option),
+						(7, skimmed_fee_msat, option),
+						(9, prev_user_channel_id, option),
+						(11, next_user_channel_id, option),
 					});
 					Ok(Some(Event::PaymentForwarded {
-						fee_earned_msat, prev_channel_id, claim_from_onchain_tx, next_channel_id,
-						outbound_amount_forwarded_msat
+						prev_channel_id, next_channel_id, prev_user_channel_id,
+						next_user_channel_id, total_fee_earned_msat, skimmed_fee_msat,
+						claim_from_onchain_tx, outbound_amount_forwarded_msat,
 					}))
 				};
 				f()
 			},
 			9u8 => {
-				let f = || {
+				let mut f = || {
 					let mut channel_id = ChannelId::new_zero();
 					let mut reason = UpgradableRequired(None);
 					let mut user_channel_id_low_opt: Option<u64> = None;
@@ -1434,7 +1625,7 @@ impl MaybeReadable for Event {
 				f()
 			},
 			11u8 => {
-				let f = || {
+				let mut f = || {
 					let mut channel_id = ChannelId::new_zero();
 					let mut transaction = Transaction{ version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 					read_tlv_fields!(reader, {
@@ -1446,7 +1637,7 @@ impl MaybeReadable for Event {
 				f()
 			},
 			13u8 => {
-				let f = || {
+				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, option),
@@ -1462,7 +1653,7 @@ impl MaybeReadable for Event {
 				f()
 			},
 			15u8 => {
-				let f = || {
+				let mut f = || {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_id = PaymentId([0; 32]);
 					let mut reason = None;
@@ -1484,7 +1675,7 @@ impl MaybeReadable for Event {
 				Ok(None)
 			},
 			19u8 => {
-				let f = || {
+				let mut f = || {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut purpose = UpgradableRequired(None);
 					let mut amount_msat = 0;
@@ -1511,7 +1702,7 @@ impl MaybeReadable for Event {
 				f()
 			},
 			21u8 => {
-				let f = || {
+				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, required),
@@ -1527,7 +1718,7 @@ impl MaybeReadable for Event {
 				f()
 			},
 			23u8 => {
-				let f = || {
+				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, payment_hash, required),
@@ -1545,7 +1736,7 @@ impl MaybeReadable for Event {
 				f()
 			},
 			25u8 => {
-				let f = || {
+				let mut f = || {
 					let mut prev_channel_id = ChannelId::new_zero();
 					let mut failed_next_destination_opt = UpgradableRequired(None);
 					read_tlv_fields!(reader, {
@@ -1561,7 +1752,7 @@ impl MaybeReadable for Event {
 			},
 			27u8 => Ok(None),
 			29u8 => {
-				let f = || {
+				let mut f = || {
 					let mut channel_id = ChannelId::new_zero();
 					let mut user_channel_id: u128 = 0;
 					let mut counterparty_node_id = RequiredWrapper(None);
@@ -1583,14 +1774,16 @@ impl MaybeReadable for Event {
 				f()
 			},
 			31u8 => {
-				let f = || {
+				let mut f = || {
 					let mut channel_id = ChannelId::new_zero();
 					let mut user_channel_id: u128 = 0;
 					let mut former_temporary_channel_id = None;
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut funding_txo = RequiredWrapper(None);
+					let mut channel_type = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
+						(1, channel_type, option),
 						(2, user_channel_id, required),
 						(4, former_temporary_channel_id, required),
 						(6, counterparty_node_id, required),
@@ -1602,13 +1795,14 @@ impl MaybeReadable for Event {
 						user_channel_id,
 						former_temporary_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						funding_txo: funding_txo.0.unwrap()
+						funding_txo: funding_txo.0.unwrap(),
+						channel_type,
 					}))
 				};
 				f()
 			},
 			33u8 => {
-				let f = || {
+				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 					});

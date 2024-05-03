@@ -79,8 +79,15 @@ mod shutdown_tests;
 #[cfg(all(test, async_signing))]
 #[allow(unused_mut)]
 mod async_signer_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod offers_tests;
+#[allow(dead_code)] // TODO(dual_funding): Exchange for dual_funding cfg
+pub(crate) mod interactivetxs;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
+
+use bitcoin::hashes::{sha256::Hash as Sha256, Hash};
 
 /// payment_hash type, use to cross-lock hop
 ///
@@ -106,13 +113,22 @@ impl core::fmt::Display for PaymentPreimage {
 	}
 }
 
+/// Converts a `PaymentPreimage` into a `PaymentHash` by hashing the preimage with SHA256.
+impl From<PaymentPreimage> for PaymentHash {
+	fn from(value: PaymentPreimage) -> Self {
+		PaymentHash(Sha256::hash(&value.0).to_byte_array())
+	}
+}
+
 /// payment_secret type, use to authenticate sender to the receiver and tie MPP HTLCs together
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
 pub struct PaymentSecret(pub [u8; 32]);
 
+#[allow(unused_imports)]
 use crate::prelude::*;
+
 use bitcoin::bech32;
 use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
 

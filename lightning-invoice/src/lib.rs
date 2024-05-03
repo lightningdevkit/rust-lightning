@@ -31,7 +31,6 @@ pub mod utils;
 
 extern crate bech32;
 #[macro_use] extern crate lightning;
-extern crate num_traits;
 extern crate secp256k1;
 extern crate alloc;
 #[cfg(any(test, feature = "std"))]
@@ -79,14 +78,7 @@ mod tb;
 
 #[allow(unused_imports)]
 mod prelude {
-	#[cfg(feature = "hashbrown")]
-	extern crate hashbrown;
-
 	pub use alloc::{vec, vec::Vec, string::String};
-	#[cfg(not(feature = "hashbrown"))]
-	pub use std::collections::{HashMap, hash_map};
-	#[cfg(feature = "hashbrown")]
-	pub use self::hashbrown::{HashMap, HashSet, hash_map};
 
 	pub use alloc::string::ToString;
 }
@@ -550,7 +542,7 @@ impl InvoiceBuilder<tb::False, tb::False, tb::False, tb::False, tb::False, tb::F
 			amount: None,
 			si_prefix: None,
 			timestamp: None,
-			tagged_fields: Vec::new(),
+			tagged_fields: Vec::with_capacity(8),
 			error: None,
 
 			phantom_d: core::marker::PhantomData,
@@ -1076,9 +1068,10 @@ impl RawBolt11Invoice {
 		find_all_extract!(self.known_tagged_fields(), TaggedField::PrivateRoute(ref x), x).collect()
 	}
 
+	/// Returns `None` if no amount is set or on overflow.
 	pub fn amount_pico_btc(&self) -> Option<u64> {
-		self.hrp.raw_amount.map(|v| {
-			v * self.hrp.si_prefix.as_ref().map_or(1_000_000_000_000, |si| { si.multiplier() })
+		self.hrp.raw_amount.and_then(|v| {
+			v.checked_mul(self.hrp.si_prefix.as_ref().map_or(1_000_000_000_000, |si| { si.multiplier() }))
 		})
 	}
 
@@ -1353,6 +1346,15 @@ impl Bolt11Invoice {
 	/// Recover the payee's public key (only to be used if none was included in the invoice)
 	pub fn recover_payee_pub_key(&self) -> PublicKey {
 		self.signed_invoice.recover_payee_pub_key().expect("was checked by constructor").0
+	}
+
+	/// Recover the payee's public key if one was included in the invoice, otherwise return the
+	/// recovered public key from the signature
+	pub fn get_payee_pub_key(&self) -> PublicKey {
+		match self.payee_pub_key() {
+			Some(pk) => *pk,
+			None => self.recover_payee_pub_key()
+		}
 	}
 
 	/// Returns the Duration since the Unix epoch at which the invoice expires.
@@ -2062,7 +2064,7 @@ mod test {
 		let route_1 = RouteHint(vec![
 			RouteHintHop {
 				src_node_id: public_key,
-				short_channel_id: de::parse_int_be(&[123; 8], 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes([123; 8]),
 				fees: RoutingFees {
 					base_msat: 2,
 					proportional_millionths: 1,
@@ -2073,7 +2075,7 @@ mod test {
 			},
 			RouteHintHop {
 				src_node_id: public_key,
-				short_channel_id: de::parse_int_be(&[42; 8], 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes([42; 8]),
 				fees: RoutingFees {
 					base_msat: 3,
 					proportional_millionths: 2,
@@ -2098,7 +2100,7 @@ mod test {
 			},
 			RouteHintHop {
 				src_node_id: public_key,
-				short_channel_id: de::parse_int_be(&[1; 8], 256).expect("short chan ID slice too big?"),
+				short_channel_id: u64::from_be_bytes([1; 8]),
 				fees: RoutingFees {
 					base_msat: 5,
 					proportional_millionths: 4,

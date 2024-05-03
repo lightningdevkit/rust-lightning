@@ -16,7 +16,7 @@ use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs, PaymentId, RecipientOnionFields};
-use crate::ln::msgs;
+use crate::ln::{msgs, ChannelId};
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils;
@@ -27,7 +27,6 @@ use crate::util::config::UserConfig;
 use bitcoin::hash_types::BlockHash;
 
 use crate::prelude::*;
-use core::default::Default;
 use crate::sync::Mutex;
 
 use crate::ln::functional_test_utils::*;
@@ -201,7 +200,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	let chan_0_monitor_serialized =
-		get_monitor!(nodes[0], OutPoint { txid: tx.txid(), index: 0 }.to_channel_id()).encode();
+		get_monitor!(nodes[0], ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.txid(), index: 0 })).encode();
 	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
@@ -412,7 +411,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	}
 
 	let mut nodes_0_read = &nodes_0_serialized[..];
-	if let Err(msgs::DecodeError::InvalidValue) =
+	if let Err(msgs::DecodeError::DangerousValue) =
 		<(BlockHash, ChannelManager<&test_utils::TestChainMonitor, &test_utils::TestBroadcaster, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestFeeEstimator, &test_utils::TestRouter, &test_utils::TestLogger>)>::read(&mut nodes_0_read, ChannelManagerReadArgs {
 		default_config: UserConfig::default(),
 		entropy_source: keys_manager,
@@ -446,7 +445,8 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 	assert!(nodes_0_read.is_empty());
 
 	for monitor in node_0_monitors.drain(..) {
-		assert_eq!(nodes[0].chain_monitor.watch_channel(monitor.get_funding_txo().0, monitor),
+		let funding_outpoint = monitor.get_funding_txo().0;
+		assert_eq!(nodes[0].chain_monitor.watch_channel(funding_outpoint, monitor),
 			Ok(ChannelMonitorUpdateStatus::Completed));
 		check_added_monitors!(nodes[0], 1);
 	}
@@ -822,15 +822,19 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	assert_eq!(send_events.len(), 2);
 	let node_1_msgs = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut send_events);
 	let node_2_msgs = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut send_events);
-	do_pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_1_msgs, true, false, None, false);
-	do_pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_2_msgs, true, false, None, false);
+	do_pass_along_path(PassAlongPathArgs::new(&nodes[0],&[&nodes[1], &nodes[3]], 15_000_000, payment_hash, node_1_msgs)
+		.with_payment_secret(payment_secret)
+		.without_clearing_recipient_events());
+	do_pass_along_path(PassAlongPathArgs::new(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, payment_hash, node_2_msgs)
+		.with_payment_secret(payment_secret)
+		.without_clearing_recipient_events());
 
 	// Now that we have an MPP payment pending, get the latest encoded copies of nodes[3]'s
 	// monitors and ChannelManager, for use later, if we don't want to persist both monitors.
 	let mut original_monitor = test_utils::TestVecWriter(Vec::new());
 	if !persist_both_monitors {
-		for outpoint in nodes[3].chain_monitor.chain_monitor.list_monitors() {
-			if outpoint.to_channel_id() == chan_id_not_persisted {
+		for (outpoint, channel_id) in nodes[3].chain_monitor.chain_monitor.list_monitors() {
+			if channel_id == chan_id_not_persisted {
 				assert!(original_monitor.0.is_empty());
 				nodes[3].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut original_monitor).unwrap();
 			}
@@ -849,16 +853,16 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// crashed in between the two persistence calls - using one old ChannelMonitor and one new one,
 	// with the old ChannelManager.
 	let mut updated_monitor = test_utils::TestVecWriter(Vec::new());
-	for outpoint in nodes[3].chain_monitor.chain_monitor.list_monitors() {
-		if outpoint.to_channel_id() == chan_id_persisted {
+	for (outpoint, channel_id) in nodes[3].chain_monitor.chain_monitor.list_monitors() {
+		if channel_id == chan_id_persisted {
 			assert!(updated_monitor.0.is_empty());
 			nodes[3].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut updated_monitor).unwrap();
 		}
 	}
 	// If `persist_both_monitors` is set, get the second monitor here as well
 	if persist_both_monitors {
-		for outpoint in nodes[3].chain_monitor.chain_monitor.list_monitors() {
-			if outpoint.to_channel_id() == chan_id_not_persisted {
+		for (outpoint, channel_id) in nodes[3].chain_monitor.chain_monitor.list_monitors() {
+			if channel_id == chan_id_not_persisted {
 				assert!(original_monitor.0.is_empty());
 				nodes[3].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap().write(&mut original_monitor).unwrap();
 			}
@@ -1220,7 +1224,7 @@ fn test_reload_partial_funding_batch() {
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
 
 	// Reload the node while a subset of the channels in the funding batch have persisted monitors.
-	let channel_id_1 = OutPoint { txid: tx.txid(), index: 0 }.to_channel_id();
+	let channel_id_1 = ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.txid(), index: 0 });
 	let node_encoded = nodes[0].node.encode();
 	let channel_monitor_1_serialized = get_monitor!(nodes[0], channel_id_1).encode();
 	reload_node!(nodes[0], node_encoded, &[&channel_monitor_1_serialized], new_persister, new_chain_monitor, new_channel_manager);

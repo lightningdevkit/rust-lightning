@@ -9,9 +9,7 @@
 
 //! Types describing on-chain transactions.
 
-use crate::ln::ChannelId;
 use bitcoin::hash_types::Txid;
-use bitcoin::hashes::Hash;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 use bitcoin::blockdata::transaction::Transaction;
 
@@ -58,14 +56,9 @@ pub struct OutPoint {
 }
 
 impl OutPoint {
-	/// Convert an `OutPoint` to a lightning channel id.
-	pub fn to_channel_id(&self) -> ChannelId {
-		ChannelId::v1_from_funding_txid(self.txid.as_byte_array(), self.index)
-	}
-
 	/// Converts this OutPoint into the OutPoint field as used by rust-bitcoin
 	///
-	/// This is not exported to bindings users as the same type is used universally in the C bindings 
+	/// This is not exported to bindings users as the same type is used universally in the C bindings
 	/// for all outpoints
 	pub fn into_bitcoin_outpoint(self) -> BitcoinOutPoint {
 		BitcoinOutPoint {
@@ -83,9 +76,19 @@ impl core::fmt::Display for OutPoint {
 
 impl_writeable!(OutPoint, { txid, index });
 
+#[derive(Debug, Clone)]
+pub(crate) struct MaybeSignedTransaction(pub Transaction);
+
+impl MaybeSignedTransaction {
+	pub fn is_fully_signed(&self) -> bool {
+		!self.0.input.iter().any(|input| input.witness.is_empty())
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::chain::transaction::OutPoint;
+	use crate::ln::ChannelId;
 
 	use bitcoin::blockdata::transaction::Transaction;
 	use bitcoin::consensus::encode;
@@ -94,13 +97,13 @@ mod tests {
 	#[test]
 	fn test_channel_id_calculation() {
 		let tx: Transaction = encode::deserialize(&<Vec<u8>>::from_hex("020000000001010e0adef48412e4361325ac1c6e36411299ab09d4f083b9d8ddb55fbc06e1b0c00000000000feffffff0220a1070000000000220020f81d95e040bd0a493e38bae27bff52fe2bb58b93b293eb579c01c31b05c5af1dc072cfee54a3000016001434b1d6211af5551905dc2642d05f5b04d25a8fe80247304402207f570e3f0de50546aad25a872e3df059d277e776dda4269fa0d2cc8c2ee6ec9a022054e7fae5ca94d47534c86705857c24ceea3ad51c69dd6051c5850304880fc43a012103cb11a1bacc223d98d91f1946c6752e358a5eb1a1c983b3e6fb15378f453b76bd00000000").unwrap()[..]).unwrap();
-		assert_eq!(&OutPoint {
+		assert_eq!(&ChannelId::v1_from_funding_outpoint(OutPoint {
 			txid: tx.txid(),
 			index: 0
-		}.to_channel_id().0[..], &<Vec<u8>>::from_hex("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25e").unwrap()[..]);
-		assert_eq!(&OutPoint {
+		}).0[..], &<Vec<u8>>::from_hex("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25e").unwrap()[..]);
+		assert_eq!(&ChannelId::v1_from_funding_outpoint(OutPoint {
 			txid: tx.txid(),
 			index: 1
-		}.to_channel_id().0[..], &<Vec<u8>>::from_hex("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25f").unwrap()[..]);
+		}).0[..], &<Vec<u8>>::from_hex("3e88dd7165faf7be58b3c5bb2c9c452aebef682807ea57080f62e6f6e113c25f").unwrap()[..]);
 	}
 }

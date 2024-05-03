@@ -21,7 +21,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose, ClosureReason, HTLCDestination};
 use crate::ln::channelmanager::{RAACommitmentOrder, PaymentSendFailure, PaymentId, RecipientOnionFields};
 use crate::ln::channel::{AnnouncementSigsState, ChannelPhase};
-use crate::ln::msgs;
+use crate::ln::{msgs, ChannelId};
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler};
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::errors::APIError;
@@ -173,11 +173,11 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
 			assert_eq!(via_channel_id, Some(channel_id));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_1, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -554,11 +554,11 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
 			assert_eq!(via_channel_id, Some(channel_id));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_2, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -672,11 +672,11 @@ fn test_monitor_update_fail_cs() {
 			assert_eq!(receiver_node_id.unwrap(), nodes[1].node.get_our_node_id());
 			assert_eq!(via_channel_id, Some(channel_id));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(our_payment_secret, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -1683,11 +1683,11 @@ fn test_monitor_update_fail_claim() {
 			assert_eq!(via_channel_id, Some(channel_id));
 			assert_eq!(via_user_channel_id, Some(42));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_2, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -1699,11 +1699,11 @@ fn test_monitor_update_fail_claim() {
 			assert_eq!(receiver_node_id.unwrap(), nodes[0].node.get_our_node_id());
 			assert_eq!(via_channel_id, Some(channel_id));
 			match &purpose {
-				PaymentPurpose::InvoicePayment { payment_preimage, payment_secret, .. } => {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
 					assert!(payment_preimage.is_none());
 					assert_eq!(payment_secret_3, *payment_secret);
 				},
-				_ => panic!("expected PaymentPurpose::InvoicePayment")
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
 			}
 		},
 		_ => panic!("Unexpected event"),
@@ -1861,7 +1861,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-	let channel_id = OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index }.to_channel_id();
+	let channel_id = ChannelId::v1_from_funding_outpoint(OutPoint { txid: funding_created_msg.funding_txid, index: funding_created_msg.funding_output_index });
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors!(nodes[1], 1);
 
@@ -1955,8 +1955,8 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 
 	send_payment(&nodes[0], &[&nodes[1]], 8000000);
 	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -2634,8 +2634,8 @@ fn test_temporary_error_during_shutdown() {
 	assert_eq!(txn_a, txn_b);
 	assert_eq!(txn_a.len(), 1);
 	check_spends!(txn_a[0], funding_tx);
-	check_closed_event!(nodes[1], 1, ClosureReason::CooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[0], 1, ClosureReason::CooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -3404,7 +3404,8 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	let bc_update_id = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_bc).unwrap().2;
 	let mut events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if close_during_reload { 2 } else { 1 });
-	expect_payment_forwarded(events.pop().unwrap(), &nodes[1], &nodes[0], &nodes[2], Some(1000), close_during_reload, false);
+	expect_payment_forwarded(events.pop().unwrap(), &nodes[1], &nodes[0], &nodes[2], Some(1000),
+		None, close_during_reload, false, false);
 	if close_during_reload {
 		match events[0] {
 			Event::ChannelClosed { .. } => {},

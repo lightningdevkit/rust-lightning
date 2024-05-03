@@ -50,7 +50,6 @@ use crate::util::scid_utils::scid_from_parts;
 use crate::io;
 use crate::prelude::*;
 use core::{cmp,mem,fmt};
-use core::convert::TryInto;
 use core::ops::Deref;
 #[cfg(any(test, fuzzing, debug_assertions))]
 use crate::sync::Mutex;
@@ -104,10 +103,38 @@ enum InboundHTLCRemovalReason {
 	Fulfill(PaymentPreimage),
 }
 
+/// Represents the resolution status of an inbound HTLC.
+#[derive(Clone)]
+enum InboundHTLCResolution {
+	/// Resolved implies the action we must take with the inbound HTLC has already been determined,
+	/// i.e., we already know whether it must be failed back or forwarded.
+	//
+	// TODO: Once this variant is removed, we should also clean up
+	// [`MonitorRestoreUpdates::accepted_htlcs`] as the path will be unreachable.
+	Resolved {
+		pending_htlc_status: PendingHTLCStatus,
+	},
+	/// Pending implies we will attempt to resolve the inbound HTLC once it has been fully committed
+	/// to by both sides of the channel, i.e., once a `revoke_and_ack` has been processed by both
+	/// nodes for the state update in which it was proposed.
+	Pending {
+		update_add_htlc: msgs::UpdateAddHTLC,
+	},
+}
+
+impl_writeable_tlv_based_enum!(InboundHTLCResolution,
+	(0, Resolved) => {
+		(0, pending_htlc_status, required),
+	},
+	(2, Pending) => {
+		(0, update_add_htlc, required),
+	};
+);
+
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
-	RemoteAnnounced(PendingHTLCStatus),
+	RemoteAnnounced(InboundHTLCResolution),
 	/// Included in a received commitment_signed message (implying we've
 	/// revoke_and_ack'd it), but the remote hasn't yet revoked their previous
 	/// state (see the example below). We have not yet included this HTLC in a
@@ -137,13 +164,13 @@ enum InboundHTLCState {
 	/// Implies AwaitingRemoteRevoke.
 	///
 	/// [BOLT #2]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md
-	AwaitingRemoteRevokeToAnnounce(PendingHTLCStatus),
+	AwaitingRemoteRevokeToAnnounce(InboundHTLCResolution),
 	/// Included in a received commitment_signed message (implying we've revoke_and_ack'd it).
 	/// We have also included this HTLC in our latest commitment_signed and are now just waiting
 	/// on the remote's revoke_and_ack to make this HTLC an irrevocable part of the state of the
 	/// channel (before it can then get forwarded and/or removed).
 	/// Implies AwaitingRemoteRevoke.
-	AwaitingAnnouncedRemoteRevoke(PendingHTLCStatus),
+	AwaitingAnnouncedRemoteRevoke(InboundHTLCResolution),
 	Committed,
 	/// Removed by us and a new commitment_signed was sent (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -158,6 +185,72 @@ enum InboundHTLCState {
 	LocalRemoved(InboundHTLCRemovalReason),
 }
 
+/// Exposes the state of pending inbound HTLCs.
+///
+/// At a high level, an HTLC being forwarded from one Lightning node to another Lightning node goes
+/// through the following states in the state machine:
+/// - Announced for addition by the originating node through the update_add_htlc message.
+/// - Added to the commitment transaction of the receiving node and originating node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+/// - Announced for resolution (fulfillment or failure) by the receiving node through either one of
+///   the update_fulfill_htlc, update_fail_htlc, and update_fail_malformed_htlc messages.
+/// - Removed from the commitment transaction of the originating node and receiving node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+///
+/// This can be used to inspect what next message an HTLC is waiting for to advance its state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InboundHTLCStateDetails {
+	/// We have added this HTLC in our commitment transaction by receiving commitment_signed and
+	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
+	/// before this HTLC is included on the remote commitment transaction.
+	AwaitingRemoteRevokeToAdd,
+	/// This HTLC has been included in the commitment_signed and revoke_and_ack messages on both sides
+	/// and is included in both commitment transactions.
+	///
+	/// This HTLC is now safe to either forward or be claimed as a payment by us. The HTLC will
+	/// remain in this state until the forwarded upstream HTLC has been resolved and we resolve this
+	/// HTLC correspondingly, or until we claim it as a payment. If it is part of a multipart
+	/// payment, it will only be claimed together with other required parts.
+	Committed,
+	/// We have received the preimage for this HTLC and it is being removed by fulfilling it with
+	/// update_fulfill_htlc. This HTLC is still on both commitment transactions, but we are awaiting
+	/// the appropriate revoke_and_ack's from the remote before this HTLC is removed from the remote
+	/// commitment transaction after update_fulfill_htlc.
+	AwaitingRemoteRevokeToRemoveFulfill,
+	/// The HTLC is being removed by failing it with update_fail_htlc or update_fail_malformed_htlc.
+	/// This HTLC is still on both commitment transactions, but we are awaiting the appropriate
+	/// revoke_and_ack's from the remote before this HTLC is removed from the remote commitment
+	/// transaction.
+	AwaitingRemoteRevokeToRemoveFail,
+}
+
+impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
+	fn from(state: &InboundHTLCState) -> Option<InboundHTLCStateDetails> {
+		match state {
+			InboundHTLCState::RemoteAnnounced(_) => None,
+			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(_) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+			InboundHTLCState::AwaitingAnnouncedRemoteRevoke(_) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+			InboundHTLCState::Committed =>
+				Some(InboundHTLCStateDetails::Committed),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(_)) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed(_)) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail),
+			InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) =>
+				Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill),
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum_upgradable!(InboundHTLCStateDetails,
+	(0, AwaitingRemoteRevokeToAdd) => {},
+	(2, Committed) => {},
+	(4, AwaitingRemoteRevokeToRemoveFulfill) => {},
+	(6, AwaitingRemoteRevokeToRemoveFail) => {};
+);
+
 struct InboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -165,6 +258,53 @@ struct InboundHTLCOutput {
 	payment_hash: PaymentHash,
 	state: InboundHTLCState,
 }
+
+/// Exposes details around pending inbound HTLCs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InboundHTLCDetails {
+	/// The HTLC ID.
+	/// The IDs are incremented by 1 starting from 0 for each offered HTLC.
+	/// They are unique per channel and inbound/outbound direction, unless an HTLC was only announced
+	/// and not part of any commitment transaction.
+	pub htlc_id: u64,
+	/// The amount in msat.
+	pub amount_msat: u64,
+	/// The block height at which this HTLC expires.
+	pub cltv_expiry: u32,
+	/// The payment hash.
+	pub payment_hash: PaymentHash,
+	/// The state of the HTLC in the state machine.
+	///
+	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
+	/// waiting for to advance to the next state.
+	///
+	/// See [`InboundHTLCStateDetails`] for information on the specific states.
+	///
+	/// LDK will always fill this field in, but when downgrading to prior versions of LDK, new
+	/// states may result in `None` here.
+	pub state: Option<InboundHTLCStateDetails>,
+	/// Whether the HTLC has an output below the local dust limit. If so, the output will be trimmed
+	/// from the local commitment transaction and added to the commitment transaction fee.
+	/// For non-anchor channels, this takes into account the cost of the second-stage HTLC
+	/// transactions as well.
+	///
+	/// When the local commitment transaction is broadcasted as part of a unilateral closure,
+	/// the value of this HTLC will therefore not be claimable but instead burned as a transaction
+	/// fee.
+	///
+	/// Note that dust limits are specific to each party. An HTLC can be dust for the local
+	/// commitment transaction but not for the counterparty's commitment transaction and vice versa.
+	pub is_dust: bool,
+}
+
+impl_writeable_tlv_based!(InboundHTLCDetails, {
+	(0, htlc_id, required),
+	(2, amount_msat, required),
+	(4, cltv_expiry, required),
+	(6, payment_hash, required),
+	(7, state, upgradable_option),
+	(8, is_dust, required),
+});
 
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 enum OutboundHTLCState {
@@ -198,6 +338,72 @@ enum OutboundHTLCState {
 	/// revoke_and_ack to drop completely.
 	AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome),
 }
+
+/// Exposes the state of pending outbound HTLCs.
+///
+/// At a high level, an HTLC being forwarded from one Lightning node to another Lightning node goes
+/// through the following states in the state machine:
+/// - Announced for addition by the originating node through the update_add_htlc message.
+/// - Added to the commitment transaction of the receiving node and originating node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+/// - Announced for resolution (fulfillment or failure) by the receiving node through either one of
+///   the update_fulfill_htlc, update_fail_htlc, and update_fail_malformed_htlc messages.
+/// - Removed from the commitment transaction of the originating node and receiving node in turn
+///   through the exchange of commitment_signed and revoke_and_ack messages.
+///
+/// This can be used to inspect what next message an HTLC is waiting for to advance its state.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OutboundHTLCStateDetails {
+	/// We are awaiting the appropriate revoke_and_ack's from the remote before the HTLC is added
+	/// on the remote's commitment transaction after update_add_htlc.
+	AwaitingRemoteRevokeToAdd,
+	/// The HTLC has been added to the remote's commitment transaction by sending commitment_signed
+	/// and receiving revoke_and_ack in return.
+	///
+	/// The HTLC will remain in this state until the remote node resolves the HTLC, or until we
+	/// unilaterally close the channel due to a timeout with an uncooperative remote node.
+	Committed,
+	/// The HTLC has been fulfilled successfully by the remote with a preimage in update_fulfill_htlc,
+	/// and we removed the HTLC from our commitment transaction by receiving commitment_signed and
+	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
+	/// for the removal from its commitment transaction.
+	AwaitingRemoteRevokeToRemoveSuccess,
+	/// The HTLC has been failed by the remote with update_fail_htlc or update_fail_malformed_htlc,
+	/// and we removed the HTLC from our commitment transaction by receiving commitment_signed and
+	/// returning revoke_and_ack. We are awaiting the appropriate revoke_and_ack's from the remote
+	/// for the removal from its commitment transaction.
+	AwaitingRemoteRevokeToRemoveFailure,
+}
+
+impl From<&OutboundHTLCState> for OutboundHTLCStateDetails {
+	fn from(state: &OutboundHTLCState) -> OutboundHTLCStateDetails {
+		match state {
+			OutboundHTLCState::LocalAnnounced(_) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd,
+			OutboundHTLCState::Committed =>
+				OutboundHTLCStateDetails::Committed,
+			// RemoteRemoved states are ignored as the state is transient and the remote has not committed to
+			// the state yet.
+			OutboundHTLCState::RemoteRemoved(_) =>
+				OutboundHTLCStateDetails::Committed,
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
+			OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Failure(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveSuccess,
+			OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Failure(_)) =>
+				OutboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFailure,
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum_upgradable!(OutboundHTLCStateDetails,
+	(0, AwaitingRemoteRevokeToAdd) => {},
+	(2, Committed) => {},
+	(4, AwaitingRemoteRevokeToRemoveSuccess) => {},
+	(6, AwaitingRemoteRevokeToRemoveFailure) => {};
+);
 
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
@@ -237,6 +443,58 @@ struct OutboundHTLCOutput {
 	skimmed_fee_msat: Option<u64>,
 }
 
+/// Exposes details around pending outbound HTLCs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutboundHTLCDetails {
+	/// The HTLC ID.
+	/// The IDs are incremented by 1 starting from 0 for each offered HTLC.
+	/// They are unique per channel and inbound/outbound direction, unless an HTLC was only announced
+	/// and not part of any commitment transaction.
+	///
+	/// Not present when we are awaiting a remote revocation and the HTLC is not added yet.
+	pub htlc_id: Option<u64>,
+	/// The amount in msat.
+	pub amount_msat: u64,
+	/// The block height at which this HTLC expires.
+	pub cltv_expiry: u32,
+	/// The payment hash.
+	pub payment_hash: PaymentHash,
+	/// The state of the HTLC in the state machine.
+	///
+	/// Determines on which commitment transactions the HTLC is included and what message the HTLC is
+	/// waiting for to advance to the next state.
+	///
+	/// See [`OutboundHTLCStateDetails`] for information on the specific states.
+	///
+	/// LDK will always fill this field in, but when downgrading to prior versions of LDK, new
+	/// states may result in `None` here.
+	pub state: Option<OutboundHTLCStateDetails>,
+	/// The extra fee being skimmed off the top of this HTLC.
+	pub skimmed_fee_msat: Option<u64>,
+	/// Whether the HTLC has an output below the local dust limit. If so, the output will be trimmed
+	/// from the local commitment transaction and added to the commitment transaction fee.
+	/// For non-anchor channels, this takes into account the cost of the second-stage HTLC
+	/// transactions as well.
+	///
+	/// When the local commitment transaction is broadcasted as part of a unilateral closure,
+	/// the value of this HTLC will therefore not be claimable but instead burned as a transaction
+	/// fee.
+	///
+	/// Note that dust limits are specific to each party. An HTLC can be dust for the local
+	/// commitment transaction but not for the counterparty's commitment transaction and vice versa.
+	pub is_dust: bool,
+}
+
+impl_writeable_tlv_based!(OutboundHTLCDetails, {
+	(0, htlc_id, required),
+	(2, amount_msat, required),
+	(4, cltv_expiry, required),
+	(6, payment_hash, required),
+	(7, state, upgradable_option),
+	(8, skimmed_fee_msat, required),
+	(10, is_dust, required),
+});
+
 /// See AwaitingRemoteRevoke ChannelState for more info
 #[cfg_attr(test, derive(Clone, Debug, PartialEq))]
 enum HTLCUpdateAwaitingACK {
@@ -267,7 +525,7 @@ enum HTLCUpdateAwaitingACK {
 }
 
 macro_rules! define_state_flags {
-	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr)),+], $extra_flags: expr) => {
+	($flag_type_doc: expr, $flag_type: ident, [$(($flag_doc: expr, $flag: ident, $value: expr, $get: ident, $set: ident, $clear: ident)),+], $extra_flags: expr) => {
 		#[doc = $flag_type_doc]
 		#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq)]
 		struct $flag_type(u32);
@@ -296,15 +554,18 @@ macro_rules! define_state_flags {
 
 			#[allow(unused)]
 			fn is_empty(&self) -> bool { self.0 == 0 }
-
 			#[allow(unused)]
 			fn is_set(&self, flag: Self) -> bool { *self & flag == flag }
+			#[allow(unused)]
+			fn set(&mut self, flag: Self) { *self |= flag }
+			#[allow(unused)]
+			fn clear(&mut self, flag: Self) -> Self { self.0 &= !flag.0; *self }
 		}
 
-		impl core::ops::Not for $flag_type {
-			type Output = Self;
-			fn not(self) -> Self::Output { Self(!self.0) }
-		}
+		$(
+			define_state_flags!($flag_type, Self::$flag, $get, $set, $clear);
+		)*
+
 		impl core::ops::BitOr for $flag_type {
 			type Output = Self;
 			fn bitor(self, rhs: Self) -> Self::Output { Self(self.0 | rhs.0) }
@@ -323,8 +584,28 @@ macro_rules! define_state_flags {
 	($flag_type_doc: expr, $flag_type: ident, $flags: tt) => {
 		define_state_flags!($flag_type_doc, $flag_type, $flags, 0);
 	};
+	($flag_type: ident, $flag: expr, $get: ident, $set: ident, $clear: ident) => {
+		impl $flag_type {
+			#[allow(unused)]
+			fn $get(&self) -> bool { self.is_set($flag_type::new() | $flag) }
+			#[allow(unused)]
+			fn $set(&mut self) { self.set($flag_type::new() | $flag) }
+			#[allow(unused)]
+			fn $clear(&mut self) -> Self { self.clear($flag_type::new() | $flag) }
+		}
+	};
 	($flag_type_doc: expr, FUNDED_STATE, $flag_type: ident, $flags: tt) => {
 		define_state_flags!($flag_type_doc, $flag_type, $flags, FundedStateFlags::ALL.0);
+
+		define_state_flags!($flag_type, FundedStateFlags::PEER_DISCONNECTED,
+			is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected);
+		define_state_flags!($flag_type, FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS,
+			is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress);
+		define_state_flags!($flag_type, FundedStateFlags::REMOTE_SHUTDOWN_SENT,
+			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent);
+		define_state_flags!($flag_type, FundedStateFlags::LOCAL_SHUTDOWN_SENT,
+			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent);
+
 		impl core::ops::BitOr<FundedStateFlags> for $flag_type {
 			type Output = Self;
 			fn bitor(self, rhs: FundedStateFlags) -> Self::Output { Self(self.0 | rhs.0) }
@@ -371,15 +652,19 @@ define_state_flags!(
 	"Flags that apply to all [`ChannelState`] variants in which the channel is funded.",
 	FundedStateFlags, [
 		("Indicates the remote side is considered \"disconnected\" and no updates are allowed \
-			until after we've done a `channel_reestablish` dance.", PEER_DISCONNECTED, state_flags::PEER_DISCONNECTED),
+			until after we've done a `channel_reestablish` dance.", PEER_DISCONNECTED, state_flags::PEER_DISCONNECTED,
+			is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected),
 		("Indicates the user has told us a `ChannelMonitor` update is pending async persistence \
 			somewhere and we should pause sending any outbound messages until they've managed to \
-			complete it.", MONITOR_UPDATE_IN_PROGRESS, state_flags::MONITOR_UPDATE_IN_PROGRESS),
+			complete it.", MONITOR_UPDATE_IN_PROGRESS, state_flags::MONITOR_UPDATE_IN_PROGRESS,
+			is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress),
 		("Indicates we received a `shutdown` message from the remote end. If set, they may not add \
 			any new HTLCs to the channel, and we are expected to respond with our own `shutdown` \
-			message when possible.", REMOTE_SHUTDOWN_SENT, state_flags::REMOTE_SHUTDOWN_SENT),
+			message when possible.", REMOTE_SHUTDOWN_SENT, state_flags::REMOTE_SHUTDOWN_SENT,
+			is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent),
 		("Indicates we sent a `shutdown` message. At this point, we may not add any new HTLCs to \
-			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT)
+			the channel.", LOCAL_SHUTDOWN_SENT, state_flags::LOCAL_SHUTDOWN_SENT,
+			is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent)
 	]
 );
 
@@ -387,9 +672,9 @@ define_state_flags!(
 	"Flags that only apply to [`ChannelState::NegotiatingFunding`].",
 	NegotiatingFundingFlags, [
 		("Indicates we have (or are prepared to) send our `open_channel`/`accept_channel` message.",
-			OUR_INIT_SENT, state_flags::OUR_INIT_SENT),
+			OUR_INIT_SENT, state_flags::OUR_INIT_SENT, is_our_init_sent, set_our_init_sent, clear_our_init_sent),
 		("Indicates we have received their `open_channel`/`accept_channel` message.",
-			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT)
+			THEIR_INIT_SENT, state_flags::THEIR_INIT_SENT, is_their_init_sent, set_their_init_sent, clear_their_init_sent)
 	]
 );
 
@@ -398,13 +683,16 @@ define_state_flags!(
 	FUNDED_STATE, AwaitingChannelReadyFlags, [
 		("Indicates they sent us a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY),
+			THEIR_CHANNEL_READY, state_flags::THEIR_CHANNEL_READY,
+			is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready),
 		("Indicates we sent them a `channel_ready` message. Once both `THEIR_CHANNEL_READY` and \
 			`OUR_CHANNEL_READY` are set, our state moves on to `ChannelReady`.",
-			OUR_CHANNEL_READY, state_flags::OUR_CHANNEL_READY),
+			OUR_CHANNEL_READY, state_flags::OUR_CHANNEL_READY,
+			is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready),
 		("Indicates the channel was funded in a batch and the broadcast of the funding transaction \
 			is being held until all channels in the batch have received `funding_signed` and have \
-			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH)
+			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH,
+			is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch)
 	]
 );
 
@@ -415,10 +703,13 @@ define_state_flags!(
 			`revoke_and_ack` message. During this period, we can't generate new `commitment_signed` \
 			messages as we'd be unable to determine which HTLCs they included in their `revoke_and_ack` \
 			implicit ACK, so instead we have to hold them away temporarily to be sent later.",
-			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE)
+			AWAITING_REMOTE_REVOKE, state_flags::AWAITING_REMOTE_REVOKE,
+			is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke)
 	]
 );
 
+// Note that the order of this enum is implicitly defined by where each variant is placed. Take this
+// into account when introducing new states and update `test_channel_state_order` accordingly.
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq)]
 enum ChannelState {
 	/// We are negotiating the parameters required for the channel prior to funding it.
@@ -439,12 +730,12 @@ enum ChannelState {
 }
 
 macro_rules! impl_state_flag {
-	($get: ident, $set: ident, $clear: ident, $state_flag: expr, [$($state: ident),+]) => {
+	($get: ident, $set: ident, $clear: ident, [$($state: ident),+]) => {
 		#[allow(unused)]
 		fn $get(&self) -> bool {
 			match self {
 				$(
-					ChannelState::$state(flags) => flags.is_set($state_flag.into()),
+					ChannelState::$state(flags) => flags.$get(),
 				)*
 				_ => false,
 			}
@@ -453,7 +744,7 @@ macro_rules! impl_state_flag {
 		fn $set(&mut self) {
 			match self {
 				$(
-					ChannelState::$state(flags) => *flags |= $state_flag,
+					ChannelState::$state(flags) => flags.$set(),
 				)*
 				_ => debug_assert!(false, "Attempted to set flag on unexpected ChannelState"),
 			}
@@ -462,17 +753,17 @@ macro_rules! impl_state_flag {
 		fn $clear(&mut self) {
 			match self {
 				$(
-					ChannelState::$state(flags) => *flags &= !($state_flag),
+					ChannelState::$state(flags) => { let _ = flags.$clear(); },
 				)*
 				_ => debug_assert!(false, "Attempted to clear flag on unexpected ChannelState"),
 			}
 		}
 	};
-	($get: ident, $set: ident, $clear: ident, $state_flag: expr, FUNDED_STATES) => {
-		impl_state_flag!($get, $set, $clear, $state_flag, [AwaitingChannelReady, ChannelReady]);
+	($get: ident, $set: ident, $clear: ident, FUNDED_STATES) => {
+		impl_state_flag!($get, $set, $clear, [AwaitingChannelReady, ChannelReady]);
 	};
-	($get: ident, $set: ident, $clear: ident, $state_flag: expr, $state: ident) => {
-		impl_state_flag!($get, $set, $clear, $state_flag, [$state]);
+	($get: ident, $set: ident, $clear: ident, $state: ident) => {
+		impl_state_flag!($get, $set, $clear, [$state]);
 	};
 }
 
@@ -523,35 +814,27 @@ impl ChannelState {
 		}
 	}
 
-	fn should_force_holding_cell(&self) -> bool {
+	fn can_generate_new_commitment(&self) -> bool {
 		match self {
 			ChannelState::ChannelReady(flags) =>
-				flags.is_set(ChannelReadyFlags::AWAITING_REMOTE_REVOKE) ||
-					flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into()) ||
-					flags.is_set(FundedStateFlags::PEER_DISCONNECTED.into()),
+				!flags.is_set(ChannelReadyFlags::AWAITING_REMOTE_REVOKE) &&
+					!flags.is_set(FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS.into()) &&
+					!flags.is_set(FundedStateFlags::PEER_DISCONNECTED.into()),
 			_ => {
-				debug_assert!(false, "The holding cell is only valid within ChannelReady");
+				debug_assert!(false, "Can only generate new commitment within ChannelReady");
 				false
 			},
 		}
 	}
 
-	impl_state_flag!(is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected,
-		FundedStateFlags::PEER_DISCONNECTED, FUNDED_STATES);
-	impl_state_flag!(is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress,
-		FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS, FUNDED_STATES);
-	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent,
-		FundedStateFlags::LOCAL_SHUTDOWN_SENT, FUNDED_STATES);
-	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent,
-		FundedStateFlags::REMOTE_SHUTDOWN_SENT, FUNDED_STATES);
-	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready,
-		AwaitingChannelReadyFlags::OUR_CHANNEL_READY, AwaitingChannelReady);
-	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready,
-		AwaitingChannelReadyFlags::THEIR_CHANNEL_READY, AwaitingChannelReady);
-	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch,
-		AwaitingChannelReadyFlags::WAITING_FOR_BATCH, AwaitingChannelReady);
-	impl_state_flag!(is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke,
-		ChannelReadyFlags::AWAITING_REMOTE_REVOKE, ChannelReady);
+	impl_state_flag!(is_peer_disconnected, set_peer_disconnected, clear_peer_disconnected, FUNDED_STATES);
+	impl_state_flag!(is_monitor_update_in_progress, set_monitor_update_in_progress, clear_monitor_update_in_progress, FUNDED_STATES);
+	impl_state_flag!(is_local_shutdown_sent, set_local_shutdown_sent, clear_local_shutdown_sent, FUNDED_STATES);
+	impl_state_flag!(is_remote_shutdown_sent, set_remote_shutdown_sent, clear_remote_shutdown_sent, FUNDED_STATES);
+	impl_state_flag!(is_our_channel_ready, set_our_channel_ready, clear_our_channel_ready, AwaitingChannelReady);
+	impl_state_flag!(is_their_channel_ready, set_their_channel_ready, clear_their_channel_ready, AwaitingChannelReady);
+	impl_state_flag!(is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch, AwaitingChannelReady);
+	impl_state_flag!(is_awaiting_remote_revoke, set_awaiting_remote_revoke, clear_awaiting_remote_revoke, ChannelReady);
 }
 
 pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
@@ -788,6 +1071,7 @@ pub(super) struct MonitorRestoreUpdates {
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
 	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<HTLCSource>,
+	pub pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 	pub funding_broadcastable: Option<Transaction>,
 	pub channel_ready: Option<msgs::ChannelReady>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
@@ -816,7 +1100,7 @@ pub(super) struct ReestablishResponses {
 pub(crate) struct ShutdownResult {
 	pub(crate) closure_reason: ClosureReason,
 	/// A channel monitor update to apply.
-	pub(crate) monitor_update: Option<(PublicKey, OutPoint, ChannelMonitorUpdate)>,
+	pub(crate) monitor_update: Option<(PublicKey, OutPoint, ChannelId, ChannelMonitorUpdate)>,
 	/// A list of dropped outbound HTLCs that can safely be failed backwards immediately.
 	pub(crate) dropped_outbound_htlcs: Vec<(HTLCSource, PaymentHash, PublicKey, ChannelId)>,
 	/// An unbroadcasted batch funding transaction id. The closure of this channel should be
@@ -905,6 +1189,10 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
+	#[cfg(any(dual_funding, splicing))]
+	UnfundedOutboundV2(OutboundV2Channel<SP>),
+	#[cfg(any(dual_funding, splicing))]
+	UnfundedInboundV2(InboundV2Channel<SP>),
 	Funded(Channel<SP>),
 }
 
@@ -917,6 +1205,10 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::Funded(chan) => &chan.context,
 			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
+			#[cfg(any(dual_funding, splicing))]
+			ChannelPhase::UnfundedOutboundV2(chan) => &chan.context,
+			#[cfg(any(dual_funding, splicing))]
+			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
 		}
 	}
 
@@ -925,6 +1217,10 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::Funded(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedOutboundV1(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedInboundV1(ref mut chan) => &mut chan.context,
+			#[cfg(any(dual_funding, splicing))]
+			ChannelPhase::UnfundedOutboundV2(ref mut chan) => &mut chan.context,
+			#[cfg(any(dual_funding, splicing))]
+			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
 		}
 	}
 }
@@ -1023,6 +1319,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
+	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 
 	/// If we went to send a commitment update (ie some messages then [`msgs::CommitmentSigned`])
 	/// but our signer (initially) refused to give us a signature, we should retry at some point in
@@ -1231,9 +1528,15 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// We track whether we already emitted a `ChannelReady` event.
 	channel_ready_event_emitted: bool,
 
+	/// Some if we initiated to shut down the channel.
+	local_initiated_shutdown: Option<()>,
+
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
+	#[cfg(not(test))]
 	channel_keys_id: [u8; 32],
+	#[cfg(test)]
+	pub channel_keys_id: [u8; 32],
 
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
@@ -1241,6 +1544,557 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 }
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
+	fn new_for_inbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
+		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
+		entropy_source: &'a ES,
+		signer_provider: &'a SP,
+		counterparty_node_id: PublicKey,
+		their_features: &'a InitFeatures,
+		user_id: u128,
+		config: &'a UserConfig,
+		current_chain_height: u32,
+		logger: &'a L,
+		is_0conf: bool,
+		our_funding_satoshis: u64,
+		counterparty_pubkeys: ChannelPublicKeys,
+		channel_type: ChannelTypeFeatures,
+		holder_selected_channel_reserve_satoshis: u64,
+		msg_channel_reserve_satoshis: u64,
+		msg_push_msat: u64,
+		open_channel_fields: msgs::CommonOpenChannelFields,
+	) -> Result<ChannelContext<SP>, ChannelError>
+		where
+			ES::Target: EntropySource,
+			F::Target: FeeEstimator,
+			L::Target: Logger,
+			SP::Target: SignerProvider,
+	{
+		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(open_channel_fields.temporary_channel_id));
+		let announced_channel = if (open_channel_fields.channel_flags & 1) == 1 { true } else { false };
+
+		let channel_value_satoshis = our_funding_satoshis.saturating_add(open_channel_fields.funding_satoshis);
+
+		let channel_keys_id = signer_provider.generate_channel_keys_id(true, channel_value_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let pubkeys = holder_signer.pubkeys().clone();
+
+		if config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
+			return Err(ChannelError::Close(format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}", config.channel_handshake_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
+		}
+
+		// Check sanity of message fields:
+		if channel_value_satoshis > config.channel_handshake_limits.max_funding_satoshis {
+			return Err(ChannelError::Close(format!(
+				"Per our config, funding must be at most {}. It was {}. Peer contribution: {}. Our contribution: {}",
+				config.channel_handshake_limits.max_funding_satoshis, channel_value_satoshis,
+				open_channel_fields.funding_satoshis, our_funding_satoshis)));
+		}
+		if channel_value_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
+			return Err(ChannelError::Close(format!("Funding must be smaller than the total bitcoin supply. It was {}", channel_value_satoshis)));
+		}
+		if msg_channel_reserve_satoshis > channel_value_satoshis {
+			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must be no greater than channel_value_satoshis: {}", msg_channel_reserve_satoshis, channel_value_satoshis)));
+		}
+		let full_channel_value_msat = (channel_value_satoshis - msg_channel_reserve_satoshis) * 1000;
+		if msg_push_msat > full_channel_value_msat {
+			return Err(ChannelError::Close(format!("push_msat {} was larger than channel amount minus reserve ({})", msg_push_msat, full_channel_value_msat)));
+		}
+		if open_channel_fields.dust_limit_satoshis > channel_value_satoshis {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis {} was larger than channel_value_satoshis {}. Peer never wants payout outputs?", open_channel_fields.dust_limit_satoshis, channel_value_satoshis)));
+		}
+		if open_channel_fields.htlc_minimum_msat >= full_channel_value_msat {
+			return Err(ChannelError::Close(format!("Minimum htlc value ({}) was larger than full channel value ({})", open_channel_fields.htlc_minimum_msat, full_channel_value_msat)));
+		}
+		Channel::<SP>::check_remote_fee(&channel_type, fee_estimator, open_channel_fields.commitment_feerate_sat_per_1000_weight, None, &&logger)?;
+
+		let max_counterparty_selected_contest_delay = u16::min(config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
+		if open_channel_fields.to_self_delay > max_counterparty_selected_contest_delay {
+			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_counterparty_selected_contest_delay, open_channel_fields.to_self_delay)));
+		}
+		if open_channel_fields.max_accepted_htlcs < 1 {
+			return Err(ChannelError::Close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
+		}
+		if open_channel_fields.max_accepted_htlcs > MAX_HTLCS {
+			return Err(ChannelError::Close(format!("max_accepted_htlcs was {}. It must not be larger than {}", open_channel_fields.max_accepted_htlcs, MAX_HTLCS)));
+		}
+
+		// Now check against optional parameters as set by config...
+		if channel_value_satoshis < config.channel_handshake_limits.min_funding_satoshis {
+			return Err(ChannelError::Close(format!("Funding satoshis ({}) is less than the user specified limit ({})", channel_value_satoshis, config.channel_handshake_limits.min_funding_satoshis)));
+		}
+		if open_channel_fields.htlc_minimum_msat > config.channel_handshake_limits.max_htlc_minimum_msat {
+			return Err(ChannelError::Close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", open_channel_fields.htlc_minimum_msat, config.channel_handshake_limits.max_htlc_minimum_msat)));
+		}
+		if open_channel_fields.max_htlc_value_in_flight_msat < config.channel_handshake_limits.min_max_htlc_value_in_flight_msat {
+			return Err(ChannelError::Close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", open_channel_fields.max_htlc_value_in_flight_msat, config.channel_handshake_limits.min_max_htlc_value_in_flight_msat)));
+		}
+		if msg_channel_reserve_satoshis > config.channel_handshake_limits.max_channel_reserve_satoshis {
+			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg_channel_reserve_satoshis, config.channel_handshake_limits.max_channel_reserve_satoshis)));
+		}
+		if open_channel_fields.max_accepted_htlcs < config.channel_handshake_limits.min_max_accepted_htlcs {
+			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", open_channel_fields.max_accepted_htlcs, config.channel_handshake_limits.min_max_accepted_htlcs)));
+		}
+		if open_channel_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
+		}
+		if open_channel_fields.dust_limit_satoshis >  MAX_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
+		}
+
+		// Convert things into internal flags and prep our state:
+
+		if config.channel_handshake_limits.force_announced_channel_preference {
+			if config.channel_handshake_config.announced_channel != announced_channel {
+				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
+			}
+		}
+
+		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			// Protocol level safety check in place, although it should never happen because
+			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
+			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
+		}
+		if holder_selected_channel_reserve_satoshis * 1000 >= full_channel_value_msat {
+			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({})msats. Channel value is ({} - {})msats.", holder_selected_channel_reserve_satoshis * 1000, full_channel_value_msat, msg_push_msat)));
+		}
+		if msg_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			log_debug!(logger, "channel_reserve_satoshis ({}) is smaller than our dust limit ({}). We can broadcast stale states without any risk, implying this channel is very insecure for our counterparty.",
+				msg_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+		}
+		if holder_selected_channel_reserve_satoshis < open_channel_fields.dust_limit_satoshis {
+			return Err(ChannelError::Close(format!("Dust limit ({}) too high for the channel reserve we require the remote to keep ({})", open_channel_fields.dust_limit_satoshis, holder_selected_channel_reserve_satoshis)));
+		}
+
+		// check if the funder's amount for the initial commitment tx is sufficient
+		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
+		let anchor_outputs_value = if channel_type.supports_anchors_zero_fee_htlc_tx() {
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
+		} else {
+			0
+		};
+		let funders_amount_msat = open_channel_fields.funding_satoshis * 1000 - msg_push_msat;
+		let commitment_tx_fee = commit_tx_fee_msat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) / 1000;
+		if (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value) < commitment_tx_fee {
+			return Err(ChannelError::Close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value), commitment_tx_fee)));
+		}
+
+		let to_remote_satoshis = funders_amount_msat / 1000 - commitment_tx_fee - anchor_outputs_value;
+		// While it's reasonable for us to not meet the channel reserve initially (if they don't
+		// want to push much to us), our counterparty should always have more than our reserve.
+		if to_remote_satoshis < holder_selected_channel_reserve_satoshis {
+			return Err(ChannelError::Close("Insufficient funding amount for initial reserve".to_owned()));
+		}
+
+		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
+			match &open_channel_fields.shutdown_scriptpubkey {
+				&Some(ref script) => {
+					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
+					if script.len() == 0 {
+						None
+					} else {
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)))
+						}
+						Some(script.clone())
+					}
+				},
+				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
+				&None => {
+					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
+				}
+			}
+		} else { None };
+
+		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
+			match signer_provider.get_shutdown_scriptpubkey() {
+				Ok(scriptpubkey) => Some(scriptpubkey),
+				Err(_) => return Err(ChannelError::Close("Failed to get upfront shutdown scriptpubkey".to_owned())),
+			}
+		} else { None };
+
+		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
+			if !shutdown_scriptpubkey.is_compatible(&their_features) {
+				return Err(ChannelError::Close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
+			}
+		}
+
+		let destination_script = match signer_provider.get_destination_script(channel_keys_id) {
+			Ok(script) => script,
+			Err(_) => return Err(ChannelError::Close("Failed to get destination script".to_owned())),
+		};
+
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
+
+		let minimum_depth = if is_0conf {
+			Some(0)
+		} else {
+			Some(cmp::max(config.channel_handshake_config.minimum_depth, 1))
+		};
+
+		let value_to_self_msat = our_funding_satoshis * 1000 + msg_push_msat;
+
+		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
+
+		let channel_context = ChannelContext {
+			user_id,
+
+			config: LegacyChannelConfig {
+				options: config.channel_config.clone(),
+				announced_channel,
+				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
+			},
+
+			prev_config: None,
+
+			inbound_handshake_limits_override: None,
+
+			temporary_channel_id: Some(open_channel_fields.temporary_channel_id),
+			channel_id: open_channel_fields.temporary_channel_id,
+			channel_state: ChannelState::NegotiatingFunding(
+				NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
+			),
+			announcement_sigs_state: AnnouncementSigsState::NotSent,
+			secp_ctx,
+
+			latest_monitor_update_id: 0,
+
+			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+			shutdown_scriptpubkey,
+			destination_script,
+
+			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			value_to_self_msat,
+
+			pending_inbound_htlcs: Vec::new(),
+			pending_outbound_htlcs: Vec::new(),
+			holding_cell_htlc_updates: Vec::new(),
+			pending_update_fee: None,
+			holding_cell_update_fee: None,
+			next_holder_htlc_id: 0,
+			next_counterparty_htlc_id: 0,
+			update_time_counter: 1,
+
+			resend_order: RAACommitmentOrder::CommitmentFirst,
+
+			monitor_pending_channel_ready: false,
+			monitor_pending_revoke_and_ack: false,
+			monitor_pending_commitment_signed: false,
+			monitor_pending_forwards: Vec::new(),
+			monitor_pending_failures: Vec::new(),
+			monitor_pending_finalized_fulfills: Vec::new(),
+			monitor_pending_update_adds: Vec::new(),
+
+			signer_pending_commitment_update: false,
+			signer_pending_funding: false,
+
+
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
+
+			last_sent_closing_fee: None,
+			pending_counterparty_closing_signed: None,
+			expecting_peer_commitment_signed: false,
+			closing_fee_limits: None,
+			target_closing_feerate_sats_per_kw: None,
+
+			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
+			short_channel_id: None,
+			channel_creation_height: current_chain_height,
+
+			feerate_per_kw: open_channel_fields.commitment_feerate_sat_per_1000_weight,
+			channel_value_satoshis,
+			counterparty_dust_limit_satoshis: open_channel_fields.dust_limit_satoshis,
+			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
+			counterparty_max_htlc_value_in_flight_msat: cmp::min(open_channel_fields.max_htlc_value_in_flight_msat, channel_value_satoshis * 1000),
+			holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &config.channel_handshake_config),
+			counterparty_selected_channel_reserve_satoshis: Some(msg_channel_reserve_satoshis),
+			holder_selected_channel_reserve_satoshis,
+			counterparty_htlc_minimum_msat: open_channel_fields.htlc_minimum_msat,
+			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
+			counterparty_max_accepted_htlcs: open_channel_fields.max_accepted_htlcs,
+			holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, MAX_HTLCS),
+			minimum_depth,
+
+			counterparty_forwarding_info: None,
+
+			channel_transaction_parameters: ChannelTransactionParameters {
+				holder_pubkeys: pubkeys,
+				holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
+				is_outbound_from_holder: false,
+				counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+					selected_contest_delay: open_channel_fields.to_self_delay,
+					pubkeys: counterparty_pubkeys,
+				}),
+				funding_outpoint: None,
+				channel_type_features: channel_type.clone()
+			},
+			funding_transaction: None,
+			is_batch_funding: None,
+
+			counterparty_cur_commitment_point: Some(open_channel_fields.first_per_commitment_point),
+			counterparty_prev_commitment_point: None,
+			counterparty_node_id,
+
+			counterparty_shutdown_scriptpubkey,
+
+			commitment_secrets: CounterpartyCommitmentSecrets::new(),
+
+			channel_update_status: ChannelUpdateStatus::Enabled,
+			closing_signed_in_flight: false,
+
+			announcement_sigs: None,
+
+			#[cfg(any(test, fuzzing))]
+			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+			workaround_lnd_bug_4006: None,
+			sent_message_awaiting_response: None,
+
+			latest_inbound_scid_alias: None,
+			outbound_scid_alias: 0,
+
+			channel_pending_event_emitted: false,
+			channel_ready_event_emitted: false,
+
+			#[cfg(any(test, fuzzing))]
+			historical_inbound_htlc_fulfills: new_hash_set(),
+
+			channel_type,
+			channel_keys_id,
+
+			local_initiated_shutdown: None,
+
+			blocked_monitor_updates: Vec::new(),
+		};
+
+		Ok(channel_context)
+	}
+
+	fn new_for_outbound_channel<'a, ES: Deref, F: Deref>(
+		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
+		entropy_source: &'a ES,
+		signer_provider: &'a SP,
+		counterparty_node_id: PublicKey,
+		their_features: &'a InitFeatures,
+		funding_satoshis: u64,
+		push_msat: u64,
+		user_id: u128,
+		config: &'a UserConfig,
+		current_chain_height: u32,
+		outbound_scid_alias: u64,
+		temporary_channel_id: Option<ChannelId>,
+		holder_selected_channel_reserve_satoshis: u64,
+		channel_keys_id: [u8; 32],
+		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
+		pubkeys: ChannelPublicKeys,
+	) -> Result<ChannelContext<SP>, APIError>
+		where
+			ES::Target: EntropySource,
+			F::Target: FeeEstimator,
+			SP::Target: SignerProvider,
+	{
+		// This will be updated with the counterparty contribution if this is a dual-funded channel
+		let channel_value_satoshis = funding_satoshis;
+
+		let holder_selected_contest_delay = config.channel_handshake_config.our_to_self_delay;
+
+		if !their_features.supports_wumbo() && channel_value_satoshis > MAX_FUNDING_SATOSHIS_NO_WUMBO {
+			return Err(APIError::APIMisuseError{err: format!("funding_value must not exceed {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, channel_value_satoshis)});
+		}
+		if channel_value_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
+			return Err(APIError::APIMisuseError{err: format!("funding_value must be smaller than the total bitcoin supply, it was {}", channel_value_satoshis)});
+		}
+		let channel_value_msat = channel_value_satoshis * 1000;
+		if push_msat > channel_value_msat {
+			return Err(APIError::APIMisuseError { err: format!("Push value ({}) was larger than channel_value ({})", push_msat, channel_value_msat) });
+		}
+		if holder_selected_contest_delay < BREAKDOWN_TIMEOUT {
+			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", holder_selected_contest_delay)});
+		}
+
+		let channel_type = get_initial_channel_type(&config, their_features);
+		debug_assert!(channel_type.is_subset(&channelmanager::provided_channel_type_features(&config)));
+
+		let (commitment_conf_target, anchor_outputs_value_msat)  = if channel_type.supports_anchors_zero_fee_htlc_tx() {
+			(ConfirmationTarget::AnchorChannelFee, ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000)
+		} else {
+			(ConfirmationTarget::NonAnchorChannelFee, 0)
+		};
+		let commitment_feerate = fee_estimator.bounded_sat_per_1000_weight(commitment_conf_target);
+
+		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
+		let commitment_tx_fee = commit_tx_fee_msat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
+		if value_to_self_msat.saturating_sub(anchor_outputs_value_msat) < commitment_tx_fee {
+			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
+		}
+
+		let mut secp_ctx = Secp256k1::new();
+		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
+
+		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
+			match signer_provider.get_shutdown_scriptpubkey() {
+				Ok(scriptpubkey) => Some(scriptpubkey),
+				Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get shutdown scriptpubkey".to_owned()}),
+			}
+		} else { None };
+
+		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
+			if !shutdown_scriptpubkey.is_compatible(&their_features) {
+				return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
+			}
+		}
+
+		let destination_script = match signer_provider.get_destination_script(channel_keys_id) {
+			Ok(script) => script,
+			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
+		};
+
+		let temporary_channel_id = temporary_channel_id.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
+
+		Ok(Self {
+			user_id,
+
+			config: LegacyChannelConfig {
+				options: config.channel_config.clone(),
+				announced_channel: config.channel_handshake_config.announced_channel,
+				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
+			},
+
+			prev_config: None,
+
+			inbound_handshake_limits_override: Some(config.channel_handshake_limits.clone()),
+
+			channel_id: temporary_channel_id,
+			temporary_channel_id: Some(temporary_channel_id),
+			channel_state: ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT),
+			announcement_sigs_state: AnnouncementSigsState::NotSent,
+			secp_ctx,
+			// We'll add our counterparty's `funding_satoshis` when we receive `accept_channel2`.
+			channel_value_satoshis,
+
+			latest_monitor_update_id: 0,
+
+			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+			shutdown_scriptpubkey,
+			destination_script,
+
+			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
+			value_to_self_msat,
+
+			pending_inbound_htlcs: Vec::new(),
+			pending_outbound_htlcs: Vec::new(),
+			holding_cell_htlc_updates: Vec::new(),
+			pending_update_fee: None,
+			holding_cell_update_fee: None,
+			next_holder_htlc_id: 0,
+			next_counterparty_htlc_id: 0,
+			update_time_counter: 1,
+
+			resend_order: RAACommitmentOrder::CommitmentFirst,
+
+			monitor_pending_channel_ready: false,
+			monitor_pending_revoke_and_ack: false,
+			monitor_pending_commitment_signed: false,
+			monitor_pending_forwards: Vec::new(),
+			monitor_pending_failures: Vec::new(),
+			monitor_pending_finalized_fulfills: Vec::new(),
+			monitor_pending_update_adds: Vec::new(),
+
+			signer_pending_commitment_update: false,
+			signer_pending_funding: false,
+
+			// We'll add our counterparty's `funding_satoshis` to these max commitment output assertions
+			// when we receive `accept_channel2`.
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
+
+			last_sent_closing_fee: None,
+			pending_counterparty_closing_signed: None,
+			expecting_peer_commitment_signed: false,
+			closing_fee_limits: None,
+			target_closing_feerate_sats_per_kw: None,
+
+			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
+			short_channel_id: None,
+			channel_creation_height: current_chain_height,
+
+			feerate_per_kw: commitment_feerate,
+			counterparty_dust_limit_satoshis: 0,
+			holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
+			counterparty_max_htlc_value_in_flight_msat: 0,
+			// We'll adjust this to include our counterparty's `funding_satoshis` when we
+			// receive `accept_channel2`.
+			holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &config.channel_handshake_config),
+			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
+			holder_selected_channel_reserve_satoshis,
+			counterparty_htlc_minimum_msat: 0,
+			holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
+			counterparty_max_accepted_htlcs: 0,
+			holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, MAX_HTLCS),
+			minimum_depth: None, // Filled in in accept_channel
+
+			counterparty_forwarding_info: None,
+
+			channel_transaction_parameters: ChannelTransactionParameters {
+				holder_pubkeys: pubkeys,
+				holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
+				is_outbound_from_holder: true,
+				counterparty_parameters: None,
+				funding_outpoint: None,
+				channel_type_features: channel_type.clone()
+			},
+			funding_transaction: None,
+			is_batch_funding: None,
+
+			counterparty_cur_commitment_point: None,
+			counterparty_prev_commitment_point: None,
+			counterparty_node_id,
+
+			counterparty_shutdown_scriptpubkey: None,
+
+			commitment_secrets: CounterpartyCommitmentSecrets::new(),
+
+			channel_update_status: ChannelUpdateStatus::Enabled,
+			closing_signed_in_flight: false,
+
+			announcement_sigs: None,
+
+			#[cfg(any(test, fuzzing))]
+			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+			workaround_lnd_bug_4006: None,
+			sent_message_awaiting_response: None,
+
+			latest_inbound_scid_alias: None,
+			outbound_scid_alias,
+
+			channel_pending_event_emitted: false,
+			channel_ready_event_emitted: false,
+
+			#[cfg(any(test, fuzzing))]
+			historical_inbound_htlc_fulfills: new_hash_set(),
+
+			channel_type,
+			channel_keys_id,
+
+			blocked_monitor_updates: Vec::new(),
+			local_initiated_shutdown: None,
+		})
+	}
+
 	/// Allowed in any state (including after shutdown)
 	pub fn get_update_time_counter(&self) -> u32 {
 		self.update_time_counter
@@ -1876,7 +2730,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
 		}
 		let feerate_plus_quarter = feerate_per_kw.checked_mul(1250).map(|v| v / 1000);
-		cmp::max(2530, feerate_plus_quarter.unwrap_or(u32::max_value()))
+		cmp::max(feerate_per_kw + 2530, feerate_plus_quarter.unwrap_or(u32::max_value()))
 	}
 
 	/// Get forwarding information for the counterparty.
@@ -1964,6 +2818,99 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 		}
 		stats
+	}
+
+	/// Returns information on all pending inbound HTLCs.
+	pub fn get_pending_inbound_htlc_details(&self) -> Vec<InboundHTLCDetails> {
+		let mut holding_cell_states = new_hash_map();
+		for holding_cell_update in self.holding_cell_htlc_updates.iter() {
+			match holding_cell_update {
+				HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
+					holding_cell_states.insert(
+						htlc_id,
+						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFulfill,
+					);
+				},
+				HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => {
+					holding_cell_states.insert(
+						htlc_id,
+						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail,
+					);
+				},
+				HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => {
+					holding_cell_states.insert(
+						htlc_id,
+						InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail,
+					);
+				},
+				// Outbound HTLC.
+				HTLCUpdateAwaitingACK::AddHTLC { .. } => {},
+			}
+		}
+		let mut inbound_details = Vec::new();
+		let htlc_success_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			0
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
+		};
+		let holder_dust_limit_success_sat = htlc_success_dust_limit + self.holder_dust_limit_satoshis;
+		for htlc in self.pending_inbound_htlcs.iter() {
+			if let Some(state_details) = (&htlc.state).into() {
+				inbound_details.push(InboundHTLCDetails{
+					htlc_id: htlc.htlc_id,
+					amount_msat: htlc.amount_msat,
+					cltv_expiry: htlc.cltv_expiry,
+					payment_hash: htlc.payment_hash,
+					state: Some(holding_cell_states.remove(&htlc.htlc_id).unwrap_or(state_details)),
+					is_dust: htlc.amount_msat / 1000 < holder_dust_limit_success_sat,
+				});
+			}
+		}
+		inbound_details
+	}
+
+	/// Returns information on all pending outbound HTLCs.
+	pub fn get_pending_outbound_htlc_details(&self) -> Vec<OutboundHTLCDetails> {
+		let mut outbound_details = Vec::new();
+		let htlc_timeout_dust_limit = if self.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			0
+		} else {
+			let dust_buffer_feerate = self.get_dust_buffer_feerate(None) as u64;
+			dust_buffer_feerate * htlc_success_tx_weight(self.get_channel_type()) / 1000
+		};
+		let holder_dust_limit_timeout_sat = htlc_timeout_dust_limit + self.holder_dust_limit_satoshis;
+		for htlc in self.pending_outbound_htlcs.iter() {
+			outbound_details.push(OutboundHTLCDetails{
+				htlc_id: Some(htlc.htlc_id),
+				amount_msat: htlc.amount_msat,
+				cltv_expiry: htlc.cltv_expiry,
+				payment_hash: htlc.payment_hash,
+				skimmed_fee_msat: htlc.skimmed_fee_msat,
+				state: Some((&htlc.state).into()),
+				is_dust: htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat,
+			});
+		}
+		for holding_cell_update in self.holding_cell_htlc_updates.iter() {
+			if let HTLCUpdateAwaitingACK::AddHTLC {
+				amount_msat,
+				cltv_expiry,
+				payment_hash,
+				skimmed_fee_msat,
+				..
+			} = *holding_cell_update {
+				outbound_details.push(OutboundHTLCDetails{
+					htlc_id: None,
+					amount_msat: amount_msat,
+					cltv_expiry: cltv_expiry,
+					payment_hash: payment_hash,
+					skimmed_fee_msat: skimmed_fee_msat,
+					state: Some(OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+					is_dust: amount_msat / 1000 < holder_dust_limit_timeout_sat,
+				});
+			}
+		}
+		outbound_details
 	}
 
 	/// Get the available balances, see [`AvailableBalances`]'s fields for more info.
@@ -2388,16 +3335,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			// funding transaction, don't return a funding txo (which prevents providing the
 			// monitor update to the user, even if we return one).
 			// See test_duplicate_chan_id and test_pre_lockin_no_chan_closed_update for more.
-			let generate_monitor_update = match self.channel_state {
-				ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_)|ChannelState::ShutdownComplete => true,
-				_ => false,
-			};
-			if generate_monitor_update {
+			if !self.channel_state.is_pre_funded_state() {
 				self.latest_monitor_update_id = CLOSED_CHANNEL_UPDATE_ID;
-				Some((self.get_counterparty_node_id(), funding_txo, ChannelMonitorUpdate {
+				Some((self.get_counterparty_node_id(), funding_txo, self.channel_id(), ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					counterparty_node_id: Some(self.counterparty_node_id),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast }],
+					channel_id: Some(self.channel_id()),
 				}))
 			} else { None }
 		} else { None };
@@ -2463,6 +3407,49 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			_ => todo!()
 		}
 	}
+
+	/// If we receive an error message when attempting to open a channel, it may only be a rejection
+	/// of the channel type we tried, not of our ability to open any channel at all. We can see if a
+	/// downgrade of channel features would be possible so that we can still open the channel.
+	pub(crate) fn maybe_downgrade_channel_features<F: Deref>(
+		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>
+	) -> Result<(), ()>
+	where
+		F::Target: FeeEstimator
+	{
+		if !self.is_outbound() ||
+			!matches!(
+				self.channel_state, ChannelState::NegotiatingFunding(flags)
+				if flags == NegotiatingFundingFlags::OUR_INIT_SENT
+			)
+		{
+			return Err(());
+		}
+		if self.channel_type == ChannelTypeFeatures::only_static_remote_key() {
+			// We've exhausted our options
+			return Err(());
+		}
+		// We support opening a few different types of channels. Try removing our additional
+		// features one by one until we've either arrived at our default or the counterparty has
+		// accepted one.
+		//
+		// Due to the order below, we may not negotiate `option_anchors_zero_fee_htlc_tx` if the
+		// counterparty doesn't support `option_scid_privacy`. Since `get_initial_channel_type`
+		// checks whether the counterparty supports every feature, this would only happen if the
+		// counterparty is advertising the feature, but rejecting channels proposing the feature for
+		// whatever reason.
+		if self.channel_type.supports_anchors_zero_fee_htlc_tx() {
+			self.channel_type.clear_anchors_zero_fee_htlc_tx();
+			self.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
+			assert!(!self.channel_transaction_parameters.channel_type_features.supports_anchors_nonzero_fee_htlc_tx());
+		} else if self.channel_type.supports_scid_privacy() {
+			self.channel_type.clear_scid_privacy();
+		} else {
+			self.channel_type = ChannelTypeFeatures::only_static_remote_key();
+		}
+		self.channel_transaction_parameters.channel_type_features = self.channel_type.clone();
+		Ok(())
+	}
 }
 
 // Internal utility functions for channels
@@ -2507,6 +3494,20 @@ pub(crate) fn get_legacy_default_holder_selected_channel_reserve_satoshis(channe
 	cmp::min(channel_value_satoshis, cmp::max(q, 1000))
 }
 
+/// Returns a minimum channel reserve value each party needs to maintain, fixed in the spec to a
+/// default of 1% of the total channel value.
+///
+/// Guaranteed to return a value no larger than channel_value_satoshis
+///
+/// This is used both for outbound and inbound channels and has lower bound
+/// of `dust_limit_satoshis`.
+#[cfg(any(dual_funding, splicing))]
+fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satoshis: u64) -> u64 {
+	// Fixed at 1% of channel value by spec.
+	let (q, _) = channel_value_satoshis.overflowing_div(100);
+	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
+}
+
 // Get the fee cost in SATS of a commitment tx with a given number of HTLC outputs.
 // Note that num_htlcs should not include dust HTLCs.
 #[inline]
@@ -2522,10 +3523,26 @@ pub(crate) fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_
 	(commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
 }
 
+/// Context for dual-funded channels.
+#[cfg(any(dual_funding, splicing))]
+pub(super) struct DualFundingChannelContext {
+	/// The amount in satoshis we will be contributing to the channel.
+	pub our_funding_satoshis: u64,
+	/// The amount in satoshis our counterparty will be contributing to the channel.
+	pub their_funding_satoshis: u64,
+	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
+	/// to the current block height to align incentives against fee-sniping.
+	pub funding_tx_locktime: u32,
+	/// The feerate set by the initiator to be used for the funding transaction.
+	pub funding_feerate_sat_per_1000_weight: u32,
+}
+
 // Holder designates channel data owned for the benefit of the user client.
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
+	#[cfg(any(dual_funding, splicing))]
+	pub dual_funding_channel_context: Option<DualFundingChannelContext>,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -2709,7 +3726,7 @@ impl<SP: Deref> Channel<SP> where
 	where L::Target: Logger {
 		// Assert that we'll add the HTLC claim to the holding cell in `get_update_fulfill_htlc`
 		// (see equivalent if condition there).
-		assert!(self.context.channel_state.should_force_holding_cell());
+		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
 		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, logger);
 		self.context.latest_monitor_update_id = mon_update_id;
@@ -2777,9 +3794,10 @@ impl<SP: Deref> Channel<SP> where
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage: payment_preimage_arg.clone(),
 			}],
+			channel_id: Some(self.context.channel_id()),
 		};
 
-		if self.context.channel_state.should_force_holding_cell() {
+		if !self.context.channel_state.can_generate_new_commitment() {
 			// Note that this condition is the same as the assertion in
 			// `claim_htlc_while_disconnected_dropping_mon_update` and must match exactly -
 			// `claim_htlc_while_disconnected_dropping_mon_update` would not work correctly if we
@@ -2953,7 +3971,7 @@ impl<SP: Deref> Channel<SP> where
 			return Ok(None);
 		}
 
-		if self.context.channel_state.should_force_holding_cell() {
+		if !self.context.channel_state.can_generate_new_commitment() {
 			debug_assert!(force_holding_cell, "!force_holding_cell is only called when emptying the holding cell, so we shouldn't end up back in it!");
 			force_holding_cell = true;
 		}
@@ -3049,12 +4067,12 @@ impl<SP: Deref> Channel<SP> where
 		let mut check_reconnection = false;
 		match &self.context.channel_state {
 			ChannelState::AwaitingChannelReady(flags) => {
-				let flags = *flags & !FundedStateFlags::ALL;
+				let flags = flags.clone().clear(FundedStateFlags::ALL.into());
 				debug_assert!(!flags.is_set(AwaitingChannelReadyFlags::OUR_CHANNEL_READY) || !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
-				if flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
+				if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
 					// If we reconnected before sending our `channel_ready` they may still resend theirs.
 					check_reconnection = true;
-				} else if (flags & !AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
+				} else if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
 					self.context.channel_state.set_their_channel_ready();
 				} else if flags == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
 					self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
@@ -3099,22 +4117,14 @@ impl<SP: Deref> Channel<SP> where
 
 		log_info!(logger, "Received channel_ready from peer for channel {}", &self.context.channel_id());
 
-		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger))
+		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
 	}
 
-	pub fn update_add_htlc<F, FE: Deref, L: Deref>(
-		&mut self, msg: &msgs::UpdateAddHTLC, mut pending_forward_status: PendingHTLCStatus,
-		create_pending_htlc_status: F, fee_estimator: &LowerBoundedFeeEstimator<FE>, logger: &L
-	) -> Result<(), ChannelError>
-	where F: for<'a> Fn(&'a Self, PendingHTLCStatus, u16) -> PendingHTLCStatus,
-		FE::Target: FeeEstimator, L::Target: Logger,
-	{
+	pub fn update_add_htlc(
+		&mut self, msg: &msgs::UpdateAddHTLC, pending_forward_status: PendingHTLCStatus,
+	) -> Result<(), ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state".to_owned()));
-		}
-		// We can't accept HTLCs sent after we've sent a shutdown.
-		if self.context.channel_state.is_local_shutdown_sent() {
-			pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x4000|8);
 		}
 		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
 		if self.context.channel_state.is_remote_shutdown_sent() {
@@ -3134,7 +4144,6 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
-		let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
 		if inbound_stats.pending_htlcs + 1 > self.context.holder_max_accepted_htlcs as u32 {
 			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.context.holder_max_accepted_htlcs)));
 		}
@@ -3160,34 +4169,6 @@ impl<SP: Deref> Channel<SP> where
 				removed_outbound_total_msat += htlc.amount_msat;
 			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
 				removed_outbound_total_msat += htlc.amount_msat;
-			}
-		}
-
-		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
-		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-			(0, 0)
-		} else {
-			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
-			(dust_buffer_feerate * htlc_timeout_tx_weight(self.context.get_channel_type()) / 1000,
-				dust_buffer_feerate * htlc_success_tx_weight(self.context.get_channel_type()) / 1000)
-		};
-		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
-		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
-			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
-			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
-				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
-					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
-				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
-			}
-		}
-
-		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
-		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
-			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
-			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
-				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
-					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
-				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
 			}
 		}
 
@@ -3224,23 +4205,7 @@ impl<SP: Deref> Channel<SP> where
 		} else {
 			0
 		};
-		if !self.context.is_outbound() {
-			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
-			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
-			// side, only on the sender's. Note that with anchor outputs we are no longer as
-			// sensitive to fee spikes, so we need to account for them.
-			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
-			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
-			if !self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
-				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
-			}
-			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
-				// Note that if the pending_forward_status is not updated here, then it's because we're already failing
-				// the HTLC, i.e. its status is already set to failing.
-				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
-				pending_forward_status = create_pending_htlc_status(self, pending_forward_status, 0x1000|7);
-			}
-		} else {
+		if self.context.is_outbound() {
 			// Check that they won't violate our local required channel reserve by adding this HTLC.
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
@@ -3268,7 +4233,9 @@ impl<SP: Deref> Channel<SP> where
 			amount_msat: msg.amount_msat,
 			payment_hash: msg.payment_hash,
 			cltv_expiry: msg.cltv_expiry,
-			state: InboundHTLCState::RemoteAnnounced(pending_forward_status),
+			state: InboundHTLCState::RemoteAnnounced(InboundHTLCResolution::Resolved {
+				pending_htlc_status: pending_forward_status
+			}),
 		});
 		Ok(())
 	}
@@ -3304,7 +4271,7 @@ impl<SP: Deref> Channel<SP> where
 		Err(ChannelError::Close("Remote tried to fulfill/fail an HTLC we couldn't find".to_owned()))
 	}
 
-	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(HTLCSource, u64), ChannelError> {
+	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(HTLCSource, u64, Option<u64>), ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			return Err(ChannelError::Close("Got fulfill HTLC message when channel was not in an operational state".to_owned()));
 		}
@@ -3312,7 +4279,7 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ChannelError::Close("Peer sent update_fulfill_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
-		self.mark_outbound_htlc_removed(msg.htlc_id, Some(msg.payment_preimage), None).map(|htlc| (htlc.source.clone(), htlc.amount_msat))
+		self.mark_outbound_htlc_removed(msg.htlc_id, Some(msg.payment_preimage), None).map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
 	}
 
 	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
@@ -3474,13 +4441,13 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		for htlc in self.context.pending_inbound_htlcs.iter_mut() {
-			let new_forward = if let &InboundHTLCState::RemoteAnnounced(ref forward_info) = &htlc.state {
-				Some(forward_info.clone())
+			let htlc_resolution = if let &InboundHTLCState::RemoteAnnounced(ref resolution) = &htlc.state {
+				Some(resolution.clone())
 			} else { None };
-			if let Some(forward_info) = new_forward {
+			if let Some(htlc_resolution) = htlc_resolution {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToAnnounce due to commitment_signed in channel {}.",
 					&htlc.payment_hash, &self.context.channel_id);
-				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info);
+				htlc.state = InboundHTLCState::AwaitingRemoteRevokeToAnnounce(htlc_resolution);
 				need_commitment = true;
 			}
 		}
@@ -3515,7 +4482,8 @@ impl<SP: Deref> Channel<SP> where
 				htlc_outputs: htlcs_and_sigs,
 				claimed_htlcs,
 				nondust_htlc_sources,
-			}]
+			}],
+			channel_id: Some(self.context.channel_id()),
 		};
 
 		self.context.cur_holder_commitment_transaction_number -= 1;
@@ -3570,7 +4538,7 @@ impl<SP: Deref> Channel<SP> where
 	) -> (Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>)
 	where F::Target: FeeEstimator, L::Target: Logger
 	{
-		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) && !self.context.channel_state.should_force_holding_cell() {
+		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) && self.context.channel_state.can_generate_new_commitment() {
 			self.free_holding_cell_htlcs(fee_estimator, logger)
 		} else { (None, Vec::new()) }
 	}
@@ -3591,6 +4559,7 @@ impl<SP: Deref> Channel<SP> where
 				update_id: self.context.latest_monitor_update_id + 1, // We don't increment this yet!
 				counterparty_node_id: Some(self.context.counterparty_node_id),
 				updates: Vec::new(),
+				channel_id: Some(self.context.channel_id()),
 			};
 
 			let mut htlc_updates = Vec::new();
@@ -3769,6 +4738,7 @@ impl<SP: Deref> Channel<SP> where
 				idx: self.context.cur_counterparty_commitment_transaction_number + 1,
 				secret: msg.per_commitment_secret,
 			}],
+			channel_id: Some(self.context.channel_id()),
 		};
 
 		// Update state now that we've passed all the can-fail calls...
@@ -3787,6 +4757,7 @@ impl<SP: Deref> Channel<SP> where
 
 		log_trace!(logger, "Updating HTLCs on receipt of RAA in channel {}...", &self.context.channel_id());
 		let mut to_forward_infos = Vec::new();
+		let mut pending_update_adds = Vec::new();
 		let mut revoked_htlcs = Vec::new();
 		let mut finalized_claimed_htlcs = Vec::new();
 		let mut update_fail_htlcs = Vec::new();
@@ -3834,29 +4805,37 @@ impl<SP: Deref> Channel<SP> where
 					let mut state = InboundHTLCState::Committed;
 					mem::swap(&mut state, &mut htlc.state);
 
-					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(forward_info) = state {
+					if let InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution) = state {
 						log_trace!(logger, " ...promoting inbound AwaitingRemoteRevokeToAnnounce {} to AwaitingAnnouncedRemoteRevoke", &htlc.payment_hash);
-						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info);
+						htlc.state = InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution);
 						require_commitment = true;
-					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(forward_info) = state {
-						match forward_info {
-							PendingHTLCStatus::Fail(fail_msg) => {
-								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
-								require_commitment = true;
-								match fail_msg {
-									HTLCFailureMsg::Relay(msg) => {
-										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
-										update_fail_htlcs.push(msg)
+					} else if let InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution) = state {
+						match resolution {
+							InboundHTLCResolution::Resolved { pending_htlc_status } =>
+								match pending_htlc_status {
+									PendingHTLCStatus::Fail(fail_msg) => {
+										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to LocalRemoved due to PendingHTLCStatus indicating failure", &htlc.payment_hash);
+										require_commitment = true;
+										match fail_msg {
+											HTLCFailureMsg::Relay(msg) => {
+												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailRelay(msg.reason.clone()));
+												update_fail_htlcs.push(msg)
+											},
+											HTLCFailureMsg::Malformed(msg) => {
+												htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
+												update_fail_malformed_htlcs.push(msg)
+											},
+										}
 									},
-									HTLCFailureMsg::Malformed(msg) => {
-										htlc.state = InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::FailMalformed((msg.sha256_of_onion, msg.failure_code)));
-										update_fail_malformed_htlcs.push(msg)
-									},
+									PendingHTLCStatus::Forward(forward_info) => {
+										log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed, attempting to forward", &htlc.payment_hash);
+										to_forward_infos.push((forward_info, htlc.htlc_id));
+										htlc.state = InboundHTLCState::Committed;
+									}
 								}
-							},
-							PendingHTLCStatus::Forward(forward_info) => {
+							InboundHTLCResolution::Pending { update_add_htlc } => {
 								log_trace!(logger, " ...promoting inbound AwaitingAnnouncedRemoteRevoke {} to Committed", &htlc.payment_hash);
-								to_forward_infos.push((forward_info, htlc.htlc_id));
+								pending_update_adds.push(update_add_htlc);
 								htlc.state = InboundHTLCState::Committed;
 							}
 						}
@@ -3916,6 +4895,8 @@ impl<SP: Deref> Channel<SP> where
 				}
 			}
 		}
+
+		self.context.monitor_pending_update_adds.append(&mut pending_update_adds);
 
 		if self.context.channel_state.is_monitor_update_in_progress() {
 			// We can't actually generate a new commitment transaction (incl by freeing holding
@@ -4180,8 +5161,8 @@ impl<SP: Deref> Channel<SP> where
 		// first received the funding_signed.
 		let mut funding_broadcastable =
 			if self.context.is_outbound() &&
-				matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
-				matches!(self.context.channel_state, ChannelState::ChannelReady(_))
+				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
+				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
 			{
 				self.context.funding_transaction.take()
 			} else { None };
@@ -4217,13 +5198,16 @@ impl<SP: Deref> Channel<SP> where
 		mem::swap(&mut failed_htlcs, &mut self.context.monitor_pending_failures);
 		let mut finalized_claimed_htlcs = Vec::new();
 		mem::swap(&mut finalized_claimed_htlcs, &mut self.context.monitor_pending_finalized_fulfills);
+		let mut pending_update_adds = Vec::new();
+		mem::swap(&mut pending_update_adds, &mut self.context.monitor_pending_update_adds);
 
 		if self.context.channel_state.is_peer_disconnected() {
 			self.context.monitor_pending_revoke_and_ack = false;
 			self.context.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, order: RAACommitmentOrder::RevokeAndACKFirst,
-				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, channel_ready, announcement_sigs
+				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
+				funding_broadcastable, channel_ready, announcement_sigs
 			};
 		}
 
@@ -4245,7 +5229,8 @@ impl<SP: Deref> Channel<SP> where
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, funding_broadcastable, channel_ready, announcement_sigs
+			raa, commitment_update, order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
+			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs
 		}
 	}
 
@@ -4485,7 +5470,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let shutdown_msg = self.get_outbound_shutdown();
 
-		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height(), logger);
+		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger);
 
 		if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(_)) {
 			// If we're waiting on a monitor update, we shouldn't re-send any channel_ready's.
@@ -4826,6 +5811,7 @@ impl<SP: Deref> Channel<SP> where
 				updates: vec![ChannelMonitorUpdateStep::ShutdownScript {
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
+				channel_id: Some(self.context.channel_id()),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
@@ -4932,11 +5918,17 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 
+		let closure_reason = if self.initiated_shutdown() {
+			ClosureReason::LocallyInitiatedCooperativeClosure
+		} else {
+			ClosureReason::CounterpartyInitiatedCooperativeClosure
+		};
+
 		assert!(self.context.shutdown_scriptpubkey.is_some());
 		if let Some((last_fee, sig)) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
 				let shutdown_result = ShutdownResult {
-					closure_reason: ClosureReason::CooperativeClosure,
+					closure_reason,
 					monitor_update: None,
 					dropped_outbound_htlcs: Vec::new(),
 					unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
@@ -4971,7 +5963,7 @@ impl<SP: Deref> Channel<SP> where
 							.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
 						let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
 							let shutdown_result = ShutdownResult {
-								closure_reason: ClosureReason::CooperativeClosure,
+								closure_reason,
 								monitor_update: None,
 								dropped_outbound_htlcs: Vec::new(),
 								unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
@@ -5102,6 +6094,86 @@ impl<SP: Deref> Channel<SP> where
 			})
 	}
 
+	pub fn can_accept_incoming_htlc<F: Deref, L: Deref>(
+		&self, msg: &msgs::UpdateAddHTLC, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: L
+	) -> Result<(), (&'static str, u16)>
+	where
+		F::Target: FeeEstimator,
+		L::Target: Logger
+	{
+		if self.context.channel_state.is_local_shutdown_sent() {
+			return Err(("Shutdown was already sent", 0x4000|8))
+		}
+
+		let inbound_stats = self.context.get_inbound_pending_htlc_stats(None);
+		let outbound_stats = self.context.get_outbound_pending_htlc_stats(None);
+		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(fee_estimator);
+		let (htlc_timeout_dust_limit, htlc_success_dust_limit) = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			(0, 0)
+		} else {
+			let dust_buffer_feerate = self.context.get_dust_buffer_feerate(None) as u64;
+			(dust_buffer_feerate * htlc_timeout_tx_weight(self.context.get_channel_type()) / 1000,
+				dust_buffer_feerate * htlc_success_tx_weight(self.context.get_channel_type()) / 1000)
+		};
+		let exposure_dust_limit_timeout_sats = htlc_timeout_dust_limit + self.context.counterparty_dust_limit_satoshis;
+		if msg.amount_msat / 1000 < exposure_dust_limit_timeout_sats {
+			let on_counterparty_tx_dust_htlc_exposure_msat = inbound_stats.on_counterparty_tx_dust_exposure_msat + outbound_stats.on_counterparty_tx_dust_exposure_msat + msg.amount_msat;
+			if on_counterparty_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
+				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
+					on_counterparty_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
+				return Err(("Exceeded our dust exposure limit on counterparty commitment tx", 0x1000|7))
+			}
+		}
+
+		let exposure_dust_limit_success_sats = htlc_success_dust_limit + self.context.holder_dust_limit_satoshis;
+		if msg.amount_msat / 1000 < exposure_dust_limit_success_sats {
+			let on_holder_tx_dust_htlc_exposure_msat = inbound_stats.on_holder_tx_dust_exposure_msat + outbound_stats.on_holder_tx_dust_exposure_msat + msg.amount_msat;
+			if on_holder_tx_dust_htlc_exposure_msat > max_dust_htlc_exposure_msat {
+				log_info!(logger, "Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on holder commitment tx",
+					on_holder_tx_dust_htlc_exposure_msat, max_dust_htlc_exposure_msat);
+				return Err(("Exceeded our dust exposure limit on holder commitment tx", 0x1000|7))
+			}
+		}
+
+		let anchor_outputs_value_msat = if self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+			ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000
+		} else {
+			0
+		};
+
+		let mut removed_outbound_total_msat = 0;
+		for ref htlc in self.context.pending_outbound_htlcs.iter() {
+			if let OutboundHTLCState::AwaitingRemoteRevokeToRemove(OutboundHTLCOutcome::Success(_)) = htlc.state {
+				removed_outbound_total_msat += htlc.amount_msat;
+			} else if let OutboundHTLCState::AwaitingRemovedRemoteRevoke(OutboundHTLCOutcome::Success(_)) = htlc.state {
+				removed_outbound_total_msat += htlc.amount_msat;
+			}
+		}
+
+		let pending_value_to_self_msat =
+			self.context.value_to_self_msat + inbound_stats.pending_htlcs_value_msat - removed_outbound_total_msat;
+		let pending_remote_value_msat =
+			self.context.channel_value_satoshis * 1000 - pending_value_to_self_msat;
+
+		if !self.context.is_outbound() {
+			// `Some(())` is for the fee spike buffer we keep for the remote. This deviates from
+			// the spec because the fee spike buffer requirement doesn't exist on the receiver's
+			// side, only on the sender's. Note that with anchor outputs we are no longer as
+			// sensitive to fee spikes, so we need to account for them.
+			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
+			let mut remote_fee_cost_incl_stuck_buffer_msat = self.context.next_remote_commit_tx_fee_msat(htlc_candidate, Some(()));
+			if !self.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				remote_fee_cost_incl_stuck_buffer_msat *= FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
+			}
+			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(self.context.holder_selected_channel_reserve_satoshis * 1000).saturating_sub(anchor_outputs_value_msat) < remote_fee_cost_incl_stuck_buffer_msat {
+				log_info!(logger, "Attempting to fail HTLC due to fee spike buffer violation in channel {}. Rebalancing is required.", &self.context.channel_id());
+				return Err(("Fee spike buffer violation", 0x1000|7));
+			}
+		}
+
+		Ok(())
+	}
+
 	pub fn get_cur_holder_commitment_transaction_number(&self) -> u64 {
 		self.context.cur_holder_commitment_transaction_number + 1
 	}
@@ -5179,6 +6251,26 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	/// On startup, its possible we detect some monitor updates have actually completed (and the
+	/// ChannelManager was simply stale). In that case, we should simply drop them, which we do
+	/// here after logging them.
+	pub fn on_startup_drop_completed_blocked_mon_updates_through<L: Logger>(&mut self, logger: &L, loaded_mon_update_id: u64) {
+		let channel_id = self.context.channel_id();
+		self.context.blocked_monitor_updates.retain(|update| {
+			if update.update.update_id <= loaded_mon_update_id {
+				log_info!(
+					logger,
+					"Dropping completed ChannelMonitorUpdate id {} on channel {} due to a stale ChannelManager",
+					update.update.update_id,
+					channel_id,
+				);
+				false
+			} else {
+				true
+			}
+		});
+	}
+
 	pub fn blocked_monitor_updates_pending(&self) -> usize {
 		self.context.blocked_monitor_updates.len()
 	}
@@ -5191,7 +6283,7 @@ impl<SP: Deref> Channel<SP> where
 		if !self.is_awaiting_monitor_update() { return false; }
 		if matches!(
 			self.context.channel_state, ChannelState::AwaitingChannelReady(flags)
-			if (flags & !(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH)).is_empty()
+			if flags.clone().clear(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY | FundedStateFlags::PEER_DISCONNECTED | FundedStateFlags::MONITOR_UPDATE_IN_PROGRESS | AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty()
 		) {
 			// If we're not a 0conf channel, we'll be waiting on a monitor update with only
 			// AwaitingChannelReady set, though our peer could have sent their channel_ready.
@@ -5236,6 +6328,11 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_state.is_local_shutdown_sent()
 	}
 
+	/// Returns true if we initiated to shut down the channel.
+	pub fn initiated_shutdown(&self) -> bool {
+		self.context.local_initiated_shutdown.is_some()
+	}
+
 	/// Returns true if this channel is fully shut down. True here implies that no further actions
 	/// may/will be taken on this channel, and thus this object should be freed. Any future changes
 	/// will be handled appropriately by the chain monitor.
@@ -5277,14 +6374,14 @@ impl<SP: Deref> Channel<SP> where
 
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
-		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if (f & !FundedStateFlags::ALL).is_empty()) {
+		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()).is_empty()) {
 			self.context.channel_state.set_our_channel_ready();
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
 			self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 			self.context.update_time_counter += 1;
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f & !FundedStateFlags::ALL == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
@@ -5859,7 +6956,7 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ChannelError::Ignore("Cannot send an HTLC while disconnected from channel counterparty".to_owned()));
 		}
 
-		let need_holding_cell = self.context.channel_state.should_force_holding_cell();
+		let need_holding_cell = !self.context.channel_state.can_generate_new_commitment();
 		log_debug!(logger, "Pushing new outbound HTLC with hash {} for {} msat {}",
 			payment_hash, amount_msat,
 			if force_holding_cell { "into holding cell" }
@@ -5965,7 +7062,8 @@ impl<SP: Deref> Channel<SP> where
 				feerate_per_kw: Some(counterparty_commitment_tx.feerate_per_kw()),
 				to_broadcaster_value_sat: Some(counterparty_commitment_tx.to_broadcaster_value_sat()),
 				to_countersignatory_value_sat: Some(counterparty_commitment_tx.to_countersignatory_value_sat()),
-			}]
+			}],
+			channel_id: Some(self.context.channel_id()),
 		};
 		self.context.channel_state.set_awaiting_remote_revoke();
 		monitor_update
@@ -6149,6 +7247,7 @@ impl<SP: Deref> Channel<SP> where
 		// From here on out, we may not fail!
 		self.context.target_closing_feerate_sats_per_kw = target_feerate_sats_per_kw;
 		self.context.channel_state.set_local_shutdown_sent();
+		self.context.local_initiated_shutdown = Some(());
 		self.context.update_time_counter += 1;
 
 		let monitor_update = if update_shutdown_script {
@@ -6159,6 +7258,7 @@ impl<SP: Deref> Channel<SP> where
 				updates: vec![ChannelMonitorUpdateStep::ShutdownScript {
 					scriptpubkey: self.get_closing_scriptpubkey(),
 				}],
+				channel_id: Some(self.context.channel_id()),
 			};
 			self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
 			self.push_ret_blockable_mon_update(monitor_update)
@@ -6216,201 +7316,40 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	where ES::Target: EntropySource,
 	      F::Target: FeeEstimator
 	{
-		let holder_selected_contest_delay = config.channel_handshake_config.our_to_self_delay;
-		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
-		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
-		let pubkeys = holder_signer.pubkeys().clone();
-
-		if !their_features.supports_wumbo() && channel_value_satoshis > MAX_FUNDING_SATOSHIS_NO_WUMBO {
-			return Err(APIError::APIMisuseError{err: format!("funding_value must not exceed {}, it was {}", MAX_FUNDING_SATOSHIS_NO_WUMBO, channel_value_satoshis)});
-		}
-		if channel_value_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
-			return Err(APIError::APIMisuseError{err: format!("funding_value must be smaller than the total bitcoin supply, it was {}", channel_value_satoshis)});
-		}
-		let channel_value_msat = channel_value_satoshis * 1000;
-		if push_msat > channel_value_msat {
-			return Err(APIError::APIMisuseError { err: format!("Push value ({}) was larger than channel_value ({})", push_msat, channel_value_msat) });
-		}
-		if holder_selected_contest_delay < BREAKDOWN_TIMEOUT {
-			return Err(APIError::APIMisuseError {err: format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks", holder_selected_contest_delay)});
-		}
 		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			// Protocol level safety check in place, although it should never happen because
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
-			return Err(APIError::APIMisuseError { err: format!("Holder selected channel  reserve below implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
+			return Err(APIError::APIMisuseError { err: format!("Holder selected channel reserve below \
+				implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
 		}
 
-		let channel_type = Self::get_initial_channel_type(&config, their_features);
-		debug_assert!(channel_type.is_subset(&channelmanager::provided_channel_type_features(&config)));
+		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let pubkeys = holder_signer.pubkeys().clone();
 
-		let (commitment_conf_target, anchor_outputs_value_msat)  = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			(ConfirmationTarget::AnchorChannelFee, ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000)
-		} else {
-			(ConfirmationTarget::NonAnchorChannelFee, 0)
-		};
-		let commitment_feerate = fee_estimator.bounded_sat_per_1000_weight(commitment_conf_target);
-
-		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commitment_tx_fee = commit_tx_fee_msat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
-		if value_to_self_msat.saturating_sub(anchor_outputs_value_msat) < commitment_tx_fee {
-			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
-		}
-
-		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
-
-		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-			match signer_provider.get_shutdown_scriptpubkey() {
-				Ok(scriptpubkey) => Some(scriptpubkey),
-				Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get shutdown scriptpubkey".to_owned()}),
-			}
-		} else { None };
-
-		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
-			if !shutdown_scriptpubkey.is_compatible(&their_features) {
-				return Err(APIError::IncompatibleShutdownScript { script: shutdown_scriptpubkey.clone() });
-			}
-		}
-
-		let destination_script = match signer_provider.get_destination_script(channel_keys_id) {
-			Ok(script) => script,
-			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
-		};
-
-		let temporary_channel_id = temporary_channel_id.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
-
-		Ok(Self {
-			context: ChannelContext {
-				user_id,
-
-				config: LegacyChannelConfig {
-					options: config.channel_config.clone(),
-					announced_channel: config.channel_handshake_config.announced_channel,
-					commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
-				},
-
-				prev_config: None,
-
-				inbound_handshake_limits_override: Some(config.channel_handshake_limits.clone()),
-
-				channel_id: temporary_channel_id,
-				temporary_channel_id: Some(temporary_channel_id),
-				channel_state: ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT),
-				announcement_sigs_state: AnnouncementSigsState::NotSent,
-				secp_ctx,
-				channel_value_satoshis,
-
-				latest_monitor_update_id: 0,
-
-				holder_signer: ChannelSignerType::Ecdsa(holder_signer),
-				shutdown_scriptpubkey,
-				destination_script,
-
-				cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
-				cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
-				value_to_self_msat,
-
-				pending_inbound_htlcs: Vec::new(),
-				pending_outbound_htlcs: Vec::new(),
-				holding_cell_htlc_updates: Vec::new(),
-				pending_update_fee: None,
-				holding_cell_update_fee: None,
-				next_holder_htlc_id: 0,
-				next_counterparty_htlc_id: 0,
-				update_time_counter: 1,
-
-				resend_order: RAACommitmentOrder::CommitmentFirst,
-
-				monitor_pending_channel_ready: false,
-				monitor_pending_revoke_and_ack: false,
-				monitor_pending_commitment_signed: false,
-				monitor_pending_forwards: Vec::new(),
-				monitor_pending_failures: Vec::new(),
-				monitor_pending_finalized_fulfills: Vec::new(),
-
-				signer_pending_commitment_update: false,
-				signer_pending_funding: false,
-
-				#[cfg(debug_assertions)]
-				holder_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
-				#[cfg(debug_assertions)]
-				counterparty_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
-
-				last_sent_closing_fee: None,
-				pending_counterparty_closing_signed: None,
-				expecting_peer_commitment_signed: false,
-				closing_fee_limits: None,
-				target_closing_feerate_sats_per_kw: None,
-
-				funding_tx_confirmed_in: None,
-				funding_tx_confirmation_height: 0,
-				short_channel_id: None,
-				channel_creation_height: current_chain_height,
-
-				feerate_per_kw: commitment_feerate,
-				counterparty_dust_limit_satoshis: 0,
-				holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
-				counterparty_max_htlc_value_in_flight_msat: 0,
-				holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(channel_value_satoshis, &config.channel_handshake_config),
-				counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
-				holder_selected_channel_reserve_satoshis,
-				counterparty_htlc_minimum_msat: 0,
-				holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
-				counterparty_max_accepted_htlcs: 0,
-				holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, MAX_HTLCS),
-				minimum_depth: None, // Filled in in accept_channel
-
-				counterparty_forwarding_info: None,
-
-				channel_transaction_parameters: ChannelTransactionParameters {
-					holder_pubkeys: pubkeys,
-					holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
-					is_outbound_from_holder: true,
-					counterparty_parameters: None,
-					funding_outpoint: None,
-					channel_type_features: channel_type.clone()
-				},
-				funding_transaction: None,
-				is_batch_funding: None,
-
-				counterparty_cur_commitment_point: None,
-				counterparty_prev_commitment_point: None,
+		let chan = Self {
+			context: ChannelContext::new_for_outbound_channel(
+				fee_estimator,
+				entropy_source,
+				signer_provider,
 				counterparty_node_id,
-
-				counterparty_shutdown_scriptpubkey: None,
-
-				commitment_secrets: CounterpartyCommitmentSecrets::new(),
-
-				channel_update_status: ChannelUpdateStatus::Enabled,
-				closing_signed_in_flight: false,
-
-				announcement_sigs: None,
-
-				#[cfg(any(test, fuzzing))]
-				next_local_commitment_tx_fee_info_cached: Mutex::new(None),
-				#[cfg(any(test, fuzzing))]
-				next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
-
-				workaround_lnd_bug_4006: None,
-				sent_message_awaiting_response: None,
-
-				latest_inbound_scid_alias: None,
+				their_features,
+				channel_value_satoshis,
+				push_msat,
+				user_id,
+				config,
+				current_chain_height,
 				outbound_scid_alias,
-
-				channel_pending_event_emitted: false,
-				channel_ready_event_emitted: false,
-
-				#[cfg(any(test, fuzzing))]
-				historical_inbound_htlc_fulfills: HashSet::new(),
-
-				channel_type,
+				temporary_channel_id,
+				holder_selected_channel_reserve_satoshis,
 				channel_keys_id,
-
-				blocked_monitor_updates: Vec::new(),
-			},
+				holder_signer,
+				pubkeys,
+			)?,
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
-		})
+		};
+		Ok(chan)
 	}
 
 	/// Only allowed after [`ChannelContext::channel_transaction_parameters`] is set.
@@ -6475,7 +7414,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		// Now that we're past error-generating stuff, update our local state:
 
 		self.context.channel_state = ChannelState::FundingNegotiated;
-		self.context.channel_id = funding_txo.to_channel_id();
+		self.context.channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
 
 		// If the funding transaction is a coinbase transaction, we need to set the minimum depth to 100.
 		// We can skip this if it is a zero-conf channel.
@@ -6504,29 +7443,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		Ok(funding_created)
 	}
 
-	fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) -> ChannelTypeFeatures {
-		// The default channel type (ie the first one we try) depends on whether the channel is
-		// public - if it is, we just go with `only_static_remotekey` as it's the only option
-		// available. If it's private, we first try `scid_privacy` as it provides better privacy
-		// with no other changes, and fall back to `only_static_remotekey`.
-		let mut ret = ChannelTypeFeatures::only_static_remote_key();
-		if !config.channel_handshake_config.announced_channel &&
-			config.channel_handshake_config.negotiate_scid_privacy &&
-			their_features.supports_scid_privacy() {
-			ret.set_scid_privacy_required();
-		}
-
-		// Optionally, if the user would like to negotiate the `anchors_zero_fee_htlc_tx` option, we
-		// set it now. If they don't understand it, we'll fall back to our default of
-		// `only_static_remotekey`.
-		if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
-			their_features.supports_anchors_zero_fee_htlc_tx() {
-			ret.set_anchors_zero_fee_htlc_tx_required();
-		}
-
-		ret
-	}
-
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
@@ -6536,37 +7452,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	where
 		F::Target: FeeEstimator
 	{
-		if !self.context.is_outbound() ||
-			!matches!(
-				self.context.channel_state, ChannelState::NegotiatingFunding(flags)
-				if flags == NegotiatingFundingFlags::OUR_INIT_SENT
-			)
-		{
-			return Err(());
-		}
-		if self.context.channel_type == ChannelTypeFeatures::only_static_remote_key() {
-			// We've exhausted our options
-			return Err(());
-		}
-		// We support opening a few different types of channels. Try removing our additional
-		// features one by one until we've either arrived at our default or the counterparty has
-		// accepted one.
-		//
-		// Due to the order below, we may not negotiate `option_anchors_zero_fee_htlc_tx` if the
-		// counterparty doesn't support `option_scid_privacy`. Since `get_initial_channel_type`
-		// checks whether the counterparty supports every feature, this would only happen if the
-		// counterparty is advertising the feature, but rejecting channels proposing the feature for
-		// whatever reason.
-		if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() {
-			self.context.channel_type.clear_anchors_zero_fee_htlc_tx();
-			self.context.feerate_per_kw = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
-			assert!(!self.context.channel_transaction_parameters.channel_type_features.supports_anchors_nonzero_fee_htlc_tx());
-		} else if self.context.channel_type.supports_scid_privacy() {
-			self.context.channel_type.clear_scid_privacy();
-		} else {
-			self.context.channel_type = ChannelTypeFeatures::only_static_remote_key();
-		}
-		self.context.channel_transaction_parameters.channel_type_features = self.context.channel_type.clone();
+		self.context.maybe_downgrade_channel_features(fee_estimator)?;
 		Ok(self.get_open_channel(chain_hash))
 	}
 
@@ -6586,29 +7472,31 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::OpenChannel {
-			chain_hash,
-			temporary_channel_id: self.context.channel_id,
-			funding_satoshis: self.context.channel_value_satoshis,
+			common_fields: msgs::CommonOpenChannelFields {
+				chain_hash,
+				temporary_channel_id: self.context.channel_id,
+				funding_satoshis: self.context.channel_value_satoshis,
+				dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
+				max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
+				htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
+				commitment_feerate_sat_per_1000_weight: self.context.feerate_per_kw as u32,
+				to_self_delay: self.context.get_holder_selected_contest_delay(),
+				max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
+				funding_pubkey: keys.funding_pubkey,
+				revocation_basepoint: keys.revocation_basepoint.to_public_key(),
+				payment_basepoint: keys.payment_point,
+				delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
+				htlc_basepoint: keys.htlc_basepoint.to_public_key(),
+				first_per_commitment_point,
+				channel_flags: if self.context.config.announced_channel {1} else {0},
+				shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
+					Some(script) => script.clone().into_inner(),
+					None => Builder::new().into_script(),
+				}),
+				channel_type: Some(self.context.channel_type.clone()),
+			},
 			push_msat: self.context.channel_value_satoshis * 1000 - self.context.value_to_self_msat,
-			dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
-			max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
 			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
-			htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
-			feerate_per_kw: self.context.feerate_per_kw as u32,
-			to_self_delay: self.context.get_holder_selected_contest_delay(),
-			max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
-			funding_pubkey: keys.funding_pubkey,
-			revocation_basepoint: keys.revocation_basepoint.to_public_key(),
-			payment_point: keys.payment_point,
-			delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
-			htlc_basepoint: keys.htlc_basepoint.to_public_key(),
-			first_per_commitment_point,
-			channel_flags: if self.context.config.announced_channel {1} else {0},
-			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
-				Some(script) => script.clone().into_inner(),
-				None => Builder::new().into_script(),
-			}),
-			channel_type: Some(self.context.channel_type.clone()),
 		}
 	}
 
@@ -6623,58 +7511,58 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		if !matches!(self.context.channel_state, ChannelState::NegotiatingFunding(flags) if flags == NegotiatingFundingFlags::OUR_INIT_SENT) {
 			return Err(ChannelError::Close("Got an accept_channel message at a strange time".to_owned()));
 		}
-		if msg.dust_limit_satoshis > 21000000 * 100000000 {
-			return Err(ChannelError::Close(format!("Peer never wants payout outputs? dust_limit_satoshis was {}", msg.dust_limit_satoshis)));
+		if msg.common_fields.dust_limit_satoshis > 21000000 * 100000000 {
+			return Err(ChannelError::Close(format!("Peer never wants payout outputs? dust_limit_satoshis was {}", msg.common_fields.dust_limit_satoshis)));
 		}
 		if msg.channel_reserve_satoshis > self.context.channel_value_satoshis {
 			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than ({})", msg.channel_reserve_satoshis, self.context.channel_value_satoshis)));
 		}
-		if msg.dust_limit_satoshis > self.context.holder_selected_channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("Dust limit ({}) is bigger than our channel reserve ({})", msg.dust_limit_satoshis, self.context.holder_selected_channel_reserve_satoshis)));
+		if msg.common_fields.dust_limit_satoshis > self.context.holder_selected_channel_reserve_satoshis {
+			return Err(ChannelError::Close(format!("Dust limit ({}) is bigger than our channel reserve ({})", msg.common_fields.dust_limit_satoshis, self.context.holder_selected_channel_reserve_satoshis)));
 		}
 		if msg.channel_reserve_satoshis > self.context.channel_value_satoshis - self.context.holder_selected_channel_reserve_satoshis {
 			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than channel value minus our reserve ({})",
 				msg.channel_reserve_satoshis, self.context.channel_value_satoshis - self.context.holder_selected_channel_reserve_satoshis)));
 		}
 		let full_channel_value_msat = (self.context.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000;
-		if msg.htlc_minimum_msat >= full_channel_value_msat {
-			return Err(ChannelError::Close(format!("Minimum htlc value ({}) is full channel value ({})", msg.htlc_minimum_msat, full_channel_value_msat)));
+		if msg.common_fields.htlc_minimum_msat >= full_channel_value_msat {
+			return Err(ChannelError::Close(format!("Minimum htlc value ({}) is full channel value ({})", msg.common_fields.htlc_minimum_msat, full_channel_value_msat)));
 		}
 		let max_delay_acceptable = u16::min(peer_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
-		if msg.to_self_delay > max_delay_acceptable {
-			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_delay_acceptable, msg.to_self_delay)));
+		if msg.common_fields.to_self_delay > max_delay_acceptable {
+			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_delay_acceptable, msg.common_fields.to_self_delay)));
 		}
-		if msg.max_accepted_htlcs < 1 {
+		if msg.common_fields.max_accepted_htlcs < 1 {
 			return Err(ChannelError::Close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
 		}
-		if msg.max_accepted_htlcs > MAX_HTLCS {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs was {}. It must not be larger than {}", msg.max_accepted_htlcs, MAX_HTLCS)));
+		if msg.common_fields.max_accepted_htlcs > MAX_HTLCS {
+			return Err(ChannelError::Close(format!("max_accepted_htlcs was {}. It must not be larger than {}", msg.common_fields.max_accepted_htlcs, MAX_HTLCS)));
 		}
 
 		// Now check against optional parameters as set by config...
-		if msg.htlc_minimum_msat > peer_limits.max_htlc_minimum_msat {
-			return Err(ChannelError::Close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", msg.htlc_minimum_msat, peer_limits.max_htlc_minimum_msat)));
+		if msg.common_fields.htlc_minimum_msat > peer_limits.max_htlc_minimum_msat {
+			return Err(ChannelError::Close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", msg.common_fields.htlc_minimum_msat, peer_limits.max_htlc_minimum_msat)));
 		}
-		if msg.max_htlc_value_in_flight_msat < peer_limits.min_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", msg.max_htlc_value_in_flight_msat, peer_limits.min_max_htlc_value_in_flight_msat)));
+		if msg.common_fields.max_htlc_value_in_flight_msat < peer_limits.min_max_htlc_value_in_flight_msat {
+			return Err(ChannelError::Close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", msg.common_fields.max_htlc_value_in_flight_msat, peer_limits.min_max_htlc_value_in_flight_msat)));
 		}
 		if msg.channel_reserve_satoshis > peer_limits.max_channel_reserve_satoshis {
 			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg.channel_reserve_satoshis, peer_limits.max_channel_reserve_satoshis)));
 		}
-		if msg.max_accepted_htlcs < peer_limits.min_max_accepted_htlcs {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, peer_limits.min_max_accepted_htlcs)));
+		if msg.common_fields.max_accepted_htlcs < peer_limits.min_max_accepted_htlcs {
+			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.common_fields.max_accepted_htlcs, peer_limits.min_max_accepted_htlcs)));
 		}
-		if msg.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
+		if msg.common_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.common_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
+		if msg.common_fields.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.common_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
-		if msg.minimum_depth > peer_limits.max_minimum_depth {
-			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, msg.minimum_depth)));
+		if msg.common_fields.minimum_depth > peer_limits.max_minimum_depth {
+			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, msg.common_fields.minimum_depth)));
 		}
 
-		if let Some(ty) = &msg.channel_type {
+		if let Some(ty) = &msg.common_fields.channel_type {
 			if *ty != self.context.channel_type {
 				return Err(ChannelError::Close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
 			}
@@ -6690,7 +7578,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
-			match &msg.shutdown_scriptpubkey {
+			match &msg.common_fields.shutdown_scriptpubkey {
 				&Some(ref script) => {
 					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
 					if script.len() == 0 {
@@ -6709,32 +7597,32 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			}
 		} else { None };
 
-		self.context.counterparty_dust_limit_satoshis = msg.dust_limit_satoshis;
-		self.context.counterparty_max_htlc_value_in_flight_msat = cmp::min(msg.max_htlc_value_in_flight_msat, self.context.channel_value_satoshis * 1000);
+		self.context.counterparty_dust_limit_satoshis = msg.common_fields.dust_limit_satoshis;
+		self.context.counterparty_max_htlc_value_in_flight_msat = cmp::min(msg.common_fields.max_htlc_value_in_flight_msat, self.context.channel_value_satoshis * 1000);
 		self.context.counterparty_selected_channel_reserve_satoshis = Some(msg.channel_reserve_satoshis);
-		self.context.counterparty_htlc_minimum_msat = msg.htlc_minimum_msat;
-		self.context.counterparty_max_accepted_htlcs = msg.max_accepted_htlcs;
+		self.context.counterparty_htlc_minimum_msat = msg.common_fields.htlc_minimum_msat;
+		self.context.counterparty_max_accepted_htlcs = msg.common_fields.max_accepted_htlcs;
 
 		if peer_limits.trust_own_funding_0conf {
-			self.context.minimum_depth = Some(msg.minimum_depth);
+			self.context.minimum_depth = Some(msg.common_fields.minimum_depth);
 		} else {
-			self.context.minimum_depth = Some(cmp::max(1, msg.minimum_depth));
+			self.context.minimum_depth = Some(cmp::max(1, msg.common_fields.minimum_depth));
 		}
 
 		let counterparty_pubkeys = ChannelPublicKeys {
-			funding_pubkey: msg.funding_pubkey,
-			revocation_basepoint: RevocationBasepoint::from(msg.revocation_basepoint),
-			payment_point: msg.payment_point,
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(msg.delayed_payment_basepoint),
-			htlc_basepoint: HtlcBasepoint::from(msg.htlc_basepoint)
+			funding_pubkey: msg.common_fields.funding_pubkey,
+			revocation_basepoint: RevocationBasepoint::from(msg.common_fields.revocation_basepoint),
+			payment_point: msg.common_fields.payment_basepoint,
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(msg.common_fields.delayed_payment_basepoint),
+			htlc_basepoint: HtlcBasepoint::from(msg.common_fields.htlc_basepoint)
 		};
 
 		self.context.channel_transaction_parameters.counterparty_parameters = Some(CounterpartyChannelTransactionParameters {
-			selected_contest_delay: msg.to_self_delay,
+			selected_contest_delay: msg.common_fields.to_self_delay,
 			pubkeys: counterparty_pubkeys,
 		});
 
-		self.context.counterparty_cur_commitment_point = Some(msg.first_per_commitment_point);
+		self.context.counterparty_cur_commitment_point = Some(msg.common_fields.first_per_commitment_point);
 		self.context.counterparty_shutdown_scriptpubkey = counterparty_shutdown_scriptpubkey;
 
 		self.context.channel_state = ChannelState::NegotiatingFunding(
@@ -6814,7 +7702,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		                                          &self.context.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
+		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id, self.context.channel_id());
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_bitcoin_tx.txid, Vec::new(),
 			self.context.cur_counterparty_commitment_transaction_number,
@@ -6834,7 +7722,11 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
 
-		let mut channel = Channel { context: self.context };
+		let mut channel = Channel {
+			context: self.context,
+			#[cfg(any(dual_funding, splicing))]
+			dual_funding_channel_context: None,
+		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
@@ -6859,12 +7751,12 @@ pub(super) struct InboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 }
 
 /// Fetches the [`ChannelTypeFeatures`] that will be used for a channel built from a given
-/// [`msgs::OpenChannel`].
+/// [`msgs::CommonOpenChannelFields`].
 pub(super) fn channel_type_from_open_channel(
-	msg: &msgs::OpenChannel, their_features: &InitFeatures,
+	common_fields: &msgs::CommonOpenChannelFields, their_features: &InitFeatures,
 	our_supported_features: &ChannelTypeFeatures
 ) -> Result<ChannelTypeFeatures, ChannelError> {
-	if let Some(channel_type) = &msg.channel_type {
+	if let Some(channel_type) = &common_fields.channel_type {
 		if channel_type.supports_any_optional_bits() {
 			return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 		}
@@ -6879,7 +7771,7 @@ pub(super) fn channel_type_from_open_channel(
 		if !channel_type.is_subset(our_supported_features) {
 			return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
 		}
-		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
+		let announced_channel = if (common_fields.channel_flags & 1) == 1 { true } else { false };
 		if channel_type.requires_scid_privacy() && announced_channel {
 			return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
 		}
@@ -6906,313 +7798,44 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			  F::Target: FeeEstimator,
 			  L::Target: Logger,
 	{
-		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(msg.temporary_channel_id));
-		let announced_channel = if (msg.channel_flags & 1) == 1 { true } else { false };
+		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(msg.common_fields.temporary_channel_id));
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
-		let channel_type = channel_type_from_open_channel(msg, their_features, our_supported_features)?;
+		let channel_type = channel_type_from_open_channel(&msg.common_fields, their_features, our_supported_features)?;
 
-		let channel_keys_id = signer_provider.generate_channel_keys_id(true, msg.funding_satoshis, user_id);
-		let holder_signer = signer_provider.derive_channel_signer(msg.funding_satoshis, channel_keys_id);
-		let pubkeys = holder_signer.pubkeys().clone();
+		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(msg.common_fields.funding_satoshis, config);
 		let counterparty_pubkeys = ChannelPublicKeys {
-			funding_pubkey: msg.funding_pubkey,
-			revocation_basepoint: RevocationBasepoint::from(msg.revocation_basepoint),
-			payment_point: msg.payment_point,
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(msg.delayed_payment_basepoint),
-			htlc_basepoint: HtlcBasepoint::from(msg.htlc_basepoint)
-		};
-
-		if config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
-			return Err(ChannelError::Close(format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}", config.channel_handshake_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
-		}
-
-		// Check sanity of message fields:
-		if msg.funding_satoshis > config.channel_handshake_limits.max_funding_satoshis {
-			return Err(ChannelError::Close(format!("Per our config, funding must be at most {}. It was {}", config.channel_handshake_limits.max_funding_satoshis, msg.funding_satoshis)));
-		}
-		if msg.funding_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
-			return Err(ChannelError::Close(format!("Funding must be smaller than the total bitcoin supply. It was {}", msg.funding_satoshis)));
-		}
-		if msg.channel_reserve_satoshis > msg.funding_satoshis {
-			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must be not greater than funding_satoshis: {}", msg.channel_reserve_satoshis, msg.funding_satoshis)));
-		}
-		let full_channel_value_msat = (msg.funding_satoshis - msg.channel_reserve_satoshis) * 1000;
-		if msg.push_msat > full_channel_value_msat {
-			return Err(ChannelError::Close(format!("push_msat {} was larger than channel amount minus reserve ({})", msg.push_msat, full_channel_value_msat)));
-		}
-		if msg.dust_limit_satoshis > msg.funding_satoshis {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis {} was larger than funding_satoshis {}. Peer never wants payout outputs?", msg.dust_limit_satoshis, msg.funding_satoshis)));
-		}
-		if msg.htlc_minimum_msat >= full_channel_value_msat {
-			return Err(ChannelError::Close(format!("Minimum htlc value ({}) was larger than full channel value ({})", msg.htlc_minimum_msat, full_channel_value_msat)));
-		}
-		Channel::<SP>::check_remote_fee(&channel_type, fee_estimator, msg.feerate_per_kw, None, &&logger)?;
-
-		let max_counterparty_selected_contest_delay = u16::min(config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
-		if msg.to_self_delay > max_counterparty_selected_contest_delay {
-			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_counterparty_selected_contest_delay, msg.to_self_delay)));
-		}
-		if msg.max_accepted_htlcs < 1 {
-			return Err(ChannelError::Close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
-		}
-		if msg.max_accepted_htlcs > MAX_HTLCS {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs was {}. It must not be larger than {}", msg.max_accepted_htlcs, MAX_HTLCS)));
-		}
-
-		// Now check against optional parameters as set by config...
-		if msg.funding_satoshis < config.channel_handshake_limits.min_funding_satoshis {
-			return Err(ChannelError::Close(format!("Funding satoshis ({}) is less than the user specified limit ({})", msg.funding_satoshis, config.channel_handshake_limits.min_funding_satoshis)));
-		}
-		if msg.htlc_minimum_msat > config.channel_handshake_limits.max_htlc_minimum_msat {
-			return Err(ChannelError::Close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", msg.htlc_minimum_msat,  config.channel_handshake_limits.max_htlc_minimum_msat)));
-		}
-		if msg.max_htlc_value_in_flight_msat < config.channel_handshake_limits.min_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", msg.max_htlc_value_in_flight_msat, config.channel_handshake_limits.min_max_htlc_value_in_flight_msat)));
-		}
-		if msg.channel_reserve_satoshis > config.channel_handshake_limits.max_channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg.channel_reserve_satoshis, config.channel_handshake_limits.max_channel_reserve_satoshis)));
-		}
-		if msg.max_accepted_htlcs < config.channel_handshake_limits.min_max_accepted_htlcs {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.max_accepted_htlcs, config.channel_handshake_limits.min_max_accepted_htlcs)));
-		}
-		if msg.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
-		}
-		if msg.dust_limit_satoshis >  MAX_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
-		}
-
-		// Convert things into internal flags and prep our state:
-
-		if config.channel_handshake_limits.force_announced_channel_preference {
-			if config.channel_handshake_config.announced_channel != announced_channel {
-				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
-			}
-		}
-
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(msg.funding_satoshis, config);
-		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			// Protocol level safety check in place, although it should never happen because
-			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
-			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
-		}
-		if holder_selected_channel_reserve_satoshis * 1000 >= full_channel_value_msat {
-			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({})msats. Channel value is ({} - {})msats.", holder_selected_channel_reserve_satoshis * 1000, full_channel_value_msat, msg.push_msat)));
-		}
-		if msg.channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			log_debug!(logger, "channel_reserve_satoshis ({}) is smaller than our dust limit ({}). We can broadcast stale states without any risk, implying this channel is very insecure for our counterparty.",
-				msg.channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
-		}
-		if holder_selected_channel_reserve_satoshis < msg.dust_limit_satoshis {
-			return Err(ChannelError::Close(format!("Dust limit ({}) too high for the channel reserve we require the remote to keep ({})", msg.dust_limit_satoshis, holder_selected_channel_reserve_satoshis)));
-		}
-
-		// check if the funder's amount for the initial commitment tx is sufficient
-		// for full fee payment plus a few HTLCs to ensure the channel will be useful.
-		let anchor_outputs_value = if channel_type.supports_anchors_zero_fee_htlc_tx() {
-			ANCHOR_OUTPUT_VALUE_SATOSHI * 2
-		} else {
-			0
-		};
-		let funders_amount_msat = msg.funding_satoshis * 1000 - msg.push_msat;
-		let commitment_tx_fee = commit_tx_fee_msat(msg.feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) / 1000;
-		if (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value) < commitment_tx_fee {
-			return Err(ChannelError::Close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value), commitment_tx_fee)));
-		}
-
-		let to_remote_satoshis = funders_amount_msat / 1000 - commitment_tx_fee - anchor_outputs_value;
-		// While it's reasonable for us to not meet the channel reserve initially (if they don't
-		// want to push much to us), our counterparty should always have more than our reserve.
-		if to_remote_satoshis < holder_selected_channel_reserve_satoshis {
-			return Err(ChannelError::Close("Insufficient funding amount for initial reserve".to_owned()));
-		}
-
-		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
-			match &msg.shutdown_scriptpubkey {
-				&Some(ref script) => {
-					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
-					if script.len() == 0 {
-						None
-					} else {
-						if !script::is_bolt2_compliant(&script, their_features) {
-							return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)))
-						}
-						Some(script.clone())
-					}
-				},
-				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-				&None => {
-					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
-				}
-			}
-		} else { None };
-
-		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-			match signer_provider.get_shutdown_scriptpubkey() {
-				Ok(scriptpubkey) => Some(scriptpubkey),
-				Err(_) => return Err(ChannelError::Close("Failed to get upfront shutdown scriptpubkey".to_owned())),
-			}
-		} else { None };
-
-		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
-			if !shutdown_scriptpubkey.is_compatible(&their_features) {
-				return Err(ChannelError::Close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
-			}
-		}
-
-		let destination_script = match signer_provider.get_destination_script(channel_keys_id) {
-			Ok(script) => script,
-			Err(_) => return Err(ChannelError::Close("Failed to get destination script".to_owned())),
-		};
-
-		let mut secp_ctx = Secp256k1::new();
-		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
-
-		let minimum_depth = if is_0conf {
-			Some(0)
-		} else {
-			Some(cmp::max(config.channel_handshake_config.minimum_depth, 1))
+			funding_pubkey: msg.common_fields.funding_pubkey,
+			revocation_basepoint: RevocationBasepoint::from(msg.common_fields.revocation_basepoint),
+			payment_point: msg.common_fields.payment_basepoint,
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(msg.common_fields.delayed_payment_basepoint),
+			htlc_basepoint: HtlcBasepoint::from(msg.common_fields.htlc_basepoint)
 		};
 
 		let chan = Self {
-			context: ChannelContext {
-				user_id,
-
-				config: LegacyChannelConfig {
-					options: config.channel_config.clone(),
-					announced_channel,
-					commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
-				},
-
-				prev_config: None,
-
-				inbound_handshake_limits_override: None,
-
-				temporary_channel_id: Some(msg.temporary_channel_id),
-				channel_id: msg.temporary_channel_id,
-				channel_state: ChannelState::NegotiatingFunding(
-					NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
-				),
-				announcement_sigs_state: AnnouncementSigsState::NotSent,
-				secp_ctx,
-
-				latest_monitor_update_id: 0,
-
-				holder_signer: ChannelSignerType::Ecdsa(holder_signer),
-				shutdown_scriptpubkey,
-				destination_script,
-
-				cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
-				cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
-				value_to_self_msat: msg.push_msat,
-
-				pending_inbound_htlcs: Vec::new(),
-				pending_outbound_htlcs: Vec::new(),
-				holding_cell_htlc_updates: Vec::new(),
-				pending_update_fee: None,
-				holding_cell_update_fee: None,
-				next_holder_htlc_id: 0,
-				next_counterparty_htlc_id: 0,
-				update_time_counter: 1,
-
-				resend_order: RAACommitmentOrder::CommitmentFirst,
-
-				monitor_pending_channel_ready: false,
-				monitor_pending_revoke_and_ack: false,
-				monitor_pending_commitment_signed: false,
-				monitor_pending_forwards: Vec::new(),
-				monitor_pending_failures: Vec::new(),
-				monitor_pending_finalized_fulfills: Vec::new(),
-
-				signer_pending_commitment_update: false,
-				signer_pending_funding: false,
-
-				#[cfg(debug_assertions)]
-				holder_max_commitment_tx_output: Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
-				#[cfg(debug_assertions)]
-				counterparty_max_commitment_tx_output: Mutex::new((msg.push_msat, msg.funding_satoshis * 1000 - msg.push_msat)),
-
-				last_sent_closing_fee: None,
-				pending_counterparty_closing_signed: None,
-				expecting_peer_commitment_signed: false,
-				closing_fee_limits: None,
-				target_closing_feerate_sats_per_kw: None,
-
-				funding_tx_confirmed_in: None,
-				funding_tx_confirmation_height: 0,
-				short_channel_id: None,
-				channel_creation_height: current_chain_height,
-
-				feerate_per_kw: msg.feerate_per_kw,
-				channel_value_satoshis: msg.funding_satoshis,
-				counterparty_dust_limit_satoshis: msg.dust_limit_satoshis,
-				holder_dust_limit_satoshis: MIN_CHAN_DUST_LIMIT_SATOSHIS,
-				counterparty_max_htlc_value_in_flight_msat: cmp::min(msg.max_htlc_value_in_flight_msat, msg.funding_satoshis * 1000),
-				holder_max_htlc_value_in_flight_msat: get_holder_max_htlc_value_in_flight_msat(msg.funding_satoshis, &config.channel_handshake_config),
-				counterparty_selected_channel_reserve_satoshis: Some(msg.channel_reserve_satoshis),
-				holder_selected_channel_reserve_satoshis,
-				counterparty_htlc_minimum_msat: msg.htlc_minimum_msat,
-				holder_htlc_minimum_msat: if config.channel_handshake_config.our_htlc_minimum_msat == 0 { 1 } else { config.channel_handshake_config.our_htlc_minimum_msat },
-				counterparty_max_accepted_htlcs: msg.max_accepted_htlcs,
-				holder_max_accepted_htlcs: cmp::min(config.channel_handshake_config.our_max_accepted_htlcs, MAX_HTLCS),
-				minimum_depth,
-
-				counterparty_forwarding_info: None,
-
-				channel_transaction_parameters: ChannelTransactionParameters {
-					holder_pubkeys: pubkeys,
-					holder_selected_contest_delay: config.channel_handshake_config.our_to_self_delay,
-					is_outbound_from_holder: false,
-					counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
-						selected_contest_delay: msg.to_self_delay,
-						pubkeys: counterparty_pubkeys,
-					}),
-					funding_outpoint: None,
-					channel_type_features: channel_type.clone()
-				},
-				funding_transaction: None,
-				is_batch_funding: None,
-
-				counterparty_cur_commitment_point: Some(msg.first_per_commitment_point),
-				counterparty_prev_commitment_point: None,
+			context: ChannelContext::new_for_inbound_channel(
+				fee_estimator,
+				entropy_source,
+				signer_provider,
 				counterparty_node_id,
+				their_features,
+				user_id,
+				config,
+				current_chain_height,
+				&&logger,
+				is_0conf,
+				0,
 
-				counterparty_shutdown_scriptpubkey,
-
-				commitment_secrets: CounterpartyCommitmentSecrets::new(),
-
-				channel_update_status: ChannelUpdateStatus::Enabled,
-				closing_signed_in_flight: false,
-
-				announcement_sigs: None,
-
-				#[cfg(any(test, fuzzing))]
-				next_local_commitment_tx_fee_info_cached: Mutex::new(None),
-				#[cfg(any(test, fuzzing))]
-				next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
-
-				workaround_lnd_bug_4006: None,
-				sent_message_awaiting_response: None,
-
-				latest_inbound_scid_alias: None,
-				outbound_scid_alias: 0,
-
-				channel_pending_event_emitted: false,
-				channel_ready_event_emitted: false,
-
-				#[cfg(any(test, fuzzing))]
-				historical_inbound_htlc_fulfills: HashSet::new(),
-
+				counterparty_pubkeys,
 				channel_type,
-				channel_keys_id,
-
-				blocked_monitor_updates: Vec::new(),
-			},
+				holder_selected_channel_reserve_satoshis,
+				msg.channel_reserve_satoshis,
+				msg.push_msat,
+				msg.common_fields.clone(),
+			)?,
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
 		};
-
 		Ok(chan)
 	}
 
@@ -7247,25 +7870,27 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::AcceptChannel {
-			temporary_channel_id: self.context.channel_id,
-			dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
-			max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
+			common_fields: msgs::CommonAcceptChannelFields {
+				temporary_channel_id: self.context.channel_id,
+				dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
+				max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
+				htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
+				minimum_depth: self.context.minimum_depth.unwrap(),
+				to_self_delay: self.context.get_holder_selected_contest_delay(),
+				max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
+				funding_pubkey: keys.funding_pubkey,
+				revocation_basepoint: keys.revocation_basepoint.to_public_key(),
+				payment_basepoint: keys.payment_point,
+				delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
+				htlc_basepoint: keys.htlc_basepoint.to_public_key(),
+				first_per_commitment_point,
+				shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
+					Some(script) => script.clone().into_inner(),
+					None => Builder::new().into_script(),
+				}),
+				channel_type: Some(self.context.channel_type.clone()),
+			},
 			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
-			htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
-			minimum_depth: self.context.minimum_depth.unwrap(),
-			to_self_delay: self.context.get_holder_selected_contest_delay(),
-			max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
-			funding_pubkey: keys.funding_pubkey,
-			revocation_basepoint: keys.revocation_basepoint.to_public_key(),
-			payment_point: keys.payment_point,
-			delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
-			htlc_basepoint: keys.htlc_basepoint.to_public_key(),
-			first_per_commitment_point,
-			shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
-				Some(script) => script.clone().into_inner(),
-				None => Builder::new().into_script(),
-			}),
-			channel_type: Some(self.context.channel_type.clone()),
 			#[cfg(taproot)]
 			next_local_nonce: None,
 		}
@@ -7356,7 +7981,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// Now that we're past error-generating stuff, update our local state:
 
 		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
-		self.context.channel_id = funding_txo.to_channel_id();
+		self.context.channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 		self.context.cur_holder_commitment_transaction_number -= 1;
 
@@ -7374,7 +7999,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		                                          &self.context.channel_transaction_parameters,
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
-		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id);
+		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id, self.context.channel_id());
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_commitment_tx.trust().txid(), Vec::new(),
 			self.context.cur_counterparty_commitment_transaction_number + 1,
@@ -7389,6 +8014,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// `ChannelMonitor`.
 		let mut channel = Channel {
 			context: self.context,
+			#[cfg(any(dual_funding, splicing))]
+			dual_funding_channel_context: None,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
@@ -7397,7 +8024,310 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	}
 }
 
-const SERIALIZATION_VERSION: u8 = 3;
+// A not-yet-funded outbound (from holder) channel using V2 channel establishment.
+#[cfg(any(dual_funding, splicing))]
+pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
+	pub context: ChannelContext<SP>,
+	pub unfunded_context: UnfundedChannelContext,
+	#[cfg(any(dual_funding, splicing))]
+	pub dual_funding_context: DualFundingChannelContext,
+}
+
+#[cfg(any(dual_funding, splicing))]
+impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
+	pub fn new<ES: Deref, F: Deref>(
+		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
+		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
+		user_id: u128, config: &UserConfig, current_chain_height: u32, outbound_scid_alias: u64,
+		funding_confirmation_target: ConfirmationTarget,
+	) -> Result<OutboundV2Channel<SP>, APIError>
+	where ES::Target: EntropySource,
+	      F::Target: FeeEstimator,
+	{
+		let channel_keys_id = signer_provider.generate_channel_keys_id(false, funding_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(funding_satoshis, channel_keys_id);
+		let pubkeys = holder_signer.pubkeys().clone();
+
+		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
+
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+
+		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
+		let funding_tx_locktime = current_chain_height;
+
+		let chan = Self {
+			context: ChannelContext::new_for_outbound_channel(
+				fee_estimator,
+				entropy_source,
+				signer_provider,
+				counterparty_node_id,
+				their_features,
+				funding_satoshis,
+				0,
+				user_id,
+				config,
+				current_chain_height,
+				outbound_scid_alias,
+				temporary_channel_id,
+				holder_selected_channel_reserve_satoshis,
+				channel_keys_id,
+				holder_signer,
+				pubkeys,
+			)?,
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			dual_funding_context: DualFundingChannelContext {
+				our_funding_satoshis: funding_satoshis,
+				their_funding_satoshis: 0,
+				funding_tx_locktime,
+				funding_feerate_sat_per_1000_weight,
+			}
+		};
+		Ok(chan)
+	}
+
+	/// If we receive an error message, it may only be a rejection of the channel type we tried,
+	/// not of our ability to open any channel at all. Thus, on error, we should first call this
+	/// and see if we get a new `OpenChannelV2` message, otherwise the channel is failed.
+	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
+		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>
+	) -> Result<msgs::OpenChannelV2, ()>
+	where
+		F::Target: FeeEstimator
+	{
+		self.context.maybe_downgrade_channel_features(fee_estimator)?;
+		Ok(self.get_open_channel_v2(chain_hash))
+	}
+
+	pub fn get_open_channel_v2(&self, chain_hash: ChainHash) -> msgs::OpenChannelV2 {
+		if self.context.have_received_message() {
+			debug_assert!(false, "Cannot generate an open_channel2 after we've moved forward");
+		}
+
+		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			debug_assert!(false, "Tried to send an open_channel2 for a channel that has already advanced");
+		}
+
+		let first_per_commitment_point = self.context.holder_signer.as_ref()
+			.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number,
+				&self.context.secp_ctx);
+		let second_per_commitment_point = self.context.holder_signer.as_ref()
+			.get_per_commitment_point(self.context.cur_holder_commitment_transaction_number - 1,
+				&self.context.secp_ctx);
+		let keys = self.context.get_holder_pubkeys();
+
+		msgs::OpenChannelV2 {
+			common_fields: msgs::CommonOpenChannelFields {
+				chain_hash,
+				temporary_channel_id: self.context.temporary_channel_id.unwrap(),
+				funding_satoshis: self.context.channel_value_satoshis,
+				dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
+				max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
+				htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
+				commitment_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
+				to_self_delay: self.context.get_holder_selected_contest_delay(),
+				max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
+				funding_pubkey: keys.funding_pubkey,
+				revocation_basepoint: keys.revocation_basepoint.to_public_key(),
+				payment_basepoint: keys.payment_point,
+				delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
+				htlc_basepoint: keys.htlc_basepoint.to_public_key(),
+				first_per_commitment_point,
+				channel_flags: if self.context.config.announced_channel {1} else {0},
+				shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
+					Some(script) => script.clone().into_inner(),
+					None => Builder::new().into_script(),
+				}),
+				channel_type: Some(self.context.channel_type.clone()),
+			},
+			funding_feerate_sat_per_1000_weight: self.context.feerate_per_kw,
+			second_per_commitment_point,
+			locktime: self.dual_funding_context.funding_tx_locktime,
+			require_confirmed_inputs: None,
+		}
+	}
+}
+
+// A not-yet-funded inbound (from counterparty) channel using V2 channel establishment.
+#[cfg(any(dual_funding, splicing))]
+pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
+	pub context: ChannelContext<SP>,
+	pub unfunded_context: UnfundedChannelContext,
+	pub dual_funding_context: DualFundingChannelContext,
+}
+
+#[cfg(any(dual_funding, splicing))]
+impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
+	/// Creates a new dual-funded channel from a remote side's request for one.
+	/// Assumes chain_hash has already been checked and corresponds with what we expect!
+	pub fn new<ES: Deref, F: Deref, L: Deref>(
+		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
+		counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
+		their_features: &InitFeatures, msg: &msgs::OpenChannelV2, funding_satoshis: u64, user_id: u128,
+		config: &UserConfig, current_chain_height: u32, logger: &L,
+	) -> Result<InboundV2Channel<SP>, ChannelError>
+		where ES::Target: EntropySource,
+			  F::Target: FeeEstimator,
+			  L::Target: Logger,
+	{
+		let channel_value_satoshis = funding_satoshis.saturating_add(msg.common_fields.funding_satoshis);
+		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			channel_value_satoshis, msg.common_fields.dust_limit_satoshis);
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+
+		// First check the channel type is known, failing before we do anything else if we don't
+		// support this channel type.
+		if msg.common_fields.channel_type.is_none() {
+			return Err(ChannelError::Close(format!("Rejecting V2 channel {} missing channel_type",
+				msg.common_fields.temporary_channel_id)))
+		}
+		let channel_type = channel_type_from_open_channel(&msg.common_fields, their_features, our_supported_features)?;
+
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: msg.common_fields.funding_pubkey,
+			revocation_basepoint: RevocationBasepoint(msg.common_fields.revocation_basepoint),
+			payment_point: msg.common_fields.payment_basepoint,
+			delayed_payment_basepoint: DelayedPaymentBasepoint(msg.common_fields.delayed_payment_basepoint),
+			htlc_basepoint: HtlcBasepoint(msg.common_fields.htlc_basepoint)
+		};
+
+		let mut context = ChannelContext::new_for_inbound_channel(
+			fee_estimator,
+			entropy_source,
+			signer_provider,
+			counterparty_node_id,
+			their_features,
+			user_id,
+			config,
+			current_chain_height,
+			logger,
+			false,
+
+			funding_satoshis,
+
+			counterparty_pubkeys,
+			channel_type,
+			holder_selected_channel_reserve_satoshis,
+			counterparty_selected_channel_reserve_satoshis,
+			0 /* push_msat not used in dual-funding */,
+			msg.common_fields.clone(),
+		)?;
+		let channel_id = ChannelId::v2_from_revocation_basepoints(
+			&context.get_holder_pubkeys().revocation_basepoint,
+			&context.get_counterparty_pubkeys().revocation_basepoint);
+		context.channel_id = channel_id;
+
+		let chan = Self {
+			context,
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			dual_funding_context: DualFundingChannelContext {
+				our_funding_satoshis: funding_satoshis,
+				their_funding_satoshis: msg.common_fields.funding_satoshis,
+				funding_tx_locktime: msg.locktime,
+				funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
+			}
+		};
+
+		Ok(chan)
+	}
+
+	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannelV2`] message which
+	/// should be sent back to the counterparty node.
+	///
+	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
+	pub fn accept_inbound_dual_funded_channel(&mut self) -> msgs::AcceptChannelV2 {
+		if self.context.is_outbound() {
+			debug_assert!(false, "Tried to send accept_channel for an outbound channel?");
+		}
+		if !matches!(
+			self.context.channel_state, ChannelState::NegotiatingFunding(flags)
+			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
+		) {
+			debug_assert!(false, "Tried to send accept_channel2 after channel had moved forward");
+		}
+		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			debug_assert!(false, "Tried to send an accept_channel2 for a channel that has already advanced");
+		}
+
+		self.generate_accept_channel_v2_message()
+	}
+
+	/// This function is used to explicitly generate a [`msgs::AcceptChannel`] message for an
+	/// inbound channel. If the intention is to accept an inbound channel, use
+	/// [`InboundV1Channel::accept_inbound_channel`] instead.
+	///
+	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
+	fn generate_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
+		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
+			self.context.cur_holder_commitment_transaction_number, &self.context.secp_ctx);
+		let second_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
+			self.context.cur_holder_commitment_transaction_number - 1, &self.context.secp_ctx);
+		let keys = self.context.get_holder_pubkeys();
+
+		msgs::AcceptChannelV2 {
+			common_fields: msgs::CommonAcceptChannelFields {
+				temporary_channel_id: self.context.temporary_channel_id.unwrap(),
+				dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
+				max_htlc_value_in_flight_msat: self.context.holder_max_htlc_value_in_flight_msat,
+				htlc_minimum_msat: self.context.holder_htlc_minimum_msat,
+				minimum_depth: self.context.minimum_depth.unwrap(),
+				to_self_delay: self.context.get_holder_selected_contest_delay(),
+				max_accepted_htlcs: self.context.holder_max_accepted_htlcs,
+				funding_pubkey: keys.funding_pubkey,
+				revocation_basepoint: keys.revocation_basepoint.to_public_key(),
+				payment_basepoint: keys.payment_point,
+				delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
+				htlc_basepoint: keys.htlc_basepoint.to_public_key(),
+				first_per_commitment_point,
+				shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
+					Some(script) => script.clone().into_inner(),
+					None => Builder::new().into_script(),
+				}),
+				channel_type: Some(self.context.channel_type.clone()),
+			},
+			funding_satoshis: self.dual_funding_context.our_funding_satoshis,
+			second_per_commitment_point,
+			require_confirmed_inputs: None,
+		}
+	}
+
+	/// Enables the possibility for tests to extract a [`msgs::AcceptChannelV2`] message for an
+	/// inbound channel without accepting it.
+	///
+	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
+	#[cfg(test)]
+	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
+		self.generate_accept_channel_v2_message()
+	}
+}
+
+// Unfunded channel utilities
+
+fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) -> ChannelTypeFeatures {
+	// The default channel type (ie the first one we try) depends on whether the channel is
+	// public - if it is, we just go with `only_static_remotekey` as it's the only option
+	// available. If it's private, we first try `scid_privacy` as it provides better privacy
+	// with no other changes, and fall back to `only_static_remotekey`.
+	let mut ret = ChannelTypeFeatures::only_static_remote_key();
+	if !config.channel_handshake_config.announced_channel &&
+		config.channel_handshake_config.negotiate_scid_privacy &&
+		their_features.supports_scid_privacy() {
+		ret.set_scid_privacy_required();
+	}
+
+	// Optionally, if the user would like to negotiate the `anchors_zero_fee_htlc_tx` option, we
+	// set it now. If they don't understand it, we'll fall back to our default of
+	// `only_static_remotekey`.
+	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx &&
+		their_features.supports_anchors_zero_fee_htlc_tx() {
+		ret.set_anchors_zero_fee_htlc_tx_required();
+	}
+
+	ret
+}
+
+const SERIALIZATION_VERSION: u8 = 4;
 const MIN_SERIALIZATION_VERSION: u8 = 3;
 
 impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
@@ -7459,7 +8389,18 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		// Note that we write out as if remove_uncommitted_htlcs_and_mark_paused had just been
 		// called.
 
-		write_ver_prefix!(writer, MIN_SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
+		let version_to_write = if self.context.pending_inbound_htlcs.iter().any(|htlc| match htlc.state {
+			InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution)|
+				InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
+				matches!(htlc_resolution, InboundHTLCResolution::Pending { .. })
+			},
+			_ => false,
+		}) {
+			SERIALIZATION_VERSION
+		} else {
+			MIN_SERIALIZATION_VERSION
+		};
+		write_ver_prefix!(writer, version_to_write, MIN_SERIALIZATION_VERSION);
 
 		// `user_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values. We write
@@ -7477,6 +8418,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			let mut channel_state = self.context.channel_state;
 			if matches!(channel_state, ChannelState::AwaitingChannelReady(_)|ChannelState::ChannelReady(_)) {
 				channel_state.set_peer_disconnected();
+			} else {
+				debug_assert!(false, "Pre-funded/shutdown channels should not be written");
 			}
 			channel_state.to_u32().write(writer)?;
 		}
@@ -7513,13 +8456,29 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			htlc.payment_hash.write(writer)?;
 			match &htlc.state {
 				&InboundHTLCState::RemoteAnnounced(_) => unreachable!(),
-				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_state) => {
+				&InboundHTLCState::AwaitingRemoteRevokeToAnnounce(ref htlc_resolution) => {
 					1u8.write(writer)?;
-					htlc_state.write(writer)?;
+					if version_to_write <= 3 {
+						if let InboundHTLCResolution::Resolved { pending_htlc_status } = htlc_resolution {
+							pending_htlc_status.write(writer)?;
+						} else {
+							panic!();
+						}
+					} else {
+						htlc_resolution.write(writer)?;
+					}
 				},
-				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_state) => {
+				&InboundHTLCState::AwaitingAnnouncedRemoteRevoke(ref htlc_resolution) => {
 					2u8.write(writer)?;
-					htlc_state.write(writer)?;
+					if version_to_write <= 3 {
+						if let InboundHTLCResolution::Resolved { pending_htlc_status } = htlc_resolution {
+							pending_htlc_status.write(writer)?;
+						} else {
+							panic!();
+						}
+					} else {
+						htlc_resolution.write(writer)?;
+					}
 				},
 				&InboundHTLCState::Committed => {
 					3u8.write(writer)?;
@@ -7745,6 +8704,11 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 
 		let holder_max_accepted_htlcs = if self.context.holder_max_accepted_htlcs == DEFAULT_MAX_HTLCS { None } else { Some(self.context.holder_max_accepted_htlcs) };
 
+		let mut monitor_pending_update_adds = None;
+		if !self.context.monitor_pending_update_adds.is_empty() {
+			monitor_pending_update_adds = Some(&self.context.monitor_pending_update_adds);
+		}
+
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -7762,6 +8726,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(7, self.context.shutdown_scriptpubkey, option),
 			(8, self.context.blocked_monitor_updates, optional_vec),
 			(9, self.context.target_closing_feerate_sats_per_kw, option),
+			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, self.context.monitor_pending_finalized_fulfills, required_vec),
 			(13, self.context.channel_creation_height, required),
 			(15, preimages, required_vec),
@@ -7780,6 +8745,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
+			// 45 and 47 are reserved for async signing
+			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 		});
 
 		Ok(())
@@ -7855,8 +8822,22 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				cltv_expiry: Readable::read(reader)?,
 				payment_hash: Readable::read(reader)?,
 				state: match <u8 as Readable>::read(reader)? {
-					1 => InboundHTLCState::AwaitingRemoteRevokeToAnnounce(Readable::read(reader)?),
-					2 => InboundHTLCState::AwaitingAnnouncedRemoteRevoke(Readable::read(reader)?),
+					1 => {
+						let resolution = if ver <= 3 {
+							InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
+						} else {
+							Readable::read(reader)?
+						};
+						InboundHTLCState::AwaitingRemoteRevokeToAnnounce(resolution)
+					},
+					2 => {
+						let resolution = if ver <= 3 {
+							InboundHTLCResolution::Resolved { pending_htlc_status: Readable::read(reader)? }
+						} else {
+							Readable::read(reader)?
+						};
+						InboundHTLCState::AwaitingAnnouncedRemoteRevoke(resolution)
+					},
 					3 => InboundHTLCState::Committed,
 					4 => InboundHTLCState::LocalRemoved(Readable::read(reader)?),
 					_ => return Err(DecodeError::InvalidValue),
@@ -8017,7 +8998,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let channel_update_status = Readable::read(reader)?;
 
 		#[cfg(any(test, fuzzing))]
-		let mut historical_inbound_htlc_fulfills = HashSet::new();
+		let mut historical_inbound_htlc_fulfills = new_hash_set();
 		#[cfg(any(test, fuzzing))]
 		{
 			let htlc_fulfills_len: u64 = Readable::read(reader)?;
@@ -8067,10 +9048,13 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut is_batch_funding: Option<()> = None;
 
+		let mut local_initiated_shutdown: Option<()> = None;
+
 		let mut pending_outbound_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 		let mut holding_cell_blinding_points_opt: Option<Vec<Option<PublicKey>>> = None;
 
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
+		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
@@ -8083,6 +9067,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(7, shutdown_scriptpubkey, option),
 			(8, blocked_monitor_updates, optional_vec),
 			(9, target_closing_feerate_sats_per_kw, option),
+			(10, monitor_pending_update_adds, option), // Added in 0.0.122
 			(11, monitor_pending_finalized_fulfills, optional_vec),
 			(13, channel_creation_height, option),
 			(15, preimages_opt, optional_vec),
@@ -8101,6 +9086,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(39, pending_outbound_blinding_points_opt, optional_vec),
 			(41, holding_cell_blinding_points_opt, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
+			// 45 and 47 are reserved for async signing
+			(49, local_initiated_shutdown, option),
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -8253,6 +9240,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				monitor_pending_forwards,
 				monitor_pending_failures,
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
+				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or(Vec::new()),
 
 				signer_pending_commitment_update: false,
 				signer_pending_funding: false,
@@ -8331,8 +9319,12 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				channel_type: channel_type.unwrap(),
 				channel_keys_id,
 
+				local_initiated_shutdown,
+
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
-			}
+			},
+			#[cfg(any(dual_funding, splicing))]
+			dual_funding_channel_context: None,
 		})
 	}
 }
@@ -8377,6 +9369,18 @@ mod tests {
 	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::address::{WitnessProgram, WitnessVersion};
 	use crate::prelude::*;
+
+	#[test]
+	fn test_channel_state_order() {
+		use crate::ln::channel::NegotiatingFundingFlags;
+		use crate::ln::channel::AwaitingChannelReadyFlags;
+		use crate::ln::channel::ChannelReadyFlags;
+
+		assert!(ChannelState::NegotiatingFunding(NegotiatingFundingFlags::new()) < ChannelState::FundingNegotiated);
+		assert!(ChannelState::FundingNegotiated < ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()));
+		assert!(ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new()) < ChannelState::ChannelReady(ChannelReadyFlags::new()));
+		assert!(ChannelState::ChannelReady(ChannelReadyFlags::new()) < ChannelState::ShutdownComplete);
+	}
 
 	struct TestFeeEstimator {
 		fee_est: u32
@@ -8482,7 +9486,7 @@ mod tests {
 		// same as the old fee.
 		fee_est.fee_est = 500;
 		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
-		assert_eq!(open_channel_msg.feerate_per_kw, original_fee);
+		assert_eq!(open_channel_msg.common_fields.commitment_feerate_sat_per_1000_weight, original_fee);
 	}
 
 	#[test]
@@ -8513,7 +9517,7 @@ mod tests {
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
-		accept_channel_msg.dust_limit_satoshis = 546;
+		accept_channel_msg.common_fields.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
 
@@ -8831,7 +9835,7 @@ mod tests {
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
 		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
-		accept_channel_msg.dust_limit_satoshis = 546;
+		accept_channel_msg.common_fields.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
 
@@ -8885,17 +9889,34 @@ mod tests {
 	fn blinding_point_skimmed_fee_malformed_ser() {
 		// Ensure that channel blinding points, skimmed fees, and malformed HTLCs are (de)serialized
 		// properly.
+		let logger = test_utils::TestLogger::new();
 		let feeest = LowerBoundedFeeEstimator::new(&TestFeeEstimator{fee_est: 15000});
 		let secp_ctx = Secp256k1::new();
 		let seed = [42; 32];
 		let network = Network::Testnet;
+		let best_block = BestBlock::from_network(network);
 		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
 
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
 		let features = channelmanager::provided_init_features(&config);
-		let outbound_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &features, 10000000, 100000, 42, &config, 0, 42, None).unwrap();
-		let mut chan = Channel { context: outbound_chan.context };
+		let mut outbound_chan = OutboundV1Channel::<&TestKeysInterface>::new(
+			&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &features, 10000000, 100000, 42, &config, 0, 42, None
+		).unwrap();
+		let inbound_chan = InboundV1Channel::<&TestKeysInterface>::new(
+			&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config),
+			&features, &outbound_chan.get_open_channel(ChainHash::using_genesis_block(network)), 7, &config, 0, &&logger, false
+		).unwrap();
+		outbound_chan.accept_channel(&inbound_chan.get_accept_channel_message(), &config.channel_handshake_limits, &features).unwrap();
+		let tx = Transaction { version: 1, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+			value: 10000000, script_pubkey: outbound_chan.context.get_funding_redeemscript(),
+		}]};
+		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
+		let funding_created = outbound_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap().unwrap();
+		let mut chan = match inbound_chan.funding_created(&funding_created, best_block, &&keys_provider, &&logger) {
+			Ok((chan, _, _)) => chan,
+			Err((_, e)) => panic!("{}", e),
+		};
 
 		let dummy_htlc_source = HTLCSource::OutboundRoute {
 			path: Path {
@@ -9787,7 +10808,7 @@ mod tests {
 		channel_type_features.set_zero_conf_required();
 
 		let mut open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
-		open_channel_msg.channel_type = Some(channel_type_features);
+		open_channel_msg.common_fields.channel_type = Some(channel_type_features);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let res = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider,
 			node_b_node_id, &channelmanager::provided_channel_type_features(&config),
@@ -9870,7 +10891,7 @@ mod tests {
 
 		// Set `channel_type` to `None` to force the implicit feature negotiation.
 		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
-		open_channel_msg.channel_type = None;
+		open_channel_msg.common_fields.channel_type = None;
 
 		// Since A supports both `static_remote_key` and `option_anchors`, but B only accepts
 		// `static_remote_key`, it will fail the channel.
@@ -9916,7 +10937,7 @@ mod tests {
 		).unwrap();
 
 		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
-		open_channel_msg.channel_type = Some(simple_anchors_channel_type.clone());
+		open_channel_msg.common_fields.channel_type = Some(simple_anchors_channel_type.clone());
 
 		let res = InboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
@@ -9943,7 +10964,7 @@ mod tests {
 		).unwrap();
 
 		let mut accept_channel_msg = channel_b.get_accept_channel_message();
-		accept_channel_msg.channel_type = Some(simple_anchors_channel_type.clone());
+		accept_channel_msg.common_fields.channel_type = Some(simple_anchors_channel_type.clone());
 
 		let res = channel_a.accept_channel(
 			&accept_channel_msg, &config.channel_handshake_limits, &simple_anchors_init
