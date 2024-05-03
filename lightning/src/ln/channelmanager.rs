@@ -1549,11 +1549,12 @@ where
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
 /// let offer = channel_manager
-///     .create_offer_builder("coffee".to_string())?
+///     .create_offer_builder()?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
 /// # let offer = builder
+///     .description("coffee".to_string())
 ///     .amount_msats(10_000_000)
 ///     .build()?;
 /// let bech32_offer = offer.to_string();
@@ -1652,13 +1653,13 @@ where
 /// let payment_id = PaymentId([42; 32]);
 /// let refund = channel_manager
 ///     .create_refund_builder(
-///         "coffee".to_string(), amount_msats, absolute_expiry, payment_id, retry,
-///         max_total_routing_fee_msat
+///         amount_msats, absolute_expiry, payment_id, retry, max_total_routing_fee_msat
 ///     )?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::refund::RefundBuilder<_> = refund.into();
 /// # let refund = builder
+///     .description("coffee".to_string())
 ///     .payer_note("refund for order 1234".to_string())
 ///     .build()?;
 /// let bech32_refund = refund.to_string();
@@ -8562,9 +8563,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	pub fn create_offer_builder(
-		&$self, description: String
-	) -> Result<$builder, Bolt12SemanticError> {
+	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
 		let entropy = &*$self.entropy_source;
@@ -8572,7 +8571,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 
 		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = OfferBuilder::deriving_signing_pubkey(
-			description, node_id, expanded_key, entropy, secp_ctx
+			node_id, expanded_key, entropy, secp_ctx
 		)
 			.chain_hash($self.chain_hash)
 			.path(path);
@@ -8631,8 +8630,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn create_refund_builder(
-		&$self, description: String, amount_msats: u64, absolute_expiry: Duration,
-		payment_id: PaymentId, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
+		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
+		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
 	) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
@@ -8641,7 +8640,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 
 		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = RefundBuilder::deriving_payer_id(
-			description, node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
+			node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
 		)?
 			.chain_hash($self.chain_hash)
 			.absolute_expiry(absolute_expiry)
