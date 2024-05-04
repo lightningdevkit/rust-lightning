@@ -42,7 +42,8 @@ use crate::events;
 use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
-use crate::ln::{inbound_payment, ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::ln::inbound_payment;
+use crate::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
 pub use crate::ln::channel::{InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -1387,7 +1388,7 @@ where
 ///
 /// ```
 /// # use bitcoin::secp256k1::PublicKey;
-/// # use lightning::ln::ChannelId;
+/// # use lightning::ln::types::ChannelId;
 /// # use lightning::ln::channelmanager::AChannelManager;
 /// # use lightning::events::{Event, EventsProvider};
 /// #
@@ -1490,7 +1491,7 @@ where
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::PaymentHash;
+/// # use lightning::ln::types::PaymentHash;
 /// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry};
 /// # use lightning::routing::router::RouteParameters;
 /// #
@@ -12374,8 +12375,7 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
-	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::ChannelId;
+	use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{create_recv_pending_htlc_info, HTLCForwardInfo, inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{self, ErrorAction};

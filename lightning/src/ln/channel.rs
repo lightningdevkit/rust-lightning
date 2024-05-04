@@ -24,7 +24,7 @@ use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
 use bitcoin::secp256k1;
 
-use crate::ln::{ChannelId, PaymentPreimage, PaymentHash};
+use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
@@ -9338,7 +9338,7 @@ mod tests {
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::network::constants::Network;
 	use crate::ln::onion_utils::INVALID_ONION_BLINDING;
-	use crate::ln::{PaymentHash, PaymentPreimage};
+	use crate::ln::types::{PaymentHash, PaymentPreimage};
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;

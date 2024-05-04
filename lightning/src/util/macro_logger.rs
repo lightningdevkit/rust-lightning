@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use crate::ln::ChannelId;
+use crate::ln::types::ChannelId;
 use crate::sign::SpendableOutputDescriptor;
 
 use bitcoin::blockdata::transaction::Transaction;

@@ -21,7 +21,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::ChannelId;
+use crate::ln::types::ChannelId;
 use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, SocketAddress, MAX_VALUE_MSAT};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};

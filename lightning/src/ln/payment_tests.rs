@@ -19,7 +19,8 @@ use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, Mes
 use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS, commit_tx_fee_msat, get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::ln::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
-use crate::ln::{msgs, ChannelId, PaymentHash, PaymentSecret, PaymentPreimage};
+use crate::ln::msgs;
+use crate::ln::types::{ChannelId, PaymentHash, PaymentSecret, PaymentPreimage};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::onion_utils;
 use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, Retry};
