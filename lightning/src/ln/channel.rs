@@ -733,6 +733,12 @@ impl fmt::Display for ChannelError {
 	}
 }
 
+impl ChannelError {
+	pub(super) fn close(err: String) -> Self {
+		ChannelError::Close(err.clone())
+	}
+}
+
 pub(super) struct WithChannelContext<'a, L: Deref> where L::Target: Logger {
 	pub logger: &'a L,
 	pub peer_id: Option<PublicKey>,
