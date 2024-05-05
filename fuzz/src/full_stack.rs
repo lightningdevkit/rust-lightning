@@ -921,19 +921,32 @@ mod tests {
 		ext_from_hex("0c005e", &mut test);
 		// the funding transaction
 		ext_from_hex("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae0000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions, one per line
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// by now client should have sent a channel_ready (CHECK 3: SendChannelReady to 03000000 for chan 3d000000)
 
 		// inbound read from peer id 0 of len 18
@@ -1303,21 +1316,28 @@ mod tests {
 		ext_from_hex("0c007d", &mut test);
 		// the commitment transaction for channel 3f00000000000000000000000000000000000000000000000000000000000000
 		ext_from_hex("02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c0000000000000160014280000000000000000000000000000000000000005000020", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		//
 		// connect a block with one transaction of len 94
 		ext_from_hex("0c005e", &mut test);
 		// the HTLC timeout transaction
 		ext_from_hex("0200000001730000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020b20000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);

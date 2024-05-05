@@ -5117,6 +5117,26 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	pub fn check_for_stale_feerate<L: Logger>(&mut self, logger: &L, min_feerate: u32) -> Result<(), ClosureReason> {
+		if self.context.is_outbound() {
+			// While its possible our fee is too low for an outbound channel because we've been
+			// unable to increase the fee, we don't try to force-close directly here.
+			return Ok(());
+		}
+		if self.context.feerate_per_kw < min_feerate {
+			log_info!(logger,
+				"Closing channel as feerate of {} is below required {} (the minimum required rate over the past day)",
+				self.context.feerate_per_kw, min_feerate
+			);
+			Err(ClosureReason::PeerFeerateTooLow {
+				peer_feerate_sat_per_kw: self.context.feerate_per_kw,
+				required_feerate_sat_per_kw: min_feerate,
+			})
+		} else {
+			Ok(())
+		}
+	}
+
 	pub fn update_fee<F: Deref, L: Deref>(&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::UpdateFee, logger: &L) -> Result<(), ChannelError>
 		where F::Target: FeeEstimator, L::Target: Logger
 	{

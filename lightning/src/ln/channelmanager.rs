@@ -962,6 +962,11 @@ pub(super) struct InboundChannelRequest {
 /// accepted. An unaccepted channel that exceeds this limit will be abandoned.
 const UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS: i32 = 2;
 
+/// The number of blocks of historical feerate estimates we keep around and consider when deciding
+/// to force-close a channel for having too-low fees. Also the number of blocks we have to see
+/// after startup before we consider force-closing channels for having too-low fees.
+const FEERATE_TRACKING_BLOCKS: usize = 144;
+
 /// Stores a PaymentSecret and any other data we may need to validate an inbound payment is
 /// actually ours and not some duplicate HTLC sent to us by a node along the route.
 ///
@@ -2098,6 +2103,21 @@ where
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
 
+	/// We only want to force-close our channels on peers based on stale feerates when we're
+	/// confident the feerate on the channel is *really* stale, not just became stale recently.
+	/// Thus, we store the fee estimates we had as of the last [`FEERATE_TRACKING_BLOCKS`] blocks
+	/// (after startup completed) here, and only force-close when channels have a lower feerate
+	/// than we predicted any time in the last [`FEERATE_TRACKING_BLOCKS`] blocks.
+	///
+	/// We only keep this in memory as we assume any feerates we receive immediately after startup
+	/// may be bunk (as they often are if Bitcoin Core crashes) and want to delay taking any
+	/// actions for a day anyway.
+	///
+	/// The first element in the pair is the
+	/// [`ConfirmationTarget::MinAllowedAnchorChannelRemoteFee`] estimate, the second the
+	/// [`ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee`] estimate.
+	last_days_feerates: Mutex<VecDeque<(u32, u32)>>,
+
 	entropy_source: ES,
 	node_signer: NS,
 	signer_provider: SP,
@@ -2874,6 +2894,8 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
+
+			last_days_feerates: Mutex::new(VecDeque::new()),
 
 			entropy_source,
 			node_signer,
@@ -9173,7 +9195,38 @@ where
 				self, || -> NotifyOption { NotifyOption::DoPersist });
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
-		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None)));
+		let mut min_anchor_feerate = None;
+		let mut min_non_anchor_feerate = None;
+		if self.background_events_processed_since_startup.load(Ordering::Relaxed) {
+			// If we're past the startup phase, update our feerate cache
+			let mut last_days_feerates = self.last_days_feerates.lock().unwrap();
+			if last_days_feerates.len() >= FEERATE_TRACKING_BLOCKS {
+				last_days_feerates.pop_front();
+			}
+			let anchor_feerate = self.fee_estimator
+				.bounded_sat_per_1000_weight(ConfirmationTarget::MinAllowedAnchorChannelRemoteFee);
+			let non_anchor_feerate = self.fee_estimator
+				.bounded_sat_per_1000_weight(ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee);
+			last_days_feerates.push_back((anchor_feerate, non_anchor_feerate));
+			if last_days_feerates.len() >= FEERATE_TRACKING_BLOCKS {
+				min_anchor_feerate = last_days_feerates.iter().map(|(f, _)| f).min().copied();
+				min_non_anchor_feerate = last_days_feerates.iter().map(|(_, f)| f).min().copied();
+			}
+		}
+
+		self.do_chain_event(Some(height), |channel| {
+			let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+			if channel.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				if let Some(feerate) = min_anchor_feerate {
+					channel.check_for_stale_feerate(&logger, feerate)?;
+				}
+			} else {
+				if let Some(feerate) = min_non_anchor_feerate {
+					channel.check_for_stale_feerate(&logger, feerate)?;
+				}
+			}
+			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
+		});
 
 		macro_rules! max_time {
 			($timestamp: expr) => {
@@ -11991,6 +12044,8 @@ where
 			entropy_source: args.entropy_source,
 			node_signer: args.node_signer,
 			signer_provider: args.signer_provider,
+
+			last_days_feerates: Mutex::new(VecDeque::new()),
 
 			logger: args.logger,
 			default_configuration: args.default_config,
