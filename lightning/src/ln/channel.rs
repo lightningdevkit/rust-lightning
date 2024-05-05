@@ -3881,6 +3881,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.funding_tx_confirmed_in = None;
 		self.funding_tx_confirmation_height = 0;
 
+		// Clear these state flags, for sending `ChannelPending` and `ChannelReady` again
+		self.channel_pending_event_emitted = false;
+		self.channel_ready_event_emitted = false;
+
 		log_trace!(logger, "Splicing process started, new channel value {}, channel_id {}", self.channel_value_satoshis, self.channel_id);
 
 		Ok(())

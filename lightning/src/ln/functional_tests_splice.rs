@@ -1096,8 +1096,19 @@ fn test_v2_splice_in() {
 	};
 
 	let _res = initiator_node.node.handle_tx_signatures(&acceptor_node.node.get_our_node_id(), &tx_signatures_1);
-	let events_0 = initiator_node.node.get_and_clear_pending_events();
-	assert_eq!(events_0.len(), 0);
+
+	let events = initiator_node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::ChannelPending { channel_id, former_temporary_channel_id, counterparty_node_id, funding_txo, .. } => {
+			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
+			// TODO check if former_temporary_channel_id should be set to empty in this case (or previous non-temp channel id?)
+			assert_eq!(former_temporary_channel_id.unwrap().to_string(), expected_temporary_channel_id);
+			assert_eq!(counterparty_node_id, acceptor_node.node.get_our_node_id());
+			assert_eq!(funding_txo.txid.to_string(), expected_splice_funding_txid);
+		}
+		_ => panic!("ChannelPending event missing, {:?}", events[0]),
+	};
 	let msg_events = initiator_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	let tx_signatures_0 = match msg_events[0] {
@@ -1117,8 +1128,18 @@ fn test_v2_splice_in() {
 
 	let _res = acceptor_node.node.handle_tx_signatures(&initiator_node.node.get_our_node_id(), &tx_signatures_0);
 
-	let events_1 = acceptor_node.node.get_and_clear_pending_events();
-	assert_eq!(events_1.len(), 0);
+	let events = acceptor_node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::ChannelPending { channel_id, former_temporary_channel_id, counterparty_node_id, funding_txo, .. } => {
+			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
+			// TODO check if former_temporary_channel_id should be set to empty in this case (or previous non-temp channel id?)
+			assert_eq!(former_temporary_channel_id.unwrap().to_string(), expected_temporary_channel_id);
+			assert_eq!(counterparty_node_id, initiator_node.node.get_our_node_id());
+			assert_eq!(funding_txo.txid.to_string(), expected_splice_funding_txid);
+		}
+		_ => panic!("ChannelPending event missing, {:?}", events[0]),
+	};
 
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
@@ -1157,19 +1178,29 @@ fn test_v2_splice_in() {
 	confirm_transaction(&acceptor_node, &broadcasted_splice_tx);
 	let channel_ready_message2 = get_event_msg!(acceptor_node, MessageSendEvent::SendChannelReady, initiator_node.node.get_our_node_id());
 
-	let _res = acceptor_node.node.handle_channel_ready(&initiator_node.node.get_our_node_id(), &channel_ready_message);
-	// let _ev = get_event!(acceptor_node, Event::ChannelReady);
-	let events_0 = acceptor_node.node.get_and_clear_pending_events();
-	assert_eq!(events_0.len(), 0);
-	let _channel_update = get_event_msg!(acceptor_node, MessageSendEvent::SendChannelUpdate, initiator_node.node.get_our_node_id());
-	// let _announcement_signatures2 = get_event_msg!(acceptor_node, MessageSendEvent::SendAnnouncementSignatures, initiator_node.node.get_our_node_id());
-
 	let _res = initiator_node.node.handle_channel_ready(&acceptor_node.node.get_our_node_id(), &channel_ready_message2);
-	// let _ev = get_event!(initiator_node, Event::ChannelReady);
-	let events_0 = initiator_node.node.get_and_clear_pending_events();
-	assert_eq!(events_0.len(), 0);
+	let events = initiator_node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::ChannelReady { channel_id, counterparty_node_id, .. } => {
+			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
+			assert_eq!(counterparty_node_id, acceptor_node.node.get_our_node_id());
+		}
+		_ => panic!("ChannelReady event missing, {:?}", events[0]),
+	};
 	let _channel_update = get_event_msg!(initiator_node, MessageSendEvent::SendChannelUpdate, acceptor_node.node.get_our_node_id());
-	// let _announcement_signatures1 = get_event_msg!(initiator_node, MessageSendEvent::SendAnnouncementSignatures, acceptor_node.node.get_our_node_id());
+
+	let _res = acceptor_node.node.handle_channel_ready(&initiator_node.node.get_our_node_id(), &channel_ready_message);
+	let events = acceptor_node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::ChannelReady { channel_id, counterparty_node_id, .. } => {
+			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
+			assert_eq!(counterparty_node_id, initiator_node.node.get_our_node_id());
+		}
+		_ => panic!("ChannelReady event missing, {:?}", events[0]),
+	};
+	let _channel_update = get_event_msg!(acceptor_node, MessageSendEvent::SendChannelUpdate, initiator_node.node.get_our_node_id());
 
 	// check new channel capacity and other parameters
 	assert_eq!(initiator_node.node.list_channels().len(), 1);

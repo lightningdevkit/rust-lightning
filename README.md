@@ -52,7 +52,7 @@ Client  LDK                                       Counterparty node (acceptor)
                                                   internal_splice() - ChannelManager
                                                   Do checks. Check if channel ID would change. Cycle back the channel to UnfundedInboundV2
                                                   splice_start() -- ChannelContext
-                                                  Start the splice, update capacity, state, reset funding transaction
+                                                  Start the splice, update capacity, state to NegotiatingFunding, reset funding transaction
                                                   get_splice_ack() -- Channel
                                                   begin_interactive_funding_tx_construction() - Channel
                                                   begin_interactive_funding_tx_construction() - ChannelContext
@@ -68,7 +68,7 @@ Client  LDK                                       Counterparty node (acceptor)
         Do checks, check against initial splice()
         Cycle back the channel to UnfundedOutboundV2
         splice_start() -- ChannelContext
-        Start the splice, update capacity, state, reset funding transaction
+        Start the splice, update capacity, state to NegotiatingFunding, reset funding transaction
         event: SpliceAckedInputsContributionReady
         contains the pre & post capacities, channel ID
         ---
@@ -93,6 +93,7 @@ provide extra input(s) for new funding
         message out: tx_add_output - for change
         message in: tx_complete
         message out: tx_add_output - for new funding
+
         message in: tx_complete
         handle_tx_complete() - ChannelManager
         internal_tx_complete() -- ChannelManager
@@ -102,7 +103,7 @@ provide extra input(s) for new funding
         get_initial_commitment_signed() - Channel
         Splicing-specific: Add signature on the previous funding tx input
         Mark finished interactive tx construction
-        Update channel state (FundingNegotiated)
+        Update channel state to FundingNegotiated
         event: FundingTransactionReadyForSigning
         contains the new funding transaction with the signature on the previous tx input
         message out: commitment_signed (UpdateHTLCs)
@@ -127,7 +128,7 @@ action by client: Create and provide signature on the extra inputs
                                                   get_initial_commitment_signed() - Channel
                                                   Splicing-specific: Add signature on the previous funding tx input
                                                   Mark finished interactive tx construction
-                                                  Update channel state (FundingNegotiated)
+                                                  Update channel state to FundingNegotiated
                                                   message out: commitment_signed (UpdateHTLCs)
                                                   channel state: Funded
                                                   ---
@@ -135,7 +136,7 @@ action by client: Create and provide signature on the extra inputs
         handle_commitment_signed() - ChannelManager
         internal_commitment_signed() -- ChannelManager
         commitment_signed_initial_v2() -- Channel
-        Update channel state to AwaitingChannelReadyFlags
+        Update channel state to AwaitingChannelReady
         watch_channel() - ChainMonitor
         received_commitment_signed() -- InteractiveTxSigningSession
         ---
@@ -156,6 +157,7 @@ action by client: Create and provide signature on the extra inputs
         received_tx_signatures() -- InteractiveTxSigningSession
         Update signature on previous tx input (with shared signature)
         Update channel state to AwaitingChannelReady
+        event: ChannelPending
         Save funding transaction
         message out: tx_signatures
         funding transaction is ready, broadcast it
@@ -168,6 +170,7 @@ action by client: Create and provide signature on the extra inputs
                                                   received_tx_signatures() -- InteractiveTxSigningSession
                                                   Update signature on previous tx input (with shared signature)
                                                   Update channel state to AwaitingChannelReady
+                                                  event: ChannelPending
                                                   Save funding transaction
                                                   funding transaction is ready, broadcast it
                                                   ---
@@ -185,9 +188,11 @@ Waiting for confirmation
                                                   ---
         message in: channel_ready
         handle_channel_ready() - ChannelManager
+        event: ChannelReady
         message out: channel_update
                                                   message in: channel_ready
                                                   handle_channel_ready() - ChannelManager
+                                                  event: ChannelReady
                                                   message out: channel_update
 /end of sequence/
 
