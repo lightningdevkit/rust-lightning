@@ -3512,7 +3512,12 @@ impl<SP: Deref> Channel<SP> where
 					return Ok(());
 				}
 			}
-			return Err(ChannelError::close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {}", feerate_per_kw, lower_limit)));
+			return Err(ChannelError::Close((format!(
+				"Peer's feerate much too low. Actual: {}. Our expected lower limit: {}", feerate_per_kw, lower_limit
+			), ClosureReason::PeerFeerateTooLow {
+				peer_feerate_sat_per_kw: feerate_per_kw,
+				required_feerate_sat_per_kw: lower_limit,
+			})));
 		}
 		Ok(())
 	}
