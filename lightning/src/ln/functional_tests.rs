@@ -10116,6 +10116,94 @@ fn test_max_dust_htlc_exposure() {
 }
 
 #[test]
+fn test_nondust_htlc_fees_are_dust() {
+	// Test that the transaction fees paid in nondust HTLCs count towards our dust limit
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut config = test_default_channel_config();
+	// Set the dust limit to the default value
+	config.channel_config.max_dust_htlc_exposure =
+		MaxDustHTLCExposure::FeeRateMultiplier(10_000);
+	// Make sure the HTLC limits don't get in the way
+	config.channel_handshake_limits.min_max_accepted_htlcs = 400;
+	config.channel_handshake_config.our_max_accepted_htlcs = 400;
+	config.channel_handshake_config.our_htlc_minimum_msat = 1;
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Create a channel from 1 -> 0 but immediately push all of the funds towards 0
+	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 1, 0).2;
+	while nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat > 0 {
+		send_payment(&nodes[1], &[&nodes[0]], nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat);
+	}
+
+	// First get the channel one HTLC_VALUE HTLC away from the dust limit by sending dust HTLCs
+	// repeatedly until we run out of space.
+	const HTLC_VALUE: u64 = 1_000_000; // Doesn't matter, tune until the test passes
+	let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], HTLC_VALUE).0;
+
+	while nodes[0].node.list_channels()[0].next_outbound_htlc_minimum_msat == 0 {
+		route_payment(&nodes[0], &[&nodes[1]], HTLC_VALUE);
+	}
+	assert_ne!(nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat, 0,
+		"We don't want to run out of ability to send because of some non-dust limit");
+	assert!(nodes[0].node.list_channels()[0].pending_outbound_htlcs.len() < 10,
+		"We should be able to fill our dust limit without too many HTLCs");
+
+	let dust_limit = nodes[0].node.list_channels()[0].next_outbound_htlc_minimum_msat;
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	assert_ne!(nodes[0].node.list_channels()[0].next_outbound_htlc_minimum_msat, 0,
+		"Make sure we are able to send once we clear one HTLC");
+
+	// At this point we have somewhere between dust_limit and dust_limit * 2 left in our dust
+	// exposure limit, and we want to max that out using non-dust HTLCs.
+	let commitment_tx_per_htlc_cost =
+		htlc_success_tx_weight(&ChannelTypeFeatures::empty()) * 253;
+	let max_htlcs_remaining = dust_limit * 2 / commitment_tx_per_htlc_cost;
+	assert!(max_htlcs_remaining < 30,
+		"We should be able to fill our dust limit without too many HTLCs");
+	for i in 0..max_htlcs_remaining + 1 {
+		assert_ne!(i, max_htlcs_remaining);
+		if nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat < dust_limit {
+			// We found our limit, and it was less than max_htlcs_remaining!
+			// At this point we can only send dust HTLCs as any non-dust HTLCs will overuse our
+			// remaining dust exposure.
+			break;
+		}
+		route_payment(&nodes[0], &[&nodes[1]], dust_limit * 2);
+	}
+
+	// At this point non-dust HTLCs are no longer accepted from node 0 -> 1, we also check that
+	// such HTLCs can't be routed over the same channel either.
+	create_announced_chan_between_nodes(&nodes, 2, 0);
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[2], nodes[1], dust_limit * 2);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	nodes[2].node.send_payment_with_route(&route, payment_hash, onion, PaymentId([0; 32])).unwrap();
+	check_added_monitors(&nodes[2], 1);
+	let send = SendEvent::from_node(&nodes[2]);
+
+	nodes[0].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &send.msgs[0]);
+	commitment_signed_dance!(nodes[0], nodes[2], send.commitment_msg, false, true);
+
+	expect_pending_htlcs_forwardable!(nodes[0]);
+	check_added_monitors(&nodes[0], 1);
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	expect_htlc_handling_failed_destinations!(
+		nodes[0].node.get_and_clear_pending_events(),
+		&[HTLCDestination::NextHopChannel { node_id: Some(node_id_1), channel_id: chan_id_1 }]
+	);
+
+	let fail = get_htlc_update_msgs(&nodes[0], &nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_fail_htlc(&nodes[0].node.get_our_node_id(), &fail.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[2], nodes[0], fail.commitment_signed, false);
+	expect_payment_failed_conditions(&nodes[2], payment_hash, false, PaymentFailedConditions::new());
+}
+
+
+#[test]
 fn test_non_final_funding_tx() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
