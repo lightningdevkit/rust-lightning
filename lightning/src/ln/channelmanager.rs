@@ -4217,7 +4217,7 @@ where
 				match find_funding_output(&chan, &funding_transaction) {
 					Ok(found_funding_txo) => funding_txo = found_funding_txo,
 					Err(err) => {
-						let chan_err = ChannelError::Close(err.to_owned());
+						let chan_err = ChannelError::close(err.to_owned());
 						let api_err = APIError::APIMisuseError { err: err.to_owned() };
 						return close_chan!(chan_err, api_err, chan);
 					},
@@ -7016,7 +7016,7 @@ where
 				},
 				Some(mut phase) => {
 					let err_msg = format!("Got an unexpected funding_created message from peer with counterparty_node_id {}", counterparty_node_id);
-					let err = ChannelError::Close(err_msg);
+					let err = ChannelError::close(err_msg);
 					return Err(convert_chan_phase_err!(self, err, &mut phase, &msg.temporary_channel_id).1);
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
@@ -7031,7 +7031,7 @@ where
 			// `update_maps_on_chan_removal`), we'll remove the existing channel
 			// from `outpoint_to_peer`. Thus, we must first unset the funding outpoint
 			// on the channel.
-			let err = ChannelError::Close($err.to_owned());
+			let err = ChannelError::close($err.to_owned());
 			chan.unset_funding_info(msg.temporary_channel_id);
 			return Err(convert_chan_phase_err!(self, err, chan, &funded_channel_id, UNFUNDED_CHANNEL).1);
 		} } }
@@ -7116,7 +7116,7 @@ where
 								} else { unreachable!(); }
 								Ok(())
 							} else {
-								let e = ChannelError::Close("Channel funding outpoint was a duplicate".to_owned());
+								let e = ChannelError::close("Channel funding outpoint was a duplicate".to_owned());
 								// We weren't able to watch the channel to begin with, so no
 								// updates should be made on it. Previously, full_stack_target
 								// found an (unreachable) panic when the monitor update contained
@@ -7187,7 +7187,7 @@ where
 
 					Ok(())
 				} else {
-					try_chan_phase_entry!(self, Err(ChannelError::Close(
+					try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got a channel_ready message for an unfunded channel!".into())), chan_phase_entry)
 				}
 			},
@@ -7302,7 +7302,7 @@ where
 							(tx, Some(remove_channel_phase!(self, chan_phase_entry)), shutdown_result)
 						} else { (tx, None, shutdown_result) }
 					} else {
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+						return try_chan_phase_entry!(self, Err(ChannelError::close(
 							"Got a closing_signed message for an unfunded channel!".into())), chan_phase_entry);
 					}
 				},
@@ -7402,7 +7402,7 @@ where
 					}
 					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info, &self.fee_estimator), chan_phase_entry);
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7446,7 +7446,7 @@ where
 						next_user_channel_id = chan.context.get_user_id();
 						res
 					} else {
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+						return try_chan_phase_entry!(self, Err(ChannelError::close(
 							"Got an update_fulfill_htlc message for an unfunded channel!".into())), chan_phase_entry);
 					}
 				},
@@ -7477,7 +7477,7 @@ where
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					try_chan_phase_entry!(self, chan.update_fail_htlc(&msg, HTLCFailReason::from_msg(msg)), chan_phase_entry);
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an update_fail_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7500,13 +7500,13 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if (msg.failure_code & 0x8000) == 0 {
-					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
+					let chan_err = ChannelError::close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
 					try_chan_phase_entry!(self, Err(chan_err), chan_phase_entry);
 				}
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					try_chan_phase_entry!(self, chan.update_fail_malformed_htlc(&msg, HTLCFailReason::reason(msg.failure_code, msg.sha256_of_onion.to_vec())), chan_phase_entry);
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an update_fail_malformed_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
 				Ok(())
@@ -7536,7 +7536,7 @@ where
 					}
 					Ok(())
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got a commitment_signed message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7732,7 +7732,7 @@ where
 						}
 						htlcs_to_fail
 					} else {
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+						return try_chan_phase_entry!(self, Err(ChannelError::close(
 							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_phase_entry);
 					}
 				},
@@ -7758,7 +7758,7 @@ where
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 					try_chan_phase_entry!(self, chan.update_fee(&self.fee_estimator, &msg, &&logger), chan_phase_entry);
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an update_fee message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7793,7 +7793,7 @@ where
 						update_msg: Some(self.get_channel_update_for_broadcast(chan).unwrap()),
 					});
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an announcement_signatures message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7845,7 +7845,7 @@ where
 						}
 					}
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got a channel_update for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7907,7 +7907,7 @@ where
 						}
 						need_lnd_workaround
 					} else {
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+						return try_chan_phase_entry!(self, Err(ChannelError::close(
 							"Got a channel_reestablish message for an unfunded channel!".into())), chan_phase_entry);
 					}
 				},
