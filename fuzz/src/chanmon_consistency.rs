@@ -186,6 +186,10 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
+
+	fn watch_dummy(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
+		return self.chain_monitor.watch_dummy(funding_outpoint, monitor);
+	}
 }
 
 struct KeyProvider {
