@@ -15,8 +15,8 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::blinded_path::{BlindedPath, IntroductionNode, NodeIdLookUp};
-use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, NextHop, ReceiveTlvs};
+use crate::blinded_path::{BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
+use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -569,10 +569,10 @@ pub trait CustomOnionMessageHandler {
 
 /// A processed incoming onion message, containing either a Forward (another onion message)
 /// or a Receive payload with decrypted contents.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
-	Forward(NextHop, OnionMessage),
+	Forward(NextMessageHop, OnionMessage),
 	/// Received onion message, with decrypted contents, path_id, and reply path
 	Receive(ParsedOnionMessageContents<T>, Option<[u8; 32]>, Option<BlindedPath>)
 }
@@ -1050,8 +1050,8 @@ where
 			},
 			Ok(PeeledOnion::Forward(next_hop, onion_message)) => {
 				let next_node_id = match next_hop {
-					NextHop::NodeId(pubkey) => pubkey,
-					NextHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
+					NextMessageHop::NodeId(pubkey) => pubkey,
+					NextMessageHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
 						Some(pubkey) => pubkey,
 						None => {
 							log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {}", scid);
@@ -1255,7 +1255,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 				if let Some(ss) = prev_control_tlvs_ss.take() {
 					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(
 						ForwardTlvs {
-							next_hop: NextHop::NodeId(unblinded_pk_opt.unwrap()),
+							next_hop: NextMessageHop::NodeId(unblinded_pk_opt.unwrap()),
 							next_blinding_override: None,
 						}
 					)), ss));
@@ -1265,7 +1265,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 			} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
 				if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
 					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-						next_hop: NextHop::NodeId(intro_node_id),
+						next_hop: NextMessageHop::NodeId(intro_node_id),
 						next_blinding_override: Some(blinding_pt),
 					})), control_tlvs_ss));
 				}

@@ -24,7 +24,7 @@ use crate::routing::router::{CandidateRouteHop, FirstHopCandidate, PublicHopCand
 use crate::sign;
 use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
-use crate::ln::ChannelId;
+use crate::ln::types::ChannelId;
 use crate::ln::channelmanager::{ChannelDetails, self};
 #[cfg(test)]
 use crate::ln::chan_utils::CommitmentTransaction;

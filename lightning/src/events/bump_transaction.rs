@@ -18,7 +18,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, fee_for_weight};
 use crate::chain::ClaimId;
 use crate::io_extras::sink;
 use crate::ln::channel::ANCHOR_OUTPUT_VALUE_SATOSHI;
-use crate::ln::ChannelId;
+use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	ANCHOR_INPUT_WITNESS_WEIGHT, HTLC_SUCCESS_INPUT_ANCHOR_WITNESS_WEIGHT,

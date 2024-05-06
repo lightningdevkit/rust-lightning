@@ -88,7 +88,7 @@ impl MaybeSignedTransaction {
 #[cfg(test)]
 mod tests {
 	use crate::chain::transaction::OutPoint;
-	use crate::ln::ChannelId;
+	use crate::ln::types::ChannelId;
 
 	use bitcoin::blockdata::transaction::Transaction;
 	use bitcoin::consensus::encode;

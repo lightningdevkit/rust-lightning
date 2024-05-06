@@ -932,7 +932,7 @@ mod tests {
 	use lightning::chain::transaction::OutPoint;
 	use lightning::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::{get_event_msg, get_event};
-	use lightning::ln::{PaymentHash, ChannelId};
+	use lightning::ln::types::{PaymentHash, ChannelId};
 	use lightning::ln::channelmanager;
 	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures};

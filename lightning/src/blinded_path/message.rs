@@ -3,7 +3,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
+use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
@@ -20,7 +20,7 @@ use core::ops::Deref;
 /// route, they are encoded into [`BlindedHop::encrypted_payload`].
 pub(crate) struct ForwardTlvs {
 	/// The next hop in the onion message's path.
-	pub(crate) next_hop: NextHop,
+	pub(crate) next_hop: NextMessageHop,
 	/// Senders to a blinded path use this value to concatenate the route they find to the
 	/// introduction node with the blinded path.
 	pub(crate) next_blinding_override: Option<PublicKey>,
@@ -34,20 +34,11 @@ pub(crate) struct ReceiveTlvs {
 	pub(crate) path_id: Option<[u8; 32]>,
 }
 
-/// The next hop to forward the onion message along its path.
-#[derive(Debug)]
-pub enum NextHop {
-	/// The node id of the next hop.
-	NodeId(PublicKey),
-	/// The short channel id leading to the next hop.
-	ShortChannelId(u64),
-}
-
 impl Writeable for ForwardTlvs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let (next_node_id, short_channel_id) = match self.next_hop {
-			NextHop::NodeId(pubkey) => (Some(pubkey), None),
-			NextHop::ShortChannelId(scid) => (None, Some(scid)),
+			NextMessageHop::NodeId(pubkey) => (Some(pubkey), None),
+			NextMessageHop::ShortChannelId(scid) => (None, Some(scid)),
 		};
 		// TODO: write padding
 		encode_tlv_stream!(writer, {
@@ -75,7 +66,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let blinded_tlvs = unblinded_path.iter()
 		.skip(1) // The first node's TLVs contains the next node's pubkey
-		.map(|pk| ForwardTlvs { next_hop: NextHop::NodeId(*pk), next_blinding_override: None })
+		.map(|pk| ForwardTlvs { next_hop: NextMessageHop::NodeId(*pk), next_blinding_override: None })
 		.map(|tlvs| ControlTlvs::Forward(tlvs))
 		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { path_id: None })));
 
@@ -102,8 +93,8 @@ where
 			readable: ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override })
 		}) => {
 			let next_node_id = match next_hop {
-				NextHop::NodeId(pubkey) => pubkey,
-				NextHop::ShortChannelId(scid) => match node_id_lookup.next_node_id(scid) {
+				NextMessageHop::NodeId(pubkey) => pubkey,
+				NextMessageHop::ShortChannelId(scid) => match node_id_lookup.next_node_id(scid) {
 					Some(pubkey) => pubkey,
 					None => return Err(()),
 				},

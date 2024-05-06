@@ -15,6 +15,7 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::Confirm;
 use crate::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestination, MessageSendEvent};
 use crate::ln::msgs::{ChannelMessageHandler, Init};
+use crate::ln::types::ChannelId;
 use crate::sign::OutputSpender;
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
@@ -26,7 +27,7 @@ use bitcoin::secp256k1::Secp256k1;
 
 use crate::prelude::*;
 
-use crate::ln::{functional_test_utils::*, ChannelId};
+use crate::ln::functional_test_utils::*;
 
 fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	// Our on-chain HTLC-claim learning has a few properties worth testing:

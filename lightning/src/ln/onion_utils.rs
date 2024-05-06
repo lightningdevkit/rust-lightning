@@ -11,8 +11,8 @@ use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::streams::ChaChaReader;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
+use crate::ln::types::{PaymentHash, PaymentPreimage};
 use crate::ln::wire::Encode;
-use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop};
 use crate::sign::NodeSigner;
@@ -1240,7 +1240,7 @@ mod tests {
 	use crate::io;
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs;
-	use crate::ln::PaymentHash;
+	use crate::ln::types::PaymentHash;
 	use crate::routing::router::{Path, Route, RouteHop};
 	use crate::util::ser::{VecWriter, Writeable, Writer};
 
