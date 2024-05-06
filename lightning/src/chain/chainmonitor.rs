@@ -984,7 +984,6 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 
-		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::UnrecoverableError);
 
 		assert!(std::panic::catch_unwind(|| {
