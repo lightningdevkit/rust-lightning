@@ -10142,14 +10142,9 @@ fn test_non_final_funding_tx() {
 		},
 		_ => panic!()
 	}
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::ChannelClosed { channel_id, .. } => {
-			assert_eq!(channel_id, temp_channel_id);
-		},
-		_ => panic!("Unexpected event"),
-	}
+	let err = "Error in transaction funding: Misuse error: Funding transaction absolute timelock is non-final".to_owned();
+	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(temp_channel_id, false, ClosureReason::ProcessingError { err })]);
+	assert_eq!(get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id()).data, "Failed to fund channel");
 }
 
 #[test]
