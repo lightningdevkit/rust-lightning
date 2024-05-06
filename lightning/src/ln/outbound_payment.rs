@@ -2194,7 +2194,7 @@ mod tests {
 		assert!(outbound_payments.has_pending_payments());
 
 		let created_at = now() - DEFAULT_RELATIVE_EXPIRY;
-		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
@@ -2237,7 +2237,7 @@ mod tests {
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
-		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
@@ -2296,7 +2296,7 @@ mod tests {
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
-		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
