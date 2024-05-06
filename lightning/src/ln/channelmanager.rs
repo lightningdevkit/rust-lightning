@@ -636,7 +636,7 @@ impl MsgHandleErrInternal {
 					err: msg,
 					action: msgs::ErrorAction::IgnoreError,
 				},
-				ChannelError::Close(msg) => LightningError {
+				ChannelError::Close((msg, _reason)) => LightningError {
 					err: msg.clone(),
 					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
@@ -2446,11 +2446,10 @@ macro_rules! convert_chan_phase_err {
 			ChannelError::Ignore(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), *$channel_id))
 			},
-			ChannelError::Close(msg) => {
+			ChannelError::Close((msg, reason)) => {
 				let logger = WithChannelContext::from(&$self.logger, &$channel.context, None);
 				log_error!(logger, "Closing channel {} due to close-required error: {}", $channel_id, msg);
 				update_maps_on_chan_removal!($self, $channel.context);
-				let reason = ClosureReason::ProcessingError { err: msg.clone() };
 				let shutdown_res = $channel.context.force_shutdown(true, reason);
 				let err =
 					MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $channel_update);
@@ -4201,10 +4200,9 @@ where
 			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
 				macro_rules! close_chan { ($err: expr, $api_err: expr, $chan: expr) => { {
 					let counterparty;
-					let err = if let ChannelError::Close(msg) = $err {
+					let err = if let ChannelError::Close((msg, reason)) = $err {
 						let channel_id = $chan.context.channel_id();
 						counterparty = chan.context.get_counterparty_node_id();
-						let reason = ClosureReason::ProcessingError { err: msg.clone() };
 						let shutdown_res = $chan.context.force_shutdown(false, reason);
 						MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, None)
 					} else { unreachable!(); };

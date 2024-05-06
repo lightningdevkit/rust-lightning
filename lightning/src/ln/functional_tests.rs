@@ -7263,7 +7263,10 @@ fn test_user_configurable_csv_delay() {
 		&low_our_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{
 		match error {
-			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
+			ChannelError::Close((err, _)) => {
+				let regex = regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap();
+				assert!(regex.is_match(err.as_str()));
+			},
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false); }
@@ -7295,7 +7298,10 @@ fn test_user_configurable_csv_delay() {
 		&high_their_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{
 		match error {
-			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(err.as_str())); },
+			ChannelError::Close((err, _)) => {
+				let regex = regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap();
+				assert!(regex.is_match(err.as_str()));
+			},
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false); }
