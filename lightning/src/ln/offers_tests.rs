@@ -46,7 +46,6 @@ use crate::blinded_path::{BlindedPath, IntroductionNode};
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
 use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, Retry, self};
-use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::offers::invoice::Bolt12Invoice;
@@ -412,8 +411,6 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
 			payer_id: invoice_request.payer_id(),
-			amount_msats: None,
-			features: InvoiceRequestFeatures::empty(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
@@ -565,8 +562,6 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
 			payer_id: invoice_request.payer_id(),
-			amount_msats: None,
-			features: InvoiceRequestFeatures::empty(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
@@ -687,8 +682,6 @@ fn pays_for_offer_without_blinded_paths() {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
 			payer_id: invoice_request.payer_id(),
-			amount_msats: None,
-			features: InvoiceRequestFeatures::empty(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
