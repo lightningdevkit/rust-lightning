@@ -141,6 +141,128 @@ fn test_funding_exceeds_no_wumbo_limit() {
 	}
 }
 
+#[test]
+fn test_peer_storage() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister, chain_monitor);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_0_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let nodes_0_serialized = nodes[0].node.encode();
+
+	let (_, _, _channel_id, _funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10000);
+
+	nodes[1].node.claim_funds(payment_preimage);
+	expect_payment_claimed!(nodes[1], payment_hash, 10000);
+	check_added_monitors!(nodes[1], 1);
+	let claim_msgs = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &claim_msgs.update_fulfill_htlcs[0]);
+	expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+	// Reconnect peers
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert_eq!(reestablish_1.len(), 1);
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 1);
+
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
+	let as_resp = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
+	let bs_resp = handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+	// Reconnect peers to see if we send YourPeerStorage
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert_eq!(reestablish_1.len(), 1);
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 1);
+
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+	// Lets drop the monitor.
+	reload_node!(nodes[0], &nodes_0_serialized, &[], persister, chain_monitor, nodes_0_deserialized);
+
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_1.len(), 1);
+
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert_eq!(reestablish_2.len(), 0);
+
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_1[0]);
+
+	// Node[0] will generate bogus chennal reestablish and warning so that the peer closes the channel.
+	let mut closing_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(closing_events.len(), 2);
+	let nodes_2_event = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut closing_events);
+	let nodes_0_event = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut closing_events);
+
+	match nodes_2_event {
+		MessageSendEvent::SendChannelReestablish { ref node_id, ref msg  } => {
+			assert_eq!(nodes[1].node.get_our_node_id(), *node_id);
+			nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), msg)
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	let mut err_msgs_0 = Vec::with_capacity(1);
+	if let MessageSendEvent::HandleError { ref action, .. } = nodes_0_event {
+		match action {
+			&ErrorAction::SendErrorMessage { ref msg } => {
+				assert_eq!(msg.data, format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()));
+				err_msgs_0.push(msg.clone());
+			},
+			_ => panic!("Unexpected event!"),
+		}
+	} else {
+		panic!("Unexpected event!");
+	}
+	assert_eq!(err_msgs_0.len(), 1);
+	nodes[1].node.handle_error(&nodes[0].node.get_our_node_id(), &err_msgs_0[0]);
+
+	let commitment_tx = {
+		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
+		assert_eq!(node_txn.len(), 1);
+		node_txn.remove(0)
+	};
+
+	let block = create_dummy_block(nodes[1].best_block_hash(), 42, vec![commitment_tx]);
+	connect_block(&nodes[1], &block);
+	connect_block(&nodes[0], &block);
+	check_closed_broadcast!(nodes[1], true);
+
+	let (txo, cid) = nodes[1].chain_monitor.chain_monitor.list_monitors()[0];
+	let monitor = nodes[1].chain_monitor.chain_monitor.get_monitor(txo).unwrap();
+	let total_claimable_balance = monitor.get_claimable_balances();
+	// println!("length of chainmonitor and number of channel monitor {:?}", monitor.inner.lock().unwrap().onchain_tx_handler.claimable_outpoints);
+}
+
 fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	// A peer providing a channel_reserve_satoshis of 0 (or less than our dust limit) is insecure,
 	// but only for them. Because some LSPs do it with some level of trust of the clients (for a
