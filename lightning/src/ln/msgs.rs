@@ -41,6 +41,7 @@ use crate::sign::{NodeSigner, Recipient};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+use core::cmp;
 use core::fmt;
 use core::fmt::Debug;
 use core::ops::Deref;
@@ -55,7 +56,7 @@ use crate::io_extras::read_to_end;
 use crate::events::{EventsProvider, MessageSendEventsProvider};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::logger;
-use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
+use crate::util::ser::{BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited, WithoutLength, Writeable, Writer};
 use crate::util::base32;
 
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -1768,6 +1769,21 @@ mod fuzzy_internal_msgs {
 			outgoing_cltv_value: u32,
 			/// The node id to which the trampoline node must find a route
 			outgoing_node_id: PublicKey,
+		},
+		#[allow(unused)]
+		BlindedForward {
+			encrypted_tlvs: Vec<u8>,
+			intro_node_blinding_point: Option<PublicKey>,
+		},
+		#[allow(unused)]
+		BlindedReceive {
+			sender_intended_htlc_amt_msat: u64,
+			total_msat: u64,
+			cltv_expiry_height: u32,
+			encrypted_tlvs: Vec<u8>,
+			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
+			keysend_preimage: Option<PaymentPreimage>,
+			custom_tlvs: Vec<(u64, Vec<u8>)>,
 		}
 	}
 
@@ -1854,6 +1870,34 @@ impl Writeable for TrampolineOnionPacket {
 		w.write_all(&self.hop_data)?;
 		self.hmac.write(w)?;
 		Ok(())
+	}
+}
+
+impl LengthReadable for TrampolineOnionPacket {
+	fn read<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
+		const READ_BUFFER_SIZE: usize = 4096;
+
+		let version = Readable::read(r)?;
+		let public_key = Readable::read(r)?;
+
+		let mut hop_data = Vec::new();
+		let hop_data_len = r.total_bytes().saturating_sub(66) as usize; // 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
+		let mut read_idx = 0;
+		while read_idx < hop_data_len {
+			let mut read_buffer = [0; READ_BUFFER_SIZE];
+			let read_amt = cmp::min(hop_data_len - read_idx, READ_BUFFER_SIZE);
+			r.read_exact(&mut read_buffer[..read_amt])?;
+			hop_data.extend_from_slice(&read_buffer[..read_amt]);
+			read_idx += read_amt;
+		}
+
+		let hmac = Readable::read(r)?;
+		Ok(TrampolineOnionPacket {
+			version,
+			public_key,
+			hop_data,
+			hmac,
+		})
 	}
 }
 
@@ -2645,7 +2689,31 @@ impl Writeable for OutboundTrampolinePayload {
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(14, outgoing_node_id, required)
 				});
-			}
+			},
+			Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(10, *encrypted_tlvs, required_vec),
+					(12, intro_node_blinding_point, option)
+				});
+			},
+			Self::BlindedReceive {
+				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
+				intro_node_blinding_point, keysend_preimage, ref custom_tlvs,
+			} => {
+				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
+				// to reject any reserved types in the experimental range if new ones are ever
+				// standardized.
+				let keysend_tlv = keysend_preimage.map(|preimage| (5482373484, preimage.encode()));
+				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
+				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
+					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
+					(10, *encrypted_tlvs, required_vec),
+					(12, intro_node_blinding_point, option),
+					(18, HighZeroBytesDroppedBigSize(*total_msat), required)
+				}, custom_tlvs.iter());
+			},
 		}
 		Ok(())
 	}
@@ -3181,7 +3249,7 @@ mod tests {
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{BigSize, Hostname, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
+	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 
 	use bitcoin::hashes::hex::FromHex;
@@ -4496,6 +4564,13 @@ mod tests {
 		};
 		let encoded_trampoline_packet = trampoline_packet.encode();
 		assert_eq!(encoded_trampoline_packet.len(), 716);
+
+		{ // verify that a codec round trip works
+			let mut reader = Cursor::new(&encoded_trampoline_packet);
+			let mut trampoline_packet_reader = FixedLengthReader::new(&mut reader, encoded_trampoline_packet.len() as u64);
+			let decoded_trampoline_packet: TrampolineOnionPacket = <TrampolineOnionPacket as LengthReadable>::read(&mut trampoline_packet_reader).unwrap();
+			assert_eq!(decoded_trampoline_packet.encode(), encoded_trampoline_packet);
+		}
 
 		let msg = msgs::OutboundOnionPayload::TrampolineEntrypoint {
 			multipath_trampoline_data: None,
