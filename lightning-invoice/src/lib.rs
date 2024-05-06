@@ -577,7 +577,13 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Boo
 
 	/// Sets the amount in millisatoshis. The optimal SI prefix is chosen automatically.
 	pub fn amount_milli_satoshis(mut self, amount_msat: u64) -> Self {
-		let amount = amount_msat * 10; // Invoices are denominated in "pico BTC"
+		let amount = match amount_msat.checked_mul(10) { // Invoices are denominated in "pico BTC"
+			Some(amt) => amt,
+			None => {
+				self.error = Some(CreationError::InvalidAmount);
+				return self
+			}
+		};
 		let biggest_possible_si_prefix = SiPrefix::values_desc()
 			.iter()
 			.find(|prefix| amount % prefix.multiplier() == 0)
