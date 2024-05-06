@@ -747,7 +747,27 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash)
+		let signing_pubkey = match $contents.contents.inner.offer.signing_pubkey() {
+			Some(signing_pubkey) => signing_pubkey,
+			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
+		};
+
+		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+	}
+
+	#[cfg(test)]
+	#[allow(dead_code)]
+	pub(super) fn respond_with_no_std_using_signing_pubkey(
+		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, payment_hash: PaymentHash,
+		created_at: core::time::Duration, signing_pubkey: PublicKey
+	) -> Result<$builder, Bolt12SemanticError> {
+		debug_assert!($contents.contents.inner.offer.signing_pubkey().is_none());
+
+		if $contents.invoice_request_features().requires_unknown_bits() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
+		}
+
+		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
 	}
 } }
 
@@ -855,6 +875,11 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 			Some(keys) => keys,
 		};
 
+		match $contents.contents.inner.offer.signing_pubkey() {
+			Some(signing_pubkey) => debug_assert_eq!(signing_pubkey, keys.public_key()),
+			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
+		}
+
 		<$builder>::for_offer_using_keys(
 			&$self.inner, payment_paths, created_at, payment_hash, keys
 		)
@@ -959,6 +984,7 @@ impl InvoiceRequestContentsWithoutPayerId {
 			quantity: self.quantity,
 			payer_id: None,
 			payer_note: self.payer_note.as_ref(),
+			paths: None,
 		};
 
 		(payer, offer, invoice_request)
@@ -991,6 +1017,8 @@ pub(super) const INVOICE_REQUEST_TYPES: core::ops::Range<u64> = 80..160;
 /// [`Refund::payer_id`]: crate::offers::refund::Refund::payer_id
 pub(super) const INVOICE_REQUEST_PAYER_ID_TYPE: u64 = 88;
 
+// This TLV stream is used for both InvoiceRequest and Refund, but not all TLV records are valid for
+// InvoiceRequest as noted below.
 tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, INVOICE_REQUEST_TYPES, {
 	(80, chain: ChainHash),
 	(82, amount: (u64, HighZeroBytesDroppedBigSize)),
@@ -998,6 +1026,8 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, INVOICE_REQUEST
 	(86, quantity: (u64, HighZeroBytesDroppedBigSize)),
 	(INVOICE_REQUEST_PAYER_ID_TYPE, payer_id: PublicKey),
 	(89, payer_note: (String, WithoutLength)),
+	// Only used for Refund since the onion message of an InvoiceRequest has a reply path.
+	(90, paths: (Vec<BlindedPath>, WithoutLength)),
 });
 
 type FullInvoiceRequestTlvStream =
@@ -1080,7 +1110,9 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		let (
 			PayerTlvStream { metadata },
 			offer_tlv_stream,
-			InvoiceRequestTlvStream { chain, amount, features, quantity, payer_id, payer_note },
+			InvoiceRequestTlvStream {
+				chain, amount, features, quantity, payer_id, payer_note, paths,
+			},
 		) = tlv_stream;
 
 		let payer = match metadata {
@@ -1106,6 +1138,10 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 			None => return Err(Bolt12SemanticError::MissingPayerId),
 			Some(payer_id) => payer_id,
 		};
+
+		if paths.is_some() {
+			return Err(Bolt12SemanticError::UnexpectedPaths);
+		}
 
 		Ok(InvoiceRequestContents {
 			inner: InvoiceRequestContentsWithoutPayerId {
@@ -1218,7 +1254,7 @@ mod tests {
 		assert_eq!(unsigned_invoice_request.paths(), &[]);
 		assert_eq!(unsigned_invoice_request.issuer(), None);
 		assert_eq!(unsigned_invoice_request.supported_quantity(), Quantity::One);
-		assert_eq!(unsigned_invoice_request.signing_pubkey(), recipient_pubkey());
+		assert_eq!(unsigned_invoice_request.signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(unsigned_invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(unsigned_invoice_request.amount_msats(), None);
 		assert_eq!(unsigned_invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
@@ -1250,7 +1286,7 @@ mod tests {
 		assert_eq!(invoice_request.paths(), &[]);
 		assert_eq!(invoice_request.issuer(), None);
 		assert_eq!(invoice_request.supported_quantity(), Quantity::One);
-		assert_eq!(invoice_request.signing_pubkey(), recipient_pubkey());
+		assert_eq!(invoice_request.signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(invoice_request.amount_msats(), None);
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
@@ -1285,6 +1321,7 @@ mod tests {
 					quantity: None,
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
+					paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice_request.signature()) },
 			),
@@ -2245,7 +2282,7 @@ mod tests {
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build().unwrap();
-		assert_eq!(offer.signing_pubkey(), node_id);
+		assert_eq!(offer.signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.chain(Network::Testnet).unwrap()

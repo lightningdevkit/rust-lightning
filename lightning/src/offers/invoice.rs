@@ -210,10 +210,9 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods { ($self: ident, $s
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_offer(
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
-		created_at: Duration, payment_hash: PaymentHash
+		created_at: Duration, payment_hash: PaymentHash, signing_pubkey: PublicKey
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = Self::amount_msats(invoice_request)?;
-		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
 			fields: Self::fields(
@@ -272,7 +271,7 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 		created_at: Duration, payment_hash: PaymentHash, keys: KeyPair
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = Self::amount_msats(invoice_request)?;
-		let signing_pubkey = invoice_request.contents.inner.offer.signing_pubkey();
+		let signing_pubkey = keys.public_key();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
 			fields: Self::fields(
@@ -1435,8 +1434,8 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			features, signing_pubkey,
 		};
 
-		match offer_tlv_stream.node_id {
-			Some(expected_signing_pubkey) => {
+		match (offer_tlv_stream.node_id, &offer_tlv_stream.paths) {
+			(Some(expected_signing_pubkey), _) => {
 				if fields.signing_pubkey != expected_signing_pubkey {
 					return Err(Bolt12SemanticError::InvalidSigningPubkey);
 				}
@@ -1446,7 +1445,21 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				)?;
 				Ok(InvoiceContents::ForOffer { invoice_request, fields })
 			},
-			None => {
+			(None, Some(paths)) => {
+				if !paths
+					.iter()
+					.filter_map(|path| path.blinded_hops.last())
+					.any(|last_hop| fields.signing_pubkey == last_hop.blinded_node_id)
+				{
+					return Err(Bolt12SemanticError::InvalidSigningPubkey);
+				}
+
+				let invoice_request = InvoiceRequestContents::try_from(
+					(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
+				)?;
+				Ok(InvoiceContents::ForOffer { invoice_request, fields })
+			},
+			(None, None) => {
 				let refund = RefundContents::try_from(
 					(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
 				)?;
@@ -1464,7 +1477,7 @@ mod tests {
 	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, self};
+	use bitcoin::secp256k1::{KeyPair, Message, Secp256k1, SecretKey, XOnlyPublicKey, self};
 	use bitcoin::address::{Address, Payload, WitnessProgram, WitnessVersion};
 	use bitcoin::key::TweakedPublicKey;
 
@@ -1633,6 +1646,7 @@ mod tests {
 					quantity: None,
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
+					paths: None,
 				},
 				InvoiceTlvStreamRef {
 					paths: Some(Iterable(payment_paths.iter().map(|(_, path)| path))),
@@ -1725,6 +1739,7 @@ mod tests {
 					quantity: None,
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
+					paths: None,
 				},
 				InvoiceTlvStreamRef {
 					paths: Some(Iterable(payment_paths.iter().map(|(_, path)| path))),
@@ -2358,6 +2373,81 @@ mod tests {
 		tlv_stream.3.node_id = Some(&invalid_pubkey);
 
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidSigningPubkey));
+			},
+		}
+	}
+
+	#[test]
+	fn parses_invoice_with_node_id_from_blinded_path() {
+		let paths = vec![
+			BlindedPath {
+				introduction_node: IntroductionNode::NodeId(pubkey(40)),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+				],
+			},
+			BlindedPath {
+				introduction_node: IntroductionNode::NodeId(pubkey(40)),
+				blinding_point: pubkey(41),
+				blinded_hops: vec![
+					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
+					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
+				],
+			},
+		];
+
+		let blinded_node_id_sign = |message: &UnsignedBolt12Invoice| {
+			let secp_ctx = Secp256k1::new();
+			let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap());
+			Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+		};
+
+		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.clear_signing_pubkey()
+			.amount_msats(1000)
+			.path(paths[0].clone())
+			.path(paths[1].clone())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std_using_signing_pubkey(
+				payment_paths(), payment_hash(), now(), pubkey(46)
+			).unwrap()
+			.build().unwrap()
+			.sign(blinded_node_id_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+
+		if let Err(e) = Bolt12Invoice::try_from(buffer) {
+			panic!("error parsing invoice: {:?}", e);
+		}
+
+		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+			.clear_signing_pubkey()
+			.amount_msats(1000)
+			.path(paths[0].clone())
+			.path(paths[1].clone())
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std_using_signing_pubkey(
+				payment_paths(), payment_hash(), now(), recipient_pubkey()
+			).unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+
+		match Bolt12Invoice::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
 				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidSigningPubkey));
