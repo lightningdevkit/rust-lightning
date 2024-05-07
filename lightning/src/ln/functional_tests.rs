@@ -2433,11 +2433,11 @@ fn channel_monitor_network_test() {
 #[test]
 fn test_justice_tx_htlc_timeout() {
 	// Test justice txn built on revoked HTLC-Timeout tx, against both sides
-	let mut alice_config = UserConfig::default();
+	let mut alice_config = test_default_channel_config();
 	alice_config.channel_handshake_config.announced_channel = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
 	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
-	let mut bob_config = UserConfig::default();
+	let mut bob_config = test_default_channel_config();
 	bob_config.channel_handshake_config.announced_channel = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
 	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
@@ -2496,11 +2496,11 @@ fn test_justice_tx_htlc_timeout() {
 #[test]
 fn test_justice_tx_htlc_success() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
-	let mut alice_config = UserConfig::default();
+	let mut alice_config = test_default_channel_config();
 	alice_config.channel_handshake_config.announced_channel = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
 	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
-	let mut bob_config = UserConfig::default();
+	let mut bob_config = test_default_channel_config();
 	bob_config.channel_handshake_config.announced_channel = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
 	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
@@ -9872,7 +9872,7 @@ enum ExposureEvent {
 	AtUpdateFeeOutbound,
 }
 
-fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_event: ExposureEvent, on_holder_tx: bool, multiplier_dust_limit: bool) {
+fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_event: ExposureEvent, on_holder_tx: bool, multiplier_dust_limit: bool, apply_excess_fee: bool) {
 	// Test that we properly reject dust HTLC violating our `max_dust_htlc_exposure_msat`
 	// policy.
 	//
@@ -9887,12 +9887,33 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let mut config = test_default_channel_config();
+
+	// We hard-code the feerate values here but they're re-calculated furter down and asserted.
+	// If the values ever change below these constants should simply be updated.
+	const AT_FEE_OUTBOUND_HTLCS: u64 = 20;
+	let nondust_htlc_count_in_limit =
+	if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound  {
+		AT_FEE_OUTBOUND_HTLCS
+	} else { 0 };
+	let initial_feerate = if apply_excess_fee { 253 * 2 } else { 253 };
+	let expected_dust_buffer_feerate = initial_feerate + 2530;
+	let mut commitment_tx_cost = commit_tx_fee_msat(initial_feerate - 253, nondust_htlc_count_in_limit, &ChannelTypeFeatures::empty());
+	commitment_tx_cost +=
+		if on_holder_tx {
+			htlc_success_tx_weight(&ChannelTypeFeatures::empty())
+		} else {
+			htlc_timeout_tx_weight(&ChannelTypeFeatures::empty())
+		} * (initial_feerate as u64 - 253) / 1000 * nondust_htlc_count_in_limit;
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = initial_feerate;
+	}
 	config.channel_config.max_dust_htlc_exposure = if multiplier_dust_limit {
 		// Default test fee estimator rate is 253 sat/kw, so we set the multiplier to 5_000_000 / 253
 		// to get roughly the same initial value as the default setting when this test was
 		// originally written.
-		MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253)
-	} else { MaxDustHTLCExposure::FixedLimitMsat(5_000_000) }; // initial default setting value
+		MaxDustHTLCExposure::FeeRateMultiplier((5_000_000 + commitment_tx_cost) / 253)
+	} else { MaxDustHTLCExposure::FixedLimitMsat(5_000_000 + commitment_tx_cost) };
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config), None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -9936,6 +9957,11 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
 	update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &as_update, &bs_update);
 
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock = 253;
+	}
+
 	// Fetch a route in advance as we will be unable to once we're unable to send.
 	let (mut route, payment_hash, _, payment_secret) =
 		get_route_and_payment_hash!(nodes[0], nodes[1], 1000);
@@ -9945,8 +9971,9 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let chan = chan_lock.channel_by_id.get(&channel_id).unwrap();
 		(chan.context().get_dust_buffer_feerate(None) as u64,
-		chan.context().get_max_dust_htlc_exposure_msat(&LowerBoundedFeeEstimator(nodes[0].fee_estimator)))
+		chan.context().get_max_dust_htlc_exposure_msat(253))
 	};
+	assert_eq!(dust_buffer_feerate, expected_dust_buffer_feerate as u64);
 	let dust_outbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type_features) / 1000 + open_channel.common_fields.dust_limit_satoshis - 1) * 1000;
 	let dust_outbound_htlc_on_holder_tx: u64 = max_dust_htlc_exposure_msat / dust_outbound_htlc_on_holder_tx_msat;
 
@@ -9956,8 +9983,13 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let dust_inbound_htlc_on_holder_tx_msat: u64 = (dust_buffer_feerate * htlc_success_tx_weight(&channel_type_features) / 1000 + open_channel.common_fields.dust_limit_satoshis - if multiplier_dust_limit { 3 } else { 2 }) * 1000;
 	let dust_inbound_htlc_on_holder_tx: u64 = max_dust_htlc_exposure_msat / dust_inbound_htlc_on_holder_tx_msat;
 
+	// This test was written with a fixed dust value here, which we retain, but assert that it is,
+	// indeed, dust on both transactions.
 	let dust_htlc_on_counterparty_tx: u64 = 4;
-	let dust_htlc_on_counterparty_tx_msat: u64 = max_dust_htlc_exposure_msat / dust_htlc_on_counterparty_tx;
+	let dust_htlc_on_counterparty_tx_msat: u64 = 1_250_000;
+	let calcd_dust_htlc_on_counterparty_tx_msat: u64 = (dust_buffer_feerate * htlc_timeout_tx_weight(&channel_type_features) / 1000 + open_channel.common_fields.dust_limit_satoshis - if multiplier_dust_limit { 3 } else { 2 }) * 1000;
+	assert!(dust_htlc_on_counterparty_tx_msat < dust_inbound_htlc_on_holder_tx_msat);
+	assert!(dust_htlc_on_counterparty_tx_msat < calcd_dust_htlc_on_counterparty_tx_msat);
 
 	if on_holder_tx {
 		if dust_outbound_balance {
@@ -10027,7 +10059,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 			// Outbound dust balance: 5200 sats
 			nodes[0].logger.assert_log("lightning::ln::channel",
 				format!("Cannot accept value that would put our exposure to dust HTLCs at {} over the limit {} on counterparty commitment tx",
-					dust_htlc_on_counterparty_tx_msat * (dust_htlc_on_counterparty_tx - 1) + dust_htlc_on_counterparty_tx_msat + 4,
+					dust_htlc_on_counterparty_tx_msat * dust_htlc_on_counterparty_tx + commitment_tx_cost + 4,
 					max_dust_htlc_exposure_msat), 1);
 		}
 	} else if exposure_breach_event == ExposureEvent::AtUpdateFeeOutbound {
@@ -10035,7 +10067,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		// For the multiplier dust exposure limit, since it scales with feerate,
 		// we need to add a lot of HTLCs that will become dust at the new feerate
 		// to cross the threshold.
-		for _ in 0..20 {
+		for _ in 0..AT_FEE_OUTBOUND_HTLCS {
 			let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(1_000), None);
 			nodes[0].node.send_payment_with_route(&route, payment_hash,
 				RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
@@ -10054,26 +10086,122 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	added_monitors.clear();
 }
 
-fn do_test_max_dust_htlc_exposure_by_threshold_type(multiplier_dust_limit: bool) {
-	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCForward, true, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCForward, true, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCReception, true, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCReception, false, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCForward, false, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCReception, false, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCReception, true, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCForward, false, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtUpdateFeeOutbound, true, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtUpdateFeeOutbound, false, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, false, multiplier_dust_limit);
-	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, true, multiplier_dust_limit);
+fn do_test_max_dust_htlc_exposure_by_threshold_type(multiplier_dust_limit: bool, apply_excess_fee: bool) {
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCForward, true, multiplier_dust_limit, apply_excess_fee);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCForward, true, multiplier_dust_limit, apply_excess_fee);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCReception, true, multiplier_dust_limit, apply_excess_fee);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCReception, false, multiplier_dust_limit, apply_excess_fee);
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCForward, false, multiplier_dust_limit, apply_excess_fee);
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCReception, false, multiplier_dust_limit, apply_excess_fee);
+	do_test_max_dust_htlc_exposure(true, ExposureEvent::AtHTLCReception, true, multiplier_dust_limit, apply_excess_fee);
+	do_test_max_dust_htlc_exposure(false, ExposureEvent::AtHTLCForward, false, multiplier_dust_limit, apply_excess_fee);
+	if !multiplier_dust_limit && !apply_excess_fee {
+		// Because non-dust HTLC transaction fees are included in the dust exposure, trying to
+		// increase the fee to hit a higher dust exposure with a
+		// `MaxDustHTLCExposure::FeeRateMultiplier` is no longer super practical, so we skip these
+		// in the `multiplier_dust_limit` case.
+		do_test_max_dust_htlc_exposure(true, ExposureEvent::AtUpdateFeeOutbound, true, multiplier_dust_limit, apply_excess_fee);
+		do_test_max_dust_htlc_exposure(true, ExposureEvent::AtUpdateFeeOutbound, false, multiplier_dust_limit, apply_excess_fee);
+		do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, false, multiplier_dust_limit, apply_excess_fee);
+		do_test_max_dust_htlc_exposure(false, ExposureEvent::AtUpdateFeeOutbound, true, multiplier_dust_limit, apply_excess_fee);
+	}
 }
 
 #[test]
 fn test_max_dust_htlc_exposure() {
-	do_test_max_dust_htlc_exposure_by_threshold_type(false);
-	do_test_max_dust_htlc_exposure_by_threshold_type(true);
+	do_test_max_dust_htlc_exposure_by_threshold_type(false, false);
+	do_test_max_dust_htlc_exposure_by_threshold_type(false, true);
+	do_test_max_dust_htlc_exposure_by_threshold_type(true, false);
+	do_test_max_dust_htlc_exposure_by_threshold_type(true, true);
 }
+
+#[test]
+fn test_nondust_htlc_fees_are_dust() {
+	// Test that the transaction fees paid in nondust HTLCs count towards our dust limit
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut config = test_default_channel_config();
+	// Set the dust limit to the default value
+	config.channel_config.max_dust_htlc_exposure =
+		MaxDustHTLCExposure::FeeRateMultiplier(10_000);
+	// Make sure the HTLC limits don't get in the way
+	config.channel_handshake_limits.min_max_accepted_htlcs = 400;
+	config.channel_handshake_config.our_max_accepted_htlcs = 400;
+	config.channel_handshake_config.our_htlc_minimum_msat = 1;
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Create a channel from 1 -> 0 but immediately push all of the funds towards 0
+	let chan_id_1 = create_announced_chan_between_nodes(&nodes, 1, 0).2;
+	while nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat > 0 {
+		send_payment(&nodes[1], &[&nodes[0]], nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat);
+	}
+
+	// First get the channel one HTLC_VALUE HTLC away from the dust limit by sending dust HTLCs
+	// repeatedly until we run out of space.
+	const HTLC_VALUE: u64 = 1_000_000; // Doesn't matter, tune until the test passes
+	let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], HTLC_VALUE).0;
+
+	while nodes[0].node.list_channels()[0].next_outbound_htlc_minimum_msat == 0 {
+		route_payment(&nodes[0], &[&nodes[1]], HTLC_VALUE);
+	}
+	assert_ne!(nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat, 0,
+		"We don't want to run out of ability to send because of some non-dust limit");
+	assert!(nodes[0].node.list_channels()[0].pending_outbound_htlcs.len() < 10,
+		"We should be able to fill our dust limit without too many HTLCs");
+
+	let dust_limit = nodes[0].node.list_channels()[0].next_outbound_htlc_minimum_msat;
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	assert_ne!(nodes[0].node.list_channels()[0].next_outbound_htlc_minimum_msat, 0,
+		"Make sure we are able to send once we clear one HTLC");
+
+	// At this point we have somewhere between dust_limit and dust_limit * 2 left in our dust
+	// exposure limit, and we want to max that out using non-dust HTLCs.
+	let commitment_tx_per_htlc_cost =
+		htlc_success_tx_weight(&ChannelTypeFeatures::empty()) * 253;
+	let max_htlcs_remaining = dust_limit * 2 / commitment_tx_per_htlc_cost;
+	assert!(max_htlcs_remaining < 30,
+		"We should be able to fill our dust limit without too many HTLCs");
+	for i in 0..max_htlcs_remaining + 1 {
+		assert_ne!(i, max_htlcs_remaining);
+		if nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat < dust_limit {
+			// We found our limit, and it was less than max_htlcs_remaining!
+			// At this point we can only send dust HTLCs as any non-dust HTLCs will overuse our
+			// remaining dust exposure.
+			break;
+		}
+		route_payment(&nodes[0], &[&nodes[1]], dust_limit * 2);
+	}
+
+	// At this point non-dust HTLCs are no longer accepted from node 0 -> 1, we also check that
+	// such HTLCs can't be routed over the same channel either.
+	create_announced_chan_between_nodes(&nodes, 2, 0);
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[2], nodes[1], dust_limit * 2);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	nodes[2].node.send_payment_with_route(&route, payment_hash, onion, PaymentId([0; 32])).unwrap();
+	check_added_monitors(&nodes[2], 1);
+	let send = SendEvent::from_node(&nodes[2]);
+
+	nodes[0].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &send.msgs[0]);
+	commitment_signed_dance!(nodes[0], nodes[2], send.commitment_msg, false, true);
+
+	expect_pending_htlcs_forwardable!(nodes[0]);
+	check_added_monitors(&nodes[0], 1);
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	expect_htlc_handling_failed_destinations!(
+		nodes[0].node.get_and_clear_pending_events(),
+		&[HTLCDestination::NextHopChannel { node_id: Some(node_id_1), channel_id: chan_id_1 }]
+	);
+
+	let fail = get_htlc_update_msgs(&nodes[0], &nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_update_fail_htlc(&nodes[0].node.get_our_node_id(), &fail.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[2], nodes[0], fail.commitment_signed, false);
+	expect_payment_failed_conditions(&nodes[2], payment_hash, false, PaymentFailedConditions::new());
+}
+
 
 #[test]
 fn test_non_final_funding_tx() {
