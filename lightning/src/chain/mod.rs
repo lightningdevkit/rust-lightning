@@ -371,19 +371,22 @@ impl<T: Listen> Listen for dyn core::ops::Deref<Target = T> {
 	}
 }
 
-impl<T: core::ops::Deref, U: core::ops::Deref> Listen for (T, U)
+impl<T: core::ops::Deref, U: core::ops::Deref, V: core::ops::Deref> Listen for (T, U, V)
 where
 	T::Target: Listen,
 	U::Target: Listen,
+	V::Target: Listen,
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		self.0.filtered_block_connected(header, txdata, height);
 		self.1.filtered_block_connected(header, txdata, height);
+		self.2.filtered_block_connected(header, txdata, height);
 	}
 
 	fn block_disconnected(&self, header: &Header, height: u32) {
 		self.0.block_disconnected(header, height);
 		self.1.block_disconnected(header, height);
+		self.2.block_disconnected(header, height);
 	}
 }
 
