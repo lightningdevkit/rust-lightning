@@ -21,6 +21,7 @@ use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteParameters, RouteHint, RouteHintHop};
 use crate::ln::features::{InitFeatures, Bolt11InvoiceFeatures};
+use crate::ln::functional_test_utils::test_default_channel_config;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate, OutboundTrampolinePayload};
 use crate::ln::wire::Encode;
@@ -328,7 +329,7 @@ fn test_onion_failure() {
 	// to 2000, which is above the default value of 1000 set in create_node_chanmgrs.
 	// This exposed a previous bug because we were using the wrong value all the way down in
 	// Channel::get_counterparty_htlc_minimum_msat().
-	let mut node_2_cfg: UserConfig = Default::default();
+	let mut node_2_cfg: UserConfig = test_default_channel_config();
 	node_2_cfg.channel_handshake_config.our_htlc_minimum_msat = 2000;
 	node_2_cfg.channel_handshake_config.announced_channel = true;
 	node_2_cfg.channel_handshake_limits.force_announced_channel_preference = false;
