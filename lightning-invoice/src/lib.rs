@@ -65,7 +65,7 @@ use core::str;
 use serde::{Deserialize, Deserializer,Serialize, Serializer, de::Error};
 
 #[doc(no_inline)]
-pub use lightning::ln::PaymentSecret;
+pub use lightning::ln::types::PaymentSecret;
 #[doc(no_inline)]
 pub use lightning::routing::router::{RouteHint, RouteHintHop};
 #[doc(no_inline)]
@@ -162,7 +162,7 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// use secp256k1::Secp256k1;
 /// use secp256k1::SecretKey;
 ///
-/// use lightning::ln::PaymentSecret;
+/// use lightning::ln::types::PaymentSecret;
 ///
 /// use lightning_invoice::{Currency, InvoiceBuilder};
 ///
@@ -577,7 +577,13 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Boo
 
 	/// Sets the amount in millisatoshis. The optimal SI prefix is chosen automatically.
 	pub fn amount_milli_satoshis(mut self, amount_msat: u64) -> Self {
-		let amount = amount_msat * 10; // Invoices are denominated in "pico BTC"
+		let amount = match amount_msat.checked_mul(10) { // Invoices are denominated in "pico BTC"
+			Some(amt) => amt,
+			None => {
+				self.error = Some(CreationError::InvalidAmount);
+				return self
+			}
+		};
 		let biggest_possible_si_prefix = SiPrefix::values_desc()
 			.iter()
 			.find(|prefix| amount % prefix.multiplier() == 0)
@@ -1068,9 +1074,10 @@ impl RawBolt11Invoice {
 		find_all_extract!(self.known_tagged_fields(), TaggedField::PrivateRoute(ref x), x).collect()
 	}
 
+	/// Returns `None` if no amount is set or on overflow.
 	pub fn amount_pico_btc(&self) -> Option<u64> {
-		self.hrp.raw_amount.map(|v| {
-			v * self.hrp.si_prefix.as_ref().map_or(1_000_000_000_000, |si| { si.multiplier() })
+		self.hrp.raw_amount.and_then(|v| {
+			v.checked_mul(self.hrp.si_prefix.as_ref().map_or(1_000_000_000_000, |si| { si.multiplier() }))
 		})
 	}
 
@@ -1876,7 +1883,7 @@ mod test {
 			 Bolt11SemanticError};
 
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
-		let payment_secret = lightning::ln::PaymentSecret([21; 32]);
+		let payment_secret = lightning::ln::types::PaymentSecret([21; 32]);
 		let invoice_template = RawBolt11Invoice {
 			hrp: RawHrp {
 				currency: Currency::Bitcoin,

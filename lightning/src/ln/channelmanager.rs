@@ -42,7 +42,8 @@ use crate::events;
 use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
-use crate::ln::{inbound_payment, ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::ln::inbound_payment;
+use crate::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
 pub use crate::ln::channel::{InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -357,11 +358,6 @@ enum OnionPayload {
 		/// This is only here for backwards-compatibility in serialization, in the future it can be
 		/// removed, breaking clients running 0.0.106 and earlier.
 		_legacy_hop_data: Option<msgs::FinalOnionHopData>,
-		/// The context of the payment included by the recipient in a blinded path, or `None` if a
-		/// blinded path was not used.
-		///
-		/// Used in part to determine the [`events::PaymentPurpose`].
-		payment_context: Option<PaymentContext>,
 	},
 	/// Contains the payer-provided preimage.
 	Spontaneous(PaymentPreimage),
@@ -1392,7 +1388,7 @@ where
 ///
 /// ```
 /// # use bitcoin::secp256k1::PublicKey;
-/// # use lightning::ln::ChannelId;
+/// # use lightning::ln::types::ChannelId;
 /// # use lightning::ln::channelmanager::AChannelManager;
 /// # use lightning::events::{Event, EventsProvider};
 /// #
@@ -1495,7 +1491,7 @@ where
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::PaymentHash;
+/// # use lightning::ln::types::PaymentHash;
 /// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry};
 /// # use lightning::routing::router::RouteParameters;
 /// #
@@ -1554,11 +1550,12 @@ where
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
 /// let offer = channel_manager
-///     .create_offer_builder("coffee".to_string())?
+///     .create_offer_builder()?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
 /// # let offer = builder
+///     .description("coffee".to_string())
 ///     .amount_msats(10_000_000)
 ///     .build()?;
 /// let bech32_offer = offer.to_string();
@@ -1657,13 +1654,13 @@ where
 /// let payment_id = PaymentId([42; 32]);
 /// let refund = channel_manager
 ///     .create_refund_builder(
-///         "coffee".to_string(), amount_msats, absolute_expiry, payment_id, retry,
-///         max_total_routing_fee_msat
+///         amount_msats, absolute_expiry, payment_id, retry, max_total_routing_fee_msat
 ///     )?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::refund::RefundBuilder<_> = refund.into();
 /// # let refund = builder
+///     .description("coffee".to_string())
 ///     .payer_note("refund for order 1234".to_string())
 ///     .build()?;
 /// let bech32_refund = refund.to_string();
@@ -4485,7 +4482,7 @@ where
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
-	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>, &Transaction) -> Result<OutPoint, APIError>>(
+	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>, &Transaction) -> Result<OutPoint, &'static str>>(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, is_batch_funding: bool,
 		mut find_funding_output: FundingOutput,
 	) -> Result<(), APIError> {
@@ -4498,26 +4495,38 @@ where
 		let funding_txo;
 		let (mut chan, msg_opt) = match peer_state.channel_by_id.remove(temporary_channel_id) {
 			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
-				funding_txo = find_funding_output(&chan, &funding_transaction)?;
+				macro_rules! close_chan { ($err: expr, $api_err: expr, $chan: expr) => { {
+					let counterparty;
+					let err = if let ChannelError::Close(msg) = $err {
+						let channel_id = $chan.context.channel_id();
+						counterparty = chan.context.get_counterparty_node_id();
+						let reason = ClosureReason::ProcessingError { err: msg.clone() };
+						let shutdown_res = $chan.context.force_shutdown(false, reason);
+						MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, None)
+					} else { unreachable!(); };
+
+					mem::drop(peer_state_lock);
+					mem::drop(per_peer_state);
+					let _: Result<(), _> = handle_error!(self, Err(err), counterparty);
+					Err($api_err)
+				} } }
+				match find_funding_output(&chan, &funding_transaction) {
+					Ok(found_funding_txo) => funding_txo = found_funding_txo,
+					Err(err) => {
+						let chan_err = ChannelError::Close(err.to_owned());
+						let api_err = APIError::APIMisuseError { err: err.to_owned() };
+						return close_chan!(chan_err, api_err, chan);
+					},
+				}
 
 				let logger = WithChannelContext::from(&self.logger, &chan.context);
-				let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger)
-					.map_err(|(mut chan, e)| if let ChannelError::Close(msg) = e {
-						let channel_id = chan.context.channel_id();
-						let reason = ClosureReason::ProcessingError { err: msg.clone() };
-						let shutdown_res = chan.context.force_shutdown(false, reason);
-						(chan, MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, None))
-					} else { unreachable!(); });
+				let funding_res = chan.get_funding_created(funding_transaction, funding_txo, is_batch_funding, &&logger);
 				match funding_res {
 					Ok(funding_msg) => (chan, funding_msg),
-					Err((chan, err)) => {
-						mem::drop(peer_state_lock);
-						mem::drop(per_peer_state);
-						let _: Result<(), _> = handle_error!(self, Err(err), chan.context.get_counterparty_node_id());
-						return Err(APIError::ChannelUnavailable {
-							err: "Signer refused to sign the initial commitment transaction".to_owned()
-						});
-					},
+					Err((mut chan, chan_err)) => {
+						let api_err = APIError::ChannelUnavailable { err: "Signer refused to sign the initial commitment transaction".to_owned() };
+						return close_chan!(chan_err, api_err, chan);
+					}
 				}
 			},
 			Some(phase) => {
@@ -4682,17 +4691,13 @@ where
 					for (idx, outp) in tx.output.iter().enumerate() {
 						if outp.script_pubkey == expected_spk && outp.value == chan.context.get_value_satoshis() {
 							if output_index.is_some() {
-								return Err(APIError::APIMisuseError {
-									err: "Multiple outputs matched the expected script and value".to_owned()
-								});
+								return Err("Multiple outputs matched the expected script and value");
 							}
 							output_index = Some(idx as u16);
 						}
 					}
 					if output_index.is_none() {
-						return Err(APIError::APIMisuseError {
-							err: "No output matched the script_pubkey and value in the FundingGenerationReady event".to_owned()
-						});
+						return Err("No output matched the script_pubkey and value in the FundingGenerationReady event");
 					}
 					let outpoint = OutPoint { txid: tx.txid(), index: output_index.unwrap() };
 					if let Some(funding_batch_state) = funding_batch_state.as_mut() {
@@ -4723,11 +4728,20 @@ where
 				for (channel_id, counterparty_node_id) in channels_to_remove {
 					per_peer_state.get(&counterparty_node_id)
 						.map(|peer_state_mutex| peer_state_mutex.lock().unwrap())
-						.and_then(|mut peer_state| peer_state.channel_by_id.remove(&channel_id))
-						.map(|mut chan| {
+						.and_then(|mut peer_state| peer_state.channel_by_id.remove(&channel_id).map(|chan| (chan, peer_state)))
+						.map(|(mut chan, mut peer_state)| {
 							update_maps_on_chan_removal!(self, &chan.context());
 							let closure_reason = ClosureReason::ProcessingError { err: e.clone() };
 							shutdown_results.push(chan.context_mut().force_shutdown(false, closure_reason));
+							peer_state.pending_msg_events.push(events::MessageSendEvent::HandleError {
+								node_id: counterparty_node_id,
+								action: msgs::ErrorAction::SendErrorMessage {
+									msg: msgs::ErrorMessage {
+										channel_id,
+										data: "Failed to fund channel".to_owned(),
+									}
+								},
+							});
 						});
 				}
 			}
@@ -5346,7 +5360,7 @@ where
 								}
 							}) => {
 								let blinded_failure = routing.blinded_failure();
-								let (cltv_expiry, onion_payload, payment_data, phantom_shared_secret, mut onion_fields) = match routing {
+								let (cltv_expiry, onion_payload, payment_data, payment_context, phantom_shared_secret, mut onion_fields) = match routing {
 									PendingHTLCRouting::Receive {
 										payment_data, payment_metadata, payment_context,
 										incoming_cltv_expiry, phantom_shared_secret, custom_tlvs,
@@ -5355,8 +5369,8 @@ where
 										let _legacy_hop_data = Some(payment_data.clone());
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
 												payment_metadata, custom_tlvs };
-										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data, payment_context },
-											Some(payment_data), phantom_shared_secret, onion_fields)
+										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
+											Some(payment_data), payment_context, phantom_shared_secret, onion_fields)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
 										payment_data, payment_preimage, payment_metadata,
@@ -5368,7 +5382,7 @@ where
 											custom_tlvs,
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
-											payment_data, None, onion_fields)
+											payment_data, None, None, onion_fields)
 									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
@@ -5530,7 +5544,7 @@ where
 								match payment_secrets.entry(payment_hash) {
 									hash_map::Entry::Vacant(_) => {
 										match claimable_htlc.onion_payload {
-											OnionPayload::Invoice { ref payment_context, .. } => {
+											OnionPayload::Invoice { .. } => {
 												let payment_data = payment_data.unwrap();
 												let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
 													Ok(result) => result,
@@ -5548,9 +5562,9 @@ where
 													}
 												}
 												let purpose = events::PaymentPurpose::from_parts(
-													payment_preimage.clone(),
+													payment_preimage,
 													payment_data.payment_secret,
-													payment_context.clone(),
+													payment_context,
 												);
 												check_total_value!(purpose);
 											},
@@ -5561,13 +5575,10 @@ where
 										}
 									},
 									hash_map::Entry::Occupied(inbound_payment) => {
-										let payment_context = match claimable_htlc.onion_payload {
-											OnionPayload::Spontaneous(_) => {
-												log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", &payment_hash);
-												fail_htlc!(claimable_htlc, payment_hash);
-											},
-											OnionPayload::Invoice { ref payment_context, .. } => payment_context,
-										};
+										if let OnionPayload::Spontaneous(_) = claimable_htlc.onion_payload {
+											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", &payment_hash);
+											fail_htlc!(claimable_htlc, payment_hash);
+										}
 										let payment_data = payment_data.unwrap();
 										if inbound_payment.get().payment_secret != payment_data.payment_secret {
 											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", &payment_hash);
@@ -5580,7 +5591,7 @@ where
 											let purpose = events::PaymentPurpose::from_parts(
 												inbound_payment.get().payment_preimage,
 												payment_data.payment_secret,
-												payment_context.clone(),
+												payment_context,
 											);
 											let payment_claimable_generated = check_total_value!(purpose);
 											if payment_claimable_generated {
@@ -7673,7 +7684,7 @@ where
 							}
 						}
 					}
-					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info), chan_phase_entry);
+					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info, &self.fee_estimator), chan_phase_entry);
 				} else {
 					return try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
@@ -8553,9 +8564,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	pub fn create_offer_builder(
-		&$self, description: String
-	) -> Result<$builder, Bolt12SemanticError> {
+	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
 		let entropy = &*$self.entropy_source;
@@ -8563,7 +8572,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 
 		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = OfferBuilder::deriving_signing_pubkey(
-			description, node_id, expanded_key, entropy, secp_ctx
+			node_id, expanded_key, entropy, secp_ctx
 		)
 			.chain_hash($self.chain_hash)
 			.path(path);
@@ -8622,8 +8631,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn create_refund_builder(
-		&$self, description: String, amount_msats: u64, absolute_expiry: Duration,
-		payment_id: PaymentId, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
+		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
+		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
 	) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
@@ -8632,7 +8641,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 
 		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = RefundBuilder::deriving_payer_id(
-			description, node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
+			node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
 		)?
 			.chain_hash($self.chain_hash)
 			.absolute_expiry(absolute_expiry)
@@ -8765,14 +8774,7 @@ where
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
-		if offer.paths().is_empty() {
-			let message = new_pending_onion_message(
-				OffersMessage::InvoiceRequest(invoice_request),
-				Destination::Node(offer.signing_pubkey()),
-				Some(reply_path),
-			);
-			pending_offers_messages.push(message);
-		} else {
+		if !offer.paths().is_empty() {
 			// Send as many invoice requests as there are paths in the offer (with an upper bound).
 			// Using only one path could result in a failure if the path no longer exists. But only
 			// one invoice for a given payment id will be paid, even if more than one is received.
@@ -8785,6 +8787,16 @@ where
 				);
 				pending_offers_messages.push(message);
 			}
+		} else if let Some(signing_pubkey) = offer.signing_pubkey() {
+			let message = new_pending_onion_message(
+				OffersMessage::InvoiceRequest(invoice_request),
+				Destination::Node(signing_pubkey),
+				Some(reply_path),
+			);
+			pending_offers_messages.push(message);
+		} else {
+			debug_assert!(false);
+			return Err(Bolt12SemanticError::MissingSigningPubkey);
 		}
 
 		Ok(())
@@ -10818,11 +10830,11 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 
 impl Writeable for ClaimableHTLC {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let (payment_data, keysend_preimage, payment_context) = match &self.onion_payload {
-			OnionPayload::Invoice { _legacy_hop_data, payment_context } => {
-				(_legacy_hop_data.as_ref(), None, payment_context.as_ref())
+		let (payment_data, keysend_preimage) = match &self.onion_payload {
+			OnionPayload::Invoice { _legacy_hop_data } => {
+				(_legacy_hop_data.as_ref(), None)
 			},
-			OnionPayload::Spontaneous(preimage) => (None, Some(preimage), None),
+			OnionPayload::Spontaneous(preimage) => (None, Some(preimage)),
 		};
 		write_tlv_fields!(writer, {
 			(0, self.prev_hop, required),
@@ -10834,7 +10846,6 @@ impl Writeable for ClaimableHTLC {
 			(6, self.cltv_expiry, required),
 			(8, keysend_preimage, option),
 			(10, self.counterparty_skimmed_fee_msat, option),
-			(11, payment_context, option),
 		});
 		Ok(())
 	}
@@ -10852,7 +10863,6 @@ impl Readable for ClaimableHTLC {
 			(6, cltv_expiry, required),
 			(8, keysend_preimage, option),
 			(10, counterparty_skimmed_fee_msat, option),
-			(11, payment_context, option),
 		});
 		let payment_data: Option<msgs::FinalOnionHopData> = payment_data_opt;
 		let value = value_ser.0.unwrap();
@@ -10873,7 +10883,7 @@ impl Readable for ClaimableHTLC {
 					}
 					total_msat = Some(payment_data.as_ref().unwrap().total_msat);
 				}
-				OnionPayload::Invoice { _legacy_hop_data: payment_data, payment_context }
+				OnionPayload::Invoice { _legacy_hop_data: payment_data }
 			},
 		};
 		Ok(Self {
@@ -12111,7 +12121,7 @@ where
 					return Err(DecodeError::InvalidValue);
 				}
 				let purpose = match &htlcs[0].onion_payload {
-					OnionPayload::Invoice { _legacy_hop_data, payment_context: _ } => {
+					OnionPayload::Invoice { _legacy_hop_data } => {
 						if let Some(hop_data) = _legacy_hop_data {
 							events::PaymentPurpose::Bolt11InvoicePayment {
 								payment_preimage: match pending_inbound_payments.get(&payment_hash) {
@@ -12368,8 +12378,7 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
-	use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::ChannelId;
+	use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{create_recv_pending_htlc_info, HTLCForwardInfo, inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{self, ErrorAction};

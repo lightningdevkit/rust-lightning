@@ -46,7 +46,6 @@ use crate::blinded_path::{BlindedPath, IntroductionNode};
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
 use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, Retry, self};
-use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::offers::invoice::Bolt12Invoice;
@@ -268,10 +267,10 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	announce_node_address(charlie, &[alice, bob, david, &nodes[4], &nodes[5]], tor.clone());
 
 	let offer = bob.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), bob_id);
+	assert_ne!(offer.signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_ne!(path.introduction_node, IntroductionNode::NodeId(bob_id));
@@ -283,10 +282,10 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 	announce_node_address(&nodes[5], &[alice, bob, charlie, david, &nodes[4]], tor.clone());
 
 	let offer = bob.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), bob_id);
+	assert_ne!(offer.signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
@@ -333,10 +332,10 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = bob.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), bob_id);
+	assert_ne!(offer.signing_pubkey(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(nodes[4].node.get_our_node_id()));
@@ -382,11 +381,11 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string())
+		.create_offer_builder()
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), alice_id);
+	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
@@ -412,8 +411,6 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
 			payer_id: invoice_request.payer_id(),
-			amount_msats: None,
-			features: InvoiceRequestFeatures::empty(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
@@ -484,9 +481,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = david.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
 	assert_eq!(refund.amount_msats(), 10_000_000);
@@ -544,10 +539,10 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), alice_id);
+	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
@@ -565,8 +560,6 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
 			payer_id: invoice_request.payer_id(),
-			amount_msats: None,
-			features: InvoiceRequestFeatures::empty(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
@@ -613,9 +606,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = bob.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
 	assert_eq!(refund.amount_msats(), 10_000_000);
@@ -668,11 +659,11 @@ fn pays_for_offer_without_blinded_paths() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.clear_paths()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_eq!(offer.signing_pubkey(), alice_id);
+	assert_eq!(offer.signing_pubkey(), Some(alice_id));
 	assert!(offer.paths().is_empty());
 
 	let payment_id = PaymentId([1; 32]);
@@ -687,8 +678,6 @@ fn pays_for_offer_without_blinded_paths() {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
 			payer_id: invoice_request.payer_id(),
-			amount_msats: None,
-			features: InvoiceRequestFeatures::empty(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
@@ -724,9 +713,7 @@ fn pays_for_refund_without_blinded_paths() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = bob.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.clear_paths()
 		.build().unwrap();
@@ -760,7 +747,7 @@ fn fails_creating_offer_without_blinded_paths() {
 
 	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
 
-	match nodes[0].node.create_offer_builder("coffee".to_string()) {
+	match nodes[0].node.create_offer_builder() {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
 	}
@@ -780,7 +767,7 @@ fn fails_creating_refund_without_blinded_paths() {
 	let payment_id = PaymentId([1; 32]);
 
 	match nodes[0].node.create_refund_builder(
-		"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
@@ -803,7 +790,7 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 	let bob = &nodes[1];
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.clear_chains()
 		.chain(Network::Signet)
 		.build().unwrap();
@@ -831,9 +818,7 @@ fn fails_sending_invoice_with_unsupported_chain_for_refund() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = bob.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.chain(Network::Signet)
 		.build().unwrap();
@@ -865,7 +850,7 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -899,7 +884,7 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -932,13 +917,13 @@ fn fails_creating_refund_with_duplicate_payment_id() {
 	let payment_id = PaymentId([1; 32]);
 	assert!(
 		nodes[0].node.create_refund_builder(
-			"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+			10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 		).is_ok()
 	);
 	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
 
 	match nodes[0].node.create_refund_builder(
-		"refund".to_string(), 10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+		10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
@@ -985,7 +970,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
-		.create_offer_builder("coffee".to_string()).unwrap()
+		.create_offer_builder().unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
 
@@ -1049,9 +1034,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = david.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
 
@@ -1100,9 +1083,7 @@ fn fails_paying_invoice_more_than_once() {
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
 	let refund = david.node
-		.create_refund_builder(
-			"refund".to_string(), 10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-		)
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);

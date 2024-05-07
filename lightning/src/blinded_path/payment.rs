@@ -7,7 +7,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use crate::blinded_path::BlindedHop;
 use crate::blinded_path::utils;
 use crate::io;
-use crate::ln::PaymentSecret;
+use crate::ln::types::PaymentSecret;
 use crate::ln::channelmanager::CounterpartyForwardingInfo;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
@@ -425,7 +425,7 @@ impl_writeable_tlv_based!(Bolt12RefundContext, {});
 mod tests {
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, ReceiveTlvs, PaymentConstraints, PaymentContext, PaymentRelay};
-	use crate::ln::PaymentSecret;
+	use crate::ln::types::PaymentSecret;
 	use crate::ln::features::BlindedHopFeatures;
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
 

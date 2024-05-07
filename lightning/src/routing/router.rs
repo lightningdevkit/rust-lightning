@@ -13,7 +13,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 
 use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode};
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
-use crate::ln::PaymentHash;
+use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::{ChannelDetails, PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use crate::ln::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
@@ -3291,7 +3291,7 @@ mod tests {
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::EntropySource;
-	use crate::ln::ChannelId;
+	use crate::ln::types::ChannelId;
 	use crate::ln::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::channelmanager;
@@ -8413,7 +8413,7 @@ pub(crate) mod bench_utils {
 	use crate::chain::transaction::OutPoint;
 	use crate::routing::scoring::ScoreUpdate;
 	use crate::sign::KeysManager;
-	use crate::ln::ChannelId;
+	use crate::ln::types::ChannelId;
 	use crate::ln::channelmanager::{self, ChannelCounterparty};
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils::TestLogger;

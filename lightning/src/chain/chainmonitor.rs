@@ -31,7 +31,7 @@ use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::ln::ChannelId;
+use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
 use crate::events;
 use crate::events::{Event, EventHandler};
@@ -296,6 +296,8 @@ pub struct ChainMonitor<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T:
 	/// The best block height seen, used as a proxy for the passage of time.
 	highest_chain_height: AtomicUsize,
 
+	/// A [`Notifier`] used to wake up the background processor in case we have any [`Event`]s for
+	/// it to give to users (or [`MonitorEvent`]s for `ChannelManager` to process).
 	event_notifier: Notifier,
 }
 
@@ -738,6 +740,8 @@ where
 			monitor.block_connected(
 				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
+		// Assume we may have some new events and wake the event processor
+		self.event_notifier.notify();
 	}
 
 	fn block_disconnected(&self, header: &Header, height: u32) {
@@ -765,6 +769,8 @@ where
 			monitor.transactions_confirmed(
 				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
+		// Assume we may have some new events and wake the event processor
+		self.event_notifier.notify();
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
@@ -785,6 +791,8 @@ where
 				header, height, &*self.broadcaster, &*self.fee_estimator, &self.logger
 			)
 		});
+		// Assume we may have some new events and wake the event processor
+		self.event_notifier.notify();
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {

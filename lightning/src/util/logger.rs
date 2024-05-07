@@ -20,7 +20,7 @@ use core::cmp;
 use core::fmt;
 use core::ops::Deref;
 
-use crate::ln::ChannelId;
+use crate::ln::types::ChannelId;
 #[cfg(c_bindings)]
 use crate::prelude::*; // Needed for String
 
@@ -244,7 +244,7 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 #[cfg(test)]
 mod tests {
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
-	use crate::ln::ChannelId;
+	use crate::ln::types::ChannelId;
 	use crate::util::logger::{Logger, Level, WithContext};
 	use crate::util::test_utils::TestLogger;
 	use crate::sync::Arc;

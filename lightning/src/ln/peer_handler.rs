@@ -20,7 +20,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::sign::{NodeSigner, Recipient};
 use crate::events::{EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::ChannelId;
+use crate::ln::types::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, LightningError, SocketAddress, OnionMessageHandler, RoutingMessageHandler};
@@ -2676,7 +2676,7 @@ mod tests {
 	use crate::sign::{NodeSigner, Recipient};
 	use crate::events;
 	use crate::io;
-	use crate::ln::ChannelId;
+	use crate::ln::types::ChannelId;
 	use crate::ln::features::{InitFeatures, NodeFeatures};
 	use crate::ln::peer_channel_encryptor::PeerChannelEncryptor;
 	use crate::ln::peer_handler::{CustomMessageHandler, PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses, ErroringMessageHandler, MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER};
