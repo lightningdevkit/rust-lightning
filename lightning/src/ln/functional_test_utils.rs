@@ -810,6 +810,12 @@ macro_rules! get_htlc_update_msgs {
 /// such messages are intended to all peers.
 pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut Vec<MessageSendEvent>) -> MessageSendEvent {
 	let ev_index = msg_events.iter().position(|e| { match e {
+		MessageSendEvent::SendPeerStorageMessage { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendYourPeerStorageMessage { node_id, .. } => {
+			node_id == msg_node_id
+		},
 		MessageSendEvent::SendAcceptChannel { node_id, .. } => {
 			node_id == msg_node_id
 		},
@@ -3497,6 +3503,12 @@ macro_rules! get_chan_reestablish_msgs {
 				} else if let MessageSendEvent::SendChannelAnnouncement { ref node_id, ref msg, .. } = msg {
 					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 					announcements.insert(msg.contents.short_channel_id);
+				} else if let MessageSendEvent::SendPeerStorageMessage { ref node_id, ref msg } = msg {
+					$dst_node.node.handle_peer_storage(&$src_node.node.get_our_node_id(), msg);
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				} else if let MessageSendEvent::SendYourPeerStorageMessage { ref node_id, ref msg } = msg {
+					$dst_node.node.handle_your_peer_storage(&$src_node.node.get_our_node_id(), msg);
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 				} else {
 					panic!("Unexpected event")
 				}

@@ -2100,6 +2100,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.update_time_counter
 	}
 
+	pub fn get_commitment_secret(&self) -> CounterpartyCommitmentSecrets {
+		self.commitment_secrets.clone()
+	}
+
+	pub fn get_channel_keys_id(&self) -> [u8;32] {
+		self.channel_keys_id
+	}
+
 	pub fn get_latest_monitor_update_id(&self) -> u64 {
 		self.latest_monitor_update_id
 	}
@@ -4528,6 +4536,22 @@ impl<SP: Deref> Channel<SP> where
 			&self.context.channel_id(), if need_commitment_signed { " our own commitment_signed and" } else { "" });
 		self.monitor_updating_paused(true, need_commitment_signed, false, Vec::new(), Vec::new(), Vec::new());
 		return Ok(self.push_ret_blockable_mon_update(monitor_update));
+	}
+
+	/// Used to send LatestPeerStorage to the corresponding `ChannelMonitor`
+	pub fn update_peer_storage(&mut self, data: Vec<u8>) -> ChannelMonitorUpdate {
+		self.context.latest_monitor_update_id += 1;
+		let monitor_update = ChannelMonitorUpdate {
+			update_id: self.context.latest_monitor_update_id,
+			counterparty_node_id: None,
+			updates: vec![ChannelMonitorUpdateStep::LatestPeerStorage { 
+				data,
+			}],
+			channel_id: Some(self.context.channel_id()),
+		};
+		self.monitor_updating_paused(false, false, false, Vec::new(), Vec::new(), Vec::new());
+
+		monitor_update
 	}
 
 	/// Public version of the below, checking relevant preconditions first.

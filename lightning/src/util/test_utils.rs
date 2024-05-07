@@ -395,6 +395,10 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
+
+	fn watch_dummy(&self, funding_outpoint: OutPoint, monitor: channelmonitor::ChannelMonitor<TestChannelSigner>) -> Result<chain::ChannelMonitorUpdateStatus, ()> {
+		return self.chain_monitor.watch_dummy(funding_outpoint, monitor);
+	}
 }
 
 #[cfg(test)]
@@ -892,6 +896,14 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 
 	fn handle_tx_abort(&self, _their_node_id: &PublicKey, msg: &msgs::TxAbort) {
 		self.received_msg(wire::Message::TxAbort(msg.clone()));
+	}
+
+	fn handle_peer_storage(&self, _their_node_id: &PublicKey, msg: &msgs::PeerStorageMessage) {
+		self.received_msg(wire::Message::PeerStorageMessage(msg.clone()));
+	}
+
+	fn handle_your_peer_storage(&self, _their_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		self.received_msg(wire::Message::YourPeerStorageMessage(msg.clone()));
 	}
 }
 

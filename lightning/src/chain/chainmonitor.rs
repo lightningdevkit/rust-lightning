@@ -714,6 +714,47 @@ where C::Target: chain::Filter,
 	    L::Target: Logger,
 	    P::Target: Persist<ChannelSigner>,
 {
+	fn watch_dummy(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
+		let logger = WithChannelMonitor::from(&self.logger, &monitor);
+		let mut monitors = self.monitors.write().unwrap();
+		let entry = match monitors.entry(funding_outpoint) {
+			hash_map::Entry::Occupied(_) => {
+				log_trace!(logger, "Channel already present {}", monitor.channel_id());
+				return Err(());
+			},
+			hash_map::Entry::Vacant(e) => e,
+		};
+		log_trace!(logger, "Got new dummy ChannelMonitor for channel {}", monitor.channel_id());
+		let update_id = MonitorUpdateId::from_new_monitor(&monitor);
+		let mut pending_monitor_updates = Vec::new();
+		let persist_res = self.persister.persist_new_channel(funding_outpoint, &monitor, update_id);
+
+		match persist_res {
+			ChannelMonitorUpdateStatus::InProgress => {
+				log_info!(logger, "Persistence of new ChannelMonitor for channel {} in progress", log_funding_info!(monitor));
+				pending_monitor_updates.push(update_id);
+			},
+			ChannelMonitorUpdateStatus::Completed => {
+				log_info!(logger, "Persistence of new ChannelMonitor for channel {} completed", log_funding_info!(monitor));
+			},
+			ChannelMonitorUpdateStatus::UnrecoverableError => {
+				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
+				log_error!(logger, "{}", err_str);
+				panic!("{}", err_str);
+			},
+		}
+		if let Some(ref chain_source) = self.chain_source {
+			monitor.load_outputs_to_watch(chain_source , &self.logger);
+		}
+		entry.insert(MonitorHolder {
+			monitor,
+			pending_monitor_updates: Mutex::new(pending_monitor_updates),
+			last_chain_persist_height: AtomicUsize::new(self.highest_chain_height.load(Ordering::Acquire)),
+		});
+
+		Ok(persist_res)
+	}
+
 	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let logger = WithChannelMonitor::from(&self.logger, &monitor);
 		let mut monitors = self.monitors.write().unwrap();

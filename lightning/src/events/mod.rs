@@ -2109,6 +2109,20 @@ pub enum MessageSendEvent {
 		/// The gossip_timestamp_filter which should be sent.
 		msg: msgs::GossipTimestampFilter,
 	},
+
+	SendPeerStorageMessage {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The PeerStorageMessage which should be sent.
+		msg: msgs::PeerStorageMessage,
+	},
+
+	SendYourPeerStorageMessage {
+		/// The node_id of this message recipient
+		node_id: PublicKey,
+		/// The YourPeerStorageMessage which should be sent.
+		msg: msgs::YourPeerStorageMessage,
+	}
 }
 
 /// A trait indicating an object may generate message send events

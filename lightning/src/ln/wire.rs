@@ -53,6 +53,8 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	Warning(msgs::WarningMessage),
 	Ping(msgs::Ping),
 	Pong(msgs::Pong),
+	PeerStorageMessage(msgs::PeerStorageMessage),
+	YourPeerStorageMessage(msgs::YourPeerStorageMessage),
 	OpenChannel(msgs::OpenChannel),
 	OpenChannelV2(msgs::OpenChannelV2),
 	AcceptChannel(msgs::AcceptChannel),
@@ -111,6 +113,8 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Warning(ref msg) => msg.write(writer),
 			&Message::Ping(ref msg) => msg.write(writer),
 			&Message::Pong(ref msg) => msg.write(writer),
+			&Message::PeerStorageMessage(ref msg) => msg.write(writer),
+			&Message::YourPeerStorageMessage(ref msg) => msg.write(writer),
 			&Message::OpenChannel(ref msg) => msg.write(writer),
 			&Message::OpenChannelV2(ref msg) => msg.write(writer),
 			&Message::AcceptChannel(ref msg) => msg.write(writer),
@@ -169,6 +173,8 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::Warning(ref msg) => msg.type_id(),
 			&Message::Ping(ref msg) => msg.type_id(),
 			&Message::Pong(ref msg) => msg.type_id(),
+			&Message::PeerStorageMessage(ref msg) => msg.type_id(),
+			&Message::YourPeerStorageMessage(ref msg) => msg.type_id(),
 			&Message::OpenChannel(ref msg) => msg.type_id(),
 			&Message::OpenChannelV2(ref msg) => msg.type_id(),
 			&Message::AcceptChannel(ref msg) => msg.type_id(),
@@ -260,6 +266,12 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 		},
 		msgs::Pong::TYPE => {
 			Ok(Message::Pong(Readable::read(buffer)?))
+		},
+		msgs::PeerStorageMessage::TYPE => {
+			Ok(Message::PeerStorageMessage(Readable::read(buffer)?))
+		},
+		msgs::YourPeerStorageMessage::TYPE => {
+			Ok(Message::YourPeerStorageMessage(Readable::read(buffer)?))
 		},
 		msgs::OpenChannel::TYPE => {
 			Ok(Message::OpenChannel(Readable::read(buffer)?))
@@ -623,6 +635,14 @@ impl Encode for msgs::ReplyChannelRange {
 
 impl Encode for msgs::GossipTimestampFilter {
 	const TYPE: u16 = 265;
+}
+
+impl Encode for msgs::PeerStorageMessage {
+	const TYPE: u16 = 7;
+}
+
+impl Encode for msgs::YourPeerStorageMessage {
+	const TYPE: u16 = 9;
 }
 
 #[cfg(test)]
