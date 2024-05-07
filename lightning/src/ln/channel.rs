@@ -4970,7 +4970,7 @@ impl<SP: Deref> Channel<SP> where
 
 		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
 
-		let need_channel_ready = self.check_get_channel_ready(0).is_some();
+		let need_channel_ready = { let res = self.check_get_channel_ready(0); res.0.is_some() || res.1.is_some() };
 		self.context.channel_state = ChannelState::AwaitingChannelReady(
 			if is_splice { AwaitingChannelReadyFlags::IS_SPLICE } else { AwaitingChannelReadyFlags::new() }
 		);
@@ -6064,14 +6064,16 @@ impl<SP: Deref> Channel<SP> where
 		let funding_signed = if self.context.signer_pending_funding && !self.context.is_outbound() {
 			self.context.get_funding_signed_msg(logger).1
 		} else { None };
-		let channel_ready = if funding_signed.is_some() {
+		let (channel_ready, splice_locked) = if funding_signed.is_some() {
 			self.check_get_channel_ready(0)
-		} else { None };
+		} else { (None, None) };
 
-		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed and {} channel_ready",
+		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed, {} channel_ready, and {} splice_locked",
 			if commitment_update.is_some() { "a" } else { "no" },
 			if funding_signed.is_some() { "a" } else { "no" },
-			if channel_ready.is_some() { "a" } else { "no" });
+			if channel_ready.is_some() { "a" } else { "no" },
+			if splice_locked.is_some() { "a" } else { "no" },
+		);
 
 		SignerResumeUpdates {
 			commitment_update,
@@ -7117,12 +7119,12 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_update_status = status;
 	}
 
-	fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
+	fn check_get_channel_ready(&mut self, height: u32) -> (Option<msgs::ChannelReady>, Option<msgs::SpliceLocked>) {
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
 		if self.context.funding_tx_confirmation_height == 0 && self.context.minimum_depth != Some(0) {
-			return None;
+			return (None, None);
 		}
 
 		let funding_tx_confirmations = height as i64 - self.context.funding_tx_confirmation_height as i64 + 1;
@@ -7131,13 +7133,13 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		if funding_tx_confirmations < self.context.minimum_depth.unwrap_or(0) as i64 {
-			return None;
+			return (None, None);
 		}
 
 		// If we're still pending the signature on a funding transaction, then we're not ready to send a
 		// channel_ready yet.
 		if self.context.signer_pending_funding {
-			return None;
+			return (None, None);
 		}
 
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
@@ -7192,17 +7194,17 @@ impl<SP: Deref> Channel<SP> where
 				if !self.context.channel_state.is_peer_disconnected() {
 					let next_per_commitment_point =
 						self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.context.secp_ctx);
-					return Some(msgs::ChannelReady {
+					return (Some(msgs::ChannelReady {
 						channel_id: self.context.channel_id,
 						next_per_commitment_point,
 						short_channel_id_alias: Some(self.context.outbound_scid_alias),
-					});
+					}), None);
 				}
 			} else {
 				self.context.monitor_pending_channel_ready = true;
 			}
 		}
-		None
+		(None, None)
 	}
 
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
@@ -7211,12 +7213,12 @@ impl<SP: Deref> Channel<SP> where
 	pub fn transactions_confirmed<NS: Deref, L: Deref>(
 		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
 		chain_hash: ChainHash, node_signer: &NS, user_config: &UserConfig, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<(Option<msgs::ChannelReady>, Option<msgs::SpliceLocked>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
 	{
-		let mut msgs = (None, None);
+		let mut msgs = (None, None, None);
 		if let Some(funding_txo) = self.context.get_funding_txo() {
 			for &(index_in_block, tx) in txdata.iter() {
 				// Check if the transaction is the expected funding transaction, and if it is,
@@ -7280,10 +7282,11 @@ impl<SP: Deref> Channel<SP> where
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
 					// send it immediately instead of waiting for a best_block_updated call (which
 					// may have already happened for this block).
-					if let Some(channel_ready) = self.check_get_channel_ready(height) {
+					let (channel_ready_opt, _splice_locked_opt) = self.check_get_channel_ready(height);
+					if let Some(channel_ready) = channel_ready_opt {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
-						msgs = (Some(channel_ready), announcement_sigs);
+						msgs = (Some(channel_ready), None, announcement_sigs);
 					}
 				}
 				for inp in tx.input.iter() {
@@ -7311,7 +7314,7 @@ impl<SP: Deref> Channel<SP> where
 	pub fn best_block_updated<NS: Deref, L: Deref>(
 		&mut self, height: u32, highest_header_time: u32, chain_hash: ChainHash,
 		node_signer: &NS, user_config: &UserConfig, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<(Option<msgs::ChannelReady>, Option<msgs::SpliceLocked>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
@@ -7322,7 +7325,7 @@ impl<SP: Deref> Channel<SP> where
 	fn do_best_block_updated<NS: Deref, L: Deref>(
 		&mut self, height: u32, highest_header_time: u32,
 		chain_node_signer: Option<(ChainHash, &NS, &UserConfig)>, logger: &L
-	) -> Result<(Option<msgs::ChannelReady>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
+	) -> Result<(Option<msgs::ChannelReady>, Option<msgs::SpliceLocked>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason>
 	where
 		NS::Target: NodeSigner,
 		L::Target: Logger
@@ -7346,12 +7349,13 @@ impl<SP: Deref> Channel<SP> where
 
 		self.context.update_time_counter = cmp::max(self.context.update_time_counter, highest_header_time);
 
-		if let Some(channel_ready) = self.check_get_channel_ready(height) {
+		let (channel_ready_opt, _splice_locked_opt) = self.check_get_channel_ready(height);
+		if let Some(channel_ready) = channel_ready_opt {
 			let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 			} else { None };
 			log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
-			return Ok((Some(channel_ready), timed_out_htlcs, announcement_sigs));
+			return Ok((Some(channel_ready), None, timed_out_htlcs, announcement_sigs));
 		}
 
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) ||
@@ -7390,7 +7394,7 @@ impl<SP: Deref> Channel<SP> where
 		let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 			self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 		} else { None };
-		Ok((None, timed_out_htlcs, announcement_sigs))
+		Ok((None, None, timed_out_htlcs, announcement_sigs))
 	}
 
 	/// Indicates the funding transaction is no longer confirmed in the main chain. This may
@@ -7406,8 +7410,9 @@ impl<SP: Deref> Channel<SP> where
 			// time we saw and it will be ignored.
 			let best_time = self.context.update_time_counter;
 			match self.do_best_block_updated(reorg_height, best_time, None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>, logger) {
-				Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
+				Ok((channel_ready, splice_locked, timed_out_htlcs, announcement_sigs)) => {
 					assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
+					assert!(splice_locked.is_none(), "Cannot occur during splicing ?");
 					assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
 					assert!(announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
 					Ok(())
@@ -8442,7 +8447,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			interactive_tx_signing_session: None,
 		};
 
-		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0).0.is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 		Ok((channel, channel_monitor))
 	}
@@ -8733,7 +8738,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			#[cfg(any(dual_funding, splicing))]
 			interactive_tx_signing_session: None,
 		};
-		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0).0.is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok((channel, funding_signed, channel_monitor))
@@ -12147,6 +12152,6 @@ mod tests {
 		// Clear the ChannelState::WaitingForBatch only when called by ChannelManager.
 		node_a_chan.set_batch_ready();
 		assert_eq!(node_a_chan.context.channel_state, ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY));
-		assert!(node_a_chan.check_get_channel_ready(0).is_some());
+		assert!(node_a_chan.check_get_channel_ready(0).0.is_some());
 	}
 }
