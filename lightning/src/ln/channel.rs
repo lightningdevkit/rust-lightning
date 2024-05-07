@@ -659,6 +659,7 @@ mod state_flags {
 	pub const LOCAL_SHUTDOWN_SENT: u32 = 1 << 11;
 	pub const SHUTDOWN_COMPLETE: u32 = 1 << 12;
 	pub const WAITING_FOR_BATCH: u32 = 1 << 13;
+	pub const IS_SPLICE: u32 = 1 << 14;
 }
 
 define_state_flags!(
@@ -705,7 +706,9 @@ define_state_flags!(
 		("Indicates the channel was funded in a batch and the broadcast of the funding transaction \
 			is being held until all channels in the batch have received `funding_signed` and have \
 			their monitors persisted.", WAITING_FOR_BATCH, state_flags::WAITING_FOR_BATCH,
-			is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch)
+			is_waiting_for_batch, set_waiting_for_batch, clear_waiting_for_batch),
+		("Indicates that the channel funding changes as part of a splicing process",
+			IS_SPLICE, state_flags::IS_SPLICE, is_splice, set_splice, clear_splice)
 	]
 );
 
@@ -3864,7 +3867,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.pending_splice_post = Some(pending_splice_post);
 
 		self.channel_state = ChannelState::NegotiatingFunding(
-			// TODO check
+			// TODO check OUR_INIT_SENT & THEIR_INIT_SENT
 			if is_outgoing {
 				NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
 			} else {
@@ -3893,7 +3896,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// Splice process finished, new funding transaction locked.
 	/// At this point the old funding transaction is spent.
 	#[cfg(splicing)]
-	pub(crate) fn splice_locked<L: Deref>(&mut self, logger: &L) -> Result<(), ChannelError>
+	pub(crate) fn splice_complete<L: Deref>(&mut self, logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger
 	{
 		if self.pending_splice_post.is_none() {
@@ -4643,7 +4646,9 @@ impl<SP: Deref> Channel<SP> where
 		let mut check_reconnection = false;
 		match &self.context.channel_state {
 			ChannelState::AwaitingChannelReady(flags) => {
-				let flags = flags.clone().clear(FundedStateFlags::ALL.into());
+				let flags = flags.clone()
+					.clear(FundedStateFlags::ALL.into())
+					.clear(AwaitingChannelReadyFlags::IS_SPLICE);
 				debug_assert!(!flags.is_set(AwaitingChannelReadyFlags::OUR_CHANNEL_READY) || !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
 				if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
 					// If we reconnected before sending our `channel_ready` they may still resend theirs.
@@ -4966,7 +4971,9 @@ impl<SP: Deref> Channel<SP> where
 		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
 
 		let need_channel_ready = self.check_get_channel_ready(0).is_some();
-		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+		self.context.channel_state = ChannelState::AwaitingChannelReady(
+			if is_splice { AwaitingChannelReadyFlags::IS_SPLICE } else { AwaitingChannelReadyFlags::new() }
+		);
 		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok(channel_monitor)
@@ -5680,9 +5687,10 @@ impl<SP: Deref> Channel<SP> where
 						let (updated_funding_tx, _) = self.context.prev_funding_tx_sign(funding_tx, Some(cp_sig.clone()), logger)?;
 						funding_tx_opt = Some(updated_funding_tx);
 					}
-				}
 
-				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+					// Note: no state update, state should be AwaitingChannelReady already
+					debug_assert!(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.is_splice()));
+				}
 			}
 			if funding_tx_opt.is_some() {
 				self.context.funding_transaction = funding_tx_opt.clone();
@@ -7134,14 +7142,32 @@ impl<SP: Deref> Channel<SP> where
 
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
-		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()).is_empty()) {
+		let need_commitment_update = if matches!(self.context.channel_state,
+			ChannelState::AwaitingChannelReady(f)
+				if f.clone()
+					.clear(FundedStateFlags::ALL.into())
+					.clear(AwaitingChannelReadyFlags::IS_SPLICE.into())
+					.is_empty()
+		) {
 			self.context.channel_state.set_our_channel_ready();
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state,
+			ChannelState::AwaitingChannelReady(f)
+				if f.clone()
+					.clear(FundedStateFlags::ALL.into())
+					.clear(AwaitingChannelReadyFlags::IS_SPLICE.into())
+				== AwaitingChannelReadyFlags::THEIR_CHANNEL_READY
+		) {
 			self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 			self.context.update_time_counter += 1;
 			true
-		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
+		} else if matches!(self.context.channel_state,
+			ChannelState::AwaitingChannelReady(f)
+				if f.clone()
+					.clear(FundedStateFlags::ALL.into())
+					.clear(AwaitingChannelReadyFlags::IS_SPLICE.into())
+				== AwaitingChannelReadyFlags::OUR_CHANNEL_READY
+		) {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
@@ -7240,7 +7266,7 @@ impl<SP: Deref> Channel<SP> where
 
 							#[cfg(splicing)]
 							if self.context.pending_splice_post.is_some() {
-								self.context.splice_locked(logger).ok();
+								self.context.splice_complete(logger).ok();
 							}
 						}
 						// If this is a coinbase transaction and not a 0-conf channel
@@ -9285,7 +9311,7 @@ where
 	if !matches!(
 		context.channel_state, ChannelState::NegotiatingFunding(flags)
 		if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)) {
-		panic!("Tried to get a funding_created messsage at a time other than immediately after initial handshake completion (or tried to get funding_created twice)");
+		panic!("Tried to get a commitment_signed messsage at a time other than immediately after initial handshake completion (or tried to get funding_created twice)");
 	}
 	if !is_splice {
 		if context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||

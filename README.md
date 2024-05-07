@@ -162,6 +162,8 @@ action by client: Create and provide signature on the extra inputs
         message out: tx_signatures
         funding transaction is ready, broadcast it
         ---
+event: ChannelPending
+---
                                                   message in: tx_signatures
                                                   handle_tx_signatures() - ChannelManager
                                                   internal_tx_signatures() -- ChannelManager
@@ -192,6 +194,8 @@ Waiting for confirmation
         message out: channel_update
                                                   message in: channel_ready
                                                   handle_channel_ready() - ChannelManager
+event: ChannelReady
+---
                                                   event: ChannelReady
                                                   message out: channel_update
 /end of sequence/
