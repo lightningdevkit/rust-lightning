@@ -939,6 +939,7 @@ impl Writeable for ChannelInfo {
 			(8, self.two_to_one, required),
 			(10, self.capacity_sats, required),
 			(12, self.announcement_message, required),
+			(14, self.contract_id, option),
 		});
 		Ok(())
 	}
@@ -981,6 +982,7 @@ impl Readable for ChannelInfo {
 			(8, two_to_one_wrap, upgradable_option),
 			(10, capacity_sats, required),
 			(12, announcement_message, required),
+			(14, contract_id, option),
 		});
 
 		Ok(ChannelInfo {
@@ -992,6 +994,7 @@ impl Readable for ChannelInfo {
 			capacity_sats: _init_tlv_based_struct_field!(capacity_sats, required),
 			announcement_message: _init_tlv_based_struct_field!(announcement_message, required),
 			announcement_received_time: _init_tlv_based_struct_field!(announcement_received_time, (default_value, 0)),
+			contract_id: _init_tlv_based_struct_field!(contract_id, option),
 		})
 	}
 }
@@ -1583,6 +1586,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: timestamp,
+			contract_id: None,
 		};
 
 		self.add_channel_between_nodes(short_channel_id, channel_info, None)
@@ -1721,6 +1725,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
 				{ full_msg.cloned() } else { None },
 			announcement_received_time,
+			contract_id: None,
 		};
 
 		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)?;
@@ -3401,6 +3406,7 @@ pub(crate) mod tests {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: 87654,
+			contract_id: None,
 		};
 
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
@@ -3419,6 +3425,7 @@ pub(crate) mod tests {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: 87654,
+			contract_id: None,
 		};
 
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
