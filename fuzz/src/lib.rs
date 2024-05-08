@@ -22,6 +22,7 @@ pub mod indexedmap;
 pub mod invoice_deser;
 pub mod invoice_request_deser;
 pub mod offer_deser;
+pub mod bolt11_deser;
 pub mod onion_message;
 pub mod peer_crypt;
 pub mod process_network_graph;

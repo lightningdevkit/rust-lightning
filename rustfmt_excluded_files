@@ -3,6 +3,7 @@
 ./fuzz/src/bech32_parse.rs
 ./fuzz/src/bin/base32_target.rs
 ./fuzz/src/bin/bech32_parse_target.rs
+./fuzz/src/bin/bolt11_deser_target.rs
 ./fuzz/src/bin/chanmon_consistency_target.rs
 ./fuzz/src/bin/chanmon_deser_target.rs
 ./fuzz/src/bin/fromstr_to_netaddress_target.rs

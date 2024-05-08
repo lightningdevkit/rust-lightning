@@ -19,6 +19,7 @@ stdin_fuzz = []
 
 [dependencies]
 lightning = { path = "../lightning", features = ["regex", "hashbrown", "_test_utils"] }
+lightning-invoice = { path = "../lightning-invoice" }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
 bitcoin = { version = "0.30.2", features = ["secp-lowmemory"] }
 hex = { package = "hex-conservative", version = "0.1.1", default-features = false }
