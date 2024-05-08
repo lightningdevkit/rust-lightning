@@ -971,6 +971,8 @@ mod tests {
 
 		// create the funding transaction (client should send funding_created now)
 		ext_from_hex("0a", &mut test);
+		// Two feerate requests to check the dust exposure on the initial commitment tx
+		ext_from_hex("00fd00fd", &mut test);
 
 		// inbound read from peer id 1 of len 18
 		ext_from_hex("030112", &mut test);
@@ -1019,6 +1021,9 @@ mod tests {
 		// end of update_add_htlc from 0 to 1 via client and mac
 		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
+		// Two feerate requests to check dust exposure
+		ext_from_hex("00fd00fd", &mut test);
+
 		// inbound read from peer id 0 of len 18
 		ext_from_hex("030012", &mut test);
 		// message header indicating message length 100
@@ -1040,6 +1045,8 @@ mod tests {
 
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);
+		// Two feerate requests to check dust exposure
+		ext_from_hex("00fd00fd", &mut test);
 		// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: UpdateHTLCs event for node 03020000 with 1 HTLCs for channel 3f000000)
 
 		// we respond with commitment_signed then revoke_and_ack (a weird, but valid, order)
@@ -1115,6 +1122,9 @@ mod tests {
 		// end of update_add_htlc from 0 to 1 via client and mac
 		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff ab00000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
+		// Two feerate requests to check dust exposure
+		ext_from_hex("00fd00fd", &mut test);
+
 		// now respond to the update_fulfill_htlc+commitment_signed messages the client sent to peer 0
 		// inbound read from peer id 0 of len 18
 		ext_from_hex("030012", &mut test);
@@ -1146,6 +1156,10 @@ mod tests {
 
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);
+
+		// Two feerate requests to check dust exposure
+		ext_from_hex("00fd00fd", &mut test);
+
 		// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 		// we respond with revoke_and_ack, then commitment_signed, then update_fail_htlc
 
@@ -1243,6 +1257,9 @@ mod tests {
 		// end of update_add_htlc from 0 to 1 via client and mac
 		ext_from_hex("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff 5300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
+		// Two feerate requests to check dust exposure
+		ext_from_hex("00fd00fd", &mut test);
+
 		// inbound read from peer id 0 of len 18
 		ext_from_hex("030012", &mut test);
 		// message header indicating message length 164
@@ -1264,6 +1281,8 @@ mod tests {
 
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);
+		// Two feerate requests to check dust exposure
+		ext_from_hex("00fd00fd", &mut test);
 		// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 
 		// connect a block with one transaction of len 125
