@@ -18,7 +18,7 @@ use crate::routing::test_utils::{add_channel, add_or_update_node};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
-use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, PendingOnionMessage, SendError};
+use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, PendingOnionMessage, Responder, ResponseInstruction, SendError};
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
 
@@ -62,8 +62,8 @@ struct MessengerNode {
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
-	fn handle_message(&self, _message: OffersMessage) -> Option<OffersMessage> {
-		None
+	fn handle_message(&self, _message: OffersMessage, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
+		ResponseInstruction::NoResponse
 	}
 }
 
@@ -84,6 +84,9 @@ impl OnionMessageContents for TestCustomMessage {
 			TestCustomMessage::Request => CUSTOM_REQUEST_MESSAGE_TYPE,
 			TestCustomMessage::Response => CUSTOM_RESPONSE_MESSAGE_TYPE,
 		}
+	}
+	fn msg_type(&self) -> &'static str {
+		"Custom Message"
 	}
 }
 
@@ -123,15 +126,19 @@ impl Drop for TestCustomMessageHandler {
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
-	fn handle_custom_message(&self, msg: Self::CustomMessage) -> Option<Self::CustomMessage> {
+	fn handle_custom_message(&self, msg: Self::CustomMessage, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
 		match self.expected_messages.lock().unwrap().pop_front() {
 			Some(expected_msg) => assert_eq!(expected_msg, msg),
 			None => panic!("Unexpected message: {:?}", msg),
 		}
-
-		match msg {
+		let response_option = match msg {
 			TestCustomMessage::Request => Some(TestCustomMessage::Response),
 			TestCustomMessage::Response => None,
+		};
+		if let (Some(response), Some(responder)) = (response_option, responder) {
+			responder.respond(response)
+		} else {
+			ResponseInstruction::NoResponse
 		}
 	}
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, DecodeError> where Self: Sized {
@@ -421,6 +428,9 @@ fn invalid_custom_message_type() {
 		fn tlv_type(&self) -> u64 {
 			// Onion message contents must have a TLV >= 64.
 			63
+		}
+		fn msg_type(&self) -> &'static str {
+			"Invalid Message"
 		}
 	}
 
