@@ -1,6 +1,6 @@
 [package]
 name = "lightning-transaction-sync"
-version = "0.0.123-rc1"
+version = "0.0.123"
 authors = ["Elias Rohrer"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
@@ -23,7 +23,7 @@ electrum = ["electrum-client"]
 async-interface = []
 
 [dependencies]
-lightning = { version = "0.0.123-rc1", path = "../lightning", default-features = false, features = ["std"] }
+lightning = { version = "0.0.123", path = "../lightning", default-features = false, features = ["std"] }
 bitcoin = { version = "0.30.2", default-features = false }
 bdk-macros = "0.6"
 futures = { version = "0.3", optional = true }
@@ -31,7 +31,7 @@ esplora-client = { version = "0.6", default-features = false, optional = true }
 electrum-client = { version = "0.18.0", optional = true }
 
 [dev-dependencies]
-lightning = { version = "0.0.123-rc1", path = "../lightning", default-features = false, features = ["std", "_test_utils"] }
+lightning = { version = "0.0.123", path = "../lightning", default-features = false, features = ["std", "_test_utils"] }
 tokio = { version = "1.35.0", features = ["full"] }
 
 [target.'cfg(all(not(target_os = "windows"), not(no_download)))'.dev-dependencies]
