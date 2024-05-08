@@ -50,6 +50,7 @@ backtrace = { version = "0.3", optional = true }
 
 core2 = { version = "0.3.0", optional = true, default-features = false }
 libm = { version = "0.2", optional = true, default-features = false }
+rgb-std =  "0.11.0-beta.5" 
 
 [dev-dependencies]
 regex = "1.5.6"

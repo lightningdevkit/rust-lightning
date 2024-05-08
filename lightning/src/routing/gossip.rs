@@ -19,6 +19,7 @@ use bitcoin::secp256k1;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
+use rgbstd::contract::ContractId;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::types::ChannelId;
@@ -873,6 +874,8 @@ pub struct ChannelInfo {
 	/// (which we can probably assume we are - no-std environments probably won't have a full
 	/// network graph in memory!).
 	announcement_received_time: u64,
+	/// RGB contract ID
+	pub contract_id: Option<ContractId>,
 }
 
 impl ChannelInfo {
