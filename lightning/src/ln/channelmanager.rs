@@ -32,6 +32,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::blinded_path::{BlindedPath, NodeIdLookUp};
+use crate::blinded_path::message::ForwardNode;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
@@ -8996,8 +8997,16 @@ where
 
 		let peers = self.per_peer_state.read().unwrap()
 			.iter()
-			.filter(|(_, peer)| peer.lock().unwrap().latest_features.supports_onion_messages())
-			.map(|(node_id, _)| *node_id)
+			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
+			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
+			.map(|(node_id, peer)| ForwardNode {
+				node_id: *node_id,
+				short_channel_id: peer.channel_by_id
+					.iter()
+					.filter(|(_, channel)| channel.context().is_usable())
+					.min_by_key(|(_, channel)| channel.context().channel_creation_height)
+					.and_then(|(_, channel)| channel.context().get_short_channel_id()),
+			})
 			.collect::<Vec<_>>();
 
 		self.router

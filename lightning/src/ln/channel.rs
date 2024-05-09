@@ -1403,7 +1403,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// Either the height at which this channel was created or the height at which it was last
 	/// serialized if it was serialized by versions prior to 0.0.103.
 	/// We use this to close if funding is never broadcasted.
-	channel_creation_height: u32,
+	pub(super) channel_creation_height: u32,
 
 	counterparty_dust_limit_satoshis: u64,
 

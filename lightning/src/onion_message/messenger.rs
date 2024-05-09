@@ -98,7 +98,7 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
+/// #         &self, _recipient: PublicKey, _peers: Vec<ForwardNode>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedPath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -341,7 +341,7 @@ pub trait MessageRouter {
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()>;
 }
 
@@ -408,7 +408,7 @@ where
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -421,13 +421,13 @@ where
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
 
-		let mut peer_info = peers.iter()
+		let mut peer_info = peers.into_iter()
 			// Limit to peers with announced channels
-			.filter_map(|pubkey|
+			.filter_map(|peer|
 				network_graph
-					.node(&NodeId::from_pubkey(pubkey))
+					.node(&NodeId::from_pubkey(&peer.node_id))
 					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
-					.map(|info| (*pubkey, info.is_tor_only(), info.channels.len()))
+					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
 			)
 			// Exclude Tor-only nodes when the recipient is announced.
 			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
@@ -439,11 +439,8 @@ where
 		});
 
 		let paths = peer_info.into_iter()
-			.map(|(node_id, _, _)| vec![ForwardNode { node_id, short_channel_id: None }])
-			.map(|intermediate_nodes| {
-				BlindedPath::new_for_message(
-					&intermediate_nodes, recipient, &*self.entropy_source, secp_ctx
-				)
+			.map(|(peer, _, _)| {
+				BlindedPath::new_for_message(&[peer], recipient, &*self.entropy_source, secp_ctx)
 			})
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();

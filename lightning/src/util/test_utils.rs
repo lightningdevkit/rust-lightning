@@ -8,6 +8,7 @@
 // licenses.
 
 use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::ForwardNode;
 use crate::blinded_path::payment::ReceiveTlvs;
 use crate::chain;
 use crate::chain::WatchedOutput;
@@ -246,7 +247,7 @@ impl<'a> MessageRouter for TestRouter<'a> {
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		self.router.create_blinded_paths(recipient, peers, secp_ctx)
 	}
@@ -281,7 +282,7 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		self.inner.create_blinded_paths(recipient, peers, secp_ctx)
 	}
