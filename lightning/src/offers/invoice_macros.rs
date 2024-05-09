@@ -10,7 +10,8 @@
 //! Shared code between BOLT 12 static and single-use invoices.
 
 macro_rules! invoice_builder_methods_common { (
-	$self: ident, $self_type: ty, $invoice_fields: expr, $return_type: ty, $return_value: expr, $type_param: ty $(, $self_mut: tt)?
+	$self: ident, $self_type: ty, $invoice_fields: expr, $return_type: ty, $return_value: expr,
+	$type_param: ty $(, $self_mut: tt)?
 ) => {
 	/// Sets the [`Bolt12Invoice::relative_expiry`] as seconds since [`Bolt12Invoice::created_at`].
 	/// Any expiry that has already passed is valid and can be checked for using
@@ -80,4 +81,52 @@ macro_rules! invoice_builder_methods_common { (
 	}
 } }
 
+macro_rules! invoice_accessors_common { ($self: ident, $contents: expr) => {
+	/// Paths to the recipient originating from publicly reachable nodes, including information
+	/// needed for routing payments across them.
+	///
+	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
+	/// privacy is lost if a public node id is used for [`Bolt12Invoice::signing_pubkey`].
+	///
+	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
+	/// matched in another language.
+	pub fn payment_paths(&$self) -> &[(BlindedPayInfo, BlindedPath)] {
+		$contents.payment_paths()
+	}
+
+	/// Duration since the Unix epoch when the invoice was created.
+	pub fn created_at(&$self) -> Duration {
+		$contents.created_at()
+	}
+
+	/// Duration since [`Bolt12Invoice::created_at`] when the invoice has expired and therefore
+	/// should no longer be paid.
+	pub fn relative_expiry(&$self) -> Duration {
+		$contents.relative_expiry()
+	}
+
+	/// Whether the invoice has expired.
+	#[cfg(feature = "std")]
+	pub fn is_expired(&$self) -> bool {
+		$contents.is_expired()
+	}
+
+	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
+	/// least-preferred.
+	pub fn fallbacks(&$self) -> Vec<Address> {
+		$contents.fallbacks()
+	}
+
+	/// Features pertaining to paying an invoice.
+	pub fn invoice_features(&$self) -> &Bolt12InvoiceFeatures {
+		$contents.features()
+	}
+
+	/// The public key corresponding to the key used to sign the invoice.
+	pub fn signing_pubkey(&$self) -> PublicKey {
+		$contents.signing_pubkey()
+	}
+} }
+
+pub(super) use invoice_accessors_common;
 pub(super) use invoice_builder_methods_common;

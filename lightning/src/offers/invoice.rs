@@ -116,7 +116,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
-use crate::offers::invoice_macros::invoice_builder_methods_common;
+use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
 use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
@@ -740,35 +740,6 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 		$contents.payer_note()
 	}
 
-	/// Paths to the recipient originating from publicly reachable nodes, including information
-	/// needed for routing payments across them.
-	///
-	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
-	/// privacy is lost if a public node id is used for [`Bolt12Invoice::signing_pubkey`].
-	///
-	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
-	/// matched in another language.
-	pub fn payment_paths(&$self) -> &[(BlindedPayInfo, BlindedPath)] {
-		$contents.payment_paths()
-	}
-
-	/// Duration since the Unix epoch when the invoice was created.
-	pub fn created_at(&$self) -> Duration {
-		$contents.created_at()
-	}
-
-	/// Duration since [`Bolt12Invoice::created_at`] when the invoice has expired and therefore
-	/// should no longer be paid.
-	pub fn relative_expiry(&$self) -> Duration {
-		$contents.relative_expiry()
-	}
-
-	/// Whether the invoice has expired.
-	#[cfg(feature = "std")]
-	pub fn is_expired(&$self) -> bool {
-		$contents.is_expired()
-	}
-
 	/// SHA256 hash of the payment preimage that will be given in return for paying the invoice.
 	pub fn payment_hash(&$self) -> PaymentHash {
 		$contents.payment_hash()
@@ -778,29 +749,15 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	pub fn amount_msats(&$self) -> u64 {
 		$contents.amount_msats()
 	}
-
-	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
-	/// least-preferred.
-	pub fn fallbacks(&$self) -> Vec<Address> {
-		$contents.fallbacks()
-	}
-
-	/// Features pertaining to paying an invoice.
-	pub fn invoice_features(&$self) -> &Bolt12InvoiceFeatures {
-		$contents.features()
-	}
-
-	/// The public key corresponding to the key used to sign the invoice.
-	pub fn signing_pubkey(&$self) -> PublicKey {
-		$contents.signing_pubkey()
-	}
 } }
 
 impl UnsignedBolt12Invoice {
+	invoice_accessors_common!(self, self.contents);
 	invoice_accessors!(self, self.contents);
 }
 
 impl Bolt12Invoice {
+	invoice_accessors_common!(self, self.contents);
 	invoice_accessors!(self, self.contents);
 
 	/// Signature of the invoice verified using [`Bolt12Invoice::signing_pubkey`].
