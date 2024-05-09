@@ -23,20 +23,20 @@ Objective, Restrictions:
 - Splice-in supported (increase channel capacity)
 - between two LDK instances
 - No quiscence is used/checked
-- Happy path only, no complex combinations, no error scenarios
-- It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
-- Only a single pending splicing is supported
+- Happy path only, no complex combinations, not all error scenarios
 - Splice from only V2 channel is supported, channel ID is not changed
+- It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
+- Only a single pending splicing is supported at a time
 
-Up-to-date with main branch as of v0.0.123-beta (Apr 24, 9a438eea; originally branched off v0.0.115).
+Up-to-date with main branch as of v0.0.123 (May 8, 475f736; originally branched off v0.0.115).
 
-See also `ldk-sample` https://github.com/catenocrypt/ldk-sample/tree/splicing-hapa2
+See also `ldk-sample` https://github.com/optout21/ldk-sample/tree/splicing-hapa9-v123
 
 To test: `RUSTFLAGS="--cfg=splicing" cargo test -p lightning splic`
 
 Detailed steps
 --------------
-(as of May 2, ac452522a, splicing-hapa8-123beta)
+(as of May 9, 536e3b1, splicing-hapa9-v123)
 
 Client  LDK                                       Counterparty node (acceptor)
 ------  ---                                       ----------------------------
