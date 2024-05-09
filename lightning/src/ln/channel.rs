@@ -4646,6 +4646,9 @@ impl<SP: Deref> Channel<SP> where
 		let mut check_reconnection = false;
 		match &self.context.channel_state {
 			ChannelState::AwaitingChannelReady(flags) => {
+				if flags.is_set(AwaitingChannelReadyFlags::IS_SPLICE) {
+					return Err(ChannelError::Close("channel_ready received, but there is a splicing in progress".to_owned()));
+				}
 				let flags = flags.clone()
 					.clear(FundedStateFlags::ALL.into())
 					.clear(AwaitingChannelReadyFlags::IS_SPLICE);
@@ -4697,6 +4700,59 @@ impl<SP: Deref> Channel<SP> where
 		self.context.counterparty_cur_commitment_point = Some(msg.next_per_commitment_point);
 
 		log_info!(logger, "Received channel_ready from peer for channel {}", &self.context.channel_id());
+
+		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
+	}
+
+	/// Handles a splice_locked message from our peer. If we've already sent our splice_locked
+	/// and the channel is now usable (and public), this may generate an announcement_signatures to
+	/// reply with.
+	/// Simialar to `channel_ready`.
+	#[cfg(splicing)]
+	pub fn splice_locked<NS: Deref, L: Deref>(
+		&mut self, _msg: &msgs::SpliceLocked, node_signer: &NS, chain_hash: ChainHash,
+		user_config: &UserConfig, best_block: &BestBlock, logger: &L
+	) -> Result<Option<msgs::AnnouncementSignatures>, ChannelError>
+	where
+		NS::Target: NodeSigner,
+		L::Target: Logger
+	{
+		// Our splice_locked shouldn't have been sent if we are waiting for other channels in the
+		// batch, but we can receive splice_locked messages.
+		let mut check_reconnection = false;
+		match &self.context.channel_state {
+			ChannelState::AwaitingChannelReady(flags) => {
+				if !flags.is_set(AwaitingChannelReadyFlags::IS_SPLICE) {
+					return Err(ChannelError::Close("Splice_locked received, but there is no splicing in progress".to_owned()));
+				}
+				let flags = flags.clone()
+					.clear(FundedStateFlags::ALL.into())
+					.clear(AwaitingChannelReadyFlags::IS_SPLICE.into());
+				debug_assert!(!flags.is_set(AwaitingChannelReadyFlags::OUR_CHANNEL_READY) || !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
+				if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
+					// If we reconnected before sending our `splice_locked` they may still resend theirs.
+					check_reconnection = true;
+				} else if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
+					self.context.channel_state.set_their_channel_ready();
+				} else if flags == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
+					self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
+					self.context.update_time_counter += 1;
+				} else {
+					// We're in `WAITING_FOR_BATCH`, so we should wait until we're ready.
+					debug_assert!(flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
+				}
+			}
+			// If we reconnected before sending our `splice_locked` they may still resend theirs.
+			ChannelState::ChannelReady(_) => check_reconnection = true,
+			_ => return Err(ChannelError::Close("Peer sent a splice_locked at a strange time".to_owned())),
+		}
+		if check_reconnection {
+			return Ok(None);
+		}
+
+		self.context.counterparty_prev_commitment_point = self.context.counterparty_cur_commitment_point;
+
+		log_info!(logger, "Received splice_locked from peer for channel {}", &self.context.channel_id());
 
 		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
 	}
@@ -7142,34 +7198,24 @@ impl<SP: Deref> Channel<SP> where
 			return (None, None);
 		}
 
+		let was_splice = matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.is_splice());
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
-		let need_commitment_update = if matches!(self.context.channel_state,
-			ChannelState::AwaitingChannelReady(f)
-				if f.clone()
-					.clear(FundedStateFlags::ALL.into())
-					.clear(AwaitingChannelReadyFlags::IS_SPLICE.into())
-					.is_empty()
-		) {
+		let await_flags = if let ChannelState::AwaitingChannelReady(f) = self.context.channel_state {
+			Some(f.clone()
+				.clear(FundedStateFlags::ALL.into())
+				.clear(AwaitingChannelReadyFlags::IS_SPLICE.into()))
+		} else {
+			None
+		};
+		let need_commitment_update = if await_flags.is_some() && await_flags.unwrap().is_empty() {
 			self.context.channel_state.set_our_channel_ready();
 			true
-		} else if matches!(self.context.channel_state,
-			ChannelState::AwaitingChannelReady(f)
-				if f.clone()
-					.clear(FundedStateFlags::ALL.into())
-					.clear(AwaitingChannelReadyFlags::IS_SPLICE.into())
-				== AwaitingChannelReadyFlags::THEIR_CHANNEL_READY
-		) {
+		} else if await_flags.is_some() && await_flags.unwrap() == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
 			self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 			self.context.update_time_counter += 1;
 			true
-		} else if matches!(self.context.channel_state,
-			ChannelState::AwaitingChannelReady(f)
-				if f.clone()
-					.clear(FundedStateFlags::ALL.into())
-					.clear(AwaitingChannelReadyFlags::IS_SPLICE.into())
-				== AwaitingChannelReadyFlags::OUR_CHANNEL_READY
-		) {
+		} else if await_flags.is_some() && await_flags.unwrap() == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
 			// We got a reorg but not enough to trigger a force close, just ignore.
 			false
 		} else {
@@ -7192,13 +7238,18 @@ impl<SP: Deref> Channel<SP> where
 		if need_commitment_update {
 			if !self.context.channel_state.is_monitor_update_in_progress() {
 				if !self.context.channel_state.is_peer_disconnected() {
-					let next_per_commitment_point =
-						self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.context.secp_ctx);
-					return (Some(msgs::ChannelReady {
-						channel_id: self.context.channel_id,
-						next_per_commitment_point,
-						short_channel_id_alias: Some(self.context.outbound_scid_alias),
-					}), None);
+					if !was_splice {
+						let next_per_commitment_point =
+							self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.context.secp_ctx);
+						return (Some(msgs::ChannelReady {
+							channel_id: self.context.channel_id,
+							next_per_commitment_point,
+							short_channel_id_alias: Some(self.context.outbound_scid_alias),
+						}), None);
+					} else {
+						// #SPLICING
+						return (None, Some(msgs::SpliceLocked { channel_id: self.context.channel_id }));
+					}
 				}
 			} else {
 				self.context.monitor_pending_channel_ready = true;
@@ -7282,11 +7333,16 @@ impl<SP: Deref> Channel<SP> where
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
 					// send it immediately instead of waiting for a best_block_updated call (which
 					// may have already happened for this block).
-					let (channel_ready_opt, _splice_locked_opt) = self.check_get_channel_ready(height);
+					let (channel_ready_opt, splice_locked_opt) = self.check_get_channel_ready(height);
 					if let Some(channel_ready) = channel_ready_opt {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
 						msgs = (Some(channel_ready), None, announcement_sigs);
+					}
+					if let Some(splice_locked) = splice_locked_opt {
+						log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
+						msgs = (None, Some(splice_locked), announcement_sigs);
 					}
 				}
 				for inp in tx.input.iter() {
@@ -7349,13 +7405,20 @@ impl<SP: Deref> Channel<SP> where
 
 		self.context.update_time_counter = cmp::max(self.context.update_time_counter, highest_header_time);
 
-		let (channel_ready_opt, _splice_locked_opt) = self.check_get_channel_ready(height);
+		let (channel_ready_opt, splice_locked_opt) = self.check_get_channel_ready(height);
 		if let Some(channel_ready) = channel_ready_opt {
 			let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 			} else { None };
 			log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 			return Ok((Some(channel_ready), None, timed_out_htlcs, announcement_sigs));
+		}
+		if let Some(splice_locked) = splice_locked_opt {
+			let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
+				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
+			} else { None };
+			log_info!(logger, "Sending a splice_locked to our peer for channel {}", &self.context.channel_id);
+			return Ok((None, Some(splice_locked), timed_out_htlcs, announcement_sigs));
 		}
 
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) ||

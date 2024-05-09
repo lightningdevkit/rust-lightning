@@ -24,7 +24,6 @@ Objective, Restrictions:
 - between two LDK instances
 - No quiscence is used/checked
 - Happy path only, no complex combinations, no error scenarios
-- The message splice_locked is not yet used
 - It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
 - Only a single pending splicing is supported
 - Splice from only V2 channel is supported, channel ID is not changed
@@ -179,23 +178,26 @@ event: ChannelPending
 New funding tx gets broadcasted (both sides)
 Waiting for confirmation
         transactions_confirmed() - Channel
-        splice_locked() -- ChannelContext
+        splice_complete() -- ChannelContext
         Mark splicing process as completed
-        message out: channel_ready
+        message out: splice_locked
         ---
                                                   transactions_confirmed() - Channel
-                                                  splice_locked() -- ChannelContext
+                                                  splice_complete() -- ChannelContext
                                                   Mark splicing process as completed
-                                                  message out: channel_ready
+                                                  message out: splice_locked
                                                   ---
-        message in: channel_ready
-        handle_channel_ready() - ChannelManager
+        message in: splice_locked
+        handle_splice_locked() - ChannelManager
+        internal_splice_locked() - ChannelManager
         event: ChannelReady
         message out: channel_update
-                                                  message in: channel_ready
-                                                  handle_channel_ready() - ChannelManager
+        ---
 event: ChannelReady
 ---
+                                                  message in: splice_locked
+                                                  handle_splice_locked() - ChannelManager
+                                                  internal_splice_locked() - ChannelManager
                                                   event: ChannelReady
                                                   message out: channel_update
 /end of sequence/

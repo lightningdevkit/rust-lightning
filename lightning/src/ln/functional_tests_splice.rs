@@ -1173,12 +1173,12 @@ fn test_v2_splice_in() {
 
 	// Simulate confirmation of the funding tx
 	confirm_transaction(&initiator_node, &broadcasted_splice_tx);
-	let channel_ready_message = get_event_msg!(initiator_node, MessageSendEvent::SendChannelReady, acceptor_node.node.get_our_node_id());
+	let splice_locked_message = get_event_msg!(initiator_node, MessageSendEvent::SendSpliceLocked, acceptor_node.node.get_our_node_id());
 
 	confirm_transaction(&acceptor_node, &broadcasted_splice_tx);
-	let channel_ready_message2 = get_event_msg!(acceptor_node, MessageSendEvent::SendChannelReady, initiator_node.node.get_our_node_id());
+	let splice_locked_message2 = get_event_msg!(acceptor_node, MessageSendEvent::SendSpliceLocked, initiator_node.node.get_our_node_id());
 
-	let _res = initiator_node.node.handle_channel_ready(&acceptor_node.node.get_our_node_id(), &channel_ready_message2);
+	let _res = initiator_node.node.handle_splice_locked(&acceptor_node.node.get_our_node_id(), &splice_locked_message2);
 	let events = initiator_node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -1190,7 +1190,7 @@ fn test_v2_splice_in() {
 	};
 	let _channel_update = get_event_msg!(initiator_node, MessageSendEvent::SendChannelUpdate, acceptor_node.node.get_our_node_id());
 
-	let _res = acceptor_node.node.handle_channel_ready(&initiator_node.node.get_our_node_id(), &channel_ready_message);
+	let _res = acceptor_node.node.handle_splice_locked(&initiator_node.node.get_our_node_id(), &splice_locked_message);
 	let events = acceptor_node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {

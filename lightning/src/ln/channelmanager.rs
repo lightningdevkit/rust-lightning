@@ -2890,6 +2890,28 @@ macro_rules! send_channel_ready {
 	}}
 }
 
+/// Macro to send out `splice_locked` message, similar to `send_channel_ready`.
+#[cfg(splicing)]
+macro_rules! send_splice_locked {
+	($self: ident, $pending_msg_events: expr, $channel: expr, $splice_locked_msg: expr) => {{
+		$pending_msg_events.push(events::MessageSendEvent::SendSpliceLocked {
+			node_id: $channel.context.get_counterparty_node_id(),
+			msg: $splice_locked_msg,
+		});
+		// Note that we may send a `splice_locked` multiple times for a channel if we reconnect, so
+		// we allow collisions, but we shouldn't ever be updating the channel ID pointed to.
+		let mut short_to_chan_info = $self.short_to_chan_info.write().unwrap();
+		let outbound_alias_insert = short_to_chan_info.insert($channel.context.outbound_scid_alias(), ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
+		assert!(outbound_alias_insert.is_none() || outbound_alias_insert.unwrap() == ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()),
+			"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
+		if let Some(real_scid) = $channel.context.get_short_channel_id() {
+			let scid_insert = short_to_chan_info.insert(real_scid, ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()));
+			assert!(scid_insert.is_none() || scid_insert.unwrap() == ($channel.context.get_counterparty_node_id(), $channel.context.channel_id()),
+				"SCIDs should never collide - ensure you weren't behind the chain tip by a full month when creating channels");
+		}
+	}}
+}
+
 macro_rules! emit_channel_pending_event {
 	($locked_events: expr, $channel: expr) => {
 		if $channel.context.should_emit_channel_pending_event() {
@@ -7154,6 +7176,7 @@ where
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
 			emit_channel_pending_event!(pending_events, channel);
+			// TODO(splicing): emit SpliceLocked event instead
 			emit_channel_ready_event!(pending_events, channel);
 		}
 
@@ -8328,6 +8351,63 @@ where
 		}
 	}
 
+	#[cfg(splicing)]
+	fn internal_splice_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked) -> Result<(), MsgHandleErrInternal> {
+		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
+		// closing a channel), so any changes are likely to be lost on restart!
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
+					let logger = WithChannelContext::from(&self.logger, &chan.context);
+					let announcement_sigs_opt = try_chan_phase_entry!(self, chan.splice_locked(&msg, &self.node_signer,
+						self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_phase_entry);
+					if let Some(announcement_sigs) = announcement_sigs_opt {
+						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+							node_id: counterparty_node_id.clone(),
+							msg: announcement_sigs,
+						});
+					} else if chan.context.is_usable() {
+						// If we're sending an announcement_signatures, we'll send the (public)
+						// channel_update after sending a channel_announcement when we receive our
+						// counterparty's announcement_signatures. Thus, we only bother to send a
+						// channel_update here if the channel is not public, i.e. we're not sending an
+						// announcement_signatures.
+						log_trace!(logger, "Sending private initial channel_update for our counterparty on channel {}", chan.context.channel_id());
+						if let Ok(msg) = self.get_channel_update_for_unicast(chan) {
+							peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+								node_id: counterparty_node_id.clone(),
+								msg,
+							});
+						}
+					}
+
+					{
+						let mut pending_events = self.pending_events.lock().unwrap();
+						// TODO(splicing): emit SpliceLocked event instead
+						emit_channel_ready_event!(pending_events, chan);
+					}
+
+					Ok(())
+				} else {
+					try_chan_phase_entry!(self, Err(ChannelError::Close(
+						"Got a splice_locked message for an unfunded channel!".into())), chan_phase_entry)
+				}
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			}
+		}
+	}
+
 	fn internal_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), MsgHandleErrInternal> {
 		let mut dropped_htlcs: Vec<(HTLCSource, PaymentHash)> = Vec::new();
 		let mut finish_shutdown = None;
@@ -8382,7 +8462,8 @@ where
 					#[cfg(any(dual_funding, splicing))]
 					ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => {
 						let context = phase.context_mut();
-						log_error!(self.logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
+						let logger = WithChannelContext::from(&self.logger, context);
+						log_error!(logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
 						let mut chan = remove_channel_phase!(self, chan_phase_entry);
 						finish_shutdown = Some(chan.context_mut().force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel));
 					},
@@ -8664,14 +8745,10 @@ where
 						let logger = WithChannelContext::from(&self.logger, &chan.context);
 						let funding_txo = chan.context.get_funding_txo();
 
-						// TODO(dual_funding): Remove this allow directive after #[cfg(dual_funding)] is dropped.
-						#[allow(unused_mut)]
-						let mut interactive_tx_signing_in_progress = false;
 						#[cfg(any(dual_funding, splicing))]
-						{
-							interactive_tx_signing_in_progress = chan.interactive_tx_signing_session.is_some();
-						}
-
+						let interactive_tx_signing_in_progress = chan.interactive_tx_signing_session.is_some();
+						#[cfg(not(any(dual_funding, splicing)))]
+						let interactive_tx_signing_in_progress = false;
 
 						if interactive_tx_signing_in_progress {
 							#[cfg(any(dual_funding, splicing))]
@@ -10606,7 +10683,7 @@ where
 						ChannelPhase::UnfundedOutboundV2(_) | ChannelPhase::UnfundedInboundV2(_) => true,
 						ChannelPhase::Funded(channel) => {
 							let res = f(channel);
-							if let Ok((channel_ready_opt, _splice_locked_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
+							if let Ok((channel_ready_opt, splice_locked_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
 								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 									let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
 									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(failure_code, data),
@@ -10627,9 +10704,29 @@ where
 										log_trace!(logger, "Sending channel_ready WITHOUT channel_update for {}", channel.context.channel_id());
 									}
 								}
+								#[cfg(not(splicing))]
+								debug_assert!(splice_locked_opt.is_none());
+								#[cfg(splicing)]
+								{
+									if let Some(splice_locked) = splice_locked_opt {
+										send_splice_locked!(self, pending_msg_events, channel, splice_locked);
+										if channel.context.is_usable() {
+											log_trace!(logger, "Sending splice_locked with private initial channel_update for our counterparty on channel {}", channel.context.channel_id());
+											if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+												pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+													node_id: channel.context.get_counterparty_node_id(),
+													msg,
+												});
+											}
+										} else {
+											log_trace!(logger, "Sending splice_locked WITHOUT channel_update for {}", channel.context.channel_id());
+										}
+									}
+								}
 
 								{
 									let mut pending_events = self.pending_events.lock().unwrap();
+									// TODO(splicing): emit SpliceLocked event instead
 									emit_channel_ready_event!(pending_events, channel);
 								}
 
@@ -10938,9 +11035,19 @@ where
 
 	#[cfg(splicing)]
 	fn handle_splice_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Splicing not supported (splice_locked)".to_owned(),
-			 msg.channel_id.clone())), *counterparty_node_id);
+		// Note that we never need to persist the updated ChannelManager for an inbound
+		// splice_locked message - while the channel's state will change, any splice_locked message
+		// will ultimately be re-sent on startup and the `ChannelMonitor` won't be updated so we
+		// will not force-close the channel on startup.
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+			let res = self.internal_splice_locked(counterparty_node_id, msg);
+			let persist = match &res {
+				Err(e) if e.closes_channel() => NotifyOption::DoPersist,
+				_ => NotifyOption::SkipPersistHandleEvents,
+			};
+			let _ = handle_error!(self, res, *counterparty_node_id);
+			persist
+		});
 	}
 
 	fn handle_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) {
