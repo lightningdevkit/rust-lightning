@@ -176,6 +176,8 @@ where
 	message_router: MR,
 	offers_handler: OMH,
 	custom_handler: CMH,
+	intercept_messages_for_offline_peers: bool,
+	pending_events: Mutex<Vec<Event>>,
 }
 
 /// [`OnionMessage`]s buffered to be sent.
@@ -842,6 +844,48 @@ where
 		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL, message_router: MR,
 		offers_handler: OMH, custom_handler: CMH
 	) -> Self {
+		Self::new_inner(
+			entropy_source, node_signer, logger, node_id_lookup, message_router,
+			offers_handler, custom_handler, false
+		)
+	}
+
+	/// Similar to [`Self::new`], but rather than dropping onion messages that are
+	/// intended to be forwarded to offline peers, we will intercept them for
+	/// later forwarding.
+	///
+	/// Interception flow:
+	/// 1. If an onion message for an offline peer is received, `OnionMessenger` will
+	///    generate an [`Event::OnionMessageIntercepted`]. Event handlers can
+	///    then choose to persist this onion message for later forwarding, or drop
+	///    it.
+	/// 2. When the offline peer later comes back online, `OnionMessenger` will
+	///    generate an [`Event::OnionMessagePeerConnected`]. Event handlers will
+	///    then fetch all previously intercepted onion messages for this peer.
+	/// 3. Once the stored onion messages are fetched, they can finally be
+	///    forwarded to the now-online peer via [`Self::forward_onion_message`].
+	///
+	/// # Note
+	///
+	/// LDK will not rate limit how many [`Event::OnionMessageIntercepted`]s
+	/// are generated, so it is the caller's responsibility to limit how many
+	/// onion messages are persisted and only persist onion messages for relevant
+	/// peers.
+	pub fn new_with_offline_peer_interception(
+		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL,
+		message_router: MR, offers_handler: OMH, custom_handler: CMH
+	) -> Self {
+		Self::new_inner(
+			entropy_source, node_signer, logger, node_id_lookup, message_router,
+			offers_handler, custom_handler, true
+		)
+	}
+
+	fn new_inner(
+		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL,
+		message_router: MR, offers_handler: OMH, custom_handler: CMH,
+		intercept_messages_for_offline_peers: bool
+	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 		OnionMessenger {
@@ -854,6 +898,8 @@ where
 			message_router,
 			offers_handler,
 			custom_handler,
+			intercept_messages_for_offline_peers,
+			pending_events: Mutex::new(Vec::new()),
 		}
 	}
 
@@ -962,6 +1008,27 @@ where
 		}
 	}
 
+	/// Forwards an [`OnionMessage`] to `peer_node_id`. Useful if we initialized
+	/// the [`OnionMessenger`] with [`Self::new_with_offline_peer_interception`]
+	/// and want to forward a previously intercepted onion message to a peer that
+	/// has just come online.
+	pub fn forward_onion_message(
+		&self, message: OnionMessage, peer_node_id: &PublicKey
+	) -> Result<(), SendError> {
+		let mut message_recipients = self.message_recipients.lock().unwrap();
+		if outbound_buffer_full(&peer_node_id, &message_recipients) {
+			return Err(SendError::BufferFull);
+		}
+
+		match message_recipients.entry(*peer_node_id) {
+			hash_map::Entry::Occupied(mut e) if e.get().is_connected() => {
+				e.get_mut().enqueue_message(message);
+				Ok(())
+			},
+			_ => Err(SendError::InvalidFirstHop(*peer_node_id))
+		}
+	}
+
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn send_onion_message_using_path<T: OnionMessageContents>(
 		&self, path: OnionMessagePath, contents: T, reply_path: Option<BlindedPath>
@@ -1003,6 +1070,20 @@ where
 			msgs.insert(*node_id, recipient.release_pending_messages());
 		}
 		msgs
+	}
+
+	fn enqueue_event(&self, event: Event) {
+		const MAX_EVENTS_BUFFER_SIZE: usize = (1 << 10) * 256;
+		let mut pending_events = self.pending_events.lock().unwrap();
+		let total_buffered_bytes: usize = pending_events
+			.iter()
+			.map(|ev| ev.serialized_length())
+			.sum();
+		if total_buffered_bytes >= MAX_EVENTS_BUFFER_SIZE {
+			log_trace!(self.logger, "Dropping event {:?}: buffer full", event);
+			return
+		}
+		pending_events.push(event);
 	}
 }
 
@@ -1047,6 +1128,11 @@ where
 					handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses });
 				}
 			}
+		}
+		let mut events = Vec::new();
+		core::mem::swap(&mut *self.pending_events.lock().unwrap(), &mut events);
+		for ev in events {
+			handler.handle_event(ev);
 		}
 	}
 }
@@ -1121,6 +1207,13 @@ where
 						e.get_mut().enqueue_message(onion_message);
 						log_trace!(logger, "Forwarding an onion message to peer {}", next_node_id);
 					},
+					_ if self.intercept_messages_for_offline_peers => {
+						self.enqueue_event(
+							Event::OnionMessageIntercepted {
+								peer_node_id: next_node_id, message: onion_message
+							}
+						);
+					},
 					_ => {
 						log_trace!(
 							logger,
@@ -1142,6 +1235,11 @@ where
 				.entry(*their_node_id)
 				.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
 				.mark_connected();
+			if self.intercept_messages_for_offline_peers {
+				self.enqueue_event(
+					Event::OnionMessagePeerConnected { peer_node_id: *their_node_id }
+				);
+			}
 		} else {
 			self.message_recipients.lock().unwrap().remove(their_node_id);
 		}

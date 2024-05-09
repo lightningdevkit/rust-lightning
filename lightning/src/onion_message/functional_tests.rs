@@ -59,6 +59,17 @@ struct MessengerNode {
 	>>
 }
 
+impl Drop for MessengerNode {
+	fn drop(&mut self) {
+		#[cfg(feature = "std")] {
+			if std::thread::panicking() {
+				return;
+			}
+		}
+		assert!(release_events(self).is_empty());
+	}
+}
+
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
@@ -162,14 +173,32 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 }
 
 fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
-	let secrets = (1..=num_messengers)
+	let cfgs = (1..=num_messengers)
 		.into_iter()
-		.map(|i| SecretKey::from_slice(&[i; 32]).unwrap())
+		.map(|_| MessengerCfg::new())
 		.collect();
-	create_nodes_using_secrets(secrets)
+	create_nodes_using_cfgs(cfgs)
 }
 
-fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
+struct MessengerCfg {
+	secret_override: Option<SecretKey>,
+	intercept_offline_peer_oms: bool,
+}
+impl MessengerCfg {
+	fn new() -> Self {
+		Self { secret_override: None, intercept_offline_peer_oms: false }
+	}
+	fn with_node_secret(mut self, secret: SecretKey) -> Self {
+		self.secret_override = Some(secret);
+		self
+	}
+	fn with_offline_peer_interception(mut self) -> Self {
+		self.intercept_offline_peer_oms = true;
+		self
+	}
+}
+
+fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 	let gossip_logger = Arc::new(test_utils::TestLogger::with_id("gossip".to_string()));
 	let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, gossip_logger.clone()));
 	let gossip_sync = Arc::new(
@@ -177,7 +206,8 @@ fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
 	);
 
 	let mut nodes = Vec::new();
-	for (i, secret_key) in secrets.into_iter().enumerate() {
+	for (i, cfg) in cfgs.into_iter().enumerate() {
+		let secret_key = cfg.secret_override.unwrap_or(SecretKey::from_slice(&[(i + 1) as u8; 32]).unwrap());
 		let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 		let seed = [i as u8; 32];
 		let entropy_source = Arc::new(test_utils::TestKeysInterface::new(&seed, Network::Testnet));
@@ -189,14 +219,24 @@ fn create_nodes_using_secrets(secrets: Vec<SecretKey>) -> Vec<MessengerNode> {
 		);
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
 		let custom_message_handler = Arc::new(TestCustomMessageHandler::new());
+		let messenger = if cfg.intercept_offline_peer_oms {
+			OnionMessenger::new_with_offline_peer_interception(
+				entropy_source.clone(), node_signer.clone(), logger.clone(),
+				node_id_lookup, message_router, offers_message_handler,
+				custom_message_handler.clone()
+			)
+		} else {
+			OnionMessenger::new(
+				entropy_source.clone(), node_signer.clone(), logger.clone(),
+				node_id_lookup, message_router, offers_message_handler,
+				custom_message_handler.clone()
+			)
+		};
 		nodes.push(MessengerNode {
 			privkey: secret_key,
 			node_id: node_signer.get_node_id(Recipient::Node).unwrap(),
-			entropy_source: entropy_source.clone(),
-			messenger: OnionMessenger::new(
-				entropy_source, node_signer, logger.clone(), node_id_lookup, message_router,
-				offers_message_handler, custom_message_handler.clone()
-			),
+			entropy_source,
+			messenger,
 			custom_message_handler,
 			gossip_sync: gossip_sync.clone(),
 		});
@@ -369,11 +409,10 @@ fn we_are_intro_node() {
 
 #[test]
 fn invalid_blinded_path_error() {
-	// Make sure we error as expected if a provided blinded path has 0 or 1 hops.
+	// Make sure we error as expected if a provided blinded path has 0 hops.
 	let nodes = create_nodes(3);
 	let test_msg = TestCustomMessage::Response;
 
-	// 0 hops
 	let secp_ctx = Secp256k1::new();
 	let mut blinded_path = BlindedPath::new_for_message(&[nodes[1].node_id, nodes[2].node_id], &*nodes[2].entropy_source, &secp_ctx).unwrap();
 	blinded_path.blinded_hops.clear();
@@ -550,17 +589,82 @@ fn drops_buffered_messages_waiting_for_peer_connection() {
 }
 
 #[test]
+fn intercept_offline_peer_oms() {
+	// Ensure that if OnionMessenger is initialized with
+	// new_with_offline_peer_interception, we will intercept OMs for offline
+	// peers, generate the right events, and forward OMs when they are re-injected
+	// by the user.
+	let node_cfgs = vec![MessengerCfg::new(), MessengerCfg::new().with_offline_peer_interception(), MessengerCfg::new()];
+	let mut nodes = create_nodes_using_cfgs(node_cfgs);
+
+	let peer_conn_evs = release_events(&nodes[1]);
+	assert_eq!(peer_conn_evs.len(), 2);
+	for (i, ev) in peer_conn_evs.iter().enumerate() {
+		match ev {
+			Event::OnionMessagePeerConnected { peer_node_id } => {
+				let node_idx = if i == 0 { 0 } else { 2 };
+				assert_eq!(peer_node_id, &nodes[node_idx].node_id);
+			},
+			_ => panic!()
+		}
+	}
+
+	let message = TestCustomMessage::Response;
+	let secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPath::new_for_message(
+		&[nodes[1].node_id, nodes[2].node_id], &*nodes[2].entropy_source, &secp_ctx
+	).unwrap();
+	let destination = Destination::BlindedPath(blinded_path);
+
+	// Disconnect the peers to ensure we intercept the OM.
+	disconnect_peers(&nodes[1], &nodes[2]);
+	nodes[0].messenger.send_onion_message(message, destination, None).unwrap();
+	let mut final_node_vec = nodes.split_off(2);
+	pass_along_path(&nodes);
+
+	let mut events = release_events(&nodes[1]);
+	assert_eq!(events.len(), 1);
+	let onion_message = match events.remove(0) {
+		Event::OnionMessageIntercepted { peer_node_id, message } => {
+			assert_eq!(peer_node_id, final_node_vec[0].node_id);
+			message
+		},
+		_ => panic!()
+	};
+
+	// Ensure that we'll refuse to forward the re-injected OM until after the
+	// outbound peer comes back online.
+	let err = nodes[1].messenger.forward_onion_message(onion_message.clone(), &final_node_vec[0].node_id).unwrap_err();
+	assert_eq!(err, SendError::InvalidFirstHop(final_node_vec[0].node_id));
+
+	connect_peers(&nodes[1], &final_node_vec[0]);
+	let peer_conn_ev = release_events(&nodes[1]);
+	assert_eq!(peer_conn_ev.len(), 1);
+	match peer_conn_ev[0] {
+		Event::OnionMessagePeerConnected { peer_node_id } => {
+			assert_eq!(peer_node_id, final_node_vec[0].node_id);
+		},
+		_ => panic!()
+	}
+
+	nodes[1].messenger.forward_onion_message(onion_message, &final_node_vec[0].node_id).unwrap();
+	final_node_vec[0].custom_message_handler.expect_message(TestCustomMessage::Response);
+	pass_along_path(&vec![nodes.remove(1), final_node_vec.remove(0)]);
+}
+
+#[test]
 fn spec_test_vector() {
-	let secret_keys = [
+	let node_cfgs = [
 		"4141414141414141414141414141414141414141414141414141414141414141", // Alice
 		"4242424242424242424242424242424242424242424242424242424242424242", // Bob
 		"4343434343434343434343434343434343434343434343434343434343434343", // Carol
 		"4444444444444444444444444444444444444444444444444444444444444444", // Dave
 	]
 		.iter()
-		.map(|secret| SecretKey::from_slice(&<Vec<u8>>::from_hex(secret).unwrap()).unwrap())
+		.map(|secret_hex| SecretKey::from_slice(&<Vec<u8>>::from_hex(secret_hex).unwrap()).unwrap())
+		.map(|secret| MessengerCfg::new().with_node_secret(secret))
 		.collect();
-	let nodes = create_nodes_using_secrets(secret_keys);
+	let nodes = create_nodes_using_cfgs(node_cfgs);
 
 	// Hardcode the sender->Alice onion message, because it includes an unknown TLV of type 1, which
 	// LDK doesn't support constructing.
