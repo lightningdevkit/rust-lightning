@@ -394,8 +394,10 @@ fn test_channel_open_v2_and_close() {
 	let events_0 = initiator_node.node.get_and_clear_pending_events();
 	assert_eq!(events_0.len(), 1);
 	match events_0[0] {
-		Event::ChannelPending{ ref counterparty_node_id, .. } => {
+		Event::ChannelPending{ ref channel_id, ref counterparty_node_id, ref is_splice, .. } => {
+			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 			assert_eq!(*counterparty_node_id, acceptor_node.node.get_our_node_id());
+			assert!(!is_splice);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -404,9 +406,10 @@ fn test_channel_open_v2_and_close() {
 	let events_1 = acceptor_node.node.get_and_clear_pending_events();
 	assert_eq!(events_1.len(), 1);
 	match events_1[0] {
-		Event::ChannelPending{ ref channel_id, ref counterparty_node_id, .. } => {
+		Event::ChannelPending{ ref channel_id, ref counterparty_node_id, ref is_splice, .. } => {
 			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 			assert_eq!(*counterparty_node_id, initiator_node.node.get_our_node_id());
+			assert!(!is_splice);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -1100,12 +1103,13 @@ fn test_v2_splice_in() {
 	let events = initiator_node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::ChannelPending { channel_id, former_temporary_channel_id, counterparty_node_id, funding_txo, .. } => {
+		Event::ChannelPending { channel_id, former_temporary_channel_id, counterparty_node_id, funding_txo, is_splice, .. } => {
 			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 			// TODO check if former_temporary_channel_id should be set to empty in this case (or previous non-temp channel id?)
 			assert_eq!(former_temporary_channel_id.unwrap().to_string(), expected_temporary_channel_id);
 			assert_eq!(counterparty_node_id, acceptor_node.node.get_our_node_id());
 			assert_eq!(funding_txo.txid.to_string(), expected_splice_funding_txid);
+			assert!(is_splice);
 		}
 		_ => panic!("ChannelPending event missing, {:?}", events[0]),
 	};
@@ -1131,12 +1135,13 @@ fn test_v2_splice_in() {
 	let events = acceptor_node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::ChannelPending { channel_id, former_temporary_channel_id, counterparty_node_id, funding_txo, .. } => {
+		Event::ChannelPending { channel_id, former_temporary_channel_id, counterparty_node_id, funding_txo, is_splice, .. } => {
 			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 			// TODO check if former_temporary_channel_id should be set to empty in this case (or previous non-temp channel id?)
 			assert_eq!(former_temporary_channel_id.unwrap().to_string(), expected_temporary_channel_id);
 			assert_eq!(counterparty_node_id, initiator_node.node.get_our_node_id());
 			assert_eq!(funding_txo.txid.to_string(), expected_splice_funding_txid);
+			assert!(is_splice);
 		}
 		_ => panic!("ChannelPending event missing, {:?}", events[0]),
 	};
@@ -1182,9 +1187,10 @@ fn test_v2_splice_in() {
 	let events = initiator_node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::ChannelReady { channel_id, counterparty_node_id, .. } => {
+		Event::ChannelReady { channel_id, counterparty_node_id, is_splice, .. } => {
 			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 			assert_eq!(counterparty_node_id, acceptor_node.node.get_our_node_id());
+			assert!(is_splice);
 		}
 		_ => panic!("ChannelReady event missing, {:?}", events[0]),
 	};
@@ -1194,9 +1200,10 @@ fn test_v2_splice_in() {
 	let events = acceptor_node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
-		Event::ChannelReady { channel_id, counterparty_node_id, .. } => {
+		Event::ChannelReady { channel_id, counterparty_node_id, is_splice, .. } => {
 			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
 			assert_eq!(counterparty_node_id, initiator_node.node.get_our_node_id());
+			assert!(is_splice);
 		}
 		_ => panic!("ChannelReady event missing, {:?}", events[0]),
 	};

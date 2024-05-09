@@ -990,6 +990,10 @@ pub enum Event {
 		///
 		/// Will be `None` for channels created prior to LDK version 0.0.122.
 		channel_type: Option<ChannelTypeFeatures>,
+		/// True if the channel is pending as part of a splicing process.
+		/// Note: for persistence reasons this field is included non-conditionally, #[cfg(splicing)].
+		/// TODO: remove this comment once cfg(splicing) is removed.
+		is_splice: bool,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is ready to
 	/// be used. This event is emitted either when the funding transaction has been confirmed
@@ -1011,6 +1015,10 @@ pub enum Event {
 		counterparty_node_id: PublicKey,
 		/// The features that this channel will operate with.
 		channel_type: ChannelTypeFeatures,
+		/// True if the channel is became ready after a splicing process.
+		/// Note: for persistence reasons this field is included non-conditionally, #[cfg(splicing)].
+		/// TODO: remove this comment once cfg(splicing) is removed.
+		is_splice: bool,
 	},
 	/// Used to indicate that a channel that got past the initial handshake with the given `channel_id` is in the
 	/// process of closure. This includes previously opened channels, and channels that time out from not being funded.
@@ -1543,18 +1551,19 @@ impl Writeable for Event {
 				}
 				write_tlv_fields!(writer, {}); // Write a length field for forwards compat
 			}
-			&Event::ChannelReady { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref channel_type } => {
+			&Event::ChannelReady { ref channel_id, ref user_channel_id, ref counterparty_node_id, ref channel_type, ref is_splice } => {
 				29u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
 					(2, user_channel_id, required),
 					(4, counterparty_node_id, required),
 					(6, channel_type, required),
+					(8, is_splice, required),
 				});
 			},
 			&Event::ChannelPending { ref channel_id, ref user_channel_id,
 				ref former_temporary_channel_id, ref counterparty_node_id, ref funding_txo,
-				ref channel_type
+				ref channel_type, ref is_splice,
 			} => {
 				31u8.write(writer)?;
 				write_tlv_fields!(writer, {
@@ -1564,6 +1573,7 @@ impl Writeable for Event {
 					(4, former_temporary_channel_id, required),
 					(6, counterparty_node_id, required),
 					(8, funding_txo, required),
+					(10, is_splice, required),
 				});
 			},
 			&Event::InvoiceRequestFailed { ref payment_id } => {
@@ -1964,18 +1974,21 @@ impl MaybeReadable for Event {
 					let mut user_channel_id: u128 = 0;
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut channel_type = RequiredWrapper(None);
+					let mut is_splice = false;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(2, user_channel_id, required),
 						(4, counterparty_node_id, required),
 						(6, channel_type, required),
+						(8, is_splice, required),
 					});
 
 					Ok(Some(Event::ChannelReady {
 						channel_id,
 						user_channel_id,
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						channel_type: channel_type.0.unwrap()
+						channel_type: channel_type.0.unwrap(),
+						is_splice,
 					}))
 				};
 				f()
@@ -1988,6 +2001,7 @@ impl MaybeReadable for Event {
 					let mut counterparty_node_id = RequiredWrapper(None);
 					let mut funding_txo = RequiredWrapper(None);
 					let mut channel_type = None;
+					let mut is_splice = false;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(1, channel_type, option),
@@ -1995,6 +2009,7 @@ impl MaybeReadable for Event {
 						(4, former_temporary_channel_id, required),
 						(6, counterparty_node_id, required),
 						(8, funding_txo, required),
+						(10, is_splice, required),
 					});
 
 					Ok(Some(Event::ChannelPending {
@@ -2004,6 +2019,7 @@ impl MaybeReadable for Event {
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						funding_txo: funding_txo.0.unwrap(),
 						channel_type,
+						is_splice,
 					}))
 				};
 				f()

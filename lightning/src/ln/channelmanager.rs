@@ -2911,6 +2911,10 @@ macro_rules! send_splice_locked {
 
 macro_rules! emit_channel_pending_event {
 	($locked_events: expr, $channel: expr) => {
+		#[cfg(not(splicing))]
+		let is_splice = false;
+		#[cfg(splicing)]
+		let is_splice = $channel.context.pending_splice_post.is_some();
 		if $channel.context.should_emit_channel_pending_event() {
 			$locked_events.push_back((events::Event::ChannelPending {
 				channel_id: $channel.context.channel_id(),
@@ -2919,14 +2923,16 @@ macro_rules! emit_channel_pending_event {
 				user_channel_id: $channel.context.get_user_id(),
 				funding_txo: $channel.context.get_funding_txo().unwrap().into_bitcoin_outpoint(),
 				channel_type: Some($channel.context.get_channel_type().clone()),
+				is_splice,
 			}, None));
 			$channel.context.set_channel_pending_event_emitted();
 		}
 	}
 }
 
-macro_rules! emit_channel_ready_event {
-	($locked_events: expr, $channel: expr) => {
+/// The `is_splice` flag is passed explicitly.
+macro_rules! emit_channel_ready_event_with_splice {
+	($locked_events: expr, $channel: expr, $is_splice: expr) => {
 		if $channel.context.should_emit_channel_ready_event() {
 			debug_assert!($channel.context.channel_pending_event_emitted());
 			$locked_events.push_back((events::Event::ChannelReady {
@@ -2934,9 +2940,20 @@ macro_rules! emit_channel_ready_event {
 				user_channel_id: $channel.context.get_user_id(),
 				counterparty_node_id: $channel.context.get_counterparty_node_id(),
 				channel_type: $channel.context.get_channel_type().clone(),
+				is_splice: $is_splice,
 			}, None));
 			$channel.context.set_channel_ready_event_emitted();
 		}
+	}
+}
+
+macro_rules! emit_channel_ready_event {
+	($locked_events: expr, $channel: expr) => {
+		#[cfg(not(splicing))]
+		let is_splice = false;
+		#[cfg(splicing)]
+		let is_splice = $channel.context.pending_splice_post.is_some();
+		emit_channel_ready_event_with_splice!($locked_events, $channel, is_splice);
 	}
 }
 
@@ -7187,7 +7204,6 @@ where
 		{
 			let mut pending_events = self.pending_events.lock().unwrap();
 			emit_channel_pending_event!(pending_events, channel);
-			// TODO(splicing): emit SpliceLocked event instead
 			emit_channel_ready_event!(pending_events, channel);
 		}
 
@@ -8403,8 +8419,8 @@ where
 
 					{
 						let mut pending_events = self.pending_events.lock().unwrap();
-						// TODO(splicing): emit SpliceLocked event instead
-						emit_channel_ready_event!(pending_events, chan);
+						// Pass the splice flag explicitly, as splice has jsut been completed by this time point
+						emit_channel_ready_event_with_splice!(pending_events, chan, true);
 					}
 
 					Ok(())
@@ -10738,7 +10754,6 @@ where
 
 								{
 									let mut pending_events = self.pending_events.lock().unwrap();
-									// TODO(splicing): emit SpliceLocked event instead
 									emit_channel_ready_event!(pending_events, channel);
 								}
 
