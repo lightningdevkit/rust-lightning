@@ -4618,6 +4618,53 @@ where
 		self.batch_funding_transaction_generated(&[(temporary_channel_id, counterparty_node_id)], funding_transaction)
 	}
 
+
+	/// Unsafe: This method wont check if the funding transaction
+	/// is signed ie. if the witness data is empty or not. It is the
+	/// caller's responsibility to ensure that the funding transaction
+	/// is final.
+	///
+	/// If you wish to use a safer method, use [`ChannelManager::funding_transaction_generated`]
+	///
+	/// Call this upon creation of a funding transaction for the given channel.
+	///
+	/// Returns an [`APIError::APIMisuseError`] if the funding_transaction spent non-SegWit outputs
+	/// or if no output was found which matches the parameters in [`Event::FundingGenerationReady`].
+	///
+	/// Returns [`APIError::APIMisuseError`] if the funding transaction is not final for propagation
+	/// across the p2p network.
+	///
+	/// Returns [`APIError::ChannelUnavailable`] if a funding transaction has already been provided
+	/// for the channel or if the channel has been closed as indicated by [`Event::ChannelClosed`].
+	///
+	/// May panic if the output found in the funding transaction is duplicative with some other
+	/// channel (note that this should be trivially prevented by using unique funding transaction
+	/// keys per-channel).
+	///
+	/// Do NOT broadcast the funding transaction yourself. When we have safely received our
+	/// counterparty's signature the funding transaction will automatically be broadcast via the
+	/// [`BroadcasterInterface`] provided when this `ChannelManager` was constructed.
+	///
+	/// Note that this includes RBF or similar transaction replacement strategies - lightning does
+	/// not currently support replacing a funding transaction on an existing channel. Instead,
+	/// create a new channel with a conflicting funding transaction.
+	///
+	/// Note to keep the miner incentives aligned in moving the blockchain forward, we recommend
+	/// the wallet software generating the funding transaction to apply anti-fee sniping as
+	/// implemented by Bitcoin Core wallet. See <https://bitcoinops.org/en/topics/fee-sniping/>
+	/// for more details.
+	///
+	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
+	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	pub fn unsafe_funding_transaction_generated(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		let temporary_channels = &[(temporary_channel_id, counterparty_node_id)];
+		return self.batch_funding_transaction_generated_intern(temporary_channels, funding_transaction);
+
+	}
+
 	/// Call this upon creation of a batch funding transaction for the given channels.
 	///
 	/// Return values are identical to [`Self::funding_transaction_generated`], respective to
@@ -4641,6 +4688,13 @@ where
 				}
 			}
 		}
+		if result != Ok(()) { return result; }
+
+		return self.batch_funding_transaction_generated_intern(temporary_channels, funding_transaction);
+	}
+
+	fn batch_funding_transaction_generated_intern(&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding_transaction: Transaction) -> Result<(), APIError> {
+		let mut result = Ok(());
 		if funding_transaction.output.len() > u16::max_value() as usize {
 			result = result.and(Err(APIError::APIMisuseError {
 				err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()

@@ -3744,6 +3744,33 @@ fn test_peer_disconnected_before_funding_broadcasted() {
 }
 
 #[test]
+fn test_unsafe_funding_transaction_generated() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let expected_temporary_channel_id = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
+	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
+
+	let (temporary_channel_id, tx, _funding_output) = create_funding_tx_without_witness_data(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
+	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
+
+	assert!(nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).is_err());
+	assert!(nodes[0].node.unsafe_funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
+	let node_0_msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	match node_0_msg_events[0] {
+		MessageSendEvent::SendFundingCreated { ref node_id, .. } => {
+			assert_eq!(node_id, &nodes[1].node.get_our_node_id());
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[test]
 fn test_simple_peer_disconnect() {
 	// Test that we can reconnect when there are no lost messages
 	let chanmon_cfgs = create_chanmon_cfgs(3);

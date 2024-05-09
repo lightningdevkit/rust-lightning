@@ -1133,6 +1133,39 @@ pub fn create_coinbase_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 	internal_create_funding_transaction(node, expected_counterparty_node_id, expected_chan_value, expected_user_chan_id, true)
 }
 
+pub fn create_funding_tx_without_witness_data<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
+	expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u128) -> (ChannelId, Transaction, OutPoint) {
+	let chan_id = *node.network_chan_count.borrow();
+
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::FundingGenerationReady { ref temporary_channel_id, ref counterparty_node_id, ref channel_value_satoshis, ref output_script, user_channel_id } => {
+			assert_eq!(counterparty_node_id, expected_counterparty_node_id);
+			assert_eq!(*channel_value_satoshis, expected_chan_value);
+			assert_eq!(user_channel_id, expected_user_chan_id);
+
+			let dummy_outpoint = bitcoin::OutPoint { txid: bitcoin::Txid::from_slice(&[1; 32]).unwrap(), vout: 0 };
+			let dummy_script_sig = bitcoin::ScriptBuf::new();
+			let dummy_sequence = bitcoin::Sequence::ZERO;
+			let dummy_witness = bitcoin::Witness::new();
+			let input = vec![TxIn {
+					previous_output: dummy_outpoint,
+					script_sig: dummy_script_sig,
+					sequence: dummy_sequence,
+					witness: dummy_witness,
+				}];
+
+			let tx = Transaction { version: chan_id as i32, lock_time: LockTime::ZERO, input, output: vec![TxOut {
+				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
+			}]};
+			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
+			(*temporary_channel_id, tx, funding_outpoint)
+		},
+		_ => panic!("Unexpected event"),
+	}
+}
+
 fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 	expected_counterparty_node_id: &PublicKey, expected_chan_value: u64, expected_user_chan_id: u128,
 	coinbase: bool) -> (ChannelId, Transaction, OutPoint) {
