@@ -12,14 +12,19 @@
 use crate::blinded_path::BlindedPath;
 use crate::io;
 use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
 	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks, BlindedPathIter,
 	BlindedPayInfo, BlindedPayInfoIter, FallbackAddress, InvoiceTlvStream, InvoiceTlvStreamRef,
 };
-use crate::offers::invoice_macros::invoice_accessors_common;
-use crate::offers::merkle::{self, SignatureTlvStream, TaggedHash};
-use crate::offers::offer::{Amount, OfferContents, OfferTlvStream, Quantity};
+use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
+use crate::offers::merkle::{
+	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash,
+};
+use crate::offers::offer::{
+	Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, Quantity,
+};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::util::ser::{
 	HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer,
@@ -28,7 +33,7 @@ use crate::util::string::PrintableString;
 use bitcoin::address::Address;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{self, Keypair, PublicKey, Secp256k1};
 use core::time::Duration;
 
 #[cfg(feature = "std")]
@@ -73,6 +78,93 @@ struct InvoiceContents {
 	features: Bolt12InvoiceFeatures,
 	signing_pubkey: PublicKey,
 	message_paths: Vec<BlindedPath>,
+}
+
+/// Builds a [`StaticInvoice`] from an [`Offer`].
+///
+/// [`Offer`]: crate::offers::offer::Offer
+/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
+// TODO: add module-level docs and link here
+pub struct StaticInvoiceBuilder<'a> {
+	offer_bytes: &'a Vec<u8>,
+	invoice: InvoiceContents,
+	keys: Keypair,
+}
+
+impl<'a> StaticInvoiceBuilder<'a> {
+	/// Initialize a [`StaticInvoiceBuilder`] from the given [`Offer`].
+	///
+	/// Unless [`StaticInvoiceBuilder::relative_expiry`] is set, the invoice will expire 24 hours
+	/// after `created_at`.
+	pub fn for_offer_using_derived_keys<T: secp256k1::Signing>(
+		offer: &'a Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
+		message_paths: Vec<BlindedPath>, created_at: Duration, expanded_key: &ExpandedKey,
+		secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, Bolt12SemanticError> {
+		if offer.chains().len() > 1 {
+			return Err(Bolt12SemanticError::UnexpectedChain);
+		}
+
+		if payment_paths.is_empty() || message_paths.is_empty() || offer.paths().is_empty() {
+			return Err(Bolt12SemanticError::MissingPaths);
+		}
+
+		let offer_signing_pubkey =
+			offer.signing_pubkey().ok_or(Bolt12SemanticError::MissingSigningPubkey)?;
+
+		let keys = offer
+			.verify(&expanded_key, &secp_ctx)
+			.map_err(|()| Bolt12SemanticError::InvalidMetadata)?
+			.1
+			.ok_or(Bolt12SemanticError::MissingSigningPubkey)?;
+
+		let signing_pubkey = keys.public_key();
+		if signing_pubkey != offer_signing_pubkey {
+			return Err(Bolt12SemanticError::InvalidSigningPubkey);
+		}
+
+		let invoice =
+			InvoiceContents::new(offer, payment_paths, message_paths, created_at, signing_pubkey);
+
+		Ok(Self { offer_bytes: &offer.bytes, invoice, keys })
+	}
+
+	/// Builds a signed [`StaticInvoice`] after checking for valid semantics.
+	pub fn build_and_sign<T: secp256k1::Signing>(
+		self, secp_ctx: &Secp256k1<T>,
+	) -> Result<StaticInvoice, Bolt12SemanticError> {
+		#[cfg(feature = "std")]
+		{
+			if self.invoice.is_offer_expired() {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		#[cfg(not(feature = "std"))]
+		{
+			if self.invoice.is_offer_expired_no_std(self.invoice.created_at()) {
+				return Err(Bolt12SemanticError::AlreadyExpired);
+			}
+		}
+
+		let Self { offer_bytes, invoice, keys } = self;
+		let unsigned_invoice = UnsignedStaticInvoice::new(&offer_bytes, invoice);
+		let invoice = unsigned_invoice
+			.sign(|message: &UnsignedStaticInvoice| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.tagged_hash.as_digest(), &keys))
+			})
+			.unwrap();
+		Ok(invoice)
+	}
+
+	invoice_builder_methods_common!(self, Self, self.invoice, Self, self, S, StaticInvoice, mut);
+}
+
+/// A semantically valid [`StaticInvoice`] that hasn't been signed.
+pub struct UnsignedStaticInvoice {
+	bytes: Vec<u8>,
+	contents: InvoiceContents,
+	tagged_hash: TaggedHash,
 }
 
 macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
@@ -150,6 +242,68 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	}
 } }
 
+impl UnsignedStaticInvoice {
+	fn new(offer_bytes: &Vec<u8>, contents: InvoiceContents) -> Self {
+		let (_, invoice_tlv_stream) = contents.as_tlv_stream();
+		let offer_bytes = WithoutLength(offer_bytes);
+		let unsigned_tlv_stream = (offer_bytes, invoice_tlv_stream);
+
+		let mut bytes = Vec::new();
+		unsigned_tlv_stream.write(&mut bytes).unwrap();
+
+		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+
+		Self { contents, tagged_hash, bytes }
+	}
+
+	/// Signs the [`TaggedHash`] of the invoice using the given function.
+	///
+	/// Note: The hash computation may have included unknown, odd TLV records.
+	pub fn sign<F: SignStaticInvoiceFn>(mut self, sign: F) -> Result<StaticInvoice, SignError> {
+		let pubkey = self.contents.signing_pubkey;
+		let signature = merkle::sign_message(sign, &self, pubkey)?;
+
+		// Append the signature TLV record to the bytes.
+		let signature_tlv_stream = SignatureTlvStreamRef { signature: Some(&signature) };
+		signature_tlv_stream.write(&mut self.bytes).unwrap();
+
+		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature })
+	}
+
+	invoice_accessors_common!(self, self.contents, StaticInvoice);
+	invoice_accessors!(self, self.contents);
+}
+
+impl AsRef<TaggedHash> for UnsignedStaticInvoice {
+	fn as_ref(&self) -> &TaggedHash {
+		&self.tagged_hash
+	}
+}
+
+/// A function for signing an [`UnsignedStaticInvoice`].
+pub trait SignStaticInvoiceFn {
+	/// Signs a [`TaggedHash`] computed over the merkle root of `message`'s TLV stream.
+	fn sign_invoice(&self, message: &UnsignedStaticInvoice) -> Result<Signature, ()>;
+}
+
+impl<F> SignStaticInvoiceFn for F
+where
+	F: Fn(&UnsignedStaticInvoice) -> Result<Signature, ()>,
+{
+	fn sign_invoice(&self, message: &UnsignedStaticInvoice) -> Result<Signature, ()> {
+		self(message)
+	}
+}
+
+impl<F> SignFn<UnsignedStaticInvoice> for F
+where
+	F: SignStaticInvoiceFn,
+{
+	fn sign(&self, message: &UnsignedStaticInvoice) -> Result<Signature, ()> {
+		self.sign_invoice(message)
+	}
+}
+
 impl StaticInvoice {
 	invoice_accessors_common!(self, self.contents, StaticInvoice);
 	invoice_accessors!(self, self.contents);
@@ -161,6 +315,57 @@ impl StaticInvoice {
 }
 
 impl InvoiceContents {
+	#[cfg(feature = "std")]
+	fn is_offer_expired(&self) -> bool {
+		self.offer.is_expired()
+	}
+
+	#[cfg(not(feature = "std"))]
+	fn is_offer_expired_no_std(&self, duration_since_epoch: Duration) -> bool {
+		self.offer.is_expired_no_std(duration_since_epoch)
+	}
+
+	fn new(
+		offer: &Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
+		message_paths: Vec<BlindedPath>, created_at: Duration, signing_pubkey: PublicKey,
+	) -> Self {
+		Self {
+			offer: offer.contents.clone(),
+			payment_paths,
+			message_paths,
+			created_at,
+			relative_expiry: None,
+			fallbacks: None,
+			features: Bolt12InvoiceFeatures::empty(),
+			signing_pubkey,
+		}
+	}
+
+	fn as_tlv_stream(&self) -> PartialInvoiceTlvStreamRef {
+		let features = {
+			if self.features == Bolt12InvoiceFeatures::empty() {
+				None
+			} else {
+				Some(&self.features)
+			}
+		};
+
+		let invoice = InvoiceTlvStreamRef {
+			paths: Some(Iterable(self.payment_paths.iter().map(|(_, path)| path))),
+			message_paths: Some(self.message_paths.as_ref()),
+			blindedpay: Some(Iterable(self.payment_paths.iter().map(|(payinfo, _)| payinfo))),
+			created_at: Some(self.created_at.as_secs()),
+			relative_expiry: self.relative_expiry.map(|duration| duration.as_secs() as u32),
+			fallbacks: self.fallbacks.as_ref(),
+			features,
+			node_id: Some(&self.signing_pubkey),
+			amount: None,
+			payment_hash: None,
+		};
+
+		(self.offer.as_tlv_stream(), invoice)
+	}
+
 	fn chain(&self) -> ChainHash {
 		debug_assert_eq!(self.offer.chains().len(), 1);
 		self.offer.chains().first().cloned().unwrap_or_else(|| self.offer.implied_chain())
@@ -264,6 +469,8 @@ impl SeekReadable for FullInvoiceTlvStream {
 }
 
 type PartialInvoiceTlvStream = (OfferTlvStream, InvoiceTlvStream);
+
+type PartialInvoiceTlvStreamRef<'a> = (OfferTlvStreamRef<'a>, InvoiceTlvStreamRef<'a>);
 
 impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for StaticInvoice {
 	type Error = Bolt12ParseError;
