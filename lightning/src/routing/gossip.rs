@@ -504,8 +504,8 @@ where U::Target: UtxoLookup, L::Target: Logger
 			};
 		for (_, ref node) in iter {
 			if let Some(node_info) = node.announcement_info.as_ref() {
-				if let Some(msg) = node_info.announcement_message.clone() {
-					return Some(msg);
+				if let NodeAnnouncementInfo::Relayed(announcement) = node_info {
+					return Some(announcement.clone());
 				}
 			}
 		}
@@ -1130,45 +1130,136 @@ impl_writeable_tlv_based!(RoutingFees, {
 });
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// Information received in the latest node_announcement from this node.
-pub struct NodeAnnouncementInfo {
+/// Non-relayable information received in the latest node_announcement from this node.
+pub struct NodeAnnouncementDetails {
 	/// Protocol features the node announced support for
 	pub features: NodeFeatures,
+
 	/// When the last known update to the node state was issued.
 	/// Value is opaque, as set in the announcement.
 	pub last_update: u32,
+
 	/// Color assigned to the node
 	pub rgb: [u8; 3],
+
 	/// Moniker assigned to the node.
 	/// May be invalid or malicious (eg control chars),
 	/// should not be exposed to the user.
 	pub alias: NodeAlias,
+
+	/// Internet-level addresses via which one can connect to the node
+	pub addresses: Vec<SocketAddress>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// Information received in the latest node_announcement from this node.
+pub enum NodeAnnouncementInfo {
 	/// An initial announcement of the node
-	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
 	/// Not stored if contains excess data to prevent DoS.
-	pub announcement_message: Option<NodeAnnouncement>
+	Relayed(NodeAnnouncement),
+
+	/// Non-relayable information received in the latest node_announcement from this node.
+	Local(NodeAnnouncementDetails),
 }
 
 impl NodeAnnouncementInfo {
+
+	/// Protocol features the node announced support for
+	pub fn features(&self) -> &NodeFeatures {
+		match self {
+			NodeAnnouncementInfo::Relayed(relayed) => {
+				&relayed.contents.features
+			}
+			NodeAnnouncementInfo::Local(local) => {
+				&local.features
+			}
+		}
+	}
+
+	/// When the last known update to the node state was issued.
+	///
+	/// Value may or may not be a timestamp, depending on the policy of the origin node.
+	pub fn last_update(&self) -> u32 {
+		match self {
+			NodeAnnouncementInfo::Relayed(relayed) => {
+				relayed.contents.timestamp
+			}
+			NodeAnnouncementInfo::Local(local) => {
+				local.last_update
+			}
+		}
+	}
+
+	/// Color assigned to the node
+	pub fn rgb(&self) -> [u8; 3] {
+		match self {
+			NodeAnnouncementInfo::Relayed(relayed) => {
+				relayed.contents.rgb
+			}
+			NodeAnnouncementInfo::Local(local) => {
+				local.rgb
+			}
+		}
+	}
+
+	/// Moniker assigned to the node.
+	///
+	/// May be invalid or malicious (eg control chars), should not be exposed to the user.
+	pub fn alias(&self) -> &NodeAlias {
+		match self {
+			NodeAnnouncementInfo::Relayed(relayed) => {
+				&relayed.contents.alias
+			}
+			NodeAnnouncementInfo::Local(local) => {
+				&local.alias
+			}
+		}
+	}
+
 	/// Internet-level addresses via which one can connect to the node
-	pub fn addresses(&self) -> &[SocketAddress] {
-		self.announcement_message.as_ref()
-			.map(|msg| msg.contents.addresses.as_slice())
-			.unwrap_or_default()
+	pub fn addresses(&self) -> &Vec<SocketAddress> {
+		match self {
+			NodeAnnouncementInfo::Relayed(relayed) => {
+				&relayed.contents.addresses
+			}
+			NodeAnnouncementInfo::Local(local) => {
+				&local.addresses
+			}
+		}
+	}
+
+	/// An initial announcement of the node
+	///
+	/// Not stored if contains excess data to prevent DoS.
+	pub fn announcement_message(&self) -> Option<&NodeAnnouncement> {
+		match self {
+			NodeAnnouncementInfo::Relayed(announcement) => {
+				Some(announcement)
+			}
+			NodeAnnouncementInfo::Local(_) => {
+				None
+			}
+		}
 	}
 }
 
 impl Writeable for NodeAnnouncementInfo {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let empty_addresses = Vec::<SocketAddress>::new();
+		let features = self.features();
+		let last_update = self.last_update();
+		let rgb = self.rgb();
+		let alias = self.alias();
+		let addresses = self.addresses();
+		let announcement_message = self.announcement_message();
+
 		write_tlv_fields!(writer, {
-			(0, self.features, required),
-			(2, self.last_update, required),
-			(4, self.rgb, required),
-			(6, self.alias, required),
-			(8, self.announcement_message, option),
-			(10, empty_addresses, required_vec), // Versions prior to 0.0.115 require this field
+			(0, features, required),
+			(2, last_update, required),
+			(4, rgb, required),
+			(6, alias, required),
+			(8, announcement_message, option),
+			(10, *addresses, required_vec), // Versions 0.0.115 through 0.0.123 only serialized an empty vec
 		});
 		Ok(())
 	}
@@ -1182,11 +1273,19 @@ impl Readable for NodeAnnouncementInfo {
 			(4, rgb, required),
 			(6, alias, required),
 			(8, announcement_message, option),
-			(10, _addresses, optional_vec), // deprecated, not used anymore
+			(10, addresses, required_vec),
 		});
-		let _: Option<Vec<SocketAddress>> = _addresses;
-		Ok(Self { features: features.0.unwrap(), last_update: last_update.0.unwrap(), rgb: rgb.0.unwrap(),
-			alias: alias.0.unwrap(), announcement_message })
+		if let Some(announcement) = announcement_message {
+			Ok(Self::Relayed(announcement))
+		} else {
+			Ok(Self::Local(NodeAnnouncementDetails {
+				features: features.0.unwrap(),
+				last_update: last_update.0.unwrap(),
+				rgb: rgb.0.unwrap(),
+				alias: alias.0.unwrap(),
+				addresses,
+			}))
+		}
 	}
 }
 
@@ -1488,24 +1587,29 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					// The timestamp field is somewhat of a misnomer - the BOLTs use it to order
 					// updates to ensure you always have the latest one, only vaguely suggesting
 					// that it be at least the current time.
-					if node_info.last_update  > msg.timestamp {
+					if node_info.last_update()  > msg.timestamp {
 						return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
-					} else if node_info.last_update  == msg.timestamp {
+					} else if node_info.last_update()  == msg.timestamp {
 						return Err(LightningError{err: "Update had the same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 					}
 				}
 
 				let should_relay =
 					msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY &&
-					msg.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY &&
-					msg.excess_data.len() + msg.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY;
-				node.announcement_info = Some(NodeAnnouncementInfo {
-					features: msg.features.clone(),
-					last_update: msg.timestamp,
-					rgb: msg.rgb,
-					alias: msg.alias,
-					announcement_message: if should_relay { full_msg.cloned() } else { None },
-				});
+						msg.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY &&
+						msg.excess_data.len() + msg.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY;
+
+				node.announcement_info = if let (Some(signed_announcement), true) = (full_msg, should_relay) {
+					Some(NodeAnnouncementInfo::Relayed(signed_announcement.clone()))
+				} else {
+					Some(NodeAnnouncementInfo::Local(NodeAnnouncementDetails {
+						features: msg.features.clone(),
+						last_update: msg.timestamp,
+						rgb: msg.rgb,
+						alias: msg.alias,
+						addresses: msg.addresses.clone(),
+					}))
+				};
 
 				Ok(())
 			}
@@ -3448,13 +3552,7 @@ pub(crate) mod tests {
 		// 1. Check we can read a valid NodeAnnouncementInfo and fail on an invalid one
 		let announcement_message = <Vec<u8>>::from_hex("d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a000122013413a7031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f2020201010101010101010101010101010101010101010101010101010101010101010000701fffefdfc2607").unwrap();
 		let announcement_message = NodeAnnouncement::read(&mut announcement_message.as_slice()).unwrap();
-		let valid_node_ann_info = NodeAnnouncementInfo {
-			features: channelmanager::provided_node_features(&UserConfig::default()),
-			last_update: 0,
-			rgb: [0u8; 3],
-			alias: NodeAlias([0u8; 32]),
-			announcement_message: Some(announcement_message)
-		};
+		let valid_node_ann_info = NodeAnnouncementInfo::Relayed(announcement_message);
 
 		let mut encoded_valid_node_ann_info = Vec::new();
 		assert!(valid_node_ann_info.write(&mut encoded_valid_node_ann_info).is_ok());
@@ -3487,8 +3585,8 @@ pub(crate) mod tests {
 		let old_ann_info_with_addresses = <Vec<u8>>::from_hex("3f0009000708a000080a51220204000000000403000000062000000000000000000000000000000000000000000000000000000000000000000a0505014104d2").unwrap();
 		let ann_info_with_addresses = NodeAnnouncementInfo::read(&mut old_ann_info_with_addresses.as_slice())
 				.expect("to be able to read an old NodeAnnouncementInfo with addresses");
-		// This serialized info has an address field but no announcement_message, therefore the addresses returned by our function will still be empty
-		assert!(ann_info_with_addresses.addresses().is_empty());
+		// This serialized info has no announcement_message but its address field should still be considered
+		assert!(!ann_info_with_addresses.addresses().is_empty());
 	}
 
 	#[test]

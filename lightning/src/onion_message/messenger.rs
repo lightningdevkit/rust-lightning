@@ -383,15 +383,14 @@ where
 				intermediate_nodes: vec![], destination, first_node_addresses: None
 			})
 		} else {
-			let node_announcement = network_graph
+			let node_details = network_graph
 				.node(&NodeId::from_pubkey(&first_node))
 				.and_then(|node_info| node_info.announcement_info.as_ref())
-				.and_then(|announcement_info| announcement_info.announcement_message.as_ref())
-				.map(|node_announcement| &node_announcement.contents);
+				.map(|announcement_info| (announcement_info.features(), announcement_info.addresses()));
 
-			match node_announcement {
-				Some(node_announcement) if node_announcement.features.supports_onion_messages() => {
-					let first_node_addresses = Some(node_announcement.addresses.clone());
+			match node_details {
+				Some((features, addresses)) if features.supports_onion_messages() && addresses.len() > 0 => {
+					let first_node_addresses = Some(addresses.clone());
 					Ok(OnionMessagePath {
 						intermediate_nodes: vec![], destination, first_node_addresses
 					})
