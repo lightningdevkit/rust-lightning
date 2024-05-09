@@ -147,6 +147,10 @@ pub enum ConfirmationTarget {
 ///
 /// Note that all of the functions implemented here *must* be reentrant-safe (obviously - they're
 /// called from inside the library in response to chain events, P2P events, or timer events).
+///
+/// LDK may generate a substantial number of fee-estimation calls in some cases. You should
+/// pre-calculate and cache the fee estimate results to ensure you don't substantially slow HTLC
+/// handling.
 pub trait FeeEstimator {
 	/// Gets estimated satoshis of fee required per 1000 Weight-Units.
 	///
