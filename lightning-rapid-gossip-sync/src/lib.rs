@@ -92,9 +92,15 @@ pub enum GraphSyncError {
 	LightningError(LightningError),
 }
 
-impl From<lightning::io::Error> for GraphSyncError {
-	fn from(error: lightning::io::Error) -> Self {
+impl From<io::Error> for GraphSyncError {
+	fn from(error: io::Error) -> Self {
 		Self::DecodeError(DecodeError::Io(error.kind()))
+	}
+}
+
+impl From<bitcoin::secp256k1::Error> for GraphSyncError {
+	fn from(_: bitcoin::secp256k1::Error) -> Self {
+		Self::DecodeError(DecodeError::InvalidValue)
 	}
 }
 

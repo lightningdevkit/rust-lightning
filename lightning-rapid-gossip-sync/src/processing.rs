@@ -5,13 +5,11 @@ use core::sync::atomic::Ordering;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::PublicKey;
 
-use lightning::ln::msgs::{
-	DecodeError, ErrorAction, LightningError, UnsignedChannelUpdate,
-};
-use lightning::routing::gossip::NetworkGraph;
+use lightning::ln::msgs::{DecodeError, ErrorAction, LightningError, SocketAddress, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
+use lightning::routing::gossip::{NetworkGraph, NodeAlias, NodeId};
 use lightning::util::logger::Logger;
 use lightning::{log_debug, log_warn, log_trace, log_given_level, log_gossip};
-use lightning::util::ser::{BigSize, Readable};
+use lightning::util::ser::{BigSize, FixedLengthReader, Readable};
 use lightning::io;
 
 use crate::{GraphSyncError, RapidGossipSync};
@@ -21,12 +19,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(all(not(feature = "std"), not(test)))]
 use alloc::{vec::Vec, borrow::ToOwned};
+use lightning::ln::features::NodeFeatures;
 
 /// The purpose of this prefix is to identify the serialization format, should other rapid gossip
 /// sync formats arise in the future.
 ///
 /// The fourth byte is the protocol version in case our format gets updated.
-const GOSSIP_PREFIX: [u8; 4] = [76, 68, 75, 1];
+const GOSSIP_PREFIX: [u8; 3] = [76, 68, 75];
 
 /// Maximum vector allocation capacity for distinct node IDs. This constraint is necessary to
 /// avoid malicious updates being able to trigger excessive memory allocation.
@@ -59,12 +58,19 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		current_time_unix: Option<u64>
 	) -> Result<u32, GraphSyncError> {
 		log_trace!(self.logger, "Processing RGS data...");
-		let mut prefix = [0u8; 4];
-		read_cursor.read_exact(&mut prefix)?;
+		let mut protocol_prefix = [0u8; 3];
 
-		if prefix != GOSSIP_PREFIX {
+		read_cursor.read_exact(&mut protocol_prefix)?;
+		if protocol_prefix != GOSSIP_PREFIX {
 			return Err(DecodeError::UnknownVersion.into());
 		}
+
+		let version: u8 = Readable::read(&mut read_cursor)?;
+		if version != 1 && version != 2 {
+			return Err(DecodeError::UnknownVersion.into());
+		}
+
+		let parse_node_details = version == 2;
 
 		let chain_hash: ChainHash = Readable::read(read_cursor)?;
 		let ng_chain_hash = self.network_graph.get_chain_hash();
@@ -88,17 +94,130 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		// backdate the applied timestamp by a week
 		let backdated_timestamp = latest_seen_timestamp.saturating_sub(24 * 3600 * 7);
 
+		let mut default_node_features = Vec::new();
+		if parse_node_details {
+			let default_feature_count: u8 = Readable::read(read_cursor)?;
+			for _ in 0..default_feature_count {
+				let current_default_feature: NodeFeatures = Readable::read(read_cursor)?;
+				default_node_features.push(current_default_feature);
+			}
+		};
+
 		let node_id_count: u32 = Readable::read(read_cursor)?;
 		let mut node_ids: Vec<PublicKey> = Vec::with_capacity(core::cmp::min(
 			node_id_count,
 			MAX_INITIAL_NODE_ID_VECTOR_CAPACITY,
 		) as usize);
-		for _ in 0..node_id_count {
-			let current_node_id = Readable::read(read_cursor)?;
-			node_ids.push(current_node_id);
-		}
 
 		let network_graph = &self.network_graph;
+		let mut node_modifications: Vec<UnsignedNodeAnnouncement> = Vec::new();
+
+		if parse_node_details {
+			let read_only_network_graph = network_graph.read_only();
+			for _ in 0..node_id_count {
+				let mut pubkey_bytes = [0u8; 33];
+				read_cursor.read_exact(&mut pubkey_bytes)?;
+
+				/*
+				We encode additional information in the pubkey parity byte with the following mapping:
+
+				7: expect extra data after the pubkey
+				6: use this as a reminder without altering anything
+				5-3: index of new features among default (1-6). If index is 7 (all 3 bits are set, it's
+				outside the present default range). 0 means no feature changes.
+				2: addresses have changed
+
+				1: used for all keys
+				0: used for odd keys
+				*/
+				let node_detail_flag = pubkey_bytes.first().ok_or(DecodeError::ShortRead)?;
+
+				let has_address_details = (node_detail_flag & (1 << 2)) > 0;
+				let feature_detail_marker = (node_detail_flag & (0b111 << 3)) >> 3;
+				let is_reminder = (node_detail_flag & (1 << 6)) > 0;
+				let has_additional_data = (node_detail_flag & (1 << 7)) > 0;
+
+				// extract the relevant bits for pubkey parity
+				let key_parity = node_detail_flag & 0b_0000_0011;
+				pubkey_bytes[0] = key_parity;
+
+				let current_pubkey = PublicKey::from_slice(&pubkey_bytes)?;
+				let current_node_id = NodeId::from_pubkey(&current_pubkey);
+				node_ids.push(current_pubkey);
+
+				if is_reminder || has_address_details || feature_detail_marker > 0 {
+					let mut synthetic_node_announcement = UnsignedNodeAnnouncement {
+						features: NodeFeatures::empty(),
+						timestamp: backdated_timestamp,
+						node_id: current_node_id,
+						rgb: [0, 0, 0],
+						alias: NodeAlias([0u8; 32]),
+						addresses: Vec::new(),
+						excess_address_data: Vec::new(),
+						excess_data: Vec::new(),
+					};
+
+					read_only_network_graph.nodes()
+						.get(&current_node_id)
+						.and_then(|node| node.announcement_info.as_ref())
+						.map(|info| {
+							synthetic_node_announcement.features = info.features().clone();
+							synthetic_node_announcement.rgb = info.rgb().clone();
+							synthetic_node_announcement.alias = info.alias().clone();
+							synthetic_node_announcement.addresses = info.addresses().clone();
+						});
+
+					if has_address_details {
+						let address_count: u8 = Readable::read(read_cursor)?;
+						let mut node_addresses: Vec<SocketAddress> = Vec::new();
+						for address_index in 0..address_count {
+							let current_byte_count: u8 = Readable::read(read_cursor)?;
+							let mut address_reader = FixedLengthReader::new(&mut read_cursor, current_byte_count as u64);
+							if let Ok(current_address) = Readable::read(&mut address_reader) {
+								node_addresses.push(current_address);
+								if address_reader.bytes_remain() {
+									return Err(DecodeError::ShortRead.into());
+								}
+							} else {
+								// Do not crash to allow future socket address forwards compatibility
+								log_gossip!(
+									self.logger,
+									"Failure to parse address at index {} for node ID {}",
+									address_index, current_node_id
+								);
+								address_reader.eat_remaining()?;
+							}
+						}
+						synthetic_node_announcement.addresses = node_addresses;
+					}
+
+					if feature_detail_marker > 0 {
+						if feature_detail_marker < 7 {
+							let feature_index = (feature_detail_marker - 1) as usize;
+							synthetic_node_announcement.features = default_node_features
+								.get(feature_index)
+								.ok_or(DecodeError::InvalidValue)?
+								.clone();
+						} else {
+							let node_features: NodeFeatures = Readable::read(read_cursor)?;
+							synthetic_node_announcement.features = node_features;
+						}
+					}
+
+					node_modifications.push(synthetic_node_announcement);
+				}
+
+				if has_additional_data {
+					let additional_data: Vec<u8> = Readable::read(read_cursor)?;
+					log_gossip!(self.logger, "Ignoring {} bytes of additional data in node announcement", additional_data.len());
+				}
+			}
+		} else {
+			for _ in 0..node_id_count {
+				let current_node_id = Readable::read(read_cursor)?;
+				node_ids.push(current_node_id);
+			}
+		}
 
 		let mut previous_scid: u64 = 0;
 		let announcement_count: u32 = Readable::read(read_cursor)?;
@@ -113,7 +232,9 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			previous_scid = short_channel_id;
 
 			let node_id_1_index: BigSize = Readable::read(read_cursor)?;
-			let node_id_2_index: BigSize = Readable::read(read_cursor)?;
+			let mut node_id_2_index: BigSize = Readable::read(read_cursor)?;
+			let has_additional_data = (node_id_2_index.0 & (1 << 63)) > 0;
+			node_id_2_index.0 &= !(1 << 63); // ensure 63rd bit isn't set
 
 			if max(node_id_1_index.0, node_id_2_index.0) >= node_id_count as u64 {
 				return Err(DecodeError::InvalidValue.into());
@@ -139,6 +260,26 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 					return Err(lightning_error.into());
 				}
 			}
+
+			if version >= 2 && has_additional_data {
+				// forwards compatibility
+				let additional_data: Vec<u8> = Readable::read(read_cursor)?;
+				log_gossip!(self.logger, "Ignoring {} bytes of additional data in channel announcement", additional_data.len());
+			}
+		}
+
+		for modification in node_modifications {
+			match network_graph.update_node_from_unsigned_announcement(&modification) {
+				Ok(_) => {}
+				Err(LightningError { action: ErrorAction::IgnoreDuplicateGossip, .. }) => {}
+				Err(LightningError { action: ErrorAction::IgnoreAndLog(level), err }) => {
+					log_given_level!(self.logger, level, "Failed to apply node announcement: {:?}", err);
+				}
+				Err(LightningError { action: ErrorAction::IgnoreError, err }) => {
+					log_gossip!(self.logger, "Failed to apply node announcement: {:?}", err);
+				}
+				Err(e) => return Err(e.into()),
+			}
 		}
 
 		previous_scid = 0; // updates start at a new scid
@@ -157,6 +298,8 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 		let default_fee_proportional_millionths: u32 = Readable::read(&mut read_cursor)?;
 		let default_htlc_maximum_msat: u64 = Readable::read(&mut read_cursor)?;
 
+		let mut previous_channel_direction = None;
+
 		for _ in 0..update_count {
 			let scid_delta: BigSize = Readable::read(read_cursor)?;
 			let short_channel_id = previous_scid
@@ -165,6 +308,19 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			previous_scid = short_channel_id;
 
 			let channel_flags: u8 = Readable::read(read_cursor)?;
+
+			if version >= 2 {
+				let direction = (channel_flags & 1) == 1;
+				let is_same_direction_update = Some(direction) == previous_channel_direction;
+				previous_channel_direction = Some(direction);
+
+				if scid_delta.0 == 0 && is_same_direction_update {
+					// this is additional data for forwards compatibility
+					let additional_data: Vec<u8> = Readable::read(read_cursor)?;
+					log_gossip!(self.logger, "Ignoring {} bytes of additional data in channel update", additional_data.len());
+					continue;
+				}
+			}
 
 			// flags are always sent in full, and hence always need updating
 			let standard_channel_flags = channel_flags & 0b_0000_0011;
@@ -265,7 +421,8 @@ mod tests {
 	#[cfg(feature = "std")]
 	use lightning::ln::msgs::DecodeError;
 
-	use lightning::routing::gossip::NetworkGraph;
+	use lightning::routing::gossip::{NetworkGraph, NodeId};
+	use lightning::util::logger::Level;
 	use lightning::util::test_utils::TestLogger;
 
 	use crate::processing::STALE_RGS_UPDATE_AGE_LIMIT_SECS;
@@ -320,6 +477,141 @@ mod tests {
 		} else {
 			panic!("Unexpected update result: {:?}", update_result)
 		}
+	}
+
+	#[test]
+	fn node_data_update_succeeds_with_v2() {
+		let mut logger = TestLogger::new();
+		logger.enable(Level::Gossip);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
+
+		let example_input = vec![
+			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
+			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 102, 97, 206, 240,
+			0, 0, 0, 0, 2, 63, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5,
+			101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143, 5, 38, 4, 1,
+			1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+			1, 1, 0, 2, 3, 0, 4, 7, 1, 127, 0, 0, 1, 37, 163, 14, 5, 10, 103, 111, 111, 103, 108,
+			101, 46, 99, 111, 109, 1, 187, 19, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 5,
+			57, 13, 3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0, 2, 23, 48, 62, 77, 75, 108, 209,
+			54, 16, 50, 202, 155, 210, 174, 185, 217, 0, 170, 77, 69, 217, 234, 216, 10, 201, 66,
+			51, 116, 196, 81, 167, 37, 77, 7, 102, 0, 0, 2, 25, 48, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0,
+			0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+			0, 0, 1
+		];
+
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+		let update_result = rapid_sync.update_network_graph_no_std(&example_input[..], None);
+		assert!(update_result.is_ok());
+
+		let read_only_graph = network_graph.read_only();
+		let nodes = read_only_graph.nodes();
+		assert_eq!(nodes.len(), 2);
+
+		{
+			// address node
+			let node_id = NodeId::from_slice(&[3, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143]).unwrap();
+			let node = nodes.get(&node_id).unwrap();
+			let announcement_info = node.announcement_info.as_ref().unwrap();
+			let addresses = announcement_info.addresses();
+			assert_eq!(addresses.len(), 5);
+		}
+
+		{
+			// feature node
+			let node_id = NodeId::from_slice(&[2, 77, 75, 108, 209, 54, 16, 50, 202, 155, 210, 174, 185, 217, 0, 170, 77, 69, 217, 234, 216, 10, 201, 66, 51, 116, 196, 81, 167, 37, 77, 7, 102]).unwrap();
+			let node = nodes.get(&node_id).unwrap();
+			let announcement_info = node.announcement_info.as_ref().unwrap();
+			let features = announcement_info.features();
+			println!("features: {}", features);
+			// assert_eq!(addresses.len(), 5);
+		}
+
+		logger.assert_log_contains("lightning_rapid_gossip_sync::processing", "Failed to apply node announcement", 0);
+	}
+
+	#[test]
+	fn node_date_update_succeeds_without_channels() {
+		let mut logger = TestLogger::new();
+		logger.enable(Level::Gossip);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+
+		let example_input = vec![
+			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247, 79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 102, 105, 183, 240, 0, 0, 0, 0, 1, 63, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213, 170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143, 5, 13, 3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 7, 1, 127, 0, 0, 1, 37, 163, 19, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 5, 57, 38, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 2, 3, 0, 4, 14, 5, 10, 103, 111, 111, 103, 108, 101, 46, 99, 111, 109, 1, 187, 0, 2, 23, 48, 0, 0, 0, 0, 0, 0, 0, 0,
+		];
+
+		let update_result = rapid_sync.update_network_graph_no_std(&example_input[..], None);
+		assert!(update_result.is_ok());
+
+		logger.assert_log_contains("lightning_rapid_gossip_sync::processing", "Failed to apply node announcement: \"No existing channels for node_announcement\"", 1);
+	}
+
+	#[test]
+	fn update_ignores_v2_additional_data() {
+		let mut logger = TestLogger::new();
+		logger.enable(Level::Gossip);
+		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
+		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
+
+		let example_input = vec![
+			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
+			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 102, 106, 12, 80,
+			1, 0, 2, 23, 48, 0, 0, 0, 3, 143, 27, 132, 197, 86, 123, 18, 100, 64, 153, 93, 62, 213,
+			170, 186, 5, 101, 215, 30, 24, 52, 96, 72, 25, 255, 156, 23, 245, 233, 213, 221, 7, 143,
+			5, 38, 4, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+			1, 1, 1, 1, 1, 1, 0, 2, 3, 0, 4, 19, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+			5, 57, 13, 3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 7, 1, 127, 0, 0, 1, 37, 163, 14, 5,
+			10, 103, 111, 111, 103, 108, 101, 46, 99, 111, 109, 1, 187, 0, 255, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 138, 77, 75, 108, 209, 54, 16, 50, 202,
+			155, 210, 174, 185, 217, 0, 170, 77, 69, 217, 234, 216, 10, 201, 66, 51, 116, 196, 81,
+			167, 37, 77, 7, 102, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 186, 83, 31, 230, 6, 129, 52, 80, 61, 39, 35, 19, 50, 39, 200, 103, 172, 143,
+			166, 200, 60, 83, 126, 154, 68, 195, 197, 189, 189, 203, 31, 227, 55, 0, 2, 22, 49, 0,
+			255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+			0, 0, 1, 0, 255, 128, 0, 0, 0, 0, 0, 0, 1, 0, 147, 23, 23, 23, 23, 23, 23, 23, 23, 23,
+			23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23,
+			23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23,
+			23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23,
+			23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23,
+			23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23,
+			23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23, 23,
+			23, 23, 23, 23, 23, 23, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 17, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+			42, 42, 42, 42, 42, 42, 42, 0, 1, 0, 1, 0, 17, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42,
+			42, 42, 42, 42, 42, 42, 42
+		];
+
+		let update_result = rapid_sync.update_network_graph_no_std(&example_input[..], None);
+		assert!(update_result.is_ok());
+
+		logger.assert_log_contains("lightning_rapid_gossip_sync::processing", "Ignoring 255 bytes of additional data in node announcement", 3);
+		logger.assert_log_contains("lightning_rapid_gossip_sync::processing", "Ignoring 147 bytes of additional data in channel announcement", 1);
+		logger.assert_log_contains("lightning_rapid_gossip_sync::processing", "Ignoring 17 bytes of additional data in channel update", 1);
 	}
 
 	#[test]
@@ -645,7 +937,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	pub fn update_fails_with_unknown_version() {
 		let unknown_version_input = vec![
-			76, 68, 75, 2, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
+			76, 68, 75, 3, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247,
 			79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218,
 			0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251,
 			187, 172, 38, 46, 79, 247, 108, 44, 155, 48, 219, 238, 252, 53, 192, 6, 67, 2, 36, 125,
