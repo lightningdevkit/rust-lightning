@@ -513,9 +513,6 @@ pub struct TestPersister {
 	/// The queue of update statuses we'll return. If none are queued, ::Completed will always be
 	/// returned.
 	pub update_rets: Mutex<VecDeque<chain::ChannelMonitorUpdateStatus>>,
-	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
-	/// MonitorId here.
-	pub chain_sync_monitor_persistences: Mutex<VecDeque<OutPoint>>,
 	/// When we get an update_persisted_channel call *with* a ChannelMonitorUpdate, we insert the
 	/// [`ChannelMonitor::get_latest_update_id`] here.
 	///
@@ -526,7 +523,6 @@ impl TestPersister {
 	pub fn new() -> Self {
 		Self {
 			update_rets: Mutex::new(VecDeque::new()),
-			chain_sync_monitor_persistences: Mutex::new(VecDeque::new()),
 			offchain_monitor_updates: Mutex::new(new_hash_map()),
 		}
 	}
@@ -552,22 +548,13 @@ impl<Signer: sign::ecdsa::WriteableEcdsaChannelSigner> chainmonitor::Persist<Sig
 
 		if let Some(update) = update  {
 			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update.update_id);
-		} else {
-			self.chain_sync_monitor_persistences.lock().unwrap().push_back(funding_txo);
 		}
 		ret
 	}
 
 	fn archive_persisted_channel(&self, funding_txo: OutPoint) { 
 		// remove the channel from the offchain_monitor_updates map
-		match self.offchain_monitor_updates.lock().unwrap().remove(&funding_txo) {
-			Some(_) => {},
-			None => {
-				// If the channel was not in the offchain_monitor_updates map, it should be in the
-				// chain_sync_monitor_persistences map.
-				self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &funding_txo);
-			}
-		};
+		self.offchain_monitor_updates.lock().unwrap().remove(&funding_txo);
 	}
 }
 

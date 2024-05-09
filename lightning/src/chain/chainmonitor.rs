@@ -148,7 +148,7 @@ pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// The [`ChannelMonitorUpdate::update_id`] or [`ChannelMonitor::get_latest_update_id`] uniquely
 	/// links this call to [`ChainMonitor::channel_monitor_updated`].
 	/// For [`Persist::update_persisted_channel`], it is only necessary to call [`ChainMonitor::channel_monitor_updated`]
-	/// when an [`ChannelMonitorUpdate`] is provided and when you return [`ChannelMonitorUpdateStatus::InProgress`].
+	/// when a [`ChannelMonitorUpdate`] is provided and when you return [`ChannelMonitorUpdateStatus::InProgress`].
 	///
 	/// See [`Writeable::write`] on [`ChannelMonitor`] for writing out a `ChannelMonitor`,
 	/// [`Writeable::write`] on [`ChannelMonitorUpdate`] for writing out an update, and
@@ -312,7 +312,7 @@ where C::Target: chain::Filter,
 						log_funding_info!(monitor)
 					),
 				ChannelMonitorUpdateStatus::InProgress => {
-					log_debug!(logger, "Channel Monitor sync for channel {} in progress.", log_funding_info!(monitor));
+					log_trace!(logger, "Channel Monitor sync for channel {} in progress.", log_funding_info!(monitor));
 				},
 				ChannelMonitorUpdateStatus::UnrecoverableError => {
 					return Err(());
@@ -992,7 +992,6 @@ mod tests {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 
-		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::UnrecoverableError);
 
 		assert!(std::panic::catch_unwind(|| {

@@ -1102,7 +1102,6 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(persist_manager_post_event: bo
 	// Now connect the HTLC claim transaction with the ChainMonitor-generated ChannelMonitor update
 	// returning InProgress. This should cause the claim event to never make its way to the
 	// ChannelManager.
-	chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 
 	if payment_timeout {
