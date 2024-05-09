@@ -736,6 +736,7 @@ enum ChannelState {
 	FundingNegotiated,
 	/// We've received/sent `funding_created` and `funding_signed` and are thus now waiting on the
 	/// funding transaction to confirm.
+	/// Also used in case of splicing (with splicing flag set)
 	AwaitingChannelReady(AwaitingChannelReadyFlags),
 	/// Both we and our counterparty consider the funding transaction confirmed and the channel is
 	/// now operational.
@@ -4735,6 +4736,8 @@ impl<SP: Deref> Channel<SP> where
 				} else if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
 					self.context.channel_state.set_their_channel_ready();
 				} else if flags == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
+					// splice_locked sent and received, mark the splicing process complete
+					self.context.splice_complete(logger)?;
 					self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 					self.context.update_time_counter += 1;
 				} else {
@@ -7315,11 +7318,6 @@ impl<SP: Deref> Channel<SP> where
 								// Mark that the interactive tx session is complete
 								self.interactive_tx_signing_session = None;
 								log_info!(logger, "Interactive transaction signing session closed for channel {}", &self.context.channel_id);
-							}
-
-							#[cfg(splicing)]
-							if self.context.pending_splice_post.is_some() {
-								self.context.splice_complete(logger).ok();
 							}
 						}
 						// If this is a coinbase transaction and not a 0-conf channel
