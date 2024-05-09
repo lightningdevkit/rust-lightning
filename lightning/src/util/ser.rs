@@ -39,7 +39,7 @@ use crate::chain::ClaimId;
 use crate::ln::msgs::DecodeError;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
-use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::ln::types::{PaymentPreimage, PaymentHash, PaymentSecret};
 
 use crate::util::byte_utils::{be48_to_array, slice_to_be48};
 use crate::util::string::UntrustedString;

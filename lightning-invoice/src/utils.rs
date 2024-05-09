@@ -8,7 +8,7 @@ use bitcoin::hashes::Hash;
 use lightning::chain;
 use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use lightning::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
-use lightning::ln::{PaymentHash, PaymentSecret};
+use lightning::ln::types::{PaymentHash, PaymentSecret};
 use lightning::ln::channelmanager::{ChannelDetails, ChannelManager, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
@@ -824,9 +824,9 @@ mod test {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use lightning::sign::PhantomKeysManager;
 	use lightning::events::{MessageSendEvent, MessageSendEventsProvider};
-	use lightning::ln::PaymentHash;
+	use lightning::ln::types::PaymentHash;
 	#[cfg(feature = "std")]
-	use lightning::ln::PaymentPreimage;
+	use lightning::ln::types::PaymentPreimage;
 	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::ChannelMessageHandler;

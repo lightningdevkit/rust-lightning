@@ -39,6 +39,7 @@ use bitcoin::{secp256k1, Sequence, Txid, Witness};
 
 use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
+use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	get_revokeable_redeemscript, make_funding_redeemscript, ChannelPublicKeys,
 	ChannelTransactionParameters, ClosingTransaction, CommitmentTransaction,
@@ -53,7 +54,7 @@ use crate::ln::channel_keys::{
 use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
-use crate::ln::{chan_utils, PaymentPreimage};
+use crate::ln::types::PaymentPreimage;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -110,8 +111,8 @@ pub struct DelayedPaymentOutputDescriptor {
 	pub channel_keys_id: [u8; 32],
 	/// The value of the channel which this output originated from, possibly indirectly.
 	pub channel_value_satoshis: u64,
-	/// The channel public keys and other parameters needed to generate a spending transaction or to provide to a re-derived signer through
-	/// [`ChannelSigner::provide_channel_parameters`].
+	/// The channel public keys and other parameters needed to generate a spending transaction or
+	/// to provide to a re-derived signer through [`ChannelSigner::provide_channel_parameters`].
 	///
 	/// Added as optional, but always `Some` if the descriptor was produced in v0.0.123 or later.
 	pub channel_transaction_parameters: Option<ChannelTransactionParameters>,
@@ -405,7 +406,7 @@ impl SpendableOutputDescriptor {
 									subtype: 0,
 									key: "add_tweak".as_bytes().to_vec(),
 								},
-								add_tweak.to_vec(),
+								add_tweak.as_byte_array().to_vec(),
 							)]
 							.into_iter()
 							.collect()
@@ -927,6 +928,8 @@ pub trait OutputSpender {
 
 // Primarily needed in doctests because of https://github.com/rust-lang/rust/issues/67295
 /// A dynamic [`SignerProvider`] temporarily needed for doc tests.
+///
+/// This is not exported to bindings users as it is not intended for public consumption.
 #[cfg(taproot)]
 #[doc(hidden)]
 #[deprecated(note = "Remove once taproot cfg is removed")]
@@ -934,6 +937,8 @@ pub type DynSignerProvider =
 	dyn SignerProvider<EcdsaSigner = InMemorySigner, TaprootSigner = InMemorySigner>;
 
 /// A dynamic [`SignerProvider`] temporarily needed for doc tests.
+///
+/// This is not exported to bindings users as it is not intended for public consumption.
 #[cfg(not(taproot))]
 #[doc(hidden)]
 #[deprecated(note = "Remove once taproot cfg is removed")]

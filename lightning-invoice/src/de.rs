@@ -15,7 +15,7 @@ use bitcoin::address::WitnessVersion;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256;
 use crate::prelude::*;
-use lightning::ln::PaymentSecret;
+use lightning::ln::types::PaymentSecret;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
 
@@ -43,7 +43,11 @@ mod hrp_sm {
 	}
 
 	impl States {
-		fn next_state(&self, read_symbol: char) -> Result<States, super::Bolt11ParseError> {
+		fn next_state(&self, read_byte: u8) -> Result<States, super::Bolt11ParseError> {
+			let read_symbol = match char::from_u32(read_byte.into()) {
+				Some(symb) if symb.is_ascii() => symb,
+				_ => return Err(super::Bolt11ParseError::MalformedHRP),
+			};
 			match *self {
 				States::Start => {
 					if read_symbol == 'l' {
@@ -119,7 +123,7 @@ mod hrp_sm {
 			*range = Some(new_range);
 		}
 
-		fn step(&mut self, c: char) -> Result<(), super::Bolt11ParseError> {
+		fn step(&mut self, c: u8) -> Result<(), super::Bolt11ParseError> {
 			let next_state = self.state.next_state(c)?;
 			match next_state {
 				States::ParseCurrencyPrefix => {
@@ -158,7 +162,7 @@ mod hrp_sm {
 
 	pub fn parse_hrp(input: &str) -> Result<(&str, &str, &str), super::Bolt11ParseError> {
 		let mut sm = StateMachine::new();
-		for c in input.chars() {
+		for c in input.bytes() {
 			sm.step(c)?;
 		}
 

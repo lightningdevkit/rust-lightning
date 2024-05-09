@@ -34,7 +34,7 @@ use bitcoin::secp256k1;
 use bitcoin::sighash::EcdsaSighashType;
 
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
-use crate::ln::{PaymentHash, PaymentPreimage, ChannelId};
+use crate::ln::types::{PaymentHash, PaymentPreimage, ChannelId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
 use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
@@ -1866,7 +1866,7 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// its outputs and balances (i.e. [`Self::get_claimable_balances`] returns an empty set).
 	///
 	/// This function returns true only if [`Self::get_claimable_balances`] has been empty for at least
-	/// 2016 blocks as an additional protection against any bugs resulting in spuriously empty balance sets.
+	/// 4032 blocks as an additional protection against any bugs resulting in spuriously empty balance sets.
 	pub fn is_fully_resolved<L: Logger>(&self, logger: &L) -> bool {
 		let mut is_all_funds_claimed = self.get_claimable_balances().is_empty();
 		let current_height = self.current_best_block().height;
@@ -1879,10 +1879,10 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			}
 		}
 
+		const BLOCKS_THRESHOLD: u32 = 4032; // ~four weeks
 		match (inner.balances_empty_height, is_all_funds_claimed) {
 			(Some(balances_empty_height), true) => {
 				// Claimed all funds, check if reached the blocks threshold.
-				const BLOCKS_THRESHOLD: u32 = 4032; // ~four weeks
 				return current_height >= balances_empty_height + BLOCKS_THRESHOLD;
 			},
 			(Some(_), false) => {
@@ -1898,6 +1898,9 @@ impl<Signer: WriteableEcdsaChannelSigner> ChannelMonitor<Signer> {
 			(None, true) => {
 				// Claimed all funds but `balances_empty_height` is None. It is set to the
 				// current block height.
+				log_debug!(logger,
+					"ChannelMonitor funded at {} is now fully resolved. It will become archivable in {} blocks",
+					inner.get_funding_txo().0, BLOCKS_THRESHOLD);
 				inner.balances_empty_height = Some(current_height);
 				false
 			},
@@ -4810,7 +4813,7 @@ mod tests {
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::InMemorySigner;
-	use crate::ln::{PaymentPreimage, PaymentHash, ChannelId};
+	use crate::ln::types::{PaymentPreimage, PaymentHash, ChannelId};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, RevocationBasepoint, RevocationKey};
 	use crate::ln::chan_utils::{self,HTLCOutputInCommitment, ChannelPublicKeys, ChannelTransactionParameters, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};
 	use crate::ln::channelmanager::{PaymentSendFailure, PaymentId, RecipientOnionFields};

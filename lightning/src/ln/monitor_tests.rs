@@ -15,10 +15,10 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
-use crate::ln::{channel, ChannelId};
+use crate::ln::channel;
+use crate::ln::types::ChannelId;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
 use crate::ln::msgs::ChannelMessageHandler;
-use crate::util::config::UserConfig;
 use crate::crypto::utils::sign;
 use crate::util::ser::Writeable;
 use crate::util::scid_utils::block_from_scid;
@@ -2249,7 +2249,7 @@ fn test_yield_anchors_events() {
 	// emitted by LDK, such that the consumer can attach fees to the zero fee HTLC transactions.
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let mut anchors_config = UserConfig::default();
+	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announced_channel = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;
@@ -2400,7 +2400,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let bob_persister;
 	let bob_chain_monitor;
 
-	let mut anchors_config = UserConfig::default();
+	let mut anchors_config = test_default_channel_config();
 	anchors_config.channel_handshake_config.announced_channel = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;
@@ -2876,4 +2876,41 @@ fn test_monitor_claims_with_random_signatures() {
 	do_test_monitor_claims_with_random_signatures(false, true);
 	do_test_monitor_claims_with_random_signatures(true, false);
 	do_test_monitor_claims_with_random_signatures(true, true);
+}
+
+#[test]
+fn test_event_replay_causing_monitor_replay() {
+	// In LDK 0.0.121 there was a bug where if a `PaymentSent` event caused an RAA
+	// `ChannelMonitorUpdate` hold and then the node was restarted after the `PaymentSent` event
+	// and `ChannelMonitorUpdate` both completed but without persisting the `ChannelManager` we'd
+	// replay the `ChannelMonitorUpdate` on restart (which is fine, but triggered a safety panic).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let node_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
+
+	let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 1_000_000).0;
+
+	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1]]], false, payment_preimage);
+
+	// At this point the `PaymentSent` event has not been processed but the full commitment signed
+	// dance has completed.
+	let serialized_channel_manager = nodes[0].node.encode();
+
+	// Now process the `PaymentSent` to get the final RAA `ChannelMonitorUpdate`, checking that it
+	// resulted in a `ChannelManager` persistence request.
+	nodes[0].node.get_and_clear_needs_persistence();
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, true /* expected post-event monitor update*/);
+	assert!(nodes[0].node.get_and_clear_needs_persistence());
+
+	let serialized_monitor = get_monitor!(nodes[0], chan.2).encode();
+	reload_node!(nodes[0], &serialized_channel_manager, &[&serialized_monitor], persister, new_chain_monitor, node_deserialized);
+
+	// Expect the `PaymentSent` to get replayed, this time without the duplicate monitor update
+	expect_payment_sent(&nodes[0], payment_preimage, None, false, false /* expected post-event monitor update*/);
 }

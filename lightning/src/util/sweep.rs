@@ -13,7 +13,7 @@ use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 use crate::chain::{self, BestBlock, Confirm, Filter, Listen, WatchedOutput};
 use crate::io;
 use crate::ln::msgs::DecodeError;
-use crate::ln::ChannelId;
+use crate::ln::types::ChannelId;
 use crate::prelude::Vec;
 use crate::sign::{ChangeDestinationSource, OutputSpender, SpendableOutputDescriptor};
 use crate::sync::Mutex;

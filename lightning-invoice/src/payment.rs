@@ -12,7 +12,7 @@
 use crate::Bolt11Invoice;
 use bitcoin::hashes::Hash;
 
-use lightning::ln::PaymentHash;
+use lightning::ln::types::PaymentHash;
 use lightning::ln::channelmanager::RecipientOnionFields;
 use lightning::routing::router::{PaymentParameters, RouteParameters};
 
@@ -85,7 +85,7 @@ mod tests {
 	use super::*;
 	use crate::{InvoiceBuilder, Currency};
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use lightning::ln::PaymentSecret;
+	use lightning::ln::types::PaymentSecret;
 	use lightning::routing::router::Payee;
 	use secp256k1::{SecretKey, PublicKey, Secp256k1};
 	use core::time::Duration;

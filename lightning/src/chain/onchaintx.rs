@@ -25,7 +25,7 @@ use bitcoin::secp256k1;
 use crate::chain::chaininterface::compute_feerate_sat_per_1000_weight;
 use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ChannelSigner, EntropySource, SignerProvider, ecdsa::WriteableEcdsaChannelSigner};
 use crate::ln::msgs::DecodeError;
-use crate::ln::PaymentPreimage;
+use crate::ln::types::PaymentPreimage;
 use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction};
 use crate::chain::ClaimId;
 use crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};

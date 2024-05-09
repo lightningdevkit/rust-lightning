@@ -346,7 +346,8 @@ mod tests {
 		};
 
 		// BOLT 12 test vectors
-		let invoice_request = OfferBuilder::new("A Mathematical Treatise".into(), recipient_pubkey)
+		let invoice_request = OfferBuilder::new(recipient_pubkey)
+			.description("A Mathematical Treatise".into())
 			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 100 })
 			.build_unchecked()
 			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
@@ -371,7 +372,7 @@ mod tests {
 
         #[test]
         fn compute_tagged_hash() {
-                let unsigned_invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey())
+                let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
                         .amount_msats(1000)
                         .build().unwrap()
                         .request_invoice(vec![1; 32], payer_pubkey()).unwrap()
@@ -400,7 +401,7 @@ mod tests {
 			KeyPair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
-		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey)
+		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
 			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
@@ -432,7 +433,7 @@ mod tests {
 			KeyPair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
-		let invoice_request = OfferBuilder::new("foo".into(), recipient_pubkey)
+		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
 			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()

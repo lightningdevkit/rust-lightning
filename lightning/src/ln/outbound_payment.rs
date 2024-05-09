@@ -15,7 +15,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::events::{self, PaymentFailureReason};
-use crate::ln::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{ChannelDetails, EventCompletionAction, HTLCSource, PaymentId};
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
@@ -1837,7 +1837,7 @@ mod tests {
 	use core::time::Duration;
 
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
-	use crate::ln::PaymentHash;
+	use crate::ln::types::PaymentHash;
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
@@ -2194,7 +2194,7 @@ mod tests {
 		assert!(outbound_payments.has_pending_payments());
 
 		let created_at = now() - DEFAULT_RELATIVE_EXPIRY;
-		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
@@ -2237,7 +2237,7 @@ mod tests {
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
-		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
@@ -2296,7 +2296,7 @@ mod tests {
 		let payment_id = PaymentId([0; 32]);
 		let expiration = StaleExpiration::AbsoluteTimeout(Duration::from_secs(100));
 
-		let invoice = OfferBuilder::new("foo".into(), recipient_pubkey())
+		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
