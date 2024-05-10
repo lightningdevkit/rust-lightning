@@ -923,13 +923,12 @@ where
 		&self, contents: T, destination: Destination, reply_path: Option<BlindedPath>,
 		log_suffix: fmt::Arguments
 	) -> Result<SendSuccess, SendError> {
-		let mut logger = WithContext::from(&self.logger, None, None);
-		let result = self.find_path(destination)
-			.and_then(|path| {
-				let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
-				logger = WithContext::from(&self.logger, first_hop, None);
-				self.enqueue_onion_message(path, contents, reply_path, log_suffix)
-			});
+		let mut logger = WithContext::from(&self.logger, None, None, None);
+		let result = self.find_path(destination).and_then(|path| {
+			let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
+			logger = WithContext::from(&self.logger, first_hop, None, None);
+			self.enqueue_onion_message(path, contents, reply_path, log_suffix)
+		});
 
 		match result.as_ref() {
 			Err(SendError::GetNodeIdFailed) => {
@@ -1149,7 +1148,7 @@ where
 	CMH::Target: CustomOnionMessageHandler,
 {
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage) {
-		let logger = WithContext::from(&self.logger, Some(*peer_node_id), None);
+		let logger = WithContext::from(&self.logger, Some(*peer_node_id), None, None);
 		match self.peel_onion_message(msg) {
 			Ok(PeeledOnion::Receive(message, path_id, reply_path)) => {
 				log_trace!(

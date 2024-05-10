@@ -923,25 +923,28 @@ pub(super) struct WithChannelContext<'a, L: Deref> where L::Target: Logger {
 	pub logger: &'a L,
 	pub peer_id: Option<PublicKey>,
 	pub channel_id: Option<ChannelId>,
+	pub payment_hash: Option<PaymentHash>,
 }
 
 impl<'a, L: Deref> Logger for WithChannelContext<'a, L> where L::Target: Logger {
 	fn log(&self, mut record: Record) {
 		record.peer_id = self.peer_id;
 		record.channel_id = self.channel_id;
+		record.payment_hash = self.payment_hash;
 		self.logger.log(record)
 	}
 }
 
 impl<'a, 'b, L: Deref> WithChannelContext<'a, L>
 where L::Target: Logger {
-	pub(super) fn from<S: Deref>(logger: &'a L, context: &'b ChannelContext<S>) -> Self
+	pub(super) fn from<S: Deref>(logger: &'a L, context: &'b ChannelContext<S>, payment_hash: Option<PaymentHash>) -> Self
 	where S::Target: SignerProvider
 	{
 		WithChannelContext {
 			logger,
 			peer_id: Some(context.counterparty_node_id),
 			channel_id: Some(context.channel_id),
+			payment_hash
 		}
 	}
 }
@@ -1571,7 +1574,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			L::Target: Logger,
 			SP::Target: SignerProvider,
 	{
-		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(open_channel_fields.temporary_channel_id));
+		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(open_channel_fields.temporary_channel_id), None);
 		let announced_channel = if (open_channel_fields.channel_flags & 1) == 1 { true } else { false };
 
 		let channel_value_satoshis = our_funding_satoshis.saturating_add(open_channel_fields.funding_satoshis);
@@ -7859,7 +7862,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			  F::Target: FeeEstimator,
 			  L::Target: Logger,
 	{
-		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(msg.common_fields.temporary_channel_id));
+		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(msg.common_fields.temporary_channel_id), None);
 
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
