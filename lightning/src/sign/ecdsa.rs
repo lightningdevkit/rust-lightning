@@ -11,7 +11,6 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::msgs::UnsignedChannelAnnouncement;
 use crate::ln::types::PaymentPreimage;
-use crate::util::ser::Writeable;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -211,12 +210,3 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 		&self, msg: &UnsignedChannelAnnouncement, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
 }
-
-/// A writeable signer.
-///
-/// There will always be two instances of a signer per channel, one occupied by the
-/// [`ChannelManager`] and another by the channel's [`ChannelMonitor`].
-///
-/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
-pub trait WriteableEcdsaChannelSigner: EcdsaChannelSigner + Writeable {}

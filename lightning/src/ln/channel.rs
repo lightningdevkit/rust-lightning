@@ -37,7 +37,7 @@ use crate::chain::BestBlock;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
 use crate::events::ClosureReason;
 use crate::routing::gossip::NodeId;
@@ -3670,7 +3670,7 @@ impl FailHTLCMessageName for msgs::UpdateFailMalformedHTLC {
 
 impl<SP: Deref> Channel<SP> where
 	SP::Target: SignerProvider,
-	<SP::Target as SignerProvider>::EcdsaSigner: WriteableEcdsaChannelSigner
+	<SP::Target as SignerProvider>::EcdsaSigner: EcdsaChannelSigner
 {
 	fn check_remote_fee<F: Deref, L: Deref>(
 		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,

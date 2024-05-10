@@ -65,7 +65,7 @@ use crate::io::{self, Error};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::prelude::*;
-use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
+use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
@@ -709,9 +709,7 @@ impl HTLCDescriptor {
 	}
 
 	/// Derives the channel signer required to sign the HTLC input.
-	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(
-		&self, signer_provider: &SP,
-	) -> S
+	pub fn derive_channel_signer<S: EcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
 	where
 		SP::Target: SignerProvider<EcdsaSigner = S>,
 	{
@@ -942,8 +940,8 @@ pub type DynSignerProvider = dyn SignerProvider<EcdsaSigner = InMemorySigner>;
 
 /// A trait that can return signer instances for individual channels.
 pub trait SignerProvider {
-	/// A type which implements [`WriteableEcdsaChannelSigner`] which will be returned by [`Self::derive_channel_signer`].
-	type EcdsaSigner: WriteableEcdsaChannelSigner;
+	/// A type which implements [`EcdsaChannelSigner`] which will be returned by [`Self::derive_channel_signer`].
+	type EcdsaSigner: EcdsaChannelSigner;
 	#[cfg(taproot)]
 	/// A type which implements [`TaprootChannelSigner`]
 	type TaprootSigner: TaprootChannelSigner;
@@ -970,7 +968,7 @@ pub trait SignerProvider {
 
 	/// Reads a [`Signer`] for this [`SignerProvider`] from the given input stream.
 	/// This is only called during deserialization of other objects which contain
-	/// [`WriteableEcdsaChannelSigner`]-implementing objects (i.e., [`ChannelMonitor`]s and [`ChannelManager`]s).
+	/// [`EcdsaChannelSigner`]-implementing objects (i.e., [`ChannelMonitor`]s and [`ChannelManager`]s).
 	/// The bytes are exactly those which `<Self::Signer as Writeable>::write()` writes, and
 	/// contain no versioning scheme. You may wish to include your own version prefix and ensure
 	/// you've read all of the provided bytes to ensure no corruption occurred.
@@ -1014,7 +1012,7 @@ pub trait ChangeDestinationSource {
 	fn get_change_destination_script(&self) -> Result<ScriptBuf, ()>;
 }
 
-/// A simple implementation of [`WriteableEcdsaChannelSigner`] that just keeps the private keys in memory.
+/// A simple implementation of [`EcdsaChannelSigner`] that just keeps the private keys in memory.
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
 /// a secure external signer.
@@ -1742,8 +1740,6 @@ const SERIALIZATION_VERSION: u8 = 1;
 
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl WriteableEcdsaChannelSigner for InMemorySigner {}
-
 impl Writeable for InMemorySigner {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
@@ -1939,7 +1935,7 @@ impl KeysManager {
 		self.node_secret
 	}
 
-	/// Derive an old [`WriteableEcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
+	/// Derive an old [`EcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
 	pub fn derive_channel_keys(
 		&self, channel_value_satoshis: u64, params: &[u8; 32],
 	) -> InMemorySigner {
