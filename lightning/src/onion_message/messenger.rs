@@ -47,6 +47,70 @@ use {
 
 pub(super) const MAX_TIMER_TICKS: usize = 2;
 
+/// A trivial trait which describes any [`OnionMessenger`].
+///
+/// This is not exported to bindings users as general cover traits aren't useful in other
+/// languages.
+pub trait AOnionMessenger {
+	/// A type implementing [`EntropySource`]
+	type EntropySource: EntropySource + ?Sized;
+	/// A type that may be dereferenced to [`Self::EntropySource`]
+	type ES: Deref<Target = Self::EntropySource>;
+	/// A type implementing [`NodeSigner`]
+	type NodeSigner: NodeSigner + ?Sized;
+	/// A type that may be dereferenced to [`Self::NodeSigner`]
+	type NS: Deref<Target = Self::NodeSigner>;
+	/// A type implementing [`Logger`]
+	type Logger: Logger + ?Sized;
+	/// A type that may be dereferenced to [`Self::Logger`]
+	type L: Deref<Target = Self::Logger>;
+	/// A type implementing [`NodeIdLookUp`]
+	type NodeIdLookUp: NodeIdLookUp + ?Sized;
+	/// A type that may be dereferenced to [`Self::NodeIdLookUp`]
+	type NL: Deref<Target = Self::NodeIdLookUp>;
+	/// A type implementing [`MessageRouter`]
+	type MessageRouter: MessageRouter + ?Sized;
+	/// A type that may be dereferenced to [`Self::MessageRouter`]
+	type MR: Deref<Target = Self::MessageRouter>;
+	/// A type implementing [`OffersMessageHandler`]
+	type OffersMessageHandler: OffersMessageHandler + ?Sized;
+	/// A type that may be dereferenced to [`Self::OffersMessageHandler`]
+	type OMH: Deref<Target = Self::OffersMessageHandler>;
+	/// A type implementing [`CustomOnionMessageHandler`]
+	type CustomOnionMessageHandler: CustomOnionMessageHandler + ?Sized;
+	/// A type that may be dereferenced to [`Self::CustomOnionMessageHandler`]
+	type CMH: Deref<Target = Self::CustomOnionMessageHandler>;
+	/// Returns a reference to the actual [`OnionMessenger`] object.
+	fn get_om(&self) -> &OnionMessenger<Self::ES, Self::NS, Self::L, Self::NL, Self::MR, Self::OMH, Self::CMH>;
+}
+
+impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> AOnionMessenger
+for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	L::Target: Logger,
+	NL::Target: NodeIdLookUp,
+	MR::Target: MessageRouter,
+	OMH::Target: OffersMessageHandler,
+	CMH::Target: CustomOnionMessageHandler,
+{
+	type EntropySource = ES::Target;
+	type ES = ES;
+	type NodeSigner = NS::Target;
+	type NS = NS;
+	type Logger = L::Target;
+	type L = L;
+	type NodeIdLookUp = NL::Target;
+	type NL = NL;
+	type MessageRouter = MR::Target;
+	type MR = MR;
+	type OffersMessageHandler = OMH::Target;
+	type OMH = OMH;
+	type CustomOnionMessageHandler = CMH::Target;
+	type CMH = CMH;
+	fn get_om(&self) -> &OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> { self }
+}
+
 /// A sender, receiver and forwarder of [`OnionMessage`]s.
 ///
 /// # Handling Messages
