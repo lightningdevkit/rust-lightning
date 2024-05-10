@@ -30,6 +30,7 @@ pub mod base32;
 pub(crate) mod base32;
 
 pub(crate) mod atomic_counter;
+pub(crate) mod async_poll;
 pub(crate) mod byte_utils;
 pub(crate) mod transaction_utils;
 pub(crate) mod time;
