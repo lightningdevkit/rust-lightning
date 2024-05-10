@@ -3848,7 +3848,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		todo!();
 	}
 
-	#[cfg(any(dual_funding, splicing))]
+	/// Check is a splice is currently in progress
+	/// Can be called regardless of `splicing` configuration. TODO: remove this note once `cfg(splicing)` is being removed
 	pub fn is_splice_pending(&self) -> bool {
 		#[cfg(splicing)]
 		return self.pending_splice_post.is_some();
@@ -3891,7 +3892,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	pub(crate) fn splice_start<L: Deref>(&mut self, is_outgoing: bool, relative_satoshis: i64, logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger
 	{
-		if self.pending_splice_post.is_some() {
+		if self.is_splice_pending() {
 			return Err(ChannelError::Warn(format!("Internal error: Channel is already splicing, channel_id {}", self.channel_id())));
 		}
 
@@ -3944,7 +3945,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	pub(crate) fn splice_complete<L: Deref>(&mut self, logger: &L) -> Result<(), ChannelError>
 	where L::Target: Logger
 	{
-		if self.pending_splice_post.is_none() {
+		if !self.is_splice_pending() {
 			return Err(ChannelError::Warn(format!("Internal error: Channel is not in currently splicing, channel_id {}", self.channel_id())));
 		}
 
@@ -9095,37 +9096,6 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		Ok((channel, commitment_signed, Some(funding_ready_for_sig_event)))
 	}
 
-	/*
-	/// #SPLICING STEP4 A
-	/// Get the splice_ack message that can be sent in response to splice initiation
-	/// TODO move to ChannelContext
-	#[cfg(splicing)]
-	pub fn get_splice_ack(&mut self, chain_hash: ChainHash) -> Result<msgs::SpliceAck, ChannelError> {
-		if self.context.is_outbound() {
-			panic!("Tried to accept a splice on an outound channel?");
-		}
-
-		let pending_splice = match &self.context.pending_splice_post {
-			None => return Err(ChannelError::Close("get_splice_ack() is invalid on a channel with no active splice".to_owned())),
-			Some(ps) => ps.clone(),
-		};
-
-		// TODO checks
-
-		// TODO check
-		// self.context.channel_state = ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
-
-		let keys = self.context.get_holder_pubkeys();
-		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
-		Ok(msgs::SpliceAck {
-			chain_hash,
-			channel_id: self.context.channel_id, // pending_splice.pre_channel_id.unwrap(), // TODO
-			relative_satoshis: pending_splice.relative_satoshis(), //self.context.get_value_satoshis()),
-			funding_pubkey: keys.funding_pubkey,
-		})
-	}
-	*/
-	
 	pub fn accept_channel_v2(&mut self, msg: &msgs::AcceptChannelV2, default_limits: &ChannelHandshakeLimits,
 		their_features: &InitFeatures) -> Result<(), ChannelError> {
 		// According to the spec we MUST fail the negotiation if `require_confirmed_inputs` is set in
@@ -9386,7 +9356,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 
 		let pending_splice = match &self.context.pending_splice_post {
 			None => return Err(ChannelError::Close("get_splice_ack() is invalid on a channel with no active splice".to_owned())),
-			Some(ps) => ps.clone(),
+			Some(ps) => ps,
 		};
 
 		// TODO checks

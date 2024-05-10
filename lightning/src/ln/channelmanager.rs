@@ -2911,10 +2911,7 @@ macro_rules! send_splice_locked {
 
 macro_rules! emit_channel_pending_event {
 	($locked_events: expr, $channel: expr) => {
-		#[cfg(not(splicing))]
-		let is_splice = false;
-		#[cfg(splicing)]
-		let is_splice = $channel.context.pending_splice_post.is_some();
+		let is_splice = $channel.context.is_splice_pending();
 		if $channel.context.should_emit_channel_pending_event() {
 			$locked_events.push_back((events::Event::ChannelPending {
 				channel_id: $channel.context.channel_id(),
@@ -2949,10 +2946,7 @@ macro_rules! emit_channel_ready_event_with_splice {
 
 macro_rules! emit_channel_ready_event {
 	($locked_events: expr, $channel: expr) => {
-		#[cfg(not(splicing))]
-		let is_splice = false;
-		#[cfg(splicing)]
-		let is_splice = $channel.context.pending_splice_post.is_some();
+		let is_splice = $channel.context.is_splice_pending();
 		emit_channel_ready_event_with_splice!($locked_events, $channel, is_splice);
 	}
 }
