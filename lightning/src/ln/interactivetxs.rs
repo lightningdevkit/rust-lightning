@@ -23,8 +23,8 @@ use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::msgs;
-use crate::ln::msgs::SerialId;
 use crate::ln::types::ChannelId;
+type SerialId = u64;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 use crate::util::ser::TransactionU16LenLimited;
 
