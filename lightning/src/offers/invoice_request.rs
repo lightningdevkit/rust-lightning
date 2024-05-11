@@ -1247,7 +1247,7 @@ mod tests {
 		assert_eq!(unsigned_invoice_request.payer_metadata(), &[1; 32]);
 		assert_eq!(unsigned_invoice_request.chains(), vec![ChainHash::using_genesis_block(Network::Bitcoin)]);
 		assert_eq!(unsigned_invoice_request.metadata(), None);
-		assert_eq!(unsigned_invoice_request.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
+		assert_eq!(unsigned_invoice_request.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(unsigned_invoice_request.description(), Some(PrintableString("")));
 		assert_eq!(unsigned_invoice_request.offer_features(), &OfferFeatures::empty());
 		assert_eq!(unsigned_invoice_request.absolute_expiry(), None);
@@ -1279,7 +1279,7 @@ mod tests {
 		assert_eq!(invoice_request.payer_metadata(), &[1; 32]);
 		assert_eq!(invoice_request.chains(), vec![ChainHash::using_genesis_block(Network::Bitcoin)]);
 		assert_eq!(invoice_request.metadata(), None);
-		assert_eq!(invoice_request.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
+		assert_eq!(invoice_request.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(invoice_request.description(), Some(PrintableString("")));
 		assert_eq!(invoice_request.offer_features(), &OfferFeatures::empty());
 		assert_eq!(invoice_request.absolute_expiry(), None);

@@ -697,7 +697,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`Offer::amount`]: crate::offers::offer::Offer::amount
-	pub fn amount(&$self) -> Option<&Amount> {
+	pub fn amount(&$self) -> Option<Amount> {
 		$contents.amount()
 	}
 
@@ -944,7 +944,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn amount(&self) -> Option<&Amount> {
+	fn amount(&self) -> Option<Amount> {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } =>
 				invoice_request.inner.offer.amount(),
@@ -1545,7 +1545,7 @@ mod tests {
 		assert_eq!(unsigned_invoice.payer_metadata(), &[1; 32]);
 		assert_eq!(unsigned_invoice.offer_chains(), Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)]));
 		assert_eq!(unsigned_invoice.metadata(), None);
-		assert_eq!(unsigned_invoice.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
+		assert_eq!(unsigned_invoice.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(unsigned_invoice.description(), Some(PrintableString("")));
 		assert_eq!(unsigned_invoice.offer_features(), Some(&OfferFeatures::empty()));
 		assert_eq!(unsigned_invoice.absolute_expiry(), None);
@@ -1589,7 +1589,7 @@ mod tests {
 		assert_eq!(invoice.payer_metadata(), &[1; 32]);
 		assert_eq!(invoice.offer_chains(), Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)]));
 		assert_eq!(invoice.metadata(), None);
-		assert_eq!(invoice.amount(), Some(&Amount::Bitcoin { amount_msats: 1000 }));
+		assert_eq!(invoice.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(invoice.description(), Some(PrintableString("")));
 		assert_eq!(invoice.offer_features(), Some(&OfferFeatures::empty()));
 		assert_eq!(invoice.absolute_expiry(), None);
