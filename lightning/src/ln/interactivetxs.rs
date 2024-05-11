@@ -34,8 +34,9 @@ use crate::ln::chan_utils::{
 use crate::ln::channel::{FundingNegotiationContext, TOTAL_BITCOIN_SUPPLY_SATOSHIS};
 use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;
-use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
+use crate::ln::msgs::{MessageSendEvent, TxSignatures};
 use crate::ln::types::ChannelId;
+type SerialId = u64;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
 
 use core::fmt::Display;
