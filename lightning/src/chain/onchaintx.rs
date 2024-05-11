@@ -23,7 +23,7 @@ use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
 use crate::chain::chaininterface::compute_feerate_sat_per_1000_weight;
-use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ChannelSigner, EntropySource, SignerProvider, ecdsa::WriteableEcdsaChannelSigner};
+use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ChannelSigner, EntropySource, SignerProvider, ecdsa::EcdsaChannelSigner};
 use crate::ln::msgs::DecodeError;
 use crate::ln::types::PaymentPreimage;
 use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction};
@@ -33,7 +33,7 @@ use crate::chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
 use crate::chain::package::{PackageSolvingData, PackageTemplate};
 use crate::chain::transaction::MaybeSignedTransaction;
 use crate::util::logger::Logger;
-use crate::util::ser::{Readable, ReadableArgs, MaybeReadable, UpgradableRequired, Writer, Writeable, VecWriter};
+use crate::util::ser::{Readable, ReadableArgs, MaybeReadable, UpgradableRequired, Writer, Writeable};
 
 use crate::io;
 use crate::prelude::*;
@@ -225,7 +225,7 @@ pub(crate) enum FeerateStrategy {
 /// OnchainTxHandler receives claiming requests, aggregates them if it's sound, broadcast and
 /// do RBF bumping if possible.
 #[derive(Clone)]
-pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
+pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
 	channel_value_satoshis: u64,
 	channel_keys_id: [u8; 32],
 	destination_script: ScriptBuf,
@@ -281,7 +281,7 @@ pub struct OnchainTxHandler<ChannelSigner: WriteableEcdsaChannelSigner> {
 	pub(super) secp_ctx: Secp256k1<secp256k1::All>,
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner> PartialEq for OnchainTxHandler<ChannelSigner> {
+impl<ChannelSigner: EcdsaChannelSigner> PartialEq for OnchainTxHandler<ChannelSigner> {
 	fn eq(&self, other: &Self) -> bool {
 		// `signer`, `secp_ctx`, and `pending_claim_events` are excluded on purpose.
 		self.channel_value_satoshis == other.channel_value_satoshis &&
@@ -300,7 +300,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> PartialEq for OnchainTxHandler<
 const SERIALIZATION_VERSION: u8 = 1;
 const MIN_SERIALIZATION_VERSION: u8 = 1;
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
+impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
@@ -312,12 +312,9 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner>
 
 		self.channel_transaction_parameters.write(writer)?;
 
-		let mut key_data = VecWriter(Vec::new());
-		self.signer.write(&mut key_data)?;
-		assert!(key_data.0.len() < core::usize::MAX);
-		assert!(key_data.0.len() < core::u32::MAX as usize);
-		(key_data.0.len() as u32).write(writer)?;
-		writer.write_all(&key_data.0[..])?;
+		// Write a zero-length signer. The data is no longer deserialized as of version 0.0.113 and
+		// downgrades before version 0.0.113 are no longer supported as of version 0.0.119.
+		0u32.write(writer)?;
 
 		writer.write_all(&(self.pending_claim_requests.len() as u64).to_be_bytes())?;
 		for (ref ancestor_claim_txid, request) in self.pending_claim_requests.iter() {
@@ -443,7 +440,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
+impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn new(
 		channel_value_satoshis: u64, channel_keys_id: [u8; 32], destination_script: ScriptBuf,
 		signer: ChannelSigner, channel_parameters: ChannelTransactionParameters,

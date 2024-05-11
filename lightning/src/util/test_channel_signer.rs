@@ -13,7 +13,7 @@ use crate::ln::channel_keys::{HtlcKey};
 use crate::ln::msgs;
 use crate::ln::types::PaymentPreimage;
 use crate::sign::{InMemorySigner, ChannelSigner};
-use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
+use crate::sign::ecdsa::EcdsaChannelSigner;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -296,8 +296,6 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		self.inner.sign_channel_announcement_with_funding_key(msg, secp_ctx)
 	}
 }
-
-impl WriteableEcdsaChannelSigner for TestChannelSigner {}
 
 #[cfg(taproot)]
 impl TaprootChannelSigner for TestChannelSigner {

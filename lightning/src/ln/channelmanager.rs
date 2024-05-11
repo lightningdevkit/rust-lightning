@@ -68,7 +68,7 @@ use crate::offers::refund::{Refund, RefundBuilder};
 use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
-use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -1061,8 +1061,8 @@ pub trait AChannelManager {
 	type NodeSigner: NodeSigner + ?Sized;
 	/// A type that may be dereferenced to [`Self::NodeSigner`].
 	type NS: Deref<Target = Self::NodeSigner>;
-	/// A type implementing [`WriteableEcdsaChannelSigner`].
-	type Signer: WriteableEcdsaChannelSigner + Sized;
+	/// A type implementing [`EcdsaChannelSigner`].
+	type Signer: EcdsaChannelSigner + Sized;
 	/// A type implementing [`SignerProvider`] for [`Self::Signer`].
 	type SignerProvider: SignerProvider<EcdsaSigner= Self::Signer> + ?Sized;
 	/// A type that may be dereferenced to [`Self::SignerProvider`].

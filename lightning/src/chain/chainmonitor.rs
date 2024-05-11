@@ -32,7 +32,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
-use crate::sign::ecdsa::WriteableEcdsaChannelSigner;
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::events;
 use crate::events::{Event, EventHandler};
 use crate::util::logger::{Logger, WithContext};
@@ -101,7 +101,7 @@ use bitcoin::secp256k1::PublicKey;
 ///
 /// [`TrustedCommitmentTransaction::revokeable_output_index`]: crate::ln::chan_utils::TrustedCommitmentTransaction::revokeable_output_index
 /// [`TrustedCommitmentTransaction::build_to_local_justice_tx`]: crate::ln::chan_utils::TrustedCommitmentTransaction::build_to_local_justice_tx
-pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
+pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// Persist a new channel's data in response to a [`chain::Watch::watch_channel`] call. This is
 	/// called by [`ChannelManager`] for new channels, or may be called directly, e.g. on startup.
 	///
@@ -163,7 +163,7 @@ pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
 	fn archive_persisted_channel(&self, channel_funding_outpoint: OutPoint);
 }
 
-struct MonitorHolder<ChannelSigner: WriteableEcdsaChannelSigner> {
+struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
 	monitor: ChannelMonitor<ChannelSigner>,
 	/// The full set of pending monitor updates for this Channel.
 	///
@@ -174,7 +174,7 @@ struct MonitorHolder<ChannelSigner: WriteableEcdsaChannelSigner> {
 	pending_monitor_updates: Mutex<Vec<u64>>,
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner> MonitorHolder<ChannelSigner> {
+impl<ChannelSigner: EcdsaChannelSigner> MonitorHolder<ChannelSigner> {
 	fn has_pending_updates(&self, pending_monitor_updates_lock: &MutexGuard<Vec<u64>>) -> bool {
 		!pending_monitor_updates_lock.is_empty()
 	}
@@ -184,12 +184,12 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> MonitorHolder<ChannelSigner> {
 ///
 /// Note that this holds a mutex in [`ChainMonitor`] and may block other events until it is
 /// released.
-pub struct LockedChannelMonitor<'a, ChannelSigner: WriteableEcdsaChannelSigner> {
+pub struct LockedChannelMonitor<'a, ChannelSigner: EcdsaChannelSigner> {
 	lock: RwLockReadGuard<'a, HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
 	funding_txo: OutPoint,
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner> Deref for LockedChannelMonitor<'_, ChannelSigner> {
+impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, ChannelSigner> {
 	type Target = ChannelMonitor<ChannelSigner>;
 	fn deref(&self) -> &ChannelMonitor<ChannelSigner> {
 		&self.lock.get(&self.funding_txo).expect("Checked at construction").monitor
@@ -212,7 +212,7 @@ impl<ChannelSigner: WriteableEcdsaChannelSigner> Deref for LockedChannelMonitor<
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [module-level documentation]: crate::chain::chainmonitor
 /// [`rebroadcast_pending_claims`]: Self::rebroadcast_pending_claims
-pub struct ChainMonitor<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 	where C::Target: chain::Filter,
         T::Target: BroadcasterInterface,
         F::Target: FeeEstimator,
@@ -236,7 +236,7 @@ pub struct ChainMonitor<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T:
 	event_notifier: Notifier,
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
+impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> ChainMonitor<ChannelSigner, C, T, F, L, P>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
 	    F::Target: FeeEstimator,
@@ -623,7 +623,7 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 chain::Listen for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where
 	C::Target: chain::Filter,
@@ -652,7 +652,7 @@ where
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
+impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref>
 chain::Confirm for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where
 	C::Target: chain::Filter,
@@ -706,7 +706,7 @@ where
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref >
+impl<ChannelSigner: EcdsaChannelSigner, C: Deref , T: Deref , F: Deref , L: Deref , P: Deref >
 chain::Watch<ChannelSigner> for ChainMonitor<ChannelSigner, C, T, F, L, P>
 where C::Target: chain::Filter,
 	    T::Target: BroadcasterInterface,
@@ -841,7 +841,7 @@ where C::Target: chain::Filter,
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P>
+impl<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F: Deref, L: Deref, P: Deref> events::EventsProvider for ChainMonitor<ChannelSigner, C, T, F, L, P>
 	where C::Target: chain::Filter,
 	      T::Target: BroadcasterInterface,
 	      F::Target: FeeEstimator,

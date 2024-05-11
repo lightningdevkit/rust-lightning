@@ -28,7 +28,7 @@ use crate::prelude::*;
 use crate::sign::{
 	ChannelDerivationParameters, HTLCDescriptor, SignerProvider, P2WPKH_WITNESS_WEIGHT
 };
-use crate::sign::ecdsa::{EcdsaChannelSigner, WriteableEcdsaChannelSigner};
+use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
@@ -92,7 +92,7 @@ impl AnchorDescriptor {
 	}
 
 	/// Derives the channel signer required to sign the anchor input.
-	pub fn derive_channel_signer<S: WriteableEcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
+	pub fn derive_channel_signer<S: EcdsaChannelSigner, SP: Deref>(&self, signer_provider: &SP) -> S
 	where
 		SP::Target: SignerProvider<EcdsaSigner= S>
 	{

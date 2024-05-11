@@ -21,7 +21,7 @@ use crate::prelude::*;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
-use crate::sign::{EntropySource, ecdsa::WriteableEcdsaChannelSigner, SignerProvider};
+use crate::sign::{EntropySource, ecdsa::EcdsaChannelSigner, SignerProvider};
 use crate::chain::transaction::OutPoint;
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, CLOSED_CHANNEL_UPDATE_ID};
 use crate::ln::channelmanager::AChannelManager;
@@ -202,7 +202,7 @@ where
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSigner> for K {
+impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSigner> for K {
 	// TODO: We really need a way for the persister to inform the user that its time to crash/shut
 	// down once these start returning failure.
 	// Then we should return InProgress rather than UnrecoverableError, implying we should probably
@@ -637,7 +637,7 @@ where
 	}
 }
 
-impl<ChannelSigner: WriteableEcdsaChannelSigner, K: Deref, L: Deref, ES: Deref, SP: Deref>
+impl<ChannelSigner: EcdsaChannelSigner, K: Deref, L: Deref, ES: Deref, SP: Deref>
 	Persist<ChannelSigner> for MonitorUpdatingPersister<K, L, ES, SP>
 where
 	K::Target: KVStore,
@@ -1247,7 +1247,7 @@ mod tests {
 			.is_err());
 	}
 
-	fn persist_fn<P: Deref, ChannelSigner: WriteableEcdsaChannelSigner>(_persist: P) -> bool where P::Target: Persist<ChannelSigner> {
+	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool where P::Target: Persist<ChannelSigner> {
 		true
 	}
 
