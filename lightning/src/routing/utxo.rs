@@ -14,6 +14,7 @@
 //! order to announce a channel. This module handles that checking.
 
 use bitcoin::TxOut;
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::ChainHash;
 
 use hex::DisplayHex;
@@ -455,12 +456,12 @@ impl PendingChecks {
 	pub(super) fn check_channel_announcement<U: Deref>(&self,
 		utxo_lookup: &Option<U>, msg: &msgs::UnsignedChannelAnnouncement,
 		full_msg: Option<&msgs::ChannelAnnouncement>
-	) -> Result<Option<u64>, msgs::LightningError> where U::Target: UtxoLookup {
+	) -> Result<Option<Amount>, msgs::LightningError> where U::Target: UtxoLookup {
 		let handle_result = |res| {
 			match res {
 				Ok(TxOut { value, script_pubkey }) => {
 					let expected_script =
-						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_array(), msg.bitcoin_key_2.as_array()).to_v0_p2wsh();
+						make_funding_redeemscript_from_slices(msg.bitcoin_key_1.as_array(), msg.bitcoin_key_2.as_array()).to_p2wsh();
 					if script_pubkey != expected_script {
 						return Err(LightningError{
 							err: format!("Channel announcement key ({}) didn't match on-chain script ({})",
@@ -564,6 +565,7 @@ mod tests {
 	use crate::routing::gossip::tests::*;
 	use crate::util::test_utils::{TestChainSource, TestLogger};
 
+	use bitcoin::amount::Amount;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 	use core::sync::atomic::Ordering;
@@ -610,7 +612,7 @@ mod tests {
 
 		let future = UtxoFuture::new();
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
 		network_graph.update_channel_from_announcement(&valid_announcement, &Some(&chain_source)).unwrap();
@@ -632,7 +634,7 @@ mod tests {
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 0, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script }));
 		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
 		network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).unwrap();
 
@@ -660,7 +662,7 @@ mod tests {
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: bitcoin::ScriptBuf::new() }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: bitcoin::ScriptBuf::new() }));
 		assert!(network_graph.read_only().channels().get(&valid_announcement.contents.short_channel_id).is_none());
 	}
 
@@ -709,7 +711,7 @@ mod tests {
 			"Awaiting channel_announcement validation to accept channel_update");
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 
 		assert!(network_graph.read_only().channels()
 			.get(&valid_announcement.contents.short_channel_id).unwrap().one_to_two.is_some());
@@ -745,7 +747,7 @@ mod tests {
 			"Awaiting channel_announcement validation to accept channel_update");
 
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 
 		assert_eq!(chan_update_a.contents.timestamp, chan_update_b.contents.timestamp);
 		let graph_lock = network_graph.read_only();
@@ -792,7 +794,7 @@ mod tests {
 
 		// Still, if we resolve the original future, the original channel will be accepted.
 		future.resolve_without_forwarding(&network_graph,
-			Ok(TxOut { value: 1_000_000, script_pubkey: good_script }));
+			Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		assert!(!network_graph.read_only().channels()
 			.get(&valid_announcement.contents.short_channel_id).unwrap()
 			.announcement_message.as_ref().unwrap()

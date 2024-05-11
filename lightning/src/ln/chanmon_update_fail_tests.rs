@@ -14,7 +14,7 @@
 
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};

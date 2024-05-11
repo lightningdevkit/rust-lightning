@@ -1,11 +1,10 @@
 //! Abstractions for scripts used in the Lightning Network.
 
+use bitcoin::{WitnessProgram, WPubkeyHash, WScriptHash};
 use bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0 as SEGWIT_V0;
 use bitcoin::blockdata::script::{Script, ScriptBuf};
 use bitcoin::hashes::Hash;
-use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::address::WitnessProgram;
 
 use crate::ln::channelmanager;
 use crate::ln::features::InitFeatures;
@@ -67,12 +66,12 @@ impl ShutdownScript {
 
 	/// Generates a P2WPKH script pubkey from the given [`WPubkeyHash`].
 	pub fn new_p2wpkh(pubkey_hash: &WPubkeyHash) -> Self {
-		Self(ShutdownScriptImpl::Bolt2(ScriptBuf::new_v0_p2wpkh(pubkey_hash)))
+		Self(ShutdownScriptImpl::Bolt2(ScriptBuf::new_p2wpkh(pubkey_hash)))
 	}
 
 	/// Generates a P2WSH script pubkey from the given [`WScriptHash`].
 	pub fn new_p2wsh(script_hash: &WScriptHash) -> Self {
-		Self(ShutdownScriptImpl::Bolt2(ScriptBuf::new_v0_p2wsh(script_hash)))
+		Self(ShutdownScriptImpl::Bolt2(ScriptBuf::new_p2wsh(script_hash)))
 	}
 
 	/// Generates a witness script pubkey from the given segwit version and program.
@@ -114,7 +113,7 @@ impl ShutdownScript {
 /// Check if a given script is compliant with BOLT 2's shutdown script requirements for the given
 /// counterparty features.
 pub(crate) fn is_bolt2_compliant(script: &Script, features: &InitFeatures) -> bool {
-	if script.is_p2pkh() || script.is_p2sh() || script.is_v0_p2wpkh() || script.is_v0_p2wsh() {
+	if script.is_p2pkh() || script.is_p2sh() || script.is_p2wpkh() || script.is_p2wsh() {
 		true
 	} else if features.supports_shutdown_anysegwit() {
 		script.is_witness_program() && script.as_bytes()[0] != SEGWIT_V0.to_u8()
@@ -151,7 +150,7 @@ impl Into<ScriptBuf> for ShutdownScript {
 	fn into(self) -> ScriptBuf {
 		match self.0 {
 			ShutdownScriptImpl::Legacy(pubkey) =>
-				ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::hash(&pubkey.serialize())),
+				ScriptBuf::new_p2wpkh(&WPubkeyHash::hash(&pubkey.serialize())),
 			ShutdownScriptImpl::Bolt2(script_pubkey) => script_pubkey,
 		}
 	}
@@ -170,7 +169,7 @@ impl core::fmt::Display for ShutdownScript{
 mod shutdown_script_tests {
 	use super::ShutdownScript;
 
-	use bitcoin::address::{WitnessProgram, WitnessVersion};
+	use bitcoin::{WitnessProgram, WitnessVersion};
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::script::{Builder, ScriptBuf};
 	use bitcoin::secp256k1::Secp256k1;
@@ -206,7 +205,7 @@ mod shutdown_script_tests {
 	fn generates_p2wpkh_from_pubkey() {
 		let pubkey = pubkey();
 		let pubkey_hash = pubkey.wpubkey_hash().unwrap();
-		let p2wpkh_script = ScriptBuf::new_v0_p2wpkh(&pubkey_hash);
+		let p2wpkh_script = ScriptBuf::new_p2wpkh(&pubkey_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wpkh_from_pubkey(pubkey.inner);
 		assert!(shutdown_script.is_compatible(&any_segwit_features()));
@@ -217,7 +216,7 @@ mod shutdown_script_tests {
 	#[test]
 	fn generates_p2wpkh_from_pubkey_hash() {
 		let pubkey_hash = pubkey().wpubkey_hash().unwrap();
-		let p2wpkh_script = ScriptBuf::new_v0_p2wpkh(&pubkey_hash);
+		let p2wpkh_script = ScriptBuf::new_p2wpkh(&pubkey_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wpkh(&pubkey_hash);
 		assert!(shutdown_script.is_compatible(&any_segwit_features()));
@@ -229,7 +228,7 @@ mod shutdown_script_tests {
 	#[test]
 	fn generates_p2wsh_from_script_hash() {
 		let script_hash = redeem_script().wscript_hash();
-		let p2wsh_script = ScriptBuf::new_v0_p2wsh(&script_hash);
+		let p2wsh_script = ScriptBuf::new_p2wsh(&script_hash);
 
 		let shutdown_script = ShutdownScript::new_p2wsh(&script_hash);
 		assert!(shutdown_script.is_compatible(&any_segwit_features()));

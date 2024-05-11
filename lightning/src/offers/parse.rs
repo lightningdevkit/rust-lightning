@@ -9,7 +9,6 @@
 
 //! Parsing and formatting for bech32 message encoding.
 
-use bitcoin::bech32;
 use bitcoin::secp256k1;
 use crate::io;
 use crate::ln::msgs::DecodeError;
@@ -25,8 +24,7 @@ pub(super) use sealed::Bech32Encode;
 pub use sealed::Bech32Encode;
 
 mod sealed {
-	use bitcoin::bech32;
-	use bitcoin::bech32::{FromBase32, ToBase32};
+	use bech32::{FromBase32, ToBase32};
 	use core::fmt;
 	use super::Bolt12ParseError;
 
@@ -277,7 +275,6 @@ mod bolt12_tests {
 #[cfg(test)]
 mod tests {
 	use super::Bolt12ParseError;
-	use bitcoin::bech32;
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::offer::Offer;
 

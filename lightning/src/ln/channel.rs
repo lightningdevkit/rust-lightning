@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::{Script, ScriptBuf, Builder};
 use bitcoin::blockdata::transaction::Transaction;
@@ -4459,7 +4460,7 @@ impl<SP: Deref> Channel<SP> where
 
 				let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, &self.context.channel_type, &keys);
 				let htlc_sighashtype = if self.context.channel_type.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
-				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]);
+				let htlc_sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap()[..]);
 				log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
 					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.to_public_key().serialize()),
 					encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript), &self.context.channel_id());
@@ -5967,7 +5968,7 @@ impl<SP: Deref> Channel<SP> where
 		};
 
 		for outp in closing_tx.trust().built_transaction().output.iter() {
-			if !outp.script_pubkey.is_witness_program() && outp.value < MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS {
+			if !outp.script_pubkey.is_witness_program() && outp.value < Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS) {
 				return Err(ChannelError::Close("Remote sent us a closing_signed with a dust output. Always use segwit closing scripts!".to_owned()));
 			}
 		}
@@ -6502,8 +6503,8 @@ impl<SP: Deref> Channel<SP> where
 				if self.context.funding_tx_confirmation_height == 0 {
 					if tx.txid() == funding_txo.txid {
 						let txo_idx = funding_txo.index as usize;
-						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.context.get_funding_redeemscript().to_v0_p2wsh() ||
-								tx.output[txo_idx].value != self.context.channel_value_satoshis {
+						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.context.get_funding_redeemscript().to_p2wsh() ||
+								tx.output[txo_idx].value.to_sat() != self.context.channel_value_satoshis {
 							if self.context.is_outbound() {
 								// If we generated the funding transaction and it doesn't match what it
 								// should, the client is really broken and we should just panic and
@@ -6518,7 +6519,7 @@ impl<SP: Deref> Channel<SP> where
 							return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
 						} else {
 							if self.context.is_outbound() {
-								if !tx.is_coin_base() {
+								if !tx.is_coinbase() {
 									for input in tx.input.iter() {
 										if input.witness.is_empty() {
 											// We generated a malleable funding transaction, implying we've
@@ -6538,7 +6539,7 @@ impl<SP: Deref> Channel<SP> where
 						}
 						// If this is a coinbase transaction and not a 0-conf channel
 						// we should update our min_depth to 100 to handle coinbase maturity
-						if tx.is_coin_base() &&
+						if tx.is_coinbase() &&
 							self.context.minimum_depth.unwrap_or(0) > 0 &&
 							self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
 							self.context.minimum_depth = Some(COINBASE_MATURITY);
@@ -7482,7 +7483,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// If the funding transaction is a coinbase transaction, we need to set the minimum depth to 100.
 		// We can skip this if it is a zero-conf channel.
-		if funding_transaction.is_coin_base() &&
+		if funding_transaction.is_coinbase() &&
 			self.context.minimum_depth.unwrap_or(0) > 0 &&
 			self.context.minimum_depth.unwrap_or(0) < COINBASE_MATURITY {
 			self.context.minimum_depth = Some(COINBASE_MATURITY);
@@ -7761,7 +7762,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let funding_redeemscript = self.context.get_funding_redeemscript();
 		let funding_txo = self.context.get_funding_txo().unwrap();
-		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
+		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.context.get_holder_pubkeys().payment_point, &self.context.get_counterparty_pubkeys().payment_point, self.context.is_outbound());
 		let shutdown_script = self.context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let mut monitor_signer = signer_provider.derive_channel_signer(self.context.channel_value_satoshis, self.context.channel_keys_id);
@@ -8058,7 +8059,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let (counterparty_initial_commitment_tx, funding_signed) = self.context.get_funding_signed_msg(logger);
 
 		let funding_redeemscript = self.context.get_funding_redeemscript();
-		let funding_txo_script = funding_redeemscript.to_v0_p2wsh();
+		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&self.context.get_holder_pubkeys().payment_point, &self.context.get_counterparty_pubkeys().payment_point, self.context.is_outbound());
 		let shutdown_script = self.context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let mut monitor_signer = signer_provider.derive_channel_signer(self.context.channel_value_satoshis, self.context.channel_keys_id);
@@ -9402,11 +9403,12 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 #[cfg(test)]
 mod tests {
 	use std::cmp;
+	use bitcoin::amount::Amount;
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::{ScriptBuf, Builder};
-	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::blockdata::transaction::{Transaction, TxOut, Version};
 	use bitcoin::blockdata::opcodes;
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 	use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 	use crate::ln::types::{PaymentHash, PaymentPreimage};
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
@@ -9435,9 +9437,8 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::hash_types::WPubkeyHash;
 	use bitcoin::blockdata::locktime::absolute::LockTime;
-	use bitcoin::address::{WitnessProgram, WitnessVersion};
+	use bitcoin::{WitnessProgram, WitnessVersion, WPubkeyHash};
 	use crate::prelude::*;
 
 	#[test]
@@ -9593,8 +9594,8 @@ mod tests {
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.context.get_funding_redeemscript();
-		let tx = Transaction { version: 1, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-			value: 10000000, script_pubkey: output_script.clone(),
+		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
@@ -9722,8 +9723,8 @@ mod tests {
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.context.get_funding_redeemscript();
-		let tx = Transaction { version: 1, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-			value: 10000000, script_pubkey: output_script.clone(),
+		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
@@ -9911,8 +9912,8 @@ mod tests {
 
 		// Node A --> Node B: funding created
 		let output_script = node_a_chan.context.get_funding_redeemscript();
-		let tx = Transaction { version: 1, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-			value: 10000000, script_pubkey: output_script.clone(),
+		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
@@ -9978,8 +9979,8 @@ mod tests {
 			&features, &outbound_chan.get_open_channel(ChainHash::using_genesis_block(network)), 7, &config, 0, &&logger, false
 		).unwrap();
 		outbound_chan.accept_channel(&inbound_chan.get_accept_channel_message(), &config.channel_handshake_limits, &features).unwrap();
-		let tx = Transaction { version: 1, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-			value: 10000000, script_pubkey: outbound_chan.context.get_funding_redeemscript(),
+		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+			value: Amount::from_sat(10000000), script_pubkey: outbound_chan.context.get_funding_redeemscript(),
 		}]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
 		let funding_created = outbound_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap().unwrap();
@@ -10236,7 +10237,7 @@ mod tests {
 						&htlc, $opt_anchors, &keys.broadcaster_delayed_payment_key, &keys.revocation_key);
 					let htlc_redeemscript = chan_utils::get_htlc_redeemscript(&htlc, $opt_anchors, &keys);
 					let htlc_sighashtype = if $opt_anchors.supports_anchors_zero_fee_htlc_tx() { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
-					let htlc_sighash = Message::from_slice(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, htlc.amount_msat / 1000, htlc_sighashtype).unwrap()[..]).unwrap();
+					let htlc_sighash = Message::from_digest(sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, htlc.to_bitcoin_amount(), htlc_sighashtype).unwrap().as_raw_hash().to_byte_array());
 					assert!(secp_ctx.verify_ecdsa(&htlc_sighash, &remote_signature, &keys.countersignatory_htlc_key.to_public_key()).is_ok(), "verify counterparty htlc sig");
 
 					let mut preimage: Option<PaymentPreimage> = None;
@@ -11102,15 +11103,15 @@ mod tests {
 		// Fund the channel with a batch funding transaction.
 		let output_script = node_a_chan.context.get_funding_redeemscript();
 		let tx = Transaction {
-			version: 1,
+			version: Version::ONE,
 			lock_time: LockTime::ZERO,
 			input: Vec::new(),
 			output: vec![
 				TxOut {
-					value: 10000000, script_pubkey: output_script.clone(),
+					value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 				},
 				TxOut {
-					value: 10000000, script_pubkey: Builder::new().into_script(),
+					value: Amount::from_sat(10000000), script_pubkey: Builder::new().into_script(),
 				},
 			]};
 		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };

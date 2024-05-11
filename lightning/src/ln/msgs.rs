@@ -3194,7 +3194,7 @@ impl_writeable_msg!(GossipTimestampFilter, {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::{Transaction, TxIn, ScriptBuf, Sequence, Witness, TxOut};
+	use bitcoin::{Amount, Transaction, TxIn, ScriptBuf, Sequence, Witness, TxOut};
 	use hex::DisplayHex;
 	use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -3206,12 +3206,13 @@ mod tests {
 
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::address::Address;
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::hash_types::Txid;
 	use bitcoin::locktime::absolute::LockTime;
+	use bitcoin::transaction::Version;
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::{Secp256k1, Message};
@@ -3302,7 +3303,7 @@ mod tests {
 	macro_rules! get_sig_on {
 		($privkey: expr, $ctx: expr, $string: expr) => {
 			{
-				let sighash = Message::from_slice(&$string.into_bytes()[..]).unwrap();
+				let sighash = Message::from_digest_slice(&$string.into_bytes()[..]).unwrap();
 				$ctx.sign_ecdsa(&sighash, &$privkey)
 			}
 		}
@@ -3904,7 +3905,7 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 			prevtx: TransactionU16LenLimited::new(Transaction {
-				version: 2,
+				version: Version::TWO,
 				lock_time: LockTime::ZERO,
 				input: vec![TxIn {
 					previous_output: OutPoint { txid: Txid::from_str("305bab643ee297b8b6b76b320792c8223d55082122cb606bf89382146ced9c77").unwrap(), index: 2 }.into_bitcoin_outpoint(),
@@ -3916,12 +3917,12 @@ mod tests {
 				}],
 				output: vec![
 					TxOut {
-						value: 12704566,
-						script_pubkey: Address::from_str("bc1qzlffunw52jav8vwdu5x3jfk6sr8u22rmq3xzw2").unwrap().payload.script_pubkey(),
+						value: Amount::from_sat(12704566),
+						script_pubkey: Address::from_str("bc1qzlffunw52jav8vwdu5x3jfk6sr8u22rmq3xzw2").unwrap().payload().script_pubkey(),
 					},
 					TxOut {
-						value: 245148,
-						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().payload.script_pubkey(),
+						value: Amount::from_sat(245148),
+						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().payload().script_pubkey(),
 					},
 				],
 			}).unwrap(),
@@ -3939,7 +3940,7 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 			sats: 4886718345,
-			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().payload.script_pubkey(),
+			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().payload().script_pubkey(),
 		};
 		let encoded_value = tx_add_output.encode();
 		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202000000012345678900000001234567890016001436ec78d514df462da95e6a00c24daa8915362d42").unwrap();

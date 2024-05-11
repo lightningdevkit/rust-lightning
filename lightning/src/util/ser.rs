@@ -27,6 +27,7 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE, SCHNORR_SIGNATURE_SIZE};
 use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::{self, ScriptBuf};
 use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
@@ -900,7 +901,7 @@ impl Writeable for Vec<Witness> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		(self.len() as u16).write(w)?;
 		for witness in self {
-			(witness.serialized_len() as u16).write(w)?;
+			(witness.size() as u16).write(w)?;
 			witness.write(w)?;
 		}
 		Ok(())
@@ -920,7 +921,7 @@ impl Readable for Vec<Witness> {
 			// of witnesses. We'll just do a sanity check for the lengths and error if there is a mismatch.
 			let witness_len = <u16 as Readable>::read(r)? as usize;
 			let witness = <Witness as Readable>::read(r)?;
-			if witness.serialized_len() != witness_len {
+			if witness.size() != witness_len {
 				return Err(DecodeError::BadLengthDescriptor);
 			}
 			witnesses.push(witness);
@@ -1142,6 +1143,20 @@ impl<T: Readable> Readable for Option<T>
 				Ok(Some(Readable::read(&mut reader)?))
 			}
 		}
+	}
+}
+
+impl Writeable for Amount {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.to_sat().write(w)
+	}
+}
+
+
+impl Readable for Amount {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let amount: u64 = Readable::read(r)?;
+		Ok(Amount::from_sat(amount))
 	}
 }
 

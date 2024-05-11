@@ -439,7 +439,7 @@ mod spv_client_tests {
 	use crate::test_utils::{Blockchain, NullChainListener};
 	use super::*;
 
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 
 	#[tokio::test]
 	async fn poll_from_chain_without_headers() {
@@ -566,7 +566,7 @@ mod chain_notifier_tests {
 	use crate::test_utils::{Blockchain, MockChainListener};
 	use super::*;
 
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 
 	#[tokio::test]
 	async fn sync_from_same_chain() {

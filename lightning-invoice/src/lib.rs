@@ -42,8 +42,8 @@ extern crate serde;
 use std::time::SystemTime;
 
 use bech32::u5;
-use bitcoin::{Address, Network, PubkeyHash, ScriptHash};
-use bitcoin::address::{Payload, WitnessProgram, WitnessVersion};
+use bitcoin::{Address, Network, PubkeyHash, ScriptHash, WitnessProgram, WitnessVersion};
+use bitcoin::address::Payload;
 use bitcoin::hashes::{Hash, sha256};
 use lightning::ln::features::Bolt11InvoiceFeatures;
 use lightning::util::invoice::construct_invoice_preimage;
@@ -878,8 +878,7 @@ impl SignedRawBolt11Invoice {
 
 	/// Recovers the public key used for signing the invoice from the recoverable signature.
 	pub fn recover_payee_pub_key(&self) -> Result<PayeePubKey, secp256k1::Error> {
-		let hash = Message::from_slice(&self.hash[..])
-			.expect("Hash is 32 bytes long, same as MESSAGE_SIZE");
+		let hash = Message::from_digest(self.hash);
 
 		Ok(PayeePubKey(Secp256k1::new().recover_ecdsa(
 			&hash,
@@ -904,8 +903,7 @@ impl SignedRawBolt11Invoice {
 		let pub_key = included_pub_key.or(recovered_pub_key.as_ref())
 			.expect("One is always present");
 
-		let hash = Message::from_slice(&self.hash[..])
-			.expect("Hash is 32 bytes long, same as MESSAGE_SIZE");
+		let hash = Message::from_digest(self.hash);
 
 		let secp_context = Secp256k1::new();
 		let verification_result = secp_context.verify_ecdsa(
@@ -999,8 +997,7 @@ impl RawBolt11Invoice {
 		where F: FnOnce(&Message) -> Result<RecoverableSignature, E>
 	{
 		let raw_hash = self.signable_hash();
-		let hash = Message::from_slice(&raw_hash[..])
-			.expect("Hash is 32 bytes long, same as MESSAGE_SIZE");
+		let hash = Message::from_digest(raw_hash);
 		let signature = sign_method(&hash)?;
 
 		Ok(SignedRawBolt11Invoice {

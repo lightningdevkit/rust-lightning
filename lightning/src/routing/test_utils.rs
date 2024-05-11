@@ -17,7 +17,7 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1, All};
 

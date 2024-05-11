@@ -13,7 +13,7 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey, self};
+use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey, self};
 use core::fmt;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
@@ -102,7 +102,7 @@ impl Metadata {
 
 	pub fn derive_from<W: Writeable, T: secp256k1::Signing>(
 		self, tlv_stream: W, secp_ctx: Option<&Secp256k1<T>>
-	) -> (Self, Option<KeyPair>) {
+	) -> (Self, Option<Keypair>) {
 		match self {
 			Metadata::Bytes(_) => (self, None),
 			Metadata::Derived(mut metadata_material) => {
@@ -188,7 +188,7 @@ impl MetadataMaterial {
 
 	fn derive_metadata_and_keys<T: secp256k1::Signing>(
 		mut self, secp_ctx: &Secp256k1<T>
-	) -> (Vec<u8>, KeyPair) {
+	) -> (Vec<u8>, Keypair) {
 		self.hmac.input(DERIVED_METADATA_AND_KEYS_HMAC_INPUT);
 		self.maybe_include_encrypted_payment_id();
 
@@ -197,7 +197,7 @@ impl MetadataMaterial {
 
 		let hmac = Hmac::from_engine(self.hmac);
 		let privkey = SecretKey::from_slice(hmac.as_byte_array()).unwrap();
-		let keys = KeyPair::from_secret_key(secp_ctx, &privkey);
+		let keys = Keypair::from_secret_key(secp_ctx, &privkey);
 
 		(bytes, keys)
 	}
@@ -213,12 +213,12 @@ impl MetadataMaterial {
 	}
 }
 
-pub(super) fn derive_keys(nonce: Nonce, expanded_key: &ExpandedKey) -> KeyPair {
+pub(super) fn derive_keys(nonce: Nonce, expanded_key: &ExpandedKey) -> Keypair {
 	const IV_BYTES: &[u8; IV_LEN] = b"LDK Invoice ~~~~";
 	let secp_ctx = Secp256k1::new();
 	let hmac = Hmac::from_engine(expanded_key.hmac_for_offer(nonce, IV_BYTES));
 	let privkey = SecretKey::from_slice(hmac.as_byte_array()).unwrap();
-	KeyPair::from_secret_key(&secp_ctx, &privkey)
+	Keypair::from_secret_key(&secp_ctx, &privkey)
 }
 
 /// Verifies data given in a TLV stream was used to produce the given metadata, consisting of:
@@ -265,12 +265,12 @@ pub(super) fn verify_payer_metadata<'a, T: secp256k1::Signing>(
 /// If the latter is not included in the metadata, the TLV stream is used to check if the given
 /// `signing_pubkey` can be derived from it.
 ///
-/// Returns the [`KeyPair`] for signing the invoice, if it can be derived from the metadata.
+/// Returns the [`Keypair`] for signing the invoice, if it can be derived from the metadata.
 pub(super) fn verify_recipient_metadata<'a, T: secp256k1::Signing>(
 	metadata: &[u8], expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
 	signing_pubkey: PublicKey, tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
 	secp_ctx: &Secp256k1<T>
-) -> Result<Option<KeyPair>, ()> {
+) -> Result<Option<Keypair>, ()> {
 	let mut hmac = hmac_for_message(metadata, expanded_key, iv_bytes, tlv_stream)?;
 	hmac.input(WITHOUT_ENCRYPTED_PAYMENT_ID_HMAC_INPUT);
 
@@ -279,9 +279,9 @@ pub(super) fn verify_recipient_metadata<'a, T: secp256k1::Signing>(
 
 fn verify_metadata<T: secp256k1::Signing>(
 	metadata: &[u8], hmac: Hmac<Sha256>, signing_pubkey: PublicKey, secp_ctx: &Secp256k1<T>
-) -> Result<Option<KeyPair>, ()> {
+) -> Result<Option<Keypair>, ()> {
 	if metadata.len() == Nonce::LENGTH {
-		let derived_keys = KeyPair::from_secret_key(
+		let derived_keys = Keypair::from_secret_key(
 			secp_ctx, &SecretKey::from_slice(hmac.as_byte_array()).unwrap()
 		);
 		if fixed_time_eq(&signing_pubkey.serialize(), &derived_keys.public_key().serialize()) {

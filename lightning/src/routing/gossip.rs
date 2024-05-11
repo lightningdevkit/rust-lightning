@@ -9,6 +9,7 @@
 
 //! The [`NetworkGraph`] stores the network gossip and [`P2PGossipSync`] fetches it from peers
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::ChainHash;
 
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
@@ -18,7 +19,7 @@ use bitcoin::secp256k1;
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::types::ChannelId;
@@ -1589,7 +1590,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		self.add_channel_between_nodes(short_channel_id, channel_info, None)
 	}
 
-	fn add_channel_between_nodes(&self, short_channel_id: u64, channel_info: ChannelInfo, utxo_value: Option<u64>) -> Result<(), LightningError> {
+	fn add_channel_between_nodes(&self, short_channel_id: u64, channel_info: ChannelInfo, utxo_value: Option<Amount>) -> Result<(), LightningError> {
 		let mut channels = self.channels.write().unwrap();
 		let mut nodes = self.nodes.write().unwrap();
 
@@ -1718,7 +1719,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			one_to_two: None,
 			node_two: msg.node_id_2,
 			two_to_one: None,
-			capacity_sats: utxo_value,
+			capacity_sats: utxo_value.map(|a| a.to_sat()),
 			announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
 				{ full_msg.cloned() } else { None },
 			announcement_received_time,
@@ -2131,7 +2132,8 @@ pub(crate) mod tests {
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
+	use bitcoin::amount::Amount;
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::blockdata::transaction::TxOut;
@@ -2224,7 +2226,7 @@ pub(crate) mod tests {
 		let node_1_btckey = SecretKey::from_slice(&[40; 32]).unwrap();
 		let node_2_btckey = SecretKey::from_slice(&[39; 32]).unwrap();
 		make_funding_redeemscript(&PublicKey::from_secret_key(secp_ctx, &node_1_btckey),
-			&PublicKey::from_secret_key(secp_ctx, &node_2_btckey)).to_v0_p2wsh()
+			&PublicKey::from_secret_key(secp_ctx, &node_2_btckey)).to_p2wsh()
 	}
 
 	pub(crate) fn get_signed_channel_update<F: Fn(&mut UnsignedChannelUpdate)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelUpdate {
@@ -2357,7 +2359,7 @@ pub(crate) mod tests {
 
 		// Now test if the transaction is found in the UTXO set and the script is correct.
 		*chain_source.utxo_ret.lock().unwrap() =
-			UtxoResult::Sync(Ok(TxOut { value: 0, script_pubkey: good_script.clone() }));
+			UtxoResult::Sync(Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script.clone() }));
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.short_channel_id += 2;
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
@@ -2376,7 +2378,7 @@ pub(crate) mod tests {
 		// If we receive announcement for the same channel, once we've validated it against the
 		// chain, we simply ignore all new (duplicate) announcements.
 		*chain_source.utxo_ret.lock().unwrap() =
-			UtxoResult::Sync(Ok(TxOut { value: 0, script_pubkey: good_script }));
+			UtxoResult::Sync(Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script }));
 		match gossip_sync.handle_channel_announcement(&valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Already have chain-validated channel")
@@ -2453,7 +2455,7 @@ pub(crate) mod tests {
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
-		let amount_sats = 1000_000;
+		let amount_sats = Amount::from_sat(1000_000);
 		let short_channel_id;
 
 		{
@@ -2517,7 +2519,7 @@ pub(crate) mod tests {
 		};
 
 		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
-			unsigned_channel_update.htlc_maximum_msat = amount_sats * 1000 + 1;
+			unsigned_channel_update.htlc_maximum_msat = amount_sats.to_sat() * 1000 + 1;
 			unsigned_channel_update.timestamp += 110;
 		}, node_1_privkey, &secp_ctx);
 		match gossip_sync.handle_channel_update(&valid_channel_update) {

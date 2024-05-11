@@ -24,7 +24,7 @@
 //! use core::num::NonZeroU64;
 //! use core::time::Duration;
 //!
-//! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+//! use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 //! use lightning::offers::offer::{Offer, OfferBuilder, Quantity};
 //! use lightning::offers::parse::Bolt12ParseError;
 //! use lightning::util::ser::{Readable, Writeable};
@@ -39,7 +39,7 @@
 //! # #[cfg(feature = "std")]
 //! # fn build() -> Result<(), Bolt12ParseError> {
 //! let secp_ctx = Secp256k1::new();
-//! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+//! let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 //! let pubkey = PublicKey::from(keys);
 //!
 //! let expiration = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
@@ -78,8 +78,8 @@
 //! [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
 
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
+use bitcoin::network::Network;
+use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroU64;
 use core::ops::Deref;
@@ -909,7 +909,7 @@ impl OfferContents {
 	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
 	pub(super) fn verify<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> Result<(OfferId, Option<KeyPair>), ()> {
+	) -> Result<(OfferId, Option<Keypair>), ()> {
 		match self.metadata() {
 			Some(metadata) => {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
@@ -1140,7 +1140,7 @@ mod tests {
 	};
 
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 	use bitcoin::secp256k1::Secp256k1;
 	use core::num::NonZeroU64;
 	use core::time::Duration;

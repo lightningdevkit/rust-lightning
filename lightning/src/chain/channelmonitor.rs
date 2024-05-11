@@ -20,6 +20,7 @@
 //! security-domain-separated system design, you should consider having multiple paths for
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::block::Header;
 use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
 use bitcoin::blockdata::script::{Script, ScriptBuf};
@@ -28,10 +29,10 @@ use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash};
 
+use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::secp256k1;
-use bitcoin::sighash::EcdsaSighashType;
 
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::types::{PaymentHash, PaymentPreimage, ChannelId};
@@ -411,7 +412,7 @@ impl OnchainEventEntry {
 /// The (output index, sats value) for the counterparty's output in a commitment transaction.
 ///
 /// This was added as an `Option` in 0.0.110.
-type CommitmentTxCounterpartyOutputInfo = Option<(u32, u64)>;
+type CommitmentTxCounterpartyOutputInfo = Option<(u32, Amount)>;
 
 /// Upon discovering of some classes of onchain tx by ChannelMonitor, we may have to take actions on it
 /// once they mature to enough confirmations (ANTI_REORG_DELAY)
@@ -2171,7 +2172,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						} else { None }
 					}) {
 						res.push(Balance::ClaimableAwaitingConfirmations {
-							amount_satoshis: value,
+							amount_satoshis: value.to_sat(),
 							confirmation_height: conf_thresh,
 						});
 					} else {
@@ -2194,7 +2195,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 							descriptor: SpendableOutputDescriptor::StaticOutput { output, .. }
 						} = &event.event {
 							res.push(Balance::ClaimableAwaitingConfirmations {
-								amount_satoshis: output.value,
+								amount_satoshis: output.value.to_sat(),
 								confirmation_height: event.confirmation_threshold(),
 							});
 							if let Some(confirmed_to_self_idx) = confirmed_counterparty_output.map(|(idx, _)| idx) {
@@ -2213,7 +2214,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 							.is_output_spend_pending(&BitcoinOutPoint::new(txid, confirmed_to_self_idx));
 						if output_spendable {
 							res.push(Balance::CounterpartyRevokedOutputClaimable {
-								amount_satoshis: amt,
+								amount_satoshis: amt.to_sat(),
 							});
 						}
 					} else {
@@ -3064,7 +3065,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					debug_assert_eq!(self.current_holder_commitment_tx.txid, commitment_txid);
 					let pending_htlcs = self.current_holder_commitment_tx.non_dust_htlcs();
 					let commitment_tx_fee_satoshis = self.channel_value_satoshis -
-						commitment_tx.output.iter().fold(0u64, |sum, output| sum + output.value);
+						commitment_tx.output.iter().fold(0u64, |sum, output| sum + output.value.to_sat());
 					ret.push(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
 						channel_id,
 						counterparty_node_id,
@@ -3204,7 +3205,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let sig = self.onchain_tx_handler.signer.sign_justice_revoked_output(
 			&justice_tx, input_idx, value, &per_commitment_key, &self.onchain_tx_handler.secp_ctx)?;
-		justice_tx.input[input_idx].witness.push_bitcoin_signature(&sig.serialize_der(), EcdsaSighashType::All);
+		justice_tx.input[input_idx].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(sig));
 		justice_tx.input[input_idx].witness.push(&[1u8]);
 		justice_tx.input[input_idx].witness.push(revokeable_redeemscript.as_bytes());
 		Ok(justice_tx)
@@ -3265,7 +3266,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			let delayed_key = DelayedPaymentKey::from_basepoint(&self.onchain_tx_handler.secp_ctx, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key, &PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key));
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
-			let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
+			let revokeable_p2wsh = revokeable_redeemscript.to_p2wsh();
 
 			// First, process non-htlc outputs (to_holder & to_counterparty)
 			for (idx, outp) in tx.output.iter().enumerate() {
@@ -3283,7 +3284,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				for (_, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {
 					if let Some(transaction_output_index) = htlc.transaction_output_index {
 						if transaction_output_index as usize >= tx.output.len() ||
-								tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
+								tx.output[transaction_output_index as usize].value != htlc.to_bitcoin_amount() {
 							// per_commitment_data is corrupt or our commitment signing key leaked!
 							return (claimable_outpoints, (commitment_txid, watch_outputs),
 								to_counterparty_output_info);
@@ -3385,7 +3386,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 			let revokeable_p2wsh = chan_utils::get_revokeable_redeemscript(&revocation_pubkey,
 				self.counterparty_commitment_params.on_counterparty_tx_csv,
-				&delayed_key).to_v0_p2wsh();
+				&delayed_key).to_p2wsh();
 			for (idx, outp) in transaction.output.iter().enumerate() {
 				if outp.script_pubkey == revokeable_p2wsh {
 					to_counterparty_output_info =
@@ -3398,7 +3399,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				if let Some(transaction) = tx {
 					if transaction_output_index as usize >= transaction.output.len() ||
-						transaction.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
+						transaction.output[transaction_output_index as usize].value != htlc.to_bitcoin_amount() {
 							// per_commitment_data is corrupt or our commitment signing key leaked!
 							return (claimable_outpoints, to_counterparty_output_info);
 						}
@@ -3481,7 +3482,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&holder_tx.revocation_key, self.on_holder_tx_csv, &holder_tx.delayed_payment_key);
-		let broadcasted_holder_revokable_script = Some((redeemscript.to_v0_p2wsh(), holder_tx.per_commitment_point.clone(), holder_tx.revocation_key.clone()));
+		let broadcasted_holder_revokable_script = Some((redeemscript.to_p2wsh(), holder_tx.per_commitment_point.clone(), holder_tx.revocation_key.clone()));
 
 		for &(ref htlc, _, _) in holder_tx.htlc_outputs.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
@@ -3719,11 +3720,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	{
 		let txn_matched = self.filter_block(txdata);
 		for tx in &txn_matched {
-			let mut output_val = 0;
+			let mut output_val = Amount::ZERO;
 			for out in tx.output.iter() {
-				if out.value > 21_000_000_0000_0000 { panic!("Value-overflowing transaction provided to block connected"); }
+				if out.value > Amount::MAX_MONEY { panic!("Value-overflowing transaction provided to block connected"); }
 				output_val += out.value;
-				if output_val > 21_000_000_0000_0000 { panic!("Value-overflowing transaction provided to block connected"); }
+				if output_val > Amount::MAX_MONEY { panic!("Value-overflowing transaction provided to block connected"); }
 			}
 		}
 
@@ -4069,7 +4070,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							// If the expected script is a known type, check that the witness
 							// appears to be spending the correct type (ie that the match would
 							// actually succeed in BIP 158/159-style filters).
-							if _script_pubkey.is_v0_p2wsh() {
+							if _script_pubkey.is_p2wsh() {
 								if input.witness.last().unwrap().to_vec() == deliberately_bogus_accepted_htlc_witness_program() {
 									// In at least one test we use a deliberately bogus witness
 									// script which hit an old panic. Thus, we check for that here
@@ -4078,7 +4079,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								}
 
 								assert_eq!(&bitcoin::Address::p2wsh(&ScriptBuf::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
-							} else if _script_pubkey.is_v0_p2wpkh() {
+							} else if _script_pubkey.is_p2wpkh() {
 								assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap(), bitcoin::Network::Bitcoin).unwrap().script_pubkey(), _script_pubkey);
 							} else { panic!(); }
 						}
@@ -4719,11 +4720,11 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		// wrong `counterparty_payment_script` was being tracked. Fix it now on deserialization to
 		// give them a chance to recognize the spendable output.
 		if onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() &&
-			counterparty_payment_script.is_v0_p2wpkh()
+			counterparty_payment_script.is_p2wpkh()
 		{
 			let payment_point = onchain_tx_handler.channel_transaction_parameters.holder_pubkeys.payment_point;
 			counterparty_payment_script =
-				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point).to_v0_p2wsh();
+				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point).to_p2wsh();
 		}
 
 		Ok((best_block.block_hash, ChannelMonitor::from_impl(ChannelMonitorImpl {
@@ -4788,10 +4789,11 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 #[cfg(test)]
 mod tests {
+	use bitcoin::amount::Amount;
 	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::blockdata::script::{ScriptBuf, Builder};
 	use bitcoin::blockdata::opcodes;
-	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut};
+	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, Version};
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
 	use bitcoin::sighash;
 	use bitcoin::sighash::EcdsaSighashType;
@@ -4799,7 +4801,7 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::hash_types::{BlockHash, Txid};
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{SecretKey,PublicKey};
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::{Sequence, Witness};
@@ -4959,7 +4961,7 @@ mod tests {
 			}
 		}
 		let dummy_sig = crate::crypto::utils::sign(&secp_ctx,
-			&bitcoin::secp256k1::Message::from_slice(&[42; 32]).unwrap(),
+			&bitcoin::secp256k1::Message::from_digest([42; 32]),
 			&SecretKey::from_slice(&[42; 32]).unwrap());
 
 		macro_rules! test_preimages_exist {
@@ -5091,7 +5093,7 @@ mod tests {
 					transaction_output_index: Some($idx as u32),
 				};
 				let redeem_script = if *$weight == WEIGHT_REVOKED_OUTPUT { chan_utils::get_revokeable_redeemscript(&RevocationKey::from_basepoint(&secp_ctx, &RevocationBasepoint::from(pubkey), &pubkey), 256, &DelayedPaymentKey::from_basepoint(&secp_ctx, &DelayedPaymentBasepoint::from(pubkey), &pubkey)) } else { chan_utils::get_htlc_redeemscript_with_explicit_keys(&htlc, $opt_anchors, &HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(pubkey), &pubkey), &HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(pubkey), &pubkey), &RevocationKey::from_basepoint(&secp_ctx, &RevocationBasepoint::from(pubkey), &pubkey)) };
-				let sighash = hash_to_message!(&$sighash_parts.segwit_signature_hash($idx, &redeem_script, $amount, EcdsaSighashType::All).unwrap()[..]);
+				let sighash = hash_to_message!(&$sighash_parts.p2wsh_signature_hash($idx, &redeem_script, $amount, EcdsaSighashType::All).unwrap()[..]);
 				let sig = secp_ctx.sign_ecdsa(&sighash, &privkey);
 				let mut ser_sig = sig.serialize_der().to_vec();
 				ser_sig.push(EcdsaSighashType::All as u8);
@@ -5120,7 +5122,7 @@ mod tests {
 
 		// Justice tx with 1 to_holder, 2 revoked offered HTLCs, 1 revoked received HTLCs
 		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: Version(0), lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
 				claim_tx.input.push(TxIn {
@@ -5135,7 +5137,7 @@ mod tests {
 			}
 			claim_tx.output.push(TxOut {
 				script_pubkey: script_pubkey.clone(),
-				value: 0,
+				value: Amount::ZERO,
 			});
 			let base_weight = claim_tx.weight().to_wu();
 			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT, weight_revoked_offered_htlc(channel_type_features), weight_revoked_offered_htlc(channel_type_features), weight_revoked_received_htlc(channel_type_features)];
@@ -5143,7 +5145,7 @@ mod tests {
 			{
 				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
 				for (idx, inp) in inputs_weight.iter().enumerate() {
-					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, channel_type_features);
+					sign_input!(sighash_parts, idx, Amount::ZERO, inp, sum_actual_sigs, channel_type_features);
 					inputs_total_weight += inp;
 				}
 			}
@@ -5152,7 +5154,7 @@ mod tests {
 
 		// Claim tx with 1 offered HTLCs, 3 received HTLCs
 		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: Version(0), lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			for i in 0..4 {
 				claim_tx.input.push(TxIn {
@@ -5167,7 +5169,7 @@ mod tests {
 			}
 			claim_tx.output.push(TxOut {
 				script_pubkey: script_pubkey.clone(),
-				value: 0,
+				value: Amount::ZERO,
 			});
 			let base_weight = claim_tx.weight().to_wu();
 			let inputs_weight = vec![weight_offered_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features), weight_received_htlc(channel_type_features)];
@@ -5175,7 +5177,7 @@ mod tests {
 			{
 				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
 				for (idx, inp) in inputs_weight.iter().enumerate() {
-					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, channel_type_features);
+					sign_input!(sighash_parts, idx, Amount::ZERO, inp, sum_actual_sigs, channel_type_features);
 					inputs_total_weight += inp;
 				}
 			}
@@ -5184,7 +5186,7 @@ mod tests {
 
 		// Justice tx with 1 revoked HTLC-Success tx output
 		for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
-			let mut claim_tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+			let mut claim_tx = Transaction { version: Version(0), lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 			let mut sum_actual_sigs = 0;
 			claim_tx.input.push(TxIn {
 				previous_output: BitcoinOutPoint {
@@ -5197,7 +5199,7 @@ mod tests {
 			});
 			claim_tx.output.push(TxOut {
 				script_pubkey: script_pubkey.clone(),
-				value: 0,
+				value: Amount::ZERO,
 			});
 			let base_weight = claim_tx.weight().to_wu();
 			let inputs_weight = vec![WEIGHT_REVOKED_OUTPUT];
@@ -5205,7 +5207,7 @@ mod tests {
 			{
 				let mut sighash_parts = sighash::SighashCache::new(&mut claim_tx);
 				for (idx, inp) in inputs_weight.iter().enumerate() {
-					sign_input!(sighash_parts, idx, 0, inp, sum_actual_sigs, channel_type_features);
+					sign_input!(sighash_parts, idx, Amount::ZERO, inp, sum_actual_sigs, channel_type_features);
 					inputs_total_weight += inp;
 				}
 			}

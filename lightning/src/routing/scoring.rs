@@ -2166,7 +2166,7 @@ mod tests {
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::time::Duration;
 	use crate::io;

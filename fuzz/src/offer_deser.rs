@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 use crate::utils::test_logger;
 use core::convert::TryFrom;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
@@ -23,7 +23,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 		assert_eq!(data, bytes);
 
 		let secp_ctx = Secp256k1::new();
-		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let pubkey = PublicKey::from(keys);
 		let mut buffer = Vec::new();
 

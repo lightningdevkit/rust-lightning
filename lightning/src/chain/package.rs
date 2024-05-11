@@ -13,6 +13,7 @@
 
 
 use bitcoin::{Sequence, Witness};
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction};
@@ -21,6 +22,7 @@ use bitcoin::blockdata::script::{Script, ScriptBuf};
 use bitcoin::hash_types::Txid;
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::sighash::EcdsaSighashType;
+use bitcoin::transaction::Version;
 
 use crate::ln::types::PaymentPreimage;
 use crate::ln::chan_utils::{self, TxCreationKeys, HTLCOutputInCommitment};
@@ -121,13 +123,13 @@ pub(crate) struct RevokedOutput {
 	counterparty_htlc_base_key: HtlcBasepoint,
 	per_commitment_key: SecretKey,
 	weight: u64,
-	amount: u64,
+	amount: Amount,
 	on_counterparty_tx_csv: u16,
 	is_counterparty_balance_on_anchors: Option<()>,
 }
 
 impl RevokedOutput {
-	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: u64, on_counterparty_tx_csv: u16, is_counterparty_balance_on_anchors: bool) -> Self {
+	pub(crate) fn build(per_commitment_point: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, per_commitment_key: SecretKey, amount: Amount, on_counterparty_tx_csv: u16, is_counterparty_balance_on_anchors: bool) -> Self {
 		RevokedOutput {
 			per_commitment_point,
 			counterparty_delayed_payment_base_key,
@@ -501,7 +503,7 @@ pub(crate) enum PackageSolvingData {
 impl PackageSolvingData {
 	fn amount(&self) -> u64 {
 		let amt = match self {
-			PackageSolvingData::RevokedOutput(ref outp) => outp.amount,
+			PackageSolvingData::RevokedOutput(ref outp) => outp.amount.to_sat(),
 			PackageSolvingData::RevokedHTLCOutput(ref outp) => outp.amount,
 			PackageSolvingData::CounterpartyOfferedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
 			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => outp.htlc.amount_msat / 1000,
@@ -586,7 +588,7 @@ impl PackageSolvingData {
 				let chan_keys = TxCreationKeys::derive_new(&onchain_handler.secp_ctx, &outp.per_commitment_point, &outp.counterparty_delayed_payment_base_key, &outp.counterparty_htlc_base_key, &onchain_handler.signer.pubkeys().revocation_basepoint, &onchain_handler.signer.pubkeys().htlc_basepoint);
 				let witness_script = chan_utils::get_revokeable_redeemscript(&chan_keys.revocation_key, outp.on_counterparty_tx_csv, &chan_keys.broadcaster_delayed_payment_key);
 				//TODO: should we panic on signer failure ?
-				if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_output(&bumped_tx, i, outp.amount, &outp.per_commitment_key, &onchain_handler.secp_ctx) {
+				if let Ok(sig) = onchain_handler.signer.sign_justice_revoked_output(&bumped_tx, i, outp.amount.to_sat(), &outp.per_commitment_key, &onchain_handler.secp_ctx) {
 					let mut ser_sig = sig.serialize_der().to_vec();
 					ser_sig.push(EcdsaSighashType::All as u8);
 					bumped_tx.input[i].witness.push(ser_sig);
@@ -911,12 +913,12 @@ impl PackageTemplate {
 		htlcs
 	}
 	pub(crate) fn maybe_finalize_malleable_package<L: Logger, Signer: EcdsaChannelSigner>(
-		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: u64,
+		&self, current_height: u32, onchain_handler: &mut OnchainTxHandler<Signer>, value: Amount,
 		destination_script: ScriptBuf, logger: &L
 	) -> Option<MaybeSignedTransaction> {
 		debug_assert!(self.is_malleable());
 		let mut bumped_tx = Transaction {
-			version: 2,
+			version: Version::TWO,
 			lock_time: LockTime::from_consensus(self.package_locktime(current_height)),
 			input: vec![],
 			output: vec![TxOut {
@@ -1198,6 +1200,7 @@ mod tests {
 	use crate::ln::types::{PaymentPreimage, PaymentHash};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 
+	use bitcoin::amount::Amount;
 	use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
@@ -1215,7 +1218,7 @@ mod tests {
 			{
 				let dumb_scalar = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 				let dumb_point = PublicKey::from_secret_key(&$secp_ctx, &dumb_scalar);
-				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, 0, 0, $is_counterparty_balance_on_anchors))
+				PackageSolvingData::RevokedOutput(RevokedOutput::build(dumb_point, DelayedPaymentBasepoint::from(dumb_point), HtlcBasepoint::from(dumb_point), dumb_scalar, Amount::ZERO, 0, $is_counterparty_balance_on_anchors))
 			}
 		}
 	}

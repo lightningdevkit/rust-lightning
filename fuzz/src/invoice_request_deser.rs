@@ -7,7 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::secp256k1::{KeyPair, Parity, PublicKey, Secp256k1, SecretKey, self};
+use bitcoin::secp256k1::{Keypair, Parity, PublicKey, Secp256k1, SecretKey, self};
 use crate::utils::test_logger;
 use core::convert::TryFrom;
 use lightning::blinded_path::BlindedPath;
@@ -28,7 +28,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 		assert_eq!(data, bytes);
 
 		let secp_ctx = Secp256k1::new();
-		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut buffer = Vec::new();
 
 		if let Ok(unsigned_invoice) = build_response(&invoice_request, &secp_ctx) {

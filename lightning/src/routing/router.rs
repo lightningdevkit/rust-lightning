@@ -3329,8 +3329,9 @@ mod tests {
 	#[cfg(c_bindings)]
 	use crate::util::ser::Writer;
 
+	use bitcoin::amount::Amount;
 	use bitcoin::hashes::Hash;
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::blockdata::opcodes;
@@ -4888,10 +4889,10 @@ mod tests {
 		.push_slice(&PublicKey::from_secret_key(&secp_ctx, &privkeys[0]).serialize())
 		.push_slice(&PublicKey::from_secret_key(&secp_ctx, &privkeys[2]).serialize())
 		.push_opcode(opcodes::all::OP_PUSHNUM_2)
-		.push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_v0_p2wsh();
+		.push_opcode(opcodes::all::OP_CHECKMULTISIG).into_script().to_p2wsh();
 
 		*chain_monitor.utxo_ret.lock().unwrap() =
-			UtxoResult::Sync(Ok(TxOut { value: 15, script_pubkey: good_script.clone() }));
+			UtxoResult::Sync(Ok(TxOut { value: Amount::from_sat(15), script_pubkey: good_script.clone() }));
 		gossip_sync.add_utxo_lookup(Some(chain_monitor));
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[0], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 333);

@@ -31,6 +31,7 @@ use bitcoin::blockdata::opcodes;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use bitcoin::sighash::{SighashCache, EcdsaSighashType};
+use bitcoin::transaction::Version;
 
 use crate::prelude::*;
 
@@ -359,16 +360,16 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
-		version: 2,
+		version: Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
-				value: Amount::ONE_BTC.to_sat(),
+				value: Amount::ONE_BTC,
 				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 			},
 			TxOut {
-				value: Amount::ONE_BTC.to_sat(),
+				value: Amount::ONE_BTC,
 				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 			},
 		],
@@ -535,8 +536,8 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	check_spends!(b_broadcast_txn[1], remote_txn[0], coinbase_tx);
 	assert_eq!(b_broadcast_txn[0].input.len(), if anchors { 2 } else { 1 });
 	assert_eq!(b_broadcast_txn[1].input.len(), if anchors { 2 } else { 1 });
-	assert_eq!(remote_txn[0].output[b_broadcast_txn[0].input[0].previous_output.vout as usize].value, 3_000);
-	assert_eq!(remote_txn[0].output[b_broadcast_txn[1].input[0].previous_output.vout as usize].value, 4_000);
+	assert_eq!(remote_txn[0].output[b_broadcast_txn[0].input[0].previous_output.vout as usize].value.to_sat(), 3_000);
+	assert_eq!(remote_txn[0].output[b_broadcast_txn[1].input[0].previous_output.vout as usize].value.to_sat(), 4_000);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[0], true);
@@ -615,8 +616,8 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	assert_ne!(a_broadcast_txn[0].input[0].previous_output.vout,
 	           a_broadcast_txn[1].input[0].previous_output.vout);
 	// a_broadcast_txn [0] and [1] should spend the HTLC outputs of the commitment tx
-	assert_eq!(remote_txn[0].output[a_broadcast_txn[0].input[0].previous_output.vout as usize].value, 3_000);
-	assert_eq!(remote_txn[0].output[a_broadcast_txn[1].input[0].previous_output.vout as usize].value, 4_000);
+	assert_eq!(remote_txn[0].output[a_broadcast_txn[0].input[0].previous_output.vout as usize].value.to_sat(), 3_000);
+	assert_eq!(remote_txn[0].output[a_broadcast_txn[1].input[0].previous_output.vout as usize].value.to_sat(), 4_000);
 
 	// Once the HTLC-Timeout transaction confirms, A will no longer consider the HTLC
 	// "MaybeClaimable", but instead move it to "AwaitingConfirmations".
@@ -720,16 +721,16 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
-		version: 2,
+		version: Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
-				value: Amount::ONE_BTC.to_sat(),
+				value: Amount::ONE_BTC,
 				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 			},
 			TxOut {
-				value: Amount::ONE_BTC.to_sat(),
+				value: Amount::ONE_BTC,
 				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 			},
 		],
@@ -1275,7 +1276,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	// Currently the revoked commitment is claimed in four transactions as the HTLCs all expire
 	// quite soon.
 	assert_eq!(claim_txn.len(), 4);
-	claim_txn.sort_unstable_by_key(|tx| tx.output.iter().map(|output| output.value).sum::<u64>());
+	claim_txn.sort_unstable_by_key(|tx| tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>());
 
 	// The following constants were determined experimentally
 	const BS_TO_SELF_CLAIM_EXP_WEIGHT: u64 = 483;
@@ -1434,16 +1435,16 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
-		version: 2,
+		version: Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
-				value: Amount::ONE_BTC.to_sat(),
+				value: Amount::ONE_BTC,
 				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 			},
 			TxOut {
-				value: Amount::ONE_BTC.to_sat(),
+				value: Amount::ONE_BTC,
 				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 			},
 		],
@@ -1465,9 +1466,9 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
 	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, funding_tx.txid());
 	if anchors {
-		assert_eq!(revoked_local_txn[0].output[4].value, 11000); // to_self output
+		assert_eq!(revoked_local_txn[0].output[4].value.to_sat(), 11000); // to_self output
 	} else {
-		assert_eq!(revoked_local_txn[0].output[2].value, 11000); // to_self output
+		assert_eq!(revoked_local_txn[0].output[2].value.to_sat(), 11000); // to_self output
 	}
 
 	// The to-be-revoked commitment tx should have two HTLCs, an output for each side, and an
@@ -1589,10 +1590,10 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	if anchors {
 		// With anchors, B can pay for revoked_htlc_success's fee with additional inputs, rather
 		// than with the HTLC itself.
-		fuzzy_assert_eq(as_htlc_claim_tx[0].output[0].value,
+		fuzzy_assert_eq(as_htlc_claim_tx[0].output[0].value.to_sat(),
 			3_000 - as_revoked_htlc_success_claim_fee);
 	} else {
-		fuzzy_assert_eq(as_htlc_claim_tx[0].output[0].value,
+		fuzzy_assert_eq(as_htlc_claim_tx[0].output[0].value.to_sat(),
 			3_000 - revoked_htlc_success_fee - as_revoked_htlc_success_claim_fee);
 	}
 
@@ -1607,7 +1608,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
 			amount_satoshis: 1_000,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: as_htlc_claim_tx[0].output[0].value,
+			amount_satoshis: as_htlc_claim_tx[0].output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
@@ -1620,7 +1621,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 2
 			amount_satoshis: 1_000,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: as_htlc_claim_tx[0].output[0].value,
+			amount_satoshis: as_htlc_claim_tx[0].output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + 2,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
@@ -1689,7 +1690,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 			// to_self output in B's revoked commitment
 			amount_satoshis: 11_000,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: revoked_htlc_timeout_claim.output[0].value,
+			amount_satoshis: revoked_htlc_timeout_claim.output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
@@ -1697,10 +1698,10 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 	mine_transaction(&nodes[0], &revoked_to_self_claim);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			// to_self output in B's revoked commitment
-			amount_satoshis: revoked_to_self_claim.output[0].value,
+			amount_satoshis: revoked_to_self_claim.output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
 		}, Balance::ClaimableAwaitingConfirmations {
-			amount_satoshis: revoked_htlc_timeout_claim.output[0].value,
+			amount_satoshis: revoked_htlc_timeout_claim.output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 2,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
@@ -1746,11 +1747,11 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
-		version: 2,
+		version: Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![TxOut {
-			value: Amount::ONE_BTC.to_sat(),
+			value: Amount::ONE_BTC,
 			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 		}],
 	};
@@ -1943,7 +1944,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 		}, Balance::CounterpartyRevokedOutputClaimable { // HTLC 1
 			amount_satoshis: 4_000,
 		}, Balance::ClaimableAwaitingConfirmations { // HTLC 2
-			amount_satoshis: claim_txn_2[0].output[0].value,
+			amount_satoshis: claim_txn_2[0].output[0].value.to_sat(),
 			confirmation_height: htlc_2_claim_maturity,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
@@ -1968,16 +1969,16 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 
 	if anchors {
 		assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
-				amount_satoshis: claim_txn_2[1].output[0].value,
+				amount_satoshis: claim_txn_2[1].output[0].value.to_sat(),
 				confirmation_height: rest_claim_maturity,
 			}, Balance::ClaimableAwaitingConfirmations {
-				amount_satoshis: revoked_to_self_claim.as_ref().unwrap().output[0].value,
+				amount_satoshis: revoked_to_self_claim.as_ref().unwrap().output[0].value.to_sat(),
 				confirmation_height: rest_claim_maturity,
 			}],
 			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	} else {
 		assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
-				amount_satoshis: claim_txn_2[1].output[0].value,
+				amount_satoshis: claim_txn_2[1].output[0].value.to_sat(),
 				confirmation_height: rest_claim_maturity,
 			}],
 			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
@@ -2135,11 +2136,11 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	check_added_monitors(&nodes[0], 1);
 
 	let coinbase_tx = Transaction {
-		version: 2,
+		version: Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![TxOut { // UTXO to attach fees to `htlc_tx` on anchors
-			value: Amount::ONE_BTC.to_sat(),
+			value: Amount::ONE_BTC,
 			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 		}],
 	};
@@ -2164,8 +2165,8 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 					assert_eq!(txn.len(), 1);
 					let htlc_tx = txn.pop().unwrap();
 					check_spends!(&htlc_tx, &commitment_txn[0], &coinbase_tx);
-					let htlc_tx_fee = HTLC_AMT_SAT + coinbase_tx.output[0].value -
-						htlc_tx.output.iter().map(|output| output.value).sum::<u64>();
+					let htlc_tx_fee = HTLC_AMT_SAT + coinbase_tx.output[0].value.to_sat() -
+						htlc_tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>();
 					let htlc_tx_weight = htlc_tx.weight().to_wu();
 					(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
 				}
@@ -2180,7 +2181,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 			}
 			let htlc_tx = txn.pop().unwrap();
 			check_spends!(htlc_tx, commitment_txn[0]);
-			let htlc_tx_fee = HTLC_AMT_SAT - htlc_tx.output[0].value;
+			let htlc_tx_fee = HTLC_AMT_SAT - htlc_tx.output[0].value.to_sat();
 			let htlc_tx_weight = htlc_tx.weight().to_wu();
 			(htlc_tx, compute_feerate_sat_per_1000_weight(htlc_tx_fee, htlc_tx_weight))
 		};
@@ -2291,11 +2292,11 @@ fn test_yield_anchors_events() {
 	let (commitment_tx, anchor_tx) = match holder_events.pop().unwrap() {
 		Event::BumpTransaction(event) => {
 			let coinbase_tx = Transaction {
-				version: 2,
+				version: Version::TWO,
 				lock_time: LockTime::ZERO,
 				input: vec![TxIn { ..Default::default() }],
 				output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
-					value: Amount::ONE_BTC.to_sat(),
+					value: Amount::ONE_BTC,
 					script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 				}],
 			};
@@ -2312,8 +2313,8 @@ fn test_yield_anchors_events() {
 		_ => panic!("Unexpected event"),
 	};
 
-	assert_eq!(commitment_tx.output[2].value, 1_000); // HTLC A -> B
-	assert_eq!(commitment_tx.output[3].value, 2_000); // HTLC B -> A
+	assert_eq!(commitment_tx.output[2].value.to_sat(), 1_000); // HTLC A -> B
+	assert_eq!(commitment_tx.output[3].value.to_sat(), 2_000); // HTLC B -> A
 
 	mine_transactions(&nodes[0], &[&commitment_tx, &anchor_tx]);
 	check_added_monitors!(nodes[0], 1);
@@ -2468,9 +2469,9 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let mut revoked_commitment_txs = Vec::with_capacity(events.len());
 	let mut anchor_txs = Vec::with_capacity(events.len());
 	for (idx, event) in events.into_iter().enumerate() {
-		let utxo_value = Amount::ONE_BTC.to_sat() * (idx + 1) as u64;
+		let utxo_value = Amount::ONE_BTC * (idx + 1) as u64;
 		let coinbase_tx = Transaction {
-			version: 2,
+			version: Version::TWO,
 			lock_time: LockTime::ZERO,
 			input: vec![TxIn { ..Default::default() }],
 			output: vec![TxOut { // UTXO to attach fees to `anchor_tx`
@@ -2545,18 +2546,18 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let htlc_tx = {
 		let secret_key = SecretKey::from_slice(&[1; 32]).unwrap();
 		let public_key = PublicKey::new(secret_key.public_key(&secp));
-		let fee_utxo_script = ScriptBuf::new_v0_p2wpkh(&public_key.wpubkey_hash().unwrap());
+		let fee_utxo_script = ScriptBuf::new_p2wpkh(&public_key.wpubkey_hash().unwrap());
 		let coinbase_tx = Transaction {
-			version: 2,
+			version: Version::TWO,
 			lock_time: LockTime::ZERO,
 			input: vec![TxIn { ..Default::default() }],
 			output: vec![TxOut { // UTXO to attach fees to `htlc_tx`
-				value: Amount::ONE_BTC.to_sat(),
+				value: Amount::ONE_BTC,
 				script_pubkey: fee_utxo_script.clone(),
 			}],
 		};
 		let mut htlc_tx = Transaction {
-			version: 2,
+			version: Version::TWO,
 			lock_time: LockTime::ZERO,
 			input: vec![TxIn { // Fee input
 				previous_output: bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 },
@@ -2593,7 +2594,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		}
 		let fee_utxo_sig = {
 			let witness_script = ScriptBuf::new_p2pkh(&public_key.pubkey_hash());
-			let sighash = hash_to_message!(&SighashCache::new(&htlc_tx).segwit_signature_hash(
+			let sighash = hash_to_message!(&SighashCache::new(&htlc_tx).p2wsh_signature_hash(
 				0, &witness_script, coinbase_tx.output[0].value, EcdsaSighashType::All
 			).unwrap()[..]);
 			let sig = sign(&secp, &sighash, &secret_key);
@@ -2703,7 +2704,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	let secp = Secp256k1::new();
 	let privkey = bitcoin::PrivateKey::from_slice(&[1; 32], bitcoin::Network::Testnet).unwrap();
 	let pubkey = bitcoin::PublicKey::from_private_key(&secp, &privkey);
-	let p2wpkh_script = ScriptBuf::new_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap());
+	let p2wpkh_script = ScriptBuf::new_p2wpkh(&pubkey.wpubkey_hash().unwrap());
 	get_monitor!(nodes[1], chan_id).set_counterparty_payment_script(p2wpkh_script.clone());
 	assert_eq!(get_monitor!(nodes[1], chan_id).get_counterparty_payment_script(), p2wpkh_script);
 
@@ -2742,7 +2743,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	};
 	check_closed_event!(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false,
 		 [nodes[0].node.get_our_node_id()], 100000);
-	assert!(get_monitor!(nodes[1], chan_id).get_counterparty_payment_script().is_v0_p2wsh());
+	assert!(get_monitor!(nodes[1], chan_id).get_counterparty_payment_script().is_p2wsh());
 
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
@@ -2785,12 +2786,12 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let coinbase_tx = Transaction {
-		version: 2,
+		version: Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
-				value: Amount::ONE_BTC.to_sat(),
+				value: Amount::ONE_BTC,
 				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 			},
 		],

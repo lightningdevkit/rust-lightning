@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::transaction::TxOut;
@@ -28,7 +29,7 @@ use lightning::util::ser::Readable;
 
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 
 use crate::utils::test_logger;
 
@@ -94,8 +95,8 @@ impl<Out: test_logger::Output> UtxoLookup for FuzzChainSource<'_, '_, Out> {
 		if input_slice.is_none() { return UtxoResult::Sync(Err(UtxoLookupError::UnknownTx)); }
 		let input_slice = input_slice.unwrap();
 		let txo_res = TxOut {
-			value: if input_slice[0] % 2 == 0 { 1_000_000 } else { 1_000 },
-			script_pubkey: Builder::new().push_int(input_slice[1] as i64).into_script().to_v0_p2wsh(),
+			value: Amount::from_sat(if input_slice[0] % 2 == 0 { 1_000_000 } else { 1_000 }),
+			script_pubkey: Builder::new().push_int(input_slice[1] as i64).into_script().to_p2wsh(),
 		};
 		match input_slice {
 			&[0, _] => UtxoResult::Sync(Err(UtxoLookupError::UnknownChain)),

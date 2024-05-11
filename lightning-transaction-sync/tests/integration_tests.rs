@@ -12,7 +12,7 @@ use electrsd::{bitcoind, bitcoind::BitcoinD, ElectrsD};
 use bitcoin::{Amount, Txid, BlockHash};
 use bitcoin::blockdata::block::Header;
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use electrsd::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::AddressType;
 use bitcoind::bitcoincore_rpc::RpcApi;
 use bdk_macros::maybe_await;
@@ -171,7 +171,7 @@ macro_rules! test_syncing {
 		None, None, None, None).unwrap();
 		let second_txid = $bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None,
 		None, None, None, None, None).unwrap();
-		$tx_sync.register_tx(&txid, &new_address.payload.script_pubkey());
+		$tx_sync.register_tx(&txid, &new_address.payload().script_pubkey());
 
 		maybe_await!($tx_sync.sync(vec![&$confirmable])).unwrap();
 

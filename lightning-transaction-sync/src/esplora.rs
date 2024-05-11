@@ -51,7 +51,7 @@ where
 	pub fn new(server_url: String, logger: L) -> Self {
 		let builder = Builder::new(&server_url);
 		#[cfg(not(feature = "async-interface"))]
-		let client = builder.build_blocking().unwrap();
+		let client = builder.build_blocking();
 		#[cfg(feature = "async-interface")]
 		let client = builder.build_async().unwrap();
 

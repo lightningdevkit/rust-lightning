@@ -28,12 +28,13 @@ use crate::util::config::UserConfig;
 use crate::util::string::UntrustedString;
 use crate::prelude::*;
 
-use bitcoin::{Transaction, TxOut};
+use bitcoin::{Transaction, TxOut, WitnessProgram, WitnessVersion};
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::blockdata::script::Builder;
 use bitcoin::blockdata::opcodes;
-use bitcoin::network::constants::Network;
-use bitcoin::address::{WitnessProgram, WitnessVersion};
+use bitcoin::network::Network;
+use bitcoin::transaction::Version;
 
 use crate::ln::functional_test_utils::*;
 
@@ -1169,17 +1170,17 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 	assert_eq!(txn[0].output.len(), 2);
 
 	if timeout_step != TimeoutStep::NoTimeout {
-		assert!((txn[0].output[0].script_pubkey.is_v0_p2wpkh() &&
-		         txn[0].output[1].script_pubkey.is_v0_p2wsh()) ||
-		        (txn[0].output[1].script_pubkey.is_v0_p2wpkh() &&
-		         txn[0].output[0].script_pubkey.is_v0_p2wsh()));
+		assert!((txn[0].output[0].script_pubkey.is_p2wpkh() &&
+		         txn[0].output[1].script_pubkey.is_p2wsh()) ||
+		        (txn[0].output[1].script_pubkey.is_p2wpkh() &&
+		         txn[0].output[0].script_pubkey.is_p2wsh()));
 		check_closed_broadcast!(nodes[1], true);
 		check_added_monitors!(nodes[1], 1);
 		check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError { err: "closing_signed negotiation failed to finish within two timer ticks".to_string() }
 			, [nodes[0].node.get_our_node_id()], 100000);
 	} else {
-		assert!(txn[0].output[0].script_pubkey.is_v0_p2wpkh());
-		assert!(txn[0].output[1].script_pubkey.is_v0_p2wpkh());
+		assert!(txn[0].output[0].script_pubkey.is_p2wpkh());
+		assert!(txn[0].output[1].script_pubkey.is_p2wpkh());
 
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -1409,12 +1410,12 @@ fn batch_funding_failure() {
 	assert_eq!(events.len(), 2);
 	// Build a transaction which only has the output for one of the two channels we're trying to
 	// confirm. Previously this led to a deadlock in channel closure handling.
-	let mut tx = Transaction { version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+	let mut tx = Transaction { version: Version::TWO, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 	let mut chans = Vec::new();
 	for (idx, ev) in events.iter().enumerate() {
 		if let Event::FundingGenerationReady { temporary_channel_id, counterparty_node_id, output_script, .. } = ev {
 			if idx == 0 {
-				tx.output.push(TxOut { value: 1_000_000, script_pubkey: output_script.clone() });
+				tx.output.push(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: output_script.clone() });
 			}
 			chans.push((temporary_channel_id, counterparty_node_id));
 		} else { panic!(); }
