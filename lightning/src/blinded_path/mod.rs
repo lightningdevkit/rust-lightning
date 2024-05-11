@@ -268,7 +268,7 @@ impl_writeable!(BlindedHop, {
 
 impl Direction {
 	/// Returns the [`NodeId`] from the inputs corresponding to the direction.
-	pub fn select_node_id<'a>(&self, node_a: &'a NodeId, node_b: &'a NodeId) -> &'a NodeId {
+	pub(crate) fn select_node_id<'a>(&self, node_a: &'a NodeId, node_b: &'a NodeId) -> &'a NodeId {
 		match self {
 			Direction::NodeOne => core::cmp::min(node_a, node_b),
 			Direction::NodeTwo => core::cmp::max(node_a, node_b),
@@ -276,7 +276,7 @@ impl Direction {
 	}
 
 	/// Returns the [`PublicKey`] from the inputs corresponding to the direction.
-	pub fn select_pubkey<'a>(&self, node_a: &'a PublicKey, node_b: &'a PublicKey) -> &'a PublicKey {
+	pub(crate) fn select_pubkey<'a>(&self, node_a: &'a PublicKey, node_b: &'a PublicKey) -> &'a PublicKey {
 		let (node_one, node_two) = if NodeId::from_pubkey(node_a) < NodeId::from_pubkey(node_b) {
 			(node_a, node_b)
 		} else {
