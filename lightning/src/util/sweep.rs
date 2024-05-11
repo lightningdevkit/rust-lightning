@@ -14,7 +14,7 @@ use crate::chain::{self, BestBlock, Confirm, Filter, Listen, WatchedOutput};
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::ln::types::ChannelId;
-use crate::prelude::Vec;
+use crate::prelude::*;
 use crate::sign::{ChangeDestinationSource, OutputSpender, SpendableOutputDescriptor};
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
