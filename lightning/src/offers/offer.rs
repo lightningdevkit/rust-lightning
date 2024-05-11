@@ -990,14 +990,14 @@ pub enum Amount {
 	/// An amount of currency specified using ISO 4712.
 	Currency {
 		/// The currency that the amount is denominated in.
-		iso4217_code: CurrencyCode,
+		iso4217_code: [u8; 3],
 		/// The amount in the currency unit adjusted by the ISO 4712 exponent (e.g., USD cents).
 		amount: u64,
 	},
 }
 
 /// An ISO 4712 three-letter currency code (e.g., USD).
-pub type CurrencyCode = [u8; 3];
+pub(crate) type CurrencyCode = [u8; 3];
 
 /// Quantity of items supported by an [`Offer`].
 #[derive(Clone, Copy, Debug, PartialEq)]
