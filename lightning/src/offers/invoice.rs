@@ -697,7 +697,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`Offer::amount`]: crate::offers::offer::Offer::amount
-	pub fn amount(&$self) -> Option<&Amount> {
+	pub fn amount(&$self) -> Option<Amount> {
 		$contents.amount()
 	}
 
@@ -944,7 +944,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn amount(&self) -> Option<&Amount> {
+	fn amount(&self) -> Option<Amount> {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } =>
 				invoice_request.inner.offer.amount(),

@@ -582,7 +582,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// The minimum amount required for a successful payment of a single item.
-	pub fn amount(&$self) -> Option<&$crate::offers::offer::Amount> {
+	pub fn amount(&$self) -> Option<$crate::offers::offer::Amount> {
 		$contents.amount()
 	}
 
@@ -808,8 +808,8 @@ impl OfferContents {
 		self.metadata.as_ref().and_then(|metadata| metadata.as_bytes())
 	}
 
-	pub fn amount(&self) -> Option<&Amount> {
-		self.amount.as_ref()
+	pub fn amount(&self) -> Option<Amount> {
+		self.amount
 	}
 
 	pub fn description(&self) -> Option<PrintableString> {
@@ -982,7 +982,7 @@ impl Writeable for OfferContents {
 
 /// The minimum amount required for an item in an [`Offer`], denominated in either bitcoin or
 /// another currency.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Amount {
 	/// An amount of bitcoin.
 	Bitcoin {
