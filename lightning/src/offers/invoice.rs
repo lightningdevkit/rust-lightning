@@ -836,6 +836,8 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 
 	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
 	/// least-preferred.
+	///
+	/// This is not exported to bindings users as Address is not yet mapped
 	pub fn fallbacks(&$self) -> Vec<Address> {
 		$contents.fallbacks()
 	}
