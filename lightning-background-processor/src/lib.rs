@@ -338,7 +338,7 @@ macro_rules! define_run_body {
 
 			if $channel_manager.get_cm().get_and_clear_needs_persistence() {
 				log_trace!($logger, "Persisting ChannelManager...");
-				$persister.persist_manager(&$channel_manager)?;
+				$persister.persist_manager($channel_manager.get_cm())?;
 				log_trace!($logger, "Done persisting ChannelManager.");
 			}
 			if $timer_elapsed(&mut last_freshness_call, FRESHNESS_TIMER) {
@@ -440,7 +440,7 @@ macro_rules! define_run_body {
 		// After we exit, ensure we persist the ChannelManager one final time - this avoids
 		// some races where users quit while channel updates were in-flight, with
 		// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
-		$persister.persist_manager(&$channel_manager)?;
+		$persister.persist_manager($channel_manager.get_cm())?;
 
 		// Persist Scorer on exit
 		if let Some(ref scorer) = $scorer {
@@ -814,8 +814,8 @@ impl BackgroundProcessor {
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-		PS::Target: 'static + Persister<'a, CM, L, SC>,
-		CM::Target: AChannelManager + Send + Sync,
+		PS::Target: 'static + Persister<'a, <<CM as Deref>::Target as AChannelManager>::M, <<CM as Deref>::Target as AChannelManager>::T, <<CM as Deref>::Target as AChannelManager>::ES, <<CM as Deref>::Target as AChannelManager>::NS, <<CM as Deref>::Target as AChannelManager>::SP, <<CM as Deref>::Target as AChannelManager>::F, <<CM as Deref>::Target as AChannelManager>::R, L, SC>,
+		CM::Target: AChannelManager<L = L> + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));

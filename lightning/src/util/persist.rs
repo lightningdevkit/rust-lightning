@@ -154,18 +154,24 @@ pub trait KVStore {
 	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> Result<Vec<String>, io::Error>;
 }
 
+
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-pub trait Persister<'a, CM: Deref, L: Deref, S: WriteableScore<'a>>
-where
-	CM::Target: 'static + AChannelManager,
-	L::Target: 'static + Logger,
+pub trait Persister<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>>
+	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+		T::Target: 'static + BroadcasterInterface,
+		ES::Target: 'static + EntropySource,
+		NS::Target: 'static + crate::sign::NodeSigner,
+		SP::Target: 'static + SignerProvider,
+		F::Target: 'static + FeeEstimator,
+		R::Target: 'static + crate::routing::router::Router,
+		L::Target: 'static + Logger,
 {
 	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error>;
+	fn persist_manager(&self, channel_manager: &crate::ln::channelmanager::ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error>;
 
 	/// Persist the given [`NetworkGraph`] to disk, returning an error if persistence failed.
 	fn persist_graph(&self, network_graph: &NetworkGraph<L>) -> Result<(), io::Error>;
@@ -174,13 +180,17 @@ where
 	fn persist_scorer(&self, scorer: &S) -> Result<(), io::Error>;
 }
 
-
-impl<'a, A: KVStore + ?Sized, CM: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, CM, L, S> for A
-where
-	CM::Target: 'static + AChannelManager,
-	L::Target: 'static + Logger,
+impl<'a, A: KVStore + ?Sized, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, M, T, ES, NS, SP, F, R, L, S> for A
+	where M::Target: 'static + chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+		T::Target: 'static + BroadcasterInterface,
+		ES::Target: 'static + EntropySource,
+		NS::Target: 'static + crate::sign::NodeSigner,
+		SP::Target: 'static + SignerProvider,
+		F::Target: 'static + FeeEstimator,
+		R::Target: 'static + crate::routing::router::Router,
+		L::Target: 'static + Logger,
 {
-	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error> {
+	fn persist_manager(&self, channel_manager: &crate::ln::channelmanager::ChannelManager<M, T, ES, NS, SP, F, R, L>) -> Result<(), io::Error> {
 		self.write(CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
 			CHANNEL_MANAGER_PERSISTENCE_KEY,
