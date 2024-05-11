@@ -35,8 +35,6 @@ use core::ops::Deref;
 /// A _temporary_ ID is generated randomly.
 /// (Later revocation-point-based _v2_ is a possibility.)
 /// The variety (context) is not stored, it is relevant only at creation.
-///
-/// This is not exported to bindings users as we just use [u8; 32] directly.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ChannelId(pub [u8; 32]);
 
