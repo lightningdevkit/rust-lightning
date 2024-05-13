@@ -165,6 +165,7 @@ pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 ///
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
+#[derive(Clone)]
 pub struct OfferWithExplicitMetadataBuilder<'a> {
 	offer: OfferContents,
 	metadata_strategy: core::marker::PhantomData<ExplicitMetadata>,
@@ -177,6 +178,7 @@ pub struct OfferWithExplicitMetadataBuilder<'a> {
 ///
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
+#[derive(Clone)]
 pub struct OfferWithDerivedMetadataBuilder<'a> {
 	offer: OfferContents,
 	metadata_strategy: core::marker::PhantomData<DerivedMetadata>,
