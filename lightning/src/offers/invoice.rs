@@ -503,6 +503,7 @@ for InvoiceBuilder<'a, DerivedSigningPubkey> {
 ///
 /// This is serialized as a TLV stream, which includes TLV records from the originating message. As
 /// such, it may include unknown, odd TLV records.
+#[derive(Clone)]
 pub struct UnsignedBolt12Invoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,

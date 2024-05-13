@@ -487,6 +487,7 @@ for InvoiceRequestBuilder<'a, 'b, DerivedPayerId, secp256k1::All> {
 ///
 /// This is serialized as a TLV stream, which includes TLV records from the originating message. As
 /// such, it may include unknown, odd TLV records.
+#[derive(Clone)]
 pub struct UnsignedInvoiceRequest {
 	bytes: Vec<u8>,
 	contents: InvoiceRequestContents,
