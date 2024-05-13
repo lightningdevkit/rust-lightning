@@ -14,6 +14,7 @@ pub(crate) mod message;
 pub(crate) mod utils;
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
+use core::ops::Deref;
 
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
@@ -98,6 +99,11 @@ impl NodeIdLookUp for EmptyNodeIdLookUp {
 	fn next_node_id(&self, _short_channel_id: u64) -> Option<PublicKey> {
 		None
 	}
+}
+
+impl Deref for EmptyNodeIdLookUp {
+	type Target = EmptyNodeIdLookUp;
+	fn deref(&self) -> &Self { self }
 }
 
 /// An encrypted payload and node id corresponding to a hop in a payment or onion message path, to
