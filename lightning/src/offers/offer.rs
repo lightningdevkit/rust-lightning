@@ -163,8 +163,6 @@ pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 ///
 /// See [module-level documentation] for usage.
 ///
-/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-///
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
 pub struct OfferWithExplicitMetadataBuilder<'a> {
@@ -176,8 +174,6 @@ pub struct OfferWithExplicitMetadataBuilder<'a> {
 /// Builds an [`Offer`] for the "offer to be paid" flow.
 ///
 /// See [module-level documentation] for usage.
-///
-/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 ///
 /// [module-level documentation]: self
 #[cfg(c_bindings)]

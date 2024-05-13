@@ -8560,8 +8560,6 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// Errors if the parameterized [`Router`] is unable to create a blinded path for the offer.
 	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
@@ -8623,8 +8621,6 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
 	/// - `amount_msats` is invalid, or
 	/// - the parameterized [`Router`] is unable to create a blinded path for the refund.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
