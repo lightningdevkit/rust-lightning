@@ -15,6 +15,8 @@ pub(crate) mod utils;
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
+use core::ops::Deref;
+
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
@@ -115,9 +117,9 @@ pub struct BlindedHop {
 
 impl BlindedPath {
 	/// Create a one-hop blinded path for a message.
-	pub fn one_hop_for_message<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
-		recipient_node_id: PublicKey, entropy_source: &ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> {
+	pub fn one_hop_for_message<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+		recipient_node_id: PublicKey, entropy_source: ES, secp_ctx: &Secp256k1<T>
+	) -> Result<Self, ()> where ES::Target: EntropySource {
 		Self::new_for_message(&[recipient_node_id], entropy_source, secp_ctx)
 	}
 
@@ -126,9 +128,9 @@ impl BlindedPath {
 	///
 	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_message<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
-		node_pks: &[PublicKey], entropy_source: &ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> {
+	pub fn new_for_message<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+		node_pks: &[PublicKey], entropy_source: ES, secp_ctx: &Secp256k1<T>
+	) -> Result<Self, ()> where ES::Target: EntropySource {
 		if node_pks.is_empty() { return Err(()) }
 		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
@@ -142,10 +144,10 @@ impl BlindedPath {
 	}
 
 	/// Create a one-hop blinded path for a payment.
-	pub fn one_hop_for_payment<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn one_hop_for_payment<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		payee_node_id: PublicKey, payee_tlvs: payment::ReceiveTlvs, min_final_cltv_expiry_delta: u16,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> {
+		entropy_source: ES, secp_ctx: &Secp256k1<T>
+	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
 		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
 		// be in relation to a specific channel.
 		let htlc_maximum_msat = u64::max_value();
@@ -164,11 +166,11 @@ impl BlindedPath {
 	///
 	/// [`ForwardTlvs`]: crate::blinded_path::payment::ForwardTlvs
 	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_payment<ES: EntropySource + ?Sized, T: secp256k1::Signing + secp256k1::Verification>(
+	pub fn new_for_payment<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		intermediate_nodes: &[payment::ForwardNode], payee_node_id: PublicKey,
 		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
-		entropy_source: &ES, secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> {
+		entropy_source: ES, secp_ctx: &Secp256k1<T>
+	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id)
 		);
