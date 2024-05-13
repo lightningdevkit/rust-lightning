@@ -13,10 +13,11 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 
 use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode};
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
-use crate::ln::types::PaymentHash;
-use crate::ln::channelmanager::{ChannelDetails, PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use crate::ln::{PaymentHash, PaymentPreimage};
+use crate::ln::channelmanager::{ChannelDetails, PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, RecipientOnionFields};
 use crate::ln::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
+use crate::ln::onion_utils;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
@@ -602,6 +603,17 @@ impl RouteParameters {
 	/// [`Self::max_total_routing_fee_msat`] defaults to 1% of the payment amount + 50 sats
 	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
 		Self { payment_params, final_value_msat, max_total_routing_fee_msat: Some(final_value_msat / 100 + 50_000) }
+	}
+
+	/// Sets the maximum number of hops that can be included in a payment path, based on the provided
+	/// [`RecipientOnionFields`] and blinded paths.
+	pub fn set_max_path_length(
+		&mut self, recipient_onion: &RecipientOnionFields, is_keysend: bool, best_block_height: u32
+	) -> Result<(), ()> {
+		let keysend_preimage_opt = is_keysend.then(|| PaymentPreimage([42; 32]));
+		onion_utils::set_max_path_length(
+			self, recipient_onion, keysend_preimage_opt, best_block_height
+		)
 	}
 }
 
