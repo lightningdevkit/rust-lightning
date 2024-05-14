@@ -163,10 +163,9 @@ pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 ///
 /// See [module-level documentation] for usage.
 ///
-/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-///
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
+#[derive(Clone)]
 pub struct OfferWithExplicitMetadataBuilder<'a> {
 	offer: OfferContents,
 	metadata_strategy: core::marker::PhantomData<ExplicitMetadata>,
@@ -177,10 +176,9 @@ pub struct OfferWithExplicitMetadataBuilder<'a> {
 ///
 /// See [module-level documentation] for usage.
 ///
-/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-///
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
+#[derive(Clone)]
 pub struct OfferWithDerivedMetadataBuilder<'a> {
 	offer: OfferContents,
 	metadata_strategy: core::marker::PhantomData<DerivedMetadata>,
@@ -582,7 +580,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// The minimum amount required for a successful payment of a single item.
-	pub fn amount(&$self) -> Option<&$crate::offers::offer::Amount> {
+	pub fn amount(&$self) -> Option<$crate::offers::offer::Amount> {
 		$contents.amount()
 	}
 
@@ -808,8 +806,8 @@ impl OfferContents {
 		self.metadata.as_ref().and_then(|metadata| metadata.as_bytes())
 	}
 
-	pub fn amount(&self) -> Option<&Amount> {
-		self.amount.as_ref()
+	pub fn amount(&self) -> Option<Amount> {
+		self.amount
 	}
 
 	pub fn description(&self) -> Option<PrintableString> {
@@ -982,7 +980,7 @@ impl Writeable for OfferContents {
 
 /// The minimum amount required for an item in an [`Offer`], denominated in either bitcoin or
 /// another currency.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Amount {
 	/// An amount of bitcoin.
 	Bitcoin {
@@ -1381,7 +1379,7 @@ mod tests {
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
-		assert_eq!(offer.amount(), Some(&bitcoin_amount));
+		assert_eq!(offer.amount(), Some(bitcoin_amount));
 		assert_eq!(tlv_stream.amount, Some(1000));
 		assert_eq!(tlv_stream.currency, None);
 

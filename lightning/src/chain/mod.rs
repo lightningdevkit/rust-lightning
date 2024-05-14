@@ -52,6 +52,9 @@ impl BestBlock {
 	}
 
 	/// Returns a `BestBlock` as identified by the given block hash and height.
+	///
+	/// This is not exported to bindings users directly as the bindings auto-generate an
+	/// equivalent `new`.
 	pub fn new(block_hash: BlockHash, height: u32) -> Self {
 		BestBlock { block_hash, height }
 	}
