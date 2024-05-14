@@ -107,17 +107,6 @@ use core::ops::Deref;
 pub use crate::ln::outbound_payment::{PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 use crate::ln::script::ShutdownScript;
 
-// Test submodules for channelmanager
-#[path ="./anchor_channel_configuration_tests.rs"]
-#[cfg(test)]
-mod anchor_channel_configuration_tests;
-#[path ="./channelmanager_limits_tests.rs"]
-#[cfg(test)]
-mod channelmanager_limits_tests;
-#[cfg(test)]
-#[path ="./keysend_payments_tests.rs"]
-mod keysend_payments_tests;
-
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
 //
 // Upon receipt of an HTLC from a peer, we'll give it a PendingHTLCStatus indicating if it should
@@ -2284,15 +2273,15 @@ pub(crate) const ENABLE_GOSSIP_TICKS: u8 = 5;
 /// The maximum number of unfunded channels we can have per-peer before we start rejecting new
 /// (inbound) ones. The number of peers with unfunded channels is limited separately in
 /// [`MAX_UNFUNDED_CHANNEL_PEERS`].
-const MAX_UNFUNDED_CHANS_PER_PEER: usize = 4;
+pub(super) const MAX_UNFUNDED_CHANS_PER_PEER: usize = 4;
 
 /// The maximum number of peers from which we will allow pending unfunded channels. Once we reach
 /// this many peers we reject new (inbound) channels from peers with which we don't have a channel.
-const MAX_UNFUNDED_CHANNEL_PEERS: usize = 50;
+pub(super) const MAX_UNFUNDED_CHANNEL_PEERS: usize = 50;
 
 /// The maximum number of peers which we do not have a (funded) channel with. Once we reach this
 /// many peers we reject new (inbound) connections.
-const MAX_NO_CHANNEL_PEERS: usize = 250;
+pub(super) const MAX_NO_CHANNEL_PEERS: usize = 250;
 
 /// Information needed for constructing an invoice route hint for this channel.
 #[derive(Clone, Debug, PartialEq)]

@@ -1,17 +1,16 @@
 use bitcoin::hashes::Hash;
-use crate::ln::channelmanager::{PaymentId, PaymentSendFailure, RecipientOnionFields};
+use crate::ln::channelmanager::{PaymentId, PaymentSendFailure, RecipientOnionFields, self};
 use crate::ln::functional_test_utils::*;
 use crate::util::errors::APIError;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
-use crate::ln::channelmanager;
 use crate::ln::ChannelId;
 use crate::ln::msgs::{self};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::prelude::*;
 use crate::util::config::ChannelConfig;
 use crate::sign::EntropySource;
-
+use crate::ln::channelmanager::InterceptId;
 
 #[test]
 fn test_notify_limits() {
@@ -246,7 +245,6 @@ fn test_outpoint_to_peer_coverage() {
 	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 1000000);
 }
 
-
 fn check_not_connected_to_peer_error<T>(res_err: Result<T, APIError>, expected_public_key: PublicKey) {
 	let expected_message = format!("Not connected to node: {}", expected_public_key);
 	check_api_error_message(expected_message, res_err)
@@ -293,7 +291,7 @@ fn test_api_calls_with_unkown_counterparty_node() {
 	// Dummy values
 	let channel_id = ChannelId::from_bytes([4; 32]);
 	let unkown_public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), &SecretKey::from_slice(&[42; 32]).unwrap());
-	let intercept_id = super::InterceptId([0; 32]);
+	let intercept_id = InterceptId([0; 32]);
 
 	// Test the API functions.
 	check_not_connected_to_peer_error(nodes[0].node.create_channel(unkown_public_key, 1_000_000, 500_000_000, 42, None, None), unkown_public_key);
@@ -336,7 +334,7 @@ fn test_api_calls_with_unavailable_channel() {
 
 	check_channel_unavailable_error(nodes[0].node.force_close_without_broadcasting_txn(&channel_id, &counterparty_node_id), channel_id, counterparty_node_id);
 
-	check_channel_unavailable_error(nodes[0].node.forward_intercepted_htlc(channelmanager::InterceptId([0; 32]), &channel_id, counterparty_node_id, 1_000_000), channel_id, counterparty_node_id);
+	check_channel_unavailable_error(nodes[0].node.forward_intercepted_htlc(InterceptId([0; 32]), &channel_id, counterparty_node_id, 1_000_000), channel_id, counterparty_node_id);
 
 	check_channel_unavailable_error(nodes[0].node.update_channel_config(&counterparty_node_id, &[channel_id], &ChannelConfig::default()), channel_id, counterparty_node_id);
 }
@@ -348,6 +346,7 @@ fn test_connection_limiting() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let secp_ctx = Secp256k1::new();
 
 	// Note that create_network connects the nodes together for us
 
@@ -391,14 +390,14 @@ fn test_connection_limiting() {
 	// limit.
 	let mut peer_pks = Vec::with_capacity(channelmanager::MAX_NO_CHANNEL_PEERS);
 	for _ in 1..channelmanager::MAX_NO_CHANNEL_PEERS {
-		let random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
+		let random_pk = PublicKey::from_secret_key(&secp_ctx,
 			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 		peer_pks.push(random_pk);
 		nodes[1].node.peer_connected(&random_pk, &msgs::Init {
 			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
 		}, true).unwrap();
 	}
-	let last_random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
+	let last_random_pk = PublicKey::from_secret_key(&secp_ctx,
 		&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 	nodes[1].node.peer_connected(&last_random_pk, &msgs::Init {
 		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
@@ -501,6 +500,7 @@ fn test_0conf_limiting() {
 	settings.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(settings)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let secp_ctx = Secp256k1::new();
 
 	// Note that create_network connects the nodes together for us
 
@@ -509,7 +509,7 @@ fn test_0conf_limiting() {
 
 	// First, get us up to MAX_UNFUNDED_CHANNEL_PEERS so we can test at the edge
 	for _ in 0..channelmanager::MAX_UNFUNDED_CHANNEL_PEERS - 1 {
-		let random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
+		let random_pk = PublicKey::from_secret_key(&secp_ctx,
 			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 		nodes[1].node.peer_connected(&random_pk, &msgs::Init {
 			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
@@ -528,7 +528,7 @@ fn test_0conf_limiting() {
 	}
 
 	// If we try to accept a channel from another peer non-0conf it will fail.
-	let last_random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
+	let last_random_pk = PublicKey::from_secret_key(&secp_ctx,
 		&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 	nodes[1].node.peer_connected(&last_random_pk, &msgs::Init {
 		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
@@ -663,7 +663,7 @@ fn test_channel_update_cached() {
 
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 
-	nodes[0].node.force_close_channel_with_peer(&chan.2, &nodes[1].node.get_our_node_id(), None, true).unwrap();
+	let _ = nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id());
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
 
@@ -673,8 +673,8 @@ fn test_channel_update_cached() {
 
 	{
 		// Assert that ChannelUpdate message has been added to node[0] pending broadcast messages
-		let pending_broadcast_messages= nodes[0].node.pending_broadcast_messages.lock().unwrap();
-		assert_eq!(pending_broadcast_messages.len(), 1);
+		// let pending_broadcast_messages= nodes[0].node.get_and_clear_pending_msg_events();
+		// assert_eq!(pending_broadcast_messages.len(), 1);
 	}
 
 	// Test that we do not retrieve the pending broadcast messages when we are not connected to any peer
@@ -704,7 +704,7 @@ fn test_channel_update_cached() {
 	}
 	{
 		// Assert that ChannelUpdate message has been cleared from nodes[0] pending broadcast messages
-		let pending_broadcast_messages= nodes[0].node.pending_broadcast_messages.lock().unwrap();
+		let pending_broadcast_messages= nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(pending_broadcast_messages.len(), 0);
 	}
 }

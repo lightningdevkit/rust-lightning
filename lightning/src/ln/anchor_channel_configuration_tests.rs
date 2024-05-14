@@ -1,10 +1,11 @@
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::types::ChannelId;
+use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ErrorAction;
-use crate::ln::{functional_test_utils::*, ChannelId};
+use crate::ln::msgs::ChannelMessageHandler;
 use crate::prelude::*;
-use crate::util::config::ChannelConfigUpdate;
 use crate::util::errors::APIError;
+use crate::util::config::ChannelConfigUpdate;
 
 #[test]
 fn test_inbound_anchors_manual_acceptance() {

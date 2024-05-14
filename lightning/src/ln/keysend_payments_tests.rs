@@ -1,11 +1,9 @@
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use core::sync::atomic::Ordering;
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::ln::{self, inbound_payment, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channelmanager::{HTLCForwardInfo, PaymentId, RecipientOnionFields};
 use crate::ln::onion_payment::create_recv_pending_htlc_info;
-use crate::ln::inbound_payment;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{self};
 use crate::ln::msgs::ChannelMessageHandler;
@@ -13,7 +11,7 @@ use crate::prelude::*;
 use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
 use crate::util::ser::Writeable;
 use crate::util::test_utils;
-use crate::sign::EntropySource;
+use crate::sign::{EntropySource, NodeSigner};
 
 #[test]
 fn test_keysend_dup_hash_partial_mpp() {
@@ -131,7 +129,6 @@ fn test_keysend_dup_hash_partial_mpp() {
 		_ => panic!("Unexpected event"),
 	}
 }
-
 
 #[test]
 fn test_keysend_dup_payment_hash() {
@@ -389,6 +386,11 @@ fn bad_inbound_payment_hash() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	let highest_seen_timestamp = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Testnet).header.time;
+	let node_signer = node_cfgs[0].keys_manager;
+	let inbound_pmt_key_material = node_signer.get_inbound_payment_key_material();
+	let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+
 	let (_, payment_hash, payment_secret) = get_payment_preimage_hash!(&nodes[0]);
 	let payment_data = msgs::FinalOnionHopData {
 		payment_secret,
@@ -399,7 +401,7 @@ fn bad_inbound_payment_hash() {
 	// payment verification fails as expected.
 	let mut bad_payment_hash = payment_hash.clone();
 	bad_payment_hash.0[0] += 1;
-	match inbound_payment::verify(bad_payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger) {
+	match inbound_payment::verify(bad_payment_hash, &payment_data, highest_seen_timestamp as u64, &expanded_inbound_key, &nodes[0].logger) {
 		Ok(_) => panic!("Unexpected ok"),
 		Err(()) => {
 			nodes[0].logger.assert_log_contains("lightning::ln::inbound_payment", "Failing HTLC with user-generated payment_hash", 1);
@@ -407,14 +409,15 @@ fn bad_inbound_payment_hash() {
 	}
 
 	// Check that using the original payment hash succeeds.
-	assert!(inbound_payment::verify(payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
+	assert!(inbound_payment::verify(payment_hash, &payment_data, highest_seen_timestamp as u64, &expanded_inbound_key, &nodes[0].logger).is_ok());
 }
 
 #[test]
 fn reject_excessively_underpaying_htlcs() {
 	let chanmon_cfg = create_chanmon_cfgs(1);
 	let node_cfg = create_node_cfgs(1, &chanmon_cfg);
-	let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None]);
+	let user_cfg = test_default_channel_config();
+	let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[Some(user_cfg)]);
 	let node = create_network(1, &node_cfg, &node_chanmgr);
 	let sender_intended_amt_msat = 100;
 	let extra_fee_msat = 10;
@@ -431,10 +434,10 @@ fn reject_excessively_underpaying_htlcs() {
 	// Check that if the amount we received + the penultimate hop extra fee is less than the sender
 	// intended amount, we fail the payment.
 	let current_height: u32 = node[0].node.best_block.read().unwrap().height;
-	if let Err(crate::ln::channelmanager::InboundHTLCErr { err_code, .. }) =
+	if let Err(ln::onion_payment::InboundHTLCErr { err_code, .. }) =
 		create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 			sender_intended_amt_msat - extra_fee_msat - 1, 42, None, true, Some(extra_fee_msat),
-			current_height, node[0].node.default_configuration.accept_mpp_keysend)
+			current_height, user_cfg.accept_mpp_keysend)
 	{
 		assert_eq!(err_code, 19);
 	} else { panic!(); }
@@ -453,14 +456,15 @@ fn reject_excessively_underpaying_htlcs() {
 	let current_height: u32 = node[0].node.best_block.read().unwrap().height;
 	assert!(create_recv_pending_htlc_info(hop_data, [0; 32], PaymentHash([0; 32]),
 		sender_intended_amt_msat - extra_fee_msat, 42, None, true, Some(extra_fee_msat),
-		current_height, node[0].node.default_configuration.accept_mpp_keysend).is_ok());
+		current_height, user_cfg.accept_mpp_keysend).is_ok());
 }
 
 #[test]
 fn test_final_incorrect_cltv(){
 	let chanmon_cfg = create_chanmon_cfgs(1);
 	let node_cfg = create_node_cfgs(1, &chanmon_cfg);
-	let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[None]);
+	let user_cfg = test_default_channel_config();
+	let node_chanmgr = create_node_chanmgrs(1, &node_cfg, &[Some(user_cfg)]);
 	let node = create_network(1, &node_cfg, &node_chanmgr);
 
 	let current_height: u32 = node[0].node.best_block.read().unwrap().height;
@@ -474,7 +478,7 @@ fn test_final_incorrect_cltv(){
 		}),
 		custom_tlvs: Vec::new(),
 	}, [0; 32], PaymentHash([0; 32]), 100, 23, None, true, None, current_height,
-		node[0].node.default_configuration.accept_mpp_keysend);
+		user_cfg.accept_mpp_keysend);
 
 	// Should not return an error as this condition:
 	// https://github.com/lightning/bolts/blob/4dcc377209509b13cf89a4b91fde7d478f5b46d8/04-onion-routing.md?plain=1#L334

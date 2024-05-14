@@ -83,5 +83,11 @@ mod async_signer_tests;
 mod offers_tests;
 #[allow(dead_code)] // TODO(dual_funding): Exchange for dual_funding cfg
 pub(crate) mod interactivetxs;
+#[cfg(test)]
+mod anchor_channel_configuration_tests;
+#[cfg(test)]
+mod channelmanager_limits_tests;
+#[cfg(test)]
+mod keysend_payments_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
