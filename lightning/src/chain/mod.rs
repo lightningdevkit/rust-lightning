@@ -330,6 +330,11 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 pub trait Filter {
 	/// Registers interest in a transaction with `txid` and having an output with `script_pubkey` as
 	/// a spending condition.
+	///
+	/// This may be used, for example, to monitor for when a funding transaction confirms.
+	///
+	/// The `script_pubkey` is provided for informational purposes and may be useful for block
+	/// sources which only support filtering on scripts.
 	fn register_tx(&self, txid: &Txid, script_pubkey: &Script);
 
 	/// Registers interest in spends of a transaction output.
@@ -338,6 +343,9 @@ pub trait Filter {
 	/// to ensure that also dependent output spents within an already connected block are correctly
 	/// handled, e.g., by re-scanning the block in question whenever new outputs have been
 	/// registered mid-processing.
+	///
+	/// This may be used, for example, to monitor for when a funding output is spent (by any
+	/// transaction).
 	fn register_output(&self, output: WatchedOutput);
 }
 
@@ -349,6 +357,9 @@ pub trait Filter {
 ///
 /// If `block_hash` is `Some`, this indicates the output was created in the corresponding block and
 /// may have been spent there. See [`Filter::register_output`] for details.
+///
+/// Depending on your block source, you may need one or both of either [`Self::outpoint`] or
+/// [`Self::script_pubkey`].
 ///
 /// [`ChannelMonitor`]: channelmonitor::ChannelMonitor
 /// [`ChannelMonitor::block_connected`]: channelmonitor::ChannelMonitor::block_connected
