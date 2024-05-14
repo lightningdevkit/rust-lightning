@@ -503,6 +503,7 @@ for InvoiceBuilder<'a, DerivedSigningPubkey> {
 ///
 /// This is serialized as a TLV stream, which includes TLV records from the originating message. As
 /// such, it may include unknown, odd TLV records.
+#[derive(Clone)]
 pub struct UnsignedBolt12Invoice {
 	bytes: Vec<u8>,
 	contents: InvoiceContents,
@@ -560,7 +561,9 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
 	///
 	/// Note: The hash computation may have included unknown, odd TLV records.
-	pub fn sign<F: SignBolt12InvoiceFn>(
+	///
+	/// This is not exported to bindings users as functions aren't currently mapped.
+	pub(crate) fn sign<F: SignBolt12InvoiceFn>(
 		$($self_mut)* $self: $self_type, sign: F
 	) -> Result<Bolt12Invoice, SignError> {
 		let pubkey = $self.contents.fields().signing_pubkey;
@@ -697,7 +700,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`Offer::amount`]: crate::offers::offer::Offer::amount
-	pub fn amount(&$self) -> Option<&Amount> {
+	pub fn amount(&$self) -> Option<Amount> {
 		$contents.amount()
 	}
 
@@ -835,6 +838,8 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 
 	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
 	/// least-preferred.
+	///
+	/// This is not exported to bindings users as Address is not yet mapped
 	pub fn fallbacks(&$self) -> Vec<Address> {
 		$contents.fallbacks()
 	}
@@ -944,7 +949,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn amount(&self) -> Option<&Amount> {
+	fn amount(&self) -> Option<Amount> {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } =>
 				invoice_request.inner.offer.amount(),

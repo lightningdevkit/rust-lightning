@@ -121,8 +121,8 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 ///     &keys_manager, &keys_manager, logger, &node_id_lookup, message_router,
 ///     &offers_message_handler, &custom_message_handler
 /// );
-
-/// # #[derive(Debug)]
+///
+/// # #[derive(Debug, Clone)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
 /// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -315,15 +315,15 @@ where
 	}
 }
 
-impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter for DefaultMessageRouter<G, L, ES>
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> DefaultMessageRouter<G, L, ES>
 where
 	L::Target: Logger,
 	ES::Target: EntropySource,
 {
-	fn find_path(
-		&self, sender: PublicKey, peers: Vec<PublicKey>, mut destination: Destination
+	pub(crate) fn find_path(
+		network_graph: &G, sender: PublicKey, peers: Vec<PublicKey>, mut destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		let network_graph = self.network_graph.deref().read_only();
+		let network_graph = network_graph.deref().read_only();
 		destination.resolve(&network_graph);
 
 		let first_node = match destination.first_node() {
@@ -354,10 +354,11 @@ where
 		}
 	}
 
-	fn create_blinded_paths<
+	pub(crate) fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		network_graph: &G, recipient: PublicKey, peers: Vec<PublicKey>, entropy_source: &ES,
+		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -366,7 +367,7 @@ where
 		// recipient's node_id.
 		const MIN_PEER_CHANNELS: usize = 3;
 
-		let network_graph = self.network_graph.deref().read_only();
+		let network_graph = network_graph.deref().read_only();
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
 
@@ -389,7 +390,7 @@ where
 
 		let paths = peer_info.into_iter()
 			.map(|(pubkey, _, _)| vec![pubkey, recipient])
-			.map(|node_pks| BlindedPath::new_for_message(&node_pks, &*self.entropy_source, secp_ctx))
+			.map(|node_pks| BlindedPath::new_for_message(&node_pks, &**entropy_source, secp_ctx))
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
 
@@ -397,13 +398,33 @@ where
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if is_recipient_announced {
-					BlindedPath::one_hop_for_message(recipient, &*self.entropy_source, secp_ctx)
+					BlindedPath::one_hop_for_message(recipient, &**entropy_source, secp_ctx)
 						.map(|path| vec![path])
 				} else {
 					Err(())
 				}
 			},
 		}
+	}
+}
+
+impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter for DefaultMessageRouter<G, L, ES>
+where
+	L::Target: Logger,
+	ES::Target: EntropySource,
+{
+	fn find_path(
+		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
+	) -> Result<OnionMessagePath, ()> {
+		Self::find_path(&self.network_graph, sender, peers, destination)
+	}
+
+	fn create_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		Self::create_blinded_paths(&self.network_graph, recipient, peers, &self.entropy_source, secp_ctx)
 	}
 }
 
@@ -985,28 +1006,6 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, On
 	false
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> EventsProvider
-for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
-where
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	L::Target: Logger,
-	NL::Target: NodeIdLookUp,
-	MR::Target: MessageRouter,
-	OMH::Target: OffersMessageHandler,
-	CMH::Target: CustomOnionMessageHandler,
-{
-	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
-		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
-			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
-				if let Some(addresses) = addresses.take() {
-					handler.handle_event(Event::ConnectionNeeded { node_id: *node_id, addresses });
-				}
-			}
-		}
-	}
-}
-
 impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler
 for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
 where
@@ -1018,6 +1017,18 @@ where
 	OMH::Target: OffersMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
+	fn get_and_clear_connections_needed(&self) -> Vec<(PublicKey, Vec<SocketAddress>)> {
+		let mut res = Vec::new();
+		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
+			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
+				if let Some(addresses) = addresses.take() {
+					res.push((*node_id, addresses));
+				}
+			}
+		}
+		res
+	}
+
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage) {
 		let logger = WithContext::from(&self.logger, Some(*peer_node_id), None);
 		match self.peel_onion_message(msg) {

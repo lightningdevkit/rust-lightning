@@ -338,7 +338,7 @@ macro_rules! define_run_body {
 
 			if $channel_manager.get_cm().get_and_clear_needs_persistence() {
 				log_trace!($logger, "Persisting ChannelManager...");
-				$persister.persist_manager(&$channel_manager)?;
+				$persister.persist_manager($channel_manager.get_cm())?;
 				log_trace!($logger, "Done persisting ChannelManager.");
 			}
 			if $timer_elapsed(&mut last_freshness_call, FRESHNESS_TIMER) {
@@ -440,7 +440,7 @@ macro_rules! define_run_body {
 		// After we exit, ensure we persist the ChannelManager one final time - this avoids
 		// some races where users quit while channel updates were in-flight, with
 		// ChannelMonitor update(s) persisted without a corresponding ChannelManager update.
-		$persister.persist_manager(&$channel_manager)?;
+		$persister.persist_manager($channel_manager.get_cm())?;
 
 		// Persist Scorer on exit
 		if let Some(ref scorer) = $scorer {
@@ -704,7 +704,10 @@ where
 		persister, chain_monitor,
 		chain_monitor.process_pending_events_async(async_event_handler).await,
 		channel_manager, channel_manager.get_cm().process_pending_events_async(async_event_handler).await,
-		peer_manager, process_onion_message_handler_events_async(&peer_manager, async_event_handler).await,
+		peer_manager,
+		for event in onion_message_handler_events(peer_manager) {
+			handler(event).await
+		},
 		gossip_sync, logger, scorer, should_break, {
 			let fut = Selector {
 				a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
@@ -729,23 +732,11 @@ where
 	)
 }
 
-#[cfg(feature = "futures")]
-async fn process_onion_message_handler_events_async<
-	EventHandlerFuture: core::future::Future<Output = ()>,
-	EventHandler: Fn(Event) -> EventHandlerFuture,
-	PM: 'static + Deref + Send + Sync,
->(
-	peer_manager: &PM, handler: EventHandler
-)
-where
-	PM::Target: APeerManager + Send + Sync,
-{
-	let events = core::cell::RefCell::new(Vec::new());
-	peer_manager.onion_message_handler().process_pending_events(&|e| events.borrow_mut().push(e));
-
-	for event in events.into_inner() {
-		handler(event).await
-	}
+fn onion_message_handler_events<PM: 'static + Deref + Send + Sync>(
+	peer_manager: &PM
+) -> impl Iterator<Item=Event> where PM::Target: APeerManager + Send + Sync {
+	peer_manager.onion_message_handler().get_and_clear_connections_needed()
+		.into_iter().map(|(node_id, addresses)| Event::ConnectionNeeded { node_id, addresses })
 }
 
 #[cfg(feature = "std")]
@@ -823,8 +814,8 @@ impl BackgroundProcessor {
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-		PS::Target: 'static + Persister<'a, CM, L, SC>,
-		CM::Target: AChannelManager + Send + Sync,
+		PS::Target: 'static + Persister<'a, <<CM as Deref>::Target as AChannelManager>::M, <<CM as Deref>::Target as AChannelManager>::T, <<CM as Deref>::Target as AChannelManager>::ES, <<CM as Deref>::Target as AChannelManager>::NS, <<CM as Deref>::Target as AChannelManager>::SP, <<CM as Deref>::Target as AChannelManager>::F, <<CM as Deref>::Target as AChannelManager>::R, L, SC>,
+		CM::Target: AChannelManager<L = L> + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
 	{
 		let stop_thread = Arc::new(AtomicBool::new(false));
@@ -852,7 +843,9 @@ impl BackgroundProcessor {
 				persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
 				channel_manager, channel_manager.get_cm().process_pending_events(&event_handler),
 				peer_manager,
-				peer_manager.onion_message_handler().process_pending_events(&event_handler),
+				for event in onion_message_handler_events(&peer_manager) {
+					event_handler.handle_event(event);
+				},
 				gossip_sync, logger, scorer, stop_thread.load(Ordering::Acquire),
 				{ Sleeper::from_two_futures(
 					&channel_manager.get_cm().get_event_or_persistence_needed_future(),
@@ -989,9 +982,7 @@ mod tests {
 				Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
 				Arc<test_utils::TestLogger>,
 				Arc<KeysManager>,
-				Arc<LockingWrapper<TestScorer>>,
-				(),
-				TestScorer>
+				Arc<LockingWrapper<TestScorer>>>
 			>,
 			Arc<test_utils::TestLogger>>;
 
@@ -1151,9 +1142,10 @@ mod tests {
 	}
 
 	impl ScoreLookUp for TestScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
 		fn channel_penalty_msat(
-			&self, _candidate: &CandidateRouteHop, _usage: ChannelUsage, _score_params: &Self::ScoreParams
+			&self, _candidate: &CandidateRouteHop, _usage: ChannelUsage, _score_params: &lightning::routing::scoring::ProbabilisticScoringFeeParameters
 		) -> u64 { unimplemented!(); }
 	}
 

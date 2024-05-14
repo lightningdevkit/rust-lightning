@@ -103,7 +103,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub(crate) use crate::ln::outbound_payment::{PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -1002,8 +1002,6 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 		Arc<L>,
 		Arc<KeysManager>,
 		Arc<RwLock<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>,
-		ProbabilisticScoringFeeParameters,
-		ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>,
 	>>,
 	Arc<L>
 >;
@@ -1033,8 +1031,6 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> =
 			&'g L,
 			&'c KeysManager,
 			&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
-			ProbabilisticScoringFeeParameters,
-			ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>
 		>,
 		&'g L
 	>;
@@ -4071,7 +4067,7 @@ where
 		// If we returned an error and the `node_signer` cannot provide a signature for whatever
 		// reason`, we wouldn't be able to receive inbound payments through the corresponding
 		// channel.
-		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&unsigned)).unwrap();
+		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(unsigned.clone())).unwrap();
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -4776,7 +4772,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_partial_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config_update: &ChannelConfigUpdate,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config_update: &ChannelConfigUpdate,
 	) -> Result<(), APIError> {
 		if config_update.cltv_expiry_delta.map(|delta| delta < MIN_CLTV_EXPIRY_DELTA).unwrap_or(false) {
 			return Err(APIError::APIMisuseError {
@@ -4791,14 +4787,14 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if !peer_state.has_channel(channel_id) {
 				return Err(APIError::ChannelUnavailable {
 					err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, counterparty_node_id),
 				});
 			};
 		}
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if let Some(channel_phase) = peer_state.channel_by_id.get_mut(channel_id) {
 				let mut config = channel_phase.context().config();
 				config.apply(config_update);
@@ -4853,7 +4849,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config: &ChannelConfig,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config: &ChannelConfig,
 	) -> Result<(), APIError> {
 		return self.update_partial_channel_config(counterparty_node_id, channel_ids, &(*config).into());
 	}
@@ -8560,8 +8556,6 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// Errors if the parameterized [`Router`] is unable to create a blinded path for the offer.
 	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
@@ -8623,8 +8617,6 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
 	/// - `amount_msats` is invalid, or
 	/// - the parameterized [`Router`] is unable to create a blinded path for the refund.
-	///
-	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice

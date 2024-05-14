@@ -13,7 +13,7 @@ use crate::Bolt11Invoice;
 use bitcoin::hashes::Hash;
 
 use lightning::ln::types::PaymentHash;
-use lightning::ln::channelmanager::RecipientOnionFields;
+use lightning::ln::outbound_payment::RecipientOnionFields;
 use lightning::routing::router::{PaymentParameters, RouteParameters};
 
 /// Builds the necessary parameters to pay or pre-flight probe the given zero-amount
@@ -170,7 +170,8 @@ mod tests {
 	#[cfg(feature = "std")]
 	fn payment_metadata_end_to_end() {
 		use lightning::events::Event;
-		use lightning::ln::channelmanager::{Retry, PaymentId};
+		use lightning::ln::channelmanager::PaymentId;
+		use lightning::ln::outbound_payment::Retry;
 		use lightning::ln::msgs::ChannelMessageHandler;
 		use lightning::ln::functional_test_utils::*;
 		// Test that a payment metadata read from an invoice passed to `pay_invoice` makes it all

@@ -89,7 +89,7 @@ impl NodeId {
 	}
 
 	/// Get the public key as an array from this NodeId
-	pub fn as_array(&self) -> &[u8; PUBLIC_KEY_SIZE] {
+	pub fn as_array(&self) -> &[u8; 33] {
 		&self.0
 	}
 
@@ -878,7 +878,7 @@ pub struct ChannelInfo {
 impl ChannelInfo {
 	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
 	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
-	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+	pub(crate) fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
 		let (direction, source, outbound) = {
 			if target == &self.node_one {
 				(self.two_to_one.as_ref(), &self.node_two, false)
@@ -893,7 +893,7 @@ impl ChannelInfo {
 
 	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
 	/// returned `target`, or `None` if `source` is not one of the channel's counterparties.
-	pub fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+	pub(crate) fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
 		let (direction, target, outbound) = {
 			if source == &self.node_one {
 				(self.one_to_two.as_ref(), &self.node_two, true)

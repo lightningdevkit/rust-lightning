@@ -487,6 +487,7 @@ for InvoiceRequestBuilder<'a, 'b, DerivedPayerId, secp256k1::All> {
 ///
 /// This is serialized as a TLV stream, which includes TLV records from the originating message. As
 /// such, it may include unknown, odd TLV records.
+#[derive(Clone)]
 pub struct UnsignedInvoiceRequest {
 	bytes: Vec<u8>,
 	contents: InvoiceRequestContents,
@@ -546,7 +547,9 @@ macro_rules! unsigned_invoice_request_sign_method { (
 	/// Signs the [`TaggedHash`] of the invoice request using the given function.
 	///
 	/// Note: The hash computation may have included unknown, odd TLV records.
-	pub fn sign<F: SignInvoiceRequestFn>(
+	///
+	/// This is not exported to bindings users as functions are not yet mapped.
+	pub(crate) fn sign<F: SignInvoiceRequestFn>(
 		$($self_mut)* $self: $self_type, sign: F
 	) -> Result<InvoiceRequest, SignError> {
 		let pubkey = $self.contents.payer_id;

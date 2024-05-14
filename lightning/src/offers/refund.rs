@@ -141,6 +141,7 @@ pub struct RefundBuilder<'a, T: secp256k1::Signing> {
 ///
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
+#[derive(Clone)]
 pub struct RefundMaybeWithDerivedMetadataBuilder<'a> {
 	refund: RefundContents,
 	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
