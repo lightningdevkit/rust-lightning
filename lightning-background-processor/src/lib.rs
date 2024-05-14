@@ -93,7 +93,7 @@ pub struct BackgroundProcessor {
 }
 
 #[cfg(not(test))]
-const FRESHNESS_TIMER: u64 = 60;
+const FRESHNESS_TIMER: u64 = 1;
 #[cfg(test)]
 const FRESHNESS_TIMER: u64 = 1;
 
@@ -933,7 +933,7 @@ mod tests {
 	use lightning::events::{Event, PathFailure, MessageSendEventsProvider, MessageSendEvent};
 	use lightning::{get_event_msg, get_event};
 	use lightning::ln::types::{PaymentHash, ChannelId};
-	use lightning::ln::channelmanager;
+	use lightning::ln::channelmanager::{self, TICKS_PER_MINUTE};
 	use lightning::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChainParameters, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 	use lightning::ln::features::{ChannelFeatures, NodeFeatures};
 	use lightning::ln::functional_test_utils::*;
@@ -960,7 +960,7 @@ mod tests {
 	use lightning_rapid_gossip_sync::RapidGossipSync;
 	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
 
-	const EVENT_DEADLINE: u64 = 5 * FRESHNESS_TIMER;
+	const EVENT_DEADLINE: u64 = 5 * TICKS_PER_MINUTE as u64 * FRESHNESS_TIMER;
 
 	#[derive(Clone, Hash, PartialEq, Eq)]
 	struct TestDescriptor{}

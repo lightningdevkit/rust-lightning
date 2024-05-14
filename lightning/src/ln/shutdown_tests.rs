@@ -10,6 +10,7 @@
 //! Tests of our shutdown and closing_signed negotiation logic as well as some assorted force-close
 //! handling tests.
 
+use crate::ln::channel::UNPROGRESS_CLOSING_SIGNED_NEGOTIATION_AGE_LIMIT_TICKS;
 use crate::sign::{EntropySource, SignerProvider};
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::chain::transaction::OutPoint;
@@ -1161,8 +1162,9 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		assert_eq!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
 	}
 
-	nodes[1].node.timer_tick_occurred();
-	nodes[1].node.timer_tick_occurred();
+	for _ in 0..UNPROGRESS_CLOSING_SIGNED_NEGOTIATION_AGE_LIMIT_TICKS + 1 {
+		nodes[1].node.timer_tick_occurred();
+	}
 
 	let txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(txn.len(), 1);

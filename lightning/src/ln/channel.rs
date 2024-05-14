@@ -56,6 +56,7 @@ use crate::sync::Mutex;
 use crate::sign::type_resolver::ChannelSignerType;
 
 use super::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
+use super::channelmanager::TICKS_PER_MINUTE;
 
 #[cfg(test)]
 pub struct ChannelValueStat {
@@ -968,9 +969,9 @@ pub(super) enum ChannelUpdateStatus {
 	/// We've announced the channel as enabled and are connected to our peer.
 	Enabled,
 	/// Our channel is no longer live, but we haven't announced the channel as disabled yet.
-	DisabledStaged(u8),
+	DisabledStaged(u16),
 	/// Our channel is live again, but we haven't announced the channel as enabled yet.
-	EnabledStaged(u8),
+	EnabledStaged(u16),
 	/// We've announced the channel as disabled.
 	Disabled,
 }
@@ -1160,23 +1161,23 @@ pub(crate) const MIN_AFFORDABLE_HTLC_COUNT: usize = 4;
 /// number of ticks to allow forwarding HTLCs by nodes that have yet to receive the new
 /// ChannelUpdate prompted by the config update. This value was determined as follows:
 ///
-///   * The expected interval between ticks (1 minute).
+///   * The expected interval between ticks (1 second).
 ///   * The average convergence delay of updates across the network, i.e., ~300 seconds on average
 ///      for a node to see an update as seen on `<https://arxiv.org/pdf/2205.12737.pdf>`.
 ///   * `EXPIRE_PREV_CONFIG_TICKS` = convergence_delay / tick_interval
-pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5;
+pub(crate) const EXPIRE_PREV_CONFIG_TICKS: usize = 5 * TICKS_PER_MINUTE as usize;
 
 /// The number of ticks that may elapse while we're waiting for a response to a
 /// [`msgs::RevokeAndACK`] or [`msgs::ChannelReestablish`] message before we attempt to disconnect
 /// them.
 ///
 /// See [`ChannelContext::sent_message_awaiting_response`] for more information.
-pub(crate) const DISCONNECT_PEER_AWAITING_RESPONSE_TICKS: usize = 2;
+pub(crate) const DISCONNECT_PEER_AWAITING_RESPONSE_TICKS: usize = 2 * TICKS_PER_MINUTE as usize;
 
 /// The number of ticks that may elapse while we're waiting for an unfunded outbound/inbound channel
 /// to be promoted to a [`Channel`] since the unfunded channel was created. An unfunded channel
 /// exceeding this age limit will be force-closed and purged from memory.
-pub(crate) const UNFUNDED_CHANNEL_AGE_LIMIT_TICKS: usize = 60;
+pub(crate) const UNFUNDED_CHANNEL_AGE_LIMIT_TICKS: usize = 60 * TICKS_PER_MINUTE as usize;
 
 /// Number of blocks needed for an output from a coinbase transaction to be spendable.
 pub(crate) const COINBASE_MATURITY: u32 = 100;
@@ -3608,7 +3609,7 @@ pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 /// The number of ticks before the channel is forced closed if
 /// no progress on closing_signed negotiation is being made.
 /// An unprogressed channel that exceeds this limit will be abandoned.
-const UNPROGRESS_CLOSING_SIGNED_NEGOTIATION_AGE_LIMIT_TICKS: i32 = 1;
+pub(crate) const UNPROGRESS_CLOSING_SIGNED_NEGOTIATION_AGE_LIMIT_TICKS: i32 = 1 * TICKS_PER_MINUTE as i32;
 
 #[cfg(any(test, fuzzing))]
 struct CommitmentTxInfoCached {
@@ -5716,7 +5717,7 @@ impl<SP: Deref> Channel<SP> where
 
 	/// Checks if the closing_signed negotiation is making appropriate progress, possibly returning
 	/// an Err if no progress is being made and the channel should be force-closed instead.
-	/// Should be called on a one-minute timer.
+	/// Should be called on a one-second timer.
 	pub fn timer_check_closing_negotiation_progress(&mut self) -> Result<(), ChannelError> {
 		if self.closing_negotiation_ready() {
 			if self.context.closing_signed_in_flight {

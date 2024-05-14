@@ -957,7 +957,7 @@ pub(super) struct InboundChannelRequest {
 
 /// The number of ticks that may elapse while we're waiting for an unaccepted inbound channel to be
 /// accepted. An unaccepted channel that exceeds this limit will be abandoned.
-const UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS: i32 = 2;
+const UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS: i32 = 2 * TICKS_PER_MINUTE as i32;
 
 /// Stores a PaymentSecret and any other data we may need to validate an inbound payment is
 /// actually ours and not some duplicate HTLC sent to us by a node along the route.
@@ -2259,16 +2259,20 @@ const CHECK_CLTV_EXPIRY_SANITY: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRA
 #[allow(dead_code)]
 const CHECK_CLTV_EXPIRY_SANITY_2: u32 = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS - 2*CLTV_CLAIM_BUFFER;
 
+/// Constant that keeps track of the number of times [`ChannelManager::timer_tick_occurred`]
+/// is called every minute.
+pub const TICKS_PER_MINUTE: u8 = 60;
+
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] until expiry of incomplete MPPs
-pub(crate) const MPP_TIMEOUT_TICKS: u8 = 3;
+pub(crate) const MPP_TIMEOUT_TICKS: u8 = 3 * TICKS_PER_MINUTE;
 
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] where a peer is disconnected
 /// until we mark the channel disabled and gossip the update.
-pub(crate) const DISABLE_GOSSIP_TICKS: u8 = 10;
+pub(crate) const DISABLE_GOSSIP_TICKS: u16 = 10 * TICKS_PER_MINUTE as u16;
 
 /// The number of ticks of [`ChannelManager::timer_tick_occurred`] where a peer is connected until
 /// we mark the channel enabled and gossip the update.
-pub(crate) const ENABLE_GOSSIP_TICKS: u8 = 5;
+pub(crate) const ENABLE_GOSSIP_TICKS: u16 = 5 * TICKS_PER_MINUTE as u16;
 
 /// The maximum number of unfunded channels we can have per-peer before we start rejecting new
 /// (inbound) ones. The number of peers with unfunded channels is limited separately in
