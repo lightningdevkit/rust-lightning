@@ -3601,7 +3601,14 @@ pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	#[cfg(any(dual_funding, splicing))]
 	pub dual_funding_channel_context: Option<DualFundingChannelContext>,
+	/// Number of ticks before channel is force closed if closing_signed negotiation stalls.
+	timer_ticks: i32,
 }
+
+/// The number of ticks before the channel is forced closed if
+/// no progress on closing_signed negotiation is being made.
+/// An unprogressed channel that exceeds this limit will be abandoned.
+const UNPROGRESS_CLOSING_SIGNED_NEGOTIATION_AGE_LIMIT_TICKS: i32 = 1;
 
 #[cfg(any(test, fuzzing))]
 struct CommitmentTxInfoCached {
@@ -5714,7 +5721,7 @@ impl<SP: Deref> Channel<SP> where
 		if self.closing_negotiation_ready() {
 			if self.context.closing_signed_in_flight {
 				return Err(ChannelError::Close("closing_signed negotiation failed to finish within two timer ticks".to_owned()));
-			} else {
+			} else if { self.timer_ticks -= 1 ; self.timer_ticks } <= 0 {
 				self.context.closing_signed_in_flight = true;
 			}
 		}
@@ -7790,6 +7797,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			context: self.context,
 			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
+			timer_ticks: UNPROGRESS_CLOSING_SIGNED_NEGOTIATION_AGE_LIMIT_TICKS,
 		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
@@ -8080,6 +8088,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			context: self.context,
 			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
+			timer_ticks: UNPROGRESS_CLOSING_SIGNED_NEGOTIATION_AGE_LIMIT_TICKS,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
@@ -9389,6 +9398,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			},
 			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
+			timer_ticks: UNPROGRESS_CLOSING_SIGNED_NEGOTIATION_AGE_LIMIT_TICKS,
 		})
 	}
 }
