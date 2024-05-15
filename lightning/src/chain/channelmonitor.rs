@@ -2430,8 +2430,8 @@ macro_rules! fail_unbroadcast_htlcs {
 		debug_assert_eq!($commitment_tx_confirmed.txid(), $commitment_txid_confirmed);
 
 		macro_rules! check_htlc_fails {
-			($txid: expr, $commitment_tx: expr) => {
-				if let Some(ref latest_outpoints) = $self.counterparty_claimable_outpoints.get($txid) {
+			($txid: expr, $commitment_tx: expr, $per_commitment_outpoints: expr) => {
+				if let Some(ref latest_outpoints) = $per_commitment_outpoints {
 					for &(ref htlc, ref source_option) in latest_outpoints.iter() {
 						if let &Some(ref source) = source_option {
 							// Check if the HTLC is present in the commitment transaction that was
@@ -2491,10 +2491,10 @@ macro_rules! fail_unbroadcast_htlcs {
 			}
 		}
 		if let Some(ref txid) = $self.current_counterparty_commitment_txid {
-			check_htlc_fails!(txid, "current");
+			check_htlc_fails!(txid, "current", $self.counterparty_claimable_outpoints.get(txid));
 		}
 		if let Some(ref txid) = $self.prev_counterparty_commitment_txid {
-			check_htlc_fails!(txid, "previous");
+			check_htlc_fails!(txid, "previous", $self.counterparty_claimable_outpoints.get(txid));
 		}
 	} }
 }
@@ -2763,15 +2763,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// If the channel is force closed, try to claim the output from this preimage.
 		// First check if a counterparty commitment transaction has been broadcasted:
 		macro_rules! claim_htlcs {
-			($commitment_number: expr, $txid: expr) => {
-				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None);
+			($commitment_number: expr, $txid: expr, $htlcs: expr) => {
+				let (htlc_claim_reqs, _) = self.get_counterparty_output_claim_info($commitment_number, $txid, None, $htlcs);
 				self.onchain_tx_handler.update_claims_view_from_requests(htlc_claim_reqs, self.best_block.height, self.best_block.height, broadcaster, fee_estimator, logger);
 			}
 		}
 		if let Some(txid) = self.current_counterparty_commitment_txid {
 			if txid == confirmed_spend_txid {
 				if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
-					claim_htlcs!(*commitment_number, txid);
+					claim_htlcs!(*commitment_number, txid, self.counterparty_claimable_outpoints.get(&txid));
 				} else {
 					debug_assert!(false);
 					log_error!(logger, "Detected counterparty commitment tx on-chain without tracking commitment number");
@@ -2782,7 +2782,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if let Some(txid) = self.prev_counterparty_commitment_txid {
 			if txid == confirmed_spend_txid {
 				if let Some(commitment_number) = self.counterparty_commitment_txn_on_chain.get(&txid) {
-					claim_htlcs!(*commitment_number, txid);
+					claim_htlcs!(*commitment_number, txid, self.counterparty_claimable_outpoints.get(&txid));
 				} else {
 					debug_assert!(false);
 					log_error!(logger, "Detected counterparty commitment tx on-chain without tracking commitment number");
@@ -3279,8 +3279,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 
 			// Then, try to find revoked htlc outputs
-			if let Some(ref per_commitment_data) = per_commitment_option {
-				for (_, &(ref htlc, _)) in per_commitment_data.iter().enumerate() {
+			if let Some(per_commitment_claimable_data) = per_commitment_option {
+				for (htlc, _) in per_commitment_claimable_data {
 					if let Some(transaction_output_index) = htlc.transaction_output_index {
 						if transaction_output_index as usize >= tx.output.len() ||
 								tx.output[transaction_output_index as usize].value != htlc.amount_msat / 1000 {
@@ -3304,9 +3304,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 				self.counterparty_commitment_txn_on_chain.insert(commitment_txid, commitment_number);
 
-				if let Some(per_commitment_data) = per_commitment_option {
+				if let Some(per_commitment_claimable_data) = per_commitment_option {
 					fail_unbroadcast_htlcs!(self, "revoked_counterparty", commitment_txid, tx, height,
-						block_hash, per_commitment_data.iter().map(|(htlc, htlc_source)|
+						block_hash, per_commitment_claimable_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
 				} else {
@@ -3319,7 +3319,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						block_hash, [].iter().map(|reference| *reference), logger);
 				}
 			}
-		} else if let Some(per_commitment_data) = per_commitment_option {
+		} else if let Some(per_commitment_claimable_data) = per_commitment_option {
 			// While this isn't useful yet, there is a potential race where if a counterparty
 			// revokes a state at the same time as the commitment transaction for that state is
 			// confirmed, and the watchtower receives the block before the user, the user could
@@ -3334,12 +3334,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 			log_info!(logger, "Got broadcast of non-revoked counterparty commitment transaction {}", commitment_txid);
 			fail_unbroadcast_htlcs!(self, "counterparty", commitment_txid, tx, height, block_hash,
-				per_commitment_data.iter().map(|(htlc, htlc_source)|
+				per_commitment_claimable_data.iter().map(|(htlc, htlc_source)|
 					(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 				), logger);
-
 			let (htlc_claim_reqs, counterparty_output_info) =
-				self.get_counterparty_output_claim_info(commitment_number, commitment_txid, Some(tx));
+				self.get_counterparty_output_claim_info(commitment_number, commitment_txid, Some(tx), per_commitment_option);
 			to_counterparty_output_info = counterparty_output_info;
 			for req in htlc_claim_reqs {
 				claimable_outpoints.push(req);
@@ -3350,12 +3349,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	/// Returns the HTLC claim package templates and the counterparty output info
-	fn get_counterparty_output_claim_info(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>)
+	fn get_counterparty_output_claim_info(&self, commitment_number: u64, commitment_txid: Txid, tx: Option<&Transaction>, per_commitment_option: Option<&Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>)
 	-> (Vec<PackageTemplate>, CommitmentTxCounterpartyOutputInfo) {
 		let mut claimable_outpoints = Vec::new();
 		let mut to_counterparty_output_info: CommitmentTxCounterpartyOutputInfo = None;
 
-		let htlc_outputs = match self.counterparty_claimable_outpoints.get(&commitment_txid) {
+		let per_commitment_claimable_data = match per_commitment_option {
 			Some(outputs) => outputs,
 			None => return (claimable_outpoints, to_counterparty_output_info),
 		};
@@ -3394,7 +3393,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
-		for (_, &(ref htlc, _)) in htlc_outputs.iter().enumerate() {
+		for  &(ref htlc, _) in per_commitment_claimable_data.iter() {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				if let Some(transaction) = tx {
 					if transaction_output_index as usize >= transaction.output.len() ||
@@ -3584,6 +3583,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if counterparty_commitment_txid == confirmed_commitment_txid {
 				continue;
 			}
+			// If we have generated claims for counterparty_commitment_txid earlier, we can rely on always
+			// having claim related htlcs for counterparty_commitment_txid in counterparty_claimable_outpoints.
 			for (htlc, _) in self.counterparty_claimable_outpoints.get(counterparty_commitment_txid).unwrap_or(&vec![]) {
 				log_trace!(logger, "Canceling claims for previously confirmed counterparty commitment {}",
 					counterparty_commitment_txid);
@@ -4219,9 +4220,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 
 			macro_rules! check_htlc_valid_counterparty {
-				($counterparty_txid: expr, $htlc_output: expr) => {
-					if let Some(txid) = $counterparty_txid {
-						for &(ref pending_htlc, ref pending_source) in self.counterparty_claimable_outpoints.get(&txid).unwrap() {
+				($htlc_output: expr, $per_commitment_data: expr) => {
+						for &(ref pending_htlc, ref pending_source) in $per_commitment_data {
 							if pending_htlc.payment_hash == $htlc_output.payment_hash && pending_htlc.amount_msat == $htlc_output.amount_msat {
 								if let &Some(ref source) = pending_source {
 									log_claim!("revoked counterparty commitment tx", false, pending_htlc, true);
@@ -4230,7 +4230,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								}
 							}
 						}
-					}
 				}
 			}
 
@@ -4247,9 +4246,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								// resolve the source HTLC with the original sender.
 								payment_data = Some(((*source).clone(), htlc_output.payment_hash, htlc_output.amount_msat));
 							} else if !$holder_tx {
-								check_htlc_valid_counterparty!(self.current_counterparty_commitment_txid, htlc_output);
+								if let Some(current_counterparty_commitment_txid) = &self.current_counterparty_commitment_txid {
+									check_htlc_valid_counterparty!(htlc_output, self.counterparty_claimable_outpoints.get(current_counterparty_commitment_txid).unwrap());
+								}
 								if payment_data.is_none() {
-									check_htlc_valid_counterparty!(self.prev_counterparty_commitment_txid, htlc_output);
+									if let Some(prev_counterparty_commitment_txid) = &self.prev_counterparty_commitment_txid {
+										check_htlc_valid_counterparty!(htlc_output, self.counterparty_claimable_outpoints.get(prev_counterparty_commitment_txid).unwrap());
+									}
 								}
 							}
 							if payment_data.is_none() {
@@ -4287,7 +4290,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 			if let Some(ref htlc_outputs) = self.counterparty_claimable_outpoints.get(&input.previous_output.txid) {
-				scan_commitment!(htlc_outputs.iter().map(|&(ref a, ref b)| (a, (b.as_ref().clone()).map(|boxed| &**boxed))),
+				scan_commitment!(htlc_outputs.iter().map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed))),
 					"counterparty commitment tx", false);
 			}
 
