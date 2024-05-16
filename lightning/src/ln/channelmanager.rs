@@ -10272,8 +10272,8 @@ where
 				};
 
 				match response {
-					Ok(invoice) => return responder.respond(OffersMessage::Invoice(invoice)),
-					Err(error) => return responder.respond(OffersMessage::InvoiceError(error.into())),
+					Ok(invoice) => responder.respond(OffersMessage::Invoice(invoice)),
+					Err(error) => responder.respond(OffersMessage::InvoiceError(error.into())),
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
@@ -10300,14 +10300,14 @@ where
 							self.logger,
 							"A response was generated, but there is no reply_path specified for sending the response."
 						);
-						return ResponseInstruction::NoResponse;
+						ResponseInstruction::NoResponse
 					}
-					_ => return ResponseInstruction::NoResponse,
+					_ => ResponseInstruction::NoResponse,
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
 				log_trace!(self.logger, "Received invoice_error: {}", invoice_error);
-				return ResponseInstruction::NoResponse;
+				ResponseInstruction::NoResponse
 			},
 		}
 	}
