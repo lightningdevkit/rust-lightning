@@ -328,6 +328,61 @@ pub const ARCHIVAL_DELAY_BLOCKS: u32 = 4032;
 /// providing us the preimage (which would claim it).
 pub const HTLC_FAIL_BACK_BUFFER: u32 = CLTV_CLAIM_BUFFER + LATENCY_GRACE_PERIOD_BLOCKS;
 
+/// An opaque key used with the [`ChannelId`] to identify a [`ClaimMetadata`].
+///
+/// This type is used in [`Event::PersistClaimInfo`] and [`Event::ClaimInfoRequest`] to
+/// associate persisted [`ClaimInfo`] with the correct commitment transaction.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct ClaimKey(pub(crate) Txid);
+
+impl Writeable for ClaimKey {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		0u8.write(writer)?;
+		self.0.write(writer)
+	}
+}
+
+impl Readable for ClaimKey {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let version: u8 = Readable::read(reader)?;
+		if version != 0 {
+			return Err(DecodeError::UnknownRequiredFeature);
+		}
+		Ok(Self(Readable::read(reader)?))
+	}
+}
+
+/// Metadata associated with an [`Event::ClaimInfoRequest`] which allows the operation to continue
+/// after calling [`ChainMonitor::provide_claim_info`].
+///
+/// [`ChainMonitor::provide_claim_info`]: super::chainmonitor::ChainMonitor::provide_claim_info
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimMetadata {
+	/// The [`BlockHash`] of the block containing [`Self::tx`].
+	pub(crate) block_hash: BlockHash,
+	/// The counterparty commitment transaction for which a claim might be necessary.
+	pub(crate) tx: Transaction,
+	/// The height of the block in which the commitment transaction is included.
+	pub(crate) height: u32,
+}
+
+impl_writeable_tlv_based!(ClaimMetadata, {
+	(1, block_hash, required),
+	(3, tx, required),
+	(5, height, required),
+});
+
+/// Represents detailed information about HTLCs in a commitment transaction that can be claimed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimInfo {
+	/// A list of HTLC outputs for the commitment transaction that are eligible for claiming.
+	pub(crate) htlcs: Vec<HTLCOutputInCommitment>,
+}
+
+impl_writeable_tlv_based!(ClaimInfo, {
+	(1, htlcs, required_vec),
+});
+
 // Deprecated, use [`HolderCommitment`] or [`HolderCommitmentTransaction`].
 #[derive(Clone, PartialEq, Eq)]
 struct HolderSignedTx {
