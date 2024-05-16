@@ -18,6 +18,14 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
+use bitcoin::{Transaction, OutPoint, Txid, BlockHash};
+use bitcoin::script::ScriptBuf;
+use bitcoin::hashes::Hash;
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::secp256k1::PublicKey;
+use core::time::Duration;
+use core::ops::Deref;
+
 use crate::blinded_path::message::OffersContext;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef};
 use crate::chain::transaction;
@@ -34,15 +42,8 @@ use crate::sign::SpendableOutputDescriptor;
 use crate::util::errors::APIError;
 use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReadable, Readable, RequiredWrapper, UpgradableRequired, WithoutLength};
 use crate::util::string::UntrustedString;
-
-use bitcoin::{Transaction, OutPoint};
-use bitcoin::script::ScriptBuf;
-use bitcoin::hashes::Hash;
-use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::secp256k1::PublicKey;
 use crate::io;
-use core::time::Duration;
-use core::ops::Deref;
+use crate::ln::chan_utils::HTLCOutputInCommitment;
 use crate::sync::Arc;
 
 #[allow(unused_imports)]
@@ -992,9 +993,9 @@ pub enum Event {
 		/// If this is `Some`, then the corresponding channel should be avoided when the payment is
 		/// retried. May be `None` for older [`Event`] serializations.
 		short_channel_id: Option<u64>,
-#[cfg(test)]
+		#[cfg(test)]
 		error_code: Option<u16>,
-#[cfg(test)]
+		#[cfg(test)]
 		error_data: Option<Vec<u8>>,
 	},
 	/// Indicates that a probe payment we sent returned successful, i.e., only failed at the destination.
@@ -1373,6 +1374,69 @@ pub enum Event {
 		/// Destination of the HTLC that failed to be processed.
 		failed_next_destination: HTLCDestination,
 	},
+	/// Indicates that a [`ClaimInfo`] for a specific counterparty commitment transaction must be 
+	/// supplied to LDK if available.
+	///
+	/// This event is generated when there is a need for [`ClaimInfo`] that was previously stored
+	/// using [`PersistClaimInfo`] for the specified counterparty commitment transaction.
+	/// This event can be safely ignored if [`PersistClaimInfo`] event is being ignored.
+	///
+	/// The response to this event should be handled by calling
+	/// [`ChainMonitor::provide_claim_info`] with the [`ClaimInfo`] that was previously stored and
+	/// [`ClaimMetadata`] from this event.
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
+	///
+	/// [`ChainMonitor::provide_claim_info`]: crate::chain::chainmonitor::ChainMonitor::provide_claim_info
+	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
+	ClaimInfoRequest {
+		/// The [`OutPoint`] identifying the channel monitor with which this claim is associated.
+		monitor_id: transaction::OutPoint,
+		/// The transaction identifier for which [`ClaimInfo`] is requested.
+		claim_key: Txid,
+		/// Additional metadata that must be supplied in the call to [`ChainMonitor::provide_claim_info`].
+		///
+		/// [`ChainMonitor::provide_claim_info`]: crate::chain::chainmonitor::ChainMonitor::provide_claim_info
+		claim_metadata: ClaimMetadata,
+	},
+
+	/// Indicates that [`ClaimInfo`] may be durably persisted to reduce `ChannelMonitor` in-memory size.
+	///
+	/// This event is used to persist information regarding a claim, necessary to generate revocation
+	/// transactions. Persisted [`ClaimInfo`] may later be requested by LDK with an [`ClaimInfoRequest`]
+	/// when we need to check for counterparty spend transactions.
+	/// It is recommended to store [`ClaimInfo`] against a combination key of `monitor_id` and
+	/// `claim_key` for effective retrieval after a [`ClaimInfoRequest`].
+	/// After successfully persisting the claim information, [`ChainMonitor::claim_info_persisted`]
+	/// must be called to notify the system that the data has been successfully stored.
+	///
+	/// Calling [`ChainMonitor::claim_info_persisted`] results in the removal of the [`ClaimInfo`] from both
+	/// the in-memory and on-disk versions of the [`ChannelMonitor`]. This action reduces the memory
+	/// footprint of the [`ChannelMonitor`], optimizing both process memory and disk usage.
+	/// This event can be safely ignored if such optimization is not desired;
+	/// however, if ignored, the [`ClaimInfo`] will continue to be stored both in-memory and on-disk
+	/// for [`ChannelMonitor`].
+	/// 
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
+	///
+	/// [`ChainMonitor::claim_info_persisted`]: crate::chain::chainmonitor::ChainMonitor::claim_info_persisted
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	/// [`ClaimInfoRequest`]: Event::ClaimInfoRequest
+	PersistClaimInfo {
+		/// The [`OutPoint`] identifying the channel monitor with which this claim is associated.
+		monitor_id: transaction::OutPoint,
+		/// The transaction identifier against which [`ClaimInfo`] is to be persisted.
+		claim_key: Txid,
+		/// Claim related information necessary to generate revocation transactions, that must be durably
+		/// persisted before calling [`ChainMonitor::claim_info_persisted`].
+		///
+		/// [`ChainMonitor::claim_info_persisted`]: crate::chain::chainmonitor::ChainMonitor::claim_info_persisted
+		claim_info: ClaimInfo,
+	},
 	/// Indicates that a transaction originating from LDK needs to have its fee bumped. This event
 	/// requires confirmed external funds to be readily available to spend.
 	///
@@ -1419,6 +1483,34 @@ pub enum Event {
 		peer_node_id: PublicKey,
 	}
 }
+
+/// Metadata associated for generating a claim when broadcast of commitment transaction is detected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimMetadata {
+	/// The [`BlockHash`] of the block containing the related commitment transaction.
+	pub(crate) block_hash: BlockHash,
+	/// The counterparty commitment transaction for which a claim might be necessary.
+	pub(crate) tx: Transaction,
+	/// The height of the block in which the commitment transaction is included.
+	pub(crate) height: u32,
+}
+
+/// Represents detailed information about HTLCs in a commitment transaction that can be claimed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimInfo {
+	/// A list of HTLC outputs for the commitment transaction that are eligible for claiming.
+	pub(crate) htlcs: Vec<HTLCOutputInCommitment>,
+}
+
+impl_writeable_tlv_based!(ClaimInfo, {
+	(2, htlcs, required_vec),
+});
+
+impl_writeable_tlv_based!(ClaimMetadata, {
+	(2, block_hash, required),
+	(4, tx, required),
+	(6, height, required),
+});
 
 impl Writeable for Event {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -1738,6 +1830,18 @@ impl Writeable for Event {
 					(6, counterparty_node_id, required),
 					(8, former_temporary_channel_id, required),
 				});
+			},
+			&Event::ClaimInfoRequest { ref monitor_id, ref claim_key, ref claim_metadata } => {
+				45u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, monitor_id, required),
+					(2, claim_key, required),
+					(4, claim_metadata, required),
+				});
+			}
+			&Event::PersistClaimInfo { .. } => {
+				47u8.write(writer)?;
+				// We don't write `PersistClaimInfo` because it is ok if we lost it, and it may be replayed.
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
@@ -2233,6 +2337,26 @@ impl MaybeReadable for Event {
 					former_temporary_channel_id: former_temporary_channel_id.0.unwrap(),
 				}))
 			},
+			45u8 => {
+				let mut f = || {
+					let mut monitor_id = RequiredWrapper(None);
+					let mut claim_key = RequiredWrapper(None);
+					let mut claim_metadata = RequiredWrapper(None);
+					read_tlv_fields!(reader, {
+						(0, monitor_id, required),
+						(2, claim_key, required),
+						(4, claim_metadata, required),
+    			});
+
+					Ok(Some(Event::ClaimInfoRequest {
+						monitor_id: monitor_id.0.unwrap(),
+						claim_key: claim_key.0.unwrap(),
+						claim_metadata: claim_metadata.0.unwrap(),
+					}))
+				};
+				f()
+			},
+			47u8 => Ok(None),
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
