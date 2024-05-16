@@ -10277,7 +10277,7 @@ where
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				let response = invoice
+				let result = invoice
 					.verify(expanded_key, secp_ctx)
 					.map_err(|()| InvoiceError::from_string("Unrecognized invoice".to_owned()))
 					.and_then(|payment_id| {
@@ -10293,16 +10293,15 @@ where
 						}
 					});
 
-				match (responder, response) {
-					(Some(responder), Err(e)) => responder.respond(OffersMessage::InvoiceError(e)),
-					(None, Err(_)) => {
-						log_trace!(
-							self.logger,
-							"A response was generated, but there is no reply_path specified for sending the response."
-						);
-						ResponseInstruction::NoResponse
-					}
-					_ => ResponseInstruction::NoResponse,
+				match result {
+					Ok(()) => ResponseInstruction::NoResponse,
+					Err(e) => match responder {
+						Some(responder) => responder.respond(OffersMessage::InvoiceError(e)),
+						None => {
+							log_trace!(self.logger, "No reply path for sending invoice error: {:?}", e);
+							ResponseInstruction::NoResponse
+						},
+					},
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
