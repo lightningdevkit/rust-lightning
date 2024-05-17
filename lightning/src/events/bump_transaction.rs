@@ -597,7 +597,7 @@ where
 		commitment_tx: &Transaction, commitment_tx_fee_sat: u64, anchor_descriptor: &AnchorDescriptor,
 	) -> Result<(), ()> {
 		// Our commitment transaction already has fees allocated to it, so we should take them into
-		// account. We do so by pretending the commitment tranasction's fee and weight are part of
+		// account. We do so by pretending the commitment transaction's fee and weight are part of
 		// the anchor input.
 		let mut anchor_utxo = anchor_descriptor.previous_utxo();
 		anchor_utxo.value += commitment_tx_fee_sat;
@@ -607,9 +607,9 @@ where
 			satisfaction_weight: commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
 		}];
 		#[cfg(debug_assertions)]
-		let must_spend_amount =	must_spend.iter().map(|input| input.previous_utxo.value).sum::<u64>();
+		let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value).sum::<u64>();
 
-		log_debug!(self.logger, "Peforming coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
+		log_debug!(self.logger, "Performing coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
 			package_target_feerate_sat_per_1000_weight);
 		let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
 			claim_id, must_spend, &[], package_target_feerate_sat_per_1000_weight,
@@ -711,14 +711,14 @@ where
 			htlc_tx.output.push(htlc_output);
 		}
 
-		log_debug!(self.logger, "Peforming coin selection for HTLC transaction targeting {} sat/kW",
+		log_debug!(self.logger, "Performing coin selection for HTLC transaction targeting {} sat/kW",
 			target_feerate_sat_per_1000_weight);
 
 		#[cfg(debug_assertions)]
 		let must_spend_satisfaction_weight =
 			must_spend.iter().map(|input| input.satisfaction_weight).sum::<u64>();
 		#[cfg(debug_assertions)]
-		let must_spend_amount =	must_spend.iter().map(|input| input.previous_utxo.value).sum::<u64>();
+		let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value).sum::<u64>();
 
 		let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
 			claim_id, must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
