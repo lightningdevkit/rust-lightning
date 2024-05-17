@@ -1296,7 +1296,8 @@ pub enum Event {
 		///
 		/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
 		unsigned_transaction: Transaction,
-	},
+	}
+	/* Note: SpliceAckedInputsContributionReady is no longer used
 	/// #SPLICING
 	/// Indicates that the splice negotiation is done, `splice_ack` msg was received, and interactive transaction negotiation can start.
 	/// Similar to FundingInputsContributionReady
@@ -1323,6 +1324,7 @@ pub enum Event {
 		/// during splicing.
 		counterparty_funding_satoshis: u64,
 	}
+	*/
 }
 
 impl Writeable for Event {
@@ -1584,6 +1586,7 @@ impl Writeable for Event {
 					(0, payment_id, required),
 				})
 			},
+			/*
 			// #SPLICING
 			#[cfg(splicing)]
 			&Event::SpliceAckedInputsContributionReady { ref channel_id, ref counterparty_node_id, ref pre_channel_value_satoshis, ref post_channel_value_satoshis, ref holder_funding_satoshis, ref counterparty_funding_satoshis } => {
@@ -1597,6 +1600,7 @@ impl Writeable for Event {
 					(10, counterparty_funding_satoshis, required),
 				});
 			},
+			*/
 			&Event::ConnectionNeeded { .. } => {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
