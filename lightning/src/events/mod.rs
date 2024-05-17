@@ -1208,6 +1208,7 @@ pub enum Event {
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	BumpTransaction(BumpTransactionEvent),
+	/* Note: FundingInputsContributionReady event has been abandoned
 	/// Used to indicate that the client should provide inputs to fund a dual-funded channel using
 	/// interactive transaction construction by calling [`ChannelManager::contribute_funding_inputs`].
 	/// Generated in [`ChannelManager`] message handling.
@@ -1246,6 +1247,7 @@ pub enum Event {
 		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 	},
+	*/
 	/// Indicates that a transaction constructed via interactive transaction construction for a
 	/// dual-funded (V2) channel is ready to be signed by the client. This event will only be triggered
 	/// if at least one input was contributed by the holder.
@@ -1599,16 +1601,16 @@ impl Writeable for Event {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
 			},
-			#[cfg(any(dual_funding, splicing))]
-			&Event::FundingInputsContributionReady { .. } => {
-				37u8.write(writer)?;
-				// We never write out FundingInputsContributionReady events as, upon disconnection, peers
-				// drop any channels which have not yet exchanged the initial commitment_signed in V2 channel
-				// establishment.
-			},
+			// #[cfg(any(dual_funding, splicing))]
+			// &Event::FundingInputsContributionReady { .. } => {
+			// 	37u8.write(writer)?;
+			// 	// We never write out FundingInputsContributionReady events as, upon disconnection, peers
+			// 	// drop any channels which have not yet exchanged the initial commitment_signed in V2 channel
+			// 	// establishment.
+			// },
 			#[cfg(any(dual_funding, splicing))]
 			&Event::OpenChannelV2Request { .. } => {
-				39u8.write(writer)?;
+				37u8.write(writer)?;
 				// We never write the OpenChannelV2Request events as, upon disconnection, peers
 				// drop any channels which have not yet completed any interactive funding transaction
 				// construction.

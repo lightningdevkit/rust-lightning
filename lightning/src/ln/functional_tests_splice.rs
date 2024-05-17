@@ -270,8 +270,11 @@ fn test_channel_open_v2_and_close() {
 	let expected_temporary_channel_id = "b1a3942f261316385476c86d7f454062ceb06d2e37675f08c2fac76b8c3ddc5e";
 	let expected_funded_channel_id = "0df1425050bb045209e23459ebb5f9c8f6f219dafb85e2ec59d5fe841f1c4463";
 
+	let extra_funding_input_sats = channel_value_sat + 35_000;
+	let custom_input_secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
+	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_funding_input_sats, &PublicKey::from_secret_key(&Secp256k1::new(), &custom_input_secret_key))];
 	// Have node0 initiate a channel to node1 with aforementioned parameters
-	let channel_id_temp1 = initiator_node.node.create_dual_funded_channel(acceptor_node.node.get_our_node_id(), channel_value_sat, None, 42, None).unwrap();
+	let channel_id_temp1 = initiator_node.node.create_dual_funded_channel(acceptor_node.node.get_our_node_id(), channel_value_sat, funding_inputs, None, 42, None).unwrap();
 	assert_eq!(channel_id_temp1.to_string(), expected_temporary_channel_id);
 
 	// Extract the channel open message from node0 to node1
@@ -285,23 +288,8 @@ fn test_channel_open_v2_and_close() {
 
 	let _res = initiator_node.node.handle_accept_channel_v2(&acceptor_node.node.get_our_node_id(), &accept_channel2_message.clone());
 
-	// Note: FundingInputsContributionReady emitted
-	let events = initiator_node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	let channel_id1 = match events[0] {
-		Event::FundingInputsContributionReady { channel_id, counterparty_node_id, .. } => {
-			// Here we have the final channel_id now
-			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
-			assert_eq!(counterparty_node_id, acceptor_node.node.get_our_node_id());
-			channel_id
-		}
-		_ => panic!("FundingInputsContributionReady event missing {:?}", events[0]),
-	};
-
-	let extra_funding_input_sats = channel_value_sat + 35_000;
-	let custom_input_secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
-	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_funding_input_sats, &PublicKey::from_secret_key(&Secp256k1::new(), &custom_input_secret_key))];
-	let _res = initiator_node.node.contribute_funding_inputs(&channel_id1, &acceptor_node.node.get_our_node_id(), funding_inputs).unwrap();
+	// Note: FundingInputsContributionReady event is no longer used
+	// Note: contribute_funding_inputs() call is no longer used
 
 	// let events = acceptor_node.node.get_and_clear_pending_events();
 	// println!("acceptor_node events: {}", events.len());
@@ -349,7 +337,7 @@ fn test_channel_open_v2_and_close() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	if let Event::FundingTransactionReadyForSigning {
+	let channel_id1 = if let Event::FundingTransactionReadyForSigning {
 		channel_id,
 		counterparty_node_id,
 		mut unsigned_transaction,
@@ -363,8 +351,9 @@ fn test_channel_open_v2_and_close() {
 		witness.push([7; 72]);
 		unsigned_transaction.input[0].witness = witness;
 
-		let _res = initiator_node.node.funding_transaction_signed(&channel_id1, &counterparty_node_id, unsigned_transaction).unwrap();
-	} else { panic!(); }
+		let _res = initiator_node.node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
+		channel_id
+	} else { panic!(); };
 
 	let _res = acceptor_node.node.handle_tx_complete(&initiator_node.node.get_our_node_id(), &tx_complete_msg);
 	let msg_events = acceptor_node.node.get_and_clear_pending_msg_events();
@@ -737,8 +726,12 @@ fn test_v2_splice_in() {
 	let expected_temporary_channel_id = "b1a3942f261316385476c86d7f454062ceb06d2e37675f08c2fac76b8c3ddc5e";
 	let expected_funded_channel_id = "0df1425050bb045209e23459ebb5f9c8f6f219dafb85e2ec59d5fe841f1c4463";
 
+	let extra_funding_input_sats = channel_value_sat + 35_000;
+	let custom_input_secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
+	let custom_input_pubkey = PublicKey::from_secret_key(&Secp256k1::new(), &custom_input_secret_key);
+	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_funding_input_sats, &custom_input_pubkey)];
 	// Have node0 initiate a channel to node1 with aforementioned parameters
-	let channel_id_temp1 = initiator_node.node.create_dual_funded_channel(acceptor_node.node.get_our_node_id(), channel_value_sat, None, 42, None).unwrap();
+	let channel_id_temp1 = initiator_node.node.create_dual_funded_channel(acceptor_node.node.get_our_node_id(), channel_value_sat, funding_inputs, None, 42, None).unwrap();
 	assert_eq!(channel_id_temp1.to_string(), expected_temporary_channel_id);
 
 	// Extract the channel open message from node0 to node1
@@ -752,23 +745,8 @@ fn test_v2_splice_in() {
 
 	let _res = initiator_node.node.handle_accept_channel_v2(&acceptor_node.node.get_our_node_id(), &accept_channel2_message.clone());
 
-	// Note: FundingInputsContributionReady emitted
-	let events = initiator_node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	let channel_id1 = match events[0] {
-		Event::FundingInputsContributionReady { channel_id, .. } => { 
-			// Here we have the final channel_id now
-			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
-			channel_id
-		}
-		_ => panic!("FundingInputsContributionReady event missing {:?}", events[0]),
-	};
-
-	let extra_funding_input_sats = channel_value_sat + 35_000;
-	let custom_input_secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
-	let custom_input_pubkey = PublicKey::from_secret_key(&Secp256k1::new(), &custom_input_secret_key);
-	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_funding_input_sats, &custom_input_pubkey)];
-	let _res = initiator_node.node.contribute_funding_inputs(&channel_id1, &acceptor_node.node.get_our_node_id(), funding_inputs).unwrap();
+	// Note: FundingInputsContributionReady event is no longer used
+	// Note: contribute_funding_inputs() call is no longer used
 
 	// initiator_node will generate a TxAddInput message to kickstart the interactive transaction construction protocol
 	let tx_add_input_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
@@ -803,7 +781,7 @@ fn test_v2_splice_in() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	if let Event::FundingTransactionReadyForSigning {
+	let channel_id1 = if let Event::FundingTransactionReadyForSigning {
 		channel_id,
 		counterparty_node_id,
 		mut unsigned_transaction,
@@ -813,8 +791,9 @@ fn test_v2_splice_in() {
 		let mut witness = Witness::new();
 		witness.push([7; 72]);
 		unsigned_transaction.input[0].witness = witness;
-		let _res = initiator_node.node.funding_transaction_signed(&channel_id1, &counterparty_node_id, unsigned_transaction).unwrap();
-	} else { panic!(); }
+		let _res = initiator_node.node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
+		channel_id
+	} else { panic!(); };
 
 	let _res = acceptor_node.node.handle_tx_complete(&initiator_node.node.get_our_node_id(), &tx_complete_msg);
 	let msg_events = acceptor_node.node.get_and_clear_pending_msg_events();
@@ -1262,8 +1241,12 @@ fn test_v2_payment_splice_in_payment() {
 	let expected_temporary_channel_id = "b1a3942f261316385476c86d7f454062ceb06d2e37675f08c2fac76b8c3ddc5e";
 	let expected_funded_channel_id = "0df1425050bb045209e23459ebb5f9c8f6f219dafb85e2ec59d5fe841f1c4463";
 
+	let extra_funding_input_sats = channel_value_sat + 35_000;
+	let custom_input_secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
+	let custom_input_pubkey = PublicKey::from_secret_key(&Secp256k1::new(), &custom_input_secret_key);
+	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_funding_input_sats, &custom_input_pubkey)];
 	// Have node0 initiate a channel to node1 with aforementioned parameters
-	let channel_id_temp1 = initiator_node.node.create_dual_funded_channel(acceptor_node.node.get_our_node_id(), channel_value_sat, None, 42, None).unwrap();
+	let channel_id_temp1 = initiator_node.node.create_dual_funded_channel(acceptor_node.node.get_our_node_id(), channel_value_sat, funding_inputs, None, 42, None).unwrap();
 	assert_eq!(channel_id_temp1.to_string(), expected_temporary_channel_id);
 
 	// Extract the channel open message from node0 to node1
@@ -1277,23 +1260,8 @@ fn test_v2_payment_splice_in_payment() {
 
 	let _res = initiator_node.node.handle_accept_channel_v2(&acceptor_node.node.get_our_node_id(), &accept_channel2_message.clone());
 
-	// Note: FundingInputsContributionReady emitted
-	let events = initiator_node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	let channel_id1 = match events[0] {
-		Event::FundingInputsContributionReady { channel_id, .. } => { 
-			// Here we have the final channel_id now
-			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
-			channel_id
-		}
-		_ => panic!("FundingInputsContributionReady event missing {:?}", events[0]),
-	};
-
-	let extra_funding_input_sats = channel_value_sat + 35_000;
-	let custom_input_secret_key = SecretKey::from_slice(&[2; 32]).unwrap();
-	let custom_input_pubkey = PublicKey::from_secret_key(&Secp256k1::new(), &custom_input_secret_key);
-	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_funding_input_sats, &custom_input_pubkey)];
-	let _res = initiator_node.node.contribute_funding_inputs(&channel_id1, &acceptor_node.node.get_our_node_id(), funding_inputs).unwrap();
+	// Note: FundingInputsContributionReady event is no longer used
+	// Note: contribute_funding_inputs() call is no longer used
 
 	// initiator_node will generate a TxAddInput message to kickstart the interactive transaction construction protocol
 	let tx_add_input_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
@@ -1327,7 +1295,7 @@ fn test_v2_payment_splice_in_payment() {
 		},
 		_ => panic!("Unexpected event"),
 	};
-	if let Event::FundingTransactionReadyForSigning {
+	let channel_id1 = if let Event::FundingTransactionReadyForSigning {
 		channel_id,
 		counterparty_node_id,
 		mut unsigned_transaction,
@@ -1337,8 +1305,9 @@ fn test_v2_payment_splice_in_payment() {
 		let mut witness = Witness::new();
 		witness.push([7; 72]);
 		unsigned_transaction.input[0].witness = witness;
-		let _res = initiator_node.node.funding_transaction_signed(&channel_id1, &counterparty_node_id, unsigned_transaction).unwrap();
-	} else { panic!(); }
+		let _res = initiator_node.node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
+		channel_id
+	} else { panic!(); };
 
 	let _res = acceptor_node.node.handle_tx_complete(&initiator_node.node.get_our_node_id(), &tx_complete_msg);
 	let msg_events = acceptor_node.node.get_and_clear_pending_msg_events();

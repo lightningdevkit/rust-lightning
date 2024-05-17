@@ -23,6 +23,7 @@ use bitcoin::{
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::events::bump_transaction::{BASE_INPUT_WEIGHT, EMPTY_SCRIPT_SIG_WEIGHT};
+use crate::events::MessageSendEvent;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::msgs;
 use crate::ln::msgs::{CommitmentSigned, SerialId, TxSignatures};
@@ -1088,6 +1089,39 @@ pub(crate) enum InteractiveTxMessageSend {
 	TxComplete(msgs::TxComplete),
 }
 
+impl InteractiveTxMessageSend {
+	pub fn into_msg_send_event(self, counterparty_node_id: &PublicKey) -> MessageSendEvent {
+		match self {
+			InteractiveTxMessageSend::TxAddInput(msg) => {
+				MessageSendEvent::SendTxAddInput { node_id: *counterparty_node_id, msg }
+			},
+			InteractiveTxMessageSend::TxAddOutput(msg) => {
+				MessageSendEvent::SendTxAddOutput { node_id: *counterparty_node_id, msg }
+			},
+			InteractiveTxMessageSend::TxComplete(msg) => {
+				MessageSendEvent::SendTxComplete { node_id: *counterparty_node_id, msg }
+			},
+		}
+	}
+}
+
+pub(super) struct InteractiveTxMessageSendResult(
+	pub Result<InteractiveTxMessageSend, msgs::TxAbort>,
+);
+
+impl InteractiveTxMessageSendResult {
+	pub fn into_msg_send_event(self, counterparty_node_id: &PublicKey) -> MessageSendEvent {
+		match self.0 {
+			Ok(interactive_tx_msg_send) => {
+				interactive_tx_msg_send.into_msg_send_event(counterparty_node_id)
+			},
+			Err(tx_abort_msg) => {
+				MessageSendEvent::SendTxAbort { node_id: *counterparty_node_id, msg: tx_abort_msg }
+			},
+		}
+	}
+}
+
 // This macro executes a state machine transition based on a provided action.
 macro_rules! do_state_transition {
 	($self: ident, $transition: ident, $msg: expr) => {{
@@ -1118,6 +1152,39 @@ pub(crate) enum HandleTxCompleteValue {
 	SendTxMessage(InteractiveTxMessageSend),
 	SendTxComplete(InteractiveTxMessageSend, InteractiveTxSigningSession),
 	NegotiationComplete(InteractiveTxSigningSession),
+}
+
+pub(super) struct HandleTxCompleteResult(pub Result<HandleTxCompleteValue, msgs::TxAbort>);
+
+impl HandleTxCompleteResult {
+	pub fn into_msg_send_event(
+		self, counterparty_node_id: &PublicKey,
+	) -> (Option<MessageSendEvent>, Option<InteractiveTxSigningSession>) {
+		match self.0 {
+			Ok(tx_complete_res) => {
+				let (tx_msg_opt, signing_session_opt) = match tx_complete_res {
+					HandleTxCompleteValue::SendTxMessage(msg) => (Some(msg), None),
+					HandleTxCompleteValue::SendTxComplete(msg, signing_session) => {
+						(Some(msg), Some(signing_session))
+					},
+					HandleTxCompleteValue::NegotiationComplete(signing_session) => {
+						(None, Some(signing_session))
+					},
+				};
+				(
+					tx_msg_opt.map(|tx_msg| tx_msg.into_msg_send_event(counterparty_node_id)),
+					signing_session_opt,
+				)
+			},
+			Err(tx_abort_msg) => (
+				Some(MessageSendEvent::SendTxAbort {
+					node_id: *counterparty_node_id,
+					msg: tx_abort_msg,
+				}),
+				None,
+			),
+		}
+	}
 }
 
 impl InteractiveTxConstructor {
