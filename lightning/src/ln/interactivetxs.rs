@@ -101,6 +101,39 @@ pub(crate) enum AbortReason {
 	InvalidTx,
 }
 
+impl AbortReason {
+	pub fn into_tx_abort_msg(self, channel_id: ChannelId) -> msgs::TxAbort {
+		let msg = match self {
+			AbortReason::InvalidStateTransition => "State transition was invalid",
+			AbortReason::UnexpectedCounterpartyMessage => "Unexpected message",
+			AbortReason::ReceivedTooManyTxAddInputs => "Too many `tx_add_input`s received",
+			AbortReason::ReceivedTooManyTxAddOutputs => "Too many `tx_add_output`s received",
+			AbortReason::IncorrectInputSequenceValue => {
+				"Input has a sequence value greater than 0xFFFFFFFD"
+			},
+			AbortReason::IncorrectSerialIdParity => "Parity for `serial_id` was incorrect",
+			AbortReason::SerialIdUnknown => "The `serial_id` is unknown",
+			AbortReason::DuplicateSerialId => "The `serial_id` already exists",
+			AbortReason::PrevTxOutInvalid => "Invalid previous transaction output",
+			AbortReason::ExceededMaximumSatsAllowed => {
+				"Output amount exceeded total bitcoin supply"
+			},
+			AbortReason::ExceededNumberOfInputsOrOutputs => "Too many inputs or outputs",
+			AbortReason::TransactionTooLarge => "Transaction weight is too large",
+			AbortReason::BelowDustLimit => "Output amount is below the dust limit",
+			AbortReason::InvalidOutputScript => "The output script is non-standard",
+			AbortReason::InsufficientFees => "Insufficient fees paid",
+			AbortReason::OutputsValueExceedsInputsValue => {
+				"Total value of outputs exceeds total value of inputs"
+			},
+			AbortReason::InvalidTx => "The transaction is invalid",
+		}
+		.to_string();
+
+		msgs::TxAbort { channel_id, data: msg.into_bytes() }
+	}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InteractiveTxInput {
 	serial_id: SerialId,
@@ -154,10 +187,12 @@ impl ConstructedTransaction {
 			})
 			.fold(0u64, |value, (_, output)| value.saturating_add(output.tx_out.value));
 
-		// Keep the inputs&outputs sorted by SerialId
-		let mut inputs: Vec<_> = context.inputs.clone().into_values().collect();
+		let remote_inputs_value_satoshis = context.remote_inputs_value();
+		let remote_outputs_value_satoshis = context.remote_outputs_value();
+		let mut inputs: Vec<InteractiveTxInput> = context.inputs.into_values().collect();
+		let mut outputs: Vec<InteractiveTxOutput> = context.outputs.into_values().collect();
+		// Inputs and outputs must be sorted by serial_id
 		inputs.sort_unstable_by_key(|InteractiveTxInput { serial_id, .. }| *serial_id);
-		let mut outputs: Vec<_> = context.outputs.clone().into_values().collect();
 		outputs.sort_unstable_by_key(|InteractiveTxOutput { serial_id, .. }| *serial_id);
 
 		Self {
@@ -166,8 +201,8 @@ impl ConstructedTransaction {
 			local_inputs_value_satoshis,
 			local_outputs_value_satoshis,
 
-			remote_inputs_value_satoshis: context.remote_inputs_value(),
-			remote_outputs_value_satoshis: context.remote_outputs_value(),
+			remote_inputs_value_satoshis,
+			remote_outputs_value_satoshis,
 
 			inputs,
 			outputs,
@@ -196,14 +231,12 @@ impl ConstructedTransaction {
 	}
 
 	pub fn into_unsigned_tx(self) -> Transaction {
-		// TODO: remove note
-		// Note: no need to sort any more
+		let ConstructedTransaction { inputs, outputs, .. } = self;
+
 		let input: Vec<TxIn> =
-			self.inputs.into_iter()
-			.map(|InteractiveTxInput { input, .. }| input).collect();
+			inputs.into_iter().map(|InteractiveTxInput { input, .. }| input).collect();
 		let output: Vec<TxOut> =
-			self.outputs.into_iter()
-			.map(|InteractiveTxOutput { tx_out, .. }| tx_out).collect();
+			outputs.into_iter().map(|InteractiveTxOutput { tx_out, .. }| tx_out).collect();
 
 		Transaction { version: 2, lock_time: self.lock_time, input, output }
 	}
@@ -214,8 +247,6 @@ impl ConstructedTransaction {
 
 	/// Return all outputs and their index that match the given script pubkey and optionally value.
 	pub fn find_output_by_script(&self, script_pubkey: &ScriptBuf, value: Option<u64>) -> Vec<(usize, TxOut)> {
-		// TODO: remove note
-		// Note: no need to sort any more
 		self.outputs.iter()
 			.enumerate()
 			.filter(|(_idx, outp)| 
@@ -258,7 +289,7 @@ impl ConstructedTransaction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct InteractiveTxSigningSession {
+pub(crate) struct InteractiveTxSigningSession {
 	pub unsigned_tx: ConstructedTransaction,
 	holder_sends_tx_signatures_first: bool,
 	sent_commitment_signed: Option<CommitmentSigned>,
@@ -358,8 +389,6 @@ impl InteractiveTxSigningSession {
 
 	fn finalize_funding_tx(&self) -> Transaction {
 		let lock_time = self.unsigned_tx.lock_time;
-		// TODO: remove note
-		// Note: no need to sort any more
 		let input = self.unsigned_tx.inputs.iter().cloned()
 			.map(|InteractiveTxInput { input, .. }| input).collect();
 		let output = self.unsigned_tx.outputs.iter().cloned()
@@ -1276,9 +1305,9 @@ mod tests {
 		P2WSH_INPUT_WEIGHT_LOWER_BOUND, TX_COMMON_FIELDS_WEIGHT,
 	};
 
-	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
-
 	use crate::prelude::*;
+
+	const TEST_FEERATE_SATS_PER_KW: u32 = FEERATE_FLOOR_SATS_PER_KW * 10;
 
 	// A simple entropy source that works based on an atomic counter.
 	struct TestEntropySource(AtomicCounter);
