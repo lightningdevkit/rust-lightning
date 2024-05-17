@@ -1162,7 +1162,7 @@ pub enum Event {
 		/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
 		counterparty_node_id: PublicKey,
 		/// The counterparty's contribution to the channel value in satoshis.
-		funding_satoshis: u64,
+		counterparty_funding_satoshis: u64,
 		/// The features that this channel will operate with. If you reject the channel, a
 		/// well-behaved counterparty may automatically re-attempt the channel with a new set of
 		/// feature flags.

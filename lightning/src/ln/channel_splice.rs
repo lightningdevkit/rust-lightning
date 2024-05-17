@@ -47,7 +47,7 @@ pub(crate) struct PendingSpliceInfoPost {
 
 impl PendingSpliceInfoPre {
 	pub(crate) fn new(relative_satoshis: i64, pre_channel_value: u64,
-		post_channel_id: Option<ChannelId>, funding_feerate_perkw: u32, locktime: u32
+		post_channel_id: Option<ChannelId>, funding_feerate_perkw: u32, locktime: u32,
 	) -> Self {
 		let post_channel_value = Self::add_checked(pre_channel_value, relative_satoshis);
 		Self {

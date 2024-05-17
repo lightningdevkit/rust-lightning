@@ -5816,6 +5816,7 @@ impl<SP: Deref> Channel<SP> where
 					self.context.funding_transaction_saved = funding_tx_opt.clone();
 				}
 			}
+			// Note: no state change (to AwaitingChannelReady) at this point yet
 			// Note: cannot mark interactive tx session is complete as of yet, funding_transaction_signed() can come later from the client
 
 			Ok((tx_signatures_opt, funding_tx_opt))
@@ -5863,7 +5864,6 @@ impl<SP: Deref> Channel<SP> where
 			return Err(ChannelError::Warn(format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)));
 		}
 	}
-
 
 	/// Queues up an outbound update fee by placing it in the holding cell. You should call
 	/// [`Self::maybe_free_holding_cell_htlcs`] in order to actually generate and send the
@@ -7384,7 +7384,7 @@ impl<SP: Deref> Channel<SP> where
 											// We generated a malleable funding transaction, implying we've
 											// just exposed ourselves to funds loss to our counterparty.
 											#[cfg(not(fuzzing))]
-											panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction! witness len {}  txid {}  inputs {}  txlen {}", input.witness.len(), tx.txid(), tx.input.len(), tx.encode().len());
+											panic!("Client called ChannelManager::funding_transaction_generated with bogus transaction!");
 										}
 									}
 								}
@@ -9472,7 +9472,7 @@ where
 		context.signer_pending_funding = false;
 	}
 
-	log_info!(logger, "Generated commitment_signed for peer, signature {:?}  channel {}", signature, &context.channel_id());
+	log_info!(logger, "Generated commitment_signed for peer for channel {}", &context.channel_id());
 
 	Ok(msgs::CommitmentSigned {
 		channel_id: context.channel_id.clone(),

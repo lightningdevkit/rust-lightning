@@ -3390,7 +3390,7 @@ where
 		let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
 
 		// TODO(dual_funding): Merge this with below when cfg is removed.
-		#[cfg(all(not(dual_funding), not(splicing)))]
+		#[cfg(not(any(dual_funding, splicing)))]
 		let (channel_phase, msg_send_event) = {
 			let channel = {
 				match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
@@ -5066,13 +5066,15 @@ where
 	#[cfg(any(dual_funding, splicing))]
 	pub fn funding_transaction_signed(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		transaction: Transaction) -> Result<(), APIError> {
-		let witnesses: Vec<_> = transaction.input.into_iter().enumerate().filter_map(|(_idx, input)| {
+		let witnesses: Vec<_> = transaction.input.into_iter().filter_map(|input| {
 			if input.witness.is_empty() { None } else { Some(input.witness) }
 		}).collect();
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
+			.ok_or_else(|| APIError::ChannelUnavailable {
+				err: format!("Can't find a peer matching the passed counterparty node_id {}",
+					counterparty_node_id) })?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -7070,7 +7072,7 @@ where
 
 	/// Gets the node_id held by this ChannelManager
 	pub fn get_our_node_id(&self) -> PublicKey {
-		self.our_network_pubkey.clone()
+		self.our_network_pubkey
 	}
 
 	fn handle_monitor_update_completion_actions<I: IntoIterator<Item=MonitorUpdateCompletionAction>>(&self, actions: I) {
@@ -7364,7 +7366,7 @@ where
 				match unaccepted_channel.open_channel_msg {
 					OpenChannelMessage::V1(open_channel_msg) => {
 						InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
-							counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features,
+							*counterparty_node_id, &self.channel_type_features(), &peer_state.latest_features,
 							&open_channel_msg, user_channel_id, &self.default_configuration, best_block_height,
 							&self.logger, accept_0conf).map(|channel| ChannelPhase::UnfundedInboundV1(channel))
 							.map_err(|err| MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id))
@@ -7394,7 +7396,7 @@ where
 				match handle_error!(self, Result::<(), MsgHandleErrInternal>::Err(err), *counterparty_node_id) {
 					Ok(_) => unreachable!("`handle_error` only returns Err as we've passed in an Err"),
 					Err(e) => {
-						return Err(APIError::ChannelUnavailable { err: e.err });
+						Err(APIError::ChannelUnavailable { err: e.err })
 					},
 				}
 			}
@@ -7406,7 +7408,7 @@ where
 					let send_msg_err_event = events::MessageSendEvent::HandleError {
 						node_id: channel_phase.context().get_counterparty_node_id(),
 						action: msgs::ErrorAction::SendErrorMessage{
-							msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "No zero confirmation channels accepted".to_owned(), }
+							msg: msgs::ErrorMessage { channel_id: *temporary_channel_id, data: "No zero confirmation channels accepted".to_owned(), }
 						}
 					};
 					peer_state.pending_msg_events.push(send_msg_err_event);
@@ -7422,7 +7424,7 @@ where
 						let send_msg_err_event = events::MessageSendEvent::HandleError {
 							node_id: channel_phase.context().get_counterparty_node_id(),
 							action: msgs::ErrorAction::SendErrorMessage{
-								msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
+								msg: msgs::ErrorMessage { channel_id: *temporary_channel_id, data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
 							}
 						};
 						peer_state.pending_msg_events.push(send_msg_err_event);
@@ -7442,7 +7444,7 @@ where
 						peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
 							node_id: channel.context.get_counterparty_node_id(),
 							msg: channel.accept_inbound_channel() });
-						peer_state.channel_by_id.insert(temporary_channel_id.clone(),
+						peer_state.channel_by_id.insert(*temporary_channel_id,
 							ChannelPhase::UnfundedInboundV1(channel));
 					},
 					#[cfg(any(dual_funding, splicing))]
@@ -7690,7 +7692,7 @@ where
 					pending_events.push_back((events::Event::OpenChannelV2Request {
 						temporary_channel_id: msg.common_fields.temporary_channel_id.clone(),
 						counterparty_node_id: counterparty_node_id.clone(),
-						funding_satoshis: msg.common_fields.funding_satoshis,
+						counterparty_funding_satoshis: msg.common_fields.funding_satoshis,
 						channel_type: msg.common_fields.channel_type.clone().unwrap(),
 					}, None));
 					peer_state.inbound_channel_request_by_id.insert(temporary_channel_id, InboundChannelRequest {
