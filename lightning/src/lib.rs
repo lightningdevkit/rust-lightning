@@ -61,7 +61,7 @@ compile_error!("Tests will always fail with cfg=fuzzing");
 
 #[macro_use]
 extern crate alloc;
-extern crate bitcoin;
+pub extern crate bitcoin;
 #[cfg(any(test, feature = "std"))]
 extern crate core;
 
