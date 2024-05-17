@@ -27,6 +27,7 @@ Objective, Restrictions:
 - Splice from only V2 channel is supported, channel ID is not changed
 - It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
 - Only a single pending splicing is supported at a time
+- Splice-in with contributions from the acceptor is not supported
 
 Up-to-date with main branch as of v0.0.123 (May 8, 475f736; originally branched off v0.0.115).
 
@@ -68,14 +69,14 @@ Client  LDK                                       Counterparty node (acceptor)
         Cycle back the channel to UnfundedOutboundV2
         splice_start() -- ChannelContext
         Start the splice, update capacity, state to NegotiatingFunding, reset funding transaction
-        event: SpliceAckedInputsContributionReady
-        contains the pre & post capacities, channel ID
-        ---
-event: SpliceAckedInputsContributionReady
-action by client:
-provide extra input(s) for new funding
----
-        contribute_funding_inputs() - ChannelManager API
+        //event: SpliceAckedInputsContributionReady
+        //contains the pre & post capacities, channel ID
+//        ---
+//event: SpliceAckedInputsContributionReady
+//action by client:
+//provide extra input(s) for new funding
+//---
+        //contribute_funding_inputs() - ChannelManager API
         begin_interactive_funding_tx_construction() - Channel
         begin_interactive_funding_tx_construction() - ChannelContext
         Splicing specific: Add the previous funding as an input to the new one.

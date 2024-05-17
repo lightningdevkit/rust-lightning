@@ -680,7 +680,7 @@ fn test_v1_splice_in() {
 	let locktime = 0; // TODO
 
 	// Initiate splice-in (on node0)
-	let res_error = initiator_node.node.splice_channel(&channel_id2, &acceptor_node.node.get_our_node_id(), splice_in_sats as i64, funding_feerate_perkw, locktime);
+	let res_error = initiator_node.node.splice_channel(&channel_id2, &acceptor_node.node.get_our_node_id(), splice_in_sats as i64, Vec::new(), funding_feerate_perkw, locktime);
 	assert!(res_error.is_err());
 	assert_eq!(format!("{:?}", res_error.err().unwrap())[..53].to_string(), "Misuse error: Channel ID would change during splicing".to_string());
 
@@ -907,7 +907,9 @@ fn test_v2_splice_in() {
 	let locktime = 0; // TODO
 
 	// Initiate splice-in (on node0)
-	let _res = initiator_node.node.splice_channel(&channel_id1, &acceptor_node.node.get_our_node_id(), splice_in_sats as i64, funding_feerate_perkw, locktime).unwrap();
+	let extra_splice_funding_input_sats = 35_000;
+	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_splice_funding_input_sats, &custom_input_pubkey)];
+	let _res = initiator_node.node.splice_channel(&channel_id1, &acceptor_node.node.get_our_node_id(), splice_in_sats as i64, funding_inputs, funding_feerate_perkw, locktime).unwrap();
 	// Extract the splice message from node0 to node1
 	let splice_msg = get_event_msg!(initiator_node, MessageSendEvent::SendSplice, acceptor_node.node.get_our_node_id());
 
@@ -930,19 +932,7 @@ fn test_v2_splice_in() {
 
 	let _res = initiator_node.node.handle_splice_ack(&acceptor_node.node.get_our_node_id(), &splice_ack_msg);
 
-	// Note: SpliceAckedInputsContributionReady emitted
-	let events = initiator_node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::SpliceAckedInputsContributionReady { channel_id, pre_channel_value_satoshis, post_channel_value_satoshis, holder_funding_satoshis, counterparty_funding_satoshis, .. } => {
-			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
-			assert_eq!(pre_channel_value_satoshis, channel_value_sat);
-			assert_eq!(post_channel_value_satoshis, post_splice_channel_value);
-			assert_eq!(holder_funding_satoshis, post_splice_channel_value - channel_value_sat);
-			assert_eq!(counterparty_funding_satoshis, 0);
-		},
-		_ => panic!("SpliceAckedInputsContributionReady event missing {:?}", events[0]),
-	};
+	// Note: SpliceAckedInputsContributionReady event is no longer used
 
 	// check that capacity has been updated, channel is not usable, and funding tx is unset
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
@@ -956,11 +946,8 @@ fn test_v2_splice_in() {
 		assert!(channel.funding_txo.is_none());
 		assert_eq!(channel.confirmations.unwrap(), 0);
 	}
-	
-	let extra_splice_funding_input_sats = 35_000;
-	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_splice_funding_input_sats, &custom_input_pubkey)];
 
-	let _res = initiator_node.node.contribute_funding_inputs(&channel_id1, &acceptor_node.node.get_our_node_id(), funding_inputs).unwrap();
+	// Note: contribute_funding_inputs() call is no longer used
 
 	// Initiator_node will generate first TxAddInput message
 	let tx_add_input_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
@@ -1467,7 +1454,9 @@ fn test_v2_payment_splice_in_payment() {
 	let locktime = 0; // TODO
 
 	// Initiate splice-in (on node0)
-	let _res = initiator_node.node.splice_channel(&channel_id1, &acceptor_node.node.get_our_node_id(), splice_in_sats as i64, funding_feerate_perkw, locktime).unwrap();
+	let extra_splice_funding_input_sats = 35_000;
+	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_splice_funding_input_sats, &custom_input_pubkey)];
+	let _res = initiator_node.node.splice_channel(&channel_id1, &acceptor_node.node.get_our_node_id(), splice_in_sats as i64, funding_inputs, funding_feerate_perkw, locktime).unwrap();
 	// Extract the splice message from node0 to node1
 	let splice_msg = get_event_msg!(initiator_node, MessageSendEvent::SendSplice, acceptor_node.node.get_our_node_id());
 
@@ -1490,19 +1479,7 @@ fn test_v2_payment_splice_in_payment() {
 
 	let _res = initiator_node.node.handle_splice_ack(&acceptor_node.node.get_our_node_id(), &splice_ack_msg);
 
-	// Note: SpliceAckedInputsContributionReady emitted
-	let events = initiator_node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::SpliceAckedInputsContributionReady { channel_id, pre_channel_value_satoshis, post_channel_value_satoshis, holder_funding_satoshis, counterparty_funding_satoshis, .. } => {
-			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
-			assert_eq!(pre_channel_value_satoshis, channel_value_sat);
-			assert_eq!(post_channel_value_satoshis, post_splice_channel_value);
-			assert_eq!(holder_funding_satoshis, post_splice_channel_value);
-			assert_eq!(counterparty_funding_satoshis, 0);
-		},
-		_ => panic!("SpliceAckedInputsContributionReady event missing {:?}", events[0]),
-	};
+	// Note: SpliceAckedInputsContributionReady event no longer used
 
 	// check that capacity has been updated, channel is not usable, and funding tx is unset
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
@@ -1516,11 +1493,8 @@ fn test_v2_payment_splice_in_payment() {
 		assert!(channel.funding_txo.is_none());
 		assert_eq!(channel.confirmations.unwrap(), 0);
 	}
-	
-	let extra_splice_funding_input_sats = 35_000;
-	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_splice_funding_input_sats, &custom_input_pubkey)];
 
-	let _res = initiator_node.node.contribute_funding_inputs(&channel_id1, &acceptor_node.node.get_our_node_id(), funding_inputs).unwrap();
+	// Note: contribute_funding_inputs() call is no longer used
 
 	// Initiator_node will generate first TxAddInput message
 	let tx_add_input_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());

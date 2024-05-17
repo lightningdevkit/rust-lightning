@@ -3491,7 +3491,12 @@ where
 	///   <------- splice_signed_ack ---    send signature on funding tx. In future this should be tx_signatures
 	///   [new funding tx can be broadcast]
 	#[cfg(splicing)]
-	pub fn splice_channel(&self, channel_id: &ChannelId, their_network_key: &PublicKey, relative_satoshis: i64, funding_feerate_perkw: u32, locktime: u32) -> Result<(), APIError> {
+	pub fn splice_channel(
+		&self, channel_id: &ChannelId, their_network_key: &PublicKey, relative_satoshis: i64,
+		funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_perkw: u32, locktime: u32
+	) -> Result<(), APIError> {
+		let funding_inputs = Self::length_limit_holder_input_prev_txs(funding_inputs)?;
+
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		// We want to make sure the lock is actually acquired by PersistenceNotifierGuard.
 		debug_assert!(&self.total_consistency_lock.try_write().is_err());
@@ -3526,7 +3531,7 @@ where
 						return Err(APIError::ChannelUnavailable { err: format!("Channel has already a splice pending, channel id {}", channel_id) });
 					}
 
-					chan.context.pending_splice_pre = Some(PendingSpliceInfoPre::new(relative_satoshis, pre_channel_value, None, funding_feerate_perkw, locktime));
+					chan.context.pending_splice_pre = Some(PendingSpliceInfoPre::new(relative_satoshis, pre_channel_value, None, funding_feerate_perkw, locktime, funding_inputs));
 
 					// Check channel id
 					let post_splice_v2_channel_id = chan.context.generate_v2_channel_id_from_revocation_basepoints();
@@ -7334,6 +7339,17 @@ where
 			funding_satoshis)
 	}
 
+	#[cfg(any(dual_funding, splicing))]
+	fn length_limit_holder_input_prev_txs(funding_inputs: Vec<(TxIn, Transaction)>) -> Result<Vec<(TxIn, TransactionU16LenLimited)>, APIError> {
+		funding_inputs.into_iter().map(|(txin, tx)| {
+			match TransactionU16LenLimited::new(tx) {
+				Ok(tx) => Ok((txin, tx)),
+				Err(err) => Err(err)
+			}
+		}).collect::<Result<Vec<(TxIn, TransactionU16LenLimited)>, ()>>()
+		.map_err(|_| APIError::APIMisuseError { err: "One or more transactions had a serialized length exceeding 65535 bytes".into() })
+	}
+
 	// TODO(dual_funding): Remove param _-prefix once #[cfg(dual_funding)] is dropped.
 	fn do_accept_inbound_channel(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
@@ -9313,7 +9329,7 @@ where
 				if let ChannelPhase::UnfundedInboundV2(post_chan) = chan_entry.get_mut() {
 					let pre_channel_value = post_chan.context.get_value_satoshis();
 
-					post_chan.context.pending_splice_pre = Some(PendingSpliceInfoPre::new(msg.relative_satoshis, pre_channel_value, Some(post_chan_id), msg.funding_feerate_perkw, msg.locktime));
+					post_chan.context.pending_splice_pre = Some(PendingSpliceInfoPre::new(msg.relative_satoshis, pre_channel_value, Some(post_chan_id), msg.funding_feerate_perkw, msg.locktime, Vec::new()));
 
 					// Apply start of splice changed in the state (update state, capacity funding tx, ...)
 					post_chan.context.splice_start(false, msg.relative_satoshis, &self.logger)
@@ -9421,8 +9437,8 @@ where
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal consistency error".to_string(), post_chan_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let ChannelPhase::UnfundedOutboundV2(post_chan) = chan_entry.get_mut() {
-					let pre_channel_value = post_chan.context.get_value_satoshis();
-					let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, msg.relative_satoshis);
+					// let pre_channel_value = post_chan.context.get_value_satoshis();
+					// let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, msg.relative_satoshis);
 
 					// Update pre-splice info with the new channel ID of the post channel
 					post_chan.context.pending_splice_pre.as_mut().unwrap().post_channel_id = Some(post_chan_id);
@@ -9431,6 +9447,7 @@ where
 					post_chan.context.splice_start(true, msg.relative_satoshis, &self.logger)
 						.map_err(|ce| MsgHandleErrInternal::send_err_msg_no_close(ce.to_string(), post_chan_id))?;
 
+					/* Node: SpliceAckedInputsContributionReady event is no longer used
 					// Prepare SpliceAckedInputsContributionReady event
 					let mut pending_events = self.pending_events.lock().unwrap();
 					pending_events.push_back((events::Event::SpliceAckedInputsContributionReady {
@@ -9441,6 +9458,22 @@ where
 						holder_funding_satoshis: if post_channel_value < pre_channel_value { 0 } else { post_channel_value.saturating_sub(pre_channel_value) },
 						counterparty_funding_satoshis: 0,
 					} , None));
+					*/
+					let tx_msg_opt = post_chan.begin_interactive_funding_tx_construction(&self.signer_provider,
+						&self.entropy_source, self.get_our_node_id(), pending_splice.our_funding_inputs)
+						.map_err(|e| MsgHandleErrInternal::from_chan_no_close(
+							ChannelError::Close(format!("V2 channel rejected due to sender error {:?}", e)), post_chan_id))?;
+					if let Some(tx_msg) = tx_msg_opt {
+						let msg_send_event = match tx_msg {
+							InteractiveTxMessageSend::TxAddInput(msg) => events::MessageSendEvent::SendTxAddInput {
+								node_id: *counterparty_node_id, msg },
+							InteractiveTxMessageSend::TxAddOutput(msg) => events::MessageSendEvent::SendTxAddOutput {
+								node_id: *counterparty_node_id, msg },
+							InteractiveTxMessageSend::TxComplete(msg) => events::MessageSendEvent::SendTxComplete {
+								node_id: *counterparty_node_id, msg },
+						};
+						peer_state.pending_msg_events.push(msg_send_event);
+					}
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal consistency error".to_string(), post_chan_id));
 				}

@@ -32,7 +32,7 @@ use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash};
 use crate::ln::channel_splice::{PendingSpliceInfoPre, PendingSpliceInfoPost};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 #[cfg(any(dual_funding, splicing))]
-use crate::ln::interactivetxs::{AbortReason, ConstructedTransaction, estimate_input_weight, get_output_weight, HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxMessageSend, InteractiveTxSigningSession, TX_COMMON_FIELDS_WEIGHT};
+use crate::ln::interactivetxs::{ConstructedTransaction, estimate_input_weight, get_output_weight, HandleTxCompleteValue, InteractiveTxConstructor, InteractiveTxMessageSend, InteractiveTxSigningSession, TX_COMMON_FIELDS_WEIGHT};
 use crate::ln::msgs;
 use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
@@ -3720,7 +3720,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			}
 		}
 
-
 		let total_input_satoshis: u64 = funding_inputs_with_extra.iter().map(|input| input.1.as_transaction().output[input.0.previous_output.vout as usize].value).sum();
 		if total_input_satoshis < dual_funding_context.our_funding_satoshis {
 			return Err(APIError::APIMisuseError {
@@ -3755,38 +3754,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	}
 
 	#[cfg(any(dual_funding, splicing))]
-	fn get_tx_abort_msg_from_abort_reason(&self, reason: AbortReason) -> msgs::TxAbort {
-		let msg = match reason {
-			AbortReason::InvalidStateTransition => "State transition was invalid",
-			AbortReason::UnexpectedCounterpartyMessage => "Unexpected message",
-			AbortReason::ReceivedTooManyTxAddInputs => "Too many `tx_add_input`s received",
-			AbortReason::ReceivedTooManyTxAddOutputs => "Too many `tx_add_output`s received",
-			AbortReason::IncorrectInputSequenceValue => "Input has a sequence value greater than 0xFFFFFFFD",
-			AbortReason::IncorrectSerialIdParity => "Parity for `serial_id` was incorrect",
-			AbortReason::SerialIdUnknown => "The `serial_id` is unknown",
-			AbortReason::DuplicateSerialId => "The `serial_id` already exists",
-			AbortReason::PrevTxOutInvalid => "Invalid previous transaction output",
-			AbortReason::ExceededMaximumSatsAllowed => "Output amount exceeded total bitcoin supply",
-			AbortReason::ExceededNumberOfInputsOrOutputs => "Too many inputs or outputs",
-			AbortReason::TransactionTooLarge => "Transaction weight is too large",
-			AbortReason::BelowDustLimit => "Output amount is below the dust limit",
-			AbortReason::InvalidOutputScript => "The output script is non-standard",
-			AbortReason::InsufficientFees => "Insufficient fees paid",
-			AbortReason::OutputsValueExceedsInputsValue => "Total value of outputs exceeds total value of inputs",
-			AbortReason::InvalidTx => "The transaction is invalid",
-		}.to_string();
-
-		msgs::TxAbort {
-			channel_id: self.channel_id(),
-			data: msg.into_bytes(),
-		}
-	}
-
-	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSend, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
-				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+				|reason| reason.into_tx_abort_msg(self.channel_id)),
 			None => Err(msgs::TxAbort {
 				channel_id: self.channel_id(),
 				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
@@ -3798,7 +3769,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_output(msg).map_err(
-				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+				|reason| reason.into_tx_abort_msg(self.channel_id)),
 			None => Err(msgs::TxAbort {
 				channel_id: self.channel_id(),
 				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
@@ -3810,7 +3781,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_input(msg).map_err(
-				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+				|reason| reason.into_tx_abort_msg(self.channel_id)),
 			None => Err(msgs::TxAbort {
 				channel_id: self.channel_id(),
 				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
@@ -3822,7 +3793,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_output(msg).map_err(
-				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+				|reason| reason.into_tx_abort_msg(self.channel_id)),
 			None => Err(msgs::TxAbort {
 				channel_id: self.channel_id(),
 				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
@@ -3835,7 +3806,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	-> Result<HandleTxCompleteValue, msgs::TxAbort> {
 		match self.interactive_tx_constructor {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_complete(msg).map_err(
-				|reason| self.get_tx_abort_msg_from_abort_reason(reason)),
+				|reason| reason.into_tx_abort_msg(self.channel_id)),
 			None => Err(msgs::TxAbort {
 				channel_id: self.channel_id(),
 				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
