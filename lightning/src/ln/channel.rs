@@ -3941,68 +3941,10 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		Ok(msg)
 	}
 
-	/*
 	#[cfg(any(dual_funding, splicing))]
-	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSend, msgs::TxAbort> {
-		match self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.channel_id)),
-			None => Err(msgs::TxAbort {
-				channel_id: self.channel_id(),
-				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
-			}),
-		}
+	pub fn tx_signatures(&self, _msg: &msgs::TxSignatures)-> Result<InteractiveTxMessageSend, ChannelError> {
+		todo!();
 	}
-
-	#[cfg(any(dual_funding, splicing))]
-	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
-		match self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_output(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.channel_id)),
-			None => Err(msgs::TxAbort {
-				channel_id: self.channel_id(),
-				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
-			}),
-		}
-	}
-
-	#[cfg(any(dual_funding, splicing))]
-	pub fn tx_remove_input(&mut self, msg: &msgs::TxRemoveInput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
-		match self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_input(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.channel_id)),
-			None => Err(msgs::TxAbort {
-				channel_id: self.channel_id(),
-				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
-			}),
-		}
-	}
-
-	#[cfg(any(dual_funding, splicing))]
-	pub fn tx_remove_output(&mut self, msg: &msgs::TxRemoveOutput)-> Result<InteractiveTxMessageSend, msgs::TxAbort> {
-		match self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor.handle_tx_remove_output(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.channel_id)),
-			None => Err(msgs::TxAbort {
-				channel_id: self.channel_id(),
-				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
-			}),
-		}
-	}
-
-	#[cfg(any(dual_funding, splicing))]
-	pub fn tx_complete(&mut self, msg: &msgs::TxComplete)
-	-> Result<HandleTxCompleteValue, msgs::TxAbort> {
-		match self.interactive_tx_constructor {
-			Some(ref mut tx_constructor) => tx_constructor.handle_tx_complete(msg).map_err(
-				|reason| reason.into_tx_abort_msg(self.channel_id)),
-			None => Err(msgs::TxAbort {
-				channel_id: self.channel_id(),
-				data: "We do not have an interactive transaction negotiation in progress".to_string().into_bytes()
-			}),
-		}
-	}
-	}*/
 
 	#[cfg(any(dual_funding, splicing))]
 	pub fn tx_init_rbf(&self, _msg: &msgs::TxInitRbf)-> Result<InteractiveTxMessageSend, ChannelError> {

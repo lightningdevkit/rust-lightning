@@ -11435,7 +11435,7 @@ where
 
 						// TODO(dual_funding): Combine this match arm with above once #[cfg(any(dual_funding, splicing))] is removed.
 						#[cfg(any(dual_funding, splicing))]
-						ChannelPhase::UnfundedInboundV2(_channel) => {
+						ChannelPhase::UnfundedInboundV2(_) => {
 							// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
 							// they are not persisted and won't be recovered after a crash.
 							// Therefore, they shouldn't exist at this point.
@@ -15142,8 +15142,6 @@ mod tests {
 			nodes[0].node.contribute_funding_inputs(&channel_id, &counterparty_node_id, funding_inputs).unwrap();
 		} else { panic!(); }
 		*/
-		// nodes[0] will generate a TxAddInput message to kickstart the interactive transaction construction
-		// protocol with nodes[1].
 		let tx_add_input_msg = get_event_msg!(&nodes[0], MessageSendEvent::SendTxAddInput, nodes[1].node.get_our_node_id());
 
 		nodes[1].node.handle_tx_add_input(&nodes[0].node.get_our_node_id(), &tx_add_input_msg);
