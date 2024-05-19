@@ -1989,10 +1989,11 @@ where L::Target: Logger {
 
 	let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
 
-	log_trace!(logger, "Searching for a route from payer {} to {} {} MPP and {} first hops {}overriding the network graph with a fee limit of {} msat",
+	log_trace!(logger, "Searching for a route from payer {} to {} {} MPP and {} first hops {}overriding the network graph of {} nodes and {} channels with a fee limit of {} msat",
 		our_node_pubkey, LoggedPayeePubkey(payment_params.payee.node_id()),
 		if allow_mpp { "with" } else { "without" },
 		first_hops.map(|hops| hops.len()).unwrap_or(0), if first_hops.is_some() { "" } else { "not " },
+		network_graph.nodes().len(), network_graph.channels().len(),
 		max_total_routing_fee_msat);
 
 	// Step (1).
