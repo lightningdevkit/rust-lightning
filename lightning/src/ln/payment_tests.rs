@@ -4228,7 +4228,7 @@ fn peel_payment_onion_custom_tlvs() {
 	let payment_hash = PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
 
 	let (onion_routing_packet, first_hop_msat, cltv_expiry) = onion_utils::create_payment_onion(
-		&secp_ctx, &route.paths[0], &session_priv, amt_msat, recipient_onion.clone(),
+		&secp_ctx, &route.paths[0], &session_priv, amt_msat, &recipient_onion,
 		nodes[0].best_block_info().1, &payment_hash, &Some(keysend_preimage), prng_seed
 	).unwrap();
 

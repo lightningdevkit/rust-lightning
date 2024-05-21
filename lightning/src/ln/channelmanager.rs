@@ -4084,8 +4084,8 @@ where
 	pub(crate) fn test_send_payment_along_path(&self, path: &Path, payment_hash: &PaymentHash, recipient_onion: RecipientOnionFields, total_value: u64, cur_height: u32, payment_id: PaymentId, keysend_preimage: &Option<PaymentPreimage>, session_priv_bytes: [u8; 32]) -> Result<(), APIError> {
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(SendAlongPathArgs {
-			path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage,
-			session_priv_bytes
+			path, payment_hash, recipient_onion: &recipient_onion, total_value,
+			cur_height, payment_id, keysend_preimage, session_priv_bytes
 		})
 	}
 

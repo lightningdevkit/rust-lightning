@@ -1723,7 +1723,7 @@ mod fuzzy_internal_msgs {
 		}
 	}
 
-	pub(crate) enum OutboundOnionPayload {
+	pub(crate) enum OutboundOnionPayload<'a> {
 		Forward {
 			short_channel_id: u64,
 			/// The value, in msat, of the payment after this hop's fee is deducted.
@@ -1739,24 +1739,24 @@ mod fuzzy_internal_msgs {
 		},
 		Receive {
 			payment_data: Option<FinalOnionHopData>,
-			payment_metadata: Option<Vec<u8>>,
+			payment_metadata: Option<&'a Vec<u8>>,
 			keysend_preimage: Option<PaymentPreimage>,
-			custom_tlvs: Vec<(u64, Vec<u8>)>,
+			custom_tlvs: &'a Vec<(u64, Vec<u8>)>,
 			sender_intended_htlc_amt_msat: u64,
 			cltv_expiry_height: u32,
 		},
 		BlindedForward {
-			encrypted_tlvs: Vec<u8>,
+			encrypted_tlvs: &'a Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>,
 		},
 		BlindedReceive {
 			sender_intended_htlc_amt_msat: u64,
 			total_msat: u64,
 			cltv_expiry_height: u32,
-			encrypted_tlvs: Vec<u8>,
+			encrypted_tlvs: &'a Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
 			keysend_preimage: Option<PaymentPreimage>,
-			custom_tlvs: Vec<(u64, Vec<u8>)>,
+			custom_tlvs: &'a Vec<(u64, Vec<u8>)>,
 		}
 	}
 
@@ -2569,7 +2569,7 @@ impl Readable for FinalOnionHopData {
 	}
 }
 
-impl Writeable for OutboundOnionPayload {
+impl<'a> Writeable for OutboundOnionPayload<'a> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
 			Self::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } => {
@@ -2604,12 +2604,12 @@ impl Writeable for OutboundOnionPayload {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
 					(8, payment_data, option),
-					(16, payment_metadata.as_ref().map(|m| WithoutLength(m)), option)
+					(16, payment_metadata.map(|m| WithoutLength(m)), option)
 				}, custom_tlvs.iter());
 			},
 			Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point } => {
 				_encode_varint_length_prefixed_tlv!(w, {
-					(10, *encrypted_tlvs, required_vec),
+					(10, **encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option)
 				});
 			},
@@ -2626,7 +2626,7 @@ impl Writeable for OutboundOnionPayload {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
 					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
-					(10, *encrypted_tlvs, required_vec),
+					(10, **encrypted_tlvs, required_vec),
 					(12, intro_node_blinding_point, option),
 					(18, HighZeroBytesDroppedBigSize(*total_msat), required)
 				}, custom_tlvs.iter());
@@ -4359,7 +4359,7 @@ mod tests {
 			keysend_preimage: None,
 			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
-			custom_tlvs: vec![],
+			custom_tlvs: &vec![],
 		};
 		let encoded_value = outbound_msg.encode();
 		let target_value = <Vec<u8>>::from_hex("1002080badf00d010203040404ffffffff").unwrap();
@@ -4387,7 +4387,7 @@ mod tests {
 			keysend_preimage: None,
 			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
-			custom_tlvs: vec![],
+			custom_tlvs: &vec![],
 		};
 		let encoded_value = outbound_msg.encode();
 		let target_value = <Vec<u8>>::from_hex("3602080badf00d010203040404ffffffff082442424242424242424242424242424242424242424242424242424242424242421badca1f").unwrap();
@@ -4424,7 +4424,7 @@ mod tests {
 			payment_data: None,
 			payment_metadata: None,
 			keysend_preimage: None,
-			custom_tlvs: bad_type_range_tlvs,
+			custom_tlvs: &bad_type_range_tlvs,
 			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
 		};
@@ -4436,7 +4436,7 @@ mod tests {
 			((1 << 16) - 1, vec![42; 32]),
 		];
 		if let msgs::OutboundOnionPayload::Receive { ref mut custom_tlvs, .. } = msg {
-			*custom_tlvs = good_type_range_tlvs.clone();
+			*custom_tlvs = &good_type_range_tlvs;
 		}
 		let encoded_value = msg.encode();
 		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&encoded_value[..]), (None, &&node_signer)).unwrap();
@@ -4456,7 +4456,7 @@ mod tests {
 			payment_data: None,
 			payment_metadata: None,
 			keysend_preimage: None,
-			custom_tlvs: expected_custom_tlvs.clone(),
+			custom_tlvs: &expected_custom_tlvs,
 			sender_intended_htlc_amt_msat: 0x0badf00d01020304,
 			cltv_expiry_height: 0xffffffff,
 		};

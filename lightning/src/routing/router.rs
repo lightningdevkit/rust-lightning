@@ -13,10 +13,11 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 
 use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode};
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs};
-use crate::ln::types::PaymentHash;
-use crate::ln::channelmanager::{ChannelDetails, PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use crate::ln::{PaymentHash, PaymentPreimage};
+use crate::ln::channelmanager::{ChannelDetails, PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, RecipientOnionFields};
 use crate::ln::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
+use crate::ln::onion_utils;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
@@ -603,6 +604,17 @@ impl RouteParameters {
 	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
 		Self { payment_params, final_value_msat, max_total_routing_fee_msat: Some(final_value_msat / 100 + 50_000) }
 	}
+
+	/// Sets the maximum number of hops that can be included in a payment path, based on the provided
+	/// [`RecipientOnionFields`] and blinded paths.
+	pub fn set_max_path_length(
+		&mut self, recipient_onion: &RecipientOnionFields, is_keysend: bool, best_block_height: u32
+	) -> Result<(), ()> {
+		let keysend_preimage_opt = is_keysend.then(|| PaymentPreimage([42; 32]));
+		onion_utils::set_max_path_length(
+			self, recipient_onion, keysend_preimage_opt, best_block_height
+		)
+	}
 }
 
 impl Writeable for RouteParameters {
@@ -654,6 +666,8 @@ const DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF: u8 = 2;
 // The median hop CLTV expiry delta currently seen in the network.
 const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
 
+/// Estimated maximum number of hops that can be included in a payment path. May be inaccurate if
+/// payment metadata, custom TLVs, or blinded paths are included in the payment.
 // During routing, we only consider paths shorter than our maximum length estimate.
 // In the TLV onion format, there is no fixed maximum length, but the `hop_payloads`
 // field is always 1300 bytes. As the `tlv_payload` for each hop may vary in length, we have to
@@ -665,7 +679,7 @@ const MEDIAN_HOP_CLTV_EXPIRY_DELTA: u32 = 40;
 // (payment_secret and total_msat) = 93 bytes for the final hop.
 // Since the length of the potentially included `payment_metadata` is unknown to us, we round
 // down from (1300-93) / 61 = 19.78... to arrive at a conservative estimate of 19.
-const MAX_PATH_LENGTH_ESTIMATE: u8 = 19;
+pub const MAX_PATH_LENGTH_ESTIMATE: u8 = 19;
 
 /// Information used to route a payment.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -683,6 +697,10 @@ pub struct PaymentParameters {
 	/// The maximum number of paths that may be used by (MPP) payments.
 	/// Defaults to [`DEFAULT_MAX_PATH_COUNT`].
 	pub max_path_count: u8,
+
+	/// The maximum number of [`Path::hops`] in any returned path.
+	/// Defaults to [`MAX_PATH_LENGTH_ESTIMATE`].
+	pub max_path_length: u8,
 
 	/// Selects the maximum share of a channel's total capacity which will be sent over a channel,
 	/// as a power of 1/2. A higher value prefers to send the payment using more MPP parts whereas
@@ -730,6 +748,7 @@ impl Writeable for PaymentParameters {
 			(8, *blinded_hints, optional_vec),
 			(9, self.payee.final_cltv_expiry_delta(), option),
 			(11, self.previously_failed_blinded_path_idxs, required_vec),
+			(13, self.max_path_length, required),
 		});
 		Ok(())
 	}
@@ -749,6 +768,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 			(8, blinded_route_hints, optional_vec),
 			(9, final_cltv_expiry_delta, (default_value, default_final_cltv_expiry_delta)),
 			(11, previously_failed_blinded_path_idxs, optional_vec),
+			(13, max_path_length, (default_value, MAX_PATH_LENGTH_ESTIMATE)),
 		});
 		let blinded_route_hints = blinded_route_hints.unwrap_or(vec![]);
 		let payee = if blinded_route_hints.len() != 0 {
@@ -773,6 +793,7 @@ impl ReadableArgs<u32> for PaymentParameters {
 			expiry_time,
 			previously_failed_channels: previously_failed_channels.unwrap_or(Vec::new()),
 			previously_failed_blinded_path_idxs: previously_failed_blinded_path_idxs.unwrap_or(Vec::new()),
+			max_path_length: _init_tlv_based_struct_field!(max_path_length, (default_value, unused)),
 		})
 	}
 }
@@ -789,6 +810,7 @@ impl PaymentParameters {
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
+			max_path_length: MAX_PATH_LENGTH_ESTIMATE,
 			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
 			previously_failed_blinded_path_idxs: Vec::new(),
@@ -828,6 +850,7 @@ impl PaymentParameters {
 			expiry_time: None,
 			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
 			max_path_count: DEFAULT_MAX_PATH_COUNT,
+			max_path_length: MAX_PATH_LENGTH_ESTIMATE,
 			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
 			previously_failed_channels: Vec::new(),
 			previously_failed_blinded_path_idxs: Vec::new(),
@@ -1849,6 +1872,7 @@ pub(crate) fn get_route<L: Deref, S: ScoreLookUp>(
 where L::Target: Logger {
 
 	let payment_params = &route_params.payment_params;
+	let max_path_length = core::cmp::min(payment_params.max_path_length, MAX_PATH_LENGTH_ESTIMATE);
 	let final_value_msat = route_params.final_value_msat;
 	// If we're routing to a blinded recipient, we won't have their node id. Therefore, keep the
 	// unblinded payee id as an option. We also need a non-optional "payee id" for path construction,
@@ -2145,8 +2169,9 @@ where L::Target: Logger {
 					// Verify the liquidity offered by this channel complies to the minimal contribution.
 					let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
 					// Do not consider candidate hops that would exceed the maximum path length.
-					let path_length_to_node = $next_hops_path_length + 1;
-					let exceeds_max_path_length = path_length_to_node > MAX_PATH_LENGTH_ESTIMATE;
+					let path_length_to_node = $next_hops_path_length
+						+ if $candidate.blinded_hint_idx().is_some() { 0 } else { 1 };
+					let exceeds_max_path_length = path_length_to_node > max_path_length;
 
 					// Do not consider candidates that exceed the maximum total cltv expiry limit.
 					// In order to already account for some of the privacy enhancing random CLTV
@@ -2600,9 +2625,8 @@ where L::Target: Logger {
 					};
 					let path_min = candidate.htlc_minimum_msat().saturating_add(
 						compute_fees_saturating(candidate.htlc_minimum_msat(), candidate.fees()));
-					add_entry!(&first_hop_candidate, blinded_path_fee,
-						path_contribution_msat, path_min, 0_u64, candidate.cltv_expiry_delta(),
-						candidate.blinded_path().map_or(1, |bp| bp.blinded_hops.len() as u8));
+					add_entry!(&first_hop_candidate, blinded_path_fee, path_contribution_msat, path_min,
+						0_u64, candidate.cltv_expiry_delta(), 0);
 				}
 			}
 		}
@@ -3362,7 +3386,7 @@ mod tests {
 	fn simple_route_test() {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
-		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
+		let mut payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::new();
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
@@ -3377,7 +3401,8 @@ mod tests {
 				assert_eq!(err, "Cannot send a payment of 0 msat");
 		} else { panic!(); }
 
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
+		payment_params.max_path_length = 2;
+		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 2);
@@ -3395,6 +3420,10 @@ mod tests {
 		assert_eq!(route.paths[0].hops[1].cltv_expiry_delta, 42);
 		assert_eq!(route.paths[0].hops[1].node_features.le_flags(), &id_to_feature_flags(3));
 		assert_eq!(route.paths[0].hops[1].channel_features.le_flags(), &id_to_feature_flags(4));
+
+		route_params.payment_params.max_path_length = 1;
+		get_route(&our_id, &route_params, &network_graph.read_only(), None,
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap_err();
 	}
 
 	#[test]
@@ -3799,7 +3828,7 @@ mod tests {
 		});
 
 		// If all the channels require some features we don't understand, route should fail
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
+		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		if let Err(LightningError{err, action: ErrorAction::IgnoreError}) = get_route(&our_id,
 			&route_params, &network_graph.read_only(), None, Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes) {
@@ -3809,6 +3838,7 @@ mod tests {
 		// If we specify a channel to node7, that overrides our local channel view and that gets used
 		let our_chans = vec![get_channel_details(Some(42), nodes[7].clone(),
 			InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
+		route_params.payment_params.max_path_length = 2;
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(),
 			Some(&our_chans.iter().collect::<Vec<_>>()), Arc::clone(&logger), &scorer,
 			&Default::default(), &random_seed_bytes).unwrap();
@@ -4055,8 +4085,9 @@ mod tests {
 			} else { panic!(); }
 		}
 
-		let payment_params = PaymentParameters::from_node_id(nodes[6], 42)
+		let mut payment_params = PaymentParameters::from_node_id(nodes[6], 42)
 			.with_route_hints(last_hops_multi_private_channels(&nodes)).unwrap();
+		payment_params.max_path_length = 5;
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
@@ -4214,7 +4245,8 @@ mod tests {
 		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 		let random_seed_bytes = keys_manager.get_secure_random_bytes();
 		// Test through channels 2, 3, 0xff00, 0xff01.
-		// Test shows that multiple hop hints are considered.
+		// Test shows that multi-hop route hints are considered and factored correctly into the
+		// max path length.
 
 		// Disabling channels 6 & 7 by flags=2
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[2], UnsignedChannelUpdate {
@@ -4242,7 +4274,8 @@ mod tests {
 			excess_data: Vec::new()
 		});
 
-		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
+		let mut route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
+		route_params.payment_params.max_path_length = 4;
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths[0].hops.len(), 4);
@@ -4274,6 +4307,9 @@ mod tests {
 		assert_eq!(route.paths[0].hops[3].cltv_expiry_delta, 42);
 		assert_eq!(route.paths[0].hops[3].node_features.le_flags(), default_node_features().le_flags()); // We dont pass flags in from invoices yet
 		assert_eq!(route.paths[0].hops[3].channel_features.le_flags(), &Vec::<u8>::new()); // We can't learn any flags from invoices, sadly
+		route_params.payment_params.max_path_length = 3;
+		get_route(&our_id, &route_params, &network_graph.read_only(), None,
+			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap_err();
 	}
 
 	#[test]

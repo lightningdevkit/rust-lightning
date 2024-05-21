@@ -536,7 +536,7 @@ mod tests {
 		let path = Path { hops, blinded_tail: None, };
 		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv).unwrap();
 		let (onion_payloads, ..) = super::onion_utils::build_onion_payloads(
-			&path, total_amt_msat, recipient_onion, cur_height + 1, &Some(keysend_preimage)
+			&path, total_amt_msat, &recipient_onion, cur_height + 1, &Some(keysend_preimage)
 		).unwrap();
 
 		assert!(super::onion_utils::construct_onion_packet(
@@ -563,8 +563,8 @@ mod tests {
 		};
 
 		let (onion, amount_msat, cltv_expiry) = create_payment_onion(
-			&secp_ctx, &path, &session_priv, total_amt_msat, recipient_onion, cur_height,
-			&payment_hash, &Some(preimage), prng_seed
+			&secp_ctx, &path, &session_priv, total_amt_msat, &recipient_onion,
+			cur_height, &payment_hash, &Some(preimage), prng_seed
 		).unwrap();
 
 		let msg = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, onion);
