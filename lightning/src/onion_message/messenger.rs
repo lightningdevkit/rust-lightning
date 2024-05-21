@@ -325,11 +325,17 @@ impl OnionMessageRecipient {
 
 /// The `Responder` struct creates an appropriate [`ResponseInstruction`]
 /// for responding to a message.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Responder {
 	/// The path along which a response can be sent.
 	reply_path: BlindedPath,
 	path_id: Option<[u8; 32]>
 }
+
+impl_writeable_tlv_based!(Responder, {
+	(0, reply_path, required),
+	(2, path_id, option),
+});
 
 impl Responder {
 	/// Creates a new [`Responder`] instance with the provided reply path.
