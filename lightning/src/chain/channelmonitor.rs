@@ -30,7 +30,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1::{SecretKey, PublicKey};
-use bitcoin::secp256k1;
+use bitcoin::{secp256k1, TxIn};
 use bitcoin::sighash::EcdsaSighashType;
 
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
@@ -4175,70 +4175,77 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	) where L::Target: Logger {
 		'outer_loop: for input in &tx.input {
 			let mut payment_data = None;
+			let txid = &tx.txid();
 			let htlc_claim = HTLCClaim::from_witness(&input.witness);
-			let revocation_sig_claim = htlc_claim == Some(HTLCClaim::Revocation);
 			let accepted_preimage_claim = htlc_claim == Some(HTLCClaim::AcceptedPreimage);
-			#[cfg(not(fuzzing))]
-			let accepted_timeout_claim = htlc_claim == Some(HTLCClaim::AcceptedTimeout);
 			let offered_preimage_claim = htlc_claim == Some(HTLCClaim::OfferedPreimage);
-			#[cfg(not(fuzzing))]
-			let offered_timeout_claim = htlc_claim == Some(HTLCClaim::OfferedTimeout);
 
 			let mut payment_preimage = PaymentPreimage([0; 32]);
 			if offered_preimage_claim || accepted_preimage_claim {
 				payment_preimage.0.copy_from_slice(input.witness.second_to_last().unwrap());
 			}
 
-			macro_rules! log_claim {
-				($tx_info: expr, $holder_tx: expr, $htlc: expr, $source_avail: expr) => {
-					let outbound_htlc = $holder_tx == $htlc.offered;
-					// HTLCs must either be claimed by a matching script type or through the
-					// revocation path:
-					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
-					debug_assert!(!$htlc.offered || offered_preimage_claim || offered_timeout_claim || revocation_sig_claim);
-					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
-					debug_assert!($htlc.offered || accepted_preimage_claim || accepted_timeout_claim || revocation_sig_claim);
-					// Further, only exactly one of the possible spend paths should have been
-					// matched by any HTLC spend:
-					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
-					debug_assert_eq!(accepted_preimage_claim as u8 + accepted_timeout_claim as u8 +
-					                 offered_preimage_claim as u8 + offered_timeout_claim as u8 +
-					                 revocation_sig_claim as u8, 1);
-					if ($holder_tx && revocation_sig_claim) ||
-							(outbound_htlc && !$source_avail && (accepted_preimage_claim || offered_preimage_claim)) {
-						log_error!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}!",
-							$tx_info, input.previous_output.txid, input.previous_output.vout, tx.txid(),
-							if outbound_htlc { "outbound" } else { "inbound" }, &$htlc.payment_hash,
-							if revocation_sig_claim { "revocation sig" } else { "preimage claim after we'd passed the HTLC resolution back. We can likely claim the HTLC output with a revocation claim" });
-					} else {
-						log_info!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}",
-							$tx_info, input.previous_output.txid, input.previous_output.vout, tx.txid(),
-							if outbound_htlc { "outbound" } else { "inbound" }, &$htlc.payment_hash,
-							if revocation_sig_claim { "revocation sig" } else if accepted_preimage_claim || offered_preimage_claim { "preimage" } else { "timeout" });
+			fn log_claim<L: Deref>(
+				tx_info: &str, txid: &Txid, input: &TxIn, is_holder_tx: bool, htlc_claim: &Option<HTLCClaim>,
+				htlc: &HTLCOutputInCommitment, is_source_available: bool, logger: &WithChannelMonitor<L>,
+			)
+				where L::Target: Logger {
+				let revocation_sig_claim = *htlc_claim == Some(HTLCClaim::Revocation);
+				let accepted_preimage_claim = *htlc_claim == Some(HTLCClaim::AcceptedPreimage);
+				#[cfg(not(fuzzing))]
+					let accepted_timeout_claim = *htlc_claim == Some(HTLCClaim::AcceptedTimeout);
+				let offered_preimage_claim = *htlc_claim == Some(HTLCClaim::OfferedPreimage);
+				#[cfg(not(fuzzing))]
+					let offered_timeout_claim = *htlc_claim == Some(HTLCClaim::OfferedTimeout);
+
+				let outbound_htlc = is_holder_tx == htlc.offered;
+				// HTLCs must either be claimed by a matching script type or through the
+				// revocation path:
+				#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
+				debug_assert!(!htlc.offered || offered_preimage_claim || offered_timeout_claim || revocation_sig_claim);
+				#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
+				debug_assert!(htlc.offered || accepted_preimage_claim || accepted_timeout_claim || revocation_sig_claim);
+				// Further, only exactly one of the possible spend paths should have been
+				// matched by any HTLC spend:
+				#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
+				debug_assert_eq!(accepted_preimage_claim as u8 + accepted_timeout_claim as u8 +
+													 offered_preimage_claim as u8 + offered_timeout_claim as u8 +
+													 revocation_sig_claim as u8, 1);
+				if (is_holder_tx && revocation_sig_claim) ||
+					(outbound_htlc && !is_source_available && (accepted_preimage_claim || offered_preimage_claim)) {
+					log_error!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}!",
+				tx_info, input.previous_output.txid, input.previous_output.vout, txid,
+				if outbound_htlc { "outbound" } else { "inbound" }, &htlc.payment_hash,
+				if revocation_sig_claim { "revocation sig" } else { "preimage claim after we'd passed the HTLC resolution back. We can likely claim the HTLC output with a revocation claim" });
+				} else {
+					log_info!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}",
+				tx_info, input.previous_output.txid, input.previous_output.vout, txid,
+				if outbound_htlc { "outbound" } else { "inbound" }, &htlc.payment_hash,
+				if revocation_sig_claim { "revocation sig" } else if accepted_preimage_claim || offered_preimage_claim { "preimage" } else { "timeout" });
+				}
+			}
+
+			fn check_htlc_valid_counterparty<L: Deref>(
+				txid: &Txid, input: &TxIn, htlc_output: &HTLCOutputInCommitment, htlc_claim: &Option<HTLCClaim>,
+				per_commitment_data: &[(HTLCOutputInCommitment, Option<Box<HTLCSource>>)], logger: &WithChannelMonitor<L>,
+			) -> Option<(HTLCSource, PaymentHash, u64)> where L::Target: Logger {
+				for &(ref pending_htlc, ref pending_source) in per_commitment_data {
+					if pending_htlc.payment_hash == htlc_output.payment_hash && pending_htlc.amount_msat == htlc_output.amount_msat {
+						if let Some(ref source) = pending_source {
+							log_claim("revoked counterparty commitment tx", txid, input, false, htlc_claim, pending_htlc, true, logger);
+							return Some(((**source).clone(), htlc_output.payment_hash.clone(), htlc_output.amount_msat));
+						}
 					}
 				}
+				None
 			}
-
-			macro_rules! check_htlc_valid_counterparty {
-				($htlc_output: expr, $per_commitment_data: expr) => {
-						for &(ref pending_htlc, ref pending_source) in $per_commitment_data {
-							if pending_htlc.payment_hash == $htlc_output.payment_hash && pending_htlc.amount_msat == $htlc_output.amount_msat {
-								if let &Some(ref source) = pending_source {
-									log_claim!("revoked counterparty commitment tx", false, pending_htlc, true);
-									payment_data = Some(((**source).clone(), $htlc_output.payment_hash, $htlc_output.amount_msat));
-									break;
-								}
-							}
-						}
-				}
-			}
-
+			
 			macro_rules! scan_commitment {
 				($htlcs: expr, $tx_info: expr, $holder_tx: expr) => {
 					for (ref htlc_output, source_option) in $htlcs {
 						if Some(input.previous_output.vout) == htlc_output.transaction_output_index {
 							if let Some(ref source) = source_option {
-								log_claim!($tx_info, $holder_tx, htlc_output, true);
+								log_claim($tx_info,  txid, input, $holder_tx, &htlc_claim, htlc_output, true, logger);
 								// We have a resolution of an HTLC either from one of our latest
 								// holder commitment transactions or an unrevoked counterparty commitment
 								// transaction. This implies we either learned a preimage, the HTLC
@@ -4247,16 +4254,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								payment_data = Some(((*source).clone(), htlc_output.payment_hash, htlc_output.amount_msat));
 							} else if !$holder_tx {
 								if let Some(current_counterparty_commitment_txid) = &self.current_counterparty_commitment_txid {
-									check_htlc_valid_counterparty!(htlc_output, self.counterparty_claimable_outpoints.get(current_counterparty_commitment_txid).unwrap());
+									payment_data = check_htlc_valid_counterparty( &tx.txid(), input, htlc_output, &htlc_claim, self.counterparty_claimable_outpoints.get(current_counterparty_commitment_txid).unwrap(), logger);
 								}
 								if payment_data.is_none() {
 									if let Some(prev_counterparty_commitment_txid) = &self.prev_counterparty_commitment_txid {
-										check_htlc_valid_counterparty!(htlc_output, self.counterparty_claimable_outpoints.get(prev_counterparty_commitment_txid).unwrap());
+										payment_data = check_htlc_valid_counterparty(&tx.txid(), input, htlc_output, &htlc_claim, self.counterparty_claimable_outpoints.get(prev_counterparty_commitment_txid).unwrap(), logger);
 									}
 								}
 							}
 							if payment_data.is_none() {
-								log_claim!($tx_info, $holder_tx, htlc_output, false);
+								log_claim($tx_info,  txid, input, $holder_tx, &htlc_claim, htlc_output, false, logger);
 								let outbound_htlc = $holder_tx == htlc_output.offered;
 								self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
 									txid: tx.txid(), height, block_hash: Some(*block_hash), transaction: Some(tx.clone()),
@@ -4342,7 +4349,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						}));
 					}
 				} else {
-					self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
+					self.onchain_events_awaiting_threshold_conf.retain(|entry| {
 						if entry.height != height { return true; }
 						match entry.event {
 							OnchainEvent::HTLCUpdate { source: ref htlc_source, .. } => {
