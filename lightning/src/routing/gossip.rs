@@ -879,6 +879,7 @@ impl ChannelInfo {
 	/// Returns a [`DirectedChannelInfo`] for the channel directed to the given `target` from a
 	/// returned `source`, or `None` if `target` is not one of the channel's counterparties.
 	pub fn as_directed_to(&self, target: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+		if self.one_to_two.is_none() || self.two_to_one.is_none() { return None; }
 		let (direction, source, outbound) = {
 			if target == &self.node_one {
 				(self.two_to_one.as_ref(), &self.node_two, false)
@@ -888,12 +889,14 @@ impl ChannelInfo {
 				return None;
 			}
 		};
-		direction.map(|dir| (DirectedChannelInfo::new(self, dir, outbound), source))
+		let dir = direction.expect("We checked that both directions are available at the start");
+		Some((DirectedChannelInfo::new(self, dir, outbound), source))
 	}
 
 	/// Returns a [`DirectedChannelInfo`] for the channel directed from the given `source` to a
 	/// returned `target`, or `None` if `source` is not one of the channel's counterparties.
 	pub fn as_directed_from(&self, source: &NodeId) -> Option<(DirectedChannelInfo, &NodeId)> {
+		if self.one_to_two.is_none() || self.two_to_one.is_none() { return None; }
 		let (direction, target, outbound) = {
 			if source == &self.node_one {
 				(self.one_to_two.as_ref(), &self.node_two, true)
@@ -903,7 +906,8 @@ impl ChannelInfo {
 				return None;
 			}
 		};
-		direction.map(|dir| (DirectedChannelInfo::new(self, dir, outbound), target))
+		let dir = direction.expect("We checked that both directions are available at the start");
+		Some((DirectedChannelInfo::new(self, dir, outbound), target))
 	}
 
 	/// Returns a [`ChannelUpdateInfo`] based on the direction implied by the channel_flag.
