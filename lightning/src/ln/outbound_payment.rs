@@ -501,9 +501,9 @@ pub enum PaymentSendFailure {
 	},
 }
 
-/// An error when attempting to pay a BOLT 12 invoice.
+/// An error when attempting to pay a [`Bolt12Invoice`].
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Bolt12PaymentError {
+pub enum Bolt12PaymentError {
 	/// The invoice was not requested.
 	UnexpectedInvoice,
 	/// Payment for an invoice with the corresponding [`PaymentId`] was already initiated.
