@@ -10277,13 +10277,15 @@ where
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				let result = invoice
-					.verify(expanded_key, secp_ctx)
-					.map_err(|()| InvoiceError::from_string("Unrecognized invoice".to_owned()))
-					.and_then(|payment_id| {
+				let result = match invoice.verify(expanded_key, secp_ctx) {
+					Ok(payment_id) => {
 						let features = self.bolt12_invoice_features();
 						if invoice.invoice_features().requires_unknown_bits_from(&features) {
 							Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
+						} else if self.default_configuration.manually_handle_bolt12_invoices {
+							let event = Event::InvoiceReceived { payment_id, invoice, responder };
+							self.pending_events.lock().unwrap().push_back((event, None));
+							return ResponseInstruction::NoResponse;
 						} else {
 							self.send_payment_for_bolt12_invoice(&invoice, payment_id)
 								.map_err(|e| {
@@ -10291,7 +10293,9 @@ where
 									InvoiceError::from_string(format!("{:?}", e))
 								})
 						}
-					});
+					},
+					Err(()) => Err(InvoiceError::from_string("Unrecognized invoice".to_owned())),
+				};
 
 				match result {
 					Ok(()) => ResponseInstruction::NoResponse,
