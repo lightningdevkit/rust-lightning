@@ -25,6 +25,8 @@ use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::offers::invoice::Bolt12Invoice;
+use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
 use crate::sign::SpendableOutputDescriptor;
@@ -714,6 +716,23 @@ pub enum Event {
 	InvoiceRequestFailed {
 		/// The `payment_id` to have been associated with payment for the requested invoice.
 		payment_id: PaymentId,
+	},
+	/// Indicates a [`Bolt12Invoice`] in response to an [`InvoiceRequest`] or a [`Refund`] was
+	/// received.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Refund`]: crate::offers::refund::Refund
+	InvoiceReceived {
+		/// The `payment_id` associated with payment for the invoice.
+		payment_id: PaymentId,
+		/// The invoice to pay.
+		invoice: Bolt12Invoice,
+		/// A responder for replying with an [`InvoiceError`] if needed.
+		///
+		/// `None` if the invoice wasn't sent with a reply path.
+		///
+		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
+		responder: Option<Responder>,
 	},
 	/// Indicates an outbound payment we made succeeded (i.e. it made it all the way to its target
 	/// and we got back the payment preimage for it).
@@ -1471,7 +1490,15 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, peer_node_id, required),
 				});
-			}
+			},
+			&Event::InvoiceReceived { ref payment_id, ref invoice, ref responder } => {
+				41u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, payment_id, required),
+					(2, invoice, required),
+					(4, responder, option),
+				})
+			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -1904,6 +1931,21 @@ impl MaybeReadable for Event {
 					});
 					Ok(Some(Event::OnionMessagePeerConnected {
 						peer_node_id: peer_node_id.0.unwrap()
+					}))
+				};
+				f()
+			},
+			41u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(0, payment_id, required),
+						(2, invoice, required),
+						(4, responder, option),
+					});
+					Ok(Some(Event::InvoiceReceived {
+						payment_id: payment_id.0.unwrap(),
+						invoice: invoice.0.unwrap(),
+						responder,
 					}))
 				};
 				f()
