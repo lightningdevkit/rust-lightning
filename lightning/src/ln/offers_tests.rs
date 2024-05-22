@@ -427,11 +427,9 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 			payer_note_truncated: None,
 		},
 	});
-	let introduction_node_id = resolve_introduction_node(alice, &reply_path);
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), david_id);
-	assert_eq!(introduction_node_id, charlie_id);
-	assert!(matches!(reply_path.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(charlie_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
@@ -582,11 +580,9 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 			payer_note_truncated: None,
 		},
 	});
-	let introduction_node_id = resolve_introduction_node(alice, &reply_path);
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), bob_id);
-	assert_eq!(introduction_node_id, bob_id);
-	assert!(matches!(reply_path.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(bob_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);

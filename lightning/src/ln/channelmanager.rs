@@ -8270,7 +8270,8 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		let entropy = &*$self.entropy_source;
 		let secp_ctx = &$self.secp_ctx;
 
-		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let path = $self.create_compact_blinded_path()
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = OfferBuilder::deriving_signing_pubkey(
 			node_id, expanded_key, entropy, secp_ctx
 		)
@@ -8337,7 +8338,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let entropy = &*$self.entropy_source;
 		let secp_ctx = &$self.secp_ctx;
 
-		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let path = $self.create_compact_blinded_path()
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = RefundBuilder::deriving_payer_id(
 			node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
 		)?
@@ -8686,10 +8688,28 @@ where
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
-	/// Creates a blinded path by delegating to [`MessageRouter::create_compact_blinded_paths`].
+	/// Creates a blinded path by delegating to [`MessageRouter::create_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors or returns an empty `Vec`.
 	fn create_blinded_path(&self) -> Result<BlindedPath, ()> {
+		let recipient = self.get_our_node_id();
+		let secp_ctx = &self.secp_ctx;
+
+		let peers = self.per_peer_state.read().unwrap()
+			.iter()
+			.filter(|(_, peer)| peer.lock().unwrap().latest_features.supports_onion_messages())
+			.map(|(node_id, _)| *node_id)
+			.collect::<Vec<_>>();
+
+		self.router
+			.create_blinded_paths(recipient, peers, secp_ctx)
+			.and_then(|paths| paths.into_iter().next().ok_or(()))
+	}
+
+	/// Creates a blinded path by delegating to [`MessageRouter::create_compact_blinded_paths`].
+	///
+	/// Errors if the `MessageRouter` errors or returns an empty `Vec`.
+	fn create_compact_blinded_path(&self) -> Result<BlindedPath, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
