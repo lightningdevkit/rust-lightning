@@ -449,6 +449,65 @@ where
 	pub fn new(network_graph: G, entropy_source: ES) -> Self {
 		Self { network_graph, entropy_source }
 	}
+
+	fn create_blinded_paths_from_iter<
+		I: Iterator<Item = ForwardNode>,
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: I, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		// Limit the number of blinded paths that are computed.
+		const MAX_PATHS: usize = 3;
+
+		// Ensure peers have at least three channels so that it is more difficult to infer the
+		// recipient's node_id.
+		const MIN_PEER_CHANNELS: usize = 3;
+
+		let network_graph = self.network_graph.deref().read_only();
+		let is_recipient_announced =
+			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
+
+		let mut peer_info = peers
+			// Limit to peers with announced channels
+			.filter_map(|peer|
+				network_graph
+					.node(&NodeId::from_pubkey(&peer.node_id))
+					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
+					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
+			)
+			// Exclude Tor-only nodes when the recipient is announced.
+			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
+			.collect::<Vec<_>>();
+
+		// Prefer using non-Tor nodes with the most channels as the introduction node.
+		peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
+			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
+		});
+
+		let paths = peer_info.into_iter()
+			.map(|(peer, _, _)| {
+				BlindedPath::new_for_message(&[peer], recipient, &*self.entropy_source, secp_ctx)
+			})
+			.take(MAX_PATHS)
+			.collect::<Result<Vec<_>, _>>();
+
+		let mut paths = match paths {
+			Ok(paths) if !paths.is_empty() => Ok(paths),
+			_ => {
+				if is_recipient_announced {
+					BlindedPath::one_hop_for_message(recipient, &*self.entropy_source, secp_ctx)
+						.map(|path| vec![path])
+				} else {
+					Err(())
+				}
+			},
+		}?;
+		for path in &mut paths {
+			path.use_compact_introduction_node(&network_graph);
+		}
+
+		Ok(paths)
+	}
 }
 
 impl<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref> MessageRouter for DefaultMessageRouter<G, L, ES>
@@ -494,57 +553,7 @@ where
 	>(
 		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		// Limit the number of blinded paths that are computed.
-		const MAX_PATHS: usize = 3;
-
-		// Ensure peers have at least three channels so that it is more difficult to infer the
-		// recipient's node_id.
-		const MIN_PEER_CHANNELS: usize = 3;
-
-		let network_graph = self.network_graph.deref().read_only();
-		let is_recipient_announced =
-			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
-
-		let mut peer_info = peers.into_iter()
-			// Limit to peers with announced channels
-			.filter_map(|peer|
-				network_graph
-					.node(&NodeId::from_pubkey(&peer.node_id))
-					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
-					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
-			)
-			// Exclude Tor-only nodes when the recipient is announced.
-			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
-			.collect::<Vec<_>>();
-
-		// Prefer using non-Tor nodes with the most channels as the introduction node.
-		peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
-			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
-		});
-
-		let paths = peer_info.into_iter()
-			.map(|(peer, _, _)| {
-				BlindedPath::new_for_message(&[peer], recipient, &*self.entropy_source, secp_ctx)
-			})
-			.take(MAX_PATHS)
-			.collect::<Result<Vec<_>, _>>();
-
-		let mut paths = match paths {
-			Ok(paths) if !paths.is_empty() => Ok(paths),
-			_ => {
-				if is_recipient_announced {
-					BlindedPath::one_hop_for_message(recipient, &*self.entropy_source, secp_ctx)
-						.map(|path| vec![path])
-				} else {
-					Err(())
-				}
-			},
-		}?;
-		for path in &mut paths {
-			path.use_compact_introduction_node(&network_graph);
-		}
-
-		Ok(paths)
+		self.create_blinded_paths_from_iter(recipient, peers.into_iter(), secp_ctx)
 	}
 }
 
