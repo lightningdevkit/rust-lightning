@@ -11,11 +11,12 @@
 
 macro_rules! invoice_builder_methods_common { (
 	$self: ident, $self_type: ty, $invoice_fields: expr, $return_type: ty, $return_value: expr,
-	$type_param: ty $(, $self_mut: tt)?
+	$type_param: ty, $invoice_type: ty $(, $self_mut: tt)?
 ) => {
-	/// Sets the [`Bolt12Invoice::relative_expiry`] as seconds since [`Bolt12Invoice::created_at`].
-	/// Any expiry that has already passed is valid and can be checked for using
-	/// [`Bolt12Invoice::is_expired`].
+	#[doc = concat!("Sets the [`", stringify!($invoice_type), "::relative_expiry`]")]
+	#[doc = concat!("as seconds since [`", stringify!($invoice_type), "::created_at`].")]
+	#[doc = "Any expiry that has already passed is valid and can be checked for using"]
+	#[doc = concat!("[`", stringify!($invoice_type), "::is_expired`].")]
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn relative_expiry($($self_mut)* $self: $self_type, relative_expiry_secs: u32) -> $return_type {
@@ -24,7 +25,7 @@ macro_rules! invoice_builder_methods_common { (
 		$return_value
 	}
 
-	/// Adds a P2WSH address to [`Bolt12Invoice::fallbacks`].
+	#[doc = concat!("Adds a P2WSH address to [`", stringify!($invoice_type), "::fallbacks`].")]
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2WSH addresses.
@@ -41,7 +42,7 @@ macro_rules! invoice_builder_methods_common { (
 		$return_value
 	}
 
-	/// Adds a P2WPKH address to [`Bolt12Invoice::fallbacks`].
+	#[doc = concat!("Adds a P2WPKH address to [`", stringify!($invoice_type), "::fallbacks`].")]
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2WPKH addresses.
@@ -58,7 +59,7 @@ macro_rules! invoice_builder_methods_common { (
 		$return_value
 	}
 
-	/// Adds a P2TR address to [`Bolt12Invoice::fallbacks`].
+	#[doc = concat!("Adds a P2TR address to [`", stringify!($invoice_type), "::fallbacks`].")]
 	///
 	/// Successive calls to this method will add another address. Caller is responsible for not
 	/// adding duplicate addresses and only calling if capable of receiving to P2TR addresses.
@@ -73,20 +74,21 @@ macro_rules! invoice_builder_methods_common { (
 		$return_value
 	}
 
-	/// Sets [`Bolt12Invoice::invoice_features`] to indicate MPP may be used. Otherwise, MPP is
-	/// disallowed.
+	#[doc = concat!("Sets [`", stringify!($invoice_type), "::invoice_features`]")]
+	#[doc = "to indicate MPP may be used. Otherwise, MPP is disallowed."]
 	pub fn allow_mpp($($self_mut)* $self: $self_type) -> $return_type {
 		$invoice_fields.features.set_basic_mpp_optional();
 		$return_value
 	}
 } }
 
-macro_rules! invoice_accessors_common { ($self: ident, $contents: expr) => {
+macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice_type: ty) => {
 	/// Paths to the recipient originating from publicly reachable nodes, including information
 	/// needed for routing payments across them.
 	///
 	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
-	/// privacy is lost if a public node id is used for [`Bolt12Invoice::signing_pubkey`].
+	/// privacy is lost if a public node id is used for
+	#[doc = concat!("[`", stringify!($invoice_type), "::signing_pubkey`].")]
 	///
 	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
 	/// matched in another language.
@@ -99,8 +101,9 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr) => {
 		$contents.created_at()
 	}
 
-	/// Duration since [`Bolt12Invoice::created_at`] when the invoice has expired and therefore
-	/// should no longer be paid.
+	/// Duration since
+	#[doc = concat!("[`", stringify!($invoice_type), "::created_at`]")]
+	/// when the invoice has expired and therefore should no longer be paid.
 	pub fn relative_expiry(&$self) -> Duration {
 		$contents.relative_expiry()
 	}
