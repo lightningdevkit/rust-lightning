@@ -1174,6 +1174,7 @@ mod tests {
 		assert_eq!(offer.paths(), &[]);
 		assert_eq!(offer.issuer(), None);
 		assert_eq!(offer.supported_quantity(), Quantity::One);
+		assert!(!offer.expects_quantity());
 		assert_eq!(offer.signing_pubkey(), Some(pubkey(42)));
 
 		assert_eq!(
@@ -1548,6 +1549,7 @@ mod tests {
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
+		assert!(!offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::One);
 		assert_eq!(tlv_stream.quantity_max, None);
 
@@ -1556,6 +1558,7 @@ mod tests {
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
+		assert!(offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::Unbounded);
 		assert_eq!(tlv_stream.quantity_max, Some(0));
 
@@ -1564,6 +1567,7 @@ mod tests {
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
+		assert!(offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::Bounded(ten));
 		assert_eq!(tlv_stream.quantity_max, Some(10));
 
@@ -1572,6 +1576,7 @@ mod tests {
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
+		assert!(offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::Bounded(one));
 		assert_eq!(tlv_stream.quantity_max, Some(1));
 
@@ -1581,6 +1586,7 @@ mod tests {
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
+		assert!(!offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::One);
 		assert_eq!(tlv_stream.quantity_max, None);
 	}
