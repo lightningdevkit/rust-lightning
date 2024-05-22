@@ -873,7 +873,6 @@ pub struct ChannelInfo {
 	/// (which we can probably assume we are - no-std environments probably won't have a full
 	/// network graph in memory!).
 	announcement_received_time: u64,
-
 }
 
 impl ChannelInfo {
@@ -970,7 +969,6 @@ impl Readable for ChannelInfo {
 		let mut two_to_one_wrap: Option<ChannelUpdateInfoDeserWrapper> = None;
 		_init_tlv_field_var!(capacity_sats, required);
 		_init_tlv_field_var!(announcement_message, required);
-
 		read_tlv_fields!(reader, {
 			(0, features, required),
 			(1, announcement_received_time, (default_value, 0)),
