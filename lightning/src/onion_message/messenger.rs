@@ -162,7 +162,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _peers: Vec<ForwardNode>, _secp_ctx: &Secp256k1<T>
+/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedPath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -426,8 +426,33 @@ pub trait MessageRouter {
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()>;
+
+	/// Creates compact [`BlindedPath`]s to the `recipient` node. The nodes in `peers` are assumed
+	/// to be direct peers with the `recipient`.
+	///
+	/// Compact blinded paths use short channel ids instead of pubkeys for a smaller serialization,
+	/// which is beneficial when a QR code is used to transport the data. The SCID is passed using a
+	/// [`ForwardNode`] but may be `None` for graceful degradation.
+	///
+	/// Implementations using additional intermediate nodes are responsible for using a
+	/// [`ForwardNode`] with `Some` short channel id, if possible. Similarly, implementations should
+	/// call [`BlindedPath::use_compact_introduction_node`].
+	///
+	/// The provided implementation simply delegates to [`MessageRouter::create_blinded_paths`],
+	/// ignoring the short channel ids.
+	fn create_compact_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		let peers = peers
+			.into_iter()
+			.map(|ForwardNode { node_id, short_channel_id: _ }| node_id)
+			.collect();
+		self.create_blinded_paths(recipient, peers, secp_ctx)
+	}
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
@@ -454,7 +479,7 @@ where
 		I: Iterator<Item = ForwardNode>,
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: I, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: I, secp_ctx: &Secp256k1<T>, compact_paths: bool
 	) -> Result<Vec<BlindedPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -502,8 +527,11 @@ where
 				}
 			},
 		}?;
-		for path in &mut paths {
-			path.use_compact_introduction_node(&network_graph);
+
+		if compact_paths {
+			for path in &mut paths {
+				path.use_compact_introduction_node(&network_graph);
+			}
 		}
 
 		Ok(paths)
@@ -551,9 +579,20 @@ where
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		let peers = peers
+			.into_iter()
+			.map(|node_id| ForwardNode { node_id, short_channel_id: None });
+		self.create_blinded_paths_from_iter(recipient, peers, secp_ctx, false)
+	}
+
+	fn create_compact_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
 		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.create_blinded_paths_from_iter(recipient, peers.into_iter(), secp_ctx)
+		self.create_blinded_paths_from_iter(recipient, peers.into_iter(), secp_ctx, true)
 	}
 }
 
@@ -1090,10 +1129,7 @@ where
 		let peers = self.message_recipients.lock().unwrap()
 			.iter()
 			.filter(|(_, peer)| matches!(peer, OnionMessageRecipient::ConnectedPeer(_)))
-			.map(|(node_id, _ )| ForwardNode {
-				node_id: *node_id,
-				short_channel_id: None,
-			})
+			.map(|(node_id, _ )| *node_id)
 			.collect::<Vec<_>>();
 
 		self.message_router

@@ -8245,8 +8245,8 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter::create_blinded_paths`] to construct a [`BlindedPath`] for the offer.
-	/// However, if one is not found, uses a one-hop [`BlindedPath`] with
+	/// Uses [`MessageRouter::create_compact_blinded_paths`] to construct a [`BlindedPath`] for the
+	/// offer. However, if one is not found, uses a one-hop [`BlindedPath`] with
 	/// [`ChannelManager::get_our_node_id`] as the introduction node instead. In the latter case,
 	/// the node must be announced, otherwise, there is no way to find a path to the introduction in
 	/// order to send the [`InvoiceRequest`].
@@ -8304,8 +8304,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter::create_blinded_paths`] to construct a [`BlindedPath`] for the refund.
-	/// However, if one is not found, uses a one-hop [`BlindedPath`] with
+	/// Uses [`MessageRouter::create_compact_blinded_paths`] to construct a [`BlindedPath`] for the
+	/// refund. However, if one is not found, uses a one-hop [`BlindedPath`] with
 	/// [`ChannelManager::get_our_node_id`] as the introduction node instead. In the latter case,
 	/// the node must be announced, otherwise, there is no way to find a path to the introduction in
 	/// order to send the [`Bolt12Invoice`].
@@ -8686,7 +8686,7 @@ where
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
-	/// Creates a blinded path by delegating to [`MessageRouter::create_blinded_paths`].
+	/// Creates a blinded path by delegating to [`MessageRouter::create_compact_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors or returns an empty `Vec`.
 	fn create_blinded_path(&self) -> Result<BlindedPath, ()> {
@@ -8708,7 +8708,7 @@ where
 			.collect::<Vec<_>>();
 
 		self.router
-			.create_blinded_paths(recipient, peers, secp_ctx)
+			.create_compact_blinded_paths(recipient, peers, secp_ctx)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 	}
 
