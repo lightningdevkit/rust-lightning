@@ -112,16 +112,39 @@ impl Writeable for TestCustomMessage {
 }
 
 struct TestCustomMessageHandler {
-	expected_messages: Mutex<VecDeque<TestCustomMessage>>,
+	expectations: Mutex<VecDeque<OnHandleCustomMessage>>,
+}
+
+struct OnHandleCustomMessage {
+	expect: TestCustomMessage,
+	include_reply_path: bool,
 }
 
 impl TestCustomMessageHandler {
 	fn new() -> Self {
-		Self { expected_messages: Mutex::new(VecDeque::new()) }
+		Self { expectations: Mutex::new(VecDeque::new()) }
 	}
 
 	fn expect_message(&self, message: TestCustomMessage) {
-		self.expected_messages.lock().unwrap().push_back(message);
+		self.expectations.lock().unwrap().push_back(
+			OnHandleCustomMessage {
+				expect: message,
+				include_reply_path: false,
+			}
+		);
+	}
+
+	fn expect_message_and_response(&self, message: TestCustomMessage) {
+		self.expectations.lock().unwrap().push_back(
+			OnHandleCustomMessage {
+				expect: message,
+				include_reply_path: true,
+			}
+		);
+	}
+
+	fn get_next_expectation(&self) -> OnHandleCustomMessage {
+		self.expectations.lock().unwrap().pop_front().expect("No expectations remaining")
 	}
 }
 
@@ -132,25 +155,32 @@ impl Drop for TestCustomMessageHandler {
 				return;
 			}
 		}
-		assert!(self.expected_messages.lock().unwrap().is_empty());
+		assert!(self.expectations.lock().unwrap().is_empty());
 	}
 }
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
 	fn handle_custom_message(&self, msg: Self::CustomMessage, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
-		match self.expected_messages.lock().unwrap().pop_front() {
-			Some(expected_msg) => assert_eq!(expected_msg, msg),
-			None => panic!("Unexpected message: {:?}", msg),
-		}
-		let response_option = match msg {
-			TestCustomMessage::Ping => Some(TestCustomMessage::Pong),
-			TestCustomMessage::Pong => None,
+		let expectation = self.get_next_expectation();
+		assert_eq!(msg, expectation.expect);
+
+		let response = match msg {
+			TestCustomMessage::Ping => TestCustomMessage::Pong,
+			TestCustomMessage::Pong => TestCustomMessage::Ping,
 		};
-		if let (Some(response), Some(responder)) = (response_option, responder) {
-			responder.respond(response)
-		} else {
-			ResponseInstruction::NoResponse
+
+		// Sanity check: expecting to include reply path when responder is absent should panic.
+		if expectation.include_reply_path && responder.is_none() {
+			panic!("Expected to include a reply_path, but the responder was absent.")
+		}
+
+		match responder {
+			Some(responder) if expectation.include_reply_path => {
+				responder.respond_with_reply_path(response)
+			},
+			Some(responder) => responder.respond(response),
+			None => ResponseInstruction::NoResponse,
 		}
 	}
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, DecodeError> where Self: Sized {
