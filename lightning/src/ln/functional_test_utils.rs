@@ -2460,11 +2460,11 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 							const CHAN_DISABLED_FLAG: u8 = 2;
 							assert_eq!(msg.contents.flags & CHAN_DISABLED_FLAG, 0);
 						},
-						NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } if chan_closed => {
+						NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
 							if let Some(scid) = conditions.expected_blamed_scid {
 								assert_eq!(*short_channel_id, scid);
 							}
-							assert!(is_permanent);
+							assert_eq!(*is_permanent, chan_closed);
 						},
 						_ => panic!("Unexpected update type"),
 					}
