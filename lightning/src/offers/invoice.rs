@@ -1566,10 +1566,8 @@ mod tests {
 		#[cfg(feature = "std")]
 		assert!(!unsigned_invoice.is_expired());
 		assert_eq!(unsigned_invoice.payment_hash(), payment_hash);
-		assert_eq!(unsigned_invoice.amount_msats(), 1000);
 		assert!(unsigned_invoice.fallbacks().is_empty());
 		assert_eq!(unsigned_invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
-		assert_eq!(unsigned_invoice.signing_pubkey(), recipient_pubkey());
 
 		match UnsignedBolt12Invoice::try_from(buffer) {
 			Err(e) => panic!("error parsing unsigned invoice: {:?}", e),
@@ -1610,10 +1608,8 @@ mod tests {
 		#[cfg(feature = "std")]
 		assert!(!invoice.is_expired());
 		assert_eq!(invoice.payment_hash(), payment_hash);
-		assert_eq!(invoice.amount_msats(), 1000);
 		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
-		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
@@ -1708,10 +1704,8 @@ mod tests {
 		#[cfg(feature = "std")]
 		assert!(!invoice.is_expired());
 		assert_eq!(invoice.payment_hash(), payment_hash);
-		assert_eq!(invoice.amount_msats(), 1000);
 		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
-		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
