@@ -6753,7 +6753,7 @@ where
 						receiver_node_id,
 						htlcs,
 						sender_intended_value: sender_intended_total_msat,
-						onion_fields: _,
+						onion_fields,
 					}) = payment {
 						self.pending_events.lock().unwrap().push_back((events::Event::PaymentClaimed {
 							payment_hash,
@@ -6762,6 +6762,7 @@ where
 							receiver_node_id: Some(receiver_node_id),
 							htlcs,
 							sender_intended_total_msat,
+							onion_fields,
 						}, None));
 					}
 				},
@@ -12272,6 +12273,7 @@ where
 						amount_msat: claimable_amt_msat,
 						htlcs: payment.htlcs.iter().map(events::ClaimedHTLC::from).collect(),
 						sender_intended_total_msat: payment.htlcs.first().map(|htlc| htlc.total_msat),
+						onion_fields: payment.onion_fields,
 					}, None));
 				}
 			}

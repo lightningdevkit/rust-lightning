@@ -653,6 +653,11 @@ pub enum Event {
 		/// The sender-intended sum total of all the MPP parts. This will be `None` for events
 		/// serialized prior to LDK version 0.0.117.
 		sender_intended_total_msat: Option<u64>,
+		/// The fields in the onion which were received with each HTLC. Only fields which were
+		/// identical in each HTLC involved in the payment will be included here.
+		///
+		/// Payments received on LDK versions prior to 0.0.124 will have this field unset.
+		onion_fields: Option<RecipientOnionFields>,
 	},
 	/// Indicates that a peer connection with a node is needed in order to send an [`OnionMessage`].
 	///
@@ -1348,7 +1353,7 @@ impl Writeable for Event {
 				// We never write the OpenChannelRequest events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref htlcs, ref sender_intended_total_msat } => {
+			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref htlcs, ref sender_intended_total_msat, ref onion_fields } => {
 				19u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
@@ -1357,6 +1362,7 @@ impl Writeable for Event {
 					(4, amount_msat, required),
 					(5, *htlcs, optional_vec),
 					(7, sender_intended_total_msat, option),
+					(9, onion_fields, option),
 				});
 			},
 			&Event::ProbeSuccessful { ref payment_id, ref payment_hash, ref path } => {
@@ -1719,6 +1725,7 @@ impl MaybeReadable for Event {
 					let mut receiver_node_id = None;
 					let mut htlcs: Option<Vec<ClaimedHTLC>> = Some(vec![]);
 					let mut sender_intended_total_msat: Option<u64> = None;
+					let mut onion_fields = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
@@ -1726,6 +1733,7 @@ impl MaybeReadable for Event {
 						(4, amount_msat, required),
 						(5, htlcs, optional_vec),
 						(7, sender_intended_total_msat, option),
+						(9, onion_fields, option),
 					});
 					Ok(Some(Event::PaymentClaimed {
 						receiver_node_id,
@@ -1734,6 +1742,7 @@ impl MaybeReadable for Event {
 						amount_msat,
 						htlcs: htlcs.unwrap_or(vec![]),
 						sender_intended_total_msat,
+						onion_fields,
 					}))
 				};
 				f()
