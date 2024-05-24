@@ -180,11 +180,6 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 		if expected_channel_update.is_some() {
 			match network_update {
 				Some(update) => match update {
-					&NetworkUpdate::ChannelUpdateMessage { .. } => {
-						if let NetworkUpdate::ChannelUpdateMessage { .. } = expected_channel_update.unwrap() {} else {
-							panic!("channel_update not found!");
-						}
-					},
 					&NetworkUpdate::ChannelFailure { ref short_channel_id, ref is_permanent } => {
 						if let NetworkUpdate::ChannelFailure { short_channel_id: ref expected_short_channel_id, is_permanent: ref expected_is_permanent } = expected_channel_update.unwrap() {
 							assert!(*short_channel_id == *expected_short_channel_id);
