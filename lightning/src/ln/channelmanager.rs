@@ -680,6 +680,7 @@ struct ClaimingPayment {
 	receiver_node_id: PublicKey,
 	htlcs: Vec<events::ClaimedHTLC>,
 	sender_intended_value: Option<u64>,
+	onion_fields: Option<RecipientOnionFields>,
 }
 impl_writeable_tlv_based!(ClaimingPayment, {
 	(0, amount_msat, required),
@@ -687,6 +688,7 @@ impl_writeable_tlv_based!(ClaimingPayment, {
 	(4, receiver_node_id, required),
 	(5, htlcs, optional_vec),
 	(7, sender_intended_value, option),
+	(9, onion_fields, option),
 });
 
 struct ClaimablePayment {
@@ -6324,7 +6326,7 @@ where
 					}
 				}
 
-				let _claiming_payment = claimable_payments.pending_claiming_payments
+				let claiming_payment = claimable_payments.pending_claiming_payments
 					.entry(payment_hash)
 					.and_modify(|_| {
 						debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
@@ -6340,10 +6342,11 @@ where
 							receiver_node_id,
 							htlcs,
 							sender_intended_value,
+							onion_fields: payment.onion_fields,
 						}
 					});
 
-				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = payment.onion_fields {
+				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = claiming_payment.onion_fields {
 					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
 						log_info!(self.logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
 							&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
@@ -6750,6 +6753,7 @@ where
 						receiver_node_id,
 						htlcs,
 						sender_intended_value: sender_intended_total_msat,
+						onion_fields: _,
 					}) = payment {
 						self.pending_events.lock().unwrap().push_back((events::Event::PaymentClaimed {
 							payment_hash,
