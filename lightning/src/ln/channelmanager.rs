@@ -6324,23 +6324,24 @@ where
 					}
 				}
 
-				let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
-				let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
-				let dup_purpose = claimable_payments.pending_claiming_payments.insert(
-					payment_hash,
-					ClaimingPayment {
-						amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
-						payment_purpose: payment.purpose,
-						receiver_node_id,
-						htlcs,
-						sender_intended_value,
-					},
-				);
-				if dup_purpose.is_some() {
-					debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
-					log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
-						&payment_hash);
-				}
+				let _claiming_payment = claimable_payments.pending_claiming_payments
+					.entry(payment_hash)
+					.and_modify(|_| {
+						debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
+						log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
+							&payment_hash);
+					})
+					.or_insert_with(|| {
+						let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
+						let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
+						ClaimingPayment {
+							amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
+							payment_purpose: payment.purpose,
+							receiver_node_id,
+							htlcs,
+							sender_intended_value,
+						}
+					});
 
 				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = payment.onion_fields {
 					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
