@@ -2950,18 +2950,20 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 
 	expected_total_fee_msat
 }
-pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage) {
-	let expected_total_fee_msat = do_claim_payment_along_route(
-		ClaimAlongRouteArgs::new(origin_node, expected_paths, our_payment_preimage)
-			.skip_last(skip_last)
-	);
+pub fn claim_payment_along_route(args: ClaimAlongRouteArgs) {
+	let origin_node = args.origin_node;
+	let payment_preimage = args.payment_preimage;
+	let skip_last = args.skip_last;
+	let expected_total_fee_msat = do_claim_payment_along_route(args);
 	if !skip_last {
-		expect_payment_sent!(origin_node, our_payment_preimage, Some(expected_total_fee_msat));
+		expect_payment_sent!(origin_node, payment_preimage, Some(expected_total_fee_msat));
 	}
 }
 
 pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], our_payment_preimage: PaymentPreimage) {
-	claim_payment_along_route(origin_node, &[expected_route], false, our_payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(origin_node, &[expected_route], our_payment_preimage)
+	);
 }
 
 pub const TEST_FINAL_CLTV: u32 = 70;

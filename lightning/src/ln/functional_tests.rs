@@ -3780,7 +3780,10 @@ fn test_simple_peer_disconnect() {
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_preimage_3);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage_3)
+			.skip_last(true)
+	);
 	fail_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], true, payment_hash_5);
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
@@ -8264,7 +8267,9 @@ fn test_onion_value_mpp_set_calculation() {
 	let ev = remove_first_msg_event_to_node(&expected_paths[1][0].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_paths[1], 101_000, our_payment_hash.clone(), Some(our_payment_secret), ev, true, None);
 
-	claim_payment_along_route(&nodes[0], expected_paths, false, our_payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_paths, our_payment_preimage)
+	);
 }
 
 fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
@@ -8330,7 +8335,9 @@ fn do_test_overshoot_mpp(msat_amounts: &[u64], total_msat: u64) {
 		pass_along_path(&nodes[src_idx], expected_path, amount_received, our_payment_hash.clone(), Some(our_payment_secret), ev, became_claimable_now, None);
 	}
 
-	claim_payment_along_route(&nodes[src_idx], &expected_paths, false, our_payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[src_idx], &expected_paths, our_payment_preimage)
+	);
 }
 
 #[test]
@@ -8362,7 +8369,9 @@ fn test_simple_mpp() {
 	route.paths[1].hops[0].short_channel_id = chan_2_id;
 	route.paths[1].hops[1].short_channel_id = chan_4_id;
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 200_000, payment_hash, payment_secret);
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], payment_preimage)
+	);
 }
 
 #[test]

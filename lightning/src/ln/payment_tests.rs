@@ -160,7 +160,9 @@ fn mpp_retry() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 2_000_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], payment_preimage)
+	);
 }
 
 #[test]
@@ -351,7 +353,9 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 			nodes[3].node.timer_tick_occurred();
 		}
 
-		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], payment_preimage)
+		);
 	}
 }
 
@@ -466,7 +470,9 @@ fn test_mpp_keysend() {
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[1], recv_value, payment_hash.clone(),
 		Some(payment_secret), ev.clone(), true, Some(payment_preimage));
-	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, payment_preimage)
+	);
 }
 
 #[test]
@@ -1247,7 +1253,9 @@ fn get_ldk_payment_preimage() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[1]], amt_msat, payment_hash, Some(payment_secret), events.pop().unwrap(), true, Some(payment_preimage));
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1]]], false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
+	);
 }
 
 #[test]
@@ -2276,7 +2284,9 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], amt_msat, payment_hash, Some(payment_secret), msg_events.pop().unwrap(), true, None);
-		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+		);
 	} else if test == AutoRetry::Spontaneous {
 		nodes[0].node.send_spontaneous_payment_with_retry(Some(payment_preimage),
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params,
@@ -2293,7 +2303,9 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], amt_msat, payment_hash, None, msg_events.pop().unwrap(), true, Some(payment_preimage));
-		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+		);
 	} else if test == AutoRetry::FailAttempts {
 		// Ensure ChannelManager will not retry a payment if it has run out of payment attempts.
 		nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -3813,7 +3825,9 @@ fn test_retry_custom_tlvs() {
 		.with_payment_secret(payment_secret)
 		.with_custom_tlvs(custom_tlvs);
 	do_pass_along_path(args);
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+	);
 }
 
 #[test]
@@ -4109,7 +4123,9 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	} else {
 		expect_pending_htlcs_forwardable!(nodes[3]);
 		expect_payment_claimable!(nodes[3], payment_hash, payment_secret, amt_msat);
-		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], payment_preimage)
+		);
 	}
 }
 

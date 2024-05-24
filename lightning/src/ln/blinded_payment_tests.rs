@@ -180,7 +180,9 @@ fn mpp_to_one_hop_blinded_path() {
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[1], amt_msat, payment_hash.clone(),
 		Some(payment_secret), ev.clone(), true, None);
-	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, payment_preimage)
+	);
 }
 
 #[test]
@@ -244,7 +246,9 @@ fn mpp_to_three_hop_blinded_paths() {
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[1], amt_msat, payment_hash.clone(),
 		Some(payment_secret), ev.clone(), true, None);
-	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, payment_preimage)
+	);
 }
 
 enum ForwardCheckFail {
@@ -1219,7 +1223,9 @@ fn blinded_keysend() {
 
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[0], amt_msat, payment_hash, Some(payment_secret), ev.clone(), true, Some(keysend_preimage));
-	claim_payment_along_route(&nodes[0], expected_route, false, keysend_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, keysend_preimage)
+	);
 }
 
 #[test]
@@ -1270,7 +1276,9 @@ fn blinded_mpp_keysend() {
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[1], amt_msat, payment_hash.clone(),
 		Some(payment_secret), ev.clone(), true, Some(keysend_preimage));
-	claim_payment_along_route(&nodes[0], expected_route, false, keysend_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, keysend_preimage)
+	);
 }
 
 #[test]
