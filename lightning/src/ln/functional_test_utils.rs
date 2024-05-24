@@ -2716,18 +2716,12 @@ pub fn send_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route
 	(our_payment_preimage, our_payment_hash, our_payment_secret, payment_id)
 }
 
-pub fn do_claim_payment_along_route<'a, 'b, 'c>(
-	origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool,
-	our_payment_preimage: PaymentPreimage
-) -> u64 {
-	for path in expected_paths.iter() {
-		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
+pub fn do_claim_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
+	for path in args.expected_paths.iter() {
+		assert_eq!(path.last().unwrap().node.get_our_node_id(), args.expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
-	expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage);
-	pass_claimed_payment_along_route(
-		ClaimAlongRouteArgs::new(origin_node, expected_paths, our_payment_preimage)
-			.skip_last(skip_last)
-	)
+	args.expected_paths[0].last().unwrap().node.claim_funds(args.payment_preimage);
+	pass_claimed_payment_along_route(args)
 }
 
 pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
@@ -2957,7 +2951,10 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 	expected_total_fee_msat
 }
 pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage) {
-	let expected_total_fee_msat = do_claim_payment_along_route(origin_node, expected_paths, skip_last, our_payment_preimage);
+	let expected_total_fee_msat = do_claim_payment_along_route(
+		ClaimAlongRouteArgs::new(origin_node, expected_paths, our_payment_preimage)
+			.skip_last(skip_last)
+	);
 	if !skip_last {
 		expect_payment_sent!(origin_node, our_payment_preimage, Some(expected_total_fee_msat));
 	}

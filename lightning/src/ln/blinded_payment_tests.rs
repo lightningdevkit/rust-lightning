@@ -643,7 +643,9 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 	expect_pending_htlcs_forwardable!(nodes[2]);
 
 	expect_payment_claimable!(&nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
-	do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1], &nodes[2])[..]), false, payment_preimage);
+	do_claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+	);
 	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(1000)), true, true);
 }
 

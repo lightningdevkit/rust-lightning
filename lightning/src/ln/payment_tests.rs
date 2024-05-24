@@ -817,7 +817,9 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
-	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+	do_claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+	);
 	expect_payment_sent!(nodes[0], payment_preimage, Some(new_route.paths[0].hops[0].fee_msat));
 }
 
@@ -1579,7 +1581,9 @@ fn claimed_send_payment_idempotent() {
 	// Claim the payment backwards, but note that the PaymentSent event is still pending and has
 	// not been seen by the user. At this point, from the user perspective nothing has changed, so
 	// we must remain just as idempotent as we were before.
-	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1]]], false, first_payment_preimage);
+	do_claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], first_payment_preimage)
+	);
 
 	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
 		nodes[0].node.timer_tick_occurred();
@@ -1980,7 +1984,9 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 
 		let payment_preimage = nodes[2].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
 		expect_payment_claimable!(&nodes[2], payment_hash, payment_secret, amt_msat, Some(payment_preimage), nodes[2].node.get_our_node_id());
-		do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1], &nodes[2])[..]), false, payment_preimage);
+		do_claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+		);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);
 		match events[0] {
@@ -3938,8 +3944,9 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 			_ => panic!("Unexpected event"),
 		}
 
-		do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]],
-			false, our_payment_preimage);
+		do_claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], our_payment_preimage)
+		);
 		expect_payment_sent(&nodes[0], our_payment_preimage, Some(Some(2000)), true, true);
 	} else {
 		// Expect fail back

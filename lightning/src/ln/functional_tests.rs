@@ -9806,7 +9806,9 @@ fn test_inconsistent_mpp_params() {
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 15_000_000, our_payment_hash, Some(our_payment_secret), events.pop().unwrap(), true, None);
 
-	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, our_payment_preimage);
+	do_claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], our_payment_preimage)
+	);
 	expect_payment_sent(&nodes[0], our_payment_preimage, Some(None), true, true);
 }
 
