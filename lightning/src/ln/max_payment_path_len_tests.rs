@@ -207,6 +207,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[1], &[&[&nodes[2]]], payment_preimage)
+			.with_custom_tlvs(recipient_onion_max_custom_tlv_size.custom_tlvs.clone())
 	);
 
 	// If 1 byte is added to the custom TLV value, we'll fail to send prior to pathfinding.
@@ -232,10 +233,11 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	let path = &[&nodes[1], &nodes[2]];
 	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, events.pop().unwrap())
 		.with_payment_secret(payment_secret)
-		.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs);
+		.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+			.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs)
 	);
 }
 
@@ -293,6 +295,7 @@ fn blinded_path_with_custom_tlv() {
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[1], &[&[&nodes[2], &nodes[3]]], payment_preimage)
+			.with_custom_tlvs(recipient_onion_max_custom_tlv_size.custom_tlvs.clone())
 	);
 
 	// If 1 byte is added to the custom TLV value, we'll fail to send prior to pathfinding.
@@ -330,9 +333,10 @@ fn blinded_path_with_custom_tlv() {
 	let path = &[&nodes[1], &nodes[2], &nodes[3]];
 	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, events.pop().unwrap())
 		.with_payment_secret(payment_secret)
-		.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs);
+		.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], payment_preimage)
+			.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs)
 	);
 }

@@ -1326,5 +1326,8 @@ fn custom_tlvs_to_blinded_path() {
 		.with_payment_secret(payment_secret)
 		.with_custom_tlvs(recipient_onion_fields.custom_tlvs.clone());
 	do_pass_along_path(args);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
+			.with_custom_tlvs(recipient_onion_fields.custom_tlvs.clone())
+	);
 }

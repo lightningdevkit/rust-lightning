@@ -3732,11 +3732,17 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	match (known_tlvs, even_tlvs) {
 		(true, _) => {
 			nodes[1].node.claim_funds_with_known_custom_tlvs(our_payment_preimage);
-			let expected_total_fee_msat = pass_claimed_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage));
+			let expected_total_fee_msat = pass_claimed_payment_along_route(
+				ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage)
+					.with_custom_tlvs(custom_tlvs)
+			);
 			expect_payment_sent!(&nodes[0], our_payment_preimage, Some(expected_total_fee_msat));
 		},
 		(false, false) => {
-			claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+			claim_payment_along_route(
+				ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage)
+					.with_custom_tlvs(custom_tlvs)
+			);
 		},
 		(false, true) => {
 			nodes[1].node.claim_funds(our_payment_preimage);
@@ -3823,10 +3829,11 @@ fn test_retry_custom_tlvs() {
 	let path = &[&nodes[1], &nodes[2]];
 	let args = PassAlongPathArgs::new(&nodes[0], path, 1_000_000, payment_hash, events.pop().unwrap())
 		.with_payment_secret(payment_secret)
-		.with_custom_tlvs(custom_tlvs);
+		.with_custom_tlvs(custom_tlvs.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+			.with_custom_tlvs(custom_tlvs)
 	);
 }
 
@@ -3960,6 +3967,7 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 
 		do_claim_payment_along_route(
 			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], our_payment_preimage)
+				.with_custom_tlvs(expected_tlvs)
 		);
 		expect_payment_sent(&nodes[0], our_payment_preimage, Some(Some(2000)), true, true);
 	} else {
