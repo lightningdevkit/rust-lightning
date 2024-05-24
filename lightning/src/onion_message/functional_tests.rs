@@ -438,6 +438,73 @@ fn async_response_over_one_blinded_hop() {
 }
 
 #[test]
+fn async_response_with_reply_path_succeeds() {
+	// Simulate an asynchronous interaction between two nodes, Alice and Bob.
+	// Create a channel between the two nodes to establish them as announced nodes,
+	// which allows the creation of the reply_path for successful communication.
+
+	let mut nodes = create_nodes(2);
+	let alice = &nodes[0];
+	let bob = &nodes[1];
+	let secp_ctx = Secp256k1::new();
+
+	add_channel_to_graph(alice, bob, &secp_ctx, 24);
+
+	// Alice receives a message from Bob with an added reply_path for responding back.
+	let message = TestCustomMessage::Ping;
+	let path_id = Some([2; 32]);
+	let reply_path = BlindedPath::new_for_message(&[], bob.node_id, &*bob.entropy_source, &secp_ctx).unwrap();
+
+	// Alice asynchronously responds to Bob, expecting a response back from him.
+	let responder = Responder::new(reply_path, path_id);
+	alice.custom_message_handler.expect_message_and_response(message.clone());
+	let response_instruction = alice.custom_message_handler.handle_custom_message(message, Some(responder));
+
+	assert_eq!(
+		alice.messenger.handle_onion_message_response(response_instruction),
+		Ok(Some(SendSuccess::Buffered)),
+	);
+
+	// Set Bob's expectation and pass the Onion Message along the path.
+	bob.custom_message_handler.expect_message(TestCustomMessage::Pong);
+	pass_along_path(&nodes);
+
+	// Bob responds back to Alice using the reply_path she included with the OnionMessage.
+	// Set Alice's expectation and reverse the path for the response.
+	alice.custom_message_handler.expect_message(TestCustomMessage::Ping);
+	nodes.reverse();
+	pass_along_path(&nodes);
+}
+
+#[test]
+fn async_response_with_reply_path_fails() {
+	// Simulate an asynchronous interaction between two unannounced nodes, Alice and Bob.
+	// Since the nodes are unannounced, attempting to respond using a reply_path
+	// will fail, leading to an expected failure in communication.
+
+	let nodes = create_nodes(2);
+	let alice = &nodes[0];
+	let bob = &nodes[1];
+	let secp_ctx = Secp256k1::new();
+
+	// Alice receives a message from Bob with an added reply_path for responding back.
+	let message = TestCustomMessage::Ping;
+	let path_id = Some([2; 32]);
+	let reply_path = BlindedPath::new_for_message(&[], bob.node_id, &*bob.entropy_source, &secp_ctx).unwrap();
+
+	// Alice tries to asynchronously respond to Bob, but fails because the nodes are unannounced.
+	// Therefore, the reply_path cannot be used for the response.
+	let responder = Responder::new(reply_path, path_id);
+	alice.custom_message_handler.expect_message_and_response(message.clone());
+	let response_instruction = alice.custom_message_handler.handle_custom_message(message, Some(responder));
+
+	assert_eq!(
+		alice.messenger.handle_onion_message_response(response_instruction),
+		Err(SendError::PathNotFound),
+	);
+}
+
+#[test]
 fn too_big_packet_error() {
 	// Make sure we error as expected if a packet is too big to send.
 	let nodes = create_nodes(2);
