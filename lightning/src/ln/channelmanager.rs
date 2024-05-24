@@ -6326,10 +6326,16 @@ where
 
 				let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
 				let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
-				let dup_purpose = claimable_payments.pending_claiming_payments.insert(payment_hash,
-					ClaimingPayment { amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
-					payment_purpose: payment.purpose, receiver_node_id, htlcs, sender_intended_value
-				});
+				let dup_purpose = claimable_payments.pending_claiming_payments.insert(
+					payment_hash,
+					ClaimingPayment {
+						amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
+						payment_purpose: payment.purpose,
+						receiver_node_id,
+						htlcs,
+						sender_intended_value,
+					},
+				);
 				if dup_purpose.is_some() {
 					debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
 					log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
