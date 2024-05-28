@@ -55,7 +55,7 @@ use crate::io_extras::read_to_end;
 use crate::events::{EventsProvider, MessageSendEventsProvider};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::logger;
-use crate::util::ser::{LengthReadable, LengthReadableArgs, Readable, ReadableArgs, Writeable, Writer, WithoutLength, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, TransactionU16LenLimited, BigSize};
+use crate::util::ser::{BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited, WithoutLength, Writeable, Writer};
 use crate::util::base32;
 
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -1857,6 +1857,26 @@ impl Writeable for TrampolineOnionPacket {
 	}
 }
 
+impl LengthReadable for TrampolineOnionPacket {
+	fn read<R: LengthRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let version = Readable::read(r)?;
+		let public_key = Readable::read(r)?;
+
+		let hop_data_len = r.total_bytes().saturating_sub(66); // 1 (version) + 33 (pubkey) + 32 (HMAC) = 66
+		let mut rd = FixedLengthReader::new(r, hop_data_len);
+		let hop_data = WithoutLength::<Vec<u8>>::read(&mut rd)?.0;
+
+		let hmac = Readable::read(r)?;
+
+		Ok(TrampolineOnionPacket {
+			version,
+			public_key,
+			hop_data,
+			hmac,
+		})
+	}
+}
+
 impl Debug for TrampolineOnionPacket {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		f.write_fmt(format_args!("TrampolineOnionPacket version {} with hmac {:?}", self.version, &self.hmac[..]))
@@ -3181,7 +3201,7 @@ mod tests {
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
-	use crate::util::ser::{BigSize, Hostname, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
+	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 
 	use bitcoin::hashes::hex::FromHex;
@@ -4496,6 +4516,13 @@ mod tests {
 		};
 		let encoded_trampoline_packet = trampoline_packet.encode();
 		assert_eq!(encoded_trampoline_packet.len(), 716);
+
+		{ // verify that a codec round trip works
+			let mut reader = Cursor::new(&encoded_trampoline_packet);
+			let mut trampoline_packet_reader = FixedLengthReader::new(&mut reader, encoded_trampoline_packet.len() as u64);
+			let decoded_trampoline_packet: TrampolineOnionPacket = <TrampolineOnionPacket as LengthReadable>::read(&mut trampoline_packet_reader).unwrap();
+			assert_eq!(decoded_trampoline_packet.encode(), encoded_trampoline_packet);
+		}
 
 		let msg = msgs::OutboundOnionPayload::TrampolineEntrypoint {
 			multipath_trampoline_data: None,
