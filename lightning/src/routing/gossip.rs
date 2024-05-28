@@ -11,39 +11,39 @@
 
 use bitcoin::blockdata::constants::ChainHash;
 
-use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
-use bitcoin::secp256k1::{PublicKey, Verification};
-use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1;
+use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{PublicKey, Verification};
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::network::constants::Network;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::types::ChannelId;
-use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
-use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, SocketAddress, MAX_VALUE_MSAT};
-use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
-use crate::ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
+use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::msgs;
+use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, GossipTimestampFilter, NodeAnnouncement};
+use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, SocketAddress, MAX_VALUE_MSAT};
+use crate::ln::msgs::{QueryChannelRange, QueryShortChannelIds, ReplyChannelRange, ReplyShortChannelIdsEnd};
+use crate::ln::types::ChannelId;
 use crate::routing::utxo::{self, UtxoLookup, UtxoResolver};
-use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
-use crate::util::logger::{Logger, Level};
+use crate::util::indexed_map::{Entry as IndexedMapEntry, IndexedMap};
+use crate::util::logger::{Level, Logger};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
+use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, Writeable, Writer};
 use crate::util::string::PrintableString;
-use crate::util::indexed_map::{IndexedMap, Entry as IndexedMapEntry};
 
 use crate::io;
 use crate::io_extras::{copy, sink};
 use crate::prelude::*;
-use core::{cmp, fmt};
-use crate::sync::{RwLock, RwLockReadGuard, LockTestExt};
-#[cfg(feature = "std")]
-use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Mutex;
+use crate::sync::{LockTestExt, RwLock, RwLockReadGuard};
 use core::ops::{Bound, Deref};
 use core::str::FromStr;
+#[cfg(feature = "std")]
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{cmp, fmt};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
