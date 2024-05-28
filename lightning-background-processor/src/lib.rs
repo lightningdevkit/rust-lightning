@@ -27,7 +27,7 @@ use lightning::chain::chainmonitor::{ChainMonitor, Persist};
 use lightning::events::{Event, PathFailure};
 #[cfg(feature = "std")]
 use lightning::events::EventHandler;
-#[cfg(any(feature = "std", feature = "futures"))]
+#[cfg(feature = "std")]
 use lightning::events::EventsProvider;
 
 use lightning::ln::channelmanager::AChannelManager;
@@ -57,8 +57,6 @@ use std::time::Instant;
 
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
 
 /// `BackgroundProcessor` takes care of tasks that (1) need to happen periodically to keep
 /// Rust-Lightning running properly, and (2) either can or should be run in the background. Its
