@@ -10337,6 +10337,16 @@ where
 					},
 				}
 			},
+			OffersMessage::StaticInvoice(_invoice) => {
+				match responder {
+					Some(responder) => {
+						responder.respond(OffersMessage::InvoiceError(
+								InvoiceError::from_string("Static invoices not yet supported".to_string())
+						))
+					},
+					None => return ResponseInstruction::NoResponse,
+				}
+			},
 			OffersMessage::InvoiceError(invoice_error) => {
 				log_trace!(self.logger, "Received invoice_error: {}", invoice_error);
 				ResponseInstruction::NoResponse
