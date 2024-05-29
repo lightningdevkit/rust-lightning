@@ -16,7 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::blinded_path::{BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
-use crate::blinded_path::message::{advance_path_by_one, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::message::{advance_path_by_one, ForwardNode, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -71,6 +71,7 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// # use bitcoin::hashes::hex::FromHex;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
 /// # use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
+/// # use lightning::blinded_path::message::ForwardNode;
 /// # use lightning::sign::{EntropySource, KeysManager};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath, OnionMessenger};
@@ -97,7 +98,7 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
+/// #         &self, _recipient: PublicKey, _peers: Vec<ForwardNode>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedPath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -145,8 +146,11 @@ pub(super) const MAX_TIMER_TICKS: usize = 2;
 ///
 /// // Create a blinded path to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
-/// let hops = [hop_node_id3, hop_node_id4, your_node_id];
-/// let blinded_path = BlindedPath::new_for_message(&hops, &keys_manager, &secp_ctx).unwrap();
+/// let hops = [
+/// 	ForwardNode { node_id: hop_node_id3, short_channel_id: None },
+/// 	ForwardNode { node_id: hop_node_id4, short_channel_id: None },
+/// ];
+/// let blinded_path = BlindedPath::new_for_message(&hops, your_node_id, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
@@ -337,7 +341,7 @@ pub trait MessageRouter {
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()>;
 }
 
@@ -404,7 +408,7 @@ where
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -417,13 +421,13 @@ where
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
 
-		let mut peer_info = peers.iter()
+		let mut peer_info = peers.into_iter()
 			// Limit to peers with announced channels
-			.filter_map(|pubkey|
+			.filter_map(|peer|
 				network_graph
-					.node(&NodeId::from_pubkey(pubkey))
+					.node(&NodeId::from_pubkey(&peer.node_id))
 					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
-					.map(|info| (*pubkey, info.is_tor_only(), info.channels.len()))
+					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
 			)
 			// Exclude Tor-only nodes when the recipient is announced.
 			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
@@ -435,12 +439,13 @@ where
 		});
 
 		let paths = peer_info.into_iter()
-			.map(|(pubkey, _, _)| vec![pubkey, recipient])
-			.map(|node_pks| BlindedPath::new_for_message(&node_pks, &*self.entropy_source, secp_ctx))
+			.map(|(peer, _, _)| {
+				BlindedPath::new_for_message(&[peer], recipient, &*self.entropy_source, secp_ctx)
+			})
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
 
-		match paths {
+		let mut paths = match paths {
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if is_recipient_announced {
@@ -450,7 +455,12 @@ where
 					Err(())
 				}
 			},
+		}?;
+		for path in &mut paths {
+			path.use_compact_introduction_node(&network_graph);
 		}
+
+		Ok(paths)
 	}
 }
 

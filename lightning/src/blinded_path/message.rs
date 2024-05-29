@@ -1,3 +1,16 @@
+// This file is Copyright its original authors, visible in version control
+// history.
+//
+// This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
+// or http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your option.
+// You may not use this file except in accordance with one or both of these
+// licenses.
+
+//! Data structures and methods for constructing [`BlindedPath`]s to send a message over.
+//!
+//! [`BlindedPath`]: crate::blinded_path::BlindedPath
+
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 #[allow(unused_imports)]
@@ -15,6 +28,17 @@ use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Writeable, Writer}
 
 use core::mem;
 use core::ops::Deref;
+
+/// An intermediate node, and possibly a short channel id leading to the next node.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ForwardNode {
+	/// This node's pubkey.
+	pub node_id: PublicKey,
+	/// The channel between `node_id` and the next hop. If set, the constructed [`BlindedHop`]'s
+	/// `encrypted_payload` will use this instead of the next [`ForwardNode::node_id`] for a more
+	/// compact representation.
+	pub short_channel_id: Option<u64>,
+}
 
 /// TLVs to encode in an intermediate onion message packet's hop data. When provided in a blinded
 /// route, they are encoded into [`BlindedHop::encrypted_payload`].
@@ -60,17 +84,24 @@ impl Writeable for ReceiveTlvs {
 	}
 }
 
-/// Construct blinded onion message hops for the given `unblinded_path`.
+/// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: &[PublicKey], session_priv: &SecretKey
+	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[ForwardNode], recipient_node_id: PublicKey,
+	session_priv: &SecretKey
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
-	let blinded_tlvs = unblinded_path.iter()
+	let pks = intermediate_nodes.iter().map(|node| &node.node_id)
+		.chain(core::iter::once(&recipient_node_id));
+	let tlvs = pks.clone()
 		.skip(1) // The first node's TLVs contains the next node's pubkey
-		.map(|pk| ForwardTlvs { next_hop: NextMessageHop::NodeId(*pk), next_blinding_override: None })
-		.map(|tlvs| ControlTlvs::Forward(tlvs))
+		.zip(intermediate_nodes.iter().map(|node| node.short_channel_id))
+		.map(|(pubkey, scid)| match scid {
+			Some(scid) => NextMessageHop::ShortChannelId(scid),
+			None => NextMessageHop::NodeId(*pubkey),
+		})
+		.map(|next_hop| ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None }))
 		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { path_id: None })));
 
-	utils::construct_blinded_hops(secp_ctx, unblinded_path.iter(), blinded_tlvs, session_priv)
+	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
 }
 
 // Advance the blinded onion message path by one hop, so make the second hop into the new
