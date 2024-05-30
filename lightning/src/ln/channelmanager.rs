@@ -8261,10 +8261,8 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// Uses [`MessageRouter`] to construct a [`BlindedPath`] for the offer based on the given
 	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications. However, if one is not found, uses a one-hop [`BlindedPath`] with
-	/// [`ChannelManager::get_our_node_id`] as the introduction node instead. In the latter case,
-	/// the node must be announced, otherwise, there is no way to find a path to the introduction
-	/// node in order to send the [`InvoiceRequest`].
+	/// privacy implications as well as those of the parameterized [`Router`], which implements
+	/// [`MessageRouter`].
 	///
 	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
 	///
@@ -8329,10 +8327,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// Uses [`MessageRouter`] to construct a [`BlindedPath`] for the refund based on the given
 	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications. However, if one is not found, uses a one-hop [`BlindedPath`] with
-	/// [`ChannelManager::get_our_node_id`] as the introduction node instead. In the latter case,
-	/// the node must be announced, otherwise, there is no way to find a path to the introduction
-	/// node in order to send the [`Bolt12Invoice`].
+	/// privacy implications as well as those of the parameterized [`Router`], which implements
+	/// [`MessageRouter`].
 	///
 	/// Also, uses a derived payer id in the refund for payer privacy.
 	///
@@ -8431,10 +8427,9 @@ where
 	///
 	/// # Privacy
 	///
-	/// Uses a one-hop [`BlindedPath`] for the reply path with [`ChannelManager::get_our_node_id`]
-	/// as the introduction node and a derived payer id for payer privacy. As such, currently, the
-	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
-	/// in order to send the [`Bolt12Invoice`].
+	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
+	/// to construct a [`BlindedPath`] for the reply path. For further privacy implications, see the
+	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
 	///
 	/// # Limitations
 	///

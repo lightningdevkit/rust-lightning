@@ -36,6 +36,11 @@ use core::{cmp, fmt};
 use core::ops::Deref;
 
 /// A [`Router`] implemented using [`find_route`].
+///
+/// # Privacy
+///
+/// Implements [`MessageRouter`] by delegating to [`DefaultMessageRouter`]. See those docs for
+/// privacy implications.
 pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
