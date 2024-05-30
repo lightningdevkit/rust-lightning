@@ -2759,8 +2759,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// our counterparty!)
 	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
-	fn build_holder_transaction_keys(&self, commitment_number: u64) -> TxCreationKeys {
-		let per_commitment_point = self.holder_signer.as_ref().get_per_commitment_point(commitment_number, &self.secp_ctx);
+	fn build_holder_transaction_keys(&self) -> TxCreationKeys {
+		let per_commitment_point = self.holder_commitment_point.current_point();
 		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
@@ -4456,7 +4456,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let funding_script = self.context.get_funding_redeemscript();
 
-		let keys = self.context.build_holder_transaction_keys(self.context.holder_commitment_point.transaction_number());
+		let keys = self.context.build_holder_transaction_keys();
 
 		let commitment_stats = self.context.build_commitment_transaction(self.context.holder_commitment_point.transaction_number(), &keys, true, false, logger);
 		let commitment_txid = {
@@ -5132,7 +5132,7 @@ impl<SP: Deref> Channel<SP> where
 		// Before proposing a feerate update, check that we can actually afford the new fee.
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
 		let htlc_stats = self.context.get_pending_htlc_stats(Some(feerate_per_kw), dust_exposure_limiting_feerate);
-		let keys = self.context.build_holder_transaction_keys(self.context.holder_commitment_point.transaction_number());
+		let keys = self.context.build_holder_transaction_keys();
 		let commitment_stats = self.context.build_commitment_transaction(self.context.holder_commitment_point.transaction_number(), &keys, true, true, logger);
 		let buffer_fee_msat = commit_tx_fee_sat(feerate_per_kw, commitment_stats.num_nondust_htlcs + htlc_stats.on_holder_tx_outbound_holding_cell_htlcs_count as usize + CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize, self.context.get_channel_type()) * 1000;
 		let holder_balance_msat = commitment_stats.local_balance_msat - htlc_stats.outbound_holding_cell_msat;
@@ -5417,7 +5417,10 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	fn get_last_revoke_and_ack(&self) -> msgs::RevokeAndACK {
-		let next_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.holder_commitment_point.transaction_number(), &self.context.secp_ctx);
+		debug_assert!(self.context.holder_commitment_point.transaction_number() <= INITIAL_COMMITMENT_NUMBER + 2);
+		// TODO: handle non-available case when get_per_commitment_point becomes async
+		debug_assert!(self.context.holder_commitment_point.is_available());
+		let next_per_commitment_point = self.context.holder_commitment_point.current_point();
 		let per_commitment_secret = self.context.holder_signer.as_ref().release_commitment_secret(self.context.holder_commitment_point.transaction_number() + 2);
 		msgs::RevokeAndACK {
 			channel_id: self.context.channel_id,
@@ -7615,7 +7618,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.holder_commitment_point.transaction_number(), &self.context.secp_ctx);
+		debug_assert!(self.context.holder_commitment_point.is_available());
+		let first_per_commitment_point = self.context.holder_commitment_point.current_point();
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::OpenChannel {
@@ -7810,7 +7814,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			&self.context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let holder_signer = self.context.build_holder_transaction_keys(self.context.holder_commitment_point.transaction_number());
+		let holder_signer = self.context.build_holder_transaction_keys();
 		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.holder_commitment_point.transaction_number(), &holder_signer, true, false, logger).tx;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
@@ -8013,7 +8017,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
-		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.holder_commitment_point.transaction_number(), &self.context.secp_ctx);
+		debug_assert!(self.context.holder_commitment_point.is_available());
+		let first_per_commitment_point = self.context.holder_commitment_point.current_point();
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::AcceptChannel {
@@ -8055,7 +8060,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	fn check_funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
 		let funding_script = self.context.get_funding_redeemscript();
 
-		let keys = self.context.build_holder_transaction_keys(self.context.holder_commitment_point.transaction_number());
+		let keys = self.context.build_holder_transaction_keys();
 		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.holder_commitment_point.transaction_number(), &keys, true, false, logger).tx;
 		let trusted_tx = initial_commitment_tx.trust();
 		let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
