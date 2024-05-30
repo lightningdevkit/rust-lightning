@@ -965,7 +965,7 @@ const UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS: i32 = 2;
 /// The number of blocks of historical feerate estimates we keep around and consider when deciding
 /// to force-close a channel for having too-low fees. Also the number of blocks we have to see
 /// after startup before we consider force-closing channels for having too-low fees.
-const FEERATE_TRACKING_BLOCKS: usize = 144;
+pub(super) const FEERATE_TRACKING_BLOCKS: usize = 144;
 
 /// Stores a PaymentSecret and any other data we may need to validate an inbound payment is
 /// actually ours and not some duplicate HTLC sent to us by a node along the route.
