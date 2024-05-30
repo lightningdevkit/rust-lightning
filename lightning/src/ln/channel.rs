@@ -5315,12 +5315,7 @@ impl<SP: Deref> Channel<SP> where
 			assert!(!self.context.is_outbound() || self.context.minimum_depth == Some(0),
 				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.context.monitor_pending_channel_ready = false;
-			let next_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.holder_commitment_point.transaction_number(), &self.context.secp_ctx);
-			Some(msgs::ChannelReady {
-				channel_id: self.context.channel_id(),
-				next_per_commitment_point,
-				short_channel_id_alias: Some(self.context.outbound_scid_alias),
-			})
+			Some(self.get_channel_ready())
 		} else { None };
 
 		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block_height, logger);
@@ -5406,7 +5401,7 @@ impl<SP: Deref> Channel<SP> where
 			self.context.get_funding_signed_msg(logger).1
 		} else { None };
 		let channel_ready = if funding_signed.is_some() {
-			self.check_get_channel_ready(0)
+			self.check_get_channel_ready(0, logger)
 		} else { None };
 
 		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed and {} channel_ready",
@@ -5618,13 +5613,8 @@ impl<SP: Deref> Channel<SP> where
 			}
 
 			// We have OurChannelReady set!
-			let next_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.holder_commitment_point.transaction_number(), &self.context.secp_ctx);
 			return Ok(ReestablishResponses {
-				channel_ready: Some(msgs::ChannelReady {
-					channel_id: self.context.channel_id(),
-					next_per_commitment_point,
-					short_channel_id_alias: Some(self.context.outbound_scid_alias),
-				}),
+				channel_ready: Some(self.get_channel_ready()),
 				raa: None, commitment_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
 				shutdown_msg, announcement_sigs,
@@ -5663,12 +5653,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.context.holder_commitment_point.transaction_number() == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
-			let next_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(self.context.holder_commitment_point.transaction_number(), &self.context.secp_ctx);
-			Some(msgs::ChannelReady {
-				channel_id: self.context.channel_id(),
-				next_per_commitment_point,
-				short_channel_id_alias: Some(self.context.outbound_scid_alias),
-			})
+			Some(self.get_channel_ready())
 		} else { None };
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
@@ -6488,7 +6473,9 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_update_status = status;
 	}
 
-	fn check_get_channel_ready(&mut self, height: u32) -> Option<msgs::ChannelReady> {
+	fn check_get_channel_ready<L: Deref>(&mut self, height: u32, logger: &L) -> Option<msgs::ChannelReady>
+		where L::Target: Logger
+	{
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
@@ -6508,6 +6495,8 @@ impl<SP: Deref> Channel<SP> where
 		// If we're still pending the signature on a funding transaction, then we're not ready to send a
 		// channel_ready yet.
 		if self.context.signer_pending_funding {
+			// TODO: set signer_pending_channel_ready
+			log_debug!(logger, "Can't produce channel_ready: the signer is pending funding.");
 			return None;
 		}
 
@@ -6540,22 +6529,35 @@ impl<SP: Deref> Channel<SP> where
 			false
 		};
 
-		if need_commitment_update {
-			if !self.context.channel_state.is_monitor_update_in_progress() {
-				if !self.context.channel_state.is_peer_disconnected() {
-					let next_per_commitment_point =
-						self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &self.context.secp_ctx);
-					return Some(msgs::ChannelReady {
-						channel_id: self.context.channel_id,
-						next_per_commitment_point,
-						short_channel_id_alias: Some(self.context.outbound_scid_alias),
-					});
-				}
-			} else {
-				self.context.monitor_pending_channel_ready = true;
-			}
+		if !need_commitment_update {
+			log_debug!(logger, "Not producing channel_ready: we do not need a commitment update");
+			return None;
 		}
-		None
+
+		if self.context.channel_state.is_monitor_update_in_progress() {
+			log_debug!(logger, "Not producing channel_ready: a monitor update is in progress. Setting monitor_pending_channel_ready.");
+			self.context.monitor_pending_channel_ready = true;
+			return None;
+		}
+
+		if self.context.channel_state.is_peer_disconnected() {
+			log_debug!(logger, "Not producing channel_ready: the peer is disconnected.");
+			return None;
+		}
+
+		// TODO: when get_per_commiment_point becomes async, check if the point is
+		// available, if not, set signer_pending_channel_ready and return None
+
+		Some(self.get_channel_ready())
+	}
+
+	fn get_channel_ready(&self) -> msgs::ChannelReady {
+		debug_assert!(self.context.holder_commitment_point.is_available());
+		msgs::ChannelReady {
+			channel_id: self.context.channel_id(),
+			next_per_commitment_point: self.context.holder_commitment_point.current_point(),
+			short_channel_id_alias: Some(self.context.outbound_scid_alias),
+		}
 	}
 
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
@@ -6622,7 +6624,7 @@ impl<SP: Deref> Channel<SP> where
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
 					// send it immediately instead of waiting for a best_block_updated call (which
 					// may have already happened for this block).
-					if let Some(channel_ready) = self.check_get_channel_ready(height) {
+					if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
 						msgs = (Some(channel_ready), announcement_sigs);
@@ -6688,7 +6690,7 @@ impl<SP: Deref> Channel<SP> where
 
 		self.context.update_time_counter = cmp::max(self.context.update_time_counter, highest_header_time);
 
-		if let Some(channel_ready) = self.check_get_channel_ready(height) {
+		if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
 			let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 			} else { None };
@@ -7873,7 +7875,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			dual_funding_channel_context: None,
 		};
 
-		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 		Ok((channel, channel_monitor))
 	}
@@ -8162,7 +8164,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
 		};
-		let need_channel_ready = channel.check_get_channel_ready(0).is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok((channel, funding_signed, channel_monitor))
@@ -11269,6 +11271,6 @@ mod tests {
 		// Clear the ChannelState::WaitingForBatch only when called by ChannelManager.
 		node_a_chan.set_batch_ready();
 		assert_eq!(node_a_chan.context.channel_state, ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY));
-		assert!(node_a_chan.check_get_channel_ready(0).is_some());
+		assert!(node_a_chan.check_get_channel_ready(0, &&logger).is_some());
 	}
 }
