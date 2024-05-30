@@ -3074,7 +3074,7 @@ where
 			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
 			match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
 				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
-				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id)
+				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id, &*self.logger)
 			{
 				Ok(res) => res,
 				Err(e) => {
