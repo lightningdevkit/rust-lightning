@@ -160,7 +160,9 @@ fn mpp_retry() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 2_000_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], payment_preimage)
+	);
 }
 
 #[test]
@@ -351,7 +353,9 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 			nodes[3].node.timer_tick_occurred();
 		}
 
-		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], payment_preimage)
+		);
 	}
 }
 
@@ -466,7 +470,9 @@ fn test_mpp_keysend() {
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[1], recv_value, payment_hash.clone(),
 		Some(payment_secret), ev.clone(), true, Some(payment_preimage));
-	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, payment_preimage)
+	);
 }
 
 #[test]
@@ -817,7 +823,9 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000, payment_hash, Some(payment_secret), events.pop().unwrap(), true, None);
-	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+	do_claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+	);
 	expect_payment_sent!(nodes[0], payment_preimage, Some(new_route.paths[0].hops[0].fee_msat));
 }
 
@@ -1245,7 +1253,9 @@ fn get_ldk_payment_preimage() {
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	pass_along_path(&nodes[0], &[&nodes[1]], amt_msat, payment_hash, Some(payment_secret), events.pop().unwrap(), true, Some(payment_preimage));
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1]]], false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
+	);
 }
 
 #[test]
@@ -1579,7 +1589,9 @@ fn claimed_send_payment_idempotent() {
 	// Claim the payment backwards, but note that the PaymentSent event is still pending and has
 	// not been seen by the user. At this point, from the user perspective nothing has changed, so
 	// we must remain just as idempotent as we were before.
-	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1]]], false, first_payment_preimage);
+	do_claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], first_payment_preimage)
+	);
 
 	for _ in 0..=IDEMPOTENCY_TIMEOUT_TICKS {
 		nodes[0].node.timer_tick_occurred();
@@ -1980,7 +1992,9 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 
 		let payment_preimage = nodes[2].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
 		expect_payment_claimable!(&nodes[2], payment_hash, payment_secret, amt_msat, Some(payment_preimage), nodes[2].node.get_our_node_id());
-		do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1], &nodes[2])[..]), false, payment_preimage);
+		do_claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+		);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 2);
 		match events[0] {
@@ -2270,7 +2284,9 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], amt_msat, payment_hash, Some(payment_secret), msg_events.pop().unwrap(), true, None);
-		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+		);
 	} else if test == AutoRetry::Spontaneous {
 		nodes[0].node.send_spontaneous_payment_with_retry(Some(payment_preimage),
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params,
@@ -2287,7 +2303,9 @@ fn do_automatic_retries(test: AutoRetry) {
 		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1], &nodes[2]], amt_msat, payment_hash, None, msg_events.pop().unwrap(), true, Some(payment_preimage));
-		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+		);
 	} else if test == AutoRetry::FailAttempts {
 		// Ensure ChannelManager will not retry a payment if it has run out of payment attempts.
 		nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
@@ -3714,11 +3732,17 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	match (known_tlvs, even_tlvs) {
 		(true, _) => {
 			nodes[1].node.claim_funds_with_known_custom_tlvs(our_payment_preimage);
-			let expected_total_fee_msat = pass_claimed_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage));
+			let expected_total_fee_msat = pass_claimed_payment_along_route(
+				ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage)
+					.with_custom_tlvs(custom_tlvs)
+			);
 			expect_payment_sent!(&nodes[0], our_payment_preimage, Some(expected_total_fee_msat));
 		},
 		(false, false) => {
-			claim_payment(&nodes[0], &[&nodes[1]], our_payment_preimage);
+			claim_payment_along_route(
+				ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], our_payment_preimage)
+					.with_custom_tlvs(custom_tlvs)
+			);
 		},
 		(false, true) => {
 			nodes[1].node.claim_funds(our_payment_preimage);
@@ -3805,9 +3829,12 @@ fn test_retry_custom_tlvs() {
 	let path = &[&nodes[1], &nodes[2]];
 	let args = PassAlongPathArgs::new(&nodes[0], path, 1_000_000, payment_hash, events.pop().unwrap())
 		.with_payment_secret(payment_secret)
-		.with_custom_tlvs(custom_tlvs);
+		.with_custom_tlvs(custom_tlvs.clone());
 	do_pass_along_path(args);
-	claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+			.with_custom_tlvs(custom_tlvs)
+	);
 }
 
 #[test]
@@ -3938,8 +3965,10 @@ fn do_test_custom_tlvs_consistency(first_tlvs: Vec<(u64, Vec<u8>)>, second_tlvs:
 			_ => panic!("Unexpected event"),
 		}
 
-		do_claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]],
-			false, our_payment_preimage);
+		do_claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], our_payment_preimage)
+				.with_custom_tlvs(expected_tlvs)
+		);
 		expect_payment_sent(&nodes[0], our_payment_preimage, Some(Some(2000)), true, true);
 	} else {
 		// Expect fail back
@@ -4102,7 +4131,9 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	} else {
 		expect_pending_htlcs_forwardable!(nodes[3]);
 		expect_payment_claimable!(nodes[3], payment_hash, payment_secret, amt_msat);
-		claim_payment_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_preimage);
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], payment_preimage)
+		);
 	}
 }
 

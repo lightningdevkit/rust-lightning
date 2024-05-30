@@ -180,7 +180,9 @@ fn mpp_to_one_hop_blinded_path() {
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[1], amt_msat, payment_hash.clone(),
 		Some(payment_secret), ev.clone(), true, None);
-	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, payment_preimage)
+	);
 }
 
 #[test]
@@ -244,7 +246,9 @@ fn mpp_to_three_hop_blinded_paths() {
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[1], amt_msat, payment_hash.clone(),
 		Some(payment_secret), ev.clone(), true, None);
-	claim_payment_along_route(&nodes[0], expected_route, false, payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, payment_preimage)
+	);
 }
 
 enum ForwardCheckFail {
@@ -643,7 +647,9 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 	expect_pending_htlcs_forwardable!(nodes[2]);
 
 	expect_payment_claimable!(&nodes[2], payment_hash, payment_secret, amt_msat, None, nodes[2].node.get_our_node_id());
-	do_claim_payment_along_route(&nodes[0], &vec!(&vec!(&nodes[1], &nodes[2])[..]), false, payment_preimage);
+	do_claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+	);
 	expect_payment_sent(&nodes[0], payment_preimage, Some(Some(1000)), true, true);
 }
 
@@ -1217,7 +1223,9 @@ fn blinded_keysend() {
 
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[0], amt_msat, payment_hash, Some(payment_secret), ev.clone(), true, Some(keysend_preimage));
-	claim_payment_along_route(&nodes[0], expected_route, false, keysend_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, keysend_preimage)
+	);
 }
 
 #[test]
@@ -1268,7 +1276,9 @@ fn blinded_mpp_keysend() {
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
 	pass_along_path(&nodes[0], expected_route[1], amt_msat, payment_hash.clone(),
 		Some(payment_secret), ev.clone(), true, Some(keysend_preimage));
-	claim_payment_along_route(&nodes[0], expected_route, false, keysend_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, keysend_preimage)
+	);
 }
 
 #[test]
@@ -1316,5 +1326,8 @@ fn custom_tlvs_to_blinded_path() {
 		.with_payment_secret(payment_secret)
 		.with_custom_tlvs(recipient_onion_fields.custom_tlvs.clone());
 	do_pass_along_path(args);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
+			.with_custom_tlvs(recipient_onion_fields.custom_tlvs.clone())
+	);
 }

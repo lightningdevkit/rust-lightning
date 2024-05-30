@@ -2716,18 +2716,12 @@ pub fn send_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, route: Route
 	(our_payment_preimage, our_payment_hash, our_payment_secret, payment_id)
 }
 
-pub fn do_claim_payment_along_route<'a, 'b, 'c>(
-	origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool,
-	our_payment_preimage: PaymentPreimage
-) -> u64 {
-	for path in expected_paths.iter() {
-		assert_eq!(path.last().unwrap().node.get_our_node_id(), expected_paths[0].last().unwrap().node.get_our_node_id());
+pub fn do_claim_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
+	for path in args.expected_paths.iter() {
+		assert_eq!(path.last().unwrap().node.get_our_node_id(), args.expected_paths[0].last().unwrap().node.get_our_node_id());
 	}
-	expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage);
-	pass_claimed_payment_along_route(
-		ClaimAlongRouteArgs::new(origin_node, expected_paths, our_payment_preimage)
-			.skip_last(skip_last)
-	)
+	args.expected_paths[0].last().unwrap().node.claim_funds(args.payment_preimage);
+	pass_claimed_payment_along_route(args)
 }
 
 pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
@@ -2737,6 +2731,7 @@ pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	pub expected_min_htlc_overpay: Vec<u32>,
 	pub skip_last: bool,
 	pub payment_preimage: PaymentPreimage,
+	pub custom_tlvs: Vec<(u64, Vec<u8>)>,
 	// Allow forwarding nodes to have taken 1 msat more fee than expected based on the downstream
 	// fulfill amount.
 	//
@@ -2755,7 +2750,7 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 		Self {
 			origin_node, expected_paths, expected_extra_fees: vec![0; expected_paths.len()],
 			expected_min_htlc_overpay: vec![0; expected_paths.len()], skip_last: false, payment_preimage,
-			allow_1_msat_fee_overpay: false,
+			allow_1_msat_fee_overpay: false, custom_tlvs: vec![],
 		}
 	}
 	pub fn skip_last(mut self, skip_last: bool) -> Self {
@@ -2774,12 +2769,16 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 		self.allow_1_msat_fee_overpay = true;
 		self
 	}
+	pub fn with_custom_tlvs(mut self, custom_tlvs: Vec<(u64, Vec<u8>)>) -> Self {
+		self.custom_tlvs = custom_tlvs;
+		self
+	}
 }
 
-pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArgs) -> u64 {
+pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 	let ClaimAlongRouteArgs {
 		origin_node, expected_paths, expected_extra_fees, expected_min_htlc_overpay, skip_last,
-		payment_preimage: our_payment_preimage, allow_1_msat_fee_overpay,
+		payment_preimage: our_payment_preimage, allow_1_msat_fee_overpay, custom_tlvs,
 	} = args;
 	let claim_event = expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1);
@@ -2793,11 +2792,13 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 				| PaymentPurpose::Bolt12RefundPayment { payment_preimage: Some(preimage), .. },
 			amount_msat,
 			ref htlcs,
+			ref onion_fields,
 			..
 		} => {
 			assert_eq!(preimage, our_payment_preimage);
 			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
+			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, custom_tlvs);
 			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
 			fwd_amt_msat = amount_msat;
 		},
@@ -2808,11 +2809,13 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 			payment_hash,
 			amount_msat,
 			ref htlcs,
+			ref onion_fields,
 			..
 		} => {
 			assert_eq!(&payment_hash.0, &Sha256::hash(&our_payment_preimage.0)[..]);
 			assert_eq!(htlcs.len(), expected_paths.len());  // One per path.
 			assert_eq!(htlcs.iter().map(|h| h.value_msat).sum::<u64>(), amount_msat);
+			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, custom_tlvs);
 			expected_paths.iter().zip(htlcs).for_each(|(path, htlc)| check_claimed_htlc_channel(origin_node, path, htlc));
 			fwd_amt_msat = amount_msat;
 		}
@@ -2956,15 +2959,20 @@ pub fn pass_claimed_payment_along_route<'a, 'b, 'c, 'd>(args: ClaimAlongRouteArg
 
 	expected_total_fee_msat
 }
-pub fn claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_paths: &[&[&Node<'a, 'b, 'c>]], skip_last: bool, our_payment_preimage: PaymentPreimage) {
-	let expected_total_fee_msat = do_claim_payment_along_route(origin_node, expected_paths, skip_last, our_payment_preimage);
+pub fn claim_payment_along_route(args: ClaimAlongRouteArgs) {
+	let origin_node = args.origin_node;
+	let payment_preimage = args.payment_preimage;
+	let skip_last = args.skip_last;
+	let expected_total_fee_msat = do_claim_payment_along_route(args);
 	if !skip_last {
-		expect_payment_sent!(origin_node, our_payment_preimage, Some(expected_total_fee_msat));
+		expect_payment_sent!(origin_node, payment_preimage, Some(expected_total_fee_msat));
 	}
 }
 
 pub fn claim_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], our_payment_preimage: PaymentPreimage) {
-	claim_payment_along_route(origin_node, &[expected_route], false, our_payment_preimage);
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(origin_node, &[expected_route], our_payment_preimage)
+	);
 }
 
 pub const TEST_FINAL_CLTV: u32 = 70;

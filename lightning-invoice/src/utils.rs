@@ -1397,7 +1397,9 @@ mod test {
 		let payment_preimage_opt = if user_generated_pmt_hash { None } else { Some(payment_preimage) };
 		assert_eq!(other_events.borrow().len(), 1);
 		check_payment_claimable(&other_events.borrow()[0], payment_hash, payment_secret, payment_amt, payment_preimage_opt, invoice.recover_payee_pub_key());
-		do_claim_payment_along_route(&nodes[0], &[&vec!(&nodes[fwd_idx])[..]], false, payment_preimage);
+		do_claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[fwd_idx]]], payment_preimage)
+		);
 		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 	}
 

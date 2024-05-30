@@ -681,6 +681,7 @@ struct ClaimingPayment {
 	receiver_node_id: PublicKey,
 	htlcs: Vec<events::ClaimedHTLC>,
 	sender_intended_value: Option<u64>,
+	onion_fields: Option<RecipientOnionFields>,
 }
 impl_writeable_tlv_based!(ClaimingPayment, {
 	(0, amount_msat, required),
@@ -688,6 +689,7 @@ impl_writeable_tlv_based!(ClaimingPayment, {
 	(4, receiver_node_id, required),
 	(5, htlcs, optional_vec),
 	(7, sender_intended_value, option),
+	(9, onion_fields, option),
 });
 
 struct ClaimablePayment {
@@ -6325,19 +6327,27 @@ where
 					}
 				}
 
-				let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
-				let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
-				let dup_purpose = claimable_payments.pending_claiming_payments.insert(payment_hash,
-					ClaimingPayment { amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
-					payment_purpose: payment.purpose, receiver_node_id, htlcs, sender_intended_value
-				});
-				if dup_purpose.is_some() {
-					debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
-					log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
-						&payment_hash);
-				}
+				let claiming_payment = claimable_payments.pending_claiming_payments
+					.entry(payment_hash)
+					.and_modify(|_| {
+						debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
+						log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
+							&payment_hash);
+					})
+					.or_insert_with(|| {
+						let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
+						let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
+						ClaimingPayment {
+							amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
+							payment_purpose: payment.purpose,
+							receiver_node_id,
+							htlcs,
+							sender_intended_value,
+							onion_fields: payment.onion_fields,
+						}
+					});
 
-				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = payment.onion_fields {
+				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = claiming_payment.onion_fields {
 					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
 						log_info!(self.logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
 							&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
@@ -6744,6 +6754,7 @@ where
 						receiver_node_id,
 						htlcs,
 						sender_intended_value: sender_intended_total_msat,
+						onion_fields,
 					}) = payment {
 						self.pending_events.lock().unwrap().push_back((events::Event::PaymentClaimed {
 							payment_hash,
@@ -6752,6 +6763,7 @@ where
 							receiver_node_id: Some(receiver_node_id),
 							htlcs,
 							sender_intended_total_msat,
+							onion_fields,
 						}, None));
 					}
 				},
@@ -12273,6 +12285,7 @@ where
 						amount_msat: claimable_amt_msat,
 						htlcs: payment.htlcs.iter().map(events::ClaimedHTLC::from).collect(),
 						sender_intended_total_msat: payment.htlcs.first().map(|htlc| htlc.total_msat),
+						onion_fields: payment.onion_fields,
 					}, None));
 				}
 			}

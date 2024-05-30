@@ -2896,7 +2896,9 @@ fn test_event_replay_causing_monitor_replay() {
 
 	let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 1_000_000).0;
 
-	do_claim_payment_along_route(&nodes[0], &[&[&nodes[1]]], false, payment_preimage);
+	do_claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
+	);
 
 	// At this point the `PaymentSent` event has not been processed but the full commitment signed
 	// dance has completed.
