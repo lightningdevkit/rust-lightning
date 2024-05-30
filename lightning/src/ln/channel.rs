@@ -1119,6 +1119,75 @@ pub(crate) struct ShutdownResult {
 	pub(crate) channel_funding_txo: Option<OutPoint>,
 }
 
+/// Tracks the transaction number, along with current and next commitment points.
+/// This consolidates the logic to advance our commitment number and request new
+/// commitment points from our signer.
+#[derive(Debug, Copy, Clone)]
+enum HolderCommitmentPoint {
+	// TODO: add a variant for before our first commitment point is retrieved
+	/// We've advanced our commitment number and are waiting on the next commitment point.
+	/// Until the `get_per_commitment_point` signer method becomes async, this variant
+	/// will not be used.
+	PendingNext { transaction_number: u64, current: PublicKey },
+	/// Our current commitment point is ready, we've cached our next point,
+	/// and we are not pending a new one.
+	Available { transaction_number: u64, current: PublicKey, next: PublicKey },
+}
+
+impl HolderCommitmentPoint {
+	pub fn new<SP: Deref>(signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>) -> Self
+		where SP::Target: SignerProvider
+	{
+		HolderCommitmentPoint::Available {
+			transaction_number: INITIAL_COMMITMENT_NUMBER,
+			current: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx),
+			next: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx),
+		}
+	}
+
+	pub fn is_available(&self) -> bool {
+		if let HolderCommitmentPoint::Available { .. } = self { true } else { false }
+	}
+
+	pub fn transaction_number(&self) -> u64 {
+		match self {
+			HolderCommitmentPoint::PendingNext { transaction_number, .. } => *transaction_number,
+			HolderCommitmentPoint::Available { transaction_number, .. } => *transaction_number,
+		}
+	}
+
+	pub fn current_point(&self) -> PublicKey {
+		match self {
+			HolderCommitmentPoint::PendingNext { current, .. } => *current,
+			HolderCommitmentPoint::Available { current, .. } => *current,
+		}
+	}
+
+	pub fn next_point(&self) -> Option<PublicKey> {
+		match self {
+			HolderCommitmentPoint::PendingNext { .. } => None,
+			HolderCommitmentPoint::Available { next, .. } => Some(*next),
+		}
+	}
+
+	pub fn advance<SP: Deref, L: Deref>(&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L)
+		where SP::Target: SignerProvider, L::Target: Logger
+	{
+		if let HolderCommitmentPoint::Available { transaction_number, next, .. } = self {
+			*self = HolderCommitmentPoint::PendingNext {
+				transaction_number: *transaction_number - 1,
+				current: *next,
+			};
+		}
+
+		if let HolderCommitmentPoint::PendingNext { transaction_number, current } = self {
+			let next = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx);
+			log_trace!(logger, "Retrieved next per-commitment point {}", *transaction_number - 1);
+			*self = HolderCommitmentPoint::Available { transaction_number: *transaction_number, current: *current, next };
+		}
+	}
+}
+
 /// If the majority of the channels funds are to the fundee and the initiator holds only just
 /// enough funds to cover their reserve value, channels are at risk of getting "stuck". Because the
 /// initiator controls the feerate, if they then go to increase the channel fee, they may have no
@@ -1297,6 +1366,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// generation start at 0 and count up...this simplifies some parts of implementation at the
 	// cost of others, but should really just be changed.
 
+	holder_commitment_point: HolderCommitmentPoint,
 	cur_holder_commitment_transaction_number: u64,
 	cur_counterparty_commitment_transaction_number: u64,
 	value_to_self_msat: u64, // Excluding all pending_htlcs, fees, and anchor outputs
@@ -1739,6 +1809,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 		let value_to_self_msat = our_funding_satoshis * 1000 + msg_push_msat;
 
+		let holder_signer = ChannelSignerType::Ecdsa(holder_signer);
+		let holder_commitment_point = HolderCommitmentPoint::new(&holder_signer, &secp_ctx);
+
 		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
 
 		let channel_context = ChannelContext {
@@ -1764,10 +1837,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 			latest_monitor_update_id: 0,
 
-			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+			holder_signer,
 			shutdown_scriptpubkey,
 			destination_script,
 
+			holder_commitment_point,
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat,
@@ -1963,6 +2037,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 		let temporary_channel_id = temporary_channel_id.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
+		let holder_signer = ChannelSignerType::Ecdsa(holder_signer);
+		let holder_commitment_point = HolderCommitmentPoint::new(&holder_signer, &secp_ctx);
+
 		Ok(Self {
 			user_id,
 
@@ -1986,10 +2063,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 			latest_monitor_update_id: 0,
 
-			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+			holder_signer,
 			shutdown_scriptpubkey,
 			destination_script,
 
+			holder_commitment_point,
 			cur_holder_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			cur_counterparty_commitment_transaction_number: INITIAL_COMMITMENT_NUMBER,
 			value_to_self_msat,
@@ -8779,6 +8857,10 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			monitor_pending_update_adds = Some(&self.context.monitor_pending_update_adds);
 		}
 
+		// `current_point` will become optional when async signing is implemented.
+		let cur_holder_commitment_point = Some(self.context.holder_commitment_point.current_point());
+		let next_holder_commitment_point = self.context.holder_commitment_point.next_point();
+
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -8815,7 +8897,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(39, pending_outbound_blinding_points, optional_vec),
 			(41, holding_cell_blinding_points, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
-			// 45 and 47 are reserved for async signing
+			(45, cur_holder_commitment_point, option),
+			(47, next_holder_commitment_point, option),
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 		});
 
@@ -9126,6 +9209,9 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut malformed_htlcs: Option<Vec<(u64, u16, [u8; 32])>> = None;
 		let mut monitor_pending_update_adds: Option<Vec<msgs::UpdateAddHTLC>> = None;
 
+		let mut cur_holder_commitment_point_opt: Option<PublicKey> = None;
+		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -9156,7 +9242,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(39, pending_outbound_blinding_points_opt, optional_vec),
 			(41, holding_cell_blinding_points_opt, optional_vec),
 			(43, malformed_htlcs, optional_vec), // Added in 0.0.119
-			// 45 and 47 are reserved for async signing
+			(45, cur_holder_commitment_point_opt, option),
+			(47, next_holder_commitment_point_opt, option),
 			(49, local_initiated_shutdown, option),
 		});
 
@@ -9268,6 +9355,24 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			}
 		}
 
+		// If we're restoring this channel for the first time after an upgrade, then we require that the
+		// signer be available so that we can immediately populate the current commitment point. Channel
+		// restoration will fail if this is not possible.
+		let holder_commitment_point = match (cur_holder_commitment_point_opt, next_holder_commitment_point_opt) {
+			(Some(current), Some(next)) => HolderCommitmentPoint::Available {
+				transaction_number: cur_holder_commitment_transaction_number, current, next
+			},
+			(Some(current), _) => HolderCommitmentPoint::Available {
+				transaction_number: cur_holder_commitment_transaction_number, current,
+				next: holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number - 1, &secp_ctx),
+			},
+			(_, _) => HolderCommitmentPoint::Available {
+				transaction_number: cur_holder_commitment_transaction_number,
+				current: holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number, &secp_ctx),
+				next: holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number - 1, &secp_ctx),
+			},
+		};
+
 		Ok(Channel {
 			context: ChannelContext {
 				user_id,
@@ -9293,6 +9398,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				shutdown_scriptpubkey,
 				destination_script,
 
+				holder_commitment_point,
 				cur_holder_commitment_transaction_number,
 				cur_counterparty_commitment_transaction_number,
 				value_to_self_msat,
