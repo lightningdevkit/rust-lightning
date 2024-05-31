@@ -46,14 +46,16 @@ use crate::util::logger::{Logger, Level, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 use crate::util::persist::KVStore;
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, Script, ScriptBuf};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::block::Block;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::hashes::Hash;
 use bitcoin::sighash::{SighashCache, EcdsaSighashType};
 
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, self};
@@ -68,12 +70,12 @@ use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
-use bitcoin::bech32::u5;
+use bech32::u5;
 use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
-use bitcoin::psbt::PartiallySignedTransaction;
+use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
 
 pub fn pubkey(byte: u8) -> PublicKey {
@@ -410,7 +412,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 #[cfg(test)]
 struct JusticeTxData {
 	justice_tx: Transaction,
-	value: u64,
+	value: Amount,
 	commitment_number: u64,
 }
 
@@ -499,7 +501,7 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer> for 
 			while let Some(JusticeTxData { justice_tx, value, commitment_number }) = channel_state.front() {
 				let input_idx = 0;
 				let commitment_txid = justice_tx.input[input_idx].previous_output.txid;
-				match data.sign_to_local_justice_tx(justice_tx.clone(), input_idx, *value, *commitment_number) {
+				match data.sign_to_local_justice_tx(justice_tx.clone(), input_idx, value.to_sat(), *commitment_number) {
 					Ok(signed_justice_tx) => {
 						let dup = self.watchtower_state.lock().unwrap()
 							.get_mut(&funding_txo).unwrap()
@@ -1170,7 +1172,7 @@ impl NodeSigner for TestNodeSigner {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn sign_invoice(&self, _: &[u8], _: &[bitcoin::bech32::u5], _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
+	fn sign_invoice(&self, _: &[u8], _: &[bech32::u5], _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
 		unreachable!()
 	}
 
@@ -1374,7 +1376,7 @@ impl TestChainSource {
 		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
 		Self {
 			chain_hash: ChainHash::using_genesis_block(network),
-			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut { value: u64::max_value(), script_pubkey }))),
+			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut { value: Amount::MAX, script_pubkey }))),
 			get_utxo_call_count: AtomicUsize::new(0),
 			watched_txn: Mutex::new(new_hash_set()),
 			watched_outputs: Mutex::new(new_hash_set()),
@@ -1505,7 +1507,7 @@ impl TestWalletSource {
 		}
 	}
 
-	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: u64) -> TxOut {
+	pub fn add_utxo(&self, outpoint: bitcoin::OutPoint, value: Amount) -> TxOut {
 		let public_key = bitcoin::PublicKey::new(self.secret_key.public_key(&self.secp));
 		let utxo = Utxo::new_p2pkh(outpoint, value, &public_key.pubkey_hash());
 		self.utxos.borrow_mut().push(utxo.clone());
@@ -1533,15 +1535,15 @@ impl WalletSource for TestWalletSource {
 		Ok(ScriptBuf::new_p2pkh(&public_key.pubkey_hash()))
 	}
 
-	fn sign_psbt(&self, psbt: PartiallySignedTransaction) -> Result<Transaction, ()> {
-		let mut tx = psbt.extract_tx();
+	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
+		let mut tx = psbt.extract_tx_unchecked_fee_rate();
 		let utxos = self.utxos.borrow();
 		for i in 0..tx.input.len() {
 			if let Some(utxo) = utxos.iter().find(|utxo| utxo.outpoint == tx.input[i].previous_output) {
 				let sighash = SighashCache::new(&tx)
 					.legacy_signature_hash(i, &utxo.output.script_pubkey, EcdsaSighashType::All as u32)
 					.map_err(|_| ())?;
-				let sig = self.secp.sign_ecdsa(&(*sighash.as_raw_hash()).into(), &self.secret_key);
+				let sig = self.secp.sign_ecdsa(&secp256k1::Message::from_digest(sighash.to_byte_array()), &self.secret_key);
 				let bitcoin_sig = bitcoin::ecdsa::Signature { sig, hash_ty: EcdsaSighashType::All };
 				tx.input[i].script_sig = Builder::new()
 					.push_slice(&bitcoin_sig.serialize())

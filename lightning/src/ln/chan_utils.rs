@@ -10,17 +10,20 @@
 //! Various utilities for building scripts related to channels. These are
 //! largely of interest for those implementing the traits on [`crate::sign`] by hand.
 
+use bitcoin::{PubkeyHash, WPubkeyHash};
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::script::{Script, ScriptBuf, Builder};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction};
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
-use bitcoin::address::Payload;
+use bitcoin::transaction::Version;
 
 use bitcoin::hashes::{Hash, HashEngine};
+use bitcoin::hashes::hash160::Hash as Hash160;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::ripemd160::Hash as Ripemd160;
-use bitcoin::hash_types::{Txid, PubkeyHash, WPubkeyHash};
+use bitcoin::hash_types::Txid;
 
 use crate::chain::chaininterface::fee_for_weight;
 use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
@@ -31,10 +34,10 @@ use crate::util::ser::{Readable, RequiredWrapper, Writeable, Writer};
 use crate::util::transaction_utils;
 
 use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};
 use bitcoin::{secp256k1, Sequence, Witness};
-use bitcoin::PublicKey as BitcoinPublicKey;
 
 use crate::io;
 use core::cmp;
@@ -186,7 +189,7 @@ pub fn build_commitment_secret(commitment_seed: &[u8; 32], idx: u64) -> [u8; 32]
 }
 
 /// Build a closing transaction
-pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value_sat: u64, to_holder_script: ScriptBuf, to_counterparty_script: ScriptBuf, funding_outpoint: OutPoint) -> Transaction {
+pub fn build_closing_transaction(to_holder_value_sat: Amount, to_counterparty_value_sat: Amount, to_holder_script: ScriptBuf, to_counterparty_script: ScriptBuf, funding_outpoint: OutPoint) -> Transaction {
 	let txins = {
 		let mut ins: Vec<TxIn> = Vec::new();
 		ins.push(TxIn {
@@ -200,14 +203,14 @@ pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value
 
 	let mut txouts: Vec<(TxOut, ())> = Vec::new();
 
-	if to_counterparty_value_sat > 0 {
+	if to_counterparty_value_sat > Amount::ZERO {
 		txouts.push((TxOut {
 			script_pubkey: to_counterparty_script,
 			value: to_counterparty_value_sat
 		}, ()));
 	}
 
-	if to_holder_value_sat > 0 {
+	if to_holder_value_sat > Amount::ZERO {
 		txouts.push((TxOut {
 			script_pubkey: to_holder_script,
 			value: to_holder_value_sat
@@ -222,7 +225,7 @@ pub fn build_closing_transaction(to_holder_value_sat: u64, to_counterparty_value
 	}
 
 	Transaction {
-		version: 2,
+		version: Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: txins,
 		output: outputs,
@@ -515,9 +518,9 @@ pub fn get_revokeable_redeemscript(revocation_key: &RevocationKey, contest_delay
 /// the channel type.
 pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey) -> ScriptBuf {
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		get_to_countersignatory_with_anchors_redeemscript(payment_key).to_v0_p2wsh()
+		get_to_countersignatory_with_anchors_redeemscript(payment_key).to_p2wsh()
 	} else {
-		ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::hash(&payment_key.serialize()))
+		ScriptBuf::new_p2wpkh(&WPubkeyHash::hash(&payment_key.serialize()))
 	}
 }
 
@@ -540,6 +543,15 @@ pub struct HTLCOutputInCommitment {
 	/// below the dust limit (in which case no output appears in the commitment transaction and the
 	/// value is spent to additional transaction fees).
 	pub transaction_output_index: Option<u32>,
+}
+
+impl HTLCOutputInCommitment {
+	/// Converts HTLC's value with millisatoshi precision into [bitcoin::Amount] with satoshi precision.
+	/// Typically this conversion is needed when transitioning from LN into base-layer Bitcoin,
+	/// e. g. in commitment transactions.
+	pub const fn to_bitcoin_amount(&self) -> Amount {
+		Amount::from_sat(self.amount_msat / 1000)
+	}
 }
 
 impl_writeable_tlv_based!(HTLCOutputInCommitment, {
@@ -670,7 +682,7 @@ pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, conte
 	));
 
 	Transaction {
-		version: 2,
+		version: Version::TWO,
 		lock_time: LockTime::from_consensus(if htlc.offered { htlc.cltv_expiry } else { 0 }),
 		input: txins,
 		output: txouts,
@@ -698,14 +710,14 @@ pub(crate) fn build_htlc_output(
 		htlc_success_tx_weight(channel_type_features)
 	};
 	let output_value = if channel_type_features.supports_anchors_zero_fee_htlc_tx() && !channel_type_features.supports_anchors_nonzero_fee_htlc_tx() {
-		htlc.amount_msat / 1000
+		htlc.to_bitcoin_amount()
 	} else {
-		let total_fee = feerate_per_kw as u64 * weight / 1000;
-		htlc.amount_msat / 1000 - total_fee
+		let total_fee = Amount::from_sat(feerate_per_kw as u64 * weight / 1000);
+		htlc.to_bitcoin_amount() - total_fee
 	};
 
 	TxOut {
-		script_pubkey: get_revokeable_redeemscript(revocation_key, contest_delay, broadcaster_delayed_payment_key).to_v0_p2wsh(),
+		script_pubkey: get_revokeable_redeemscript(revocation_key, contest_delay, broadcaster_delayed_payment_key).to_p2wsh(),
 		value: output_value,
 	}
 }
@@ -724,8 +736,8 @@ pub fn build_htlc_input_witness(
 	let mut witness = Witness::new();
 	// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 	witness.push(vec![]);
-	witness.push_bitcoin_signature(&remote_sig.serialize_der(), remote_sighash_type);
-	witness.push_bitcoin_signature(&local_sig.serialize_der(), EcdsaSighashType::All);
+	witness.push_ecdsa_signature(&BitcoinSignature { sig: *remote_sig, hash_ty: remote_sighash_type });
+	witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(*local_sig));
 	if let Some(preimage) = preimage {
 		witness.push(preimage.0.to_vec());
 	} else {
@@ -798,7 +810,7 @@ pub fn get_anchor_redeemscript(funding_pubkey: &PublicKey) -> ScriptBuf {
 
 /// Locates the output with an anchor script paying to `funding_pubkey` within `commitment_tx`.
 pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubkey: &PublicKey) -> Option<(u32, &'a TxOut)> {
-	let anchor_script = chan_utils::get_anchor_redeemscript(funding_pubkey).to_v0_p2wsh();
+	let anchor_script = chan_utils::get_anchor_redeemscript(funding_pubkey).to_p2wsh();
 	commitment_tx.output.iter().enumerate()
 		.find(|(_, txout)| txout.script_pubkey == anchor_script)
 		.map(|(idx, txout)| (idx as u32, txout))
@@ -808,7 +820,7 @@ pub(crate) fn get_anchor_output<'a>(commitment_tx: &'a Transaction, funding_pubk
 pub fn build_anchor_input_witness(funding_key: &PublicKey, funding_sig: &Signature) -> Witness {
 	let anchor_redeem_script = chan_utils::get_anchor_redeemscript(funding_key);
 	let mut ret = Witness::new();
-	ret.push_bitcoin_signature(&funding_sig.serialize_der(), EcdsaSighashType::All);
+	ret.push_ecdsa_signature(&BitcoinSignature::sighash_all(*funding_sig));
 	ret.push(anchor_redeem_script.as_bytes());
 	ret
 }
@@ -1036,7 +1048,7 @@ impl HolderCommitmentTransaction {
 	pub fn dummy(htlcs: &mut Vec<(HTLCOutputInCommitment, ())>) -> Self {
 		let secp_ctx = Secp256k1::new();
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let dummy_sig = sign(&secp_ctx, &secp256k1::Message::from_digest([42; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
 
 		let keys = TxCreationKeys {
 			per_commitment_point: dummy_key.clone(),
@@ -1091,11 +1103,11 @@ impl HolderCommitmentTransaction {
 		tx.input[0].witness.push(Vec::new());
 
 		if self.holder_sig_first {
-			tx.input[0].witness.push_bitcoin_signature(&holder_sig.serialize_der(), EcdsaSighashType::All);
-			tx.input[0].witness.push_bitcoin_signature(&self.counterparty_sig.serialize_der(), EcdsaSighashType::All);
+			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(holder_sig));
+			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
 		} else {
-			tx.input[0].witness.push_bitcoin_signature(&self.counterparty_sig.serialize_der(), EcdsaSighashType::All);
-			tx.input[0].witness.push_bitcoin_signature(&holder_sig.serialize_der(), EcdsaSighashType::All);
+			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
+			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(holder_sig));
 		}
 
 		tx.input[0].witness.push(funding_redeemscript.as_bytes().to_vec());
@@ -1125,7 +1137,7 @@ impl BuiltCommitmentTransaction {
 	///
 	/// This can be used to verify a signature.
 	pub fn get_sighash_all(&self, funding_redeemscript: &Script, channel_value_satoshis: u64) -> Message {
-		let sighash = &sighash::SighashCache::new(&self.transaction).segwit_signature_hash(0, funding_redeemscript, channel_value_satoshis, EcdsaSighashType::All).unwrap()[..];
+		let sighash = &sighash::SighashCache::new(&self.transaction).p2wsh_signature_hash(0, funding_redeemscript, Amount::from_sat(channel_value_satoshis), EcdsaSighashType::All).unwrap()[..];
 		hash_to_message!(sighash)
 	}
 
@@ -1152,8 +1164,8 @@ impl BuiltCommitmentTransaction {
 /// secret key.
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct ClosingTransaction {
-	to_holder_value_sat: u64,
-	to_counterparty_value_sat: u64,
+	to_holder_value_sat: Amount,
+	to_counterparty_value_sat: Amount,
 	to_holder_script: ScriptBuf,
 	to_counterparty_script: ScriptBuf,
 	built: Transaction,
@@ -1168,6 +1180,8 @@ impl ClosingTransaction {
 		to_counterparty_script: ScriptBuf,
 		funding_outpoint: OutPoint,
 	) -> Self {
+		let to_holder_value_sat = Amount::from_sat(to_holder_value_sat);
+		let to_counterparty_value_sat = Amount::from_sat(to_counterparty_value_sat);
 		let built = build_closing_transaction(
 			to_holder_value_sat, to_counterparty_value_sat,
 			to_holder_script.clone(), to_counterparty_script.clone(),
@@ -1212,12 +1226,12 @@ impl ClosingTransaction {
 
 	/// The value to be sent to the holder, or zero if the output will be omitted
 	pub fn to_holder_value_sat(&self) -> u64 {
-		self.to_holder_value_sat
+		self.to_holder_value_sat.to_sat()
 	}
 
 	/// The value to be sent to the counterparty, or zero if the output will be omitted
 	pub fn to_counterparty_value_sat(&self) -> u64 {
-		self.to_counterparty_value_sat
+		self.to_counterparty_value_sat.to_sat()
 	}
 
 	/// The destination of the holder's output
@@ -1257,7 +1271,7 @@ impl<'a> TrustedClosingTransaction<'a> {
 	///
 	/// This can be used to verify a signature.
 	pub fn get_sighash_all(&self, funding_redeemscript: &Script, channel_value_satoshis: u64) -> Message {
-		let sighash = &sighash::SighashCache::new(&self.inner.built).segwit_signature_hash(0, funding_redeemscript, channel_value_satoshis, EcdsaSighashType::All).unwrap()[..];
+		let sighash = &sighash::SighashCache::new(&self.inner.built).p2wsh_signature_hash(0, funding_redeemscript, Amount::from_sat(channel_value_satoshis), EcdsaSighashType::All).unwrap()[..];
 		hash_to_message!(sighash)
 	}
 
@@ -1278,8 +1292,8 @@ impl<'a> TrustedClosingTransaction<'a> {
 #[derive(Clone, Debug)]
 pub struct CommitmentTransaction {
 	commitment_number: u64,
-	to_broadcaster_value_sat: u64,
-	to_countersignatory_value_sat: u64,
+	to_broadcaster_value_sat: Amount,
+	to_countersignatory_value_sat: Amount,
 	to_broadcaster_delay: Option<u16>, // Added in 0.0.117
 	feerate_per_kw: u32,
 	htlcs: Vec<HTLCOutputInCommitment>,
@@ -1373,6 +1387,9 @@ impl CommitmentTransaction {
 	///
 	/// This is not exported to bindings users due to the generic though we likely should expose a version without
 	pub fn new_with_auxiliary_htlc_data<T>(commitment_number: u64, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, broadcaster_funding_key: PublicKey, countersignatory_funding_key: PublicKey, keys: TxCreationKeys, feerate_per_kw: u32, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters) -> CommitmentTransaction {
+		let to_broadcaster_value_sat = Amount::from_sat(to_broadcaster_value_sat);
+		let to_countersignatory_value_sat = Amount::from_sat(to_countersignatory_value_sat);
+
 		// Sort outputs and populate output indices while keeping track of the auxiliary data
 		let (outputs, htlcs) = Self::internal_build_outputs(&keys, to_broadcaster_value_sat, to_countersignatory_value_sat, htlcs_with_aux, channel_parameters, &broadcaster_funding_key, &countersignatory_funding_key).unwrap();
 
@@ -1420,7 +1437,7 @@ impl CommitmentTransaction {
 
 	fn make_transaction(obscured_commitment_transaction_number: u64, txins: Vec<TxIn>, outputs: Vec<TxOut>) -> Transaction {
 		Transaction {
-			version: 2,
+			version: Version::TWO,
 			lock_time: LockTime::from_consensus(((0x20 as u32) << 8 * 3) | ((obscured_commitment_transaction_number & 0xffffffu64) as u32)),
 			input: txins,
 			output: outputs,
@@ -1431,17 +1448,17 @@ impl CommitmentTransaction {
 	// - initial sorting of outputs / HTLCs in the constructor, in which case T is auxiliary data the
 	//   caller needs to have sorted together with the HTLCs so it can keep track of the output index
 	// - building of a bitcoin transaction during a verify() call, in which case T is just ()
-	fn internal_build_outputs<T>(keys: &TxCreationKeys, to_broadcaster_value_sat: u64, to_countersignatory_value_sat: u64, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters, broadcaster_funding_key: &PublicKey, countersignatory_funding_key: &PublicKey) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
+	fn internal_build_outputs<T>(keys: &TxCreationKeys, to_broadcaster_value_sat: Amount, to_countersignatory_value_sat: Amount, htlcs_with_aux: &mut Vec<(HTLCOutputInCommitment, T)>, channel_parameters: &DirectedChannelTransactionParameters, broadcaster_funding_key: &PublicKey, countersignatory_funding_key: &PublicKey) -> Result<(Vec<TxOut>, Vec<HTLCOutputInCommitment>), ()> {
 		let countersignatory_pubkeys = channel_parameters.countersignatory_pubkeys();
 		let contest_delay = channel_parameters.contest_delay();
 
 		let mut txouts: Vec<(TxOut, Option<&mut HTLCOutputInCommitment>)> = Vec::new();
 
-		if to_countersignatory_value_sat > 0 {
+		if to_countersignatory_value_sat > Amount::ZERO {
 			let script = if channel_parameters.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-			    get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_point).to_v0_p2wsh()
+				get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_point).to_p2wsh()
 			} else {
-			    Payload::p2wpkh(&BitcoinPublicKey::new(countersignatory_pubkeys.payment_point)).unwrap().script_pubkey()
+				ScriptBuf::new_p2wpkh(&Hash160::hash(&countersignatory_pubkeys.payment_point.serialize()).into())
 			};
 			txouts.push((
 				TxOut {
@@ -1452,7 +1469,7 @@ impl CommitmentTransaction {
 			))
 		}
 
-		if to_broadcaster_value_sat > 0 {
+		if to_broadcaster_value_sat > Amount::ZERO {
 			let redeem_script = get_revokeable_redeemscript(
 				&keys.revocation_key,
 				contest_delay,
@@ -1460,7 +1477,7 @@ impl CommitmentTransaction {
 			);
 			txouts.push((
 				TxOut {
-					script_pubkey: redeem_script.to_v0_p2wsh(),
+					script_pubkey: redeem_script.to_p2wsh(),
 					value: to_broadcaster_value_sat,
 				},
 				None,
@@ -1468,23 +1485,23 @@ impl CommitmentTransaction {
 		}
 
 		if channel_parameters.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-			if to_broadcaster_value_sat > 0 || !htlcs_with_aux.is_empty() {
+			if to_broadcaster_value_sat > Amount::ZERO || !htlcs_with_aux.is_empty() {
 				let anchor_script = get_anchor_redeemscript(broadcaster_funding_key);
 				txouts.push((
 					TxOut {
-						script_pubkey: anchor_script.to_v0_p2wsh(),
-						value: ANCHOR_OUTPUT_VALUE_SATOSHI,
+						script_pubkey: anchor_script.to_p2wsh(),
+						value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
 					},
 					None,
 				));
 			}
 
-			if to_countersignatory_value_sat > 0 || !htlcs_with_aux.is_empty() {
+			if to_countersignatory_value_sat > Amount::ZERO || !htlcs_with_aux.is_empty() {
 				let anchor_script = get_anchor_redeemscript(countersignatory_funding_key);
 				txouts.push((
 					TxOut {
-						script_pubkey: anchor_script.to_v0_p2wsh(),
-						value: ANCHOR_OUTPUT_VALUE_SATOSHI,
+						script_pubkey: anchor_script.to_p2wsh(),
+						value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
 					},
 					None,
 				));
@@ -1495,8 +1512,8 @@ impl CommitmentTransaction {
 		for (htlc, _) in htlcs_with_aux {
 			let script = chan_utils::get_htlc_redeemscript(&htlc, &channel_parameters.channel_type_features(), &keys);
 			let txout = TxOut {
-				script_pubkey: script.to_v0_p2wsh(),
-				value: htlc.amount_msat / 1000,
+				script_pubkey: script.to_p2wsh(),
+				value: htlc.to_bitcoin_amount(),
 			};
 			txouts.push((txout, Some(htlc)));
 		}
@@ -1566,12 +1583,12 @@ impl CommitmentTransaction {
 
 	/// The value to be sent to the broadcaster
 	pub fn to_broadcaster_value_sat(&self) -> u64 {
-		self.to_broadcaster_value_sat
+		self.to_broadcaster_value_sat.to_sat()
 	}
 
 	/// The value to be sent to the counterparty
 	pub fn to_countersignatory_value_sat(&self) -> u64 {
-		self.to_countersignatory_value_sat
+		self.to_countersignatory_value_sat.to_sat()
 	}
 
 	/// The feerate paid per 1000-weight-unit in this commitment transaction.
@@ -1679,7 +1696,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 
 			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &self.channel_type_features, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
-			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).segwit_signature_hash(0, &htlc_redeemscript, this_htlc.amount_msat / 1000, EcdsaSighashType::All).unwrap()[..]);
+			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, this_htlc.to_bitcoin_amount(), EcdsaSighashType::All).unwrap()[..]);
 			ret.push(sign_with_aux_rand(secp_ctx, &sighash, &holder_htlc_key, entropy_source));
 		}
 		Ok(ret)
@@ -1736,7 +1753,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 			self.to_broadcaster_delay?,
 			&self.keys.broadcaster_delayed_payment_key,
 		);
-		let revokeable_p2wsh = revokeable_redeemscript.to_v0_p2wsh();
+		let revokeable_p2wsh = revokeable_redeemscript.to_p2wsh();
 		let outputs = &self.inner.built.transaction.output;
 		outputs.iter().enumerate()
 			.find(|(_, out)| out.script_pubkey == revokeable_p2wsh)
@@ -1772,13 +1789,13 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 			value,
 		}];
 		let mut justice_tx = Transaction {
-			version: 2,
+			version: Version::TWO,
 			lock_time: LockTime::ZERO,
 			input,
 			output,
 		};
 		let weight = justice_tx.weight().to_wu() + WEIGHT_REVOKED_OUTPUT;
-		let fee = fee_for_weight(feerate_per_kw as u32, weight);
+		let fee = Amount::from_sat(fee_for_weight(feerate_per_kw as u32, weight));
 		justice_tx.output[0].value = value.checked_sub(fee).ok_or(())?;
 		Ok(justice_tx)
 	}
@@ -1906,7 +1923,7 @@ mod tests {
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let tx = builder.build(1000, 2000);
 		assert_eq!(tx.built.transaction.output.len(), 4);
-		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersignatory_with_anchors_redeemscript(&builder.counterparty_pubkeys.payment_point).to_v0_p2wsh());
+		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersignatory_with_anchors_redeemscript(&builder.counterparty_pubkeys.payment_point).to_p2wsh());
 
 		// Generate broadcaster output and anchor
 		let tx = builder.build(3000, 0);
@@ -1938,11 +1955,11 @@ mod tests {
 		let tx = builder.build(3000, 0);
 		let keys = &builder.keys.clone();
 		assert_eq!(tx.built.transaction.output.len(), 3);
-		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh());
-		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh());
-		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh().to_hex_string(),
+		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
+		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh().to_hex_string(),
 				   "0020e43a7c068553003fe68fcae424fb7b28ec5ce48cd8b6744b3945631389bad2fb");
-		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_v0_p2wsh().to_hex_string(),
+		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh().to_hex_string(),
 				   "0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d");
 
 		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
@@ -1950,11 +1967,11 @@ mod tests {
 		builder.htlcs_with_aux = vec![(received_htlc.clone(), ()), (offered_htlc.clone(), ())];
 		let tx = builder.build(3000, 0);
 		assert_eq!(tx.built.transaction.output.len(), 5);
-		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh());
-		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh());
-		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh().to_hex_string(),
+		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
+		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
 				   "0020b70d0649c72b38756885c7a30908d912a7898dd5d79457a7280b8e9a20f3f2bc");
-		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_v0_p2wsh().to_hex_string(),
+		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
 				   "002087a3faeb1950a469c0e2db4a79b093a41b9526e5a6fc6ef5cb949bde3be379c7");
 	}
 
@@ -2000,7 +2017,7 @@ mod tests {
 			.unwrap()[..]).unwrap();
 		let pubkey_hash = BitcoinPublicKey::new(
 			PublicKey::from_secret_key(&Secp256k1::new(), &secret_key)).wpubkey_hash().unwrap();
-		let destination_script = ScriptBuf::new_v0_p2wpkh(&pubkey_hash);
+		let destination_script = ScriptBuf::new_p2wpkh(&pubkey_hash);
 
 		let justice_tx = tx.trust().build_to_local_justice_tx(253, destination_script.clone()).unwrap();
 		assert_eq!(justice_tx.input.len(), 1);
@@ -2009,7 +2026,7 @@ mod tests {
 		assert!(justice_tx.input[0].sequence.is_rbf());
 
 		assert_eq!(justice_tx.output.len(), 1);
-		assert!(justice_tx.output[0].value < 1000);
+		assert!(justice_tx.output[0].value.to_sat() < 1000);
 		assert_eq!(justice_tx.output[0].script_pubkey, destination_script);
 	}
 

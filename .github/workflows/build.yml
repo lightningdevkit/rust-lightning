@@ -192,7 +192,7 @@ jobs:
         run: |
           cd fuzz && cargo update -p regex --precise "1.9.6" --verbose && cd ..
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
-        run: cd fuzz && RUSTFLAGS="--cfg=fuzzing" cargo test --verbose --color always
+        run: cd fuzz && RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" cargo test --verbose --color always
       - name: Run fuzzers
         run: cd fuzz && ./ci-fuzz.sh && cd ..
 

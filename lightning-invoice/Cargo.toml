@@ -20,11 +20,11 @@ no-std = ["lightning/no-std"]
 std = ["bitcoin/std", "lightning/std", "bech32/std"]
 
 [dependencies]
-bech32 = { version = "0.9.0", default-features = false }
+bech32 = { version = "0.9.1", default-features = false }
 lightning = { version = "0.0.123-beta", path = "../lightning", default-features = false }
-secp256k1 = { version = "0.27.0", default-features = false, features = ["recovery", "alloc"] }
+secp256k1 = { version = "0.28.0", default-features = false, features = ["recovery", "alloc"] }
 serde = { version = "1.0.118", optional = true }
-bitcoin = { version = "0.30.2", default-features = false }
+bitcoin = { version = "0.31.2", default-features = false }
 
 [dev-dependencies]
 lightning = { version = "0.0.123-beta", path = "../lightning", default-features = false, features = ["_test_utils"] }

@@ -6,7 +6,7 @@ use crate::poll::{ChainPoller, Validate, ValidatedBlockHeader};
 
 use bitcoin::blockdata::block::Header;
 use bitcoin::hash_types::BlockHash;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 
 use lightning::chain;
 
@@ -38,7 +38,7 @@ BlockSourceResult<ValidatedBlockHeader> where B::Target: BlockSource {
 ///
 /// ```
 /// use bitcoin::hash_types::BlockHash;
-/// use bitcoin::network::constants::Network;
+/// use bitcoin::network::Network;
 ///
 /// use lightning::chain;
 /// use lightning::chain::Watch;

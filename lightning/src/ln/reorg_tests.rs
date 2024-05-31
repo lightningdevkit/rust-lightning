@@ -200,7 +200,7 @@ fn test_counterparty_revoked_reorg() {
 	let mut unrevoked_local_txn = get_local_commitment_txn!(nodes[0], chan.2);
 	assert_eq!(unrevoked_local_txn.len(), 3); // commitment + 2 HTLC txn
 	// Sort the unrevoked transactions in reverse order, ie commitment tx, then HTLC 1 then HTLC 3
-	unrevoked_local_txn.sort_unstable_by_key(|tx| 1_000_000 - tx.output.iter().map(|outp| outp.value).sum::<u64>());
+	unrevoked_local_txn.sort_unstable_by_key(|tx| 1_000_000 - tx.output.iter().map(|outp| outp.value.to_sat()).sum::<u64>());
 
 	// Now mine A's old commitment transaction, which should close the channel, but take no action
 	// on any of the HTLCs, at least until we get six confirmations (which we won't get).

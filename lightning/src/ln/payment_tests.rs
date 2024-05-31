@@ -34,7 +34,7 @@ use crate::util::string::UntrustedString;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
 use crate::prelude::*;

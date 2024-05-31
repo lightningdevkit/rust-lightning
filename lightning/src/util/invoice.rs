@@ -1,6 +1,6 @@
 //! Low level invoice utilities.
 
-use bitcoin::bech32::{u5, FromBase32};
+use bech32::{u5, FromBase32};
 
 #[allow(unused)]
 use crate::prelude::*;

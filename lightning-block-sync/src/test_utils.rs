@@ -5,8 +5,9 @@ use bitcoin::blockdata::block::{Block, Header, Version};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use bitcoin::Transaction;
+use bitcoin::transaction;
 
 use lightning::chain;
 
@@ -44,7 +45,7 @@ impl Blockchain {
 			// Note that elsewhere in tests we assume that the merkle root of an empty block is all zeros,
 			// but that's OK because those tests don't trigger the check.
 			let coinbase = Transaction {
-				version: 0,
+				version: transaction::Version(0),
 				lock_time: LockTime::ZERO,
 				input: vec![],
 				output: vec![]

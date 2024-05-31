@@ -4,8 +4,7 @@ extern crate lightning_invoice;
 extern crate secp256k1;
 extern crate hex;
 
-use bitcoin::address::WitnessVersion;
-use bitcoin::{PubkeyHash, ScriptHash};
+use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::hashes::{sha256, Hash};
 use lightning_invoice::*;

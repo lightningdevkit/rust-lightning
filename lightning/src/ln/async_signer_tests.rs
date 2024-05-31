@@ -12,6 +12,7 @@
 
 use bitcoin::{Transaction, TxOut, TxIn, Amount};
 use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::transaction::Version;
 
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::events::bump_transaction::WalletSource;
@@ -344,12 +345,12 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 
 	let closing_node = if remote_commitment { &nodes[1] } else { &nodes[0] };
 	let coinbase_tx = Transaction {
-		version: 2,
+		version: Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: vec![TxIn { ..Default::default() }],
 		output: vec![
 			TxOut {
-				value: Amount::ONE_BTC.to_sat(),
+				value: Amount::ONE_BTC,
 				script_pubkey: closing_node.wallet_source.get_change_script().unwrap(),
 			},
 		],

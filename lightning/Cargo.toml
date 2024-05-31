@@ -32,7 +32,7 @@ unsafe_revoked_tx_signing = []
 _test_vectors = []
 
 no-std = ["hashbrown", "possiblyrandom", "bitcoin/no-std", "core2/alloc", "libm"]
-std = ["bitcoin/std"]
+std = ["bitcoin/std", "bech32/std"]
 
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
 grind_signatures = []
@@ -40,7 +40,8 @@ grind_signatures = []
 default = ["std", "grind_signatures"]
 
 [dependencies]
-bitcoin = { version = "0.30.2", default-features = false, features = ["secp-recovery"] }
+bech32 = { version = "0.9.1", default-features = false }
+bitcoin = { version = "0.31.2", default-features = false, features = ["secp-recovery"] }
 
 hashbrown = { version = "0.13", optional = true, default-features = false }
 possiblyrandom = { version = "0.2", optional = true, default-features = false }
@@ -55,7 +56,7 @@ libm = { version = "0.2", optional = true, default-features = false }
 regex = "1.5.6"
 
 [dev-dependencies.bitcoin]
-version = "0.30.2"
+version = "0.31.2"
 default-features = false
 features = ["bitcoinconsensus", "secp-recovery"]
 
@@ -63,4 +64,4 @@ features = ["bitcoinconsensus", "secp-recovery"]
 criterion = { version = "0.4", optional = true, default-features = false }
 
 [target.'cfg(taproot)'.dependencies]
-musig2 = { git = "https://github.com/arik-so/rust-musig2", rev = "cff11e3" }
+musig2 = { git = "https://github.com/arik-so/rust-musig2", rev = "739533fc" }

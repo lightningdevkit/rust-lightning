@@ -3,7 +3,7 @@
 use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSourceResult};
 
 use bitcoin::hash_types::BlockHash;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use lightning::chain::BestBlock;
 
 use std::ops::Deref;

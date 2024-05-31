@@ -1,7 +1,7 @@
-use bitcoin::hashes::hex::FromHex;
+use bitcoin::hashes::hex::{FromHex, HexToArrayError};
 use bitcoin::pow::Work;
 
-pub fn hex_to_work(hex: &str) -> Result<Work, bitcoin::hashes::hex::Error> {
+pub fn hex_to_work(hex: &str) -> Result<Work, HexToArrayError> {
 	let bytes = <[u8; 32]>::from_hex(hex)?;
 	Ok(Work::from_be_bytes(bytes))
 }
@@ -9,6 +9,7 @@ pub fn hex_to_work(hex: &str) -> Result<Work, bitcoin::hashes::hex::Error> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use bitcoin::hashes::hex::HexToBytesError;
 	use bitcoin::pow::Work;
 
 	#[test]
@@ -19,25 +20,25 @@ mod tests {
 	#[test]
 	fn hex_to_work_too_short_str() {
 		let hex = String::from_utf8(vec![b'0'; 32]).unwrap();
-		assert_eq!(hex_to_work(&hex), Err(bitcoin::hashes::hex::Error::InvalidLength(64, 32)));
+		assert_eq!(hex_to_work(&hex), Err(HexToArrayError::InvalidLength(32, 64)));
 	}
 
 	#[test]
 	fn hex_to_work_too_long_str() {
 		let hex = String::from_utf8(vec![b'0'; 128]).unwrap();
-		assert_eq!(hex_to_work(&hex), Err(bitcoin::hashes::hex::Error::InvalidLength(64, 128)));
+		assert_eq!(hex_to_work(&hex), Err(HexToArrayError::InvalidLength(128, 64)));
 	}
 
 	#[test]
 	fn hex_to_work_odd_length_str() {
 		let hex = String::from_utf8(vec![b'0'; 65]).unwrap();
-		assert_eq!(hex_to_work(&hex), Err(bitcoin::hashes::hex::Error::OddLengthString(65)));
+		assert_eq!(hex_to_work(&hex), Err(HexToArrayError::Conversion(HexToBytesError::OddLengthString(65))));
 	}
 
 	#[test]
 	fn hex_to_work_invalid_char() {
 		let hex = String::from_utf8(vec![b'G'; 64]).unwrap();
-		assert_eq!(hex_to_work(&hex), Err(bitcoin::hashes::hex::Error::InvalidChar(b'G')));
+		assert_eq!(hex_to_work(&hex), Err(HexToArrayError::Conversion(HexToBytesError::InvalidChar(b'G'))));
 	}
 
 	#[test]

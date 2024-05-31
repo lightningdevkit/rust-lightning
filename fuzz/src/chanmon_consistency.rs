@@ -18,17 +18,20 @@
 //! send-side handling is correct, other peers. We consider it a failure if any action results in a
 //! channel being force-closed.
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
+use bitcoin::transaction::Version;
 
+use bitcoin::WPubkeyHash;
 use bitcoin::hashes::Hash as TraitImport;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hash_types::{BlockHash, WPubkeyHash};
+use bitcoin::hash_types::BlockHash;
 
 use lightning::blinded_path::BlindedPath;
 use lightning::blinded_path::message::ForwardNode;
@@ -71,7 +74,7 @@ use std::cmp::{self, Ordering};
 use std::sync::{Arc,Mutex};
 use std::sync::atomic;
 use std::io::Cursor;
-use bitcoin::bech32::u5;
+use bech32::u5;
 
 const MAX_FEE: u32 = 10_000;
 struct FuzzEstimator {
@@ -245,7 +248,7 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn sign_gossip_message(&self, msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
-		let msg_hash = Message::from_slice(&Sha256dHash::hash(&msg.encode()[..])[..]).map_err(|_| ())?;
+		let msg_hash = Message::from_digest(Sha256dHash::hash(&msg.encode()[..]).to_byte_array());
 		let secp_ctx = Secp256k1::signing_only();
 		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
 	}
@@ -589,8 +592,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				let events = $source.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
 				if let events::Event::FundingGenerationReady { ref temporary_channel_id, ref channel_value_satoshis, ref output_script, .. } = events[0] {
-					let tx = Transaction { version: $chan_id, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-						value: *channel_value_satoshis, script_pubkey: output_script.clone(),
+					let tx = Transaction { version: Version($chan_id), lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+						value: Amount::from_sat(*channel_value_satoshis), script_pubkey: output_script.clone(),
 					}]};
 					funding_output = OutPoint { txid: tx.txid(), index: 0 };
 					$source.funding_transaction_generated(&temporary_channel_id, &$dest.get_our_node_id(), tx.clone()).unwrap();

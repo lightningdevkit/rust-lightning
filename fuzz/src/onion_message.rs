@@ -1,5 +1,5 @@
 // Imports that need to be added manually
-use bitcoin::bech32::u5;
+use bech32::u5;
 use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, self};
 use bitcoin::secp256k1::ecdh::SharedSecret;

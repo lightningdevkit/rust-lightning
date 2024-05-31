@@ -28,8 +28,8 @@
 //! use core::convert::TryFrom;
 //! use core::time::Duration;
 //!
-//! use bitcoin::network::constants::Network;
-//! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+//! use bitcoin::network::Network;
+//! use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 //! use lightning::offers::parse::Bolt12ParseError;
 //! use lightning::offers::refund::{Refund, RefundBuilder};
 //! use lightning::util::ser::{Readable, Writeable};
@@ -44,7 +44,7 @@
 //! # #[cfg(feature = "std")]
 //! # fn build() -> Result<(), Bolt12ParseError> {
 //! let secp_ctx = Secp256k1::new();
-//! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+//! let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 //! let pubkey = PublicKey::from(keys);
 //!
 //! let expiration = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
@@ -83,7 +83,7 @@
 //! [`ChannelManager::create_refund_builder`]: crate::ln::channelmanager::ChannelManager::create_refund_builder
 
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 use core::hash::{Hash, Hasher};
 use core::ops::Deref;
@@ -920,8 +920,8 @@ mod tests {
 	};
 
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey};
+	use bitcoin::network::Network;
+	use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey};
 
 	use core::time::Duration;
 
@@ -1506,7 +1506,7 @@ mod tests {
 	#[test]
 	fn fails_parsing_refund_with_extra_tlv_records() {
 		let secp_ctx = Secp256k1::new();
-		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let refund = RefundBuilder::new(vec![1; 32], keys.public_key(), 1000).unwrap()
 			.build().unwrap();
 

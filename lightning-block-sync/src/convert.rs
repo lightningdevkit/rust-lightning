@@ -277,7 +277,7 @@ pub(crate) mod tests {
 	use super::*;
 	use bitcoin::blockdata::constants::genesis_block;
 	use bitcoin::hashes::Hash;
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 	use hex::DisplayHex;
 	use serde_json::value::Number;
 	use serde_json::Value;

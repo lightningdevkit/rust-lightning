@@ -21,7 +21,7 @@
 //! extern crate lightning;
 //!
 //! use bitcoin::hashes::Hash;
-//! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+//! use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 //! use core::convert::TryFrom;
 //! use lightning::offers::invoice::UnsignedBolt12Invoice;
 //! use lightning::offers::invoice_request::InvoiceRequest;
@@ -39,7 +39,7 @@
 //! let payment_paths = create_payment_paths();
 //! let payment_hash = create_payment_hash();
 //! let secp_ctx = Secp256k1::new();
-//! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
+//! let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
 //! let pubkey = PublicKey::from(keys);
 //! let wpubkey_hash = bitcoin::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
 //! let mut buffer = Vec::new();
@@ -71,7 +71,7 @@
 //! # let payment_paths = create_payment_paths();
 //! # let payment_hash = create_payment_hash();
 //! # let secp_ctx = Secp256k1::new();
-//! # let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
+//! # let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
 //! # let pubkey = PublicKey::from(keys);
 //! # let wpubkey_hash = bitcoin::key::PublicKey::new(pubkey).wpubkey_hash().unwrap();
 //! # let mut buffer = Vec::new();
@@ -102,12 +102,11 @@
 //!
 //! ```
 
+use bitcoin::{WitnessProgram, Network, WitnessVersion, WPubkeyHash, WScriptHash};
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::hash_types::{WPubkeyHash, WScriptHash};
-use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
+use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::address::{Address, Payload, WitnessProgram, WitnessVersion};
+use bitcoin::address::{Address, Payload};
 use bitcoin::key::TweakedPublicKey;
 use core::time::Duration;
 use core::hash::{Hash, Hasher};
@@ -201,7 +200,7 @@ pub struct ExplicitSigningPubkey {}
 /// [`Bolt12Invoice::signing_pubkey`] was derived.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub struct DerivedSigningPubkey(KeyPair);
+pub struct DerivedSigningPubkey(Keypair);
 
 impl SigningPubkeyStrategy for ExplicitSigningPubkey {}
 impl SigningPubkeyStrategy for DerivedSigningPubkey {}
@@ -268,7 +267,7 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_offer_using_keys(
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
-		created_at: Duration, payment_hash: PaymentHash, keys: KeyPair
+		created_at: Duration, payment_hash: PaymentHash, keys: Keypair
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = Self::amount_msats(invoice_request)?;
 		let signing_pubkey = keys.public_key();
@@ -285,7 +284,7 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_refund_using_keys(
 		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
-		payment_hash: PaymentHash, keys: KeyPair,
+		payment_hash: PaymentHash, keys: Keypair,
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = refund.amount_msats();
 		let signing_pubkey = keys.public_key();
@@ -1094,8 +1093,8 @@ impl InvoiceContents {
 				Err(_) => return None,
 			};
 
-			let program = &address.program;
-			let witness_program = match WitnessProgram::new(version, program.clone()) {
+			let program = address.program.clone();
+			let witness_program = match WitnessProgram::new(version, program) {
 				Ok(witness_program) => witness_program,
 				Err(_) => return None,
 			};
@@ -1474,12 +1473,13 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 mod tests {
 	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, InvoiceTlvStreamRef, SIGNATURE_TAG, UnsignedBolt12Invoice};
 
+	use bitcoin::{WitnessProgram, WitnessVersion};
 	use bitcoin::blockdata::constants::ChainHash;
 	use bitcoin::blockdata::script::ScriptBuf;
 	use bitcoin::hashes::Hash;
-	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{KeyPair, Message, Secp256k1, SecretKey, XOnlyPublicKey, self};
-	use bitcoin::address::{Address, Payload, WitnessProgram, WitnessVersion};
+	use bitcoin::network::Network;
+	use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey, self};
+	use bitcoin::address::{Address, Payload};
 	use bitcoin::key::TweakedPublicKey;
 
 	use core::time::Duration;
@@ -1567,7 +1567,7 @@ mod tests {
 		assert!(!unsigned_invoice.is_expired());
 		assert_eq!(unsigned_invoice.payment_hash(), payment_hash);
 		assert_eq!(unsigned_invoice.amount_msats(), 1000);
-		assert_eq!(unsigned_invoice.fallbacks(), vec![]);
+		assert!(unsigned_invoice.fallbacks().is_empty());
 		assert_eq!(unsigned_invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
 		assert_eq!(unsigned_invoice.signing_pubkey(), recipient_pubkey());
 
@@ -1611,14 +1611,14 @@ mod tests {
 		assert!(!invoice.is_expired());
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert_eq!(invoice.amount_msats(), 1000);
-		assert_eq!(invoice.fallbacks(), vec![]);
+		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
 
-		let digest = Message::from_slice(&invoice.signable_hash()).unwrap();
+		let digest = Message::from_digest(invoice.signable_hash());
 		let pubkey = recipient_pubkey().into();
 		let secp_ctx = Secp256k1::verification_only();
 		assert!(secp_ctx.verify_schnorr(&invoice.signature, &digest, &pubkey).is_ok());
@@ -1709,7 +1709,7 @@ mod tests {
 		assert!(!invoice.is_expired());
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert_eq!(invoice.amount_msats(), 1000);
-		assert_eq!(invoice.fallbacks(), vec![]);
+		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
@@ -2402,7 +2402,7 @@ mod tests {
 
 		let blinded_node_id_sign = |message: &UnsignedBolt12Invoice| {
 			let secp_ctx = Secp256k1::new();
-			let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap());
+			let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap());
 			Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 		};
 

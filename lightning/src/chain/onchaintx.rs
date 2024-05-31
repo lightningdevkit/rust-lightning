@@ -12,6 +12,7 @@
 //! OnchainTxHandler objects are fully-part of ChannelMonitor and encapsulates all
 //! building, tracking, bumping and notifications functions.
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
@@ -615,7 +616,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				assert!(new_feerate != 0);
 
 				let transaction = cached_request.maybe_finalize_malleable_package(
-					cur_height, self, output_value, self.destination_script.clone(), logger
+					cur_height, self, Amount::from_sat(output_value), self.destination_script.clone(), logger
 				).unwrap();
 				assert!(predicted_weight >= transaction.0.weight().to_wu());
 				return Some((new_timer, new_feerate, OnchainClaim::Tx(transaction)));
@@ -644,7 +645,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					let package_target_feerate_sat_per_1000_weight = cached_request
 						.compute_package_feerate(fee_estimator, conf_target, feerate_strategy);
 					if let Some(input_amount_sat) = output.funding_amount {
-						let fee_sat = input_amount_sat - tx.0.output.iter().map(|output| output.value).sum::<u64>();
+						let fee_sat = input_amount_sat - tx.0.output.iter().map(|output| output.value.to_sat()).sum::<u64>();
 						let commitment_tx_feerate_sat_per_1000_weight =
 							compute_feerate_sat_per_1000_weight(fee_sat, tx.0.weight().to_wu());
 						if commitment_tx_feerate_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {

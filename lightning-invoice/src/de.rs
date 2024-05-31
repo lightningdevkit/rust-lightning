@@ -10,8 +10,7 @@ use core::str::FromStr;
 
 use bech32::{u5, FromBase32};
 
-use bitcoin::{PubkeyHash, ScriptHash};
-use bitcoin::address::WitnessVersion;
+use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256;
 use crate::prelude::*;
@@ -551,10 +550,10 @@ impl FromBase32 for Fallback {
 			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
 
-		let version = field_data[0];
+		let version = field_data[0].to_u8();
 		let bytes = Vec::<u8>::from_base32(&field_data[1..])?;
 
-		match version.to_u8() {
+		match version {
 			0..=16 => {
 				if bytes.len() < 2 || bytes.len() > 40 {
 					return Err(Bolt11ParseError::InvalidSegWitProgramLength);
@@ -568,14 +567,14 @@ impl FromBase32 for Fallback {
 			17 => {
 				let pkh = match PubkeyHash::from_slice(&bytes) {
 					Ok(pkh) => pkh,
-					Err(bitcoin::hashes::Error::InvalidLength(_, _)) => return Err(Bolt11ParseError::InvalidPubKeyHashLength),
+					Err(_) => return Err(Bolt11ParseError::InvalidPubKeyHashLength),
 				};
 				Ok(Fallback::PubKeyHash(pkh))
 			}
 			18 => {
 				let sh = match ScriptHash::from_slice(&bytes) {
 					Ok(sh) => sh,
-					Err(bitcoin::hashes::Error::InvalidLength(_, _)) => return Err(Bolt11ParseError::InvalidScriptHashLength),
+					Err(_) => return Err(Bolt11ParseError::InvalidScriptHashLength),
 				};
 				Ok(Fallback::ScriptHash(sh))
 			}
@@ -862,8 +861,7 @@ mod test {
 	fn test_parse_fallback() {
 		use crate::Fallback;
 		use bech32::FromBase32;
-		use bitcoin::{PubkeyHash, ScriptHash};
-		use bitcoin::address::WitnessVersion;
+		use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 		use bitcoin::hashes::Hash;
 
 		let cases = vec![

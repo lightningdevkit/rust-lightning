@@ -21,7 +21,7 @@ use bitcoin::blockdata::block::Header;
 use bitcoin::blockdata::transaction::Transaction;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::key::constants::SECRET_KEY_SIZE;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -1170,7 +1170,7 @@ where
 ///
 /// ```
 /// use bitcoin::BlockHash;
-/// use bitcoin::network::constants::Network;
+/// use bitcoin::network::Network;
 /// use lightning::chain::BestBlock;
 /// # use lightning::chain::channelmonitor::ChannelMonitor;
 /// use lightning::ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs};
@@ -4635,7 +4635,7 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let mut result = Ok(());
 
-		if !funding_transaction.is_coin_base() {
+		if !funding_transaction.is_coinbase() {
 			for inp in funding_transaction.input.iter() {
 				if inp.witness.is_empty() {
 					result = result.and(Err(APIError::APIMisuseError {
@@ -4691,9 +4691,9 @@ where
 				is_batch_funding,
 				|chan, tx| {
 					let mut output_index = None;
-					let expected_spk = chan.context.get_funding_redeemscript().to_v0_p2wsh();
+					let expected_spk = chan.context.get_funding_redeemscript().to_p2wsh();
 					for (idx, outp) in tx.output.iter().enumerate() {
-						if outp.script_pubkey == expected_spk && outp.value == chan.context.get_value_satoshis() {
+						if outp.script_pubkey == expected_spk && outp.value.to_sat() == chan.context.get_value_satoshis() {
 							if output_index.is_some() {
 								return Err("Multiple outputs matched the expected script and value");
 							}
@@ -7263,7 +7263,7 @@ where
 					match phase.get_mut() {
 						ChannelPhase::UnfundedOutboundV1(chan) => {
 							try_chan_phase_entry!(self, chan.accept_channel(&msg, &self.default_configuration.channel_handshake_limits, &peer_state.latest_features), phase);
-							(chan.context.get_value_satoshis(), chan.context.get_funding_redeemscript().to_v0_p2wsh(), chan.context.get_user_id())
+							(chan.context.get_value_satoshis(), chan.context.get_funding_redeemscript().to_p2wsh(), chan.context.get_user_id())
 						},
 						_ => {
 							return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got an unexpected accept_channel message from peer with counterparty_node_id {}", counterparty_node_id), msg.common_fields.temporary_channel_id));
@@ -13824,10 +13824,12 @@ pub mod bench {
 	use crate::util::test_utils;
 	use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 
+	use bitcoin::amount::Amount;
 	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::{Transaction, TxOut};
+	use bitcoin::transaction::Version;
 
 	use crate::sync::{Arc, Mutex, RwLock};
 
@@ -13904,8 +13906,8 @@ pub mod bench {
 
 		let tx;
 		if let Event::FundingGenerationReady { temporary_channel_id, output_script, .. } = get_event!(node_a_holder, Event::FundingGenerationReady) {
-			tx = Transaction { version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-				value: 8_000_000, script_pubkey: output_script,
+			tx = Transaction { version: Version::TWO, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+				value: Amount::from_sat(8_000_000), script_pubkey: output_script,
 			}]};
 			node_a.funding_transaction_generated(&temporary_channel_id, &node_b.get_our_node_id(), tx.clone()).unwrap();
 		} else { panic!(); }

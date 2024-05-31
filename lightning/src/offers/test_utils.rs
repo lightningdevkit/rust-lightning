@@ -9,7 +9,7 @@
 
 //! Utilities for testing BOLT 12 Offers interfaces
 
-use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 use bitcoin::secp256k1::schnorr::Signature;
 
 use core::time::Duration;
@@ -27,14 +27,14 @@ pub(crate) fn fail_sign<T: AsRef<TaggedHash>>(_message: &T) -> Result<Signature,
 	Err(())
 }
 
-pub(crate) fn payer_keys() -> KeyPair {
+pub(crate) fn payer_keys() -> Keypair {
 	let secp_ctx = Secp256k1::new();
-	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
+	Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
 }
 
 pub(crate) fn payer_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, ()> {
 	let secp_ctx = Secp256k1::new();
-	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+	let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 }
 
@@ -42,14 +42,14 @@ pub(crate) fn payer_pubkey() -> PublicKey {
 	payer_keys().public_key()
 }
 
-pub(crate) fn recipient_keys() -> KeyPair {
+pub(crate) fn recipient_keys() -> Keypair {
 	let secp_ctx = Secp256k1::new();
-	KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap())
+	Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap())
 }
 
 pub(crate) fn recipient_sign<T: AsRef<TaggedHash>>(message: &T) -> Result<Signature, ()> {
 	let secp_ctx = Secp256k1::new();
-	let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
+	let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
 	Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
 }
 

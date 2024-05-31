@@ -13,19 +13,22 @@
 //! or payments to send/ways to handle events generated.
 //! This test has been very useful, though due to its complexity good starting inputs are critical.
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::blockdata::script::{Builder, ScriptBuf};
 use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::consensus::encode::deserialize;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
+use bitcoin::transaction::Version;
 
+use bitcoin::WPubkeyHash;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::hashes::Hash as _;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hash_types::{Txid, BlockHash, WPubkeyHash};
+use bitcoin::hash_types::{Txid, BlockHash};
 
 use lightning::blinded_path::BlindedPath;
 use lightning::blinded_path::message::ForwardNode;
@@ -69,7 +72,7 @@ use std::convert::TryInto;
 use std::cmp;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
-use bitcoin::bech32::u5;
+use bech32::u5;
 
 #[inline]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
@@ -350,7 +353,7 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn sign_gossip_message(&self, msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
-		let msg_hash = Message::from_slice(&Sha256dHash::hash(&msg.encode()[..])[..]).map_err(|_| ())?;
+		let msg_hash = Message::from_digest(Sha256dHash::hash(&msg.encode()[..]).to_byte_array());
 		let secp_ctx = Secp256k1::signing_only();
 		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
 	}
@@ -651,11 +654,11 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 			},
 			10 => {
-				let mut tx = Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+				let mut tx = Transaction { version: Version(0), lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 				let mut channels = Vec::new();
 				for funding_generation in pending_funding_generation.drain(..) {
 					let txout = TxOut {
-						value: funding_generation.2, script_pubkey: funding_generation.3,
+						value: Amount::from_sat(funding_generation.2), script_pubkey: funding_generation.3,
 					};
 					if !tx.output.contains(&txout) {
 						tx.output.push(txout);
@@ -665,7 +668,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				// Once we switch to V2 channel opens we should be able to drop this entirely as
 				// channel_ids no longer change when we set the funding tx.
 				'search_loop: loop {
-					if tx.version > 0xff {
+					if tx.version.0 > 0xff {
 						break;
 					}
 					let funding_txid = tx.txid();
@@ -673,15 +676,15 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 						let outpoint = OutPoint { txid: funding_txid, index: 0 };
 						for chan in channelmanager.list_channels() {
 							if chan.channel_id == ChannelId::v1_from_funding_outpoint(outpoint) {
-								tx.version += 1;
+								tx.version = Version(tx.version.0 + 1);
 								continue 'search_loop;
 							}
 						}
 						break;
 					}
-					tx.version += 1;
+					tx.version = Version(tx.version.0 + 1);
 				}
-				if tx.version <= 0xff && !channels.is_empty() {
+				if tx.version.0 <= 0xff && !channels.is_empty() {
 					let chans = channels.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>();
 					if let Err(e) = channelmanager.batch_funding_transaction_generated(&chans, tx.clone()) {
 						// It's possible the channel has been closed in the mean time, but any other
@@ -714,11 +717,11 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				} else {
 					let txres: Result<Transaction, _> = deserialize(get_slice!(txlen));
 					if let Ok(tx) = txres {
-						let mut output_val = 0;
+						let mut output_val = Amount::ZERO;
 						for out in tx.output.iter() {
-							if out.value > 21_000_000_0000_0000 { return; }
+							if out.value > Amount::MAX_MONEY { return; }
 							output_val += out.value;
-							if output_val > 21_000_000_0000_0000 { return; }
+							if output_val > Amount::MAX_MONEY { return; }
 						}
 						loss_detector.connect_block(&[tx]);
 					} else {

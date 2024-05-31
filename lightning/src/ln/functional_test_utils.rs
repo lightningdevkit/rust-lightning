@@ -35,15 +35,17 @@ use crate::util::test_utils;
 use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::block::{Block, Header, Version};
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut};
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use bitcoin::pow::CompactTarget;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
+use bitcoin::transaction;
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -95,7 +97,7 @@ pub fn mine_transaction_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Nod
 		txdata: Vec::new(),
 	};
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
-		block.txdata.push(Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() });
+		block.txdata.push(Transaction { version: transaction::Version(0), lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() });
 	}
 	block.txdata.push((*tx).clone());
 	do_connect_block_without_consistency_checks(node, block, false);
@@ -113,7 +115,7 @@ pub fn confirm_transactions_at<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, txn: 
 	}
 	let mut txdata = Vec::new();
 	for _ in 0..*node.network_chan_count.borrow() { // Make sure we don't end up with channels at the same short id by offsetting by chan_count
-		txdata.push(Transaction { version: 0, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() });
+		txdata.push(Transaction { version: transaction::Version(0), lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() });
 	}
 	for tx in txn {
 		txdata.push((*tx).clone());
@@ -1155,8 +1157,8 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 				Vec::new()
 			};
 
-			let tx = Transaction { version: chan_id as i32, lock_time: LockTime::ZERO, input, output: vec![TxOut {
-				value: *channel_value_satoshis, script_pubkey: output_script.clone(),
+			let tx = Transaction { version: transaction::Version(chan_id as i32), lock_time: LockTime::ZERO, input, output: vec![TxOut {
+				value: Amount::from_sat(*channel_value_satoshis), script_pubkey: output_script.clone(),
 			}]};
 			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
 			(*temporary_channel_id, tx, funding_outpoint)
@@ -1476,15 +1478,15 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 
 pub fn do_check_spends<F: Fn(&bitcoin::blockdata::transaction::OutPoint) -> Option<TxOut>>(tx: &Transaction, get_output: F) {
 	for outp in tx.output.iter() {
-		assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Spending tx output didn't meet dust limit");
+		assert!(outp.value >= outp.script_pubkey.dust_value(), "Spending tx output didn't meet dust limit");
 	}
 	let mut total_value_in = 0;
 	for input in tx.input.iter() {
-		total_value_in += get_output(&input.previous_output).unwrap().value;
+		total_value_in += get_output(&input.previous_output).unwrap().value.to_sat();
 	}
 	let mut total_value_out = 0;
 	for output in tx.output.iter() {
-		total_value_out += output.value;
+		total_value_out += output.value.to_sat();
 	}
 	let min_fee = (tx.weight().to_wu() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
 	// Input amount - output amount = fee, so check that out + min_fee is smaller than input
@@ -1498,7 +1500,7 @@ macro_rules! check_spends {
 		{
 			$(
 			for outp in $spends_txn.output.iter() {
-				assert!(outp.value >= outp.script_pubkey.dust_value().to_sat(), "Input tx output didn't meet dust limit");
+				assert!(outp.value >= outp.script_pubkey.dust_value(), "Input tx output didn't meet dust limit");
 			}
 			)*
 			let get_output = |out_point: &bitcoin::blockdata::transaction::OutPoint| {
@@ -2065,7 +2067,7 @@ macro_rules! get_payment_preimage_hash {
 /// Gets a route from the given sender to the node described in `payment_params`.
 pub fn get_route(send_node: &Node, route_params: &RouteParameters) -> Result<Route, msgs::LightningError> {
 	let scorer = TestScorer::new();
-	let keys_manager = TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
+	let keys_manager = TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	router::get_route(
 		&send_node.node.get_our_node_id(), route_params, &send_node.network_graph.read_only(),
@@ -2077,7 +2079,7 @@ pub fn get_route(send_node: &Node, route_params: &RouteParameters) -> Result<Rou
 /// Like `get_route` above, but adds a random CLTV offset to the final hop.
 pub fn find_route(send_node: &Node, route_params: &RouteParameters) -> Result<Route, msgs::LightningError> {
 	let scorer = TestScorer::new();
-	let keys_manager = TestKeysInterface::new(&[0u8; 32], bitcoin::network::constants::Network::Testnet);
+	let keys_manager = TestKeysInterface::new(&[0u8; 32], Network::Testnet);
 	let random_seed_bytes = keys_manager.get_secure_random_bytes();
 	router::find_route(
 		&send_node.node.get_our_node_id(), route_params, &send_node.network_graph,
@@ -3861,7 +3863,7 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 				assert_eq!(channel_value_satoshis, event_channel_value_satoshis);
 				assert_eq!(user_channel_id, event_user_channel_id);
 				tx_outs.push(TxOut {
-					value: *channel_value_satoshis, script_pubkey: output_script.clone(),
+					value: Amount::from_sat(*channel_value_satoshis), script_pubkey: output_script.clone(),
 				});
 			},
 			_ => panic!("Unexpected event"),
@@ -3871,7 +3873,7 @@ pub fn create_batch_channel_funding<'a, 'b, 'c>(
 
 	// Compose the batch funding transaction and give it to the ChannelManager.
 	let tx = Transaction {
-		version: 2,
+		version: transaction::Version::TWO,
 		lock_time: LockTime::ZERO,
 		input: Vec::new(),
 		output: tx_outs,

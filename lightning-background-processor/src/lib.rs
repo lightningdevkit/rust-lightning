@@ -919,13 +919,14 @@ impl Drop for BackgroundProcessor {
 
 #[cfg(all(feature = "std", test))]
 mod tests {
-	use bitcoin::{ScriptBuf, Txid};
+	use bitcoin::{Amount, ScriptBuf, Txid};
 	use bitcoin::blockdata::constants::{genesis_block, ChainHash};
 	use bitcoin::blockdata::locktime::absolute::LockTime;
 	use bitcoin::blockdata::transaction::{Transaction, TxOut};
 	use bitcoin::hashes::Hash;
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1};
+	use bitcoin::transaction::Version;
 	use lightning::chain::{BestBlock, Confirm, chainmonitor, Filter};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 	use lightning::sign::{InMemorySigner, KeysManager, ChangeDestinationSource};
@@ -1350,8 +1351,8 @@ mod tests {
 					assert_eq!(channel_value_satoshis, $channel_value);
 					assert_eq!(user_channel_id, 42);
 
-					let tx = Transaction { version: 1 as i32, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
-						value: channel_value_satoshis, script_pubkey: output_script.clone(),
+					let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
+						value: Amount::from_sat(channel_value_satoshis), script_pubkey: output_script.clone(),
 					}]};
 					(temporary_channel_id, tx)
 				},

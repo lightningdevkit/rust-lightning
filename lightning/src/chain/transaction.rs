@@ -25,7 +25,7 @@ use bitcoin::blockdata::transaction::Transaction;
 ///
 /// use bitcoin::blockdata::block::Block;
 /// use bitcoin::blockdata::constants::genesis_block;
-/// use bitcoin::network::constants::Network;
+/// use bitcoin::network::Network;
 /// use lightning::chain::transaction::TransactionData;
 ///
 /// let block = genesis_block(Network::Bitcoin);

@@ -250,8 +250,8 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			} else {
 				EcdsaSighashType::All
 			};
-			let sighash = &sighash::SighashCache::new(&*htlc_tx).segwit_signature_hash(
-				input, &witness_script, htlc_descriptor.htlc.amount_msat / 1000, sighash_type
+			let sighash = &sighash::SighashCache::new(&*htlc_tx).p2wsh_signature_hash(
+				input, &witness_script, htlc_descriptor.htlc.to_bitcoin_amount(), sighash_type
 			).unwrap();
 			let countersignatory_htlc_key = HtlcKey::from_basepoint(
 				&secp_ctx, &self.inner.counterparty_pubkeys().unwrap().htlc_basepoint, &htlc_descriptor.per_commitment_point,

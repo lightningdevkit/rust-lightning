@@ -23,7 +23,7 @@ use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destinat
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
 
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::secp256k1::{All, PublicKey, Secp256k1, SecretKey};
 

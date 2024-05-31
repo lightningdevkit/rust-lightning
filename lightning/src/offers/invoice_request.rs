@@ -23,8 +23,8 @@
 //! extern crate bitcoin;
 //! extern crate lightning;
 //!
-//! use bitcoin::network::constants::Network;
-//! use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, SecretKey};
+//! use bitcoin::network::Network;
+//! use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 //! use lightning::ln::features::OfferFeatures;
 //! use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 //! use lightning::offers::offer::Offer;
@@ -32,7 +32,7 @@
 //!
 //! # fn parse() -> Result<(), lightning::offers::parse::Bolt12ParseError> {
 //! let secp_ctx = Secp256k1::new();
-//! let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
+//! let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32])?);
 //! let pubkey = PublicKey::from(keys);
 //! let mut buffer = Vec::new();
 //!
@@ -58,8 +58,8 @@
 //! ```
 
 use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::network::constants::Network;
-use bitcoin::secp256k1::{KeyPair, PublicKey, Secp256k1, self};
+use bitcoin::network::Network;
+use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use core::ops::Deref;
 use crate::sign::EntropySource;
@@ -303,7 +303,7 @@ macro_rules! invoice_request_builder_methods { (
 	}
 
 	fn build_with_checks($($self_mut)* $self: $self_type) -> Result<
-		(UnsignedInvoiceRequest, Option<KeyPair>, Option<&'b Secp256k1<$secp_context>>),
+		(UnsignedInvoiceRequest, Option<Keypair>, Option<&'b Secp256k1<$secp_context>>),
 		Bolt12SemanticError
 	> {
 		#[cfg(feature = "std")] {
@@ -334,7 +334,7 @@ macro_rules! invoice_request_builder_methods { (
 	}
 
 	fn build_without_checks($($self_mut)* $self: $self_type) ->
-		(UnsignedInvoiceRequest, Option<KeyPair>, Option<&'b Secp256k1<$secp_context>>)
+		(UnsignedInvoiceRequest, Option<Keypair>, Option<&'b Secp256k1<$secp_context>>)
 	{
 		// Create the metadata for stateless verification of a Bolt12Invoice.
 		let mut keys = None;
@@ -622,7 +622,7 @@ pub struct VerifiedInvoiceRequest {
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`respond_using_derived_keys`]: Self::respond_using_derived_keys
 	/// [`respond_with`]: Self::respond_with
-	pub keys: Option<KeyPair>,
+	pub keys: Option<Keypair>,
 }
 
 /// The contents of an [`InvoiceRequest`], which may be shared with an [`Bolt12Invoice`].
@@ -1204,8 +1204,8 @@ mod tests {
 	use super::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestTlvStreamRef, PAYER_NOTE_LIMIT, SIGNATURE_TAG, UnsignedInvoiceRequest};
 
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::network::constants::Network;
-	use bitcoin::secp256k1::{KeyPair, Secp256k1, SecretKey, self};
+	use bitcoin::network::Network;
+	use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey, self};
 	use core::num::NonZeroU64;
 	#[cfg(feature = "std")]
 	use core::time::Duration;
@@ -2245,7 +2245,7 @@ mod tests {
 	#[test]
 	fn fails_parsing_invoice_request_with_extra_tlv_records() {
 		let secp_ctx = Secp256k1::new();
-		let keys = KeyPair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let invoice_request = OfferBuilder::new(keys.public_key())
 			.amount_msats(1000)
 			.build().unwrap()

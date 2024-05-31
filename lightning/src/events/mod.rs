@@ -38,6 +38,7 @@ use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::transaction::Version;
 use crate::io;
 use core::time::Duration;
 use core::ops::Deref;
@@ -1670,7 +1671,7 @@ impl MaybeReadable for Event {
 			11u8 => {
 				let mut f = || {
 					let mut channel_id = ChannelId::new_zero();
-					let mut transaction = Transaction{ version: 2, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+					let mut transaction = Transaction{ version: Version::TWO, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(2, transaction, required),

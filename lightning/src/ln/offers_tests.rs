@@ -40,7 +40,7 @@
 //! Nodes without channels are disconnected and connected as needed to ensure that deterministic
 //! blinded paths are used.
 
-use bitcoin::network::constants::Network;
+use bitcoin::network::Network;
 use bitcoin::secp256k1::PublicKey;
 use core::time::Duration;
 use crate::blinded_path::{BlindedPath, IntroductionNode};

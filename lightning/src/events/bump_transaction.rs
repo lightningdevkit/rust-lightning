@@ -32,14 +32,15 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::sync::Mutex;
 use crate::util::logger::Logger;
 
-use bitcoin::{OutPoint, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
+use bitcoin::{OutPoint, Psbt, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::consensus::Encodable;
-use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use bitcoin::secp256k1::ecdsa::Signature;
+use bitcoin::transaction::Version;
 
 pub(crate) const EMPTY_SCRIPT_SIG_WEIGHT: u64 = 1 /* empty script_sig */ * WITNESS_SCALE_FACTOR as u64;
 
@@ -62,8 +63,8 @@ impl AnchorDescriptor {
 	/// [`Self::unsigned_tx_input`].
 	pub fn previous_utxo(&self) -> TxOut {
 		TxOut {
-			script_pubkey: self.witness_script().to_v0_p2wsh(),
-			value: ANCHOR_OUTPUT_VALUE_SATOSHI,
+			script_pubkey: self.witness_script().to_p2wsh(),
+			value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
 		}
 	}
 
@@ -257,7 +258,7 @@ pub struct Utxo {
 
 impl Utxo {
 	/// Returns a `Utxo` with the `satisfaction_weight` estimate for a legacy P2PKH output.
-	pub fn new_p2pkh(outpoint: OutPoint, value: u64, pubkey_hash: &PubkeyHash) -> Self {
+	pub fn new_p2pkh(outpoint: OutPoint, value: Amount, pubkey_hash: &PubkeyHash) -> Self {
 		let script_sig_size = 1 /* script_sig length */ +
 			1 /* OP_PUSH73 */ +
 			73 /* sig including sighash flag */ +
@@ -274,7 +275,7 @@ impl Utxo {
 	}
 
 	/// Returns a `Utxo` with the `satisfaction_weight` estimate for a P2WPKH nested in P2SH output.
-	pub fn new_nested_p2wpkh(outpoint: OutPoint, value: u64, pubkey_hash: &WPubkeyHash) -> Self {
+	pub fn new_nested_p2wpkh(outpoint: OutPoint, value: Amount, pubkey_hash: &WPubkeyHash) -> Self {
 		let script_sig_size = 1 /* script_sig length */ +
 			1 /* OP_0 */ +
 			1 /* OP_PUSH20 */ +
@@ -283,19 +284,19 @@ impl Utxo {
 			outpoint,
 			output: TxOut {
 				value,
-				script_pubkey: ScriptBuf::new_p2sh(&ScriptBuf::new_v0_p2wpkh(pubkey_hash).script_hash()),
+				script_pubkey: ScriptBuf::new_p2sh(&ScriptBuf::new_p2wpkh(pubkey_hash).script_hash()),
 			},
 			satisfaction_weight: script_sig_size * WITNESS_SCALE_FACTOR as u64 + P2WPKH_WITNESS_WEIGHT,
 		}
 	}
 
 	/// Returns a `Utxo` with the `satisfaction_weight` estimate for a SegWit v0 P2WPKH output.
-	pub fn new_v0_p2wpkh(outpoint: OutPoint, value: u64, pubkey_hash: &WPubkeyHash) -> Self {
+	pub fn new_v0_p2wpkh(outpoint: OutPoint, value: Amount, pubkey_hash: &WPubkeyHash) -> Self {
 		Self {
 			outpoint,
 			output: TxOut {
 				value,
-				script_pubkey: ScriptBuf::new_v0_p2wpkh(pubkey_hash),
+				script_pubkey: ScriptBuf::new_p2wpkh(pubkey_hash),
 			},
 			satisfaction_weight: EMPTY_SCRIPT_SIG_WEIGHT + P2WPKH_WITNESS_WEIGHT,
 		}
@@ -356,7 +357,7 @@ pub trait CoinSelectionSource {
 	///
 	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
 	/// unsigned transaction and then sign it with your wallet.
-	fn sign_psbt(&self, psbt: PartiallySignedTransaction) -> Result<Transaction, ()>;
+	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()>;
 }
 
 /// An alternative to [`CoinSelectionSource`] that can be implemented and used along [`Wallet`] to
@@ -373,7 +374,7 @@ pub trait WalletSource {
 	///
 	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
 	/// unsigned transaction and then sign it with your wallet.
-	fn sign_psbt(&self, psbt: PartiallySignedTransaction) -> Result<Transaction, ()>;
+	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()>;
 }
 
 /// A wrapper over [`WalletSource`] that implements [`CoinSelection`] by preferring UTXOs that would
@@ -414,7 +415,7 @@ where
 	fn select_confirmed_utxos_internal(
 		&self, utxos: &[Utxo], claim_id: ClaimId, force_conflicting_utxo_spend: bool,
 		tolerate_high_network_feerates: bool, target_feerate_sat_per_1000_weight: u32,
-		preexisting_tx_weight: u64, input_amount_sat: u64, target_amount_sat: u64,
+		preexisting_tx_weight: u64, input_amount_sat: Amount, target_amount_sat: Amount,
 	) -> Result<CoinSelection, ()> {
 		let mut locked_utxos = self.locked_utxos.lock().unwrap();
 		let mut eligible_utxos = utxos.iter().filter_map(|utxo| {
@@ -424,9 +425,9 @@ where
 					return None;
 				}
 			}
-			let fee_to_spend_utxo = fee_for_weight(
+			let fee_to_spend_utxo = Amount::from_sat(fee_for_weight(
 				target_feerate_sat_per_1000_weight, BASE_INPUT_WEIGHT + utxo.satisfaction_weight,
-			);
+			));
 			let should_spend = if tolerate_high_network_feerates {
 				utxo.output.value > fee_to_spend_utxo
 			} else {
@@ -442,7 +443,7 @@ where
 		eligible_utxos.sort_unstable_by_key(|(utxo, _)| utxo.output.value);
 
 		let mut selected_amount = input_amount_sat;
-		let mut total_fees = fee_for_weight(target_feerate_sat_per_1000_weight, preexisting_tx_weight);
+		let mut total_fees = Amount::from_sat(fee_for_weight(target_feerate_sat_per_1000_weight, preexisting_tx_weight));
 		let mut selected_utxos = Vec::new();
 		for (utxo, fee_to_spend_utxo) in eligible_utxos {
 			if selected_amount >= target_amount_sat + total_fees {
@@ -469,8 +470,8 @@ where
 			(8 /* value */ + change_script.consensus_encode(&mut sink()).unwrap() as u64) *
 				WITNESS_SCALE_FACTOR as u64,
 		);
-		let change_output_amount = remaining_amount.saturating_sub(change_output_fee);
-		let change_output = if change_output_amount < change_script.dust_value().to_sat() {
+		let change_output_amount = Amount::from_sat(remaining_amount.to_sat().saturating_sub(change_output_fee));
+		let change_output = if change_output_amount < change_script.dust_value() {
 			log_debug!(self.logger, "Coin selection attempt did not yield change output");
 			None
 		} else {
@@ -504,7 +505,7 @@ where
 
 		let preexisting_tx_weight = 2 /* segwit marker & flag */ + total_input_weight +
 			((BASE_TX_SIZE + total_output_size) * WITNESS_SCALE_FACTOR as u64);
-		let input_amount_sat: u64 = must_spend.iter().map(|input| input.previous_utxo.value).sum();
+		let input_amount_sat = must_spend.iter().map(|input| input.previous_utxo.value).sum();
 		let target_amount_sat = must_pay_to.iter().map(|output| output.value).sum();
 		let do_coin_selection = |force_conflicting_utxo_spend: bool, tolerate_high_network_feerates: bool| {
 			log_debug!(self.logger, "Attempting coin selection targeting {} sat/kW (force_conflicting_utxo_spend = {}, tolerate_high_network_feerates = {})",
@@ -520,7 +521,7 @@ where
 			.or_else(|_| do_coin_selection(true, true))
 	}
 
-	fn sign_psbt(&self, psbt: PartiallySignedTransaction) -> Result<Transaction, ()> {
+	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
 		self.source.sign_psbt(psbt)
 	}
 }
@@ -583,7 +584,7 @@ where
 			// way to include a dummy output.
 			log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
 			tx.output.push(TxOut {
-				value: 0,
+				value: Amount::ZERO,
 				script_pubkey: ScriptBuf::new_op_return(&[]),
 			});
 		}
@@ -600,6 +601,7 @@ where
 		// account. We do so by pretending the commitment transaction's fee and weight are part of
 		// the anchor input.
 		let mut anchor_utxo = anchor_descriptor.previous_utxo();
+		let commitment_tx_fee_sat = Amount::from_sat(commitment_tx_fee_sat);
 		anchor_utxo.value += commitment_tx_fee_sat;
 		let must_spend = vec![Input {
 			outpoint: anchor_descriptor.outpoint,
@@ -607,7 +609,7 @@ where
 			satisfaction_weight: commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
 		}];
 		#[cfg(debug_assertions)]
-		let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value).sum::<u64>();
+		let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value).sum::<Amount>();
 
 		log_debug!(self.logger, "Performing coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
 			package_target_feerate_sat_per_1000_weight);
@@ -616,7 +618,7 @@ where
 		)?;
 
 		let mut anchor_tx = Transaction {
-			version: 2,
+			version: Version::TWO,
 			lock_time: LockTime::ZERO, // TODO: Use next best height.
 			input: vec![anchor_descriptor.unsigned_tx_input()],
 			output: vec![],
@@ -627,13 +629,13 @@ where
 			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>();
 		#[cfg(debug_assertions)]
 		let total_input_amount = must_spend_amount +
-			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum::<u64>();
+			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
 
 		self.process_coin_selection(&mut anchor_tx, &coin_selection);
 		let anchor_txid = anchor_tx.txid();
 
 		// construct psbt
-		let mut anchor_psbt = PartiallySignedTransaction::from_unsigned_tx(anchor_tx).unwrap();
+		let mut anchor_psbt = Psbt::from_unsigned_tx(anchor_tx).unwrap();
 		// add witness_utxo to anchor input
 		anchor_psbt.inputs[0].witness_utxo = Some(anchor_descriptor.previous_utxo());
 		// add witness_utxo to remaining inputs
@@ -665,10 +667,10 @@ where
 			assert!(expected_signed_tx_weight >= signed_tx_weight &&
 				expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
 
-			let expected_package_fee = fee_for_weight(package_target_feerate_sat_per_1000_weight,
-				signed_tx_weight + commitment_tx.weight().to_wu());
+			let expected_package_fee = Amount::from_sat(fee_for_weight(package_target_feerate_sat_per_1000_weight,
+				signed_tx_weight + commitment_tx.weight().to_wu()));
 			let package_fee = total_input_amount -
-				anchor_tx.output.iter().map(|output| output.value).sum::<u64>();
+				anchor_tx.output.iter().map(|output| output.value).sum();
 			// Our fee should be within a 5% error margin of the expected fee based on the
 			// feerate and transaction weight and we should never pay less than required.
 			let fee_error_margin = expected_package_fee * 5 / 100;
@@ -689,7 +691,7 @@ where
 		htlc_descriptors: &[HTLCDescriptor], tx_lock_time: LockTime,
 	) -> Result<(), ()> {
 		let mut htlc_tx = Transaction {
-			version: 2,
+			version: Version::TWO,
 			lock_time: tx_lock_time,
 			input: vec![],
 			output: vec![],
@@ -718,7 +720,7 @@ where
 		let must_spend_satisfaction_weight =
 			must_spend.iter().map(|input| input.satisfaction_weight).sum::<u64>();
 		#[cfg(debug_assertions)]
-		let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value).sum::<u64>();
+		let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value.to_sat()).sum::<u64>();
 
 		let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
 			claim_id, must_spend, &htlc_tx.output, target_feerate_sat_per_1000_weight,
@@ -729,12 +731,12 @@ where
 			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>();
 		#[cfg(debug_assertions)]
 		let total_input_amount = must_spend_amount +
-			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum::<u64>();
+			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value.to_sat()).sum::<u64>();
 
 		self.process_coin_selection(&mut htlc_tx, &coin_selection);
 
 		// construct psbt
-		let mut htlc_psbt = PartiallySignedTransaction::from_unsigned_tx(htlc_tx).unwrap();
+		let mut htlc_psbt = Psbt::from_unsigned_tx(htlc_tx).unwrap();
 		// add witness_utxo to htlc inputs
 		for (i, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
 			debug_assert_eq!(htlc_psbt.unsigned_tx.input[i].previous_output, htlc_descriptor.outpoint());
@@ -775,7 +777,7 @@ where
 
 			let expected_signed_tx_fee = fee_for_weight(target_feerate_sat_per_1000_weight, signed_tx_weight);
 			let signed_tx_fee = total_input_amount -
-				htlc_tx.output.iter().map(|output| output.value).sum::<u64>();
+				htlc_tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>();
 			// Our fee should be within a 5% error margin of the expected fee based on the
 			// feerate and transaction weight and we should never pay less than required.
 			let fee_error_margin = expected_signed_tx_fee * 5 / 100;

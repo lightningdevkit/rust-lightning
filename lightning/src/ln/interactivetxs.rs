@@ -11,9 +11,11 @@ use crate::io_extras::sink;
 use crate::prelude::*;
 use core::ops::Deref;
 
+use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::consensus::Encodable;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
+use bitcoin::transaction::Version;
 use bitcoin::{
 	absolute::LockTime as AbsoluteLockTime, OutPoint, ScriptBuf, Sequence, Transaction, TxIn,
 	TxOut, Weight,
@@ -136,7 +138,7 @@ impl ConstructedTransaction {
 			.filter(|(serial_id, _)| {
 				!is_serial_id_valid_for_counterparty(context.holder_is_initiator, serial_id)
 			})
-			.fold(0u64, |value, (_, input)| value.saturating_add(input.prev_output.value));
+			.fold(0u64, |value, (_, input)| value.saturating_add(input.prev_output.value.to_sat()));
 
 		let local_outputs_value_satoshis = context
 			.outputs
@@ -144,7 +146,7 @@ impl ConstructedTransaction {
 			.filter(|(serial_id, _)| {
 				!is_serial_id_valid_for_counterparty(context.holder_is_initiator, serial_id)
 			})
-			.fold(0u64, |value, (_, output)| value.saturating_add(output.tx_out.value));
+			.fold(0u64, |value, (_, output)| value.saturating_add(output.tx_out.value.to_sat()));
 
 		Self {
 			holder_is_initiator: context.holder_is_initiator,
@@ -193,7 +195,7 @@ impl ConstructedTransaction {
 		let output: Vec<TxOut> =
 			outputs.into_iter().map(|InteractiveTxOutput { tx_out, .. }| tx_out).collect();
 
-		Transaction { version: 2, lock_time: self.lock_time, input, output }
+		Transaction { version: Version::TWO, lock_time: self.lock_time, input, output }
 	}
 }
 
@@ -210,11 +212,11 @@ struct NegotiationContext {
 }
 
 pub(crate) fn estimate_input_weight(prev_output: &TxOut) -> Weight {
-	Weight::from_wu(if prev_output.script_pubkey.is_v0_p2wpkh() {
+	Weight::from_wu(if prev_output.script_pubkey.is_p2wpkh() {
 		P2WPKH_INPUT_WEIGHT_LOWER_BOUND
-	} else if prev_output.script_pubkey.is_v0_p2wsh() {
+	} else if prev_output.script_pubkey.is_p2wsh() {
 		P2WSH_INPUT_WEIGHT_LOWER_BOUND
-	} else if prev_output.script_pubkey.is_v1_p2tr() {
+	} else if prev_output.script_pubkey.is_p2tr() {
 		P2TR_INPUT_WEIGHT_LOWER_BOUND
 	} else {
 		UNKNOWN_SEGWIT_VERSION_INPUT_WEIGHT_LOWER_BOUND
@@ -243,7 +245,7 @@ impl NegotiationContext {
 			.iter()
 			.filter(|(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
 			.fold(0u64, |acc, (_, InteractiveTxInput { prev_output, .. })| {
-				acc.saturating_add(prev_output.value)
+				acc.saturating_add(prev_output.value.to_sat())
 			})
 	}
 
@@ -252,7 +254,7 @@ impl NegotiationContext {
 			.iter()
 			.filter(|(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
 			.fold(0u64, |acc, (_, InteractiveTxOutput { tx_out, .. })| {
-				acc.saturating_add(tx_out.value)
+				acc.saturating_add(tx_out.value.to_sat())
 			})
 	}
 
@@ -402,7 +404,7 @@ impl NegotiationContext {
 		// bitcoin supply.
 		let mut outputs_value: u64 = 0;
 		for output in self.outputs.iter() {
-			outputs_value = outputs_value.saturating_add(output.1.tx_out.value);
+			outputs_value = outputs_value.saturating_add(output.1.tx_out.value.to_sat());
 		}
 		if outputs_value.saturating_add(msg.sats) > TOTAL_BITCOIN_SUPPLY_SATOSHIS {
 			// The receiving node:
@@ -423,8 +425,8 @@ impl NegotiationContext {
 		//
 		// TODO: The last check would be simplified when https://github.com/rust-bitcoin/rust-bitcoin/commit/1656e1a09a1959230e20af90d20789a4a8f0a31b
 		// hits the next release of rust-bitcoin.
-		if !(msg.script.is_v0_p2wpkh()
-			|| msg.script.is_v0_p2wsh()
+		if !(msg.script.is_p2wpkh()
+			|| msg.script.is_p2wsh()
 			|| (msg.script.is_witness_program()
 				&& msg.script.witness_version().map(|v| v.to_num() >= 1).unwrap_or(false)))
 		{
@@ -441,7 +443,10 @@ impl NegotiationContext {
 			hash_map::Entry::Vacant(entry) => {
 				entry.insert(InteractiveTxOutput {
 					serial_id: msg.serial_id,
-					tx_out: TxOut { value: msg.sats, script_pubkey: msg.script.clone() },
+					tx_out: TxOut {
+						value: Amount::from_sat(msg.sats),
+						script_pubkey: msg.script.clone(),
+					},
 				});
 				Ok(())
 			},
@@ -488,7 +493,10 @@ impl NegotiationContext {
 			msg.serial_id,
 			InteractiveTxOutput {
 				serial_id: msg.serial_id,
-				tx_out: TxOut { value: msg.sats, script_pubkey: msg.script.clone() },
+				tx_out: TxOut {
+					value: Amount::from_sat(msg.sats),
+					script_pubkey: msg.script.clone(),
+				},
 			},
 		);
 		Ok(())
@@ -941,7 +949,7 @@ impl InteractiveTxConstructor {
 			let msg = msgs::TxAddOutput {
 				channel_id: self.channel_id,
 				serial_id,
-				sats: output.value,
+				sats: output.value.to_sat(),
 				script: output.script_pubkey,
 			};
 			do_state_transition!(self, sent_tx_add_output, &msg)?;
@@ -1028,11 +1036,13 @@ mod tests {
 	use crate::sign::EntropySource;
 	use crate::util::atomic_counter::AtomicCounter;
 	use crate::util::ser::TransactionU16LenLimited;
+	use bitcoin::amount::Amount;
 	use bitcoin::blockdata::opcodes;
 	use bitcoin::blockdata::script::Builder;
 	use bitcoin::hashes::Hash;
 	use bitcoin::key::UntweakedPublicKey;
-	use bitcoin::secp256k1::{KeyPair, Secp256k1};
+	use bitcoin::secp256k1::{Keypair, Secp256k1};
+	use bitcoin::transaction::Version;
 	use bitcoin::{
 		absolute::LockTime as AbsoluteLockTime, OutPoint, Sequence, Transaction, TxIn, TxOut,
 	};
@@ -1236,17 +1246,17 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let (value, script_pubkey) = match output {
 			TestOutput::P2WPKH(value) => {
-				(*value, ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::from_slice(&[1; 20]).unwrap()))
+				(*value, ScriptBuf::new_p2wpkh(&WPubkeyHash::from_slice(&[1; 20]).unwrap()))
 			},
 			TestOutput::P2WSH(value) => {
-				(*value, ScriptBuf::new_v0_p2wsh(&WScriptHash::from_slice(&[2; 32]).unwrap()))
+				(*value, ScriptBuf::new_p2wsh(&WScriptHash::from_slice(&[2; 32]).unwrap()))
 			},
 			TestOutput::P2TR(value) => (
 				*value,
-				ScriptBuf::new_v1_p2tr(
+				ScriptBuf::new_p2tr(
 					&secp_ctx,
 					UntweakedPublicKey::from_keypair(
-						&KeyPair::from_seckey_slice(&secp_ctx, &[3; 32]).unwrap(),
+						&Keypair::from_seckey_slice(&secp_ctx, &[3; 32]).unwrap(),
 					)
 					.0,
 					None,
@@ -1257,12 +1267,12 @@ mod tests {
 			},
 		};
 
-		TxOut { value, script_pubkey }
+		TxOut { value: Amount::from_sat(value), script_pubkey }
 	}
 
 	fn generate_tx_with_locktime(outputs: &[TestOutput], locktime: u32) -> Transaction {
 		Transaction {
-			version: 2,
+			version: Version::TWO,
 			lock_time: AbsoluteLockTime::from_height(locktime).unwrap(),
 			input: vec![TxIn { ..Default::default() }],
 			output: outputs.iter().map(generate_txout).collect(),
@@ -1288,11 +1298,11 @@ mod tests {
 	}
 
 	fn generate_p2wsh_script_pubkey() -> ScriptBuf {
-		Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_v0_p2wsh()
+		Builder::new().push_opcode(opcodes::OP_TRUE).into_script().to_p2wsh()
 	}
 
 	fn generate_p2wpkh_script_pubkey() -> ScriptBuf {
-		ScriptBuf::new_v0_p2wpkh(&WPubkeyHash::from_slice(&[1; 20]).unwrap())
+		ScriptBuf::new_p2wpkh(&WPubkeyHash::from_slice(&[1; 20]).unwrap())
 	}
 
 	fn generate_outputs(outputs: &[TestOutput]) -> Vec<TxOut> {
@@ -1348,7 +1358,7 @@ mod tests {
 	}
 
 	fn generate_non_witness_output(value: u64) -> TxOut {
-		TxOut { value, script_pubkey: generate_p2sh_script_pubkey() }
+		TxOut { value: Amount::from_sat(value), script_pubkey: generate_p2sh_script_pubkey() }
 	}
 
 	#[test]

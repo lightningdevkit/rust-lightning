@@ -87,8 +87,7 @@ use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-use bitcoin::bech32;
-use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};
+use bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, WithoutLength, Writeable, Writer};
 
@@ -1021,7 +1020,7 @@ impl<T: sealed::Context> Readable for WithoutLength<Features<T>> {
 #[cfg(test)]
 mod tests {
 	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, Bolt11InvoiceFeatures, NodeFeatures, OfferFeatures, sealed};
-	use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, u5};
+	use bech32::{Base32Len, FromBase32, ToBase32, u5};
 	use crate::util::ser::{Readable, WithoutLength, Writeable};
 
 	#[test]

@@ -162,8 +162,7 @@ impl From<PaymentPreimage> for PaymentHash {
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
 pub struct PaymentSecret(pub [u8; 32]);
 
-use bitcoin::bech32;
-use bitcoin::bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
+use bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
 
 impl FromBase32 for PaymentSecret {
 	type Err = bech32::Error;

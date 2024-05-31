@@ -82,6 +82,10 @@ def check_target_os(os):
 def check_cfg_tag(cfg):
     if cfg == "fuzzing":
         pass
+    elif cfg == "secp256k1_fuzz":
+        pass
+    elif cfg == "hashes_fuzz":
+        pass
     elif cfg == "test":
         pass
     elif cfg == "debug_assertions":

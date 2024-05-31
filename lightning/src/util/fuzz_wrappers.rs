@@ -12,13 +12,13 @@ macro_rules! hash_to_message {
 		{
 			#[cfg(not(fuzzing))]
 			{
-				::bitcoin::secp256k1::Message::from_slice($slice).unwrap()
+				::bitcoin::secp256k1::Message::from_digest_slice($slice).unwrap()
 			}
 			#[cfg(fuzzing)]
 			{
-				match ::bitcoin::secp256k1::Message::from_slice($slice) {
+				match ::bitcoin::secp256k1::Message::from_digest_slice($slice) {
 					Ok(msg) => msg,
-					Err(_) => ::bitcoin::secp256k1::Message::from_slice(&[1; 32]).unwrap()
+					Err(_) => ::bitcoin::secp256k1::Message::from_digest([1; 32])
 				}
 			}
 		}

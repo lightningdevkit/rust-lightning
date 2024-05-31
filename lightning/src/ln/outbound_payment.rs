@@ -1850,7 +1850,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::network::constants::Network;
+	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	use core::time::Duration;

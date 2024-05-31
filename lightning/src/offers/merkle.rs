@@ -54,7 +54,7 @@ impl TaggedHash {
 	) -> Self {
 		let tag_hash = sha256::Hash::hash(tag.as_bytes());
 		let merkle_root = root_hash(tlv_stream);
-		let digest = Message::from_slice(tagged_hash(tag_hash, merkle_root).as_byte_array()).unwrap();
+		let digest = Message::from_digest(tagged_hash(tag_hash, merkle_root).to_byte_array());
 		Self {
 			tag,
 			merkle_root,
@@ -305,7 +305,7 @@ mod tests {
 
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::secp256k1::{KeyPair, Message, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 	use bitcoin::secp256k1::schnorr::Signature;
 	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
@@ -338,11 +338,11 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4141414141414141414141414141414141414141414141414141414141414141").unwrap()).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
+			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 		let payer_keys = {
 			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4242424242424242424242424242424242424242424242424242424242424242").unwrap()).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key)
+			Keypair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
 		// BOLT 12 test vectors
@@ -384,8 +384,7 @@ mod tests {
                 let tagged_hash = unsigned_invoice_request.as_ref();
                 let expected_digest = unsigned_invoice_request.as_ref().as_digest();
                 let tag = sha256::Hash::hash(tagged_hash.tag().as_bytes());
-                let actual_digest = Message::from_slice(super::tagged_hash(tag, tagged_hash.merkle_root()).as_byte_array())
-                        .unwrap();
+                let actual_digest = Message::from_digest(super::tagged_hash(tag, tagged_hash.merkle_root()).to_byte_array());
                 assert_eq!(*expected_digest, actual_digest);
         }
 
@@ -394,11 +393,11 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
+			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 		let payer_keys = {
 			let secret_key = SecretKey::from_slice(&[42; 32]).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key)
+			Keypair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
@@ -426,11 +425,11 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key).public_key()
+			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 		let payer_keys = {
 			let secret_key = SecretKey::from_slice(&[42; 32]).unwrap();
-			KeyPair::from_secret_key(&secp_ctx, &secret_key)
+			Keypair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
