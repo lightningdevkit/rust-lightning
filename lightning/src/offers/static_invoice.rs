@@ -563,19 +563,20 @@ mod tests {
 	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 	use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
+	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice::InvoiceTlvStreamRef;
 	use crate::offers::merkle;
 	use crate::offers::merkle::{SignatureTlvStreamRef, TaggedHash};
 	use crate::offers::offer::{Offer, OfferBuilder, OfferTlvStreamRef, Quantity};
-	use crate::offers::parse::Bolt12SemanticError;
+	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::static_invoice::{
 		StaticInvoice, StaticInvoiceBuilder, DEFAULT_RELATIVE_EXPIRY, SIGNATURE_TAG,
 	};
 	use crate::offers::test_utils::*;
 	use crate::sign::KeyMaterial;
-	use crate::util::ser::{Iterable, Writeable};
+	use crate::util::ser::{BigSize, Iterable, Writeable};
 	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::secp256k1::Secp256k1;
+	use bitcoin::secp256k1::{self, Secp256k1};
 	use bitcoin::Network;
 	use core::time::Duration;
 
@@ -591,6 +592,43 @@ mod tests {
 				SignatureTlvStreamRef { signature: Some(&self.signature) },
 			)
 		}
+	}
+
+	fn tlv_stream_to_bytes(
+		tlv_stream: &(OfferTlvStreamRef, InvoiceTlvStreamRef, SignatureTlvStreamRef),
+	) -> Vec<u8> {
+		let mut buffer = Vec::new();
+		tlv_stream.0.write(&mut buffer).unwrap();
+		tlv_stream.1.write(&mut buffer).unwrap();
+		tlv_stream.2.write(&mut buffer).unwrap();
+		buffer
+	}
+
+	fn invoice() -> StaticInvoice {
+		let node_id = recipient_pubkey();
+		let payment_paths = payment_paths();
+		let now = now();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let offer =
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+				.path(blinded_path())
+				.build()
+				.unwrap();
+
+		StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths.clone(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		)
+		.unwrap()
+		.build_and_sign(&secp_ctx)
+		.unwrap()
 	}
 
 	fn blinded_path() -> BlindedPath {
@@ -901,6 +939,233 @@ mod tests {
 			assert_eq!(e, Bolt12SemanticError::UnexpectedChain);
 		} else {
 			panic!("expected error")
+		}
+	}
+
+	#[test]
+	fn parses_invoice_with_relative_expiry() {
+		let node_id = recipient_pubkey();
+		let payment_paths = payment_paths();
+		let now = now();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let offer =
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+				.path(blinded_path())
+				.build()
+				.unwrap();
+
+		const TEST_RELATIVE_EXPIRY: u32 = 3600;
+		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths.clone(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		)
+		.unwrap()
+		.relative_expiry(TEST_RELATIVE_EXPIRY)
+		.build_and_sign(&secp_ctx)
+		.unwrap();
+
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+
+		match StaticInvoice::try_from(buffer) {
+			Ok(invoice) => assert_eq!(
+				invoice.relative_expiry(),
+				Duration::from_secs(TEST_RELATIVE_EXPIRY as u64)
+			),
+			Err(e) => panic!("error parsing invoice: {:?}", e),
+		}
+	}
+
+	#[test]
+	fn parses_invoice_with_allow_mpp() {
+		let node_id = recipient_pubkey();
+		let payment_paths = payment_paths();
+		let now = now();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let offer =
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+				.path(blinded_path())
+				.build()
+				.unwrap();
+
+		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths.clone(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		)
+		.unwrap()
+		.allow_mpp()
+		.build_and_sign(&secp_ctx)
+		.unwrap();
+
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+
+		match StaticInvoice::try_from(buffer) {
+			Ok(invoice) => {
+				let mut features = Bolt12InvoiceFeatures::empty();
+				features.set_basic_mpp_optional();
+				assert_eq!(invoice.invoice_features(), &features);
+			},
+			Err(e) => panic!("error parsing invoice: {:?}", e),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_missing_invoice_fields() {
+		// Error if `created_at` is missing.
+		let missing_created_at_invoice = invoice();
+		let mut tlv_stream = missing_created_at_invoice.as_tlv_stream();
+		tlv_stream.1.created_at = None;
+		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingCreationTime)
+				);
+			},
+		}
+
+		// Error if `node_id` is missing.
+		let missing_node_id_invoice = invoice();
+		let mut tlv_stream = missing_node_id_invoice.as_tlv_stream();
+		tlv_stream.1.node_id = None;
+		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey)
+				);
+			},
+		}
+
+		// Error if message paths are missing.
+		let missing_message_paths_invoice = invoice();
+		let mut tlv_stream = missing_message_paths_invoice.as_tlv_stream();
+		tlv_stream.1.message_paths = None;
+		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPaths)
+				);
+			},
+		}
+
+		// Error if signature is missing.
+		let invoice = invoice();
+		let mut buffer = Vec::new();
+		invoice.contents.as_tlv_stream().write(&mut buffer).unwrap();
+		match StaticInvoice::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)
+			),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invalid_signing_pubkey() {
+		let invoice = invoice();
+		let invalid_pubkey = payer_pubkey();
+		let mut tlv_stream = invoice.as_tlv_stream();
+		tlv_stream.1.node_id = Some(&invalid_pubkey);
+
+		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidSigningPubkey)
+				);
+			},
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_with_invalid_signature() {
+		let mut invoice = invoice();
+		let last_signature_byte = invoice.bytes.last_mut().unwrap();
+		*last_signature_byte = last_signature_byte.wrapping_add(1);
+
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+
+		match StaticInvoice::try_from(buffer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSignature(secp256k1::Error::InvalidSignature)
+				);
+			},
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_with_extra_tlv_records() {
+		let invoice = invoice();
+		let mut encoded_invoice = Vec::new();
+		invoice.write(&mut encoded_invoice).unwrap();
+		BigSize(1002).write(&mut encoded_invoice).unwrap();
+		BigSize(32).write(&mut encoded_invoice).unwrap();
+		[42u8; 32].write(&mut encoded_invoice).unwrap();
+
+		match StaticInvoice::try_from(encoded_invoice) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_with_invalid_offer_fields() {
+		// Error if the offer is missing paths.
+		let missing_offer_paths_invoice = invoice();
+		let mut tlv_stream = missing_offer_paths_invoice.as_tlv_stream();
+		tlv_stream.0.paths = None;
+		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPaths)
+				);
+			},
+		}
+
+		// Error if the offer has more than one chain.
+		let invalid_offer_chains_invoice = invoice();
+		let mut tlv_stream = invalid_offer_chains_invoice.as_tlv_stream();
+		let invalid_chains = vec![
+			ChainHash::using_genesis_block(Network::Bitcoin),
+			ChainHash::using_genesis_block(Network::Testnet),
+		];
+		tlv_stream.0.chains = Some(&invalid_chains);
+		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedChain)
+				);
+			},
 		}
 	}
 }
