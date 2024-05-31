@@ -71,7 +71,7 @@ use std::cell::RefCell;
 use std::convert::TryInto;
 use std::cmp;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
+use std::sync::atomic::{AtomicU64,AtomicUsize,AtomicBool,Ordering};
 use bech32::u5;
 
 #[inline]
@@ -98,6 +98,7 @@ pub fn slice_to_be24(v: &[u8]) -> u32 {
 struct InputData {
 	data: Vec<u8>,
 	read_pos: AtomicUsize,
+	halt_fee_est_reads: AtomicBool,
 }
 impl InputData {
 	fn get_slice(&self, len: usize) -> Option<&[u8]> {
@@ -124,6 +125,9 @@ struct FuzzEstimator {
 }
 impl FeeEstimator for FuzzEstimator {
 	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
+		if self.input.halt_fee_est_reads.load(Ordering::Acquire) {
+			return 253;
+		}
 		//TODO: We should actually be testing at least much more than 64k...
 		match self.input.get_slice(2) {
 			Some(slice) => cmp::max(slice_to_be16(slice) as u32, 253),
@@ -446,6 +450,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),
+		halt_fee_est_reads: AtomicBool::new(false),
 	});
 	let fee_est = Arc::new(FuzzEstimator {
 		input: input.clone(),
@@ -703,10 +708,12 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			11 => {
 				let mut txn = broadcast.txn_broadcasted.lock().unwrap().split_off(0);
 				if !txn.is_empty() {
+					input.halt_fee_est_reads.store(true, Ordering::Release);
 					loss_detector.connect_block(&txn[..]);
 					for _ in 2..100 {
 						loss_detector.connect_block(&[]);
 					}
+					input.halt_fee_est_reads.store(false, Ordering::Release);
 				}
 				for tx in txn.drain(..) {
 					loss_detector.funding_txn.push(tx);
