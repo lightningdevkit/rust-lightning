@@ -1067,6 +1067,14 @@ impl<'a> DirectedChannelInfo<'a> {
 	/// Refers to the `node_id` receiving the payment from the previous hop.
 	#[inline]
 	pub fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
+
+	/// Returns the source node's counter
+	#[inline]
+	pub(super) fn source_counter(&self) -> u32 { if self.from_node_one { self.channel.node_one_counter } else { self.channel.node_two_counter } }
+
+	/// Returns the target node's counter
+	#[inline]
+	pub(super) fn target_counter(&self) -> u32 { if self.from_node_one { self.channel.node_two_counter } else { self.channel.node_one_counter } }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
