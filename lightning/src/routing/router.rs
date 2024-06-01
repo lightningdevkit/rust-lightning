@@ -1990,39 +1990,6 @@ where L::Target: Logger {
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	let introduction_node_id_cache = payment_params.payee.blinded_route_hints().iter()
-		.map(|(_, path)| path.public_introduction_node_id(network_graph))
-		.collect::<Vec<_>>();
-	match &payment_params.payee {
-		Payee::Clear { route_hints, node_id, .. } => {
-			for route in route_hints.iter() {
-				for hop in &route.0 {
-					if hop.src_node_id == *node_id {
-						return Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError});
-					}
-				}
-			}
-		},
-		Payee::Blinded { route_hints, .. } => {
-			if introduction_node_id_cache.iter().all(|introduction_node_id| *introduction_node_id == Some(&our_node_id)) {
-				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
-			}
-			for ((_, blinded_path), introduction_node_id) in route_hints.iter().zip(introduction_node_id_cache.iter()) {
-				if blinded_path.blinded_hops.len() == 0 {
-					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
-				} else if *introduction_node_id == Some(&our_node_id) {
-					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
-				} else if blinded_path.blinded_hops.len() == 1 &&
-					route_hints
-						.iter().zip(introduction_node_id_cache.iter())
-						.filter(|((_, p), _)| p.blinded_hops.len() == 1)
-						.any(|(_, p_introduction_node_id)| p_introduction_node_id != introduction_node_id)
-				{
-					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
-				}
-			}
-		}
-	}
 	let final_cltv_expiry_delta = payment_params.payee.final_cltv_expiry_delta().unwrap_or(0);
 	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
 		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
@@ -2139,10 +2106,10 @@ where L::Target: Logger {
 		}
 	}
 
-	// Step (1).
-	// Prepare the data we'll use for payee-to-payer search by
-	// inserting first hops suggested by the caller as targets.
-	// Our search will then attempt to reach them while traversing from the payee node.
+	// Step (1). Prepare first and last hop targets.
+	//
+	// First cache all our direct channels so that we can insert them in the heap at startup.
+	// Then process any blinded routes, resolving their introduction node and caching it.
 	let mut first_hop_targets: HashMap<_, Vec<&ChannelDetails>> =
 		hash_map_with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 	if let Some(hops) = first_hops {
@@ -2169,6 +2136,68 @@ where L::Target: Logger {
 	}
 
 	let node_counters = node_counter_builder.build();
+
+	let introduction_node_id_cache = payment_params.payee.blinded_route_hints().iter()
+		.map(|(_, path)| {
+			match &path.introduction_node {
+				IntroductionNode::NodeId(pubkey) => {
+					// Note that this will only return `Some` if the `pubkey` is somehow known to
+					// us (i.e. a channel counterparty or in the network graph).
+					node_counters.node_counter_from_id(&NodeId::from_pubkey(&pubkey))
+				},
+				IntroductionNode::DirectedShortChannelId(direction, scid) => {
+					path.public_introduction_node_id(network_graph)
+						.map(|node_id_ref| *node_id_ref)
+						.or_else(|| {
+							first_hop_targets.iter().find(|(_, channels)|
+								channels
+									.iter()
+									.any(|details| Some(*scid) == details.get_outbound_payment_scid())
+							).map(|(cp, _)| direction.select_node_id(our_node_id, *cp))
+						})
+						.and_then(|node_id| node_counters.node_counter_from_id(&node_id))
+				},
+			}
+		})
+		.collect::<Vec<_>>();
+	match &payment_params.payee {
+		Payee::Clear { route_hints, node_id, .. } => {
+			for route in route_hints.iter() {
+				for hop in &route.0 {
+					if hop.src_node_id == *node_id {
+						return Err(LightningError {
+							err: "Route hint cannot have the payee as the source.".to_owned(),
+							action: ErrorAction::IgnoreError
+						});
+					}
+				}
+			}
+		},
+		Payee::Blinded { route_hints, .. } => {
+			if introduction_node_id_cache.iter().all(|info_opt| info_opt.map(|(a, _)| a) == Some(&our_node_id)) {
+				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
+			}
+			for ((_, blinded_path), info_opt) in route_hints.iter().zip(introduction_node_id_cache.iter()) {
+				if blinded_path.blinded_hops.len() == 0 {
+					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
+				}
+				let introduction_node_id = match info_opt {
+					None => continue,
+					Some(info) => info.0,
+				};
+				if *introduction_node_id == our_node_id {
+					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
+				} else if blinded_path.blinded_hops.len() == 1 &&
+					route_hints
+						.iter().zip(introduction_node_id_cache.iter())
+						.filter(|((_, p), _)| p.blinded_hops.len() == 1)
+						.any(|(_, iter_info_opt)| iter_info_opt.is_some() && iter_info_opt != info_opt)
+				{
+					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
+				}
+			}
+		}
+	}
 
 	// The main heap containing all candidate next-hops sorted by their score (max(fee,
 	// htlc_minimum)). Ideally this would be a heap which allowed cheap score reduction instead of
@@ -2667,35 +2696,17 @@ where L::Target: Logger {
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
+		debug_assert_eq!(
+			payment_params.payee.blinded_route_hints().len(),
+			introduction_node_id_cache.len(),
+			"introduction_node_id_cache was built by iterating the blinded_route_hints, so they should be the same len"
+		);
 		for (hint_idx, hint) in payment_params.payee.blinded_route_hints().iter().enumerate() {
 			// Only add the hops in this route to our candidate set if either
 			// we have a direct channel to the first hop or the first hop is
 			// in the regular network graph.
-			let source_node_id = match introduction_node_id_cache[hint_idx] {
-				Some(node_id) => node_id,
-				None => match &hint.1.introduction_node {
-					IntroductionNode::NodeId(pubkey) => {
-						let node_id = NodeId::from_pubkey(&pubkey);
-						match first_hop_targets.get_key_value(&node_id).map(|(key, _)| key) {
-							Some(node_id) => node_id,
-							None => continue,
-						}
-					},
-					IntroductionNode::DirectedShortChannelId(direction, scid) => {
-						let first_hop = first_hop_targets.iter().find(|(_, channels)|
-							channels
-								.iter()
-								.any(|details| Some(*scid) == details.get_outbound_payment_scid())
-						);
-						match first_hop {
-							Some((counterparty_node_id, _)) => {
-								direction.select_node_id(&our_node_id, counterparty_node_id)
-							},
-							None => continue,
-						}
-					},
-				},
-			};
+			let source_node_opt = introduction_node_id_cache[hint_idx];
+			let (source_node_id, _source_node_counter) = if let Some(v) = source_node_opt { v } else { continue };
 			if our_node_id == *source_node_id { continue }
 			let candidate = if hint.1.blinded_hops.len() == 1 {
 				CandidateRouteHop::OneHopBlinded(
@@ -2710,10 +2721,9 @@ where L::Target: Logger {
 			{
 				path_contribution_msat = hop_used_msat;
 			} else { continue }
-			if let Some(first_channels) = first_hop_targets.get(source_node_id) {
-				let mut first_channels = first_channels.clone();
+			if let Some(first_channels) = first_hop_targets.get_mut(source_node_id) {
 				sort_first_hop_channels(
-					&mut first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+					first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
 				);
 				for details in first_channels {
 					let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
@@ -2811,10 +2821,9 @@ where L::Target: Logger {
 						.saturating_add(1);
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
-					if let Some(first_channels) = first_hop_targets.get(target) {
-						let mut first_channels = first_channels.clone();
+					if let Some(first_channels) = first_hop_targets.get_mut(target) {
 						sort_first_hop_channels(
-							&mut first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+							first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
 						);
 						for details in first_channels {
 							let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
@@ -2860,10 +2869,9 @@ where L::Target: Logger {
 						// Note that we *must* check if the last hop was added as `add_entry`
 						// always assumes that the third argument is a node to which we have a
 						// path.
-						if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&hop.src_node_id)) {
-							let mut first_channels = first_channels.clone();
+						if let Some(first_channels) = first_hop_targets.get_mut(&NodeId::from_pubkey(&hop.src_node_id)) {
 							sort_first_hop_channels(
-								&mut first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+								first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
 							);
 							for details in first_channels {
 								let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
@@ -7726,7 +7734,7 @@ mod tests {
 		};
 
 		let mut invalid_blinded_path_2 = invalid_blinded_path.clone();
-		invalid_blinded_path_2.introduction_node = IntroductionNode::NodeId(ln_test_utils::pubkey(45));
+		invalid_blinded_path_2.introduction_node = IntroductionNode::NodeId(nodes[3]);
 		let payment_params = PaymentParameters::blinded(vec![
 			(blinded_payinfo.clone(), invalid_blinded_path.clone()),
 			(blinded_payinfo.clone(), invalid_blinded_path_2)]);
