@@ -1129,9 +1129,11 @@ pub enum Event {
 	/// * When an unknown SCID is requested for forwarding a payment.
 	/// * Expected MPP amount has already been reached
 	/// * The HTLC has timed out
+	/// * The HTLC failed to meet the forwarding requirements (i.e. insufficient fees paid, or a
+	/// CLTV that is too soon)
 	///
-	/// This event, however, does not get generated if an HTLC fails to meet the forwarding
-	/// requirements (i.e. insufficient fees paid, or a CLTV that is too soon).
+	/// The list above is not meant to cover all scenarios. This event should be expected for each
+	/// incoming HTLC that has been fully committed but we failed to handle.
 	HTLCHandlingFailed {
 		/// The channel over which the HTLC was received.
 		prev_channel_id: ChannelId,
