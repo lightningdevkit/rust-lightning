@@ -2168,20 +2168,6 @@ where L::Target: Logger {
 		}
 	}
 
-	let mut private_hop_key_cache = hash_map_with_capacity(
-		payment_params.payee.unblinded_route_hints().iter().map(|path| path.0.len()).sum()
-	);
-
-	// Because we store references to private hop node_ids in `dist`, below, we need them to exist
-	// (as `NodeId`, not `PublicKey`) for the lifetime of `dist`. Thus, we calculate all the keys
-	// we'll need here and simply fetch them when routing.
-	private_hop_key_cache.insert(maybe_dummy_payee_pk, NodeId::from_pubkey(&maybe_dummy_payee_pk));
-	for route in payment_params.payee.unblinded_route_hints().iter() {
-		for hop in route.0.iter() {
-			private_hop_key_cache.insert(hop.src_node_id, NodeId::from_pubkey(&hop.src_node_id));
-		}
-	}
-
 	let node_counters = node_counter_builder.build();
 
 	// The main heap containing all candidate next-hops sorted by their score (max(fee,
@@ -2770,7 +2756,9 @@ where L::Target: Logger {
 				let mut aggregate_path_contribution_msat = path_value_msat;
 
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
-					let target = private_hop_key_cache.get(prev_hop_id).unwrap();
+					let (target, _private_target_node_counter) =
+						node_counters.private_node_counter_from_pubkey(&prev_hop_id)
+							.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys during setup, so is always Some here");
 
 					if let Some(first_channels) = first_hop_targets.get(target) {
 						if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {
