@@ -306,7 +306,7 @@ impl_writeable!(BlindedHop, {
 
 impl Direction {
 	/// Returns the [`NodeId`] from the inputs corresponding to the direction.
-	pub fn select_node_id<'a>(&self, node_a: &'a NodeId, node_b: &'a NodeId) -> &'a NodeId {
+	pub fn select_node_id(&self, node_a: NodeId, node_b: NodeId) -> NodeId {
 		match self {
 			Direction::NodeOne => core::cmp::min(node_a, node_b),
 			Direction::NodeTwo => core::cmp::max(node_a, node_b),

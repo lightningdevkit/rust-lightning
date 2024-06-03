@@ -40,7 +40,6 @@ use crate::io_extras::{copy, sink};
 use crate::prelude::*;
 use core::{cmp, fmt};
 use crate::sync::{RwLock, RwLockReadGuard, LockTestExt};
-#[cfg(feature = "std")]
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Mutex;
 use core::ops::{Bound, Deref};
@@ -65,7 +64,7 @@ const MAX_EXCESS_BYTES_FOR_RELAY: usize = 1024;
 const MAX_SCIDS_PER_REPLY: usize = 8000;
 
 /// Represents the compressed public key of a node
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct NodeId([u8; PUBLIC_KEY_SIZE]);
 
 impl NodeId {
@@ -114,14 +113,6 @@ impl fmt::Display for NodeId {
 impl core::hash::Hash for NodeId {
 	fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
 		self.0.hash(hasher);
-	}
-}
-
-impl Eq for NodeId {}
-
-impl PartialEq for NodeId {
-	fn eq(&self, other: &Self) -> bool {
-		self.0[..] == other.0[..]
 	}
 }
 
@@ -184,6 +175,8 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	// Lock order: channels -> nodes
 	channels: RwLock<IndexedMap<u64, ChannelInfo>>,
 	nodes: RwLock<IndexedMap<NodeId, NodeInfo>>,
+	removed_node_counters: Mutex<Vec<u32>>,
+	next_node_counter: AtomicUsize,
 	// Lock order: removed_channels -> removed_nodes
 	//
 	// NOTE: In the following `removed_*` maps, we use seconds since UNIX epoch to track time instead
@@ -211,6 +204,7 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 pub struct ReadOnlyNetworkGraph<'a> {
 	channels: RwLockReadGuard<'a, IndexedMap<u64, ChannelInfo>>,
 	nodes: RwLockReadGuard<'a, IndexedMap<NodeId, NodeInfo>>,
+	max_node_counter: u32,
 }
 
 /// Update to the [`NetworkGraph`] based on payment failure information conveyed via the Onion
@@ -766,22 +760,32 @@ where
 	}
 }
 
+// Fetching values from this struct is very performance sensitive during routefinding. Thus, we
+// want to ensure that all of the fields we care about (all of them except `last_update_message`)
+// sit on the same cache line.
+//
+// We do this by using `repr(C)`, which forces the struct to be laid out in memory the way we write
+// it (ensuring `last_update_message` hangs off the end and no fields are reordered after it), and
+// `align(32)`, ensuring the struct starts either at the start, or in the middle, of a 64b x86-64
+// cache line. This ensures the beginning fields (which are 31 bytes) all sit in the same cache
+// line.
+#[repr(C, align(32))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Details about one direction of a channel as received within a [`ChannelUpdate`].
 pub struct ChannelUpdateInfo {
-	/// When the last update to the channel direction was issued.
-	/// Value is opaque, as set in the announcement.
-	pub last_update: u32,
-	/// Whether the channel can be currently used for payments (in this one direction).
-	pub enabled: bool,
-	/// The difference in CLTV values that you must have when routing through this channel.
-	pub cltv_expiry_delta: u16,
 	/// The minimum value, which must be relayed to the next hop via the channel
 	pub htlc_minimum_msat: u64,
 	/// The maximum value which may be relayed to the next hop via the channel.
 	pub htlc_maximum_msat: u64,
 	/// Fees charged when the channel is used for routing
 	pub fees: RoutingFees,
+	/// When the last update to the channel direction was issued.
+	/// Value is opaque, as set in the announcement.
+	pub last_update: u32,
+	/// The difference in CLTV values that you must have when routing through this channel.
+	pub cltv_expiry_delta: u16,
+	/// Whether the channel can be currently used for payments (in this one direction).
+	pub enabled: bool,
 	/// Most recent update for the channel received from the network
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
@@ -849,22 +853,46 @@ impl Readable for ChannelUpdateInfo {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Fetching values from this struct is very performance sensitive during routefinding. Thus, we
+// want to ensure that all of the fields we care about (all of them except `last_update_message`
+// and `announcement_received_time`) sit on the same cache line.
+//
+// Sadly, this is not possible, however we can still do okay - all of the fields before
+// `one_to_two` and `two_to_one` are just under 128 bytes long, so we can ensure they sit on
+// adjacent cache lines (which are generally fetched together in x86_64 processors).
+//
+// This leaves only the two directional channel info structs on separate cache lines.
+//
+// We accomplish this using `repr(C)`, which forces the struct to be laid out in memory the way we
+// write it (ensuring the fields we care about are at the start of the struct) and `align(128)`,
+// ensuring the struct starts at the beginning of two adjacent 64b x86-64 cache lines.
+#[repr(align(128), C)]
+#[derive(Clone, Debug, Eq)]
 /// Details about a channel (both directions).
 /// Received within a channel announcement.
 pub struct ChannelInfo {
 	/// Protocol features of a channel communicated during its announcement
 	pub features: ChannelFeatures,
+
 	/// Source node of the first direction of a channel
 	pub node_one: NodeId,
-	/// Details about the first direction of a channel
-	pub one_to_two: Option<ChannelUpdateInfo>,
+
 	/// Source node of the second direction of a channel
 	pub node_two: NodeId,
-	/// Details about the second direction of a channel
-	pub two_to_one: Option<ChannelUpdateInfo>,
+
+	/// The [`NodeInfo::node_counter`] of the node pointed to by [`Self::node_one`].
+	pub(crate) node_one_counter: u32,
+	/// The [`NodeInfo::node_counter`] of the node pointed to by [`Self::node_two`].
+	pub(crate) node_two_counter: u32,
+
 	/// The channel capacity as seen on-chain, if chain lookup is available.
 	pub capacity_sats: Option<u64>,
+
+	/// Details about the first direction of a channel
+	pub one_to_two: Option<ChannelUpdateInfo>,
+	/// Details about the second direction of a channel
+	pub two_to_one: Option<ChannelUpdateInfo>,
+
 	/// An initial announcement of the channel
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
@@ -874,6 +902,19 @@ pub struct ChannelInfo {
 	/// (which we can probably assume we are - no-std environments probably won't have a full
 	/// network graph in memory!).
 	announcement_received_time: u64,
+}
+
+impl PartialEq for ChannelInfo {
+	fn eq(&self, o: &ChannelInfo) -> bool {
+		self.features == o.features &&
+			self.node_one == o.node_one &&
+			self.one_to_two == o.one_to_two &&
+			self.node_two == o.node_two &&
+			self.two_to_one == o.two_to_one &&
+			self.capacity_sats == o.capacity_sats &&
+			self.announcement_message == o.announcement_message &&
+			self.announcement_received_time == o.announcement_received_time
+	}
 }
 
 impl ChannelInfo {
@@ -994,6 +1035,8 @@ impl Readable for ChannelInfo {
 			capacity_sats: _init_tlv_based_struct_field!(capacity_sats, required),
 			announcement_message: _init_tlv_based_struct_field!(announcement_message, required),
 			announcement_received_time: _init_tlv_based_struct_field!(announcement_received_time, (default_value, 0)),
+			node_one_counter: u32::max_value(),
+			node_two_counter: u32::max_value(),
 		})
 	}
 }
@@ -1004,6 +1047,8 @@ impl Readable for ChannelInfo {
 pub struct DirectedChannelInfo<'a> {
 	channel: &'a ChannelInfo,
 	direction: &'a ChannelUpdateInfo,
+	source_counter: u32,
+	target_counter: u32,
 	/// The direction this channel is in - if set, it indicates that we're traversing the channel
 	/// from [`ChannelInfo::node_one`] to [`ChannelInfo::node_two`].
 	from_node_one: bool,
@@ -1012,7 +1057,12 @@ pub struct DirectedChannelInfo<'a> {
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
 	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo, from_node_one: bool) -> Self {
-		Self { channel, direction, from_node_one }
+		let (source_counter, target_counter) = if from_node_one {
+			(channel.node_one_counter, channel.node_two_counter)
+		} else {
+			(channel.node_two_counter, channel.node_one_counter)
+		};
+		Self { channel, direction, from_node_one, source_counter, target_counter }
 	}
 
 	/// Returns information for the channel.
@@ -1053,6 +1103,14 @@ impl<'a> DirectedChannelInfo<'a> {
 	/// Refers to the `node_id` receiving the payment from the previous hop.
 	#[inline]
 	pub fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
+
+	/// Returns the source node's counter
+	#[inline(always)]
+	pub(super) fn source_counter(&self) -> u32 { self.source_counter }
+
+	/// Returns the target node's counter
+	#[inline(always)]
+	pub(super) fn target_counter(&self) -> u32 { self.target_counter }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
@@ -1234,7 +1292,7 @@ impl Readable for NodeAlias {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 /// Details about a node in the network, known from the network announcement.
 pub struct NodeInfo {
 	/// All valid channels a node has announced
@@ -1242,7 +1300,19 @@ pub struct NodeInfo {
 	/// More information about a node from node_announcement.
 	/// Optional because we store a Node entry after learning about it from
 	/// a channel announcement, but before receiving a node announcement.
-	pub announcement_info: Option<NodeAnnouncementInfo>
+	pub announcement_info: Option<NodeAnnouncementInfo>,
+	/// In memory, each node is assigned a unique ID. They are eagerly reused, ensuring they remain
+	/// relatively dense.
+	///
+	/// These IDs allow the router to avoid a `HashMap` lookup by simply using this value as an
+	/// index in a `Vec`, skipping a big step in some of the hottest code when routing.
+	pub(crate) node_counter: u32,
+}
+
+impl PartialEq for NodeInfo {
+	fn eq(&self, o: &NodeInfo) -> bool {
+		self.channels == o.channels && self.announcement_info == o.announcement_info
+	}
 }
 
 impl NodeInfo {
@@ -1312,6 +1382,7 @@ impl Readable for NodeInfo {
 		Ok(NodeInfo {
 			announcement_info: announcement_info_wrap.map(|w| w.0),
 			channels,
+			node_counter: u32::max_value(),
 		})
 	}
 }
@@ -1321,6 +1392,8 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 
 impl<L: Deref> Writeable for NetworkGraph<L> where L::Target: Logger {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.test_node_counter_consistency();
+
 		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
 
 		self.chain_hash.write(writer)?;
@@ -1355,16 +1428,25 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 		let mut channels = IndexedMap::with_capacity(cmp::min(channels_count as usize, 22500));
 		for _ in 0..channels_count {
 			let chan_id: u64 = Readable::read(reader)?;
-			let chan_info = Readable::read(reader)?;
+			let chan_info: ChannelInfo = Readable::read(reader)?;
 			channels.insert(chan_id, chan_info);
 		}
 		let nodes_count: u64 = Readable::read(reader)?;
+		if nodes_count > u32::max_value() as u64 / 2 { return Err(DecodeError::InvalidValue); }
 		// In Nov, 2023 there were about 69K channels; we cap allocations to 1.5x that.
 		let mut nodes = IndexedMap::with_capacity(cmp::min(nodes_count as usize, 103500));
-		for _ in 0..nodes_count {
+		for i in 0..nodes_count {
 			let node_id = Readable::read(reader)?;
-			let node_info = Readable::read(reader)?;
+			let mut node_info: NodeInfo = Readable::read(reader)?;
+			node_info.node_counter = i as u32;
 			nodes.insert(node_id, node_info);
+		}
+
+		for (_, chan) in channels.unordered_iter_mut() {
+			chan.node_one_counter =
+				nodes.get(&chan.node_one).ok_or(DecodeError::InvalidValue)?.node_counter;
+			chan.node_two_counter =
+				nodes.get(&chan.node_two).ok_or(DecodeError::InvalidValue)?.node_counter;
 		}
 
 		let mut last_rapid_gossip_sync_timestamp: Option<u32> = None;
@@ -1378,6 +1460,8 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 			logger,
 			channels: RwLock::new(channels),
 			nodes: RwLock::new(nodes),
+			removed_node_counters: Mutex::new(Vec::new()),
+			next_node_counter: AtomicUsize::new(nodes_count as usize),
 			last_rapid_gossip_sync_timestamp: Mutex::new(last_rapid_gossip_sync_timestamp),
 			removed_nodes: Mutex::new(new_hash_map()),
 			removed_channels: Mutex::new(new_hash_map()),
@@ -1423,6 +1507,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			logger,
 			channels: RwLock::new(IndexedMap::new()),
 			nodes: RwLock::new(IndexedMap::new()),
+			next_node_counter: AtomicUsize::new(0),
+			removed_node_counters: Mutex::new(Vec::new()),
 			last_rapid_gossip_sync_timestamp: Mutex::new(None),
 			removed_channels: Mutex::new(new_hash_map()),
 			removed_nodes: Mutex::new(new_hash_map()),
@@ -1430,13 +1516,45 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		}
 	}
 
+	fn test_node_counter_consistency(&self) {
+		#[cfg(debug_assertions)] {
+			let channels = self.channels.read().unwrap();
+			let nodes = self.nodes.read().unwrap();
+			let removed_node_counters = self.removed_node_counters.lock().unwrap();
+			let next_counter = self.next_node_counter.load(Ordering::Acquire);
+			assert!(next_counter < (u32::max_value() as usize) / 2);
+			let mut used_node_counters = vec![0u8; next_counter / 8 + 1];
+
+			for counter in removed_node_counters.iter() {
+				let pos = (*counter as usize) / 8;
+				let bit = 1 << (counter % 8);
+				assert_eq!(used_node_counters[pos] & bit, 0);
+				used_node_counters[pos] |= bit;
+			}
+			for (_, node) in nodes.unordered_iter() {
+				assert!((node.node_counter as usize) < next_counter);
+				let pos = (node.node_counter as usize) / 8;
+				let bit = 1 << (node.node_counter % 8);
+				assert_eq!(used_node_counters[pos] & bit, 0);
+				used_node_counters[pos] |= bit;
+			}
+
+			for (_, chan) in channels.unordered_iter() {
+				assert_eq!(chan.node_one_counter, nodes.get(&chan.node_one).unwrap().node_counter);
+				assert_eq!(chan.node_two_counter, nodes.get(&chan.node_two).unwrap().node_counter);
+			}
+		}
+	}
+
 	/// Returns a read-only view of the network graph.
 	pub fn read_only(&'_ self) -> ReadOnlyNetworkGraph<'_> {
+		self.test_node_counter_consistency();
 		let channels = self.channels.read().unwrap();
 		let nodes = self.nodes.read().unwrap();
 		ReadOnlyNetworkGraph {
 			channels,
 			nodes,
+			max_node_counter: (self.next_node_counter.load(Ordering::Acquire) as u32).saturating_sub(1),
 		}
 	}
 
@@ -1585,6 +1703,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: timestamp,
+			node_one_counter: u32::max_value(),
+			node_two_counter: u32::max_value(),
 		};
 
 		self.add_channel_between_nodes(short_channel_id, channel_info, None)
@@ -1599,7 +1719,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 		log_gossip!(self.logger, "Adding channel {} between nodes {} and {}", short_channel_id, node_id_a, node_id_b);
 
-		match channels.entry(short_channel_id) {
+		let channel_entry = channels.entry(short_channel_id);
+		let channel_info = match channel_entry {
 			IndexedMapEntry::Occupied(mut entry) => {
 				//TODO: because asking the blockchain if short_channel_id is valid is only optional
 				//in the blockchain API, we need to handle it smartly here, though it's unclear
@@ -1613,26 +1734,37 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 					// b) we don't track UTXOs of channels we know about and remove them if they
 					//    get reorg'd out.
 					// c) it's unclear how to do so without exposing ourselves to massive DoS risk.
-					Self::remove_channel_in_nodes(&mut nodes, &entry.get(), short_channel_id);
+					self.remove_channel_in_nodes(&mut nodes, &entry.get(), short_channel_id);
 					*entry.get_mut() = channel_info;
+					entry.into_mut()
 				} else {
 					return Err(LightningError{err: "Already have knowledge of channel".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
 				}
 			},
 			IndexedMapEntry::Vacant(entry) => {
-				entry.insert(channel_info);
+				entry.insert(channel_info)
 			}
 		};
 
-		for current_node_id in [node_id_a, node_id_b].iter() {
+		let mut node_counter_id = [
+			(&mut channel_info.node_one_counter, node_id_a),
+			(&mut channel_info.node_two_counter, node_id_b)
+		];
+		for (node_counter, current_node_id) in node_counter_id.iter_mut() {
 			match nodes.entry(current_node_id.clone()) {
 				IndexedMapEntry::Occupied(node_entry) => {
-					node_entry.into_mut().channels.push(short_channel_id);
+					let node = node_entry.into_mut();
+					node.channels.push(short_channel_id);
+					**node_counter = node.node_counter;
 				},
 				IndexedMapEntry::Vacant(node_entry) => {
+					let mut removed_node_counters = self.removed_node_counters.lock().unwrap();
+					**node_counter = removed_node_counters.pop()
+						.unwrap_or(self.next_node_counter.fetch_add(1, Ordering::Relaxed) as u32);
 					node_entry.insert(NodeInfo {
 						channels: vec!(short_channel_id),
 						announcement_info: None,
+						node_counter: **node_counter,
 					});
 				}
 			};
@@ -1723,6 +1855,8 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			announcement_message: if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
 				{ full_msg.cloned() } else { None },
 			announcement_received_time,
+			node_one_counter: u32::max_value(),
+			node_two_counter: u32::max_value(),
 		};
 
 		self.add_channel_between_nodes(msg.short_channel_id, chan_info, utxo_value)?;
@@ -1751,7 +1885,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		if let Some(chan) = channels.remove(&short_channel_id) {
 			let mut nodes = self.nodes.write().unwrap();
 			self.removed_channels.lock().unwrap().insert(short_channel_id, current_time_unix);
-			Self::remove_channel_in_nodes(&mut nodes, &chan, short_channel_id);
+			self.remove_channel_in_nodes(&mut nodes, &chan, short_channel_id);
 		}
 	}
 
@@ -1770,6 +1904,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		let mut removed_nodes = self.removed_nodes.lock().unwrap();
 
 		if let Some(node) = nodes.remove(&node_id) {
+			let mut removed_node_counters = self.removed_node_counters.lock().unwrap();
 			for scid in node.channels.iter() {
 				if let Some(chan_info) = channels.remove(scid) {
 					let other_node_id = if node_id == chan_info.node_one { chan_info.node_two } else { chan_info.node_one };
@@ -1778,12 +1913,14 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 							*scid != *chan_id
 						});
 						if other_node_entry.get().channels.is_empty() {
+							removed_node_counters.push(other_node_entry.get().node_counter);
 							other_node_entry.remove_entry();
 						}
 					}
 					removed_channels.insert(*scid, current_time_unix);
 				}
 			}
+			removed_node_counters.push(node.node_counter);
 			removed_nodes.insert(node_id, current_time_unix);
 		}
 	}
@@ -1859,7 +1996,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			let mut nodes = self.nodes.write().unwrap();
 			for scid in scids_to_remove {
 				let info = channels.remove(&scid).expect("We just accessed this scid, it should be present");
-				Self::remove_channel_in_nodes(&mut nodes, &info, scid);
+				self.remove_channel_in_nodes(&mut nodes, &info, scid);
 				self.removed_channels.lock().unwrap().insert(scid, Some(current_time_unix));
 			}
 		}
@@ -2041,7 +2178,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		Ok(())
 	}
 
-	fn remove_channel_in_nodes(nodes: &mut IndexedMap<NodeId, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
+	fn remove_channel_in_nodes(&self, nodes: &mut IndexedMap<NodeId, NodeInfo>, chan: &ChannelInfo, short_channel_id: u64) {
 		macro_rules! remove_from_node {
 			($node_id: expr) => {
 				if let IndexedMapEntry::Occupied(mut entry) = nodes.entry($node_id) {
@@ -2049,6 +2186,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 						short_channel_id != *chan_id
 					});
 					if entry.get().channels.is_empty() {
+						self.removed_node_counters.lock().unwrap().push(entry.get().node_counter);
 						entry.remove_entry();
 					}
 				} else {
@@ -2105,6 +2243,11 @@ impl ReadOnlyNetworkGraph<'_> {
 	pub fn get_addresses(&self, pubkey: &PublicKey) -> Option<Vec<SocketAddress>> {
 		self.nodes.get(&NodeId::from_pubkey(&pubkey))
 			.and_then(|node| node.announcement_info.as_ref().map(|ann| ann.addresses().to_vec()))
+	}
+
+	/// Gets the maximum possible node_counter for a node in this graph
+	pub(crate) fn max_node_counter(&self) -> u32 {
+		self.max_node_counter
 	}
 }
 
@@ -3404,6 +3547,8 @@ pub(crate) mod tests {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: 87654,
+			node_one_counter: 0,
+			node_two_counter: 1,
 		};
 
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
@@ -3422,6 +3567,8 @@ pub(crate) mod tests {
 			capacity_sats: None,
 			announcement_message: None,
 			announcement_received_time: 87654,
+			node_one_counter: 0,
+			node_two_counter: 1,
 		};
 
 		let mut encoded_chan_info: Vec<u8> = Vec::new();
@@ -3476,6 +3623,7 @@ pub(crate) mod tests {
 		let valid_node_info = NodeInfo {
 			channels: Vec::new(),
 			announcement_info: Some(valid_node_ann_info),
+			node_counter: 0,
 		};
 
 		let mut encoded_valid_node_info = Vec::new();
@@ -3618,7 +3766,7 @@ pub mod benches {
 
 	pub fn read_network_graph(bench: &mut Criterion) {
 		let logger = crate::util::test_utils::TestLogger::new();
-		let mut d = crate::routing::router::bench_utils::get_route_file().unwrap();
+		let (mut d, _) = crate::routing::router::bench_utils::get_graph_scorer_file().unwrap();
 		let mut v = Vec::new();
 		d.read_to_end(&mut v).unwrap();
 		bench.bench_function("read_network_graph", |b| b.iter(||
@@ -3628,7 +3776,7 @@ pub mod benches {
 
 	pub fn write_network_graph(bench: &mut Criterion) {
 		let logger = crate::util::test_utils::TestLogger::new();
-		let mut d = crate::routing::router::bench_utils::get_route_file().unwrap();
+		let (mut d, _) = crate::routing::router::bench_utils::get_graph_scorer_file().unwrap();
 		let net_graph = NetworkGraph::read(&mut d, &logger).unwrap();
 		bench.bench_function("write_network_graph", |b| b.iter(||
 			black_box(&net_graph).encode()
