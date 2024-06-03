@@ -2341,14 +2341,20 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		})
 	}
 
-	/// Create channel context for spliced channel, by duplicating and updating the context
+	/// Create channel context for spliced channel, by duplicating and updating the context.
+	/// relative_satoshis: The change in channel value (sats),
+	///  positive for increase (splice-in), negative for decrease (splice out).
+	/// delta_belongs_to_local: 
+	///  The amount from the channel value change that belongs to the local (sats).
+	///  Its sign has to be the same as the sign of relative_satoshis, and its absolute value
+	///  less or equal (e.g. for +100 in the range of 0..100, for -100 in the range of -100..0).
 	#[cfg(splicing)]
 	fn new_for_splice<L: Deref>(
 		pre_splice_context: Self,
 		is_outgoing: bool,
 		counterparty_funding_pubkey: &PublicKey,
 		relative_satoshis: i64,
-		delta_belongs_to_local: bool,
+		delta_belongs_to_local: i64,
 		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
 		logger: &L,
 	) -> Result<ChannelContext<SP>, ChannelError> where L::Target: Logger
@@ -2384,19 +2390,28 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		// Update channel signer
 		context.holder_signer = ChannelSignerType::Ecdsa(holder_signer);
 
-		// Update the channel value and adjust balance
-		let old_value = context.channel_value_satoshis;
-		let old_to_self = context.value_to_self_msat;
-		if delta_belongs_to_local {
-			// TODO check for i64 overflow
-			let delta_msats = (post_channel_value as i64 - old_value as i64) * 1000;
-			// Check if not reducing by too much
-			if delta_msats < 0 && -delta_msats > old_to_self as i64 {
-				return Err(ChannelError::Close("Cannot decrease channel value to requested amount, too low".to_string()));
-			}
-			context.value_to_self_msat = (old_to_self as i64 + delta_msats) as u64;
+		// Update the channel value and adjust balance, after checks
+		// Check if delta_belongs_to_local is not invalid (invalid abs value or invalid sign)
+		if delta_belongs_to_local.abs() > relative_satoshis.abs() ||
+			(relative_satoshis > 0 && delta_belongs_to_local < 0) ||
+			(relative_satoshis < 0 && delta_belongs_to_local > 0)
+		{
+			// Invalid paramters
+			return Err(ChannelError::Close(format!("Invalid delta_belongs_to_local value, larger than relative value {} {}", delta_belongs_to_local, relative_satoshis)));
 		}
+		let old_to_self = context.value_to_self_msat;
+		let delta_in_value_to_self = delta_belongs_to_local * 1000;
+		if delta_in_value_to_self < 0 && delta_in_value_to_self.abs() as u64 > old_to_self {
+			// Change would make our balance negative
+			return Err(ChannelError::Close(format!("Cannot decrease channel value to requested amount, too low, {} {} {} {} {}", 
+				pre_channel_value, post_channel_value, relative_satoshis, delta_belongs_to_local, old_to_self)));
+		}
+		// Perform the updates
 		context.channel_value_satoshis = post_channel_value;
+		if delta_in_value_to_self.abs() > 0 {
+			// Local balance changes
+			context.value_to_self_msat = (old_to_self as i64).saturating_add(delta_in_value_to_self) as u64;
+		}
 
 		// Reset funding tx
 		context.funding_transaction = None;
@@ -7953,7 +7968,6 @@ impl<SP: Deref> Channel<SP> where
 	/// #SPLICING STEP2 I
 	/// Inspired by get_open_channel()
 	/// Get the splice message that can be sent during splice initiation
-	/// post_channel_keys_id: in case the `channel_keys_id` changes during splicing, the value that will be used after splicing.
 	#[cfg(splicing)]
 	pub fn get_splice(&mut self, chain_hash: ChainHash,
 		// TODO; should this be a param, or stored in the channel?
@@ -9115,9 +9129,8 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		signer_provider: &SP,
 		counterparty_funding_pubkey: &PublicKey,
 		relative_satoshis: i64,
-		// push_msat: u64,
+		delta_belongs_to_local: i64,
 		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
-		// post_channel_keys_id: [u8; 32],
 		funding_tx_locktime: LockTime,
 		funding_feerate_sat_per_1000_weight: u32,
 		logger: &L,
@@ -9148,7 +9161,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			is_outgoing,
 			counterparty_funding_pubkey,
 			relative_satoshis,
-			true,
+			delta_belongs_to_local,
 			holder_signer,
 			logger,
 		)?;
@@ -9369,9 +9382,8 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		signer_provider: &SP,
 		counterparty_funding_pubkey: &PublicKey,
 		relative_satoshis: i64,
-		// push_msat: u64,
+		delta_belongs_to_local: i64,
 		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
-		// post_channel_keys_id: [u8; 32],
 		funding_tx_locktime: LockTime,
 		funding_feerate_sat_per_1000_weight: u32,
 		logger: &L,
@@ -9402,7 +9414,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			is_outgoing,
 			counterparty_funding_pubkey,
 			relative_satoshis,
-			false,
+			delta_belongs_to_local,
 			holder_signer,
 			logger,
 		)?;
