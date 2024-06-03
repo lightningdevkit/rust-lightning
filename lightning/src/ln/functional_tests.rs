@@ -11136,7 +11136,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	let mut msg_events = closing_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	match msg_events.pop().unwrap() {
-		MessageSendEvent::HandleError { action: msgs::ErrorAction::DisconnectPeer { .. }, .. } => {},
+		MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { .. }, .. } => {},
 		_ => panic!("Unexpected event"),
 	}
 	check_added_monitors(closing_node, 1);
