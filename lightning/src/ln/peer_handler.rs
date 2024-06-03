@@ -1654,12 +1654,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 			let our_features = self.init_features(&their_node_id);
 			if msg.features.requires_unknown_bits_from(&our_features) {
-				log_debug!(logger, "Peer requires features unknown to us");
+				log_debug!(logger, "Peer {} requires features unknown to us: {:?}",
+					log_pubkey!(their_node_id), msg.features.required_unknown_bits_from(&our_features));
 				return Err(PeerHandleError { }.into());
 			}
 
 			if our_features.requires_unknown_bits_from(&msg.features) {
-				log_debug!(logger, "We require features unknown to our peer");
+				log_debug!(logger, "We require features unknown to our peer {}: {:?}",
+					log_pubkey!(their_node_id), our_features.required_unknown_bits_from(&msg.features));
 				return Err(PeerHandleError { }.into());
 			}
 

@@ -442,6 +442,9 @@ mod sealed {
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
 }
 
+const ANY_REQUIRED_FEATURES_MASK: u8 = 0b01_01_01_01;
+const ANY_OPTIONAL_FEATURES_MASK: u8 = 0b10_10_10_10;
+
 /// Tracks the set of features which a node implements, templated by the context in which it
 /// appears.
 ///
@@ -615,8 +618,8 @@ impl ChannelTypeFeatures {
 		// ChannelTypeFeatures must only contain required bits, so we OR the required forms of all
 		// optional bits and then AND out the optional ones.
 		for byte in ret.flags.iter_mut() {
-			*byte |= (*byte & 0b10_10_10_10) >> 1;
-			*byte &= 0b01_01_01_01;
+			*byte |= (*byte & ANY_OPTIONAL_FEATURES_MASK) >> 1;
+			*byte &= ANY_REQUIRED_FEATURES_MASK;
 		}
 		ret
 	}
@@ -761,7 +764,7 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	pub(crate) fn supports_any_optional_bits(&self) -> bool {
-		self.flags.iter().any(|&byte| (byte & 0b10_10_10_10) != 0)
+		self.flags.iter().any(|&byte| (byte & ANY_OPTIONAL_FEATURES_MASK) != 0)
 	}
 
 	/// Returns true if this `Features` object contains required features unknown by `other`.
@@ -769,18 +772,28 @@ impl<T: sealed::Context> Features<T> {
 		// Bitwise AND-ing with all even bits set except for known features will select required
 		// unknown features.
 		self.flags.iter().enumerate().any(|(i, &byte)| {
-			const REQUIRED_FEATURES: u8 = 0b01_01_01_01;
-			const OPTIONAL_FEATURES: u8 = 0b10_10_10_10;
-			let unknown_features = if i < other.flags.len() {
-				// Form a mask similar to !T::KNOWN_FEATURE_MASK only for `other`
-				!(other.flags[i]
-					| ((other.flags[i] >> 1) & REQUIRED_FEATURES)
-					| ((other.flags[i] << 1) & OPTIONAL_FEATURES))
-			} else {
-				0b11_11_11_11
-			};
-			(byte & (REQUIRED_FEATURES & unknown_features)) != 0
+			let unknown_features = unset_features_mask_at_position(other, i);
+			(byte & (ANY_REQUIRED_FEATURES_MASK & unknown_features)) != 0
 		})
+	}
+
+	pub(crate) fn required_unknown_bits_from(&self, other: &Self) -> Vec<usize> {
+		let mut unknown_bits = Vec::new();
+
+		// Bitwise AND-ing with all even bits set except for known features will select required
+		// unknown features.
+		self.flags.iter().enumerate().for_each(|(i, &byte)| {
+			let unknown_features = unset_features_mask_at_position(other, i);
+			if byte & unknown_features != 0 {
+				for bit in (0..8).step_by(2) {
+					if ((byte & unknown_features) >> bit) & 1 == 1 {
+						unknown_bits.push(i * 8 + bit);
+					}
+				}
+			}
+		});
+
+		unknown_bits
 	}
 
 	/// Returns true if this `Features` object contains unknown feature flags which are set as
@@ -790,13 +803,12 @@ impl<T: sealed::Context> Features<T> {
 		// unknown features.
 		let byte_count = T::KNOWN_FEATURE_MASK.len();
 		self.flags.iter().enumerate().any(|(i, &byte)| {
-			let required_features = 0b01_01_01_01;
 			let unknown_features = if i < byte_count {
 				!T::KNOWN_FEATURE_MASK[i]
 			} else {
 				0b11_11_11_11
 			};
-			(byte & (required_features & unknown_features)) != 0
+			(byte & (ANY_REQUIRED_FEATURES_MASK & unknown_features)) != 0
 		})
 	}
 
@@ -1017,6 +1029,17 @@ impl<T: sealed::Context> Readable for WithoutLength<Features<T>> {
 	}
 }
 
+pub(crate) fn unset_features_mask_at_position<T: sealed::Context>(other: &Features<T>, index: usize) -> u8 {
+	if index < other.flags.len() {
+		// Form a mask similar to !T::KNOWN_FEATURE_MASK only for `other`
+		!(other.flags[index]
+			| ((other.flags[index] >> 1) & ANY_REQUIRED_FEATURES_MASK)
+			| ((other.flags[index] << 1) & ANY_OPTIONAL_FEATURES_MASK))
+	} else {
+		0b11_11_11_11
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, Bolt11InvoiceFeatures, NodeFeatures, OfferFeatures, sealed};
@@ -1033,11 +1056,24 @@ mod tests {
 		features.set_unknown_feature_required();
 		assert!(features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
+		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![123456788]);
 
 		let mut features = ChannelFeatures::empty();
 		features.set_unknown_feature_optional();
 		assert!(!features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
+		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![]);
+
+		let mut features = ChannelFeatures::empty();
+		features.set_unknown_feature_required();
+		features.set_custom_bit(123456786).unwrap();
+		assert!(features.requires_unknown_bits());
+		assert!(features.supports_unknown_bits());
+		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![123456786, 123456788]);
+
+		let mut limiter = ChannelFeatures::empty();
+		limiter.set_unknown_feature_optional();
+		assert_eq!(features.required_unknown_bits_from(&limiter), vec![123456786]);
 	}
 
 	#[test]
