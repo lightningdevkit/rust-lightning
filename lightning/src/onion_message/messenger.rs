@@ -241,7 +241,12 @@ where
 	offers_handler: OMH,
 	custom_handler: CMH,
 	intercept_messages_for_offline_peers: bool,
-	pending_events: Mutex<Vec<Event>>,
+	pending_events: Mutex<PendingEvents>,
+}
+
+struct PendingEvents {
+	intercepted_msgs: Vec<Event>,
+	peer_connecteds: Vec<Event>,
 }
 
 /// [`OnionMessage`]s buffered to be sent.
@@ -963,7 +968,10 @@ where
 			offers_handler,
 			custom_handler,
 			intercept_messages_for_offline_peers,
-			pending_events: Mutex::new(Vec::new()),
+			pending_events: Mutex::new(PendingEvents {
+				intercepted_msgs: Vec::new(),
+				peer_connecteds: Vec::new(),
+			}),
 		}
 	}
 
@@ -1135,18 +1143,16 @@ where
 		msgs
 	}
 
-	fn enqueue_event(&self, event: Event) {
+	fn enqueue_intercepted_event(&self, event: Event) {
 		const MAX_EVENTS_BUFFER_SIZE: usize = (1 << 10) * 256;
 		let mut pending_events = self.pending_events.lock().unwrap();
-		let total_buffered_bytes: usize = pending_events
-			.iter()
-			.map(|ev| ev.serialized_length())
-			.sum();
+		let total_buffered_bytes: usize =
+			pending_events.intercepted_msgs.iter().map(|ev| ev.serialized_length()).sum();
 		if total_buffered_bytes >= MAX_EVENTS_BUFFER_SIZE {
 			log_trace!(self.logger, "Dropping event {:?}: buffer full", event);
 			return
 		}
-		pending_events.push(event);
+		pending_events.intercepted_msgs.push(event);
 	}
 }
 
@@ -1193,7 +1199,20 @@ where
 			}
 		}
 		let mut events = Vec::new();
-		core::mem::swap(&mut *self.pending_events.lock().unwrap(), &mut events);
+		{
+			let mut pending_events = self.pending_events.lock().unwrap();
+			#[cfg(debug_assertions)] {
+				for ev in pending_events.intercepted_msgs.iter() {
+					if let Event::OnionMessageIntercepted { .. } = ev {} else { panic!(); }
+				}
+				for ev in pending_events.peer_connecteds.iter() {
+					if let Event::OnionMessagePeerConnected { .. } = ev {} else { panic!(); }
+				}
+			}
+			core::mem::swap(&mut pending_events.intercepted_msgs, &mut events);
+			events.append(&mut pending_events.peer_connecteds);
+			pending_events.peer_connecteds.shrink_to(10); // Limit total heap usage
+		}
 		for ev in events {
 			handler.handle_event(ev);
 		}
@@ -1271,7 +1290,7 @@ where
 						log_trace!(logger, "Forwarding an onion message to peer {}", next_node_id);
 					},
 					_ if self.intercept_messages_for_offline_peers => {
-						self.enqueue_event(
+						self.enqueue_intercepted_event(
 							Event::OnionMessageIntercepted {
 								peer_node_id: next_node_id, message: onion_message
 							}
@@ -1299,7 +1318,7 @@ where
 				.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
 				.mark_connected();
 			if self.intercept_messages_for_offline_peers {
-				self.enqueue_event(
+				self.pending_events.lock().unwrap().peer_connecteds.push(
 					Event::OnionMessagePeerConnected { peer_node_id: *their_node_id }
 				);
 			}
