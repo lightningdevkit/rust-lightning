@@ -220,6 +220,7 @@ struct MoneyLossDetector<'a> {
 	height: usize,
 	max_height: usize,
 	blocks_connected: u32,
+	error_message: String,
 }
 impl<'a> MoneyLossDetector<'a> {
 	pub fn new(peers: &'a RefCell<[bool; 256]>,
@@ -238,6 +239,7 @@ impl<'a> MoneyLossDetector<'a> {
 			height: 0,
 			max_height: 0,
 			blocks_connected: 0,
+			error_message: "Channel force-closed".to_string(),
 		}
 	}
 
@@ -292,7 +294,7 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 			}
 
 			// Force all channels onto the chain (and time out claim txn)
-			self.manager.force_close_all_channels_broadcasting_latest_txn();
+			self.manager.force_close_all_channels_broadcasting_latest_txn(self.error_message.to_string());
 		}
 	}
 }
@@ -735,9 +737,10 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			14 => {
 				let mut channels = channelmanager.list_channels();
 				let channel_id = get_slice!(1)[0] as usize;
+				let error_message = "Channel force-closed";
 				if channel_id >= channels.len() { return; }
 				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
-				channelmanager.force_close_broadcasting_latest_txn(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id).unwrap();
+				channelmanager.force_close_broadcasting_latest_txn(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id, error_message.to_string()).unwrap();
 			},
 			// 15, 16, 17, 18 is above
 			19 => {

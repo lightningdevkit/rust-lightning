@@ -1356,11 +1356,12 @@ where
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) {
 /// # let channel_manager = channel_manager.get_cm();
+/// # let error_message = "Channel force-closed";
 /// channel_manager.process_pending_events(&|event| match event {
 ///     Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, ..  } => {
 ///         if !is_trusted(counterparty_node_id) {
 ///             match channel_manager.force_close_without_broadcasting_txn(
-///                 &temporary_channel_id, &counterparty_node_id
+///                 &temporary_channel_id, &counterparty_node_id, error_message.to_string()
 ///             ) {
 ///                 Ok(()) => println!("Rejecting channel {}", temporary_channel_id),
 ///                 Err(e) => println!("Error rejecting channel {}: {:?}", temporary_channel_id, e),
@@ -3700,8 +3701,11 @@ where
 		Ok(counterparty_node_id)
 	}
 
-	fn force_close_sending_error(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, broadcast: bool) -> Result<(), APIError> {
+	fn force_close_sending_error(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, broadcast: bool, error_message: String)
+	-> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		log_debug!(self.logger,
+			"Force-closing channel, The error message sent to the peer : {}", error_message);
 		match self.force_close_channel_with_peer(channel_id, counterparty_node_id, None, broadcast) {
 			Ok(counterparty_node_id) => {
 				let per_peer_state = self.per_peer_state.read().unwrap();
@@ -3711,7 +3715,7 @@ where
 						events::MessageSendEvent::HandleError {
 							node_id: counterparty_node_id,
 							action: msgs::ErrorAction::DisconnectPeer {
-								msg: Some(msgs::ErrorMessage { channel_id: *channel_id, data: "Channel force-closed".to_owned() })
+								msg: Some(msgs::ErrorMessage { channel_id: *channel_id, data: error_message})
 							},
 						}
 					);
@@ -3722,39 +3726,53 @@ where
 		}
 	}
 
-	/// Force closes a channel, immediately broadcasting the latest local transaction(s) and
-	/// rejecting new HTLCs on the given channel. Fails if `channel_id` is unknown to
-	/// the manager, or if the `counterparty_node_id` isn't the counterparty of the corresponding
-	/// channel.
-	pub fn force_close_broadcasting_latest_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey)
+	/// Force closes a channel, immediately broadcasting the latest local transaction(s),
+	/// rejecting new HTLCs.
+	///
+	/// The provided `error_message` is sent to connected peers for closing
+	/// channels and should be a human-readable description of what went wrong.
+	///
+	/// Fails if `channel_id` is unknown to the manager, or if the `counterparty_node_id`
+	/// isn't the counterparty of the corresponding channel.
+	pub fn force_close_broadcasting_latest_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String)
 	-> Result<(), APIError> {
-		self.force_close_sending_error(channel_id, counterparty_node_id, true)
+		self.force_close_sending_error(channel_id, counterparty_node_id, true, error_message)
 	}
 
 	/// Force closes a channel, rejecting new HTLCs on the given channel but skips broadcasting
-	/// the latest local transaction(s). Fails if `channel_id` is unknown to the manager, or if the
-	/// `counterparty_node_id` isn't the counterparty of the corresponding channel.
+	/// the latest local transaction(s).
 	///
+	/// The provided `error_message` is sent to connected peers for closing channels and should
+	/// be a human-readable description of what went wrong.
+	///
+	/// Fails if `channel_id` is unknown to the manager, or if the
+	/// `counterparty_node_id` isn't the counterparty of the corresponding channel.
 	/// You can always broadcast the latest local transaction(s) via
 	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
-	pub fn force_close_without_broadcasting_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey)
+	pub fn force_close_without_broadcasting_txn(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, error_message: String)
 	-> Result<(), APIError> {
-		self.force_close_sending_error(channel_id, counterparty_node_id, false)
+		self.force_close_sending_error(channel_id, counterparty_node_id, false, error_message)
 	}
 
 	/// Force close all channels, immediately broadcasting the latest local commitment transaction
 	/// for each to the chain and rejecting new HTLCs on each.
-	pub fn force_close_all_channels_broadcasting_latest_txn(&self) {
+	///
+	/// The provided `error_message` is sent to connected peers for closing channels and should
+	/// be a human-readable description of what went wrong.
+	pub fn force_close_all_channels_broadcasting_latest_txn(&self, error_message: String) {
 		for chan in self.list_channels() {
-			let _ = self.force_close_broadcasting_latest_txn(&chan.channel_id, &chan.counterparty.node_id);
+			let _ = self.force_close_broadcasting_latest_txn(&chan.channel_id, &chan.counterparty.node_id, error_message.clone());
 		}
 	}
 
 	/// Force close all channels rejecting new HTLCs on each but without broadcasting the latest
 	/// local transaction(s).
-	pub fn force_close_all_channels_without_broadcasting_txn(&self) {
+	///
+	/// The provided `error_message` is sent to connected peers for closing channels and
+	/// should be a human-readable description of what went wrong.
+	pub fn force_close_all_channels_without_broadcasting_txn(&self, error_message: String) {
 		for chan in self.list_channels() {
-			let _ = self.force_close_without_broadcasting_txn(&chan.channel_id, &chan.counterparty.node_id);
+			let _ = self.force_close_without_broadcasting_txn(&chan.channel_id, &chan.counterparty.node_id, error_message.clone());
 		}
 	}
 
@@ -12969,8 +12987,8 @@ mod tests {
 
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-
-		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id()).unwrap();
+		let error_message = "Channel force-closed";
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
 		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
@@ -13187,6 +13205,7 @@ mod tests {
 		let channel_id = ChannelId::from_bytes([4; 32]);
 		let unkown_public_key = PublicKey::from_secret_key(&Secp256k1::signing_only(), &SecretKey::from_slice(&[42; 32]).unwrap());
 		let intercept_id = InterceptId([0; 32]);
+		let error_message = "Channel force-closed";
 
 		// Test the API functions.
 		check_not_connected_to_peer_error(nodes[0].node.create_channel(unkown_public_key, 1_000_000, 500_000_000, 42, None, None), unkown_public_key);
@@ -13195,9 +13214,9 @@ mod tests {
 
 		check_unkown_peer_error(nodes[0].node.close_channel(&channel_id, &unkown_public_key), unkown_public_key);
 
-		check_unkown_peer_error(nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &unkown_public_key), unkown_public_key);
+		check_unkown_peer_error(nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &unkown_public_key, error_message.to_string()), unkown_public_key);
 
-		check_unkown_peer_error(nodes[0].node.force_close_without_broadcasting_txn(&channel_id, &unkown_public_key), unkown_public_key);
+		check_unkown_peer_error(nodes[0].node.force_close_without_broadcasting_txn(&channel_id, &unkown_public_key, error_message.to_string()), unkown_public_key);
 
 		check_unkown_peer_error(nodes[0].node.forward_intercepted_htlc(intercept_id, &channel_id, unkown_public_key, 1_000_000), unkown_public_key);
 
@@ -13219,15 +13238,16 @@ mod tests {
 
 		// Dummy values
 		let channel_id = ChannelId::from_bytes([4; 32]);
+		let error_message = "Channel force-closed";
 
 		// Test the API functions.
 		check_api_misuse_error(nodes[0].node.accept_inbound_channel(&channel_id, &counterparty_node_id, 42));
 
 		check_channel_unavailable_error(nodes[0].node.close_channel(&channel_id, &counterparty_node_id), channel_id, counterparty_node_id);
 
-		check_channel_unavailable_error(nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &counterparty_node_id), channel_id, counterparty_node_id);
+		check_channel_unavailable_error(nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &counterparty_node_id, error_message.to_string()), channel_id, counterparty_node_id);
 
-		check_channel_unavailable_error(nodes[0].node.force_close_without_broadcasting_txn(&channel_id, &counterparty_node_id), channel_id, counterparty_node_id);
+		check_channel_unavailable_error(nodes[0].node.force_close_without_broadcasting_txn(&channel_id, &counterparty_node_id, error_message.to_string()), channel_id, counterparty_node_id);
 
 		check_channel_unavailable_error(nodes[0].node.forward_intercepted_htlc(InterceptId([0; 32]), &channel_id, counterparty_node_id, 1_000_000), channel_id, counterparty_node_id);
 
@@ -13581,6 +13601,7 @@ mod tests {
 		anchors_config.manually_accept_inbound_channels = true;
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config.clone()), Some(anchors_config.clone())]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let error_message = "Channel force-closed";
 
 		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 0, None, None).unwrap();
 		let open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
@@ -13590,7 +13611,7 @@ mod tests {
 		let events = nodes[1].node.get_and_clear_pending_events();
 		match events[0] {
 			Event::OpenChannelRequest { temporary_channel_id, .. } => {
-				nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id()).unwrap();
+				nodes[1].node.force_close_broadcasting_latest_txn(&temporary_channel_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 			}
 			_ => panic!("Unexpected event"),
 		}
@@ -13698,12 +13719,13 @@ mod tests {
 		let user_config = test_default_channel_config();
 		let node_chanmgr = create_node_chanmgrs(2, &node_cfg, &[Some(user_config), Some(user_config)]);
 		let nodes = create_network(2, &node_cfg, &node_chanmgr);
+		let error_message = "Channel force-closed";
 
 		// Open a channel, immediately disconnect each other, and broadcast Alice's latest state.
 		let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
 		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
-		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_closed_broadcast(&nodes[0], 1, true);
 		check_added_monitors(&nodes[0], 1);
 		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);

@@ -207,7 +207,8 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	}
 
 	// ...and make sure we can force-close a frozen channel
-	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &nodes[1].node.get_our_node_id()).unwrap();
+	let error_message = "Channel force-closed";
+	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], true);
 
@@ -3224,17 +3225,18 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 	let _ = get_revoke_commit_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 
 	let mon_bc = get_monitor!(nodes[1], chan_id_bc).encode();
+	let error_message = "Channel force-closed";
 
 	if close_chans_before_reload {
 		if !close_only_a {
 			chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-			nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_bc, &nodes[2].node.get_our_node_id()).unwrap();
+			nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_bc, &nodes[2].node.get_our_node_id(), error_message.to_string()).unwrap();
 			check_closed_broadcast(&nodes[1], 1, true);
 			check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[2].node.get_our_node_id()], 100000);
 		}
 
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[0].node.get_our_node_id()).unwrap();
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_closed_broadcast(&nodes[1], 1, true);
 		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100000);
 	}
@@ -3255,8 +3257,9 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 			assert_eq!(bs_close_txn.len(), 3);
 		}
 	}
+	let error_message = "Channel force-closed";
 
-	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100000);
 	let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_closing_tx.len(), 1);
@@ -3393,10 +3396,11 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	let manager_b = nodes[1].node.encode();
 	reload_node!(nodes[1], &manager_b, &[&mon_ab, &mon_bc], persister, new_chain_monitor, nodes_1_deserialized);
 
+	let error_message = "Channel force-closed";
 	if close_during_reload {
 		// Test that we still free the B<->C channel if the A<->B channel closed while we reloaded
 		// (as learned about during the on-reload block connection).
-		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[1].node.get_our_node_id()).unwrap();
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		check_closed_broadcast!(nodes[0], true);
 		check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100_000);

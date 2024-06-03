@@ -1056,11 +1056,12 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(persist_manager_post_event: bo
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let error_message = "Channel force-closed";
 
 	// Route a payment, but force-close the channel before the HTLC fulfill message arrives at
 	// nodes[0].
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
-	nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id()).unwrap();
+	nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
 	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
@@ -3599,6 +3600,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	// height.
 	connect_blocks(&nodes[3], final_cltv - HTLC_FAIL_BACK_BUFFER - nodes[3].best_block_info().1
 		- if fail_payment { 0 } else { 2 });
+	let error_message = "Channel force-closed";
 	if fail_payment {
 		// We fail the HTLC on the A->B->D path first as it expires 4 blocks earlier. We go ahead
 		// and expire both immediately, though, by connecting another 4 blocks.
@@ -3608,7 +3610,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		expect_pending_htlcs_forwardable_and_htlc_handling_failed!(&nodes[3], [reason]);
 		pass_failed_payment_back(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], false, payment_hash, PaymentFailureReason::RecipientRejected);
 	} else {
-		nodes[1].node.force_close_broadcasting_latest_txn(&chan_bd, &nodes[3].node.get_our_node_id()).unwrap();
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_bd, &nodes[3].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_closed_event!(&nodes[1], 1, ClosureReason::HolderForceClosed, false,
 			[nodes[3].node.get_our_node_id()], 1000000);
 		check_closed_broadcast(&nodes[1], 1, true);
