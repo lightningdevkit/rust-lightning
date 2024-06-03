@@ -929,24 +929,24 @@ fn test_v2_splice_in() {
 
 	// Note: contribute_funding_inputs() call is no longer used
 
-	// Initiator_node will generate first TxAddInput message
+	// TxAddInput for the previous funding
 	let tx_add_input_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
-	assert_eq!(tx_add_input_msg.prevtx.0.output[tx_add_input_msg.prevtx_out as usize].value, extra_splice_funding_input_sats);
+	assert_eq!(tx_add_input_msg.prevtx.0.output[tx_add_input_msg.prevtx_out as usize].value, channel_value_sat);
 
 	let _res = acceptor_node.node.handle_tx_add_input(&initiator_node.node.get_our_node_id(), &tx_add_input_msg);
 	let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
 
 	let _res = initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
-	// second TxAddInput message for the second input
+	// TxAddInput for the second input
 	let tx_add_input2_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
-	assert_eq!(tx_add_input2_msg.prevtx.0.output[tx_add_input2_msg.prevtx_out as usize].value, channel_value_sat);
+	assert_eq!(tx_add_input2_msg.prevtx.0.output[tx_add_input2_msg.prevtx_out as usize].value, extra_splice_funding_input_sats);
 
 	let _res = acceptor_node.node.handle_tx_add_input(&initiator_node.node.get_our_node_id(), &tx_add_input2_msg);
 	let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
 
 	let _res = initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 
-	// First TxAddOutput is for the change output
+	// TxAddOutput for the change output
 	let tx_add_output_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
 	assert!(tx_add_output_msg.script.is_v0_p2wpkh());
 	assert_eq!(tx_add_output_msg.sats, 14093); // extra_splice_input_sats - splice_in_sats - fee
@@ -957,7 +957,6 @@ fn test_v2_splice_in() {
 	let _res = initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 	// TxAddOutput for the splice funding
 	let tx_add_output2_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
-	// Check we get the channel funding output.
 	assert!(tx_add_output2_msg.script.is_v0_p2wsh());
 	assert_eq!(tx_add_output2_msg.sats, post_splice_channel_value);
 
@@ -993,20 +992,20 @@ fn test_v2_splice_in() {
 		assert_eq!(unsigned_transaction.input.len(), 2);
 		// Note: input order may vary (based on SerialId)
 		// This is the previous funding tx input, already signed (partially)
-		assert_eq!(unsigned_transaction.input[0].previous_output.txid.to_string(), expected_pre_funding_transaction_id);
-		assert_eq!(unsigned_transaction.input[0].witness.len(), 4);
+		assert_eq!(unsigned_transaction.input[1].previous_output.txid.to_string(), expected_pre_funding_transaction_id);
+		assert_eq!(unsigned_transaction.input[1].witness.len(), 4);
 		// This is the extra input, not yet signed
-		assert_eq!(unsigned_transaction.input[1].witness.len(), 0);
+		assert_eq!(unsigned_transaction.input[0].witness.len(), 0);
 
 		// Placeholder for signature on the contributed input
 		let mut witness1 = Witness::new();
 		witness1.push([7; 72]);
-		unsigned_transaction.input[1].witness = witness1;
+		unsigned_transaction.input[0].witness = witness1;
 
 		let _res = initiator_node.node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
 	} else { panic!(); }
 
-	let expected_splice_funding_txid = "ab06c66b663fdcaa43509c7f50acf96df8483117e24e014874e02ae8c265a84e";
+	let expected_splice_funding_txid = "e83b07b825b61fb54ec3129b4f9aa0b6fb2752bf16907d4b5def4753d1e6662c";
 	// check new funding tx
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
 	{
@@ -1089,8 +1088,8 @@ fn test_v2_splice_in() {
 			// - the custom input, and
 			// - the previous funding tx, also in the tlvs
 			assert_eq!(msg.witnesses.len(), 2);
-			assert_eq!(msg.witnesses[0].len(), 4);
-			assert_eq!(msg.witnesses[1].len(), 1);
+			assert_eq!(msg.witnesses[1].len(), 4);
+			assert_eq!(msg.witnesses[0].len(), 1);
 			assert!(msg.funding_outpoint_sig.is_some());
 			msg
 		},
@@ -1116,7 +1115,7 @@ fn test_v2_splice_in() {
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
 	let broadcasted_splice_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
-	let expected_funding_tx = "02000000000102dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a8591495010000000000000000a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b7900000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f04004730440220496589c8ab19a2cea70f9204634aa45a642a2a8ba5fb8952a04f4998719f397c02204642179dedd6bf2627f1cd53d2f32832af32fc28504b636fd86a098bfc992acb01473044022050d84dcf82005d21989f0595cd1d38b5e85beb1ab5843ac1323afeeecae33c960220649f00b713ccd15c868d7ebab19f978ae5bd9e25c06ee2849f10a42997a2f8b2014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae014807070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070700000000";
+	let expected_funding_tx = "02000000000102a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b79000000000000000000dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a859149501000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f0148070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707040047304402202262f62a07d13f0b65142ca4a891a12387749a65320e84d4a2cda4997eac71e9022070ff453bd2c49b67da48bfff541d8c1cdbfce13670641fe9dfa26bfc567b1a3e0147304402200b8553f0651c962e8356f1e59e07b7f2744194375779a6c6f9df100fce4042ef02206c53fb9671f812e9b6359b2f01eb9e50eca0b248da1203b7f6acd1e73fea4304014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae00000000";
 	assert_eq!(broadcasted_splice_tx.encode().len(), 460);
 	assert_eq!(broadcasted_splice_tx.encode().as_hex().to_string(), expected_funding_tx);
 	let initiator_funding_key = get_funding_key(&initiator_node, &acceptor_node, &channel_id1);
@@ -1469,37 +1468,36 @@ fn test_v2_payment_splice_in_payment() {
 
 	// Note: contribute_funding_inputs() call is no longer used
 
-	// Initiator_node will generate first TxAddInput message
+	// TxAddInput for the second input
 	let tx_add_input_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
-	assert_eq!(tx_add_input_msg.prevtx.0.output[tx_add_input_msg.prevtx_out as usize].value, channel_value_sat);
+	assert_eq!(tx_add_input_msg.prevtx.0.output[tx_add_input_msg.prevtx_out as usize].value, extra_splice_funding_input_sats);
 
 	let _res = acceptor_node.node.handle_tx_add_input(&initiator_node.node.get_our_node_id(), &tx_add_input_msg);
 	let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
 
 	let _res = initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
-	// second TxAddInput message for the second input
+	// TxAddInput for the previous funding
 	let tx_add_input2_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
-	assert_eq!(tx_add_input2_msg.prevtx.0.output[tx_add_input2_msg.prevtx_out as usize].value, extra_splice_funding_input_sats);
+	assert_eq!(tx_add_input2_msg.prevtx.0.output[tx_add_input2_msg.prevtx_out as usize].value, channel_value_sat);
 
 	let _res = acceptor_node.node.handle_tx_add_input(&initiator_node.node.get_our_node_id(), &tx_add_input2_msg);
 	let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
 
 	let _res = initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
 
-	// First TxAddOutput is for the splice funding
+	// TxAddOutput for the change output
 	let tx_add_output_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
-	assert!(tx_add_output_msg.script.is_v0_p2wsh());
-	assert_eq!(tx_add_output_msg.sats, post_splice_channel_value);
+	assert!(tx_add_output_msg.script.is_v0_p2wpkh());
+	assert_eq!(tx_add_output_msg.sats, 14093); // extra_splice_input_sats - splice_in_sats
 
 	let _res = acceptor_node.node.handle_tx_add_output(&initiator_node.node.get_our_node_id(), &tx_add_output_msg);
 	let tx_complete_msg = get_event_msg!(&acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
 
 	let _res = initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
-	// TxAddOutput for the change output
+	// TxAddOutput for the splice funding
 	let tx_add_output2_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
-	// Check we get the channel funding output.
-	assert!(tx_add_output2_msg.script.is_v0_p2wpkh());
-	assert_eq!(tx_add_output2_msg.sats, 14093); // extra_splice_input_sats - splice_in_sats
+	assert!(tx_add_output2_msg.script.is_v0_p2wsh());
+	assert_eq!(tx_add_output2_msg.sats, post_splice_channel_value);
 
 	let _res = acceptor_node.node.handle_tx_add_output(&initiator_node.node.get_our_node_id(), &tx_add_output2_msg);
 	let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
@@ -1533,20 +1531,20 @@ fn test_v2_payment_splice_in_payment() {
 		assert_eq!(unsigned_transaction.input.len(), 2);
 		// Note: input order may vary (based on SerialId)
 		// This is the previous funding tx input, already signed (partially)
-		assert_eq!(unsigned_transaction.input[1].previous_output.txid.to_string(), expected_pre_funding_transaction_id);
-		assert_eq!(unsigned_transaction.input[1].witness.len(), 4);
+		assert_eq!(unsigned_transaction.input[0].previous_output.txid.to_string(), expected_pre_funding_transaction_id);
+		assert_eq!(unsigned_transaction.input[0].witness.len(), 4);
 		// This is the extra input, not yet signed
-		assert_eq!(unsigned_transaction.input[0].witness.len(), 0);
+		assert_eq!(unsigned_transaction.input[1].witness.len(), 0);
 
 		// Placeholder for signature on the contributed input
 		let mut witness1 = Witness::new();
 		witness1.push([7; 72]);
-		unsigned_transaction.input[0].witness = witness1;
+		unsigned_transaction.input[1].witness = witness1;
 
 		let _res = initiator_node.node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
 	} else { panic!(); }
 
-	let expected_splice_funding_txid = "17cbd12d31742b171814685b920de06e5c39b1b297f433faac5e4b04b4f82348";
+	let expected_splice_funding_txid = "ab06c66b663fdcaa43509c7f50acf96df8483117e24e014874e02ae8c265a84e";
 	// check new funding tx
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
 	{
@@ -1629,8 +1627,8 @@ fn test_v2_payment_splice_in_payment() {
 			// - the custom input, and
 			// - the previous funding tx, also in the tlvs
 			assert_eq!(msg.witnesses.len(), 2);
-			assert_eq!(msg.witnesses[1].len(), 4);
-			assert_eq!(msg.witnesses[0].len(), 1);
+			assert_eq!(msg.witnesses[0].len(), 4);
+			assert_eq!(msg.witnesses[1].len(), 1);
 			assert!(msg.funding_outpoint_sig.is_some());
 			msg
 		},
@@ -1656,7 +1654,7 @@ fn test_v2_payment_splice_in_payment() {
 	// Check that funding transaction has been broadcasted
 	assert_eq!(chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 2);
 	let broadcasted_splice_tx = chanmon_cfgs[initiator_node_index].tx_broadcaster.txn_broadcasted.lock().unwrap()[1].clone();
-	let expected_funding_tx = "02000000000102a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b79000000000000000000dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a8591495010000000000000000020d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665fc0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c014807070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070704004730440220606534e90d6f41a92a48652e0c0b5bd338e570edf89e6e86c2cf632219caf3ca02206e9b0a12a8f039caab902eef56b1cb775a44e0827afafc093618bc4ad5539789014730440220145d0addaec56bee4b7d25a9f29df4ce26ea15a62ad51d3378f602ed0e0b2640022006cb7bdbf9f03254ce64425253a054c26418ccea26b7c5da43db8add0b8e9bcb014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae00000000";
+	let expected_funding_tx = "02000000000102dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a8591495010000000000000000a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b7900000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f04004730440220496589c8ab19a2cea70f9204634aa45a642a2a8ba5fb8952a04f4998719f397c02204642179dedd6bf2627f1cd53d2f32832af32fc28504b636fd86a098bfc992acb01473044022050d84dcf82005d21989f0595cd1d38b5e85beb1ab5843ac1323afeeecae33c960220649f00b713ccd15c868d7ebab19f978ae5bd9e25c06ee2849f10a42997a2f8b2014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae014807070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070700000000";
 	assert_eq!(broadcasted_splice_tx.encode().len(), 460);
 	assert_eq!(broadcasted_splice_tx.encode().as_hex().to_string(), expected_funding_tx);
 	let initiator_funding_key = get_funding_key(&initiator_node, &acceptor_node, &channel_id1);

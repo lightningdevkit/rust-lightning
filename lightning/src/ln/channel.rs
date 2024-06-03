@@ -2341,6 +2341,88 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		})
 	}
 
+	/// Create channel context for spliced channel, by duplicating and updating the context
+	#[cfg(splicing)]
+	fn new_for_splice<L: Deref>(
+		pre_splice_context: Self,
+		is_outgoing: bool,
+		counterparty_funding_pubkey: &PublicKey,
+		relative_satoshis: i64,
+		delta_belongs_to_local: bool,
+		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
+		logger: &L,
+	) -> Result<ChannelContext<SP>, ChannelError> where L::Target: Logger
+	{
+		let mut context = pre_splice_context;
+
+		if context.is_splice_pending() {
+			return Err(ChannelError::Warn(format!("Internal error: Channel is already splicing, channel_id {}", context.channel_id)));
+		}
+
+		let pre_channel_value = context.channel_value_satoshis;
+		let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, relative_satoshis);
+
+		// Save the current funding transaction
+		let pre_funding_transaction = context.funding_transaction_saved.clone();
+		let pre_funding_txo = context.get_funding_txo().clone();
+
+		// Save relevant info from pre-splice state
+		let pending_splice_post = PendingSpliceInfoPost::new(
+			relative_satoshis,
+			pre_channel_value,
+			Some(context.channel_id),
+			pre_funding_transaction,
+			pre_funding_txo,
+		);
+		context.pending_splice_post = Some(pending_splice_post);
+
+		// Update funding pubkeys
+		context.channel_transaction_parameters.holder_pubkeys.funding_pubkey = holder_signer.pubkeys().funding_pubkey;
+		if context.channel_transaction_parameters.counterparty_parameters.is_some() {
+			context.channel_transaction_parameters.counterparty_parameters.as_mut().unwrap().pubkeys.funding_pubkey = counterparty_funding_pubkey.clone();
+		}
+		// Update channel signer
+		context.holder_signer = ChannelSignerType::Ecdsa(holder_signer);
+
+		// Update the channel value and adjust balance
+		let old_value = context.channel_value_satoshis;
+		let old_to_self = context.value_to_self_msat;
+		if delta_belongs_to_local {
+			// TODO check for i64 overflow
+			let delta_msats = (post_channel_value as i64 - old_value as i64) * 1000;
+			// Check if not reducing by too much
+			if delta_msats < 0 && -delta_msats > old_to_self as i64 {
+				return Err(ChannelError::Close("Cannot decrease channel value to requested amount, too low".to_string()));
+			}
+			context.value_to_self_msat = (old_to_self as i64 + delta_msats) as u64;
+		}
+		context.channel_value_satoshis = post_channel_value;
+
+		// Reset funding tx
+		context.funding_transaction = None;
+		context.funding_transaction_saved = None;
+		context.channel_transaction_parameters.funding_outpoint = None;
+		context.funding_tx_confirmed_in = None;
+		context.funding_tx_confirmation_height = 0;
+		// Set state
+		context.channel_state = ChannelState::NegotiatingFunding(
+			if is_outgoing { NegotiatingFundingFlags::OUR_INIT_SENT } else { NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT }
+		);
+		// Reset monitor update
+		context.latest_monitor_update_id = 0;
+		// Clear these state flags, for sending `ChannelPending` and `ChannelReady` again
+		context.channel_pending_event_emitted = false;
+		context.channel_ready_event_emitted = false;
+
+		log_debug!(logger, "Splicing channel context: value {} old {}, dir {}, value to self {}, funding keys local {} cp {}",
+			context.channel_value_satoshis, pre_channel_value,
+			if is_outgoing { "outgoing" } else { "incoming" },
+			context.value_to_self_msat,
+			context.channel_transaction_parameters.holder_pubkeys.funding_pubkey, counterparty_funding_pubkey);
+
+		Ok(context)
+	}
+
 	/// Allowed in any state (including after shutdown)
 	pub fn get_update_time_counter(&self) -> u32 {
 		self.update_time_counter
@@ -3975,81 +4057,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		ChannelId::v2_from_revocation_basepoints(&self.get_holder_pubkeys().revocation_basepoint, &self.get_counterparty_pubkeys().revocation_basepoint)
 	}
 
-	/// Update channel capacity to a new value
-	/// It is assumed that the increase is coming to A's side
-	#[cfg(splicing)]
-	fn update_channel_value<L: Deref>(&mut self, new_value_sats: u64, belongs_to_local: bool, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
-		let old_value = self.channel_value_satoshis;
-		let old_to_self = self.value_to_self_msat;
-		if belongs_to_local {
-			// TODO check for i64 overflow
-			let delta_msats = (new_value_sats as i64 - old_value as i64) * 1000;
-			// Check if not reducing by too much
-			if delta_msats < 0 && -delta_msats > self.value_to_self_msat as i64 {
-				return Err(ChannelError::Close("Cannot decrease channel value to requested amount, too low".to_string()));
-			}
-			self.value_to_self_msat = (self.value_to_self_msat as i64 + delta_msats) as u64;
-		}
-
-		self.channel_value_satoshis = new_value_sats;
-
-		// set signer channel value
-		self.holder_signer.as_mut().update_channel_value(new_value_sats);
-
-		log_trace!(logger, "Changed channel value, channel_id {}  value old {} new {}  to_self old {} new {}", self.channel_id, old_value, self.channel_value_satoshis, old_to_self, self.value_to_self_msat);
-		Ok(())
-	}
-
 	/// Splice process starting; update state; update capacity, state, reset funding tx
 	#[cfg(splicing)]
-	pub(crate) fn splice_start<L: Deref>(&mut self, is_outgoing: bool, relative_satoshis: i64, logger: &L) -> Result<(), ChannelError>
-	where L::Target: Logger
-	{
-		if self.is_splice_pending() {
-			return Err(ChannelError::Warn(format!("Internal error: Channel is already splicing, channel_id {}", self.channel_id())));
-		}
+	pub(crate) fn splice_start<L: Deref>(&mut self, is_outgoing: bool, logger: &L) where L::Target: Logger {
+		// Set state, by this point handshake is complete
+		self.channel_state = ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
 
-		let pre_channel_value = self.channel_value_satoshis;
-		let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, relative_satoshis);
-
-		// Save the current funding transaction
-		let pre_funding_transaction = self.funding_transaction_saved.clone();
-		let pre_funding_txo = self.get_funding_txo().clone();
-
-		let pending_splice_post = PendingSpliceInfoPost::new(
-			relative_satoshis,
-			pre_channel_value,
-			Some(self.channel_id),
-			pre_funding_transaction,
-			pre_funding_txo,
-		);
-		self.pending_splice_post = Some(pending_splice_post);
-
-		self.channel_state = ChannelState::NegotiatingFunding(
-			// TODO check OUR_INIT_SENT & THEIR_INIT_SENT
-			if is_outgoing {
-				NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
-			} else {
-				NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
-			}
-		);
-
-		let _ = self.update_channel_value(post_channel_value, is_outgoing, logger); // TODO error
-
-		// Reset funding tx
-		self.funding_transaction = None;
-		self.funding_transaction_saved = None;
-		self.channel_transaction_parameters.funding_outpoint = None;
-		self.funding_tx_confirmed_in = None;
-		self.funding_tx_confirmation_height = 0;
-
-		// Clear these state flags, for sending `ChannelPending` and `ChannelReady` again
-		self.channel_pending_event_emitted = false;
-		self.channel_ready_event_emitted = false;
-
-		log_trace!(logger, "Splicing process started, new channel value {}, channel_id {}", self.channel_value_satoshis, self.channel_id);
-
-		Ok(())
+		log_info!(logger, "Splicing process started, new channel value {}, outgoing {}, channel_id {}", self.channel_value_satoshis, is_outgoing, self.channel_id);
 	}
 
 	/// Splice process finished, new funding transaction locked.
@@ -7939,10 +7953,12 @@ impl<SP: Deref> Channel<SP> where
 	/// #SPLICING STEP2 I
 	/// Inspired by get_open_channel()
 	/// Get the splice message that can be sent during splice initiation
+	/// post_channel_keys_id: in case the `channel_keys_id` changes during splicing, the value that will be used after splicing.
 	#[cfg(splicing)]
 	pub fn get_splice(&mut self, chain_hash: ChainHash,
 		// TODO; should this be a param, or stored in the channel?
-		relative_satoshis: i64, funding_feerate_perkw: u32, locktime: u32
+		relative_satoshis: i64, signer_provider: &SP,
+		funding_feerate_perkw: u32, locktime: u32
 	) -> msgs::Splice {
 		if !self.context.is_outbound() {
 			panic!("Tried to initiate a splice on an inbound channel?");
@@ -7961,6 +7977,16 @@ impl<SP: Deref> Channel<SP> where
 		let first_per_commitment_point = self.holder_signer.get_per_commitment_point(self.cur_holder_commitment_transaction_number, &self.secp_ctx);
 		*/
 
+		// At this point we are not committed to the new channel value yet, but the funding pubkey
+		// depends on the channel value, so we create here a new funding pubkey with the new
+		// channel value.
+		// Note that channel_keys_id is supposed NOT to change
+		let funding_pubkey = {
+			let post_splice_channel_value = PendingSpliceInfoPre::add_checked(self.context.channel_value_satoshis, relative_satoshis);
+			let holder_signer = signer_provider.derive_channel_signer(post_splice_channel_value, self.context.channel_keys_id);
+			holder_signer.pubkeys().funding_pubkey
+		};
+
 		// TODO move from here, check
 		self.context.channel_state = ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
 
@@ -7971,7 +7997,7 @@ impl<SP: Deref> Channel<SP> where
 			relative_satoshis,
 			funding_feerate_perkw,
 			locktime,
-			funding_pubkey: self.context.get_holder_pubkeys().funding_pubkey,
+			funding_pubkey,
 		}
 	}
 
@@ -9082,6 +9108,66 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		Ok(chan)
 	}
 
+	/// Create new channel for splice
+	pub fn new_spliced<L: Deref>(
+		pre_splice_context: ChannelContext<SP>,
+		is_outgoing: bool,
+		signer_provider: &SP,
+		counterparty_funding_pubkey: &PublicKey,
+		relative_satoshis: i64,
+		// push_msat: u64,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+		// post_channel_keys_id: [u8; 32],
+		funding_tx_locktime: LockTime,
+		funding_feerate_sat_per_1000_weight: u32,
+		logger: &L,
+	) -> Result<Self, ChannelError> where L::Target: Logger
+	{
+		let pre_channel_value = pre_splice_context.get_value_satoshis();
+		let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, relative_satoshis);
+		// Create new signer, using the new channel value.
+		// Note: channel_keys_id is not changed
+		let holder_signer = signer_provider.derive_channel_signer(post_channel_value, pre_splice_context.channel_keys_id);
+
+		/*
+		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
+
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+
+		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
+		let funding_tx_locktime = LockTime::from_height(current_chain_height)
+			.map_err(|_| APIError::APIMisuseError {
+				err: format!(
+					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
+					current_chain_height) })?;
+		*/
+
+		let context = ChannelContext::new_for_splice(
+			pre_splice_context,
+			is_outgoing,
+			counterparty_funding_pubkey,
+			relative_satoshis,
+			true,
+			holder_signer,
+			logger,
+		)?;
+
+		let post_chan = Self {
+			context,
+			unfunded_context: UnfundedChannelContext::default(),
+			dual_funding_context: DualFundingChannelContext {
+				our_funding_satoshis: post_channel_value,
+				their_funding_satoshis: 0,
+				funding_tx_locktime,
+				funding_feerate_sat_per_1000_weight,
+				our_funding_inputs: funding_inputs,
+			}
+		};
+
+		Ok(post_chan)
+	}
+
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannelV2` message, otherwise the channel is failed.
@@ -9276,6 +9362,66 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		Ok(chan)
 	}
 
+	/// Create new channel for splice
+	pub fn new_spliced<L: Deref>(
+		pre_splice_context: ChannelContext<SP>,
+		is_outgoing: bool,
+		signer_provider: &SP,
+		counterparty_funding_pubkey: &PublicKey,
+		relative_satoshis: i64,
+		// push_msat: u64,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+		// post_channel_keys_id: [u8; 32],
+		funding_tx_locktime: LockTime,
+		funding_feerate_sat_per_1000_weight: u32,
+		logger: &L,
+	) -> Result<Self, ChannelError> where L::Target: Logger
+	{
+		let pre_channel_value = pre_splice_context.get_value_satoshis();
+		let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, relative_satoshis);
+		// Create new signer, using the new channel value.
+		// Note: channel_keys_id is not changed
+		let holder_signer = signer_provider.derive_channel_signer(post_channel_value, pre_splice_context.channel_keys_id);
+
+		/*
+		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
+
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+
+		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
+		let funding_tx_locktime = LockTime::from_height(current_chain_height)
+			.map_err(|_| APIError::APIMisuseError {
+				err: format!(
+					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
+					current_chain_height) })?;
+		*/
+
+		let context = ChannelContext::new_for_splice(
+			pre_splice_context,
+			is_outgoing,
+			counterparty_funding_pubkey,
+			relative_satoshis,
+			false,
+			holder_signer,
+			logger,
+		)?;
+
+		let post_chan = Self {
+			context,
+			unfunded_context: UnfundedChannelContext::default(),
+			dual_funding_context: DualFundingChannelContext {
+				our_funding_satoshis: 0,
+				their_funding_satoshis: post_channel_value,
+				funding_tx_locktime,
+				funding_feerate_sat_per_1000_weight,
+				our_funding_inputs: funding_inputs,
+			}
+		};
+
+		Ok(post_chan)
+	}
+
 	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannelV2`] message which
 	/// should be sent back to the counterparty node.
 	///
@@ -9394,13 +9540,14 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		// TODO check
 		// self.context.channel_state = ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
 
-		let keys = self.context.get_holder_pubkeys();
+		// Note: at this point keys are already updated
+		let funding_pubkey = self.context.get_holder_pubkeys().funding_pubkey;
 		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
 		Ok(msgs::SpliceAck {
 			chain_hash,
 			channel_id: self.context.channel_id, // pending_splice.pre_channel_id.unwrap(), // TODO
 			relative_satoshis: pending_splice.relative_satoshis(), //self.context.get_value_satoshis()),
-			funding_pubkey: keys.funding_pubkey,
+			funding_pubkey,
 		})
 	}
 }

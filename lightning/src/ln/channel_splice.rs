@@ -22,7 +22,7 @@ use core::convert::TryFrom;
 pub(crate) struct PendingSpliceInfoPre {
 	/// The post splice value (current + relative)
 	pub post_channel_value: u64,
-	/// Reference to the post-splice channel (may be missing if channel_id is the same)
+	/// Reference to the post-splice channel (may be missing if channel_id is not yet known or the same)
 	pub post_channel_id: Option<ChannelId>,
 	pub funding_feerate_perkw: u32,
 	pub locktime: u32,

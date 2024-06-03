@@ -166,11 +166,6 @@ impl ChannelSigner for TestChannelSigner {
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
 		self.inner.provide_channel_parameters(channel_parameters)
 	}
-
-	/// #SPLICING
-	fn update_channel_value(&mut self, channel_value_satoshis: u64) {
-		self.inner.update_channel_value(channel_value_satoshis)
-	}
 }
 
 impl EcdsaChannelSigner for TestChannelSigner {

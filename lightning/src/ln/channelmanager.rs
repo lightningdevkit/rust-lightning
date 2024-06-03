@@ -52,8 +52,6 @@ pub use crate::ln::channel::{InboundHTLCDetails, InboundHTLCStateDetails, Outbou
 #[cfg(any(dual_funding, splicing))]
 use crate::ln::channel::{InboundV2Channel, OutboundV2Channel, InteractivelyFunded as _};
 #[cfg(splicing)]
-use crate::ln::channel::DualFundingChannelContext;
-#[cfg(splicing)]
 use crate::ln::channel_splice::PendingSpliceInfoPre;
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
@@ -3539,7 +3537,7 @@ where
 							chan.context.channel_id(), post_splice_v2_channel_id) });
 					}
 
-					let msg = chan.get_splice(self.chain_hash.clone(), relative_satoshis, funding_feerate_perkw, locktime);
+					let msg = chan.get_splice(self.chain_hash.clone(), relative_satoshis, &self.signer_provider, funding_feerate_perkw, locktime);
 
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSplice {
 						node_id: *their_network_key,
@@ -9247,7 +9245,7 @@ where
 		let peer_state = &mut *peer_state_lock;
 
 		// Look for channel
-		let post_channel_value = match peer_state.channel_by_id.entry(msg.channel_id) {
+		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}, channel_id {}", counterparty_node_id, msg.channel_id), msg.channel_id)),
 			hash_map::Entry::Occupied(chan_entry) => {
 				if let ChannelPhase::Funded(chan) = chan_entry.get() {
@@ -9277,8 +9275,6 @@ where
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Channel ID would change during splicing (e.g. splice on V1 channel), not yet supported, channel id {} {}",
 							chan.context.channel_id(), post_splice_v2_channel_id), msg.channel_id));
 					}
-
-					post_channel_value
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel in wrong state".to_owned(), msg.channel_id.clone()));
 				}
@@ -9287,6 +9283,7 @@ where
 
 		// Change channel, phase changes, remove and add
 		// Remove the pre channel
+		// TODO should be removed only if channel id does not change?
 		let prev_chan = match peer_state.channel_by_id.remove(&msg.channel_id) {
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}, channel_id {}", counterparty_node_id, msg.channel_id), msg.channel_id)),
 			Some(chan_phase) => {
@@ -9298,17 +9295,17 @@ where
 			}
 		};
 
-		let post_chan = InboundV2Channel {
-			context: prev_chan.context,
-			unfunded_context: UnfundedChannelContext::default(),
-			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis: 0,
-				their_funding_satoshis: post_channel_value, // msg.relative_satoshis as u64,
-				funding_tx_locktime: LockTime::from_consensus(msg.locktime),
-				funding_feerate_sat_per_1000_weight: msg.funding_feerate_perkw,
-				our_funding_inputs: vec![],
-			},
-		};
+		let post_chan = InboundV2Channel::new_spliced(
+			prev_chan.context,
+			false,
+			&self.signer_provider,
+			&msg.funding_pubkey,
+			msg.relative_satoshis,
+			Vec::new(),
+			LockTime::from_consensus(msg.locktime),
+			msg.funding_feerate_perkw,
+			&self.logger,
+		).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.channel_id))?;
 
 		// Add the modified channel
 		let post_chan_id = post_chan.context.channel_id();
@@ -9319,29 +9316,20 @@ where
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal consistency error".to_string(), post_chan_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let ChannelPhase::UnfundedInboundV2(post_chan) = chan_entry.get_mut() {
-					let pre_channel_value = post_chan.context.get_value_satoshis();
+					// Apply start of splice change in the state 
+					post_chan.context.splice_start(false, &self.logger);
 
-					post_chan.context.pending_splice_pre = Some(PendingSpliceInfoPre::new(msg.relative_satoshis, pre_channel_value, Some(post_chan_id), msg.funding_feerate_perkw, msg.locktime, Vec::new()));
-
-					// Apply start of splice changed in the state (update state, capacity funding tx, ...)
-					post_chan.context.splice_start(false, msg.relative_satoshis, &self.logger)
-						.map_err(|ce| MsgHandleErrInternal::send_err_msg_no_close(ce.to_string(), msg.channel_id.clone()))?;
-
-					let new_msg = post_chan.get_splice_ack(self.chain_hash.clone()).unwrap(); // TODO error
+					let new_msg = post_chan.get_splice_ack(self.chain_hash.clone())
+						.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, post_chan.context.channel_id()))?;
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
 						node_id: *counterparty_node_id,
 						msg: new_msg,
 					});
 
-					let _msg = post_chan.context.begin_interactive_funding_tx_construction(
-						&post_chan.dual_funding_context,
-						&self.signer_provider,
-						&self.entropy_source,
-						self.get_our_node_id(),
-						false,
-					).map_err(|e| MsgHandleErrInternal::send_err_msg_no_close(
-						format!("Failed to start interactive transaction construction, {:?}", e), msg.channel_id
-					))?;
+					let _msg = post_chan.begin_interactive_funding_tx_construction(&self.signer_provider, &self.entropy_source, self.get_our_node_id())
+						.map_err(|e| MsgHandleErrInternal::send_err_msg_no_close(
+							format!("Failed to start interactive transaction construction, {:?}", e), msg.channel_id
+						))?;
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal consistency error".to_string(), post_chan_id));
 				}
@@ -9397,6 +9385,7 @@ where
 
 		// Change channel, phase changes, remove and add
 		// Remove the pre channel
+		// TODO should be removed only if channel id does not change?
 		let prev_chan = match peer_state.channel_by_id.remove(&msg.channel_id) {
 			None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}, channel_id {}", counterparty_node_id, msg.channel_id), msg.channel_id)),
 			Some(chan_phase) => {
@@ -9408,17 +9397,17 @@ where
 			}
 		};
 
-		let post_chan = OutboundV2Channel {
-			context: prev_chan.context,
-			unfunded_context: UnfundedChannelContext::default(),
-			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis: pending_splice.post_channel_value, // msg.relative_satoshis as u64,
-				their_funding_satoshis: 0,
-				funding_tx_locktime: LockTime::from_consensus(pending_splice.locktime),
-				funding_feerate_sat_per_1000_weight: pending_splice.funding_feerate_perkw,
-				our_funding_inputs: pending_splice.our_funding_inputs,
-			},
-		};
+		let post_chan = OutboundV2Channel::new_spliced(
+			prev_chan.context,
+			true,
+			&self.signer_provider,
+			&msg.funding_pubkey,
+			msg.relative_satoshis,
+			pending_splice.our_funding_inputs,
+			LockTime::from_consensus(pending_splice.locktime),
+			pending_splice.funding_feerate_perkw,
+			&self.logger,
+		).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.channel_id))?;
 
 		// Add the modified channel
 		let post_chan_id = post_chan.context.channel_id();
@@ -9429,15 +9418,8 @@ where
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal consistency error".to_string(), post_chan_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let ChannelPhase::UnfundedOutboundV2(post_chan) = chan_entry.get_mut() {
-					// let pre_channel_value = post_chan.context.get_value_satoshis();
-					// let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, msg.relative_satoshis);
-
-					// Update pre-splice info with the new channel ID of the post channel
-					post_chan.context.pending_splice_pre.as_mut().unwrap().post_channel_id = Some(post_chan_id);
-
-					// Apply start of splice changed in the state (update state, capacity funding tx, ...)
-					post_chan.context.splice_start(true, msg.relative_satoshis, &self.logger)
-						.map_err(|ce| MsgHandleErrInternal::send_err_msg_no_close(ce.to_string(), post_chan_id))?;
+					// Apply start of splice change in the state
+					post_chan.context.splice_start(true, &self.logger);
 
 					/* Note: SpliceAckedInputsContributionReady event is no longer used
 					// Prepare SpliceAckedInputsContributionReady event

@@ -787,10 +787,6 @@ pub trait ChannelSigner {
 	///
 	/// channel_parameters.is_populated() MUST be true.
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters);
-
-	/// #SPLICING
-	/// Update the channel value, and also reset the channel parameters
-	fn update_channel_value(&mut self, channel_value_satoshis: u64);
 }
 
 /// Specifies the recipient of an invoice.
@@ -1390,14 +1386,6 @@ impl ChannelSigner for InMemorySigner {
 		}
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		self.channel_parameters = Some(channel_parameters.clone());
-	}
-
-	/// #SPLICING
-	/// Update the channel value, and also reset the channel parameters
-	fn update_channel_value(&mut self, channel_value_satoshis: u64) {
-		self.channel_value_satoshis = channel_value_satoshis;
-		assert!(self.channel_parameters.is_some());
-		self.channel_parameters = None;
 	}
 }
 
