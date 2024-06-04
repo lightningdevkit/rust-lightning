@@ -1337,37 +1337,18 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			features, signing_pubkey,
 		};
 
-		match (offer_tlv_stream.node_id, &offer_tlv_stream.paths) {
-			(Some(expected_signing_pubkey), _) => {
-				if fields.signing_pubkey != expected_signing_pubkey {
-					return Err(Bolt12SemanticError::InvalidSigningPubkey);
-				}
+		check_invoice_signing_pubkey(&fields.signing_pubkey, &offer_tlv_stream)?;
 
-				let invoice_request = InvoiceRequestContents::try_from(
-					(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
-				)?;
-				Ok(InvoiceContents::ForOffer { invoice_request, fields })
-			},
-			(None, Some(paths)) => {
-				if !paths
-					.iter()
-					.filter_map(|path| path.blinded_hops.last())
-					.any(|last_hop| fields.signing_pubkey == last_hop.blinded_node_id)
-				{
-					return Err(Bolt12SemanticError::InvalidSigningPubkey);
-				}
-
-				let invoice_request = InvoiceRequestContents::try_from(
-					(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
-				)?;
-				Ok(InvoiceContents::ForOffer { invoice_request, fields })
-			},
-			(None, None) => {
-				let refund = RefundContents::try_from(
-					(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
-				)?;
-				Ok(InvoiceContents::ForRefund { refund, fields })
-			},
+		if offer_tlv_stream.node_id.is_none() && offer_tlv_stream.paths.is_none() {
+			let refund = RefundContents::try_from(
+				(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
+			)?;
+			Ok(InvoiceContents::ForRefund { refund, fields })
+		} else {
+			let invoice_request = InvoiceRequestContents::try_from(
+				(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
+			)?;
+			Ok(InvoiceContents::ForOffer { invoice_request, fields })
 		}
 	}
 }
@@ -1386,6 +1367,29 @@ pub(super) fn construct_payment_paths(
 			Ok(blindedpay.into_iter().zip(paths.into_iter()).collect::<Vec<_>>())
 		},
 	}
+}
+
+pub(super) fn check_invoice_signing_pubkey(
+	invoice_signing_pubkey: &PublicKey, offer_tlv_stream: &OfferTlvStream
+) -> Result<(), Bolt12SemanticError> {
+	match (&offer_tlv_stream.node_id, &offer_tlv_stream.paths) {
+		(Some(expected_signing_pubkey), _) => {
+			if invoice_signing_pubkey != expected_signing_pubkey {
+				return Err(Bolt12SemanticError::InvalidSigningPubkey);
+			}
+		},
+		(None, Some(paths)) => {
+			if !paths
+				.iter()
+				.filter_map(|path| path.blinded_hops.last())
+				.any(|last_hop| invoice_signing_pubkey == &last_hop.blinded_node_id)
+			{
+				return Err(Bolt12SemanticError::InvalidSigningPubkey);
+			}
+		},
+		_ => {},
+	}
+	Ok(())
 }
 
 #[cfg(test)]
