@@ -904,6 +904,129 @@ fn fails_creating_refund_without_blinded_paths() {
 	assert!(nodes[0].node.list_recent_payments().is_empty());
 }
 
+/// Fails creating or paying an offer when a blinded path cannot be created because no peers are
+/// connected.
+#[test]
+fn fails_creating_or_paying_for_offer_without_connected_peers() {
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+
+	disconnect_peers(alice, &[bob, charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, charlie, &nodes[4], &nodes[5]]);
+
+	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
+	match alice.node.create_offer_builder(Some(absolute_expiry)) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	}
+
+	let mut args = ReconnectArgs::new(alice, bob);
+	args.send_channel_ready = (true, true);
+	reconnect_nodes(args);
+
+	let offer = alice.node
+		.create_offer_builder(Some(absolute_expiry)).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+
+	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	}
+
+	assert!(nodes[0].node.list_recent_payments().is_empty());
+
+	let mut args = ReconnectArgs::new(charlie, david);
+	args.send_channel_ready = (true, true);
+	reconnect_nodes(args);
+
+	assert!(
+		david.node.pay_for_offer(
+			&offer, None, None, None, payment_id, Retry::Attempts(0), None
+		).is_ok()
+	);
+
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+}
+
+/// Fails creating or sending an invoice for a refund when a blinded path cannot be created because
+/// no peers are connected.
+#[test]
+fn fails_creating_refund_or_sending_invoice_without_connected_peers() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.set_route_blinding_optional();
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+
+	disconnect_peers(alice, &[bob, charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, charlie, &nodes[4], &nodes[5]]);
+
+	let absolute_expiry = david.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
+	let payment_id = PaymentId([1; 32]);
+	match david.node.create_refund_builder(
+		10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
+	) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	}
+
+	let mut args = ReconnectArgs::new(charlie, david);
+	args.send_channel_ready = (true, true);
+	reconnect_nodes(args);
+
+	let refund = david.node
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
+		.unwrap()
+		.build().unwrap();
+
+	match alice.node.request_refund_payment(&refund) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	}
+
+	let mut args = ReconnectArgs::new(alice, bob);
+	args.send_channel_ready = (true, true);
+	reconnect_nodes(args);
+
+	assert!(alice.node.request_refund_payment(&refund).is_ok());
+}
+
 /// Fails creating an invoice request when the offer contains an unsupported chain.
 #[test]
 fn fails_creating_invoice_request_for_unsupported_chain() {

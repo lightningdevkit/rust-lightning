@@ -8752,7 +8752,9 @@ where
 
 		let peers = self.per_peer_state.read().unwrap()
 			.iter()
-			.filter(|(_, peer)| peer.lock().unwrap().latest_features.supports_onion_messages())
+			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
+			.filter(|(_, peer)| peer.is_connected)
+			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
 			.map(|(node_id, _)| *node_id)
 			.collect::<Vec<_>>();
 
@@ -8771,6 +8773,7 @@ where
 		let peers = self.per_peer_state.read().unwrap()
 			.iter()
 			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
+			.filter(|(_, peer)| peer.is_connected)
 			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
 			.map(|(node_id, peer)| ForwardNode {
 				node_id: *node_id,
