@@ -46,8 +46,7 @@ use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, Messa
 use crate::ln::inbound_payment;
 use crate::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{self, Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
-pub use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState, CounterpartyForwardingInfo};
-pub use crate::ln::channel_state::{InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
+use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState, CounterpartyForwardingInfo};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;

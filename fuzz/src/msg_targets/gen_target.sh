@@ -45,7 +45,7 @@ GEN_TEST lightning::ln::msgs::ErrorMessage test_msg_hole ", 32, 2"
 GEN_TEST lightning::ln::msgs::WarningMessage test_msg_hole ", 32, 2"
 GEN_TEST lightning::ln::msgs::ChannelUpdate test_msg_hole ", 108, 1"
 
-GEN_TEST lightning::ln::channelmanager::ChannelDetails test_msg_simple ""
+GEN_TEST lightning::ln::channel_state::ChannelDetails test_msg_simple ""
 
 GEN_TEST lightning::ln::msgs::OpenChannelV2 test_msg_simple ""
 GEN_TEST lightning::ln::msgs::AcceptChannelV2 test_msg_simple ""
