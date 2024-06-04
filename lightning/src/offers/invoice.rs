@@ -1278,10 +1278,9 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream)
 		)?;
 
-		let signature = match signature {
-			None => return Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)),
-			Some(signature) => signature,
-		};
+		let signature = signature.ok_or(
+			Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)
+		)?;
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 		let pubkey = contents.fields().signing_pubkey;
 		merkle::verify_signature(&signature, &tagged_hash, pubkey)?;
@@ -1315,22 +1314,13 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			.map(Into::<u64>::into)
 			.map(Duration::from_secs);
 
-		let payment_hash = match payment_hash {
-			None => return Err(Bolt12SemanticError::MissingPaymentHash),
-			Some(payment_hash) => payment_hash,
-		};
+		let payment_hash = payment_hash.ok_or(Bolt12SemanticError::MissingPaymentHash)?;
 
-		let amount_msats = match amount {
-			None => return Err(Bolt12SemanticError::MissingAmount),
-			Some(amount) => amount,
-		};
+		let amount_msats = amount.ok_or(Bolt12SemanticError::MissingAmount)?;
 
 		let features = features.unwrap_or_else(Bolt12InvoiceFeatures::empty);
 
-		let signing_pubkey = match node_id {
-			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
-			Some(node_id) => node_id,
-		};
+		let signing_pubkey = node_id.ok_or(Bolt12SemanticError::MissingSigningPubkey)?;
 
 		let fields = InvoiceFields {
 			payment_paths, created_at, relative_expiry, payment_hash, amount_msats, fallbacks,
