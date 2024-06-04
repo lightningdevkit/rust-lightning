@@ -14,7 +14,8 @@ use bitcoin::blockdata::transaction::TxOut;
 use lightning::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::ChannelId;
-use lightning::ln::channelmanager::{self, ChannelDetails, ChannelCounterparty};
+use lightning::ln::channel_state::{ChannelDetails, ChannelCounterparty, ChannelShutdownState};
+use lightning::ln::channelmanager;
 use lightning::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use lightning::ln::msgs;
 use lightning::offers::invoice::BlindedPayInfo;
@@ -243,7 +244,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							inbound_htlc_maximum_msat: None,
 							config: None,
 							feerate_sat_per_1000_weight: None,
-							channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
+							channel_shutdown_state: Some(ChannelShutdownState::NotShuttingDown),
 							pending_inbound_htlcs: Vec::new(),
 							pending_outbound_htlcs: Vec::new(),
 						});

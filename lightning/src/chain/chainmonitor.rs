@@ -39,7 +39,7 @@ use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
-use crate::ln::channelmanager::ChannelDetails;
+use crate::ln::channel_state::ChannelDetails;
 
 use crate::prelude::*;
 use crate::sync::{RwLock, RwLockReadGuard, Mutex, MutexGuard};

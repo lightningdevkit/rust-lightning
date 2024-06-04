@@ -25,7 +25,8 @@ use crate::sign;
 use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
 use crate::ln::types::ChannelId;
-use crate::ln::channelmanager::{ChannelDetails, self};
+use crate::ln::channel_state::ChannelDetails;
+use crate::ln::channelmanager;
 #[cfg(test)]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};

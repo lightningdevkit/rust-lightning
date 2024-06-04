@@ -41,7 +41,8 @@ use lightning::sign::{KeyMaterial, InMemorySigner, Recipient, EntropySource, Nod
 use lightning::events;
 use lightning::events::MessageSendEventsProvider;
 use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
-use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, ChannelManagerReadArgs, PaymentId};
+use lightning::ln::channel_state::ChannelDetails;
+use lightning::ln::channelmanager::{ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId};
 use lightning::ln::outbound_payment::{RecipientOnionFields, PaymentSendFailure};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::msgs::{self, CommitmentUpdate, ChannelMessageHandler, DecodeError, UpdateAddHTLC, Init};
