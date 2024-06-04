@@ -637,8 +637,8 @@ impl Readable for ChannelDetails {
 		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
 		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values.
 		let user_channel_id_low: u64 = user_channel_id_low.0.unwrap();
-		let user_channel_id = user_channel_id_low as u128 +
-			((user_channel_id_high_opt.unwrap_or(0 as u64) as u128) << 64);
+		let user_channel_id = user_channel_id_low as u128
+			+ ((user_channel_id_high_opt.unwrap_or(0 as u64) as u128) << 64);
 
 		Ok(Self {
 			inbound_scid_alias,
