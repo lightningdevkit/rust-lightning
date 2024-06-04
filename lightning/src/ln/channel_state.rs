@@ -15,11 +15,14 @@ use bitcoin::secp256k1::PublicKey;
 
 use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::OutPoint;
+use crate::io;
 use crate::ln::channel::ChannelContext;
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
+use crate::ln::msgs::DecodeError;
 use crate::ln::types::{ChannelId, PaymentHash};
 use crate::sign::SignerProvider;
 use crate::util::config::ChannelConfig;
+use crate::util::ser::{Readable, Writeable, Writer};
 
 use core::ops::Deref;
 
@@ -224,6 +227,12 @@ pub struct CounterpartyForwardingInfo {
 	pub cltv_expiry_delta: u16,
 }
 
+impl_writeable_tlv_based!(CounterpartyForwardingInfo, {
+	(2, fee_base_msat, required),
+	(4, fee_proportional_millionths, required),
+	(6, cltv_expiry_delta, required),
+});
+
 /// Channel parameters which apply to our counterparty. These are split out from [`ChannelDetails`]
 /// to better separate parameters.
 #[derive(Clone, Debug, PartialEq)]
@@ -252,6 +261,15 @@ pub struct ChannelCounterparty {
 	/// The largest value HTLC (in msat) the remote peer currently will accept, for this channel.
 	pub outbound_htlc_maximum_msat: Option<u64>,
 }
+
+impl_writeable_tlv_based!(ChannelCounterparty, {
+	(2, node_id, required),
+	(4, features, required),
+	(6, unspendable_punishment_reserve, required),
+	(8, forwarding_info, option),
+	(9, outbound_htlc_minimum_msat, option),
+	(11, outbound_htlc_maximum_msat, option),
+});
 
 /// Details of a channel, as returned by [`ChannelManager::list_channels`] and [`ChannelManager::list_usable_channels`]
 ///
@@ -537,6 +555,125 @@ impl ChannelDetails {
 	}
 }
 
+impl Writeable for ChannelDetails {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
+		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values.
+		let user_channel_id_low = self.user_channel_id as u64;
+		let user_channel_id_high_opt = Some((self.user_channel_id >> 64) as u64);
+		write_tlv_fields!(writer, {
+			(1, self.inbound_scid_alias, option),
+			(2, self.channel_id, required),
+			(3, self.channel_type, option),
+			(4, self.counterparty, required),
+			(5, self.outbound_scid_alias, option),
+			(6, self.funding_txo, option),
+			(7, self.config, option),
+			(8, self.short_channel_id, option),
+			(9, self.confirmations, option),
+			(10, self.channel_value_satoshis, required),
+			(12, self.unspendable_punishment_reserve, option),
+			(14, user_channel_id_low, required),
+			(16, self.balance_msat, required),
+			(18, self.outbound_capacity_msat, required),
+			(19, self.next_outbound_htlc_limit_msat, required),
+			(20, self.inbound_capacity_msat, required),
+			(21, self.next_outbound_htlc_minimum_msat, required),
+			(22, self.confirmations_required, option),
+			(24, self.force_close_spend_delay, option),
+			(26, self.is_outbound, required),
+			(28, self.is_channel_ready, required),
+			(30, self.is_usable, required),
+			(32, self.is_public, required),
+			(33, self.inbound_htlc_minimum_msat, option),
+			(35, self.inbound_htlc_maximum_msat, option),
+			(37, user_channel_id_high_opt, option),
+			(39, self.feerate_sat_per_1000_weight, option),
+			(41, self.channel_shutdown_state, option),
+			(43, self.pending_inbound_htlcs, optional_vec),
+			(45, self.pending_outbound_htlcs, optional_vec),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for ChannelDetails {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, inbound_scid_alias, option),
+			(2, channel_id, required),
+			(3, channel_type, option),
+			(4, counterparty, required),
+			(5, outbound_scid_alias, option),
+			(6, funding_txo, option),
+			(7, config, option),
+			(8, short_channel_id, option),
+			(9, confirmations, option),
+			(10, channel_value_satoshis, required),
+			(12, unspendable_punishment_reserve, option),
+			(14, user_channel_id_low, required),
+			(16, balance_msat, required),
+			(18, outbound_capacity_msat, required),
+			// Note that by the time we get past the required read above, outbound_capacity_msat will be
+			// filled in, so we can safely unwrap it here.
+			(19, next_outbound_htlc_limit_msat, (default_value, outbound_capacity_msat.0.unwrap() as u64)),
+			(20, inbound_capacity_msat, required),
+			(21, next_outbound_htlc_minimum_msat, (default_value, 0)),
+			(22, confirmations_required, option),
+			(24, force_close_spend_delay, option),
+			(26, is_outbound, required),
+			(28, is_channel_ready, required),
+			(30, is_usable, required),
+			(32, is_public, required),
+			(33, inbound_htlc_minimum_msat, option),
+			(35, inbound_htlc_maximum_msat, option),
+			(37, user_channel_id_high_opt, option),
+			(39, feerate_sat_per_1000_weight, option),
+			(41, channel_shutdown_state, option),
+			(43, pending_inbound_htlcs, optional_vec),
+			(45, pending_outbound_htlcs, optional_vec),
+		});
+
+		// `user_channel_id` used to be a single u64 value. In order to remain backwards compatible with
+		// versions prior to 0.0.113, the u128 is serialized as two separate u64 values.
+		let user_channel_id_low: u64 = user_channel_id_low.0.unwrap();
+		let user_channel_id = user_channel_id_low as u128 +
+			((user_channel_id_high_opt.unwrap_or(0 as u64) as u128) << 64);
+
+		Ok(Self {
+			inbound_scid_alias,
+			channel_id: channel_id.0.unwrap(),
+			channel_type,
+			counterparty: counterparty.0.unwrap(),
+			outbound_scid_alias,
+			funding_txo,
+			config,
+			short_channel_id,
+			channel_value_satoshis: channel_value_satoshis.0.unwrap(),
+			unspendable_punishment_reserve,
+			user_channel_id,
+			balance_msat: balance_msat.0.unwrap(),
+			outbound_capacity_msat: outbound_capacity_msat.0.unwrap(),
+			next_outbound_htlc_limit_msat: next_outbound_htlc_limit_msat.0.unwrap(),
+			next_outbound_htlc_minimum_msat: next_outbound_htlc_minimum_msat.0.unwrap(),
+			inbound_capacity_msat: inbound_capacity_msat.0.unwrap(),
+			confirmations_required,
+			confirmations,
+			force_close_spend_delay,
+			is_outbound: is_outbound.0.unwrap(),
+			is_channel_ready: is_channel_ready.0.unwrap(),
+			is_usable: is_usable.0.unwrap(),
+			is_public: is_public.0.unwrap(),
+			inbound_htlc_minimum_msat,
+			inbound_htlc_maximum_msat,
+			feerate_sat_per_1000_weight,
+			channel_shutdown_state,
+			pending_inbound_htlcs: pending_inbound_htlcs.unwrap_or(Vec::new()),
+			pending_outbound_htlcs: pending_outbound_htlcs.unwrap_or(Vec::new()),
+		})
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// Further information on the details of the channel shutdown.
 /// Upon channels being forced closed (i.e. commitment transaction confirmation detected
@@ -558,3 +695,11 @@ pub enum ChannelShutdownState {
 	/// to drop the channel.
 	ShutdownComplete,
 }
+
+impl_writeable_tlv_based_enum!(ChannelShutdownState,
+	(0, NotShuttingDown) => {},
+	(2, ShutdownInitiated) => {},
+	(4, ResolvingHTLCs) => {},
+	(6, NegotiatingClosingFee) => {},
+	(8, ShutdownComplete) => {}, ;
+);
