@@ -15,11 +15,11 @@ use crate::utils::test_logger;
 
 #[inline]
 pub fn msg_channel_details_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	test_msg_simple!(lightning::ln::channelmanager::ChannelDetails, data);
+	test_msg_simple!(lightning::ln::channel_state::ChannelDetails, data);
 }
 
 #[no_mangle]
 pub extern "C" fn msg_channel_details_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
-	test_msg_simple!(lightning::ln::channelmanager::ChannelDetails, data);
+	test_msg_simple!(lightning::ln::channel_state::ChannelDetails, data);
 }
