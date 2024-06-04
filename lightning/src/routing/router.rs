@@ -15,7 +15,8 @@ use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode};
 use crate::blinded_path::message;
 use crate::blinded_path::payment::{ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs, self};
 use crate::ln::{PaymentHash, PaymentPreimage};
-use crate::ln::channelmanager::{ChannelDetails, PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, RecipientOnionFields};
+use crate::ln::channel_state::ChannelDetails;
+use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, RecipientOnionFields};
 use crate::ln::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::ln::onion_utils;
@@ -3321,6 +3322,7 @@ mod tests {
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
 	use crate::chain::transaction::OutPoint;
 	use crate::sign::EntropySource;
+	use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
 	use crate::ln::types::ChannelId;
 	use crate::ln::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
@@ -3349,10 +3351,10 @@ mod tests {
 	use crate::sync::Arc;
 
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
-			features: InitFeatures, outbound_capacity_msat: u64) -> channelmanager::ChannelDetails {
-		channelmanager::ChannelDetails {
+			features: InitFeatures, outbound_capacity_msat: u64) -> ChannelDetails {
+		ChannelDetails {
 			channel_id: ChannelId::new_zero(),
-			counterparty: channelmanager::ChannelCounterparty {
+			counterparty: ChannelCounterparty {
 				features,
 				node_id,
 				unspendable_punishment_reserve: 0,
@@ -3382,7 +3384,7 @@ mod tests {
 			inbound_htlc_maximum_msat: None,
 			config: None,
 			feerate_sat_per_1000_weight: None,
-			channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
+			channel_shutdown_state: Some(ChannelShutdownState::NotShuttingDown),
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
 		}
@@ -8504,8 +8506,9 @@ pub(crate) mod bench_utils {
 	use crate::chain::transaction::OutPoint;
 	use crate::routing::scoring::ScoreUpdate;
 	use crate::sign::KeysManager;
+	use crate::ln::channel_state::{ChannelCounterparty, ChannelShutdownState};
+	use crate::ln::channelmanager;
 	use crate::ln::types::ChannelId;
-	use crate::ln::channelmanager::{self, ChannelCounterparty};
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils::TestLogger;
 
@@ -8590,7 +8593,7 @@ pub(crate) mod bench_utils {
 			inbound_htlc_maximum_msat: None,
 			config: None,
 			feerate_sat_per_1000_weight: None,
-			channel_shutdown_state: Some(channelmanager::ChannelShutdownState::NotShuttingDown),
+			channel_shutdown_state: Some(ChannelShutdownState::NotShuttingDown),
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
 		}

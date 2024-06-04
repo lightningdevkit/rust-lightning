@@ -17,7 +17,7 @@ use crate::blinded_path::BlindedHop;
 use crate::blinded_path::utils;
 use crate::io;
 use crate::ln::types::PaymentSecret;
-use crate::ln::channelmanager::CounterpartyForwardingInfo;
+use crate::ln::channel_state::CounterpartyForwardingInfo;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
