@@ -468,11 +468,11 @@ impl ChannelDetails {
 
 	pub(super) fn from_channel_context<SP: Deref, F: Deref>(
 		context: &ChannelContext<SP>, best_block_height: u32, latest_features: InitFeatures,
-		fee_estimator: &LowerBoundedFeeEstimator<F>
+		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Self
 	where
 		SP::Target: SignerProvider,
-		F::Target: FeeEstimator
+		F::Target: FeeEstimator,
 	{
 		let balance = context.get_available_balances(fee_estimator);
 		let (to_remote_reserve_satoshis, to_self_reserve_satoshis) =
@@ -490,15 +490,26 @@ impl ChannelDetails {
 				// Else `Channel::get_counterparty_htlc_minimum_msat` could return the
 				// default `0` value set by `Channel::new_outbound`.
 				outbound_htlc_minimum_msat: if context.have_received_message() {
-					Some(context.get_counterparty_htlc_minimum_msat()) } else { None },
+					Some(context.get_counterparty_htlc_minimum_msat())
+				} else {
+					None
+				},
 				outbound_htlc_maximum_msat: context.get_counterparty_htlc_maximum_msat(),
 			},
 			funding_txo: context.get_funding_txo(),
 			// Note that accept_channel (or open_channel) is always the first message, so
 			// `have_received_message` indicates that type negotiation has completed.
-			channel_type: if context.have_received_message() { Some(context.get_channel_type().clone()) } else { None },
+			channel_type: if context.have_received_message() {
+				Some(context.get_channel_type().clone())
+			} else {
+				None
+			},
 			short_channel_id: context.get_short_channel_id(),
-			outbound_scid_alias: if context.is_usable() { Some(context.outbound_scid_alias()) } else { None },
+			outbound_scid_alias: if context.is_usable() {
+				Some(context.outbound_scid_alias())
+			} else {
+				None
+			},
 			inbound_scid_alias: context.latest_inbound_scid_alias(),
 			channel_value_satoshis: context.get_value_satoshis(),
 			feerate_sat_per_1000_weight: Some(context.get_feerate_sat_per_1000_weight()),
