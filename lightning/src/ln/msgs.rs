@@ -52,7 +52,7 @@ use core::fmt::Display;
 use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
 
-use crate::events::{EventsProvider, MessageSendEventsProvider};
+use crate::events::MessageSendEventsProvider;
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::logger;
 use crate::util::ser::{BigSize, FixedLengthReader, HighZeroBytesDroppedBigSize, Hostname, LengthRead, LengthReadable, LengthReadableArgs, Readable, ReadableArgs, TransactionU16LenLimited, WithoutLength, Writeable, Writer};
@@ -1623,7 +1623,7 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 }
 
 /// A handler for received [`OnionMessage`]s and for providing generated ones to send.
-pub trait OnionMessageHandler: EventsProvider {
+pub trait OnionMessageHandler {
 	/// Handle an incoming `onion_message` message from the given peer.
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
 
