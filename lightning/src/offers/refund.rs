@@ -103,7 +103,7 @@ use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
-use crate::util::ser::{SeekReadable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{SeekReadable, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
@@ -766,6 +766,13 @@ impl RefundContents {
 		};
 
 		(payer, offer, invoice_request)
+	}
+}
+
+impl Readable for Refund {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }
 
