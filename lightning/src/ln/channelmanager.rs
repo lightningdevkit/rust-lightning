@@ -3382,8 +3382,8 @@ where
 					peer_state.pending_msg_events.push(
 						events::MessageSendEvent::HandleError {
 							node_id: counterparty_node_id,
-							action: msgs::ErrorAction::DisconnectPeer {
-								msg: Some(msgs::ErrorMessage { channel_id: *channel_id, data: error_message})
+							action: msgs::ErrorAction::SendErrorMessage {
+								msg: msgs::ErrorMessage { channel_id: *channel_id, data: error_message }
 							},
 						}
 					);
