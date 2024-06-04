@@ -9064,6 +9064,43 @@ pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider 
 	pub dual_funding_context: DualFundingChannelContext,
 }
 
+/// Calculate funding values for interactive tx for splicing, based on channel value changes
+#[cfg(any(dual_funding, splicing))]
+fn calculate_funding_values(
+	pre_channel_value: u64,
+	relative_satoshis: i64,
+	delta_belongs_to_local: i64,
+	is_initiator: bool,
+) -> Result<(u64, u64), ChannelError> {
+	// Check that delta_belongs_to_local is valid (not too high absolute value, and same sign)
+	if delta_belongs_to_local.abs() > relative_satoshis.abs() ||
+		(delta_belongs_to_local > 0 && relative_satoshis < 0) ||
+		(delta_belongs_to_local < 0 && relative_satoshis > 0) {
+			return Err(ChannelError::Close(
+				format!("Invalid delta_belongs_to_local value {}, relative_satoshis {}", delta_belongs_to_local, relative_satoshis)));
+	}
+	let mut our_funding_signed = delta_belongs_to_local;
+	let mut their_funding_signed = relative_satoshis.saturating_sub(delta_belongs_to_local);
+	debug_assert_eq!(our_funding_signed + their_funding_signed, relative_satoshis);
+	// The initiator side will need to add an input for the current funding
+	if is_initiator {
+		our_funding_signed = our_funding_signed.saturating_add(pre_channel_value as i64);
+	} else {
+		their_funding_signed = their_funding_signed.saturating_add(pre_channel_value as i64);
+	}
+	// Check that both resulting funding values are non-negative
+	if our_funding_signed < 0 || their_funding_signed < 0 {
+		return Err(ChannelError::Close(
+			format!("Negative funding value is invalid, {} {}, pre_channel_value {} relative_satoshis {}, belongs_to_local {}, initiator {}",
+				our_funding_signed, their_funding_signed, pre_channel_value, relative_satoshis, delta_belongs_to_local, is_initiator)));
+	}
+	let our_funding = our_funding_signed.abs() as u64;
+	let their_funding = their_funding_signed.abs() as u64;
+	// Double check that the two funding values add up
+	debug_assert_eq!(our_funding + their_funding, PendingSpliceInfoPre::add_checked(pre_channel_value, relative_satoshis));
+	Ok((our_funding, their_funding))
+}
+
 #[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	pub fn new<ES: Deref, F: Deref>(
@@ -9125,7 +9162,6 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// Create new channel for splice
 	pub fn new_spliced<L: Deref>(
 		pre_splice_context: ChannelContext<SP>,
-		is_outgoing: bool,
 		signer_provider: &SP,
 		counterparty_funding_pubkey: &PublicKey,
 		relative_satoshis: i64,
@@ -9158,7 +9194,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 
 		let context = ChannelContext::new_for_splice(
 			pre_splice_context,
-			is_outgoing,
+			true,
 			counterparty_funding_pubkey,
 			relative_satoshis,
 			delta_belongs_to_local,
@@ -9166,12 +9202,14 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			logger,
 		)?;
 
+		let (our_funding_satoshis, their_funding_satoshis) = calculate_funding_values(pre_channel_value, relative_satoshis, delta_belongs_to_local, true)?;
+
 		let post_chan = Self {
 			context,
 			unfunded_context: UnfundedChannelContext::default(),
 			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis: post_channel_value,
-				their_funding_satoshis: 0,
+				our_funding_satoshis,
+				their_funding_satoshis,
 				funding_tx_locktime,
 				funding_feerate_sat_per_1000_weight,
 				our_funding_inputs: funding_inputs,
@@ -9378,7 +9416,6 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// Create new channel for splice
 	pub fn new_spliced<L: Deref>(
 		pre_splice_context: ChannelContext<SP>,
-		is_outgoing: bool,
 		signer_provider: &SP,
 		counterparty_funding_pubkey: &PublicKey,
 		relative_satoshis: i64,
@@ -9411,7 +9448,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 
 		let context = ChannelContext::new_for_splice(
 			pre_splice_context,
-			is_outgoing,
+			false,
 			counterparty_funding_pubkey,
 			relative_satoshis,
 			delta_belongs_to_local,
@@ -9419,12 +9456,14 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			logger,
 		)?;
 
+		let (our_funding_satoshis, their_funding_satoshis) = calculate_funding_values(pre_channel_value, relative_satoshis, delta_belongs_to_local, false)?;
+
 		let post_chan = Self {
 			context,
 			unfunded_context: UnfundedChannelContext::default(),
 			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis: 0,
-				their_funding_satoshis: post_channel_value,
+				our_funding_satoshis,
+				their_funding_satoshis,
 				funding_tx_locktime,
 				funding_feerate_sat_per_1000_weight,
 				our_funding_inputs: funding_inputs,

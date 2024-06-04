@@ -9297,7 +9297,6 @@ where
 
 		let post_chan = InboundV2Channel::new_spliced(
 			prev_chan.context,
-			false,
 			&self.signer_provider,
 			&msg.funding_pubkey,
 			msg.relative_satoshis,
@@ -9400,7 +9399,6 @@ where
 
 		let post_chan = OutboundV2Channel::new_spliced(
 			prev_chan.context,
-			true,
 			&self.signer_provider,
 			&msg.funding_pubkey,
 			msg.relative_satoshis,
