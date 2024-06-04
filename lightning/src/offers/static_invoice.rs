@@ -557,3 +557,350 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		})
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
+	use crate::ln::inbound_payment::ExpandedKey;
+	use crate::offers::invoice::InvoiceTlvStreamRef;
+	use crate::offers::merkle;
+	use crate::offers::merkle::{SignatureTlvStreamRef, TaggedHash};
+	use crate::offers::offer::{Offer, OfferBuilder, OfferTlvStreamRef, Quantity};
+	use crate::offers::parse::Bolt12SemanticError;
+	use crate::offers::static_invoice::{
+		StaticInvoice, StaticInvoiceBuilder, DEFAULT_RELATIVE_EXPIRY, SIGNATURE_TAG,
+	};
+	use crate::offers::test_utils::*;
+	use crate::sign::KeyMaterial;
+	use crate::util::ser::{Iterable, Writeable};
+	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::secp256k1::Secp256k1;
+	use bitcoin::Network;
+	use core::time::Duration;
+
+	type FullInvoiceTlvStreamRef<'a> =
+		(OfferTlvStreamRef<'a>, InvoiceTlvStreamRef<'a>, SignatureTlvStreamRef<'a>);
+
+	impl StaticInvoice {
+		fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
+			let (offer_tlv_stream, invoice_tlv_stream) = self.contents.as_tlv_stream();
+			(
+				offer_tlv_stream,
+				invoice_tlv_stream,
+				SignatureTlvStreamRef { signature: Some(&self.signature) },
+			)
+		}
+	}
+
+	fn blinded_path() -> BlindedPath {
+		BlindedPath {
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
+			blinding_point: pubkey(41),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
+			],
+		}
+	}
+
+	#[test]
+	fn builds_invoice_for_offer_with_defaults() {
+		let node_id = recipient_pubkey();
+		let payment_paths = payment_paths();
+		let now = now();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let offer =
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+				.path(blinded_path())
+				.build()
+				.unwrap();
+
+		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths.clone(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		)
+		.unwrap()
+		.build_and_sign(&secp_ctx)
+		.unwrap();
+
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+
+		assert_eq!(invoice.bytes, buffer.as_slice());
+		assert!(invoice.metadata().is_some());
+		assert_eq!(invoice.amount(), None);
+		assert_eq!(invoice.description(), None);
+		assert_eq!(invoice.offer_features(), &OfferFeatures::empty());
+		assert_eq!(invoice.absolute_expiry(), None);
+		assert_eq!(invoice.offer_message_paths(), &[blinded_path()]);
+		assert_eq!(invoice.message_paths(), &[blinded_path()]);
+		assert_eq!(invoice.issuer(), None);
+		assert_eq!(invoice.supported_quantity(), Quantity::One);
+		assert_ne!(invoice.signing_pubkey(), recipient_pubkey());
+		assert_eq!(invoice.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
+		assert_eq!(invoice.payment_paths(), payment_paths.as_slice());
+		assert_eq!(invoice.created_at(), now);
+		assert_eq!(invoice.relative_expiry(), DEFAULT_RELATIVE_EXPIRY);
+		#[cfg(feature = "std")]
+		assert!(!invoice.is_expired());
+		assert!(invoice.fallbacks().is_empty());
+		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
+
+		let offer_signing_pubkey = offer.signing_pubkey().unwrap();
+		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
+		assert!(
+			merkle::verify_signature(&invoice.signature, &message, offer_signing_pubkey).is_ok()
+		);
+
+		let paths = vec![blinded_path()];
+		let metadata = vec![42; 16];
+		assert_eq!(
+			invoice.as_tlv_stream(),
+			(
+				OfferTlvStreamRef {
+					chains: None,
+					metadata: Some(&metadata),
+					currency: None,
+					amount: None,
+					description: None,
+					features: None,
+					absolute_expiry: None,
+					paths: Some(&paths),
+					issuer: None,
+					quantity_max: None,
+					node_id: Some(&offer_signing_pubkey),
+				},
+				InvoiceTlvStreamRef {
+					paths: Some(Iterable(payment_paths.iter().map(|(_, path)| path))),
+					blindedpay: Some(Iterable(payment_paths.iter().map(|(payinfo, _)| payinfo))),
+					created_at: Some(now.as_secs()),
+					relative_expiry: None,
+					payment_hash: None,
+					amount: None,
+					fallbacks: None,
+					features: None,
+					node_id: Some(&offer_signing_pubkey),
+					message_paths: Some(&paths),
+				},
+				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
+			)
+		);
+
+		if let Err(e) = StaticInvoice::try_from(buffer) {
+			panic!("error parsing invoice: {:?}", e);
+		}
+	}
+
+	#[cfg(feature = "std")]
+	#[test]
+	fn builds_invoice_from_offer_with_expiration() {
+		let node_id = recipient_pubkey();
+		let now = now();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let future_expiry = Duration::from_secs(u64::max_value());
+		let past_expiry = Duration::from_secs(0);
+
+		let valid_offer =
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+				.path(blinded_path())
+				.absolute_expiry(future_expiry)
+				.build()
+				.unwrap();
+
+		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&valid_offer,
+			payment_paths(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		)
+		.unwrap()
+		.build_and_sign(&secp_ctx)
+		.unwrap();
+		assert!(!invoice.is_expired());
+		assert_eq!(invoice.absolute_expiry(), Some(future_expiry));
+
+		let expired_offer =
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+				.path(blinded_path())
+				.absolute_expiry(past_expiry)
+				.build()
+				.unwrap();
+		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&expired_offer,
+			payment_paths(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		)
+		.unwrap()
+		.build_and_sign(&secp_ctx)
+		{
+			assert_eq!(e, Bolt12SemanticError::AlreadyExpired);
+		} else {
+			panic!("expected error")
+		}
+	}
+
+	#[test]
+	fn fails_build_with_missing_paths() {
+		let node_id = recipient_pubkey();
+		let now = now();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let valid_offer =
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+				.path(blinded_path())
+				.build()
+				.unwrap();
+
+		// Error if payment paths are missing.
+		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&valid_offer,
+			Vec::new(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		) {
+			assert_eq!(e, Bolt12SemanticError::MissingPaths);
+		} else {
+			panic!("expected error")
+		}
+
+		// Error if message paths are missing.
+		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&valid_offer,
+			payment_paths(),
+			Vec::new(),
+			now,
+			&expanded_key,
+			&secp_ctx,
+		) {
+			assert_eq!(e, Bolt12SemanticError::MissingPaths);
+		} else {
+			panic!("expected error")
+		}
+
+		// Error if offer paths are missing.
+		let mut offer_without_paths = valid_offer.clone();
+		let mut offer_tlv_stream = offer_without_paths.as_tlv_stream();
+		offer_tlv_stream.paths.take();
+		let mut buffer = Vec::new();
+		offer_tlv_stream.write(&mut buffer).unwrap();
+		offer_without_paths = Offer::try_from(buffer).unwrap();
+		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer_without_paths,
+			payment_paths(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		) {
+			assert_eq!(e, Bolt12SemanticError::MissingPaths);
+		} else {
+			panic!("expected error")
+		}
+	}
+
+	#[test]
+	fn fails_build_offer_signing_pubkey() {
+		let node_id = recipient_pubkey();
+		let now = now();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let valid_offer =
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+				.path(blinded_path())
+				.build()
+				.unwrap();
+
+		// Error if offer signing pubkey is missing.
+		let mut offer_missing_signing_pubkey = valid_offer.clone();
+		let mut offer_tlv_stream = offer_missing_signing_pubkey.as_tlv_stream();
+		offer_tlv_stream.node_id.take();
+		let mut buffer = Vec::new();
+		offer_tlv_stream.write(&mut buffer).unwrap();
+		offer_missing_signing_pubkey = Offer::try_from(buffer).unwrap();
+
+		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer_missing_signing_pubkey,
+			payment_paths(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		) {
+			assert_eq!(e, Bolt12SemanticError::MissingSigningPubkey);
+		} else {
+			panic!("expected error")
+		}
+
+		// Error if the offer's metadata cannot be verified.
+		let offer = OfferBuilder::new(recipient_pubkey())
+			.path(blinded_path())
+			.metadata(vec![42; 32])
+			.unwrap()
+			.build()
+			.unwrap();
+		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		) {
+			assert_eq!(e, Bolt12SemanticError::InvalidMetadata);
+		} else {
+			panic!("expected error")
+		}
+	}
+
+	#[test]
+	fn fails_building_with_extra_offer_chains() {
+		let node_id = recipient_pubkey();
+		let now = now();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let offer_with_extra_chain =
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+				.path(blinded_path())
+				.chain(Network::Bitcoin)
+				.chain(Network::Testnet)
+				.build()
+				.unwrap();
+
+		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer_with_extra_chain,
+			payment_paths(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			&secp_ctx,
+		) {
+			assert_eq!(e, Bolt12SemanticError::UnexpectedChain);
+		} else {
+			panic!("expected error")
+		}
+	}
+}
