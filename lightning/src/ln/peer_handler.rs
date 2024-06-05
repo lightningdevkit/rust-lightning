@@ -28,6 +28,7 @@ use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
+use crate::onion_message::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
 use crate::onion_message::messenger::{CustomOnionMessageHandler, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
@@ -147,6 +148,14 @@ impl OffersMessageHandler for IgnoringMessageHandler {
 	fn handle_message(&self, _message: OffersMessage, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
+}
+impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
+	fn held_htlc_available(
+		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
+	) -> ResponseInstruction<ReleaseHeldHtlc> {
+		ResponseInstruction::NoResponse
+	}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;

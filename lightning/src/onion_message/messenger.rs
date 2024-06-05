@@ -24,6 +24,7 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
+use super::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler};
 use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
@@ -76,22 +77,27 @@ pub trait AOnionMessenger {
 	type OffersMessageHandler: OffersMessageHandler + ?Sized;
 	/// A type that may be dereferenced to [`Self::OffersMessageHandler`]
 	type OMH: Deref<Target = Self::OffersMessageHandler>;
+	/// A type implementing [`AsyncPaymentsMessageHandler`]
+	type AsyncPaymentsMessageHandler: AsyncPaymentsMessageHandler + ?Sized;
+	/// A type that may be dereferenced to [`Self::AsyncPaymentsMessageHandler`]
+	type APH: Deref<Target = Self::AsyncPaymentsMessageHandler>;
 	/// A type implementing [`CustomOnionMessageHandler`]
 	type CustomOnionMessageHandler: CustomOnionMessageHandler + ?Sized;
 	/// A type that may be dereferenced to [`Self::CustomOnionMessageHandler`]
 	type CMH: Deref<Target = Self::CustomOnionMessageHandler>;
 	/// Returns a reference to the actual [`OnionMessenger`] object.
-	fn get_om(&self) -> &OnionMessenger<Self::ES, Self::NS, Self::L, Self::NL, Self::MR, Self::OMH, Self::CMH>;
+	fn get_om(&self) -> &OnionMessenger<Self::ES, Self::NS, Self::L, Self::NL, Self::MR, Self::OMH, Self::APH, Self::CMH>;
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> AOnionMessenger
-for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
+impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, APH: Deref, CMH: Deref> AOnionMessenger
+for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
+	APH:: Target: AsyncPaymentsMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
 	type EntropySource = ES::Target;
@@ -106,9 +112,11 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
 	type MR = MR;
 	type OffersMessageHandler = OMH::Target;
 	type OMH = OMH;
+	type AsyncPaymentsMessageHandler = APH::Target;
+	type APH = APH;
 	type CustomOnionMessageHandler = CMH::Target;
 	type CMH = CMH;
-	fn get_om(&self) -> &OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> { self }
+	fn get_om(&self) -> &OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> { self }
 }
 
 /// A sender, receiver and forwarder of [`OnionMessage`]s.
@@ -180,11 +188,12 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
 /// # let message_router = Arc::new(FakeMessageRouter {});
 /// # let custom_message_handler = IgnoringMessageHandler {};
 /// # let offers_message_handler = IgnoringMessageHandler {};
+/// # let async_payments_message_handler = IgnoringMessageHandler {};
 /// // Create the onion messenger. This must use the same `keys_manager` as is passed to your
 /// // ChannelManager.
 /// let onion_messenger = OnionMessenger::new(
 ///     &keys_manager, &keys_manager, logger, &node_id_lookup, message_router,
-///     &offers_message_handler, &custom_message_handler
+///     &offers_message_handler, &async_payments_message_handler, &custom_message_handler
 /// );
 
 /// # #[derive(Debug)]
@@ -225,14 +234,16 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-pub struct OnionMessenger<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref>
-where
+pub struct OnionMessenger<
+	ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, APH: Deref, CMH: Deref
+> where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
 	L::Target: Logger,
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
+	APH::Target: AsyncPaymentsMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
 	entropy_source: ES,
@@ -243,6 +254,7 @@ where
 	node_id_lookup: NL,
 	message_router: MR,
 	offers_handler: OMH,
+	async_payments_handler: APH,
 	custom_handler: CMH,
 	intercept_messages_for_offline_peers: bool,
 	pending_events: Mutex<PendingEvents>,
@@ -986,8 +998,8 @@ where
 	}
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref>
-OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
+impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, APH: Deref, CMH: Deref>
+OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -995,17 +1007,18 @@ where
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
+	APH::Target: AsyncPaymentsMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
 	/// Constructs a new `OnionMessenger` to send, forward, and delegate received onion messages to
 	/// their respective handlers.
 	pub fn new(
 		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL, message_router: MR,
-		offers_handler: OMH, custom_handler: CMH
+		offers_handler: OMH, async_payments_handler: APH, custom_handler: CMH
 	) -> Self {
 		Self::new_inner(
 			entropy_source, node_signer, logger, node_id_lookup, message_router,
-			offers_handler, custom_handler, false
+			offers_handler, async_payments_handler, custom_handler, false
 		)
 	}
 
@@ -1032,17 +1045,17 @@ where
 	/// peers.
 	pub fn new_with_offline_peer_interception(
 		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL,
-		message_router: MR, offers_handler: OMH, custom_handler: CMH
+		message_router: MR, offers_handler: OMH, async_payments_handler: APH, custom_handler: CMH
 	) -> Self {
 		Self::new_inner(
 			entropy_source, node_signer, logger, node_id_lookup, message_router,
-			offers_handler, custom_handler, true
+			offers_handler, async_payments_handler, custom_handler, true
 		)
 	}
 
 	fn new_inner(
 		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL,
-		message_router: MR, offers_handler: OMH, custom_handler: CMH,
+		message_router: MR, offers_handler: OMH, async_payments_handler: APH, custom_handler: CMH,
 		intercept_messages_for_offline_peers: bool
 	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
@@ -1056,6 +1069,7 @@ where
 			node_id_lookup,
 			message_router,
 			offers_handler,
+			async_payments_handler,
 			custom_handler,
 			intercept_messages_for_offline_peers,
 			pending_events: Mutex::new(PendingEvents {
@@ -1360,8 +1374,8 @@ fn outbound_buffer_full(peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, On
 	false
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> EventsProvider
-for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
+impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, APH: Deref, CMH: Deref> EventsProvider
+for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -1369,6 +1383,7 @@ where
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
+	APH::Target: AsyncPaymentsMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
 	fn process_pending_events<H: Deref>(&self, handler: H) where H::Target: EventHandler {
@@ -1400,8 +1415,8 @@ where
 	}
 }
 
-impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, CMH: Deref> OnionMessageHandler
-for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH>
+impl<ES: Deref, NS: Deref, L: Deref, NL: Deref, MR: Deref, OMH: Deref, APH: Deref, CMH: Deref> OnionMessageHandler
+for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH>
 where
 	ES::Target: EntropySource,
 	NS::Target: NodeSigner,
@@ -1409,6 +1424,7 @@ where
 	NL::Target: NodeIdLookUp,
 	MR::Target: MessageRouter,
 	OMH::Target: OffersMessageHandler,
+	APH::Target: AsyncPaymentsMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage) {
@@ -1428,7 +1444,18 @@ where
 						let response_instructions = self.offers_handler.handle_message(msg, responder);
 						let _ = self.handle_onion_message_response(response_instructions);
 					},
-					ParsedOnionMessageContents::AsyncPayments(_msg) => todo!(),
+					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::HeldHtlcAvailable(msg)) => {
+						let responder = reply_path.map(
+							|reply_path| Responder::new(reply_path, path_id)
+						);
+						let response_instructions = self.async_payments_handler.held_htlc_available(
+							msg, responder
+						);
+						let _ = self.handle_onion_message_response(response_instructions);
+					},
+					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::ReleaseHeldHtlc(msg)) => {
+						self.async_payments_handler.release_held_htlc(msg);
+					},
 					ParsedOnionMessageContents::Custom(msg) => {
 						let responder = reply_path.map(
 							|reply_path| Responder::new(reply_path, path_id)
@@ -1600,6 +1627,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
+	IgnoringMessageHandler,
 	IgnoringMessageHandler
 >;
 
@@ -1620,6 +1648,7 @@ pub type SimpleRefOnionMessenger<
 	&'i SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
 	&'j DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L, &'a KeysManager>,
 	&'i SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L>,
+	IgnoringMessageHandler,
 	IgnoringMessageHandler
 >;
 

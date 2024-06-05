@@ -12,6 +12,9 @@ use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
+use lightning::onion_message::async_payments::{
+	AsyncPaymentsMessage, AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc,
+};
 use lightning::onion_message::messenger::{
 	CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger,
 	PendingOnionMessage, Responder, ResponseInstruction,
@@ -39,6 +42,7 @@ pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
 		let node_id_lookup = EmptyNodeIdLookUp {};
 		let message_router = TestMessageRouter {};
 		let offers_msg_handler = TestOffersMessageHandler {};
+		let async_payments_msg_handler = TestAsyncPaymentsMessageHandler {};
 		let custom_msg_handler = TestCustomMessageHandler {};
 		let onion_messenger = OnionMessenger::new(
 			&keys_manager,
@@ -47,6 +51,7 @@ pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
 			&node_id_lookup,
 			&message_router,
 			&offers_msg_handler,
+			&async_payments_msg_handler,
 			&custom_msg_handler,
 		);
 
@@ -103,6 +108,17 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 	) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
+}
+
+struct TestAsyncPaymentsMessageHandler {}
+
+impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
+	fn held_htlc_available(
+		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
+	) -> ResponseInstruction<ReleaseHeldHtlc> {
+		ResponseInstruction::NoResponse
+	}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
 
 #[derive(Debug)]
