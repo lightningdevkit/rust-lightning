@@ -59,6 +59,8 @@ where
 	}
 
 	/// Returns a new [`EsploraSyncClient`] object using the given Esplora client.
+	///
+	/// This is not exported to bindings users as the underlying client from BDK is not exported.
 	pub fn from_client(client: EsploraClientType, logger: L) -> Self {
 		let sync_state = MutexType::new(SyncState::new());
 		let queue = std::sync::Mutex::new(FilterQueue::new());
@@ -397,6 +399,8 @@ where
 	}
 
 	/// Returns a reference to the underlying esplora client.
+	///
+	/// This is not exported to bindings users as the underlying client from BDK is not exported.
 	pub fn client(&self) -> &EsploraClientType {
 		&self.client
 	}
