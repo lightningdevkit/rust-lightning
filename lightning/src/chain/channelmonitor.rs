@@ -3104,9 +3104,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							},
 							commitment_txid: htlc.commitment_txid,
 							per_commitment_number: htlc.per_commitment_number,
-							per_commitment_point: self.onchain_tx_handler.signer.get_per_commitment_point(
-								htlc.per_commitment_number, &self.onchain_tx_handler.secp_ctx,
-							),
+							per_commitment_point: htlc.per_commitment_point,
 							feerate_per_kw: 0,
 							htlc: htlc.htlc,
 							preimage: htlc.preimage,

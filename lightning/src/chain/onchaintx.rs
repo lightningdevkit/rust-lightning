@@ -19,6 +19,7 @@ use bitcoin::blockdata::script::{Script, ScriptBuf};
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
@@ -179,6 +180,7 @@ pub(crate) struct ExternalHTLCClaim {
 	pub(crate) htlc: HTLCOutputInCommitment,
 	pub(crate) preimage: Option<PaymentPreimage>,
 	pub(crate) counterparty_sig: Signature,
+	pub(crate) per_commitment_point: PublicKey,
 }
 
 // Represents the different types of claims for which events are yielded externally to satisfy said
@@ -1230,6 +1232,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 						htlc: htlc.clone(),
 						preimage: *preimage,
 						counterparty_sig: counterparty_htlc_sig,
+						per_commitment_point: trusted_tx.per_commitment_point(),
 					}
 				})
 		};
