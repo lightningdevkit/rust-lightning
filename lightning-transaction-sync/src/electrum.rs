@@ -58,6 +58,8 @@ where
 	}
 
 	/// Returns a new [`ElectrumSyncClient`] object using the given Electrum client.
+	///
+	/// This is not exported to bindings users as the underlying client from BDK is not exported.
 	pub fn from_client(client: ElectrumClient, logger: L) -> Result<Self, TxSyncError> {
 		let sync_state = Mutex::new(SyncState::new());
 		let queue = Mutex::new(FilterQueue::new());
@@ -450,6 +452,8 @@ where
 	}
 
 	/// Returns a reference to the underlying Electrum client.
+	///
+	/// This is not exported to bindings users as the underlying client from BDK is not exported.
 	pub fn client(&self) -> &ElectrumClient {
 		&self.client
 	}
