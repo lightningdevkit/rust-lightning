@@ -546,10 +546,10 @@ pub struct HTLCOutputInCommitment {
 }
 
 impl HTLCOutputInCommitment {
-	/// Converts HTLC's value with millisatoshi precision into [bitcoin::Amount] with satoshi precision.
-	/// Typically this conversion is needed when transitioning from LN into base-layer Bitcoin,
+	/// Returns HTLC's value with millisatoshi precision as [bitcoin::Amount] with satoshi precision.
+	/// Typically this is needed when transitioning from LN into base-layer Bitcoin,
 	/// e. g. in commitment transactions.
-	pub const fn to_bitcoin_amount(&self) -> Amount {
+	pub const fn satoshi_amount(&self) -> Amount {
 		Amount::from_sat(self.amount_msat / 1000)
 	}
 }
@@ -710,10 +710,10 @@ pub(crate) fn build_htlc_output(
 		htlc_success_tx_weight(channel_type_features)
 	};
 	let output_value = if channel_type_features.supports_anchors_zero_fee_htlc_tx() && !channel_type_features.supports_anchors_nonzero_fee_htlc_tx() {
-		htlc.to_bitcoin_amount()
+		htlc.satoshi_amount()
 	} else {
 		let total_fee = Amount::from_sat(feerate_per_kw as u64 * weight / 1000);
-		htlc.to_bitcoin_amount() - total_fee
+		htlc.satoshi_amount() - total_fee
 	};
 
 	TxOut {
@@ -1513,7 +1513,7 @@ impl CommitmentTransaction {
 			let script = chan_utils::get_htlc_redeemscript(&htlc, &channel_parameters.channel_type_features(), &keys);
 			let txout = TxOut {
 				script_pubkey: script.to_p2wsh(),
-				value: htlc.to_bitcoin_amount(),
+				value: htlc.satoshi_amount(),
 			};
 			txouts.push((txout, Some(htlc)));
 		}
@@ -1696,7 +1696,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 
 			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &self.channel_type_features, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
-			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, this_htlc.to_bitcoin_amount(), EcdsaSighashType::All).unwrap()[..]);
+			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, this_htlc.satoshi_amount(), EcdsaSighashType::All).unwrap()[..]);
 			ret.push(sign_with_aux_rand(secp_ctx, &sighash, &holder_htlc_key, entropy_source));
 		}
 		Ok(ret)

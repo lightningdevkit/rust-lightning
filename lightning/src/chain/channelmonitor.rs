@@ -3282,7 +3282,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				for (htlc, _) in per_commitment_claimable_data {
 					if let Some(transaction_output_index) = htlc.transaction_output_index {
 						if transaction_output_index as usize >= tx.output.len() ||
-								tx.output[transaction_output_index as usize].value != htlc.to_bitcoin_amount() {
+								tx.output[transaction_output_index as usize].value != htlc.satoshi_amount() {
 							// per_commitment_data is corrupt or our commitment signing key leaked!
 							return (claimable_outpoints, to_counterparty_output_info);
 						}
@@ -3389,7 +3389,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(transaction_output_index) = htlc.transaction_output_index {
 				if let Some(transaction) = tx {
 					if transaction_output_index as usize >= transaction.output.len() ||
-						transaction.output[transaction_output_index as usize].value != htlc.to_bitcoin_amount() {
+						transaction.output[transaction_output_index as usize].value != htlc.satoshi_amount() {
 							// per_commitment_data is corrupt or our commitment signing key leaked!
 							return (claimable_outpoints, to_counterparty_output_info);
 						}
