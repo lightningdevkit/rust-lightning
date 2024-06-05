@@ -5,6 +5,8 @@
 // http://opensource.org/licenses/MIT>, at your option. You may not use this file except in
 // accordance with one or both of these licenses.
 
+//! Common error types
+
 use std::fmt;
 
 #[derive(Debug)]

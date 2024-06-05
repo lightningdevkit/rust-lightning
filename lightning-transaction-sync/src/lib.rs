@@ -72,15 +72,15 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
-mod esplora;
+pub mod esplora;
 
 #[cfg(any(feature = "_electrum"))]
-mod electrum;
+pub mod electrum;
 
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum"))]
 mod common;
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum"))]
-mod error;
+pub mod error;
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum"))]
 pub use error::TxSyncError;
 
