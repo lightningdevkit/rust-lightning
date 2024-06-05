@@ -962,8 +962,12 @@ impl HolderCommitmentPoint {
 	{
 		HolderCommitmentPoint::Available {
 			transaction_number: INITIAL_COMMITMENT_NUMBER,
-			current: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx),
-			next: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx),
+			// TODO(async_signing): remove this expect with the Uninitialized variant
+			current: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx)
+				.expect("Signer must be able to provide initial commitment point"),
+			// TODO(async_signing): remove this expect with the Uninitialized variant
+			next: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx)
+				.expect("Signer must be able to provide second commitment point"),
 		}
 	}
 
@@ -1001,9 +1005,12 @@ impl HolderCommitmentPoint {
 		where SP::Target: SignerProvider, L::Target: Logger
 	{
 		if let HolderCommitmentPoint::PendingNext { transaction_number, current } = self {
-			let next = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx);
-			log_trace!(logger, "Retrieved next per-commitment point {}", *transaction_number - 1);
-			*self = HolderCommitmentPoint::Available { transaction_number: *transaction_number, current: *current, next };
+			if let Ok(next) = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx) {
+				log_trace!(logger, "Retrieved next per-commitment point {}", *transaction_number - 1);
+				*self = HolderCommitmentPoint::Available { transaction_number: *transaction_number, current: *current, next };
+			} else {
+				log_trace!(logger, "Next per-commitment point {} is pending", transaction_number);
+			}
 		}
 	}
 
@@ -5622,7 +5629,9 @@ impl<SP: Deref> Channel<SP> where
 
 		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.context.holder_commitment_point.transaction_number() - 1;
 		if msg.next_remote_commitment_number > 0 {
-			let expected_point = self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx);
+			let expected_point = self.context.holder_signer.as_ref()
+				.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx)
+				.expect("TODO: async signing is not yet supported for per commitment points upon channel reestablishment");
 			let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
 				.map_err(|_| ChannelError::close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
 			if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {
@@ -8230,10 +8239,12 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 
 		let first_per_commitment_point = self.context.holder_signer.as_ref()
 			.get_per_commitment_point(self.context.holder_commitment_point.transaction_number(),
-				&self.context.secp_ctx);
+				&self.context.secp_ctx)
+				.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
 		let second_per_commitment_point = self.context.holder_signer.as_ref()
 			.get_per_commitment_point(self.context.holder_commitment_point.transaction_number() - 1,
-				&self.context.secp_ctx);
+				&self.context.secp_ctx)
+				.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::OpenChannelV2 {
@@ -8380,9 +8391,11 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
 	fn generate_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		let first_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
-			self.context.holder_commitment_point.transaction_number(), &self.context.secp_ctx);
+			self.context.holder_commitment_point.transaction_number(), &self.context.secp_ctx)
+			.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
 		let second_per_commitment_point = self.context.holder_signer.as_ref().get_per_commitment_point(
-			self.context.holder_commitment_point.transaction_number() - 1, &self.context.secp_ctx);
+			self.context.holder_commitment_point.transaction_number() - 1, &self.context.secp_ctx)
+			.expect("TODO: async signing is not yet supported for commitment points in v2 channel establishment");
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::AcceptChannelV2 {
@@ -9334,14 +9347,16 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(Some(current), Some(next)) => HolderCommitmentPoint::Available {
 				transaction_number: cur_holder_commitment_transaction_number, current, next
 			},
-			(Some(current), _) => HolderCommitmentPoint::Available {
+			(Some(current), _) => HolderCommitmentPoint::PendingNext {
 				transaction_number: cur_holder_commitment_transaction_number, current,
-				next: holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number - 1, &secp_ctx),
 			},
-			(_, _) => HolderCommitmentPoint::Available {
-				transaction_number: cur_holder_commitment_transaction_number,
-				current: holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number, &secp_ctx),
-				next: holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number - 1, &secp_ctx),
+			(_, _) => {
+				// TODO(async_signing): remove this expect with the Uninitialized variant
+				let current = holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number, &secp_ctx)
+					.expect("Must be able to derive the current commitment point upon channel restoration");
+				HolderCommitmentPoint::PendingNext {
+					transaction_number: cur_holder_commitment_transaction_number, current,
+				}
 			},
 		};
 
