@@ -17,6 +17,7 @@ use crate::blinded_path::message::{ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils::Padding;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
+use super::async_payments::AsyncPaymentsMessage;
 use super::messenger::CustomOnionMessageHandler;
 use super::offers::OffersMessage;
 use crate::crypto::streams::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
@@ -128,6 +129,8 @@ pub(super) enum Payload<T: OnionMessageContents> {
 pub enum ParsedOnionMessageContents<T: OnionMessageContents> {
 	/// A message related to BOLT 12 Offers.
 	Offers(OffersMessage),
+	/// A message related to async payments.
+	AsyncPayments(AsyncPaymentsMessage),
 	/// A custom onion message specified by the user.
 	Custom(T),
 }
@@ -139,12 +142,14 @@ impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContent
 	fn tlv_type(&self) -> u64 {
 		match self {
 			&ParsedOnionMessageContents::Offers(ref msg) => msg.tlv_type(),
+			&ParsedOnionMessageContents::AsyncPayments(ref msg) => msg.tlv_type(),
 			&ParsedOnionMessageContents::Custom(ref msg) => msg.tlv_type(),
 		}
 	}
 	fn msg_type(&self) -> &'static str {
 		match self {
 			ParsedOnionMessageContents::Offers(ref msg) => msg.msg_type(),
+			ParsedOnionMessageContents::AsyncPayments(ref msg) => msg.msg_type(),
 			ParsedOnionMessageContents::Custom(ref msg) => msg.msg_type(),
 		}
 	}
@@ -154,6 +159,7 @@ impl<T: OnionMessageContents> Writeable for ParsedOnionMessageContents<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
 			ParsedOnionMessageContents::Offers(msg) => Ok(msg.write(w)?),
+			ParsedOnionMessageContents::AsyncPayments(msg) => Ok(msg.write(w)?),
 			ParsedOnionMessageContents::Custom(msg) => Ok(msg.write(w)?),
 		}
 	}
@@ -253,6 +259,11 @@ for Payload<ParsedOnionMessageContents<<H as CustomOnionMessageHandler>::CustomM
 				tlv_type if OffersMessage::is_known_type(tlv_type) => {
 					let msg = OffersMessage::read(msg_reader, (tlv_type, logger))?;
 					message = Some(ParsedOnionMessageContents::Offers(msg));
+					Ok(true)
+				},
+				tlv_type if AsyncPaymentsMessage::is_known_type(tlv_type) => {
+					let msg = AsyncPaymentsMessage::read(msg_reader, tlv_type)?;
+					message = Some(ParsedOnionMessageContents::AsyncPayments(msg));
 					Ok(true)
 				},
 				_ => match handler.read_custom_message(msg_type, msg_reader)? {

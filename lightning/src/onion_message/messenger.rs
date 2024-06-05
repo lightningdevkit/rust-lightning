@@ -1428,6 +1428,7 @@ where
 						let response_instructions = self.offers_handler.handle_message(msg, responder);
 						let _ = self.handle_onion_message_response(response_instructions);
 					},
+					ParsedOnionMessageContents::AsyncPayments(_msg) => todo!(),
 					ParsedOnionMessageContents::Custom(msg) => {
 						let responder = reply_path.map(
 							|reply_path| Responder::new(reply_path, path_id)
