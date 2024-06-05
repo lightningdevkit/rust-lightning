@@ -459,6 +459,9 @@ pub trait MessageRouter {
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
 ///
+/// When creating [`BlindedPath`]s, prefers three-hop paths over two-hops paths for the compact
+/// representation. For the non-compact representation, three-hop paths are not considered.
+///
 /// # Privacy
 ///
 /// Creating [`BlindedPath`]s may affect privacy since, if a suitable path cannot be found, it will
@@ -550,8 +553,10 @@ where
 			.map(|(_, peer, _, _)| BlindedPath::new_for_message(&[peer.clone()], recipient, entropy_source, secp_ctx))
 			.take(MAX_PATHS);
 
-		let mut paths = three_hop_paths
-			.collect::<Result<Vec<_>, _>>().ok()
+		// Prefer three-hop paths over two-hop paths for compact paths. Fallback to a one-hop path
+		// if none were found and the recipient node is announced.
+		let mut paths = (!compact_paths).then(|| vec![])
+			.or_else(|| three_hop_paths.collect::<Result<Vec<_>, _>>().ok())
 			.and_then(|paths| (!paths.is_empty()).then(|| paths))
 			.or_else(|| two_hop_paths.collect::<Result<Vec<_>, _>>().ok())
 			.and_then(|paths| (!paths.is_empty()).then(|| paths))
