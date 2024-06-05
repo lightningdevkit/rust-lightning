@@ -2010,7 +2010,7 @@ where L::Target: Logger {
 		true
 	} else if let Some(payee) = payee_node_id_opt {
 		network_nodes.get(&payee).map_or(false, |node| node.announcement_info.as_ref().map_or(false,
-			|info| info.features.supports_basic_mpp()))
+			|info| info.features().supports_basic_mpp()))
 	} else { false };
 
 	let max_total_routing_fee_msat = route_params.max_total_routing_fee_msat.unwrap_or(u64::max_value());
@@ -2500,7 +2500,7 @@ where L::Target: Logger {
 				}
 
 				let features = if let Some(node_info) = $node.announcement_info.as_ref() {
-					&node_info.features
+					&node_info.features()
 				} else {
 					&default_node_features
 				};
@@ -2829,7 +2829,7 @@ where L::Target: Logger {
 					if !features_set {
 						if let Some(node) = network_nodes.get(&target) {
 							if let Some(node_info) = node.announcement_info.as_ref() {
-								ordered_hops.last_mut().unwrap().1 = node_info.features.clone();
+								ordered_hops.last_mut().unwrap().1 = node_info.features().clone();
 							} else {
 								ordered_hops.last_mut().unwrap().1 = default_node_features.clone();
 							}
