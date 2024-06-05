@@ -1,3 +1,5 @@
+//! Chain sync using the electrum protocol
+
 use crate::common::{ConfirmedTx, SyncState, FilterQueue};
 use crate::error::{TxSyncError, InternalError};
 
@@ -83,7 +85,7 @@ where
 	/// [`ChainMonitor`]: lightning::chain::chainmonitor::ChainMonitor
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`Filter`]: lightning::chain::Filter
-	pub fn sync(&self, confirmables: Vec<&(dyn Confirm + Sync + Send)>) -> Result<(), TxSyncError> {
+	pub fn sync<C: Confirm>(&self, confirmables: Vec<C>) -> Result<(), TxSyncError> {
 		// This lock makes sure we're syncing once at a time.
 		let mut sync_state = self.sync_state.lock().unwrap();
 
@@ -378,8 +380,8 @@ where
 		Ok(confirmed_txs)
 	}
 
-	fn get_unconfirmed_transactions(
-		&self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
+	fn get_unconfirmed_transactions<C: Confirm>(
+		&self, confirmables: &Vec<C>,
 	) -> Result<Vec<Txid>, InternalError> {
 		// Query the interface for relevant txids and check whether the relevant blocks are still
 		// in the best chain, mark them unconfirmed otherwise

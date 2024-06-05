@@ -33,8 +33,8 @@ impl SyncState {
 			pending_sync: false,
 		}
 	}
-	pub fn sync_unconfirmed_transactions(
-		&mut self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
+	pub fn sync_unconfirmed_transactions<C: Confirm>(
+		&mut self, confirmables: &Vec<C>,
 		unconfirmed_txs: Vec<Txid>,
 	) {
 		for txid in unconfirmed_txs {
@@ -57,8 +57,8 @@ impl SyncState {
 		}
 	}
 
-	pub fn sync_confirmed_transactions(
-		&mut self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
+	pub fn sync_confirmed_transactions<C: Confirm>(
+		&mut self, confirmables: &Vec<C>,
 		confirmed_txs: Vec<ConfirmedTx>
 	) {
 		for ctx in confirmed_txs {

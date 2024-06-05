@@ -1,3 +1,5 @@
+//! Chain sync using the Esplora API
+
 use crate::error::{TxSyncError, InternalError};
 use crate::common::{SyncState, FilterQueue, ConfirmedTx};
 
@@ -84,7 +86,7 @@ where
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`Filter`]: lightning::chain::Filter
 	#[maybe_async]
-	pub fn sync(&self, confirmables: Vec<&(dyn Confirm + Sync + Send)>) -> Result<(), TxSyncError> {
+	pub fn sync<C: Confirm>(&self, confirmables: Vec<C>) -> Result<(), TxSyncError> {
 		// This lock makes sure we're syncing once at a time.
 		#[cfg(not(feature = "async-interface"))]
 		let mut sync_state = self.sync_state.lock().unwrap();
@@ -239,8 +241,8 @@ where
 	}
 
 	#[maybe_async]
-	fn sync_best_block_updated(
-		&self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>, sync_state: &mut SyncState, tip_hash: &BlockHash,
+	fn sync_best_block_updated<C: Confirm>(
+		&self, confirmables: &Vec<C>, sync_state: &mut SyncState, tip_hash: &BlockHash,
 	) -> Result<(), InternalError> {
 
 		// Inform the interface of the new block.
@@ -369,8 +371,8 @@ where
 	}
 
 	#[maybe_async]
-	fn get_unconfirmed_transactions(
-		&self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
+	fn get_unconfirmed_transactions<C: Confirm>(
+		&self, confirmables: &Vec<C>,
 	) -> Result<Vec<Txid>, InternalError> {
 		// Query the interface for relevant txids and check whether the relevant blocks are still
 		// in the best chain, mark them unconfirmed otherwise
