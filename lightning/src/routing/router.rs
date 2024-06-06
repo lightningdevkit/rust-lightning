@@ -1494,8 +1494,9 @@ enum CandidateHopId {
 ///
 /// This wrapper handles all this for us, allowing look-up of counters from the various contexts.
 ///
-/// It is first built by passing all [`NodeId`]s that we'll ever care about either though
-/// [`NodeCountersBuilder::node_counter_from_pubkey`] or
+/// It is first built by passing all [`NodeId`]s that we'll ever care about (which are not in our
+/// [`NetworkGraph`], e.g. those from first- and last-hop hints and blinded path introduction
+/// points) either though [`NodeCountersBuilder::node_counter_from_pubkey`] or
 /// [`NodeCountersBuilder::node_counter_from_id`], then calling [`NodeCountersBuilder::build`] and
 /// using the resulting [`NodeCounters`] to look up any counters.
 ///
