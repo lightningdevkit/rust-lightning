@@ -96,7 +96,7 @@ fn chanmon_fail_from_stale_commitment() {
 }
 
 fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction, has_anchors_htlc_event: bool) -> Vec<SpendableOutputDescriptor> {
-	let mut spendable = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+	let mut spendable:Vec<_> = node.chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
 	assert_eq!(spendable.len(), if has_anchors_htlc_event { 2 } else { 1 });
 	if has_anchors_htlc_event {
 		if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { .. }) = spendable.pop().unwrap() {}
@@ -506,7 +506,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	mine_transaction(&nodes[1], &remote_txn[0]);
 
 	if anchors {
-		let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+		let mut events:Vec<_> = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
 		assert_eq!(events.len(), 1);
 		match events.pop().unwrap() {
 			Event::BumpTransaction(bump_event) => {
@@ -554,8 +554,8 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// generate any `SpendableOutputs` events. Thus, the same balances will still be listed
 	// available in `get_claimable_balances`. However, both will swap from `ClaimableOnClose` to
 	// other Balance variants, as close has already happened.
-	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
-	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect::<Vec<_>>().is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect::<Vec<_>>().is_empty());
 	let commitment_tx_fee = chan_feerate as u64 *
 		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
@@ -2154,7 +2154,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	let mut check_htlc_retry = |should_retry: bool, should_bump: bool| -> Option<Transaction> {
 		let (htlc_tx, htlc_tx_feerate) = if anchors {
 			assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
-			let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+			let events:Vec<_> = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
 			assert_eq!(events.len(), if should_retry { 1 } else { 0 });
 			if !should_retry {
 				return None;
@@ -2174,7 +2174,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 				_ => panic!("Unexpected event"),
 			}
 		} else {
-			assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+			assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect::<Vec<_>>().is_empty());
 			let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), if should_retry { 1 } else { 0 });
 			if !should_retry {
@@ -2288,7 +2288,7 @@ fn test_yield_anchors_events() {
 		&LowerBoundedFeeEstimator::new(node_cfgs[1].fee_estimator), &nodes[1].logger
 	);
 
-	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	let mut holder_events:Vec<_> = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
 	assert_eq!(holder_events.len(), 1);
 	let (commitment_tx, anchor_tx) = match holder_events.pop().unwrap() {
 		Event::BumpTransaction(event) => {
@@ -2464,7 +2464,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	check_closed_event!(&nodes[1], 2, ClosureReason::OutdatedChannelManager, [nodes[0].node.get_our_node_id(); 2], 1000000);
 
 	// Bob should now receive two events to bump his revoked commitment transaction fees.
-	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect::<Vec<_>>().is_empty());
 	let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	let mut revoked_commitment_txs = Vec::with_capacity(events.len());
