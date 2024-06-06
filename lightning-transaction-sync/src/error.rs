@@ -31,7 +31,7 @@ impl fmt::Display for InternalError {
 			Self::Failed => write!(f, "Failed to conduct transaction sync."),
 			Self::Inconsistency => {
 				write!(f, "Encountered an inconsistency during transaction sync.")
-			}
+			},
 		}
 	}
 }
