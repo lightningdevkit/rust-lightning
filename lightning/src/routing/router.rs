@@ -2140,10 +2140,7 @@ where L::Target: Logger {
 						).map(|(counterparty_node_id, _)| counterparty_node_id);
 						counterparty_opt.map(|cp| direction.select_node_id(our_node_id, *cp))
 					};
-					match node_id {
-						Some(node_id) => node_counters.node_counter_from_id(&node_id),
-						None => None,
-					}
+					node_id.and_then(|node_id| node_counters.node_counter_from_id(&node_id),)
 				},
 			}
 		})
