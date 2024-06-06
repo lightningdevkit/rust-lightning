@@ -1502,7 +1502,7 @@ enum CandidateHopId {
 ///
 /// [`NodeCounters::private_node_counter_from_pubkey`], specifically, will return `Some` iff
 /// [`NodeCountersBuilder::node_counter_from_pubkey`] was called on the same key (not
-/// [`NodeCountersBuilder::node_counter_from_id`]). It will also returned a cached copy of the
+/// [`NodeCountersBuilder::node_counter_from_id`]). It will also return a cached copy of the
 /// [`PublicKey`] -> [`NodeId`] conversion.
 struct NodeCounters<'a> {
 	network_graph: &'a ReadOnlyNetworkGraph<'a>,
