@@ -1,24 +1,24 @@
-use crate::common::{ConfirmedTx, SyncState, FilterQueue};
-use crate::error::{TxSyncError, InternalError};
+use crate::common::{ConfirmedTx, FilterQueue, SyncState};
+use crate::error::{InternalError, TxSyncError};
 
 use electrum_client::Client as ElectrumClient;
 use electrum_client::ElectrumApi;
 use electrum_client::GetMerkleRes;
 
-use lightning::util::logger::Logger;
-use lightning::{log_error, log_debug, log_trace};
 use lightning::chain::WatchedOutput;
 use lightning::chain::{Confirm, Filter};
+use lightning::util::logger::Logger;
+use lightning::{log_debug, log_error, log_trace};
 
-use bitcoin::{BlockHash, Script, Transaction, Txid};
 use bitcoin::block::Header;
 use bitcoin::hash_types::TxMerkleNode;
-use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256d::Hash as Sha256d;
+use bitcoin::hashes::Hash;
+use bitcoin::{BlockHash, Script, Transaction, Txid};
 
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Mutex;
-use std::collections::HashSet;
 use std::time::Instant;
 
 /// Synchronizes LDK with a given Electrum server.
@@ -64,12 +64,7 @@ where
 		let sync_state = Mutex::new(SyncState::new());
 		let queue = Mutex::new(FilterQueue::new());
 
-		Ok(Self {
-			sync_state,
-			queue,
-			client,
-			logger,
-		})
+		Ok(Self { sync_state, queue, client, logger })
 	}
 
 	/// Synchronizes the given `confirmables` via their [`Confirm`] interface implementations. This
@@ -84,7 +79,8 @@ where
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`Filter`]: lightning::chain::Filter
 	pub fn sync<C: Deref>(&self, confirmables: Vec<C>) -> Result<(), TxSyncError>
-		where C::Target: Confirm
+	where
+		C::Target: Confirm,
 	{
 		// This lock makes sure we're syncing once at a time.
 		let mut sync_state = self.sync_state.lock().unwrap();
@@ -124,15 +120,15 @@ where
 									num_unconfirmed += unconfirmed_txs.len();
 									sync_state.sync_unconfirmed_transactions(
 										&confirmables,
-										unconfirmed_txs
+										unconfirmed_txs,
 									);
-								}
+								},
 								Ok(true) => {
 									log_debug!(self.logger,
 										"Encountered inconsistency during transaction sync, restarting.");
 									sync_state.pending_sync = true;
 									continue;
-								}
+								},
 								Err(err) => {
 									// (Semi-)permanent failure, retry later.
 									log_error!(self.logger,
@@ -142,7 +138,7 @@ where
 									);
 									sync_state.pending_sync = true;
 									return Err(TxSyncError::from(err));
-								}
+								},
 							}
 						},
 						Err(err) => {
@@ -154,7 +150,7 @@ where
 							);
 							sync_state.pending_sync = true;
 							return Err(TxSyncError::from(err));
-						}
+						},
 					}
 
 					// Update the best block.
@@ -173,17 +169,15 @@ where
 						match self.check_update_tip(&mut tip_header, &mut tip_height) {
 							Ok(false) => {
 								num_confirmed += confirmed_txs.len();
-								sync_state.sync_confirmed_transactions(
-									&confirmables,
-									confirmed_txs
-								);
-							}
+								sync_state
+									.sync_confirmed_transactions(&confirmables, confirmed_txs);
+							},
 							Ok(true) => {
 								log_debug!(self.logger,
 									"Encountered inconsistency during transaction sync, restarting.");
 								sync_state.pending_sync = true;
 								continue;
-							}
+							},
 							Err(err) => {
 								// (Semi-)permanent failure, retry later.
 								log_error!(self.logger,
@@ -193,16 +187,18 @@ where
 								);
 								sync_state.pending_sync = true;
 								return Err(TxSyncError::from(err));
-							}
+							},
 						}
-					}
+					},
 					Err(InternalError::Inconsistency) => {
 						// Immediately restart syncing when we encounter any inconsistencies.
-						log_debug!(self.logger,
-							"Encountered inconsistency during transaction sync, restarting.");
+						log_debug!(
+							self.logger,
+							"Encountered inconsistency during transaction sync, restarting."
+						);
 						sync_state.pending_sync = true;
 						continue;
-					}
+					},
 					Err(err) => {
 						// (Semi-)permanent failure, retry later.
 						log_error!(self.logger,
@@ -212,27 +208,35 @@ where
 						);
 						sync_state.pending_sync = true;
 						return Err(TxSyncError::from(err));
-					}
+					},
 				}
 				sync_state.last_sync_hash = Some(tip_header.block_hash());
 				sync_state.pending_sync = false;
 			}
 		}
 		#[cfg(feature = "time")]
-		log_debug!(self.logger,
+		log_debug!(
+			self.logger,
 			"Finished transaction sync at tip {} in {}ms: {} confirmed, {} unconfirmed.",
-			tip_header.block_hash(), start_time.elapsed().as_millis(), num_confirmed,
-			num_unconfirmed);
+			tip_header.block_hash(),
+			start_time.elapsed().as_millis(),
+			num_confirmed,
+			num_unconfirmed
+		);
 		#[cfg(not(feature = "time"))]
-		log_debug!(self.logger,
+		log_debug!(
+			self.logger,
 			"Finished transaction sync at tip {}: {} confirmed, {} unconfirmed.",
-			tip_header.block_hash(), num_confirmed, num_unconfirmed);
+			tip_header.block_hash(),
+			num_confirmed,
+			num_unconfirmed
+		);
 		Ok(())
 	}
 
-	fn check_update_tip(&self, cur_tip_header: &mut Header, cur_tip_height: &mut u32)
-		-> Result<bool, InternalError>
-	{
+	fn check_update_tip(
+		&self, cur_tip_header: &mut Header, cur_tip_height: &mut u32,
+	) -> Result<bool, InternalError> {
 		let check_notification = self.client.block_headers_subscribe()?;
 		let check_tip_hash = check_notification.header.block_hash();
 
@@ -258,12 +262,12 @@ where
 	fn get_confirmed_transactions(
 		&self, sync_state: &SyncState,
 	) -> Result<Vec<ConfirmedTx>, InternalError> {
-
 		// First, check the confirmation status of registered transactions as well as the
 		// status of dependent transactions of registered outputs.
 		let mut confirmed_txs: Vec<ConfirmedTx> = Vec::new();
 		let mut watched_script_pubkeys = Vec::with_capacity(
-			sync_state.watched_transactions.len() + sync_state.watched_outputs.len());
+			sync_state.watched_transactions.len() + sync_state.watched_outputs.len(),
+		);
 		let mut watched_txs = Vec::with_capacity(sync_state.watched_transactions.len());
 
 		for txid in &sync_state.watched_transactions {
@@ -280,14 +284,14 @@ where
 						log_error!(self.logger, "Failed due to retrieving invalid tx data.");
 						return Err(InternalError::Failed);
 					}
-				}
+				},
 				Err(electrum_client::Error::Protocol(_)) => {
 					// We couldn't find the tx, do nothing.
-				}
+				},
 				Err(e) => {
 					log_error!(self.logger, "Failed to look up transaction {}: {}.", txid, e);
 					return Err(InternalError::Failed);
-				}
+				},
 			}
 		}
 
@@ -312,9 +316,9 @@ where
 					if confirmed_txs.iter().any(|ctx| ctx.txid == **txid) {
 						continue;
 					}
-					let mut filtered_history = script_history.iter().filter(|h| h.tx_hash == **txid);
-					if let Some(history) = filtered_history.next()
-					{
+					let mut filtered_history =
+						script_history.iter().filter(|h| h.tx_hash == **txid);
+					if let Some(history) = filtered_history.next() {
 						let prob_conf_height = history.height as u32;
 						let confirmed_tx = self.get_confirmed_tx(tx, prob_conf_height)?;
 						confirmed_txs.push(confirmed_tx);
@@ -322,8 +326,8 @@ where
 					debug_assert!(filtered_history.next().is_none());
 				}
 
-				for (watched_output, script_history) in sync_state.watched_outputs.values()
-					.zip(output_results)
+				for (watched_output, script_history) in
+					sync_state.watched_outputs.values().zip(output_results)
 				{
 					for possible_output_spend in script_history {
 						if possible_output_spend.height <= 0 {
@@ -339,8 +343,8 @@ where
 							Ok(tx) => {
 								let mut is_spend = false;
 								for txin in &tx.input {
-									let watched_outpoint = watched_output.outpoint
-										.into_bitcoin_outpoint();
+									let watched_outpoint =
+										watched_output.outpoint.into_bitcoin_outpoint();
 									if txin.previous_output == watched_outpoint {
 										is_spend = true;
 										break;
@@ -354,21 +358,24 @@ where
 								let prob_conf_height = possible_output_spend.height as u32;
 								let confirmed_tx = self.get_confirmed_tx(&tx, prob_conf_height)?;
 								confirmed_txs.push(confirmed_tx);
-							}
+							},
 							Err(e) => {
-								log_trace!(self.logger,
+								log_trace!(
+									self.logger,
 									"Inconsistency: Tx {} was unconfirmed during syncing: {}",
-									txid, e);
+									txid,
+									e
+								);
 								return Err(InternalError::Inconsistency);
-							}
+							},
 						}
 					}
 				}
-			}
+			},
 			Err(e) => {
 				log_error!(self.logger, "Failed to look up script histories: {}.", e);
 				return Err(InternalError::Failed);
-			}
+			},
 		}
 
 		// Sort all confirmed transactions first by block height, then by in-block
@@ -383,7 +390,8 @@ where
 	fn get_unconfirmed_transactions<C: Deref>(
 		&self, confirmables: &Vec<C>,
 	) -> Result<Vec<Txid>, InternalError>
-		where C::Target: Confirm
+	where
+		C::Target: Confirm,
 	{
 		// Query the interface for relevant txids and check whether the relevant blocks are still
 		// in the best chain, mark them unconfirmed otherwise
@@ -412,9 +420,9 @@ where
 		Ok(unconfirmed_txs)
 	}
 
-	fn get_confirmed_tx(&self, tx: &Transaction, prob_conf_height: u32)
-		-> Result<ConfirmedTx, InternalError>
-	{
+	fn get_confirmed_tx(
+		&self, tx: &Transaction, prob_conf_height: u32,
+	) -> Result<ConfirmedTx, InternalError> {
 		let txid = tx.txid();
 		match self.client.transaction_get_merkle(&txid, prob_conf_height as usize) {
 			Ok(merkle_res) => {
@@ -422,36 +430,47 @@ where
 				match self.client.block_header(prob_conf_height as usize) {
 					Ok(block_header) => {
 						let pos = merkle_res.pos;
-						if !self.validate_merkle_proof(&txid,
-							&block_header.merkle_root, merkle_res)?
-						{
-							log_trace!(self.logger,
+						if !self.validate_merkle_proof(
+							&txid,
+							&block_header.merkle_root,
+							merkle_res,
+						)? {
+							log_trace!(
+								self.logger,
 								"Inconsistency: Block {} was unconfirmed during syncing.",
-								block_header.block_hash());
+								block_header.block_hash()
+							);
 							return Err(InternalError::Inconsistency);
 						}
 						let confirmed_tx = ConfirmedTx {
 							tx: tx.clone(),
 							txid,
-							block_header, block_height: prob_conf_height,
+							block_header,
+							block_height: prob_conf_height,
 							pos,
 						};
 						Ok(confirmed_tx)
-					}
+					},
 					Err(e) => {
-						log_error!(self.logger,
+						log_error!(
+							self.logger,
 							"Failed to retrieve block header for height {}: {}.",
-							prob_conf_height, e);
+							prob_conf_height,
+							e
+						);
 						Err(InternalError::Failed)
-					}
+					},
 				}
-			}
+			},
 			Err(e) => {
-				log_trace!(self.logger,
+				log_trace!(
+					self.logger,
 					"Inconsistency: Tx {} was unconfirmed during syncing: {}",
-					txid, e);
+					txid,
+					e
+				);
 				Err(InternalError::Inconsistency)
-			}
+			},
 		}
 	}
 
@@ -462,20 +481,16 @@ where
 		&self.client
 	}
 
-	fn validate_merkle_proof(&self, txid: &Txid, merkle_root: &TxMerkleNode,
-		merkle_res: GetMerkleRes) -> Result<bool, InternalError>
-	{
+	fn validate_merkle_proof(
+		&self, txid: &Txid, merkle_root: &TxMerkleNode, merkle_res: GetMerkleRes,
+	) -> Result<bool, InternalError> {
 		let mut index = merkle_res.pos;
 		let mut cur = txid.to_raw_hash();
 		for mut bytes in merkle_res.merkle {
 			bytes.reverse();
 			// unwrap() safety: `bytes` has len 32 so `from_slice` can never fail.
 			let next_hash = Sha256d::from_slice(&bytes).unwrap();
-			let (left, right) = if index % 2 == 0 {
-				(cur, next_hash)
-			} else {
-				(next_hash, cur)
-			};
+			let (left, right) = if index % 2 == 0 { (cur, next_hash) } else { (next_hash, cur) };
 
 			let data = [&left[..], &right[..]].concat();
 			cur = Sha256d::hash(&data);

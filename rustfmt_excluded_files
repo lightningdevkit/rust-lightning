@@ -159,7 +159,6 @@
 ./lightning-rapid-gossip-sync/src/error.rs
 ./lightning-rapid-gossip-sync/src/lib.rs
 ./lightning-rapid-gossip-sync/src/processing.rs
-./lightning-transaction-sync/src/electrum.rs
 ./lightning-transaction-sync/src/error.rs
 ./lightning-transaction-sync/src/esplora.rs
 ./lightning-transaction-sync/src/lib.rs
