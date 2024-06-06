@@ -7,23 +7,31 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use lightning::util::indexed_map::{IndexedMap, self};
-use std::collections::{BTreeMap, btree_map};
 use lightning::util::hash_tables::*;
+use lightning::util::indexed_map::{self, IndexedMap};
+use std::collections::{btree_map, BTreeMap};
 
 use crate::utils::test_logger;
 
-use std::ops::{RangeBounds, Bound};
+use std::ops::{Bound, RangeBounds};
 
 struct ExclLowerInclUpper(u8, u8);
 impl RangeBounds<u8> for ExclLowerInclUpper {
-	fn start_bound(&self) -> Bound<&u8> { Bound::Excluded(&self.0) }
-	fn end_bound(&self) -> Bound<&u8> { Bound::Included(&self.1) }
+	fn start_bound(&self) -> Bound<&u8> {
+		Bound::Excluded(&self.0)
+	}
+	fn end_bound(&self) -> Bound<&u8> {
+		Bound::Included(&self.1)
+	}
 }
 struct ExclLowerExclUpper(u8, u8);
 impl RangeBounds<u8> for ExclLowerExclUpper {
-	fn start_bound(&self) -> Bound<&u8> { Bound::Excluded(&self.0) }
-	fn end_bound(&self) -> Bound<&u8> { Bound::Excluded(&self.1) }
+	fn start_bound(&self) -> Bound<&u8> {
+		Bound::Excluded(&self.0)
+	}
+	fn end_bound(&self) -> Bound<&u8> {
+		Bound::Excluded(&self.1)
+	}
 }
 
 fn check_eq(btree: &BTreeMap<u8, u8>, mut indexed: IndexedMap<u8, u8>) {
@@ -46,36 +54,44 @@ fn check_eq(btree: &BTreeMap<u8, u8>, mut indexed: IndexedMap<u8, u8>) {
 				if let indexed_map::Entry::Occupied(mut io) = indexed_entry {
 					assert_eq!(bo.get(), io.get());
 					assert_eq!(bo.get_mut(), io.get_mut());
-				} else { panic!(); }
+				} else {
+					panic!();
+				}
 			},
 			btree_map::Entry::Vacant(_) => {
 				if let indexed_map::Entry::Vacant(_) = indexed_entry {
-				} else { panic!(); }
-			}
+				} else {
+					panic!();
+				}
+			},
 		}
 	}
 
 	const STRIDE: u8 = 16;
 	for range_type in 0..4 {
-		for k in 0..=255/STRIDE {
+		for k in 0..=255 / STRIDE {
 			let lower_bound = k * STRIDE;
 			let upper_bound = lower_bound + (STRIDE - 1);
-			macro_rules! range { ($map: expr) => {
-				match range_type {
-					0 => $map.range(lower_bound..upper_bound),
-					1 => $map.range(lower_bound..=upper_bound),
-					2 => $map.range(ExclLowerInclUpper(lower_bound, upper_bound)),
-					3 => $map.range(ExclLowerExclUpper(lower_bound, upper_bound)),
-					_ => unreachable!(),
-				}
-			} }
+			macro_rules! range {
+				($map: expr) => {
+					match range_type {
+						0 => $map.range(lower_bound..upper_bound),
+						1 => $map.range(lower_bound..=upper_bound),
+						2 => $map.range(ExclLowerInclUpper(lower_bound, upper_bound)),
+						3 => $map.range(ExclLowerExclUpper(lower_bound, upper_bound)),
+						_ => unreachable!(),
+					}
+				};
+			}
 			let mut btree_iter = range!(btree);
 			let mut indexed_iter = range!(indexed);
 			loop {
 				let b_v = btree_iter.next();
 				let i_v = indexed_iter.next();
 				assert_eq!(b_v, i_v);
-				if b_v.is_none() { break; }
+				if b_v.is_none() {
+					break;
+				}
 			}
 		}
 	}
@@ -104,7 +120,9 @@ fn check_eq(btree: &BTreeMap<u8, u8>, mut indexed: IndexedMap<u8, u8>) {
 
 #[inline]
 pub fn do_test(data: &[u8]) {
-	if data.len() % 2 != 0 { return; }
+	if data.len() % 2 != 0 {
+		return;
+	}
 	let mut btree = BTreeMap::new();
 	let mut indexed = IndexedMap::new();
 
@@ -138,13 +156,17 @@ pub fn do_test(data: &[u8]) {
 					} else {
 						assert_eq!(bo.remove_entry(), io.remove_entry());
 					}
-				} else { panic!(); }
+				} else {
+					panic!();
+				}
 			},
 			btree_map::Entry::Vacant(bv) => {
 				if let indexed_map::Entry::Vacant(iv) = indexed.entry(k) {
 					bv.insert(k);
 					iv.insert(k);
-				} else { panic!(); }
+				} else {
+					panic!();
+				}
 			},
 		}
 	}
