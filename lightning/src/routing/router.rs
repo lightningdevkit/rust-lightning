@@ -2977,7 +2977,7 @@ where L::Target: Logger {
 					if let Some((first_channels, _)) = first_hop_targets.get(&target) {
 						for details in first_channels {
 							if let CandidateRouteHop::FirstHop(FirstHopCandidate { details: last_hop_details, .. })
-								= ordered_hops.last().unwrap().0.candidate
+								= candidate
 							{
 								if details.get_outbound_payment_scid() == last_hop_details.get_outbound_payment_scid() {
 									ordered_hops.last_mut().unwrap().1 = details.counterparty.features.to_context();
