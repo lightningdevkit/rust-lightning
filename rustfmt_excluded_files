@@ -160,7 +160,6 @@
 ./lightning-rapid-gossip-sync/src/lib.rs
 ./lightning-rapid-gossip-sync/src/processing.rs
 ./lightning-transaction-sync/src/error.rs
-./lightning-transaction-sync/src/esplora.rs
 ./lightning-transaction-sync/src/lib.rs
 ./lightning-transaction-sync/tests/integration_tests.rs
 ./lightning/src/blinded_path/message.rs
