@@ -2092,10 +2092,10 @@ where L::Target: Logger {
 		}
 	}
 
-	// Step (1).
-	// Prepare the data we'll use for payee-to-payer search by
-	// inserting first hops suggested by the caller as targets.
-	// Our search will then attempt to reach them while traversing from the payee node.
+	// Step (1). Prep first and last hop targets.
+	//
+	// First cache all our direct channels so that we can insert them in the heap at startup.
+	// Then process any blinded routes, resolving their introduction node and caching it.
 	let mut first_hop_targets: HashMap<_, Vec<&ChannelDetails>> =
 		hash_map_with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 	if let Some(hops) = first_hops {
