@@ -51,7 +51,7 @@ use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
-use crate::events::{ClaimInfo, ClosureReason, Event, EventHandler};
+use crate::events::{ClaimInfo, ClaimMetadata, ClosureReason, Event, EventHandler};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 
 #[allow(unused_imports)]
@@ -3252,6 +3252,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let commitment_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 		let per_commitment_option = self.counterparty_claimable_outpoints.get(&commitment_txid);
+
+		self.pending_events.push(Event::ClaimInfoRequest {
+			monitor_id: self.get_funding_txo().0,
+			claim_key: commitment_txid,
+			claim_metadata: ClaimMetadata {
+				block_hash: block_hash.clone(),
+				tx: tx.clone(),
+				height,
+			},
+		});
 
 		macro_rules! ignore_error {
 			( $thing : expr ) => {
