@@ -1,7 +1,6 @@
 ./bench/benches/bench.rs
 ./fuzz/src/chanmon_consistency.rs
 ./fuzz/src/full_stack.rs
-./fuzz/src/lib.rs
 ./fuzz/src/msg_targets/mod.rs
 ./fuzz/src/msg_targets/msg_accept_channel.rs
 ./fuzz/src/msg_targets/msg_accept_channel_v2.rs
