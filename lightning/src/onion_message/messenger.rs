@@ -1436,18 +1436,15 @@ where
 					"Received an onion message with path_id {:02x?} and {} reply_path: {:?}",
 					path_id, if reply_path.is_some() { "a" } else { "no" }, message);
 
+				let responder = reply_path.map(
+					|reply_path| Responder::new(reply_path, path_id)
+				);
 				match message {
 					ParsedOnionMessageContents::Offers(msg) => {
-						let responder = reply_path.map(
-							|reply_path| Responder::new(reply_path, path_id)
-						);
 						let response_instructions = self.offers_handler.handle_message(msg, responder);
 						let _ = self.handle_onion_message_response(response_instructions);
 					},
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::HeldHtlcAvailable(msg)) => {
-						let responder = reply_path.map(
-							|reply_path| Responder::new(reply_path, path_id)
-						);
 						let response_instructions = self.async_payments_handler.held_htlc_available(
 							msg, responder
 						);
@@ -1457,9 +1454,6 @@ where
 						self.async_payments_handler.release_held_htlc(msg);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
-						let responder = reply_path.map(
-							|reply_path| Responder::new(reply_path, path_id)
-						);
 						let response_instructions = self.custom_handler.handle_custom_message(msg, responder);
 						let _ = self.handle_onion_message_response(response_instructions);
 					},
