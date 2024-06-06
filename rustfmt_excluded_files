@@ -1,7 +1,6 @@
 ./bench/benches/bench.rs
 ./fuzz/src/chanmon_consistency.rs
 ./fuzz/src/full_stack.rs
-./fuzz/src/router.rs
 ./fuzz/src/utils/mod.rs
 ./fuzz/src/utils/test_logger.rs
 ./fuzz/src/utils/test_persister.rs
