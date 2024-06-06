@@ -20,7 +20,7 @@
 //!
 //! # use bitcoin::secp256k1::PublicKey;
 //! # use lightning::io;
-//! # use lightning::ln::msgs::{DecodeError, LightningError};
+//! # use lightning::ln::msgs::{DecodeError, Init, LightningError};
 //! # use lightning::ln::features::{InitFeatures, NodeFeatures};
 //! use lightning::ln::peer_handler::CustomMessageHandler;
 //! use lightning::ln::wire::{CustomMessageReader, self};
@@ -66,6 +66,12 @@
 //! #         unimplemented!()
 //! #     }
 //! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_disconnected(&self, _their_node_id: &PublicKey) {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
 //! #         unimplemented!()
 //! #     }
 //! #     fn provided_node_features(&self) -> NodeFeatures {
@@ -114,6 +120,12 @@
 //! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
 //! #         unimplemented!()
 //! #     }
+//! #     fn peer_disconnected(&self, _their_node_id: &PublicKey) {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
+//! #         unimplemented!()
+//! #     }
 //! #     fn provided_node_features(&self) -> NodeFeatures {
 //! #         unimplemented!()
 //! #     }
@@ -158,6 +170,12 @@
 //! #         unimplemented!()
 //! #     }
 //! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_disconnected(&self, _their_node_id: &PublicKey) {
+//! #         unimplemented!()
+//! #     }
+//! #     fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
 //! #         unimplemented!()
 //! #     }
 //! #     fn provided_node_features(&self) -> NodeFeatures {
@@ -285,6 +303,22 @@ macro_rules! composite_custom_message_handler {
 						)
 					)*
 					.collect()
+			}
+
+			fn peer_disconnected(&self, their_node_id: &$crate::bitcoin::secp256k1::PublicKey) {
+				$(
+					self.$field.peer_disconnected(their_node_id);
+				)*
+			}
+
+			fn peer_connected(&self, their_node_id: &$crate::bitcoin::secp256k1::PublicKey, msg: &$crate::lightning::ln::msgs::Init, inbound: bool) -> Result<(), ()> {
+				let mut result = Ok(());
+				$(
+					if let Err(e) = self.$field.peer_connected(their_node_id, msg, inbound) {
+						result = Err(e);
+					}
+				)*
+				result
 			}
 
 			fn provided_node_features(&self) -> $crate::lightning::ln::features::NodeFeatures {

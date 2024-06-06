@@ -23,7 +23,7 @@ use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::types::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::{ChannelMessageHandler, LightningError, SocketAddress, OnionMessageHandler, RoutingMessageHandler};
+use crate::ln::msgs::{ChannelMessageHandler, Init, LightningError, SocketAddress, OnionMessageHandler, RoutingMessageHandler};
 use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
@@ -78,6 +78,16 @@ pub trait CustomMessageHandler: wire::CustomMessageReader {
 	/// in the process. Each message is paired with the node id of the intended recipient. If no
 	/// connection to the node exists, then the message is simply not sent.
 	fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)>;
+
+	/// Indicates a peer disconnected.
+	fn peer_disconnected(&self, their_node_id: &PublicKey);
+
+	/// Handle a peer connecting.
+	///
+	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
+	/// with us. Implementors should be somewhat conservative about doing so, however, as other
+	/// message handlers may still wish to communicate with this peer.
+	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init, inbound: bool) -> Result<(), ()>;
 
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
 	/// queried similarly and their feature flags are OR'd together to form the [`NodeFeatures`]
@@ -189,6 +199,10 @@ impl CustomMessageHandler for IgnoringMessageHandler {
 	}
 
 	fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> { Vec::new() }
+
+	fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
+
+	fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
 
 	fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 
@@ -1680,6 +1694,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				log_debug!(logger, "Onion Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
 				return Err(PeerHandleError { }.into());
 			}
+			if let Err(()) = self.message_handler.custom_message_handler.peer_connected(&their_node_id, &msg, peer_lock.inbound_connection) {
+				log_debug!(logger, "Custom Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+				return Err(PeerHandleError { }.into());
+			}
 
 			peer_lock.awaiting_pong_timer_tick_intervals = 0;
 			peer_lock.their_features = Some(msg.features);
@@ -2430,6 +2448,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			log_trace!(WithContext::from(&self.logger, Some(node_id), None, None), "Disconnecting peer with id {} due to {}", node_id, reason);
 			self.message_handler.chan_handler.peer_disconnected(&node_id);
 			self.message_handler.onion_message_handler.peer_disconnected(&node_id);
+			self.message_handler.custom_message_handler.peer_disconnected(&node_id);
 		}
 		descriptor.disconnect_socket();
 	}
@@ -2452,6 +2471,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if !peer.handshake_complete() { return; }
 					self.message_handler.chan_handler.peer_disconnected(&node_id);
 					self.message_handler.onion_message_handler.peer_disconnected(&node_id);
+					self.message_handler.custom_message_handler.peer_disconnected(&node_id);
 				}
 			}
 		};
@@ -2680,7 +2700,7 @@ mod tests {
 	use crate::ln::peer_channel_encryptor::PeerChannelEncryptor;
 	use crate::ln::peer_handler::{CustomMessageHandler, PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses, ErroringMessageHandler, MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER};
 	use crate::ln::{msgs, wire};
-	use crate::ln::msgs::{LightningError, SocketAddress};
+	use crate::ln::msgs::{Init, LightningError, SocketAddress};
 	use crate::util::test_utils;
 
 	use bitcoin::Network;
@@ -2746,6 +2766,11 @@ mod tests {
 		}
 
 		fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> { Vec::new() }
+
+
+		fn peer_disconnected(&self, _their_node_id: &PublicKey) {}
+
+		fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> { Ok(()) }
 
 		fn provided_node_features(&self) -> NodeFeatures { NodeFeatures::empty() }
 
