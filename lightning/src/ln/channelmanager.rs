@@ -8519,9 +8519,17 @@ where
 						});
 					}
 				}
-				ChannelPhase::UnfundedInboundV1(_) => {},
+				ChannelPhase::UnfundedInboundV1(chan) => {
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					if let Some(msg) = chan.signer_maybe_unblocked(&&logger) {
+						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+							node_id,
+							msg,
+						});
+					}
+				},
 			}
-		};
+			};
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some((counterparty_node_id, channel_id)) = channel_opt {
