@@ -4,6 +4,7 @@ use bitcoin::{Txid, BlockHash, Transaction, OutPoint};
 use bitcoin::block::Header;
 
 use std::collections::{HashSet, HashMap};
+use std::ops::Deref;
 
 
 // Represents the current state.
@@ -33,10 +34,12 @@ impl SyncState {
 			pending_sync: false,
 		}
 	}
-	pub fn sync_unconfirmed_transactions(
-		&mut self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
+	pub fn sync_unconfirmed_transactions<C: Deref>(
+		&mut self, confirmables: &Vec<C>,
 		unconfirmed_txs: Vec<Txid>,
-	) {
+	)
+		where C::Target: Confirm,
+	{
 		for txid in unconfirmed_txs {
 			for c in confirmables {
 				c.transaction_unconfirmed(&txid);
@@ -57,10 +60,12 @@ impl SyncState {
 		}
 	}
 
-	pub fn sync_confirmed_transactions(
-		&mut self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
+	pub fn sync_confirmed_transactions<C: Deref>(
+		&mut self, confirmables: &Vec<C>,
 		confirmed_txs: Vec<ConfirmedTx>
-	) {
+	)
+		where C::Target: Confirm,
+	{
 		for ctx in confirmed_txs {
 			for c in confirmables {
 				c.transactions_confirmed(

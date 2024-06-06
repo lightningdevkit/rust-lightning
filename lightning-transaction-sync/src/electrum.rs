@@ -83,7 +83,9 @@ where
 	/// [`ChainMonitor`]: lightning::chain::chainmonitor::ChainMonitor
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`Filter`]: lightning::chain::Filter
-	pub fn sync(&self, confirmables: Vec<&(dyn Confirm + Sync + Send)>) -> Result<(), TxSyncError> {
+	pub fn sync<C: Deref>(&self, confirmables: Vec<C>) -> Result<(), TxSyncError>
+		where C::Target: Confirm
+	{
 		// This lock makes sure we're syncing once at a time.
 		let mut sync_state = self.sync_state.lock().unwrap();
 
@@ -378,9 +380,11 @@ where
 		Ok(confirmed_txs)
 	}
 
-	fn get_unconfirmed_transactions(
-		&self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
-	) -> Result<Vec<Txid>, InternalError> {
+	fn get_unconfirmed_transactions<C: Deref>(
+		&self, confirmables: &Vec<C>,
+	) -> Result<Vec<Txid>, InternalError>
+		where C::Target: Confirm
+	{
 		// Query the interface for relevant txids and check whether the relevant blocks are still
 		// in the best chain, mark them unconfirmed otherwise
 		let relevant_txids = confirmables
