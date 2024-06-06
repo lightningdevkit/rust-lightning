@@ -1,5 +1,4 @@
 ./bench/benches/bench.rs
-./fuzz/src/base32.rs
 ./fuzz/src/bech32_parse.rs
 ./fuzz/src/bin/base32_target.rs
 ./fuzz/src/bin/bech32_parse_target.rs
