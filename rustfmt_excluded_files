@@ -1,7 +1,6 @@
 ./bench/benches/bench.rs
 ./fuzz/src/chanmon_consistency.rs
 ./fuzz/src/full_stack.rs
-./fuzz/src/peer_crypt.rs
 ./fuzz/src/process_network_graph.rs
 ./fuzz/src/refund_deser.rs
 ./fuzz/src/router.rs
