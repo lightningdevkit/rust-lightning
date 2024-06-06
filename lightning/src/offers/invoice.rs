@@ -1102,6 +1102,7 @@ impl InvoiceFields {
 			fallbacks: self.fallbacks.as_ref(),
 			features,
 			node_id: Some(&self.signing_pubkey),
+			message_paths: None,
 		}
 	}
 }
@@ -1162,6 +1163,8 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
 	(172, fallbacks: (Vec<FallbackAddress>, WithoutLength)),
 	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
 	(176, node_id: PublicKey),
+	// Only present in `StaticInvoice`s.
+	(238, message_paths: (Vec<BlindedPath>, WithoutLength)),
 });
 
 pub(super) type BlindedPathIter<'a> = core::iter::Map<
@@ -1299,9 +1302,11 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			invoice_request_tlv_stream,
 			InvoiceTlvStream {
 				paths, blindedpay, created_at, relative_expiry, payment_hash, amount, fallbacks,
-				features, node_id,
+				features, node_id, message_paths,
 			},
 		) = tlv_stream;
+
+		if message_paths.is_some() { return Err(Bolt12SemanticError::UnexpectedPaths) }
 
 		let payment_paths = construct_payment_paths(blindedpay, paths)?;
 
@@ -1568,6 +1573,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
+					message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 			),
@@ -1659,6 +1665,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
+					message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 			),
@@ -2427,6 +2434,37 @@ mod tests {
 		match Bolt12Invoice::try_from(encoded_invoice) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_with_message_paths() {
+		let invoice = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+
+		let blinded_path = BlindedPath {
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
+			blinding_point: pubkey(41),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
+			],
+		};
+
+		let mut tlv_stream = invoice.as_tlv_stream();
+		let message_paths = vec![blinded_path];
+		tlv_stream.3.message_paths = Some(&message_paths);
+
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedPaths)),
 		}
 	}
 }
