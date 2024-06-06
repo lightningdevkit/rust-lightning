@@ -1375,6 +1375,8 @@ impl<L: Deref> ReadableArgs<L> for NetworkGraph<L> where L::Target: Logger {
 			channels.insert(chan_id, chan_info);
 		}
 		let nodes_count: u64 = Readable::read(reader)?;
+		// There shouln't be any where near `u32::MAX` nodes, and we need some headroom to insert
+		// new nodes during sync, so reject any graphs claiming more than `u32::MAX / 2` nodes.
 		if nodes_count > u32::max_value() as u64 / 2 { return Err(DecodeError::InvalidValue); }
 		// In Nov, 2023 there were about 69K channels; we cap allocations to 1.5x that.
 		let mut nodes = IndexedMap::with_capacity(cmp::min(nodes_count as usize, 103500));
