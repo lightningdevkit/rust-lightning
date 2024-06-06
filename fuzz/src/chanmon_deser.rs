@@ -4,8 +4,8 @@
 use bitcoin::hash_types::BlockHash;
 
 use lightning::chain::channelmonitor;
+use lightning::util::ser::{ReadableArgs, Writeable, Writer};
 use lightning::util::test_channel_signer::TestChannelSigner;
-use lightning::util::ser::{ReadableArgs, Writer, Writeable};
 use lightning::util::test_utils::OnlyReadsKeysInterface;
 
 use crate::utils::test_logger;
@@ -22,10 +22,19 @@ impl Writer for VecWriter {
 
 #[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	if let Ok((latest_block_hash, monitor)) = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(&mut Cursor::new(data), (&OnlyReadsKeysInterface {}, &OnlyReadsKeysInterface {})) {
+	if let Ok((latest_block_hash, monitor)) =
+		<(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
+			&mut Cursor::new(data),
+			(&OnlyReadsKeysInterface {}, &OnlyReadsKeysInterface {}),
+		) {
 		let mut w = VecWriter(Vec::new());
 		monitor.write(&mut w).unwrap();
-		let deserialized_copy = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(&mut Cursor::new(&w.0), (&OnlyReadsKeysInterface {}, &OnlyReadsKeysInterface {})).unwrap();
+		let deserialized_copy =
+			<(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
+				&mut Cursor::new(&w.0),
+				(&OnlyReadsKeysInterface {}, &OnlyReadsKeysInterface {}),
+			)
+			.unwrap();
 		assert!(latest_block_hash == deserialized_copy.0);
 		assert!(monitor == deserialized_copy.1);
 	}
@@ -37,5 +46,5 @@ pub fn chanmon_deser_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 #[no_mangle]
 pub extern "C" fn chanmon_deser_run(data: *const u8, datalen: usize) {
-	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull{});
+	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, test_logger::DevNull {});
 }

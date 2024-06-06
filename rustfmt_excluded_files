@@ -1,6 +1,5 @@
 ./bench/benches/bench.rs
 ./fuzz/src/chanmon_consistency.rs
-./fuzz/src/chanmon_deser.rs
 ./fuzz/src/fromstr_to_netaddress.rs
 ./fuzz/src/full_stack.rs
 ./fuzz/src/indexedmap.rs
