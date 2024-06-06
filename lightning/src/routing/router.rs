@@ -1719,6 +1719,7 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 			.field("source_node_id", &self.candidate.source())
 			.field("target_node_id", &self.candidate.target())
 			.field("short_channel_id", &self.candidate.short_channel_id())
+			.field("is_first_hop_target", &self.is_first_hop_target)
 			.field("total_fee_msat", &self.total_fee_msat)
 			.field("next_hops_fee_msat", &self.next_hops_fee_msat)
 			.field("hop_use_fee_msat", &self.hop_use_fee_msat)
