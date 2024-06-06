@@ -1283,6 +1283,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// If we attempted to sign a cooperative close transaction but the signer wasn't ready, then this
 	/// will be set to `true`.
 	signer_pending_closing: bool,
+	/// Similar to [`Self::signer_pending_commitment_update`] but we're waiting to send a
+	/// [`msgs::ChannelReady`].
+	signer_pending_channel_ready: bool,
 
 	// pending_update_fee is filled when sending and receiving update_fee.
 	//
@@ -2129,6 +2132,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
 			signer_pending_closing: false,
+			signer_pending_channel_ready: false,
 
 
 			#[cfg(debug_assertions)]
@@ -2362,6 +2366,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
 			signer_pending_closing: false,
+			signer_pending_channel_ready: false,
 
 			// We'll add our counterparty's `funding_satoshis` to these max commitment output assertions
 			// when we receive `accept_channel2`.
@@ -5997,7 +6002,7 @@ impl<SP: Deref> Channel<SP> where
 			assert!(!self.context.is_outbound() || self.context.minimum_depth == Some(0),
 				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.context.monitor_pending_channel_ready = false;
-			Some(self.get_channel_ready())
+			self.get_channel_ready(logger)
 		} else { None };
 
 		let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block_height, logger);
@@ -6120,8 +6125,11 @@ impl<SP: Deref> Channel<SP> where
 			let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number + 1, &counterparty_keys, false, false, logger).tx;
 			self.context.get_funding_signed_msg(logger, counterparty_initial_commitment_tx)
 		} else { None };
-		let channel_ready = if funding_signed.is_some() {
-			self.check_get_channel_ready(0, logger)
+		// Provide a `channel_ready` message if we need to, but only if we're _not_ still pending
+		// funding.
+		let channel_ready = if self.context.signer_pending_channel_ready && !self.context.signer_pending_funding {
+			log_trace!(logger, "Attempting to generate pending channel_ready...");
+			self.get_channel_ready(logger)
 		} else { None };
 
 		let mut commitment_update = if self.context.signer_pending_commitment_update {
@@ -6428,7 +6436,7 @@ impl<SP: Deref> Channel<SP> where
 
 			// We have OurChannelReady set!
 			return Ok(ReestablishResponses {
-				channel_ready: Some(self.get_channel_ready()),
+				channel_ready: self.get_channel_ready(logger),
 				raa: None, commitment_update: None,
 				order: RAACommitmentOrder::CommitmentFirst,
 				shutdown_msg, announcement_sigs,
@@ -6467,7 +6475,7 @@ impl<SP: Deref> Channel<SP> where
 
 		let channel_ready = if msg.next_local_commitment_number == 1 && INITIAL_COMMITMENT_NUMBER - self.holder_commitment_point.transaction_number() == 1 {
 			// We should never have to worry about MonitorUpdateInProgress resending ChannelReady
-			Some(self.get_channel_ready())
+			self.get_channel_ready(logger)
 		} else { None };
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
@@ -7322,14 +7330,6 @@ impl<SP: Deref> Channel<SP> where
 			return None;
 		}
 
-		// If we're still pending the signature on a funding transaction, then we're not ready to send a
-		// channel_ready yet.
-		if self.context.signer_pending_funding {
-			// TODO: set signer_pending_channel_ready
-			log_debug!(logger, "Can't produce channel_ready: the signer is pending funding.");
-			return None;
-		}
-
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
 		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()).is_empty()) {
@@ -7375,18 +7375,23 @@ impl<SP: Deref> Channel<SP> where
 			return None;
 		}
 
-		// TODO: when get_per_commiment_point becomes async, check if the point is
-		// available, if not, set signer_pending_channel_ready and return None
-
-		Some(self.get_channel_ready())
+		self.get_channel_ready(logger)
 	}
 
-	fn get_channel_ready(&self) -> msgs::ChannelReady {
-		debug_assert!(self.holder_commitment_point.is_available());
-		msgs::ChannelReady {
-			channel_id: self.context.channel_id(),
-			next_per_commitment_point: self.holder_commitment_point.current_point(),
-			short_channel_id_alias: Some(self.context.outbound_scid_alias),
+	fn get_channel_ready<L: Deref>(
+		&mut self, logger: &L
+	) -> Option<msgs::ChannelReady> where L::Target: Logger {
+		if let HolderCommitmentPoint::Available { current, .. } = self.holder_commitment_point {
+			self.context.signer_pending_channel_ready = false;
+			Some(msgs::ChannelReady {
+				channel_id: self.context.channel_id(),
+				next_per_commitment_point: current,
+				short_channel_id_alias: Some(self.context.outbound_scid_alias),
+			})
+		} else {
+			log_debug!(logger, "Not producing channel_ready: the holder commitment point is not available.");
+			self.context.signer_pending_channel_ready = true;
+			None
 		}
 	}
 
@@ -8549,7 +8554,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			holder_commitment_point,
 		};
 
-		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
+			|| channel.context.signer_pending_channel_ready;
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 		Ok((channel, channel_monitor))
 	}
@@ -8818,7 +8824,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			interactive_tx_signing_session: None,
 			holder_commitment_point,
 		};
-		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
+			|| channel.context.signer_pending_channel_ready;
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok((channel, funding_signed, channel_monitor))
@@ -10182,6 +10189,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				signer_pending_commitment_update: false,
 				signer_pending_funding: false,
 				signer_pending_closing: false,
+				signer_pending_channel_ready: false,
 
 				pending_update_fee,
 				holding_cell_update_fee,
