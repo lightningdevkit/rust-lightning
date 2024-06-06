@@ -1,3 +1,4 @@
+#![cfg_attr(rustfmt, rustfmt_skip)]
 mod utils;
 pub mod msg_accept_channel;
 pub mod msg_announcement_signatures;
