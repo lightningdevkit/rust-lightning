@@ -8499,7 +8499,14 @@ where
 					}
 				}
 				ChannelPhase::UnfundedOutboundV1(chan) => {
-					if let Some(msg) = chan.signer_maybe_unblocked(&self.logger) {
+					let (open_channel, funding_created) = chan.signer_maybe_unblocked(self.chain_hash.clone(), &self.logger);
+					if let Some(msg) = open_channel {
+						pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+							node_id,
+							msg,
+						});
+					}
+					if let Some(msg) = funding_created {
 						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
 							node_id,
 							msg,
