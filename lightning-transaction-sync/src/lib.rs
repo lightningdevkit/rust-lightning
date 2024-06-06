@@ -60,10 +60,8 @@
 
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
-
 #![deny(missing_docs)]
 #![deny(unsafe_code)]
-
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
@@ -83,7 +81,7 @@ mod error;
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum"))]
 pub use error::TxSyncError;
 
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
-pub use esplora::EsploraSyncClient;
 #[cfg(feature = "electrum")]
 pub use electrum::ElectrumSyncClient;
+#[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
+pub use esplora::EsploraSyncClient;

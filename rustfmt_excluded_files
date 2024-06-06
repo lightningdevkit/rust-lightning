@@ -159,7 +159,6 @@
 ./lightning-rapid-gossip-sync/src/error.rs
 ./lightning-rapid-gossip-sync/src/lib.rs
 ./lightning-rapid-gossip-sync/src/processing.rs
-./lightning-transaction-sync/src/lib.rs
 ./lightning-transaction-sync/tests/integration_tests.rs
 ./lightning/src/blinded_path/message.rs
 ./lightning/src/blinded_path/mod.rs
