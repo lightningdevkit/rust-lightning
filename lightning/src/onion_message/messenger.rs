@@ -18,7 +18,7 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 use crate::blinded_path::{BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
 use crate::blinded_path::message::{advance_path_by_one, ForwardNode, ForwardTlvs, ReceiveTlvs};
 use crate::blinded_path::utils;
-use crate::events::{Event, EventHandler, EventsProvider};
+use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
@@ -1317,7 +1317,7 @@ where
 	/// have an ordering requirement.
 	///
 	/// See the trait-level documentation of [`EventsProvider`] for requirements.
-	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ()>> + core::marker::Unpin, H: Fn(Event) -> Future>(
+	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ReplayEvent>> + core::marker::Unpin, H: Fn(Event) -> Future>(
 		&self, handler: H
 	) {
 		let mut intercepted_msgs = Vec::new();
@@ -1335,26 +1335,26 @@ where
 		for (node_id, recipient) in self.message_recipients.lock().unwrap().iter_mut() {
 			if let OnionMessageRecipient::PendingConnection(_, addresses, _) = recipient {
 				if let Some(addresses) = addresses.take() {
-					futures.push(Some(handler(Event::ConnectionNeeded { node_id: *node_id, addresses })));
+					futures.push(handler(Event::ConnectionNeeded { node_id: *node_id, addresses }));
 				}
 			}
 		}
 
 		for ev in intercepted_msgs {
 			if let Event::OnionMessageIntercepted { .. } = ev {} else { debug_assert!(false); }
-			futures.push(Some(handler(ev)));
+			futures.push(handler(ev));
 		}
 		// Let the `OnionMessageIntercepted` events finish before moving on to peer_connecteds
-		crate::util::async_poll::MultiFuturePoller(futures).await;
+		crate::util::async_poll::MultiEventFuturePoller::new(futures).await;
 
 		if peer_connecteds.len() <= 1 {
 			for event in peer_connecteds { handler(event).await; }
 		} else {
 			let mut futures = Vec::new();
 			for event in peer_connecteds {
-				futures.push(Some(handler(event)));
+				futures.push(handler(event));
 			}
-			crate::util::async_poll::MultiFuturePoller(futures).await;
+			crate::util::async_poll::MultiEventFuturePoller::new(futures).await;
 		}
 	}
 }

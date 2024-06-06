@@ -2334,6 +2334,7 @@ pub trait EventsProvider {
 /// currently succeed (e.g., due to a persistence failure).
 ///
 /// LDK will ensure the event is persisted and will eventually be replayed.
+#[derive(Clone, Debug)]
 pub struct ReplayEvent();
 
 /// A trait implemented for objects handling events from [`EventsProvider`].
