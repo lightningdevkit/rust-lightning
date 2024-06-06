@@ -7,17 +7,17 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey, self};
 use crate::utils::test_logger;
+use bitcoin::secp256k1::{self, Keypair, PublicKey, Secp256k1, SecretKey};
 use core::convert::TryFrom;
-use lightning::blinded_path::BlindedPath;
 use lightning::blinded_path::message::ForwardNode;
-use lightning::sign::EntropySource;
-use lightning::ln::PaymentHash;
+use lightning::blinded_path::BlindedPath;
 use lightning::ln::features::BlindedHopFeatures;
+use lightning::ln::PaymentHash;
 use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::offers::refund::Refund;
+use lightning::sign::EntropySource;
 use lightning::util::ser::Writeable;
 
 #[inline]
@@ -34,9 +34,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 
 		if let Ok(invoice) = build_response(&refund, pubkey, &secp_ctx) {
 			invoice
-				.sign(|message: &UnsignedBolt12Invoice|
+				.sign(|message: &UnsignedBolt12Invoice| {
 					Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-				)
+				})
 				.unwrap()
 				.write(&mut buffer)
 				.unwrap();
@@ -47,7 +47,9 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 struct Randomness;
 
 impl EntropySource for Randomness {
-	fn get_secure_random_bytes(&self) -> [u8; 32] { [42; 32] }
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		[42; 32]
+	}
 }
 
 fn pubkey(byte: u8) -> PublicKey {
@@ -60,7 +62,7 @@ fn privkey(byte: u8) -> SecretKey {
 }
 
 fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
-	refund: &Refund, signing_pubkey: PublicKey, secp_ctx: &Secp256k1<T>
+	refund: &Refund, signing_pubkey: PublicKey, secp_ctx: &Secp256k1<T>,
 ) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 	let entropy_source = Randomness {};
 	let intermediate_nodes = [
@@ -74,8 +76,10 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 		],
 	];
 	let paths = vec![
-		BlindedPath::new_for_message(&intermediate_nodes[0], pubkey(42), &entropy_source, secp_ctx).unwrap(),
-		BlindedPath::new_for_message(&intermediate_nodes[1], pubkey(42), &entropy_source, secp_ctx).unwrap(),
+		BlindedPath::new_for_message(&intermediate_nodes[0], pubkey(42), &entropy_source, secp_ctx)
+			.unwrap(),
+		BlindedPath::new_for_message(&intermediate_nodes[1], pubkey(42), &entropy_source, secp_ctx)
+			.unwrap(),
 	];
 
 	let payinfo = vec![
