@@ -7736,11 +7736,14 @@ where
 							&self.channel_type_features(), &peer_state.latest_features, &open_channel_msg,
 							user_channel_id, &self.default_configuration, best_block_height, &self.logger, accept_0conf
 						).map_err(|err| MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id)
-						).map(|channel| {
-							let message_send_event = events::MessageSendEvent::SendAcceptChannel {
-								node_id: *counterparty_node_id,
-								msg: channel.accept_inbound_channel(),
-							};
+						).map(|mut channel| {
+							let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+							let message_send_event = channel.accept_inbound_channel(&&logger).map(|msg| {
+								events::MessageSendEvent::SendAcceptChannel {
+									node_id: *counterparty_node_id,
+									msg,
+								}
+							});
 							(*temporary_channel_id, ChannelPhase::UnfundedInboundV1(channel), message_send_event)
 						})
 					},
@@ -7761,7 +7764,7 @@ where
 								node_id: channel.context.get_counterparty_node_id(),
 								msg: channel.accept_inbound_dual_funded_channel()
 							};
-							(channel.context.channel_id(), ChannelPhase::UnfundedInboundV2(channel), message_send_event)
+							(channel.context.channel_id(), ChannelPhase::UnfundedInboundV2(channel), Some(message_send_event))
 						})
 					},
 				}
@@ -7829,7 +7832,9 @@ where
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		channel_phase.context_mut().set_outbound_scid_alias(outbound_scid_alias);
 
-		peer_state.pending_msg_events.push(message_send_event);
+		if let Some(message_send_event) = message_send_event {
+			peer_state.pending_msg_events.push(message_send_event);
+		}
 		peer_state.channel_by_id.insert(channel_id, channel_phase);
 
 		Ok(())
@@ -8005,15 +8010,18 @@ where
 
 		let (mut channel_phase, message_send_event) = match msg {
 			OpenChannelMessageRef::V1(msg) => {
-				let channel = InboundV1Channel::new(
+				let mut channel = InboundV1Channel::new(
 					&self.fee_estimator, &self.entropy_source, &self.signer_provider, *counterparty_node_id,
 					&self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
 					&self.default_configuration, best_block_height, &self.logger, /*is_0conf=*/false
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
-				let message_send_event = events::MessageSendEvent::SendAcceptChannel {
-					node_id: *counterparty_node_id,
-					msg: channel.accept_inbound_channel(),
-				};
+				let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+				let message_send_event = channel.accept_inbound_channel(&&logger).map(|msg| {
+					events::MessageSendEvent::SendAcceptChannel {
+						node_id: *counterparty_node_id,
+						msg,
+					}
+				});
 				(ChannelPhase::UnfundedInboundV1(channel), message_send_event)
 			},
 			OpenChannelMessageRef::V2(msg) => {
@@ -8026,14 +8034,16 @@ where
 					node_id: *counterparty_node_id,
 					msg: channel.accept_inbound_dual_funded_channel(),
 				};
-				(ChannelPhase::UnfundedInboundV2(channel), message_send_event)
+				(ChannelPhase::UnfundedInboundV2(channel), Some(message_send_event))
 			},
 		};
 
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		channel_phase.context_mut().set_outbound_scid_alias(outbound_scid_alias);
 
-		peer_state.pending_msg_events.push(message_send_event);
+		if let Some(message_send_event) = message_send_event {
+			peer_state.pending_msg_events.push(message_send_event);
+		}
 		peer_state.channel_by_id.insert(channel_phase.context().channel_id(), channel_phase);
 
 		Ok(())
@@ -9579,7 +9589,17 @@ where
 					}
 					None
 				}
-				ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => None,
+				ChannelPhase::UnfundedInboundV1(chan) => {
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					if let Some(msg) = chan.signer_maybe_unblocked(&&logger) {
+						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+							node_id,
+							msg,
+						});
+					}
+					None
+				},
+				ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => None,
 			}
 		};
 
