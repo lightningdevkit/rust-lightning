@@ -2129,15 +2129,16 @@ where L::Target: Logger {
 				IntroductionNode::NodeId(pubkey) => {
 					node_counters.node_counter_from_id(&NodeId::from_pubkey(&pubkey))
 				},
-				IntroductionNode::DirectedShortChannelId(_, scid) => {
+				IntroductionNode::DirectedShortChannelId(direction, scid) => {
 					let node_id = if let Some(node_id) = path.public_introduction_node_id(network_graph) {
-						Some(node_id)
+						Some(*node_id)
 					} else {
-						first_hop_targets.iter().find(|(_, channels)|
+						let counterparty_opt = first_hop_targets.iter().find(|(_, channels)|
 							channels
 								.iter()
 								.any(|details| Some(*scid) == details.get_outbound_payment_scid())
-						).map(|(counterparty_node_id, _)| counterparty_node_id)
+						).map(|(counterparty_node_id, _)| counterparty_node_id);
+						counterparty_opt.map(|cp| direction.select_node_id(our_node_id, *cp))
 					};
 					match node_id {
 						Some(node_id) => node_counters.node_counter_from_id(&node_id),
