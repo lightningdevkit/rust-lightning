@@ -1,9 +1,6 @@
 ./bench/benches/bench.rs
 ./fuzz/src/chanmon_consistency.rs
 ./fuzz/src/full_stack.rs
-./fuzz/src/utils/mod.rs
-./fuzz/src/utils/test_logger.rs
-./fuzz/src/utils/test_persister.rs
 ./fuzz/src/zbase32.rs
 ./lightning-background-processor/src/lib.rs
 ./lightning-block-sync/src/convert.rs
