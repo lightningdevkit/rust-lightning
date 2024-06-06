@@ -2171,7 +2171,7 @@ where L::Target: Logger {
 					route_hints
 						.iter().zip(introduction_node_id_cache.iter())
 						.filter(|((_, p), _)| p.blinded_hops.len() == 1)
-						.any(|(_, p_introduction_node_id)| p_introduction_node_id != info_opt)
+						.any(|(_, iter_info_opt)| iter_info_opt.is_some() && iter_info_opt != info_opt)
 				{
 					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
 				}
