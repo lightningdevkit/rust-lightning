@@ -11,7 +11,7 @@
 //! nodes for functional tests.
 
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
-use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
@@ -1065,9 +1065,28 @@ macro_rules! unwrap_send_err {
 
 /// Check whether N channel monitor(s) have been added.
 pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, count: usize) {
+	check_added_monitors_with_expected_claim_info_events(node, count, 1);
+}
+pub fn check_added_monitors_with_expected_claim_info_events<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, count: usize, expected_claim_info_events: usize) {
 	if let Some(chain_monitor) = node.chain_monitor() {
-		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap().split_off(0);
 		let n = added_monitors.len();
+		let mut added_claim_info_events:Option<usize> = None;
+		for (_, _, updates_opt) in added_monitors.iter() {
+			if let Some(updates) = updates_opt {
+				for update in updates.updates.iter() {
+					if let ChannelMonitorUpdateStep::CommitmentSecret { .. } = update {
+						added_claim_info_events = Some(
+							added_claim_info_events.unwrap_or_default() + chain_monitor.chain_monitor.free_claim_info_events().len()
+						);
+					}
+				}
+			}
+		}
+		
+		if let Some(added_events) = added_claim_info_events {
+			assert_eq!(added_events, expected_claim_info_events, "expected {} claim info events, not {}", expected_claim_info_events, added_events);
+		}
 		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
 		added_monitors.clear();
 	}

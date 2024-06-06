@@ -1283,6 +1283,7 @@ macro_rules! _process_events_body {
 	}
 }
 pub(super) use _process_events_body as process_events_body;
+use crate::events::Event::PersistClaimInfo;
 
 pub(crate) struct WithChannelMonitor<'a, L: Deref> where L::Target: Logger {
 	logger: &'a L,
@@ -1639,6 +1640,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		mem::swap(&mut ret, &mut lck.pending_events);
 		ret.append(&mut lck.get_repeated_events());
 		ret
+	}
+
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn free_claim_info_events(&self) -> Vec<Event> {
+		let mut res = Vec::new();
+		let mut inner = self.inner.lock().unwrap();
+		inner.pending_events.retain(|ev| {
+			if let Event::PersistClaimInfo { .. } = ev {
+				res.push(ev.clone());
+				false
+			} else { true }
+		});
+		res
 	}
 
 	/// Gets the counterparty's initial commitment transaction. The returned commitment
@@ -2758,6 +2772,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				for &mut (_, ref mut source_opt) in self.counterparty_claimable_outpoints.get_mut(&txid).unwrap() {
 					*source_opt = None;
 				}
+				let htlcs = self.counterparty_claimable_outpoints.get(&txid).unwrap().iter().map(|(htlc, _)| htlc.clone()).collect();
+				self.pending_events.push(PersistClaimInfo {
+					monitor_id: self.funding_info.0,
+					claim_key: txid,
+					claim_info: ClaimInfo { htlcs },
+				})
 			} else {
 				assert!(cfg!(fuzzing), "Commitment txids are unique outside of fuzzing, where hashes can collide");
 			}
@@ -4198,7 +4218,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		});
 		#[cfg(test)]
 		{
-		        // If we see a transaction for which we registered outputs previously,
+			// If we see a transaction for which we registered outputs previously,
 			// make sure the registered scriptpubkey at the expected index match
 			// the actual transaction output one. We failed this case before #653.
 			for tx in &txn_matched {

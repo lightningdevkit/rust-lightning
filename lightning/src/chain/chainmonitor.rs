@@ -587,6 +587,15 @@ where C::Target: chain::Filter,
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn free_claim_info_events(&self) -> Vec<events::Event> {
+		let mut res = Vec::new();
+		for (_, monitor) in self.monitors.read().unwrap().iter() {
+			res.append(&mut monitor.monitor.free_claim_info_events());
+		}
+		res
+	}
+
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_and_clear_pending_events(&self) -> Vec<events::Event> {
 		use crate::events::EventsProvider;
 		let events = core::cell::RefCell::new(Vec::new());
