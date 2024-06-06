@@ -373,7 +373,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_added_monitors(&nodes[1], 1);
 		check_closed_broadcast(&nodes[1], 1, true);
-		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100_000);
+		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[0].node.get_our_node_id()], 100_000);
 	} else {
 		// We'll connect blocks until the sender has to go onchain to time out the HTLC.
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);

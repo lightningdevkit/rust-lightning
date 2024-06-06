@@ -3153,7 +3153,7 @@ where
 						}
 					} else {
 						let mut chan_phase = remove_channel_phase!(self, chan_phase_entry);
-						shutdown_result = Some(chan_phase.context_mut().force_shutdown(false, ClosureReason::HolderForceClosed));
+						shutdown_result = Some(chan_phase.context_mut().force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }));
 					}
 				},
 				hash_map::Entry::Vacant(_) => {
@@ -3322,7 +3322,7 @@ where
 			let closure_reason = if let Some(peer_msg) = peer_msg {
 				ClosureReason::CounterpartyForceClosed { peer_msg: UntrustedString(peer_msg.to_string()) }
 			} else {
-				ClosureReason::HolderForceClosed
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(broadcast) }
 			};
 			let logger = WithContext::from(&self.logger, Some(*peer_node_id), Some(*channel_id), None);
 			if let hash_map::Entry::Occupied(chan_phase_entry) = peer_state.channel_by_id.entry(channel_id.clone()) {
@@ -5497,7 +5497,7 @@ where
 					log_error!(logger,
 						"Force-closing pending channel with ID {} for not establishing in a timely manner", chan_id);
 					update_maps_on_chan_removal!(self, &context);
-					shutdown_channels.push(context.force_shutdown(false, ClosureReason::HolderForceClosed));
+					shutdown_channels.push(context.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }));
 					pending_msg_events.push(MessageSendEvent::HandleError {
 						node_id: counterparty_node_id,
 						action: msgs::ErrorAction::SendErrorMessage {
@@ -7984,7 +7984,7 @@ where
 										let reason = if let MonitorEvent::HolderForceClosedWithInfo { reason, .. } = monitor_event {
 											reason
 										} else {
-											ClosureReason::HolderForceClosed
+											ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }
 										};
 										failed_channels.push(chan.context.force_shutdown(false, reason.clone()));
 										if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
@@ -12458,7 +12458,7 @@ mod tests {
 
 		nodes[0].node.force_close_channel_with_peer(&chan.2, &nodes[1].node.get_our_node_id(), None, true).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 
 		// Confirm that the channel_update was not sent immediately to node[1] but was cached.
 		let node_1_events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -12517,7 +12517,7 @@ mod tests {
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 
 		{
 			// Assert that nodes[1] is awaiting removal for nodes[0] once nodes[1] has been
@@ -13254,7 +13254,7 @@ mod tests {
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_closed_broadcast(&nodes[0], 1, true);
 		check_added_monitors(&nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 		{
 			let txn = nodes[0].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), 1);

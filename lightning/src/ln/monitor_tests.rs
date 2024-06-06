@@ -198,7 +198,7 @@ fn archive_fully_resolved_monitors() {
 
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
 	// First archive should set balances_empty_height to current block height
-	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors(); 
+	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
 	connect_blocks(&nodes[0], 4032);
 	// Second call after 4032 blocks, should archive the monitor
@@ -784,7 +784,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_added_monitors!(nodes[0], 1);
 	check_closed_broadcast!(nodes[0], true);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 1000000);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 1000000);
 	let commitment_tx = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 		assert_eq!(txn.len(), 1);
@@ -2042,7 +2042,7 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed, false,
+	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false,
 		 [nodes[1].node.get_our_node_id()], 100000);
 
 	let commitment_tx = {
@@ -2715,7 +2715,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed, false,
+	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false,
 		 [nodes[1].node.get_our_node_id()], 100000);
 
 	let commitment_tx = {

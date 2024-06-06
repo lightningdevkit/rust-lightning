@@ -765,7 +765,7 @@ fn test_0conf_close_no_early_chan_update() {
 
 	nodes[0].node.force_close_all_channels_broadcasting_latest_txn(error_message.to_string());
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 	let _ = get_err_msg(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 

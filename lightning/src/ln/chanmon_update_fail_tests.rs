@@ -216,7 +216,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	// PaymentPathFailed event
 
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -3232,13 +3232,13 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 			chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 			nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_bc, &nodes[2].node.get_our_node_id(), error_message.to_string()).unwrap();
 			check_closed_broadcast(&nodes[1], 1, true);
-			check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[2].node.get_our_node_id()], 100000);
+			check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[2].node.get_our_node_id()], 100000);
 		}
 
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_closed_broadcast(&nodes[1], 1, true);
-		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100000);
+		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[0].node.get_our_node_id()], 100000);
 	}
 
 	// Now reload node B
@@ -3260,7 +3260,7 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 	let error_message = "Channel force-closed";
 
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
-	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[1].node.get_our_node_id()], 100000);
 	let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(as_closing_tx.len(), 1);
 
@@ -3403,7 +3403,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id_ab, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		check_closed_broadcast!(nodes[0], true);
-		check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100_000);
+		check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[1].node.get_our_node_id()], 100_000);
 		let as_closing_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		mine_transaction_without_consistency_checks(&nodes[1], &as_closing_tx[0]);
 	}

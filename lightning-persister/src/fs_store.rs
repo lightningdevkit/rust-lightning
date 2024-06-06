@@ -447,7 +447,7 @@ mod tests {
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let error_message = "Channel force-closed";
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
-		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
+		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[0].node.get_our_node_id()], 100000);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 
 		// Set the store's directory to read-only, which should result in
@@ -485,7 +485,7 @@ mod tests {
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
 		let error_message = "Channel force-closed";
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
-		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
+		check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[0].node.get_our_node_id()], 100000);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		let update_map = nodes[1].chain_monitor.latest_monitor_update_id.lock().unwrap();
 		let update_id = update_map.get(&added_monitors[0].1.channel_id()).unwrap();

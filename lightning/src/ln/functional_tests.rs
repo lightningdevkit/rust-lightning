@@ -2307,7 +2307,7 @@ fn channel_monitor_network_test() {
 	nodes[1].node.force_close_broadcasting_latest_txn(&chan_1.2, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_added_monitors!(nodes[1], 1);
 	check_closed_broadcast!(nodes[1], true);
-	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[0].node.get_our_node_id()], 100000);
 	{
 		let mut node_txn = test_txn_broadcast(&nodes[1], &chan_1, None, HTLCType::NONE);
 		assert_eq!(node_txn.len(), 1);
@@ -2345,7 +2345,7 @@ fn channel_monitor_network_test() {
 	check_closed_broadcast!(nodes[2], true);
 	assert_eq!(nodes[1].node.list_channels().len(), 0);
 	assert_eq!(nodes[2].node.list_channels().len(), 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[2].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[2].node.get_our_node_id()], 100000);
 	check_closed_event!(nodes[2], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
 
 	macro_rules! claim_funds {
@@ -2391,7 +2391,7 @@ fn channel_monitor_network_test() {
 	check_closed_broadcast!(nodes[3], true);
 	assert_eq!(nodes[2].node.list_channels().len(), 0);
 	assert_eq!(nodes[3].node.list_channels().len(), 1);
-	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed, [nodes[3].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[3].node.get_our_node_id()], 100000);
 	check_closed_event!(nodes[3], 1, ClosureReason::CommitmentTxConfirmed, [nodes[2].node.get_our_node_id()], 100000);
 
 	// Drop the ChannelMonitor for the previous channel to avoid it broadcasting transactions and
@@ -3605,7 +3605,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 
 	let node_txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 	assert_eq!(node_txn.len(), 2);
@@ -3668,7 +3668,7 @@ fn test_force_close_fail_back() {
 	nodes[2].node.force_close_broadcasting_latest_txn(&payment_event.commitment_msg.channel_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast!(nodes[2], true);
 	check_added_monitors!(nodes[2], 1);
-	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[2], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 	let commitment_tx = {
 		let mut node_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		// Note that we don't bother broadcasting the HTLC-Success transaction here as we don't
@@ -4550,7 +4550,7 @@ fn test_claim_sizeable_push_msat() {
 	nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
 	check_added_monitors!(nodes[1], 1);
-	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[0].node.get_our_node_id()], 100000);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
 	assert_eq!(node_txn.len(), 1);
 	check_spends!(node_txn[0], chan.3);
@@ -4580,7 +4580,7 @@ fn test_claim_on_remote_sizeable_push_msat() {
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast!(nodes[0], true);
 	check_added_monitors!(nodes[0], 1);
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 
 	let node_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(node_txn.len(), 1);
@@ -8856,7 +8856,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 	nodes[force_closing_node].node.force_close_broadcasting_latest_txn(&chan_ab.2, &nodes[counterparty_node].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast!(nodes[force_closing_node], true);
 	check_added_monitors!(nodes[force_closing_node], 1);
-	check_closed_event!(nodes[force_closing_node], 1, ClosureReason::HolderForceClosed, [nodes[counterparty_node].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[force_closing_node], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[counterparty_node].node.get_our_node_id()], 100000);
 	if go_onchain_before_fulfill {
 		let txn_to_broadcast = match broadcast_alice {
 			true => alice_txn.clone(),
@@ -9589,7 +9589,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 	let error_message = "Channel force-closed";
 	nodes[1].node.force_close_broadcasting_latest_txn(&channel_id, &nodes[2].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast!(nodes[1], true);
-	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[2].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[2].node.get_our_node_id()], 100000);
 	check_added_monitors!(nodes[1], 1);
 	let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(node_txn.len(), 1);
@@ -10647,7 +10647,7 @@ fn test_remove_expired_outbound_unfunded_channels() {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed, false, &[nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }, false, &[nodes[1].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -10698,7 +10698,7 @@ fn test_remove_expired_inbound_unfunded_channels() {
 		},
 		_ => panic!("Unexpected event"),
 	}
-	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed, false, &[nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }, false, &[nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
@@ -10732,7 +10732,7 @@ fn test_channel_close_when_not_timely_accepted() {
 
 	// Since we disconnected from peer and did not connect back within time,
 	// we should have forced-closed the channel by now.
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }, [nodes[1].node.get_our_node_id()], 100000);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 
 	{
@@ -11140,7 +11140,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 		_ => panic!("Unexpected event"),
 	}
 	check_added_monitors(closing_node, 1);
-	check_closed_event(closing_node, 1, ClosureReason::HolderForceClosed, false, &[other_node.node.get_our_node_id()], 1_000_000);
+	check_closed_event(closing_node, 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[other_node.node.get_our_node_id()], 1_000_000);
 
 	let commitment_tx = {
 		let mut txn = closing_node.tx_broadcaster.txn_broadcast();
