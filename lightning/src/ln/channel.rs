@@ -7889,12 +7889,27 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
 	#[cfg(async_signing)]
-	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
-		if self.context.signer_pending_funding && self.context.is_outbound() {
+	pub fn signer_maybe_unblocked<L: Deref>(&mut self, chain_hash: ChainHash, logger: &L) -> (Option<msgs::OpenChannel>, Option<msgs::FundingCreated>)
+	where L::Target: Logger
+	{
+		// If we were pending a commitment point, retry the signer and advance to an
+		// available state.
+		if !self.context.holder_commitment_point.is_available() {
+			self.context.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		}
+		let open_channel = if self.signer_pending_open_channel && self.context.holder_commitment_point.is_available() {
+			log_trace!(logger, "Attempting to generate open_channel...");
+			self.get_open_channel(chain_hash, logger).map(|msg| {
+				self.signer_pending_open_channel = false;
+				msg
+			})
+		} else { None };
+		let funding_created = if self.context.signer_pending_funding && self.context.is_outbound() {
 			log_trace!(logger, "Attempting to generate pending funding created...");
 			self.context.signer_pending_funding = false;
 			self.get_funding_created_msg(logger)
-		} else { None }
+		} else { None };
+		(open_channel, funding_created)
 	}
 }
 
