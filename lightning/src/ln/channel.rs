@@ -7995,6 +7995,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 pub(super) struct InboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
+	pub signer_pending_accept_channel: bool,
 }
 
 /// Fetches the [`ChannelTypeFeatures`] that will be used for a channel built from a given
@@ -8084,7 +8085,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
 
-		let chan = Self { context, unfunded_context };
+		let chan = Self { context, unfunded_context, signer_pending_accept_channel: false };
 		Ok(chan)
 	}
 
@@ -8092,7 +8093,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub fn accept_inbound_channel(&mut self) -> msgs::AcceptChannel {
+	pub fn accept_inbound_channel<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
+	where L::Target: Logger
+	{
 		if self.context.is_outbound() {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -8106,7 +8109,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			panic!("Tried to send an accept_channel for a channel that has already advanced");
 		}
 
-		self.generate_accept_channel_message()
+		self.generate_accept_channel_message(logger)
 	}
 
 	/// This function is used to explicitly generate a [`msgs::AcceptChannel`] message for an
@@ -8114,13 +8117,25 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// [`InboundV1Channel::accept_inbound_channel`] instead.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
-		debug_assert!(self.unfunded_context.holder_commitment_point.map(|point| point.is_available()).unwrap_or(false));
-		let first_per_commitment_point = self.unfunded_context.holder_commitment_point
-			.expect("TODO: Handle holder_commitment_point not being set").current_point();
+	fn generate_accept_channel_message<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
+	where L::Target: Logger
+	{
+		let first_per_commitment_point = if let Some(holder_commitment_point) = self.unfunded_context.holder_commitment_point {
+			self.signer_pending_accept_channel = false;
+			holder_commitment_point.current_point()
+		} else {
+			#[cfg(not(async_signing))] {
+				panic!("Failed getting commitment point for accept_channel message");
+			}
+			#[cfg(async_signing)] {
+				log_trace!(logger, "Unable to generate accept_channel message, waiting for commitment point");
+				self.signer_pending_accept_channel = true;
+				return None;
+			}
+		};
 		let keys = self.context.get_holder_pubkeys();
 
-		msgs::AcceptChannel {
+		Some(msgs::AcceptChannel {
 			common_fields: msgs::CommonAcceptChannelFields {
 				temporary_channel_id: self.context.channel_id,
 				dust_limit_satoshis: self.context.holder_dust_limit_satoshis,
@@ -8144,7 +8159,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
 			#[cfg(taproot)]
 			next_local_nonce: None,
-		}
+		})
 	}
 
 	/// Enables the possibility for tests to extract a [`msgs::AcceptChannel`] message for an
@@ -8152,8 +8167,10 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	#[cfg(test)]
-	pub fn get_accept_channel_message(&self) -> msgs::AcceptChannel {
-		self.generate_accept_channel_message()
+	pub fn get_accept_channel_message<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
+	where L::Target: Logger
+	{
+		self.generate_accept_channel_message(logger)
 	}
 
 	fn check_funding_created_signature<L: Deref>(&mut self, sig: &Signature, logger: &L) -> Result<CommitmentTransaction, ChannelError> where L::Target: Logger {
@@ -8288,6 +8305,29 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok((channel, funding_signed, channel_monitor))
+	}
+
+	/// Indicates that the signer may have some signatures for us, so we should retry if we're
+	/// blocked.
+	#[allow(unused)]
+	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
+	where L::Target: Logger
+	{
+		if self.unfunded_context.holder_commitment_point.is_none() {
+			self.unfunded_context.holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
+		}
+		if let Some(ref mut point) = self.unfunded_context.holder_commitment_point {
+			if !point.is_available() {
+				point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
+			}
+		}
+		match self.unfunded_context.holder_commitment_point {
+			Some(ref mut point) if point.is_available() && self.signer_pending_accept_channel => {
+				log_trace!(logger, "Attempting to generate accept_channel...");
+				self.generate_accept_channel_message(logger)
+			}
+			_ => None
+		}
 	}
 }
 
@@ -9834,7 +9874,7 @@ mod tests {
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
-		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let mut accept_channel_msg = node_b_chan.accept_inbound_channel(&&logger).unwrap();
 		accept_channel_msg.common_fields.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
@@ -9966,7 +10006,7 @@ mod tests {
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
 		// Node B --> Node A: accept channel
-		let accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let accept_channel_msg = node_b_chan.accept_inbound_channel(&&logger).unwrap();
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 
 		// Node A --> Node B: funding created
@@ -10153,7 +10193,7 @@ mod tests {
 		let mut node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
 		// Node B --> Node A: accept channel, explicitly setting B's dust limit.
-		let mut accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let mut accept_channel_msg = node_b_chan.accept_inbound_channel(&&logger).unwrap();
 		accept_channel_msg.common_fields.dust_limit_satoshis = 546;
 		node_a_chan.accept_channel(&accept_channel_msg, &config.channel_handshake_limits, &channelmanager::provided_init_features(&config)).unwrap();
 		node_a_chan.context.holder_dust_limit_satoshis = 1560;
@@ -10223,11 +10263,11 @@ mod tests {
 		let mut outbound_chan = OutboundV1Channel::<&TestKeysInterface>::new(
 			&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &features, 10000000, 100000, 42, &config, 0, 42, None, &logger
 		).unwrap();
-		let inbound_chan = InboundV1Channel::<&TestKeysInterface>::new(
+		let mut inbound_chan = InboundV1Channel::<&TestKeysInterface>::new(
 			&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config),
 			&features, &outbound_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap(), 7, &config, 0, &&logger, false
 		).unwrap();
-		outbound_chan.accept_channel(&inbound_chan.get_accept_channel_message(), &config.channel_handshake_limits, &features).unwrap();
+		outbound_chan.accept_channel(&inbound_chan.get_accept_channel_message(&&logger).unwrap(), &config.channel_handshake_limits, &features).unwrap();
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: Amount::from_sat(10000000), script_pubkey: outbound_chan.context.get_funding_redeemscript(),
 		}]};
@@ -11279,13 +11319,13 @@ mod tests {
 
 		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 
-		let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
+		let mut channel_b = InboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
 			&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
 			&open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false
 		).unwrap();
 
-		let mut accept_channel_msg = channel_b.get_accept_channel_message();
+		let mut accept_channel_msg = channel_b.get_accept_channel_message(&&logger).unwrap();
 		accept_channel_msg.common_fields.channel_type = Some(simple_anchors_channel_type.clone());
 
 		let res = channel_a.accept_channel(
@@ -11345,7 +11385,7 @@ mod tests {
 			true,  // Allow node b to send a 0conf channel_ready.
 		).unwrap();
 
-		let accept_channel_msg = node_b_chan.accept_inbound_channel();
+		let accept_channel_msg = node_b_chan.accept_inbound_channel(&&logger).unwrap();
 		node_a_chan.accept_channel(
 			&accept_channel_msg,
 			&config.channel_handshake_limits,

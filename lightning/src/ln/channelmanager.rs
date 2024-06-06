@@ -7446,10 +7446,13 @@ where
 				let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 				channel.context.set_outbound_scid_alias(outbound_scid_alias);
 
-				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-					node_id: channel.context.get_counterparty_node_id(),
-					msg: channel.accept_inbound_channel(),
-				});
+				let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+				if let Some(msg) = channel.accept_inbound_channel(&&logger) {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+						node_id: channel.context.get_counterparty_node_id(),
+						msg,
+					});
+				}
 
 				peer_state.channel_by_id.insert(temporary_channel_id.clone(), ChannelPhase::UnfundedInboundV1(channel));
 
@@ -7637,10 +7640,13 @@ where
 		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 		channel.context.set_outbound_scid_alias(outbound_scid_alias);
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-			node_id: counterparty_node_id.clone(),
-			msg: channel.accept_inbound_channel(),
-		});
+		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+		if let Some(msg) = channel.accept_inbound_channel(&&logger) {
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+				node_id: counterparty_node_id.clone(),
+				msg,
+			});
+		}
 		peer_state.channel_by_id.insert(channel_id, ChannelPhase::UnfundedInboundV1(channel));
 		Ok(())
 	}
@@ -8881,7 +8887,16 @@ where
 					}
 					None
 				}
-				ChannelPhase::UnfundedInboundV1(_) => None,
+				ChannelPhase::UnfundedInboundV1(chan) => {
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					if let Some(msg) = chan.signer_maybe_unblocked(&&logger) {
+						pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+							node_id,
+							msg,
+						});
+					}
+					None
+				},
 			}
 		};
 
