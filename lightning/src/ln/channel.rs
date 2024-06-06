@@ -8216,6 +8216,20 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		Ok((channel, funding_signed, channel_monitor))
 	}
+
+	/// Indicates that the signer may have some signatures for us, so we should retry if we're
+	/// blocked.
+	#[allow(unused)]
+	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
+	where L::Target: Logger
+	{
+		if !self.context.holder_commitment_point.is_available() {
+			self.context.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		}
+		if self.signer_pending_accept_channel && self.context.holder_commitment_point.is_available() {
+			self.generate_accept_channel_message(logger)
+		} else { None }
+	}
 }
 
 // A not-yet-funded outbound (from holder) channel using V2 channel establishment.
