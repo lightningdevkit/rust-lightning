@@ -1,10 +1,10 @@
 // Imports that need to be added manually
 use bech32::u5;
 use bitcoin::blockdata::script::ScriptBuf;
-use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, self};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::schnorr;
+use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
 use lightning::ln::features::InitFeatures;
@@ -12,13 +12,16 @@ use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
-use lightning::sign::{Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
-use lightning::util::test_channel_signer::TestChannelSigner;
-use lightning::util::logger::Logger;
-use lightning::util::ser::{Readable, Writeable, Writer};
-use lightning::onion_message::messenger::{CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger, PendingOnionMessage, Responder, ResponseInstruction};
+use lightning::onion_message::messenger::{
+	CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger,
+	PendingOnionMessage, Responder, ResponseInstruction,
+};
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::onion_message::packet::OnionMessageContents;
+use lightning::sign::{EntropySource, KeyMaterial, NodeSigner, Recipient, SignerProvider};
+use lightning::util::logger::Logger;
+use lightning::util::ser::{Readable, Writeable, Writer};
+use lightning::util::test_channel_signer::TestChannelSigner;
 
 use crate::utils::test_logger;
 
@@ -32,17 +35,19 @@ pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
 		let mut secret_bytes = [1; 32];
 		secret_bytes[31] = 2;
 		let secret = SecretKey::from_slice(&secret_bytes).unwrap();
-		let keys_manager = KeyProvider {
-			node_secret: secret,
-			counter: AtomicU64::new(0),
-		};
+		let keys_manager = KeyProvider { node_secret: secret, counter: AtomicU64::new(0) };
 		let node_id_lookup = EmptyNodeIdLookUp {};
 		let message_router = TestMessageRouter {};
 		let offers_msg_handler = TestOffersMessageHandler {};
 		let custom_msg_handler = TestCustomMessageHandler {};
 		let onion_messenger = OnionMessenger::new(
-			&keys_manager, &keys_manager, logger, &node_id_lookup, &message_router,
-			&offers_msg_handler, &custom_msg_handler
+			&keys_manager,
+			&keys_manager,
+			logger,
+			&node_id_lookup,
+			&message_router,
+			&offers_msg_handler,
+			&custom_msg_handler,
 		);
 
 		let peer_node_id = {
@@ -78,13 +83,9 @@ struct TestMessageRouter {}
 
 impl MessageRouter for TestMessageRouter {
 	fn find_path(
-		&self, _sender: PublicKey, _peers: Vec<PublicKey>, destination: Destination
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, destination: Destination,
 	) -> Result<OnionMessagePath, ()> {
-		Ok(OnionMessagePath {
-			intermediate_nodes: vec![],
-			destination,
-			first_node_addresses: None,
-		})
+		Ok(OnionMessagePath { intermediate_nodes: vec![], destination, first_node_addresses: None })
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
@@ -97,7 +98,9 @@ impl MessageRouter for TestMessageRouter {
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
+	fn handle_message(
+		&self, _message: OffersMessage, _responder: Option<Responder>,
+	) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
 }
@@ -127,16 +130,20 @@ struct TestCustomMessageHandler {}
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
-	fn handle_custom_message(&self, message: Self::CustomMessage, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
+	fn handle_custom_message(
+		&self, message: Self::CustomMessage, responder: Option<Responder>,
+	) -> ResponseInstruction<Self::CustomMessage> {
 		match responder {
 			Some(responder) => responder.respond(message),
-			None => ResponseInstruction::NoResponse
+			None => ResponseInstruction::NoResponse,
 		}
 	}
-	fn read_custom_message<R: io::Read>(&self, _message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
+	fn read_custom_message<R: io::Read>(
+		&self, _message_type: u64, buffer: &mut R,
+	) -> Result<Option<Self::CustomMessage>, msgs::DecodeError> {
 		let mut buf = Vec::new();
 		buffer.read_to_end(&mut buf)?;
-		return Ok(Some(TestCustomMessage {}))
+		return Ok(Some(TestCustomMessage {}));
 	}
 	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>> {
 		vec![]
@@ -158,8 +165,11 @@ struct KeyProvider {
 impl EntropySource for KeyProvider {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
-		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
+		#[rustfmt::skip]
+		let random_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8,
+			(ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8];
+		random_bytes
 	}
 }
 
@@ -167,15 +177,17 @@ impl NodeSigner for KeyProvider {
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		let node_secret = match recipient {
 			Recipient::Node => Ok(&self.node_secret),
-			Recipient::PhantomNode => Err(())
+			Recipient::PhantomNode => Err(()),
 		}?;
 		Ok(PublicKey::from_secret_key(&Secp256k1::signing_only(), node_secret))
 	}
 
-	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
+	fn ecdh(
+		&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>,
+	) -> Result<SharedSecret, ()> {
 		let mut node_secret = match recipient {
 			Recipient::Node => Ok(self.node_secret.clone()),
-			Recipient::PhantomNode => Err(())
+			Recipient::PhantomNode => Err(()),
 		}?;
 		if let Some(tweak) = tweak {
 			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
@@ -183,14 +195,18 @@ impl NodeSigner for KeyProvider {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!() }
+	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
+		unreachable!()
+	}
 
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(
+		&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient,
+	) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}
 
 	fn sign_bolt12_invoice_request(
-		&self, _invoice_request: &UnsignedInvoiceRequest
+		&self, _invoice_request: &UnsignedInvoiceRequest,
 	) -> Result<schnorr::Signature, ()> {
 		unreachable!()
 	}
@@ -201,7 +217,9 @@ impl NodeSigner for KeyProvider {
 		unreachable!()
 	}
 
-	fn sign_gossip_message(&self, _msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
+	fn sign_gossip_message(
+		&self, _msg: lightning::ln::msgs::UnsignedGossipMessage,
+	) -> Result<bitcoin::secp256k1::ecdsa::Signature, ()> {
 		unreachable!()
 	}
 }
@@ -211,17 +229,29 @@ impl SignerProvider for KeyProvider {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!() }
-
-	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
+	fn generate_channel_keys_id(
+		&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
+	) -> [u8; 32] {
 		unreachable!()
 	}
 
-	fn read_chan_signer(&self, _data: &[u8]) -> Result<TestChannelSigner, DecodeError> { unreachable!() }
+	fn derive_channel_signer(
+		&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32],
+	) -> Self::EcdsaSigner {
+		unreachable!()
+	}
 
-	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { unreachable!() }
+	fn read_chan_signer(&self, _data: &[u8]) -> Result<TestChannelSigner, DecodeError> {
+		unreachable!()
+	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { unreachable!() }
+	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+		unreachable!()
+	}
+
+	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+		unreachable!()
+	}
 }
 
 #[cfg(test)]
@@ -237,8 +267,17 @@ mod tests {
 	}
 	impl Logger for TrackingLogger {
 		fn log(&self, record: Record) {
-			*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
-			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
+			let mut lines_lock = self.lines.lock().unwrap();
+			let key = (record.module_path.to_string(), format!("{}", record.args));
+			*lines_lock.entry(key).or_insert(0) += 1;
+			println!(
+				"{:<5} [{} : {}, {}] {}",
+				record.level.to_string(),
+				record.module_path,
+				record.file,
+				record.line,
+				record.args
+			);
 		}
 	}
 

@@ -7,7 +7,10 @@ GEN_TEST() {
 	echo "pub mod $tn;" >> mod.rs
 }
 
-echo "mod utils;" > mod.rs
+{
+	echo "#![cfg_attr(rustfmt, rustfmt_skip)]"
+	echo "mod utils;"
+} > mod.rs
 
 # Note when adding new targets here you should add a similar line in src/bin/gen_target.sh
 

@@ -8,29 +8,29 @@
 // licenses.
 
 extern crate bitcoin;
+extern crate hex;
 extern crate lightning;
 extern crate lightning_rapid_gossip_sync;
-extern crate hex;
 
 pub mod utils;
 
+pub mod base32;
 pub mod bech32_parse;
-pub mod chanmon_deser;
+pub mod bolt11_deser;
 pub mod chanmon_consistency;
+pub mod chanmon_deser;
+pub mod fromstr_to_netaddress;
 pub mod full_stack;
 pub mod indexedmap;
 pub mod invoice_deser;
 pub mod invoice_request_deser;
 pub mod offer_deser;
-pub mod bolt11_deser;
+pub mod onion_hop_data;
 pub mod onion_message;
 pub mod peer_crypt;
 pub mod process_network_graph;
 pub mod refund_deser;
 pub mod router;
 pub mod zbase32;
-pub mod onion_hop_data;
-pub mod base32;
-pub mod fromstr_to_netaddress;
 
 pub mod msg_targets;

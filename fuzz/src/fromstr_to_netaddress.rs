@@ -7,8 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use lightning::ln::msgs::SocketAddress;
 use core::str::FromStr;
+use lightning::ln::msgs::SocketAddress;
 
 use crate::utils::test_logger;
 
@@ -17,7 +17,6 @@ pub fn do_test(data: &[u8]) {
 	if let Ok(s) = std::str::from_utf8(data) {
 		let _ = SocketAddress::from_str(s);
 	}
-
 }
 
 pub fn fromstr_to_netaddress_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
@@ -28,4 +27,3 @@ pub fn fromstr_to_netaddress_test<Out: test_logger::Output>(data: &[u8], _out: O
 pub extern "C" fn fromstr_to_netaddress_run(data: *const u8, datalen: usize) {
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) });
 }
-

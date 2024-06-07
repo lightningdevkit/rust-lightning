@@ -16,9 +16,11 @@ pub fn do_test(data: &[u8]) {
 	if let Ok(s) = std::str::from_utf8(data) {
 		let first_decoding = base32::Alphabet::RFC4648 { padding: true }.decode(s);
 		if let Ok(first_decoding) = first_decoding {
-			let encoding_response = base32::Alphabet::RFC4648 { padding: true }.encode(&first_decoding);
+			let encoding_response =
+				base32::Alphabet::RFC4648 { padding: true }.encode(&first_decoding);
 			assert_eq!(encoding_response, s.to_ascii_uppercase());
-			let second_decoding = base32::Alphabet::RFC4648 { padding: true }.decode(&encoding_response).unwrap();
+			let second_decoding =
+				base32::Alphabet::RFC4648 { padding: true }.decode(&encoding_response).unwrap();
 			assert_eq!(first_decoding, second_decoding);
 		}
 	}
@@ -26,19 +28,23 @@ pub fn do_test(data: &[u8]) {
 	if let Ok(s) = std::str::from_utf8(data) {
 		let first_decoding = base32::Alphabet::RFC4648 { padding: false }.decode(s);
 		if let Ok(first_decoding) = first_decoding {
-			let encoding_response = base32::Alphabet::RFC4648 { padding: false }.encode(&first_decoding);
+			let encoding_response =
+				base32::Alphabet::RFC4648 { padding: false }.encode(&first_decoding);
 			assert_eq!(encoding_response, s.to_ascii_uppercase());
-			let second_decoding = base32::Alphabet::RFC4648 { padding: false }.decode(&encoding_response).unwrap();
+			let second_decoding =
+				base32::Alphabet::RFC4648 { padding: false }.decode(&encoding_response).unwrap();
 			assert_eq!(first_decoding, second_decoding);
 		}
 	}
-	
+
 	let encode_response = base32::Alphabet::RFC4648 { padding: false }.encode(&data);
-	let decode_response = base32::Alphabet::RFC4648 { padding: false }.decode(&encode_response).unwrap();
+	let decode_response =
+		base32::Alphabet::RFC4648 { padding: false }.decode(&encode_response).unwrap();
 	assert_eq!(data, decode_response);
 
 	let encode_response = base32::Alphabet::RFC4648 { padding: true }.encode(&data);
-	let decode_response = base32::Alphabet::RFC4648 { padding: true }.decode(&encode_response).unwrap();
+	let decode_response =
+		base32::Alphabet::RFC4648 { padding: true }.decode(&encode_response).unwrap();
 	assert_eq!(data, decode_response);
 }
 

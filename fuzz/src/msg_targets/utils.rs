@@ -29,81 +29,73 @@ impl Writer for VecWriter {
 // entirely
 #[macro_export]
 macro_rules! test_msg {
-	($MsgType: path, $data: ident) => {
-		{
-			use lightning::util::ser::{Writeable, Readable};
-			let mut r = ::std::io::Cursor::new($data);
-			if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
-				let p = r.position() as usize;
-				let mut w = VecWriter(Vec::new());
-				msg.write(&mut w).unwrap();
+	($MsgType: path, $data: ident) => {{
+		use lightning::util::ser::{Readable, Writeable};
+		let mut r = ::std::io::Cursor::new($data);
+		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
+			let p = r.position() as usize;
+			let mut w = VecWriter(Vec::new());
+			msg.write(&mut w).unwrap();
 
-				assert_eq!(w.0.len(), p);
-				assert_eq!(msg.serialized_length(), p);
-				assert_eq!(&r.into_inner()[..p], &w.0[..p]);
-			}
+			assert_eq!(w.0.len(), p);
+			assert_eq!(msg.serialized_length(), p);
+			assert_eq!(&r.into_inner()[..p], &w.0[..p]);
 		}
-	}
+	}};
 }
 
 // Tests a message that may lose data on roundtrip, but shoulnd't lose data compared to our
 // re-serialization.
 #[macro_export]
 macro_rules! test_msg_simple {
-	($MsgType: path, $data: ident) => {
-		{
-			use lightning::util::ser::{Writeable, Readable};
-			let mut r = ::std::io::Cursor::new($data);
-			if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
-				let mut w = VecWriter(Vec::new());
-				msg.write(&mut w).unwrap();
-				assert_eq!(msg.serialized_length(), w.0.len());
+	($MsgType: path, $data: ident) => {{
+		use lightning::util::ser::{Readable, Writeable};
+		let mut r = ::std::io::Cursor::new($data);
+		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
+			let mut w = VecWriter(Vec::new());
+			msg.write(&mut w).unwrap();
+			assert_eq!(msg.serialized_length(), w.0.len());
 
-				let msg = <$MsgType as Readable>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
-				let mut w_two = VecWriter(Vec::new());
-				msg.write(&mut w_two).unwrap();
-				assert_eq!(&w.0[..], &w_two.0[..]);
-			}
+			let msg = <$MsgType as Readable>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
+			let mut w_two = VecWriter(Vec::new());
+			msg.write(&mut w_two).unwrap();
+			assert_eq!(&w.0[..], &w_two.0[..]);
 		}
-	}
+	}};
 }
 
 // Tests a message that must survive roundtrip exactly, and must exactly empty the read buffer and
 // split it back out on re-serialization.
 #[macro_export]
 macro_rules! test_msg_exact {
-	($MsgType: path, $data: ident) => {
-		{
-			use lightning::util::ser::{Writeable, Readable};
-			let mut r = ::std::io::Cursor::new($data);
-			if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
-				let mut w = VecWriter(Vec::new());
-				msg.write(&mut w).unwrap();
-				assert_eq!(&r.into_inner()[..], &w.0[..]);
-				assert_eq!(msg.serialized_length(), w.0.len());
-			}
+	($MsgType: path, $data: ident) => {{
+		use lightning::util::ser::{Readable, Writeable};
+		let mut r = ::std::io::Cursor::new($data);
+		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
+			let mut w = VecWriter(Vec::new());
+			msg.write(&mut w).unwrap();
+			assert_eq!(&r.into_inner()[..], &w.0[..]);
+			assert_eq!(msg.serialized_length(), w.0.len());
 		}
-	}
+	}};
 }
 
 // Tests a message that must survive roundtrip exactly, modulo one "hole" which may be set to
 // any value on re-serialization.
 #[macro_export]
 macro_rules! test_msg_hole {
-	($MsgType: path, $data: ident, $hole: expr, $hole_len: expr) => {
-		{
-			use lightning::util::ser::{Writeable, Readable};
-			let mut r = ::std::io::Cursor::new($data);
-			if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
-				let mut w = VecWriter(Vec::new());
-				msg.write(&mut w).unwrap();
-				let p = w.0.len() as usize;
-				assert_eq!(msg.serialized_length(), p);
+	($MsgType: path, $data: ident, $hole: expr, $hole_len: expr) => {{
+		use lightning::util::ser::{Readable, Writeable};
+		let mut r = ::std::io::Cursor::new($data);
+		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
+			let mut w = VecWriter(Vec::new());
+			msg.write(&mut w).unwrap();
+			let p = w.0.len() as usize;
+			assert_eq!(msg.serialized_length(), p);
 
-				assert_eq!(w.0.len(), p);
-				assert_eq!(&r.get_ref()[..$hole], &w.0[..$hole]);
-				assert_eq!(&r.get_ref()[$hole+$hole_len..p], &w.0[$hole+$hole_len..]);
-			}
+			assert_eq!(w.0.len(), p);
+			assert_eq!(&r.get_ref()[..$hole], &w.0[..$hole]);
+			assert_eq!(&r.get_ref()[$hole + $hole_len..p], &w.0[$hole + $hole_len..]);
 		}
-	}
+	}};
 }

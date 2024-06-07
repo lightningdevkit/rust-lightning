@@ -11,6 +11,7 @@
 // To modify it, modify target_template.txt and run gen_target.sh instead.
 
 #![cfg_attr(feature = "libfuzzer_fuzz", no_main)]
+#![cfg_attr(rustfmt, rustfmt_skip)]
 
 #[cfg(not(fuzzing))]
 compile_error!("Fuzz targets need cfg=fuzzing");
