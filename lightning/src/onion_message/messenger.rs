@@ -162,7 +162,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, CMH> where
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _peers: Vec<ForwardNode>, _secp_ctx: &Secp256k1<T>
+/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedPath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -426,11 +426,43 @@ pub trait MessageRouter {
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()>;
+
+	/// Creates compact [`BlindedPath`]s to the `recipient` node. The nodes in `peers` are assumed
+	/// to be direct peers with the `recipient`.
+	///
+	/// Compact blinded paths use short channel ids instead of pubkeys for a smaller serialization,
+	/// which is beneficial when a QR code is used to transport the data. The SCID is passed using a
+	/// [`ForwardNode`] but may be `None` for graceful degradation.
+	///
+	/// Implementations using additional intermediate nodes are responsible for using a
+	/// [`ForwardNode`] with `Some` short channel id, if possible. Similarly, implementations should
+	/// call [`BlindedPath::use_compact_introduction_node`].
+	///
+	/// The provided implementation simply delegates to [`MessageRouter::create_blinded_paths`],
+	/// ignoring the short channel ids.
+	fn create_compact_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		let peers = peers
+			.into_iter()
+			.map(|ForwardNode { node_id, short_channel_id: _ }| node_id)
+			.collect();
+		self.create_blinded_paths(recipient, peers, secp_ctx)
+	}
 }
 
 /// A [`MessageRouter`] that can only route to a directly connected [`Destination`].
+///
+/// # Privacy
+///
+/// Creating [`BlindedPath`]s may affect privacy since, if a suitable path cannot be found, it will
+/// create a one-hop path using the recipient as the introduction node if it is a announced node.
+/// Otherwise, there is no way to find a path to the introduction node in order to send a message,
+/// and thus an `Err` is returned.
 pub struct DefaultMessageRouter<G: Deref<Target=NetworkGraph<L>>, L: Deref, ES: Deref>
 where
 	L::Target: Logger,
@@ -448,6 +480,68 @@ where
 	/// Creates a [`DefaultMessageRouter`] using the given [`NetworkGraph`].
 	pub fn new(network_graph: G, entropy_source: ES) -> Self {
 		Self { network_graph, entropy_source }
+	}
+
+	fn create_blinded_paths_from_iter<
+		I: Iterator<Item = ForwardNode>,
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
+		&self, recipient: PublicKey, peers: I, secp_ctx: &Secp256k1<T>, compact_paths: bool
+	) -> Result<Vec<BlindedPath>, ()> {
+		// Limit the number of blinded paths that are computed.
+		const MAX_PATHS: usize = 3;
+
+		// Ensure peers have at least three channels so that it is more difficult to infer the
+		// recipient's node_id.
+		const MIN_PEER_CHANNELS: usize = 3;
+
+		let network_graph = self.network_graph.deref().read_only();
+		let is_recipient_announced =
+			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
+
+		let mut peer_info = peers
+			// Limit to peers with announced channels
+			.filter_map(|peer|
+				network_graph
+					.node(&NodeId::from_pubkey(&peer.node_id))
+					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
+					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
+			)
+			// Exclude Tor-only nodes when the recipient is announced.
+			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
+			.collect::<Vec<_>>();
+
+		// Prefer using non-Tor nodes with the most channels as the introduction node.
+		peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
+			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
+		});
+
+		let paths = peer_info.into_iter()
+			.map(|(peer, _, _)| {
+				BlindedPath::new_for_message(&[peer], recipient, &*self.entropy_source, secp_ctx)
+			})
+			.take(MAX_PATHS)
+			.collect::<Result<Vec<_>, _>>();
+
+		let mut paths = match paths {
+			Ok(paths) if !paths.is_empty() => Ok(paths),
+			_ => {
+				if is_recipient_announced {
+					BlindedPath::one_hop_for_message(recipient, &*self.entropy_source, secp_ctx)
+						.map(|path| vec![path])
+				} else {
+					Err(())
+				}
+			},
+		}?;
+
+		if compact_paths {
+			for path in &mut paths {
+				path.use_compact_introduction_node(&network_graph);
+			}
+		}
+
+		Ok(paths)
 	}
 }
 
@@ -492,59 +586,20 @@ where
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		let peers = peers
+			.into_iter()
+			.map(|node_id| ForwardNode { node_id, short_channel_id: None });
+		self.create_blinded_paths_from_iter(recipient, peers, secp_ctx, false)
+	}
+
+	fn create_compact_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	>(
 		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		// Limit the number of blinded paths that are computed.
-		const MAX_PATHS: usize = 3;
-
-		// Ensure peers have at least three channels so that it is more difficult to infer the
-		// recipient's node_id.
-		const MIN_PEER_CHANNELS: usize = 3;
-
-		let network_graph = self.network_graph.deref().read_only();
-		let is_recipient_announced =
-			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
-
-		let mut peer_info = peers.into_iter()
-			// Limit to peers with announced channels
-			.filter_map(|peer|
-				network_graph
-					.node(&NodeId::from_pubkey(&peer.node_id))
-					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
-					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
-			)
-			// Exclude Tor-only nodes when the recipient is announced.
-			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
-			.collect::<Vec<_>>();
-
-		// Prefer using non-Tor nodes with the most channels as the introduction node.
-		peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
-			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
-		});
-
-		let paths = peer_info.into_iter()
-			.map(|(peer, _, _)| {
-				BlindedPath::new_for_message(&[peer], recipient, &*self.entropy_source, secp_ctx)
-			})
-			.take(MAX_PATHS)
-			.collect::<Result<Vec<_>, _>>();
-
-		let mut paths = match paths {
-			Ok(paths) if !paths.is_empty() => Ok(paths),
-			_ => {
-				if is_recipient_announced {
-					BlindedPath::one_hop_for_message(recipient, &*self.entropy_source, secp_ctx)
-						.map(|path| vec![path])
-				} else {
-					Err(())
-				}
-			},
-		}?;
-		for path in &mut paths {
-			path.use_compact_introduction_node(&network_graph);
-		}
-
-		Ok(paths)
+		self.create_blinded_paths_from_iter(recipient, peers.into_iter(), secp_ctx, true)
 	}
 }
 
@@ -1081,10 +1136,7 @@ where
 		let peers = self.message_recipients.lock().unwrap()
 			.iter()
 			.filter(|(_, peer)| matches!(peer, OnionMessageRecipient::ConnectedPeer(_)))
-			.map(|(node_id, _ )| ForwardNode {
-				node_id: *node_id,
-				short_channel_id: None,
-			})
+			.map(|(node_id, _ )| *node_id)
 			.collect::<Vec<_>>();
 
 		self.message_router

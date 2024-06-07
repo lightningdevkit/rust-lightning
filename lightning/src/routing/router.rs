@@ -36,6 +36,11 @@ use core::{cmp, fmt};
 use core::ops::Deref;
 
 /// A [`Router`] implemented using [`find_route`].
+///
+/// # Privacy
+///
+/// Implements [`MessageRouter`] by delegating to [`DefaultMessageRouter`]. See those docs for
+/// privacy implications.
 pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
@@ -173,9 +178,17 @@ impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref,
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
-		&self, recipient: PublicKey, peers: Vec<message::ForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		self.message_router.create_blinded_paths(recipient, peers, secp_ctx)
+	}
+
+	fn create_compact_blinded_paths<
+		T: secp256k1::Signing + secp256k1::Verification
+	> (
+		&self, recipient: PublicKey, peers: Vec<message::ForwardNode>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPath>, ()> {
+		self.message_router.create_compact_blinded_paths(recipient, peers, secp_ctx)
 	}
 }
 

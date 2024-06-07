@@ -3259,28 +3259,32 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 	for i in 0..node_count {
 		for j in (i+1)..node_count {
-			let node_id_i = nodes[i].node.get_our_node_id();
-			let node_id_j = nodes[j].node.get_our_node_id();
-
-			let init_i = msgs::Init {
-				features: nodes[i].init_features(&node_id_j),
-				networks: None,
-				remote_network_address: None,
-			};
-			let init_j = msgs::Init {
-				features: nodes[j].init_features(&node_id_i),
-				networks: None,
-				remote_network_address: None,
-			};
-
-			nodes[i].node.peer_connected(&node_id_j, &init_j, true).unwrap();
-			nodes[j].node.peer_connected(&node_id_i, &init_i, false).unwrap();
-			nodes[i].onion_messenger.peer_connected(&node_id_j, &init_j, true).unwrap();
-			nodes[j].onion_messenger.peer_connected(&node_id_i, &init_i, false).unwrap();
+			connect_nodes(&nodes[i], &nodes[j]);
 		}
 	}
 
 	nodes
+}
+
+fn connect_nodes<'a, 'b: 'a, 'c: 'b>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>) {
+	let node_id_a = node_a.node.get_our_node_id();
+	let node_id_b = node_b.node.get_our_node_id();
+
+	let init_a = msgs::Init {
+		features: node_a.init_features(&node_id_b),
+		networks: None,
+		remote_network_address: None,
+	};
+	let init_b = msgs::Init {
+		features: node_b.init_features(&node_id_a),
+		networks: None,
+		remote_network_address: None,
+	};
+
+	node_a.node.peer_connected(&node_id_b, &init_b, true).unwrap();
+	node_b.node.peer_connected(&node_id_a, &init_a, false).unwrap();
+	node_a.onion_messenger.peer_connected(&node_id_b, &init_b, true).unwrap();
+	node_b.onion_messenger.peer_connected(&node_id_a, &init_a, false).unwrap();
 }
 
 pub fn connect_dummy_node<'a, 'b: 'a, 'c: 'b>(node: &Node<'a, 'b, 'c>) {
@@ -3643,13 +3647,8 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		pending_cell_htlc_claims, pending_cell_htlc_fails, pending_raa,
 		pending_responding_commitment_signed, pending_responding_commitment_signed_dup_monitor,
 	} = args;
-	node_a.node.peer_connected(&node_b.node.get_our_node_id(), &msgs::Init {
-		features: node_b.node.init_features(), networks: None, remote_network_address: None
-	}, true).unwrap();
+	connect_nodes(node_a, node_b);
 	let reestablish_1 = get_chan_reestablish_msgs!(node_a, node_b);
-	node_b.node.peer_connected(&node_a.node.get_our_node_id(), &msgs::Init {
-		features: node_a.node.init_features(), networks: None, remote_network_address: None
-	}, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(node_b, node_a);
 
 	if send_channel_ready.0 {

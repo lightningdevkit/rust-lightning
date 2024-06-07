@@ -1554,8 +1554,9 @@ where
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
+/// # let absolute_expiry = None;
 /// let offer = channel_manager
-///     .create_offer_builder()?
+///     .create_offer_builder(absolute_expiry)?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
@@ -2286,6 +2287,19 @@ const MAX_UNFUNDED_CHANNEL_PEERS: usize = 50;
 /// The maximum number of peers which we do not have a (funded) channel with. Once we reach this
 /// many peers we reject new (inbound) connections.
 const MAX_NO_CHANNEL_PEERS: usize = 250;
+
+/// The maximum expiration from the current time where an [`Offer`] or [`Refund`] is considered
+/// short-lived, while anything with a greater expiration is considered long-lived.
+///
+/// Using [`ChannelManager::create_offer_builder`] or [`ChannelManager::create_refund_builder`],
+/// will included a [`BlindedPath`] created using:
+/// - [`MessageRouter::create_compact_blinded_paths`] when short-lived, and
+/// - [`MessageRouter::create_blinded_paths`] when long-lived.
+///
+/// Using compact [`BlindedPath`]s may provide better privacy as the [`MessageRouter`] could select
+/// more hops. However, since they use short channel ids instead of pubkeys, they are more likely to
+/// become invalid over time as channels are closed. Thus, they are only suitable for short-term use.
+pub const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24);
 
 /// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
 /// These include payments that have yet to find a successful path, or have unresolved HTLCs.
@@ -8240,16 +8254,15 @@ where
 
 macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
-	/// [`ChannelManager`] when handling [`InvoiceRequest`] messages for the offer. The offer will
-	/// not have an expiration unless otherwise set on the builder.
+	/// [`ChannelManager`] when handling [`InvoiceRequest`] messages for the offer. The offer's
+	/// expiration will be `absolute_expiry` if `Some`, otherwise it will not expire.
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter::create_blinded_paths`] to construct a [`BlindedPath`] for the offer.
-	/// However, if one is not found, uses a one-hop [`BlindedPath`] with
-	/// [`ChannelManager::get_our_node_id`] as the introduction node instead. In the latter case,
-	/// the node must be announced, otherwise, there is no way to find a path to the introduction in
-	/// order to send the [`InvoiceRequest`].
+	/// Uses [`MessageRouter`] to construct a [`BlindedPath`] for the offer based on the given
+	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
+	/// privacy implications as well as those of the parameterized [`Router`], which implements
+	/// [`MessageRouter`].
 	///
 	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
 	///
@@ -8264,18 +8277,26 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
+	pub fn create_offer_builder(
+		&$self, absolute_expiry: Option<Duration>
+	) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
 		let entropy = &*$self.entropy_source;
 		let secp_ctx = &$self.secp_ctx;
 
-		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let path = $self.create_blinded_path_using_absolute_expiry(absolute_expiry)
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = OfferBuilder::deriving_signing_pubkey(
 			node_id, expanded_key, entropy, secp_ctx
 		)
 			.chain_hash($self.chain_hash)
 			.path(path);
+
+		let builder = match absolute_expiry {
+			None => builder,
+			Some(absolute_expiry) => builder.absolute_expiry(absolute_expiry),
+		};
 
 		Ok(builder.into())
 	}
@@ -8304,11 +8325,10 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter::create_blinded_paths`] to construct a [`BlindedPath`] for the refund.
-	/// However, if one is not found, uses a one-hop [`BlindedPath`] with
-	/// [`ChannelManager::get_our_node_id`] as the introduction node instead. In the latter case,
-	/// the node must be announced, otherwise, there is no way to find a path to the introduction in
-	/// order to send the [`Bolt12Invoice`].
+	/// Uses [`MessageRouter`] to construct a [`BlindedPath`] for the refund based on the given
+	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
+	/// privacy implications as well as those of the parameterized [`Router`], which implements
+	/// [`MessageRouter`].
 	///
 	/// Also, uses a derived payer id in the refund for payer privacy.
 	///
@@ -8337,7 +8357,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let entropy = &*$self.entropy_source;
 		let secp_ctx = &$self.secp_ctx;
 
-		let path = $self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let path = $self.create_blinded_path_using_absolute_expiry(Some(absolute_expiry))
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = RefundBuilder::deriving_payer_id(
 			node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
 		)?
@@ -8406,10 +8427,9 @@ where
 	///
 	/// # Privacy
 	///
-	/// Uses a one-hop [`BlindedPath`] for the reply path with [`ChannelManager::get_our_node_id`]
-	/// as the introduction node and a derived payer id for payer privacy. As such, currently, the
-	/// node must be announced. Otherwise, there is no way to find a path to the introduction node
-	/// in order to send the [`Bolt12Invoice`].
+	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
+	/// to construct a [`BlindedPath`] for the reply path. For further privacy implications, see the
+	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
 	///
 	/// # Limitations
 	///
@@ -8686,6 +8706,38 @@ where
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
+	/// Creates a blinded path by delegating to [`MessageRouter`] based on the path's intended
+	/// lifetime.
+	///
+	/// Whether or not the path is compact depends on whether the path is short-lived or long-lived,
+	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
+	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
+	fn create_blinded_path_using_absolute_expiry(
+		&self, absolute_expiry: Option<Duration>
+	) -> Result<BlindedPath, ()> {
+		let now = self.duration_since_epoch();
+		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
+
+		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
+			self.create_compact_blinded_path()
+		} else {
+			self.create_blinded_path()
+		}
+	}
+
+	pub(super) fn duration_since_epoch(&self) -> Duration {
+		#[cfg(not(feature = "std"))]
+		let now = Duration::from_secs(
+			self.highest_seen_timestamp.load(Ordering::Acquire) as u64
+		);
+		#[cfg(feature = "std")]
+		let now = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+		now
+	}
+
 	/// Creates a blinded path by delegating to [`MessageRouter::create_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors or returns an empty `Vec`.
@@ -8696,6 +8748,27 @@ where
 		let peers = self.per_peer_state.read().unwrap()
 			.iter()
 			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
+			.filter(|(_, peer)| peer.is_connected)
+			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
+			.map(|(node_id, _)| *node_id)
+			.collect::<Vec<_>>();
+
+		self.router
+			.create_blinded_paths(recipient, peers, secp_ctx)
+			.and_then(|paths| paths.into_iter().next().ok_or(()))
+	}
+
+	/// Creates a blinded path by delegating to [`MessageRouter::create_compact_blinded_paths`].
+	///
+	/// Errors if the `MessageRouter` errors or returns an empty `Vec`.
+	fn create_compact_blinded_path(&self) -> Result<BlindedPath, ()> {
+		let recipient = self.get_our_node_id();
+		let secp_ctx = &self.secp_ctx;
+
+		let peers = self.per_peer_state.read().unwrap()
+			.iter()
+			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
+			.filter(|(_, peer)| peer.is_connected)
 			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
 			.map(|(node_id, peer)| ForwardNode {
 				node_id: *node_id,
@@ -8708,7 +8781,7 @@ where
 			.collect::<Vec<_>>();
 
 		self.router
-			.create_blinded_paths(recipient, peers, secp_ctx)
+			.create_compact_blinded_paths(recipient, peers, secp_ctx)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 	}
 
