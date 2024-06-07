@@ -1,26 +1,29 @@
-#![cfg(all(not(target_os = "windows"), any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum")))]
+#![cfg(all(
+	not(target_os = "windows"),
+	any(feature = "esplora-blocking", feature = "esplora-async", feature = "electrum")
+))]
 
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
-use lightning_transaction_sync::EsploraSyncClient;
+use lightning::chain::transaction::{OutPoint, TransactionData};
+use lightning::chain::{Confirm, Filter, WatchedOutput};
+use lightning::util::test_utils::TestLogger;
 #[cfg(feature = "electrum")]
 use lightning_transaction_sync::ElectrumSyncClient;
-use lightning::chain::{Confirm, Filter, WatchedOutput};
-use lightning::chain::transaction::{OutPoint, TransactionData};
-use lightning::util::test_utils::TestLogger;
+#[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
+use lightning_transaction_sync::EsploraSyncClient;
 
-use electrsd::{bitcoind, bitcoind::BitcoinD, ElectrsD};
-use bitcoin::{Amount, Txid, BlockHash};
+use bdk_macros::maybe_await;
 use bitcoin::blockdata::block::Header;
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::network::Network;
-use electrsd::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::AddressType;
+use bitcoin::{Amount, BlockHash, Txid};
 use bitcoind::bitcoincore_rpc::RpcApi;
-use bdk_macros::maybe_await;
+use electrsd::bitcoind::bitcoincore_rpc::bitcoincore_rpc_json::AddressType;
+use electrsd::{bitcoind, bitcoind::BitcoinD, ElectrsD};
 
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::sync::Mutex;
 use std::time::Duration;
-use std::collections::{HashMap, HashSet};
 
 pub fn setup_bitcoind_and_electrsd() -> (BitcoinD, ElectrsD) {
 	let bitcoind_exe =
@@ -63,8 +66,11 @@ pub fn wait_for_block(electrsd: &ElectrsD, min_height: usize) {
 			// it didn't. Since we can't proceed without subscribing, we try again after a delay
 			// and panic if it still fails.
 			std::thread::sleep(Duration::from_secs(1));
-			electrsd.client.block_headers_subscribe_raw().expect("failed to subscribe to block headers")
-		}
+			electrsd
+				.client
+				.block_headers_subscribe_raw()
+				.expect("failed to subscribe to block headers")
+		},
 	};
 	loop {
 		if header.height >= min_height {
@@ -90,7 +96,7 @@ where
 			None if delay.as_millis() < 512 => {
 				delay = delay.mul_f32(2.0);
 				tries += 1;
-			}
+			},
 			None if tries == 10 => panic!("Exceeded our maximum wait time."),
 			None => tries += 1,
 		}
@@ -132,7 +138,8 @@ impl Confirm for TestConfirmable {
 			let block_hash = header.block_hash();
 			self.confirmed_txs.lock().unwrap().insert(txid, (block_hash, height));
 			self.unconfirmed_txs.lock().unwrap().remove(&txid);
-			self.events.lock().unwrap().push(TestConfirmableEvent::Confirmed(txid, block_hash, height));
+			let event = TestConfirmableEvent::Confirmed(txid, block_hash, height);
+			self.events.lock().unwrap().push(event);
 		}
 	}
 
@@ -145,11 +152,13 @@ impl Confirm for TestConfirmable {
 	fn best_block_updated(&self, header: &Header, height: u32) {
 		let block_hash = header.block_hash();
 		*self.best_block.lock().unwrap() = (block_hash, height);
-		self.events.lock().unwrap().push(TestConfirmableEvent::BestBlockUpdated(block_hash, height));
+		let event = TestConfirmableEvent::BestBlockUpdated(block_hash, height);
+		self.events.lock().unwrap().push(event);
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
-		self.confirmed_txs.lock().unwrap().iter().map(|(&txid, (hash, height))| (txid, *height, Some(*hash))).collect::<Vec<_>>()
+		let lock = self.confirmed_txs.lock().unwrap();
+		lock.iter().map(|(&txid, (hash, height))| (txid, *height, Some(*hash))).collect()
 	}
 }
 
@@ -165,12 +174,37 @@ macro_rules! test_syncing {
 		assert_eq!(events.len(), 1);
 
 		// Check registered confirmed transactions are marked confirmed
-		let new_address = $bitcoind.client.get_new_address(Some("test"),
-		Some(AddressType::Legacy)).unwrap().assume_checked();
-		let txid = $bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None, None,
-		None, None, None, None).unwrap();
-		let second_txid = $bitcoind.client.send_to_address(&new_address, Amount::from_sat(5000), None,
-		None, None, None, None, None).unwrap();
+		let new_address = $bitcoind
+			.client
+			.get_new_address(Some("test"), Some(AddressType::Legacy))
+			.unwrap()
+			.assume_checked();
+		let txid = $bitcoind
+			.client
+			.send_to_address(
+				&new_address,
+				Amount::from_sat(5000),
+				None,
+				None,
+				None,
+				None,
+				None,
+				None,
+			)
+			.unwrap();
+		let second_txid = $bitcoind
+			.client
+			.send_to_address(
+				&new_address,
+				Amount::from_sat(5000),
+				None,
+				None,
+				None,
+				None,
+				None,
+				None,
+			)
+			.unwrap();
 		$tx_sync.register_tx(&txid, &new_address.payload().script_pubkey());
 
 		maybe_await!($tx_sync.sync(vec![&$confirmable])).unwrap();
@@ -193,13 +227,17 @@ macro_rules! test_syncing {
 		let block_hash = tx_res.info.blockhash.unwrap();
 		let tx = tx_res.transaction().unwrap();
 		let prev_outpoint = tx.input.first().unwrap().previous_output;
-		let prev_tx = $bitcoind.client.get_transaction(&prev_outpoint.txid, None).unwrap().transaction()
+		let prev_tx = $bitcoind
+			.client
+			.get_transaction(&prev_outpoint.txid, None)
+			.unwrap()
+			.transaction()
 			.unwrap();
 		let prev_script_pubkey = prev_tx.output[prev_outpoint.vout as usize].script_pubkey.clone();
 		let output = WatchedOutput {
 			block_hash: Some(block_hash),
 			outpoint: OutPoint { txid: prev_outpoint.txid, index: prev_outpoint.vout as u16 },
-			script_pubkey: prev_script_pubkey
+			script_pubkey: prev_script_pubkey,
 		};
 
 		$tx_sync.register_output(output);
