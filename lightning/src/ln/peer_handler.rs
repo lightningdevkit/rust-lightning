@@ -1682,25 +1682,26 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				peer_lock.sync_status = InitSyncTracker::ChannelsSyncing(0);
 			}
 
-			if let Err(()) = self.message_handler.route_handler.peer_connected(&their_node_id, &msg, peer_lock.inbound_connection) {
-				log_debug!(logger, "Route Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
-				return Err(PeerHandleError { }.into());
+			let results = [
+				("Route Handler", self.message_handler.route_handler.peer_connected(&their_node_id, &msg, peer_lock.inbound_connection)),
+				("Channel Handler", self.message_handler.chan_handler.peer_connected(&their_node_id, &msg, peer_lock.inbound_connection)),
+				("Onion Handler", self.message_handler.onion_message_handler.peer_connected(&their_node_id, &msg, peer_lock.inbound_connection)),
+				("Custom Message Handler", self.message_handler.custom_message_handler.peer_connected(&their_node_id, &msg, peer_lock.inbound_connection))
+			];
+
+			for (handler_name, result) in &results {
+				if result.is_err() {
+					log_debug!(logger, "{} decided we couldn't communicate with peer {}", handler_name, log_pubkey!(their_node_id));
+				}
 			}
-			if let Err(()) = self.message_handler.chan_handler.peer_connected(&their_node_id, &msg, peer_lock.inbound_connection) {
-				log_debug!(logger, "Channel Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
-				return Err(PeerHandleError { }.into());
-			}
-			if let Err(()) = self.message_handler.onion_message_handler.peer_connected(&their_node_id, &msg, peer_lock.inbound_connection) {
-				log_debug!(logger, "Onion Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
-				return Err(PeerHandleError { }.into());
-			}
-			if let Err(()) = self.message_handler.custom_message_handler.peer_connected(&their_node_id, &msg, peer_lock.inbound_connection) {
-				log_debug!(logger, "Custom Message Handler decided we couldn't communicate with peer {}", log_pubkey!(their_node_id));
+
+			peer_lock.their_features = Some(msg.features);
+
+			if results.iter().any(|(_, result)| result.is_err()) {
 				return Err(PeerHandleError { }.into());
 			}
 
 			peer_lock.awaiting_pong_timer_tick_intervals = 0;
-			peer_lock.their_features = Some(msg.features);
 			return Ok(None);
 		} else if peer_lock.their_features.is_none() {
 			log_debug!(logger, "Peer {} sent non-Init first message", log_pubkey!(their_node_id));
