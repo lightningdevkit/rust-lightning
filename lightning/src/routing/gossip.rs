@@ -12,39 +12,39 @@
 use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::ChainHash;
 
-use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
-use bitcoin::secp256k1::{PublicKey, Verification};
-use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1;
+use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
+use bitcoin::secp256k1::Secp256k1;
+use bitcoin::secp256k1::{PublicKey, Verification};
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::network::Network;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::types::ChannelId;
-use crate::ln::features::{ChannelFeatures, NodeFeatures, InitFeatures};
-use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, SocketAddress, MAX_VALUE_MSAT};
-use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, GossipTimestampFilter};
-use crate::ln::msgs::{QueryChannelRange, ReplyChannelRange, QueryShortChannelIds, ReplyShortChannelIdsEnd};
+use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::msgs;
+use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, GossipTimestampFilter, NodeAnnouncement};
+use crate::ln::msgs::{DecodeError, ErrorAction, Init, LightningError, RoutingMessageHandler, SocketAddress, MAX_VALUE_MSAT};
+use crate::ln::msgs::{QueryChannelRange, QueryShortChannelIds, ReplyChannelRange, ReplyShortChannelIdsEnd};
+use crate::ln::types::ChannelId;
 use crate::routing::utxo::{self, UtxoLookup, UtxoResolver};
-use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer, MaybeReadable};
-use crate::util::logger::{Logger, Level};
+use crate::util::indexed_map::{Entry as IndexedMapEntry, IndexedMap};
+use crate::util::logger::{Level, Logger};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
+use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::string::PrintableString;
-use crate::util::indexed_map::{IndexedMap, Entry as IndexedMapEntry};
 
 use crate::io;
 use crate::io_extras::{copy, sink};
 use crate::prelude::*;
-use core::{cmp, fmt};
-use crate::sync::{RwLock, RwLockReadGuard, LockTestExt};
-#[cfg(feature = "std")]
-use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::sync::Mutex;
+use crate::sync::{LockTestExt, RwLock, RwLockReadGuard};
 use core::ops::{Bound, Deref};
 use core::str::FromStr;
+#[cfg(feature = "std")]
+use core::sync::atomic::{AtomicUsize, Ordering};
+use core::{cmp, fmt};
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -219,12 +219,6 @@ pub struct ReadOnlyNetworkGraph<'a> {
 /// [BOLT #4]: https://github.com/lightning/bolts/blob/master/04-onion-routing.md
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetworkUpdate {
-	/// An error indicating a `channel_update` messages should be applied via
-	/// [`NetworkGraph::update_channel`].
-	ChannelUpdateMessage {
-		/// The update to apply via [`NetworkGraph::update_channel`].
-		msg: ChannelUpdate,
-	},
 	/// An error indicating that a channel failed to route a payment, which should be applied via
 	/// [`NetworkGraph::channel_failed_permanent`] if permanent.
 	ChannelFailure {
@@ -245,19 +239,69 @@ pub enum NetworkUpdate {
 	}
 }
 
-impl_writeable_tlv_based_enum_upgradable!(NetworkUpdate,
-	(0, ChannelUpdateMessage) => {
-		(0, msg, required),
-	},
-	(2, ChannelFailure) => {
-		(0, short_channel_id, required),
-		(2, is_permanent, required),
-	},
-	(4, NodeFailure) => {
-		(0, node_id, required),
-		(2, is_permanent, required),
-	},
-);
+impl Writeable for NetworkUpdate {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			Self::ChannelFailure { short_channel_id, is_permanent } => {
+				2u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, short_channel_id, required),
+					(2, is_permanent, required),
+				});
+			},
+			Self::NodeFailure { node_id, is_permanent } => {
+				4u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, node_id, required),
+					(2, is_permanent, required),
+				});
+			}
+		}
+		Ok(())
+	}
+}
+
+impl MaybeReadable for NetworkUpdate {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		let id: u8 = Readable::read(reader)?;
+		match id {
+			0 => {
+				// 0 was previously used for network updates containing a channel update, subsequently
+				// removed in LDK version 0.0.124.
+				let mut msg: RequiredWrapper<ChannelUpdate> = RequiredWrapper(None);
+				read_tlv_fields!(reader, {
+					(0, msg, required),
+				});
+				Ok(Some(Self::ChannelFailure {
+					short_channel_id: msg.0.unwrap().contents.short_channel_id,
+					is_permanent: false
+				}))
+			},
+			2 => {
+				_init_and_read_len_prefixed_tlv_fields!(reader, {
+					(0, short_channel_id, required),
+					(2, is_permanent, required),
+				});
+				Ok(Some(Self::ChannelFailure {
+					short_channel_id: short_channel_id.0.unwrap(),
+					is_permanent: is_permanent.0.unwrap(),
+				}))
+			},
+			4 => {
+				_init_and_read_len_prefixed_tlv_fields!(reader, {
+					(0, node_id, required),
+					(2, is_permanent, required),
+				});
+				Ok(Some(Self::NodeFailure {
+					node_id: node_id.0.unwrap(),
+					is_permanent: is_permanent.0.unwrap(),
+				}))
+			}
+			t if t % 2 == 0 => Err(DecodeError::UnknownRequiredFeature),
+			_ => Ok(None),
+		}
+	}
+}
 
 /// Receives and validates network updates from peers,
 /// stores authentic and relevant data as a network graph.
@@ -354,19 +398,10 @@ where U::Target: UtxoLookup, L::Target: Logger
 
 impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// Handles any network updates originating from [`Event`]s.
-	//
-	/// Note that this will skip applying any [`NetworkUpdate::ChannelUpdateMessage`] to avoid
-	/// leaking possibly identifying information of the sender to the public network.
 	///
 	/// [`Event`]: crate::events::Event
 	pub fn handle_network_update(&self, network_update: &NetworkUpdate) {
 		match *network_update {
-			NetworkUpdate::ChannelUpdateMessage { ref msg } => {
-				let short_channel_id = msg.contents.short_channel_id;
-				let is_enabled = msg.contents.flags & (1 << 1) != (1 << 1);
-				let status = if is_enabled { "enabled" } else { "disabled" };
-				log_debug!(self.logger, "Skipping application of a channel update from a payment failure. Channel {} is {}.", short_channel_id, status);
-			},
 			NetworkUpdate::ChannelFailure { short_channel_id, is_permanent } => {
 				if is_permanent {
 					log_debug!(self.logger, "Removing channel graph entry for {} due to a payment failure.", short_channel_id);
@@ -2681,8 +2716,7 @@ pub(crate) mod tests {
 
 		let short_channel_id;
 		{
-			// Check we won't apply an update via `handle_network_update` for privacy reasons, but
-			// can continue fine if we manually apply it.
+			// Check that we can manually apply a channel update.
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
@@ -2690,14 +2724,10 @@ pub(crate) mod tests {
 			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
 
 			let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
-			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
-
-			network_graph.handle_network_update(&NetworkUpdate::ChannelUpdateMessage {
-				msg: valid_channel_update.clone(),
-			});
 
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_none());
 			network_graph.update_channel(&valid_channel_update).unwrap();
+			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 		}
 
 		// Non-permanent failure doesn't touch the channel at all
