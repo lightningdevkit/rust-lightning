@@ -946,29 +946,24 @@ pub(crate) struct ShutdownResult {
 /// commitment points from our signer.
 #[derive(Debug, Copy, Clone)]
 enum HolderCommitmentPoint {
-	// TODO: add a variant for before our first commitment point is retrieved
+	/// We have just created or accepted a channel and are pending our very
+	/// first commitment point.
+	Uninitialized { transaction_number: u64 },
 	/// We've advanced our commitment number and are waiting on the next commitment point.
-	/// Until the `get_per_commitment_point` signer method becomes async, this variant
-	/// will not be used.
+	///
+	/// We should retry advancing to `Available` via `try_resolve_pending` once our
+	/// signer is ready to provide the next commitment point.
+	///
+	/// If we just got to this state from `Uninitialized`, our commitment number
+	/// will not have been advanced.
 	PendingNext { transaction_number: u64, current: PublicKey },
-	/// Our current commitment point is ready, we've cached our next point,
-	/// and we are not pending a new one.
+	/// Our current commitment point is ready and we've cached our next point.
 	Available { transaction_number: u64, current: PublicKey, next: PublicKey },
 }
 
 impl HolderCommitmentPoint {
-	pub fn new<SP: Deref>(signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>) -> Self
-		where SP::Target: SignerProvider
-	{
-		HolderCommitmentPoint::Available {
-			transaction_number: INITIAL_COMMITMENT_NUMBER,
-			// TODO(async_signing): remove this expect with the Uninitialized variant
-			current: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx)
-				.expect("Signer must be able to provide initial commitment point"),
-			// TODO(async_signing): remove this expect with the Uninitialized variant
-			next: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx)
-				.expect("Signer must be able to provide second commitment point"),
-		}
+	pub fn new() -> Self {
+		HolderCommitmentPoint::Uninitialized { transaction_number: INITIAL_COMMITMENT_NUMBER }
 	}
 
 	pub fn is_available(&self) -> bool {
@@ -977,20 +972,23 @@ impl HolderCommitmentPoint {
 
 	pub fn transaction_number(&self) -> u64 {
 		match self {
+			HolderCommitmentPoint::Uninitialized { transaction_number } => *transaction_number,
 			HolderCommitmentPoint::PendingNext { transaction_number, .. } => *transaction_number,
 			HolderCommitmentPoint::Available { transaction_number, .. } => *transaction_number,
 		}
 	}
 
-	pub fn current_point(&self) -> PublicKey {
+	pub fn current_point(&self) -> Option<PublicKey> {
 		match self {
-			HolderCommitmentPoint::PendingNext { current, .. } => *current,
-			HolderCommitmentPoint::Available { current, .. } => *current,
+			HolderCommitmentPoint::Uninitialized { .. } => None,
+			HolderCommitmentPoint::PendingNext { current, .. } => Some(*current),
+			HolderCommitmentPoint::Available { current, .. } => Some(*current),
 		}
 	}
 
 	pub fn next_point(&self) -> Option<PublicKey> {
 		match self {
+			HolderCommitmentPoint::Uninitialized { .. } => None,
 			HolderCommitmentPoint::PendingNext { .. } => None,
 			HolderCommitmentPoint::Available { next, .. } => Some(*next),
 		}
@@ -1000,10 +998,20 @@ impl HolderCommitmentPoint {
 	/// and transitions to the next state if successful.
 	///
 	/// This method is used for the following transitions:
+	/// - `Uninitialized` -> `PendingNext`
 	/// - `PendingNext` -> `Available`
 	pub fn try_resolve_pending<SP: Deref, L: Deref>(&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L)
 		where SP::Target: SignerProvider, L::Target: Logger
 	{
+		if let HolderCommitmentPoint::Uninitialized { transaction_number } = self {
+			if let Ok(current) = signer.as_ref().get_per_commitment_point(*transaction_number, secp_ctx) {
+				log_trace!(logger, "Retrieved initial per-commitment point {}", transaction_number);
+				*self = HolderCommitmentPoint::PendingNext { transaction_number: *transaction_number, current };
+			} else {
+				log_trace!(logger, "Initial per-commitment point {} is pending", transaction_number);
+			}
+		}
+
 		if let HolderCommitmentPoint::PendingNext { transaction_number, current } = self {
 			if let Ok(next) = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx) {
 				log_trace!(logger, "Retrieved next per-commitment point {}", *transaction_number - 1);
@@ -1675,7 +1683,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let value_to_self_msat = our_funding_satoshis * 1000 + msg_push_msat;
 
 		let holder_signer = ChannelSignerType::Ecdsa(holder_signer);
-		let holder_commitment_point = HolderCommitmentPoint::new(&holder_signer, &secp_ctx);
+		let mut holder_commitment_point = HolderCommitmentPoint::new();
+		holder_commitment_point.try_resolve_pending(&holder_signer, &secp_ctx, &&logger);
 
 		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
 
@@ -1905,7 +1914,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let temporary_channel_id = temporary_channel_id.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
 		let holder_signer = ChannelSignerType::Ecdsa(holder_signer);
-		let holder_commitment_point = HolderCommitmentPoint::new(&holder_signer, &secp_ctx);
+		let mut holder_commitment_point = HolderCommitmentPoint::new();
+		holder_commitment_point.try_resolve_pending(&holder_signer, &secp_ctx, logger);
 
 		Ok(Self {
 			user_id,
@@ -2767,7 +2777,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// The result is a transaction which we can revoke broadcastership of (ie a "local" transaction)
 	/// TODO Some magic rust shit to compile-time check this?
 	fn build_holder_transaction_keys(&self) -> TxCreationKeys {
-		let per_commitment_point = self.holder_commitment_point.current_point();
+		let per_commitment_point = self.holder_commitment_point.current_point()
+			.expect("Should not build commitment transaction before retrieving first commitment point");
 		let delayed_payment_base = &self.get_holder_pubkeys().delayed_payment_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
@@ -6649,7 +6660,8 @@ impl<SP: Deref> Channel<SP> where
 		debug_assert!(self.context.holder_commitment_point.is_available());
 		msgs::ChannelReady {
 			channel_id: self.context.channel_id(),
-			next_per_commitment_point: self.context.holder_commitment_point.current_point(),
+			next_per_commitment_point: self.context.holder_commitment_point.current_point()
+				.expect("TODO"),
 			short_channel_id_alias: Some(self.context.outbound_scid_alias),
 		}
 	}
@@ -7708,7 +7720,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		}
 
 		debug_assert!(self.context.holder_commitment_point.is_available());
-		let first_per_commitment_point = self.context.holder_commitment_point.current_point();
+		let first_per_commitment_point = self.context.holder_commitment_point.current_point().expect("TODO");
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::OpenChannel {
@@ -7985,7 +7997,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	fn generate_accept_channel_message(&self) -> msgs::AcceptChannel {
 		debug_assert!(self.context.holder_commitment_point.is_available());
-		let first_per_commitment_point = self.context.holder_commitment_point.current_point();
+		let first_per_commitment_point = self.context.holder_commitment_point.current_point().expect("TODO");
 		let keys = self.context.get_holder_pubkeys();
 
 		msgs::AcceptChannel {
@@ -8832,8 +8844,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			monitor_pending_update_adds = Some(&self.context.monitor_pending_update_adds);
 		}
 
-		// `current_point` will become optional when async signing is implemented.
-		let cur_holder_commitment_point = Some(self.context.holder_commitment_point.current_point());
+		let cur_holder_commitment_point = self.context.holder_commitment_point.current_point();
 		let next_holder_commitment_point = self.context.holder_commitment_point.next_point();
 
 		write_tlv_fields!(writer, {
@@ -9333,21 +9344,16 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		// If we're restoring this channel for the first time after an upgrade, then we require that the
 		// signer be available so that we can immediately populate the current commitment point. Channel
 		// restoration will fail if this is not possible.
-		let holder_commitment_point = match (cur_holder_commitment_point_opt, next_holder_commitment_point_opt) {
+		let mut holder_commitment_point = match (cur_holder_commitment_point_opt, next_holder_commitment_point_opt) {
 			(Some(current), Some(next)) => HolderCommitmentPoint::Available {
 				transaction_number: cur_holder_commitment_transaction_number, current, next
 			},
 			(Some(current), _) => HolderCommitmentPoint::PendingNext {
 				transaction_number: cur_holder_commitment_transaction_number, current,
 			},
-			(_, _) => {
-				// TODO(async_signing): remove this expect with the Uninitialized variant
-				let current = holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number, &secp_ctx)
-					.expect("Must be able to derive the current commitment point upon channel restoration");
-				HolderCommitmentPoint::PendingNext {
-					transaction_number: cur_holder_commitment_transaction_number, current,
-				}
-			},
+			(_, _) => HolderCommitmentPoint::Uninitialized {
+				transaction_number: cur_holder_commitment_transaction_number
+			}
 		};
 
 		Ok(Channel {
