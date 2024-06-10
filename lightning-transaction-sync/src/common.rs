@@ -1,10 +1,10 @@
-use lightning::chain::{Confirm, WatchedOutput};
-use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
-use bitcoin::{Txid, BlockHash, Transaction, OutPoint};
 use bitcoin::block::Header;
+use bitcoin::{BlockHash, OutPoint, Transaction, Txid};
+use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
+use lightning::chain::{Confirm, WatchedOutput};
 
-use std::collections::{HashSet, HashMap};
-
+use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 
 // Represents the current state.
 pub(crate) struct SyncState {
@@ -33,10 +33,11 @@ impl SyncState {
 			pending_sync: false,
 		}
 	}
-	pub fn sync_unconfirmed_transactions(
-		&mut self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
-		unconfirmed_txs: Vec<Txid>,
-	) {
+	pub fn sync_unconfirmed_transactions<C: Deref>(
+		&mut self, confirmables: &Vec<C>, unconfirmed_txs: Vec<Txid>,
+	) where
+		C::Target: Confirm,
+	{
 		for txid in unconfirmed_txs {
 			for c in confirmables {
 				c.transaction_unconfirmed(&txid);
@@ -46,21 +47,24 @@ impl SyncState {
 
 			// If a previously-confirmed output spend is unconfirmed, re-add the watched output to
 			// the tracking map.
-			self.outputs_spends_pending_threshold_conf.retain(|(conf_txid, _, prev_outpoint, output)| {
-				if txid == *conf_txid {
-					self.watched_outputs.insert(*prev_outpoint, output.clone());
-					false
-				} else {
-					true
-				}
-			})
+			self.outputs_spends_pending_threshold_conf.retain(
+				|(conf_txid, _, prev_outpoint, output)| {
+					if txid == *conf_txid {
+						self.watched_outputs.insert(*prev_outpoint, output.clone());
+						false
+					} else {
+						true
+					}
+				},
+			)
 		}
 	}
 
-	pub fn sync_confirmed_transactions(
-		&mut self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
-		confirmed_txs: Vec<ConfirmedTx>
-	) {
+	pub fn sync_confirmed_transactions<C: Deref>(
+		&mut self, confirmables: &Vec<C>, confirmed_txs: Vec<ConfirmedTx>,
+	) where
+		C::Target: Confirm,
+	{
 		for ctx in confirmed_txs {
 			for c in confirmables {
 				c.transactions_confirmed(
@@ -74,19 +78,18 @@ impl SyncState {
 
 			for input in &ctx.tx.input {
 				if let Some(output) = self.watched_outputs.remove(&input.previous_output) {
-					self.outputs_spends_pending_threshold_conf.push((ctx.tx.txid(), ctx.block_height, input.previous_output, output));
+					let spent = (ctx.tx.txid(), ctx.block_height, input.previous_output, output);
+					self.outputs_spends_pending_threshold_conf.push(spent);
 				}
 			}
 		}
 	}
 
 	pub fn prune_output_spends(&mut self, cur_height: u32) {
-		self.outputs_spends_pending_threshold_conf.retain(|(_, conf_height, _, _)| {
-			cur_height < conf_height + ANTI_REORG_DELAY - 1
-		});
+		self.outputs_spends_pending_threshold_conf
+			.retain(|(_, conf_height, _, _)| cur_height < conf_height + ANTI_REORG_DELAY - 1);
 	}
 }
-
 
 // A queue that is to be filled by `Filter` and drained during the next syncing round.
 pub(crate) struct FilterQueue {
@@ -98,10 +101,7 @@ pub(crate) struct FilterQueue {
 
 impl FilterQueue {
 	pub fn new() -> Self {
-		Self {
-			transactions: HashSet::new(),
-			outputs: HashMap::new(),
-		}
+		Self { transactions: HashSet::new(), outputs: HashMap::new() }
 	}
 
 	// Processes the transaction and output queues and adds them to the given [`SyncState`].

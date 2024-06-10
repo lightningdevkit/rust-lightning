@@ -15,5 +15,5 @@ TMP_FILE=$(mktemp)
 find . -name '*.rs' -type f |sort >$TMP_FILE
 for file in $(comm -23 $TMP_FILE rustfmt_excluded_files); do
 	echo "Checking formatting of $file"
-	rustfmt $VERS --check $file
+	rustfmt $VERS --edition 2021 --check $file
 done

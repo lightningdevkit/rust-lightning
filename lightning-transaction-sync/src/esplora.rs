@@ -1,21 +1,21 @@
-use crate::error::{TxSyncError, InternalError};
-use crate::common::{SyncState, FilterQueue, ConfirmedTx};
+use crate::common::{ConfirmedTx, FilterQueue, SyncState};
+use crate::error::{InternalError, TxSyncError};
 
-use lightning::util::logger::Logger;
-use lightning::{log_error, log_debug, log_trace};
 use lightning::chain::WatchedOutput;
 use lightning::chain::{Confirm, Filter};
+use lightning::util::logger::Logger;
+use lightning::{log_debug, log_error, log_trace};
 
 use bitcoin::{BlockHash, Script, Txid};
 
-use esplora_client::Builder;
-#[cfg(feature = "async-interface")]
-use esplora_client::r#async::AsyncClient;
 #[cfg(not(feature = "async-interface"))]
 use esplora_client::blocking::BlockingClient;
+#[cfg(feature = "async-interface")]
+use esplora_client::r#async::AsyncClient;
+use esplora_client::Builder;
 
-use std::collections::HashSet;
 use core::ops::Deref;
+use std::collections::HashSet;
 
 /// Synchronizes LDK with a given [`Esplora`] server.
 ///
@@ -64,12 +64,7 @@ where
 	pub fn from_client(client: EsploraClientType, logger: L) -> Self {
 		let sync_state = MutexType::new(SyncState::new());
 		let queue = std::sync::Mutex::new(FilterQueue::new());
-		Self {
-			sync_state,
-			queue,
-			client,
-			logger,
-		}
+		Self { sync_state, queue, client, logger }
 	}
 
 	/// Synchronizes the given `confirmables` via their [`Confirm`] interface implementations. This
@@ -84,7 +79,10 @@ where
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`Filter`]: lightning::chain::Filter
 	#[maybe_async]
-	pub fn sync(&self, confirmables: Vec<&(dyn Confirm + Sync + Send)>) -> Result<(), TxSyncError> {
+	pub fn sync<C: Deref>(&self, confirmables: Vec<C>) -> Result<(), TxSyncError>
+	where
+		C::Target: Confirm,
+	{
 		// This lock makes sure we're syncing once at a time.
 		#[cfg(not(feature = "async-interface"))]
 		let mut sync_state = self.sync_state.lock().unwrap();
@@ -128,9 +126,9 @@ where
 									num_unconfirmed += unconfirmed_txs.len();
 									sync_state.sync_unconfirmed_transactions(
 										&confirmables,
-										unconfirmed_txs
+										unconfirmed_txs,
 									);
-								}
+								},
 								Err(err) => {
 									// (Semi-)permanent failure, retry later.
 									log_error!(self.logger,
@@ -140,7 +138,7 @@ where
 										);
 									sync_state.pending_sync = true;
 									return Err(TxSyncError::from(err));
-								}
+								},
 							}
 						},
 						Err(err) => {
@@ -152,17 +150,24 @@ where
 							);
 							sync_state.pending_sync = true;
 							return Err(TxSyncError::from(err));
-						}
+						},
 					}
 
-					match maybe_await!(self.sync_best_block_updated(&confirmables, &mut sync_state, &tip_hash)) {
-						Ok(()) => {}
+					match maybe_await!(self.sync_best_block_updated(
+						&confirmables,
+						&mut sync_state,
+						&tip_hash
+					)) {
+						Ok(()) => {},
 						Err(InternalError::Inconsistency) => {
 							// Immediately restart syncing when we encounter any inconsistencies.
-							log_debug!(self.logger, "Encountered inconsistency during transaction sync, restarting.");
+							log_debug!(
+								self.logger,
+								"Encountered inconsistency during transaction sync, restarting."
+							);
 							sync_state.pending_sync = true;
 							continue;
-						}
+						},
 						Err(err) => {
 							// (Semi-)permanent failure, retry later.
 							log_error!(self.logger,
@@ -172,7 +177,7 @@ where
 							);
 							sync_state.pending_sync = true;
 							return Err(TxSyncError::from(err));
-						}
+						},
 					}
 				}
 
@@ -191,11 +196,9 @@ where
 									continue;
 								}
 								num_confirmed += confirmed_txs.len();
-								sync_state.sync_confirmed_transactions(
-									&confirmables,
-									confirmed_txs
-								);
-							}
+								sync_state
+									.sync_confirmed_transactions(&confirmables, confirmed_txs);
+							},
 							Err(err) => {
 								// (Semi-)permanent failure, retry later.
 								log_error!(self.logger,
@@ -205,15 +208,18 @@ where
 								);
 								sync_state.pending_sync = true;
 								return Err(TxSyncError::from(err));
-							}
+							},
 						}
-					}
+					},
 					Err(InternalError::Inconsistency) => {
 						// Immediately restart syncing when we encounter any inconsistencies.
-						log_debug!(self.logger, "Encountered inconsistency during transaction sync, restarting.");
+						log_debug!(
+							self.logger,
+							"Encountered inconsistency during transaction sync, restarting."
+						);
 						sync_state.pending_sync = true;
 						continue;
-					}
+					},
 					Err(err) => {
 						// (Semi-)permanent failure, retry later.
 						log_error!(self.logger,
@@ -223,26 +229,39 @@ where
 						);
 						sync_state.pending_sync = true;
 						return Err(TxSyncError::from(err));
-					}
+					},
 				}
 				sync_state.last_sync_hash = Some(tip_hash);
 				sync_state.pending_sync = false;
 			}
 		}
 		#[cfg(feature = "time")]
-		log_debug!(self.logger, "Finished transaction sync at tip {} in {}ms: {} confirmed, {} unconfirmed.",
-				tip_hash, start_time.elapsed().as_millis(), num_confirmed, num_unconfirmed);
+		log_debug!(
+			self.logger,
+			"Finished transaction sync at tip {} in {}ms: {} confirmed, {} unconfirmed.",
+			tip_hash,
+			start_time.elapsed().as_millis(),
+			num_confirmed,
+			num_unconfirmed
+		);
 		#[cfg(not(feature = "time"))]
-		log_debug!(self.logger, "Finished transaction sync at tip {}: {} confirmed, {} unconfirmed.",
-				tip_hash, num_confirmed, num_unconfirmed);
+		log_debug!(
+			self.logger,
+			"Finished transaction sync at tip {}: {} confirmed, {} unconfirmed.",
+			tip_hash,
+			num_confirmed,
+			num_unconfirmed
+		);
 		Ok(())
 	}
 
 	#[maybe_async]
-	fn sync_best_block_updated(
-		&self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>, sync_state: &mut SyncState, tip_hash: &BlockHash,
-	) -> Result<(), InternalError> {
-
+	fn sync_best_block_updated<C: Deref>(
+		&self, confirmables: &Vec<C>, sync_state: &mut SyncState, tip_hash: &BlockHash,
+	) -> Result<(), InternalError>
+	where
+		C::Target: Confirm,
+	{
 		// Inform the interface of the new block.
 		let tip_header = maybe_await!(self.client.get_header_by_hash(tip_hash))?;
 		let tip_status = maybe_await!(self.client.get_block_status(&tip_hash))?;
@@ -265,7 +284,6 @@ where
 	fn get_confirmed_transactions(
 		&self, sync_state: &SyncState,
 	) -> Result<Vec<ConfirmedTx>, InternalError> {
-
 		// First, check the confirmation status of registered transactions as well as the
 		// status of dependent transactions of registered outputs.
 
@@ -281,7 +299,8 @@ where
 		}
 
 		for (_, output) in &sync_state.watched_outputs {
-			if let Some(output_status) = maybe_await!(self.client
+			if let Some(output_status) = maybe_await!(self
+				.client
 				.get_output_status(&output.outpoint.txid, output.outpoint.index as u64))?
 			{
 				if let Some(spending_txid) = output_status.txid {
@@ -296,13 +315,11 @@ where
 							}
 						}
 
-						if let Some(confirmed_tx) = maybe_await!(self
-							.get_confirmed_tx(
-								spending_txid,
-								spending_tx_status.block_hash,
-								spending_tx_status.block_height,
-							))?
-						{
+						if let Some(confirmed_tx) = maybe_await!(self.get_confirmed_tx(
+							spending_txid,
+							spending_tx_status.block_hash,
+							spending_tx_status.block_height,
+						))? {
 							confirmed_txs.push(confirmed_tx);
 						}
 					}
@@ -328,7 +345,13 @@ where
 			let block_hash = block_header.block_hash();
 			if let Some(expected_block_hash) = expected_block_hash {
 				if expected_block_hash != block_hash {
-					log_trace!(self.logger, "Inconsistency: Tx {} expected in block {}, but is confirmed in {}", txid, expected_block_hash, block_hash);
+					log_trace!(
+						self.logger,
+						"Inconsistency: Tx {} expected in block {}, but is confirmed in {}",
+						txid,
+						expected_block_hash,
+						block_hash
+					);
 					return Err(InternalError::Inconsistency);
 				}
 			}
@@ -360,7 +383,11 @@ where
 				} else {
 					// If any previously-confirmed block suddenly is no longer confirmed, we found
 					// an inconsistency and should start over.
-					log_trace!(self.logger, "Inconsistency: Tx {} was unconfirmed during syncing.", txid);
+					log_trace!(
+						self.logger,
+						"Inconsistency: Tx {} was unconfirmed during syncing.",
+						txid
+					);
 					return Err(InternalError::Inconsistency);
 				}
 			}
@@ -369,9 +396,12 @@ where
 	}
 
 	#[maybe_async]
-	fn get_unconfirmed_transactions(
-		&self, confirmables: &Vec<&(dyn Confirm + Sync + Send)>,
-	) -> Result<Vec<Txid>, InternalError> {
+	fn get_unconfirmed_transactions<C: Deref>(
+		&self, confirmables: &Vec<C>,
+	) -> Result<Vec<Txid>, InternalError>
+	where
+		C::Target: Confirm,
+	{
 		// Query the interface for relevant txids and check whether the relevant blocks are still
 		// in the best chain, mark them unconfirmed otherwise
 		let relevant_txids = confirmables
@@ -416,7 +446,6 @@ type MutexType<I> = std::sync::Mutex<I>;
 type EsploraClientType = AsyncClient;
 #[cfg(not(feature = "async-interface"))]
 type EsploraClientType = BlockingClient;
-
 
 impl<L: Deref> Filter for EsploraSyncClient<L>
 where
