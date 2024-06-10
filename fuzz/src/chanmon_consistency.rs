@@ -396,12 +396,7 @@ impl SignerProvider for KeyProvider {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);
 
-		Ok(TestChannelSigner {
-			inner,
-			state,
-			disable_revocation_policy_check: false,
-			available: Arc::new(Mutex::new(true)),
-		})
+		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {

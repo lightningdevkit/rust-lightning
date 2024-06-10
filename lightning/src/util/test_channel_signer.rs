@@ -18,7 +18,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use core::cmp;
+use core::{cmp, fmt};
 use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;
 
@@ -74,6 +74,46 @@ pub struct TestChannelSigner {
 	/// When `true` (the default), the signer will respond immediately with signatures. When `false`,
 	/// the signer will return an error indicating that it is unavailable.
 	pub available: Arc<Mutex<bool>>,
+	/// Set of signer operations that are disabled. If an operation is disabled,
+	/// the signer will return `Err` when the corresponding method is called.
+	pub disabled_signer_ops: Arc<Mutex<HashSet<SignerOp>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SignerOp {
+	GetPerCommitmentPoint,
+	ReleaseCommitmentSecret,
+	ValidateHolderCommitment,
+	SignCounterpartyCommitment,
+	ValidateCounterpartyRevocation,
+	SignHolderCommitment,
+	SignJusticeRevokedOutput,
+	SignJusticeRevokedHtlc,
+	SignHolderHtlcTransaction,
+	SignCounterpartyHtlcTransaction,
+	SignClosingTransaction,
+	SignHolderAnchorInput,
+	SignChannelAnnouncementWithFundingKey,
+}
+
+impl fmt::Display for SignerOp {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			SignerOp::GetPerCommitmentPoint => write!(f, "get_per_commitment_point"),
+			SignerOp::ReleaseCommitmentSecret => write!(f, "release_commitment_secret"),
+			SignerOp::ValidateHolderCommitment => write!(f, "validate_holder_commitment"),
+			SignerOp::SignCounterpartyCommitment => write!(f, "sign_counterparty_commitment"),
+			SignerOp::ValidateCounterpartyRevocation => write!(f, "validate_counterparty_revocation"),
+			SignerOp::SignHolderCommitment => write!(f, "sign_holder_commitment"),
+			SignerOp::SignJusticeRevokedOutput => write!(f, "sign_justice_revoked_output"),
+			SignerOp::SignJusticeRevokedHtlc => write!(f, "sign_justice_revoked_htlc"),
+			SignerOp::SignHolderHtlcTransaction => write!(f, "sign_holder_htlc_transaction"),
+			SignerOp::SignCounterpartyHtlcTransaction => write!(f, "sign_counterparty_htlc_transaction"),
+			SignerOp::SignClosingTransaction => write!(f, "sign_closing_transaction"),
+			SignerOp::SignHolderAnchorInput => write!(f, "sign_holder_anchor_input"),
+			SignerOp::SignChannelAnnouncementWithFundingKey => write!(f, "sign_channel_announcement_with_funding_key"),
+		}
+	}
 }
 
 impl PartialEq for TestChannelSigner {
@@ -91,6 +131,7 @@ impl TestChannelSigner {
 			state,
 			disable_revocation_policy_check: false,
 			available: Arc::new(Mutex::new(true)),
+			disabled_signer_ops: Arc::new(Mutex::new(new_hash_set())),
 		}
 	}
 
@@ -105,6 +146,7 @@ impl TestChannelSigner {
 			state,
 			disable_revocation_policy_check,
 			available: Arc::new(Mutex::new(true)),
+			disabled_signer_ops: Arc::new(Mutex::new(new_hash_set())),
 		}
 	}
 
@@ -122,6 +164,18 @@ impl TestChannelSigner {
 	/// testing asynchronous signing.
 	pub fn set_available(&self, available: bool) {
 		*self.available.lock().unwrap() = available;
+	}
+
+	pub fn enable_op(&mut self, signer_op: SignerOp) {
+		self.disabled_signer_ops.lock().unwrap().remove(&signer_op);
+	}
+
+	pub fn disable_op(&mut self, signer_op: SignerOp) {
+		self.disabled_signer_ops.lock().unwrap().insert(signer_op);
+	}
+
+	fn is_signer_available(&self, signer_op: SignerOp) -> bool {
+		!self.disabled_signer_ops.lock().unwrap().contains(&signer_op)
 	}
 }
 
