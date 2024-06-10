@@ -3473,9 +3473,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 						log_trace!(logger, "Counterparty commitment signature not available for funding_signed message; setting signer_pending_funding");
 						self.signer_pending_funding = true;
 					}
-				} else if self.signer_pending_funding {
-					log_trace!(logger, "Counterparty commitment signature available for funding_signed message; clearing signer_pending_funding");
-					self.signer_pending_funding = false;
 				}
 
 				// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -5377,9 +5374,13 @@ impl<SP: Deref> Channel<SP> where
 	#[cfg(async_signing)]
 	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> SignerResumeUpdates where L::Target: Logger {
 		let commitment_update = if self.context.signer_pending_commitment_update {
+			log_trace!(logger, "Attempting to generate pending commitment update...");
+			self.context.signer_pending_commitment_update = false;
 			self.get_last_commitment_update_for_send(logger).ok()
 		} else { None };
 		let funding_signed = if self.context.signer_pending_funding && !self.context.is_outbound() {
+			log_trace!(logger, "Attempting to generate pending funding signed...");
+			self.context.signer_pending_funding = false;
 			self.context.get_funding_signed_msg(logger).1
 		} else { None };
 		let channel_ready = if funding_signed.is_some() {
@@ -5475,10 +5476,6 @@ impl<SP: Deref> Channel<SP> where
 				&self.context.channel_id(), if update_fee.is_some() { " update_fee," } else { "" },
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger).map(|(cu, _)| cu) {
-			if self.context.signer_pending_commitment_update {
-				log_trace!(logger, "Commitment update generated: clearing signer_pending_commitment_update");
-				self.context.signer_pending_commitment_update = false;
-			}
 			update
 		} else {
 			#[cfg(not(async_signing))] {
@@ -7494,11 +7491,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			_ => todo!()
 		};
 
-		if self.context.signer_pending_funding {
-			log_trace!(logger, "Counterparty commitment signature ready for funding_created message: clearing signer_pending_funding");
-			self.context.signer_pending_funding = false;
-		}
-
 		Some(msgs::FundingCreated {
 			temporary_channel_id: self.context.temporary_channel_id.unwrap(),
 			funding_txid: self.context.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
@@ -7747,7 +7739,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	#[cfg(async_signing)]
 	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
 		if self.context.signer_pending_funding && self.context.is_outbound() {
-			log_trace!(logger, "Signer unblocked a funding_created");
+			log_trace!(logger, "Attempting to generate pending funding created...");
+			self.context.signer_pending_funding = false;
 			self.get_funding_created_msg(logger)
 		} else { None }
 	}
