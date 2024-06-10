@@ -238,6 +238,7 @@ struct KeyProvider {
 impl EntropySource for KeyProvider {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed);
+		#[rustfmt::skip]
 		let mut res = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, self.node_secret[31]];
 		res[30-4..30].copy_from_slice(&id.to_le_bytes());
 		res
@@ -265,7 +266,9 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
-		KeyMaterial([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_secret[31]])
+		#[rustfmt::skip]
+		let random_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, self.node_secret[31]];
+		KeyMaterial(random_bytes)
 	}
 
 	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
@@ -304,6 +307,7 @@ impl SignerProvider for KeyProvider {
 	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
 		let secp_ctx = Secp256k1::signing_only();
 		let id = channel_keys_id[0];
+		#[rustfmt::skip]
 		let keys = InMemorySigner::new(
 			&secp_ctx,
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, self.node_secret[31]]).unwrap(),
@@ -336,6 +340,7 @@ impl SignerProvider for KeyProvider {
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
 		let secp_ctx = Secp256k1::signing_only();
+		#[rustfmt::skip]
 		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_secret[31]]).unwrap();
 		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
 		Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(our_channel_monitor_claim_key_hash).into_script())
@@ -343,6 +348,7 @@ impl SignerProvider for KeyProvider {
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		let secp_ctx = Secp256k1::signing_only();
+		#[rustfmt::skip]
 		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, self.node_secret[31]]).unwrap();
 		let pubkey_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
 		Ok(ShutdownScript::new_p2wpkh(&pubkey_hash))
@@ -588,12 +594,14 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let mut channel_txn = Vec::new();
 	macro_rules! make_channel {
 		($source: expr, $dest: expr, $dest_keys_manager: expr, $chan_id: expr) => { {
-			$source.peer_connected(&$dest.get_our_node_id(), &Init {
+			let init_dest = Init {
 				features: $dest.init_features(), networks: None, remote_network_address: None
-			}, true).unwrap();
-			$dest.peer_connected(&$source.get_our_node_id(), &Init {
+			};
+			$source.peer_connected(&$dest.get_our_node_id(), &init_dest, true).unwrap();
+			let init_src = Init {
 				features: $source.init_features(), networks: None, remote_network_address: None
-			}, false).unwrap();
+			};
+			$dest.peer_connected(&$source.get_our_node_id(), &init_src, false).unwrap();
 
 			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None, None).unwrap();
 			let open_channel = {
@@ -745,8 +753,8 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 	let chan_a = nodes[0].list_usable_channels()[0].short_channel_id.unwrap();
 	let chan_b = nodes[2].list_usable_channels()[0].short_channel_id.unwrap();
 
-	let mut payment_id: u8 = 0;
-	let mut payment_idx: u64 = 0;
+	let mut p_id: u8 = 0;
+	let mut p_idx: u64 = 0;
 
 	let mut chan_a_disconnected = false;
 	let mut chan_b_disconnected = false;
@@ -1157,23 +1165,27 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 			0x0e => {
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init {
+					let init_1 = Init {
 						features: nodes[1].init_features(), networks: None, remote_network_address: None
-					}, true).unwrap();
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init {
+					};
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &init_1, true).unwrap();
+					let init_0 = Init {
 						features: nodes[0].init_features(), networks: None, remote_network_address: None
-					}, false).unwrap();
+					};
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &init_0, false).unwrap();
 					chan_a_disconnected = false;
 				}
 			},
 			0x0f => {
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init {
+					let init_2 = Init {
 						features: nodes[2].init_features(), networks: None, remote_network_address: None
-					}, true).unwrap();
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init {
+					};
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &init_2, true).unwrap();
+					let init_1 = Init {
 						features: nodes[1].init_features(), networks: None, remote_network_address: None
-					}, false).unwrap();
+					};
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &init_1, false).unwrap();
 					chan_b_disconnected = false;
 				}
 			},
@@ -1253,61 +1265,61 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 
 			// 1/10th the channel size:
-			0x30 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id, &mut payment_idx); },
-			0x31 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id, &mut payment_idx); },
-			0x32 => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id, &mut payment_idx); },
-			0x33 => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id, &mut payment_idx); },
-			0x34 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut payment_id, &mut payment_idx); },
-			0x35 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut payment_id, &mut payment_idx); },
+			0x30 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut p_id, &mut p_idx); },
+			0x31 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx); },
+			0x32 => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx); },
+			0x33 => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut p_id, &mut p_idx); },
+			0x34 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx); },
+			0x35 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx); },
 
-			0x38 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut payment_id, &mut payment_idx); },
-			0x39 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut payment_id, &mut payment_idx); },
-			0x3a => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut payment_id, &mut payment_idx); },
-			0x3b => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut payment_id, &mut payment_idx); },
-			0x3c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut payment_id, &mut payment_idx); },
-			0x3d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut payment_id, &mut payment_idx); },
+			0x38 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut p_id, &mut p_idx); },
+			0x39 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut p_id, &mut p_idx); },
+			0x3a => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut p_id, &mut p_idx); },
+			0x3b => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut p_id, &mut p_idx); },
+			0x3c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut p_id, &mut p_idx); },
+			0x3d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut p_id, &mut p_idx); },
 
-			0x40 => { send_payment(&nodes[0], &nodes[1], chan_a, 100_000, &mut payment_id, &mut payment_idx); },
-			0x41 => { send_payment(&nodes[1], &nodes[0], chan_a, 100_000, &mut payment_id, &mut payment_idx); },
-			0x42 => { send_payment(&nodes[1], &nodes[2], chan_b, 100_000, &mut payment_id, &mut payment_idx); },
-			0x43 => { send_payment(&nodes[2], &nodes[1], chan_b, 100_000, &mut payment_id, &mut payment_idx); },
-			0x44 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut payment_id, &mut payment_idx); },
-			0x45 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut payment_id, &mut payment_idx); },
+			0x40 => { send_payment(&nodes[0], &nodes[1], chan_a, 100_000, &mut p_id, &mut p_idx); },
+			0x41 => { send_payment(&nodes[1], &nodes[0], chan_a, 100_000, &mut p_id, &mut p_idx); },
+			0x42 => { send_payment(&nodes[1], &nodes[2], chan_b, 100_000, &mut p_id, &mut p_idx); },
+			0x43 => { send_payment(&nodes[2], &nodes[1], chan_b, 100_000, &mut p_id, &mut p_idx); },
+			0x44 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut p_id, &mut p_idx); },
+			0x45 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut p_id, &mut p_idx); },
 
-			0x48 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000, &mut payment_id, &mut payment_idx); },
-			0x49 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000, &mut payment_id, &mut payment_idx); },
-			0x4a => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000, &mut payment_id, &mut payment_idx); },
-			0x4b => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000, &mut payment_id, &mut payment_idx); },
-			0x4c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut payment_id, &mut payment_idx); },
-			0x4d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut payment_id, &mut payment_idx); },
+			0x48 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000, &mut p_id, &mut p_idx); },
+			0x49 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000, &mut p_id, &mut p_idx); },
+			0x4a => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000, &mut p_id, &mut p_idx); },
+			0x4b => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000, &mut p_id, &mut p_idx); },
+			0x4c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut p_id, &mut p_idx); },
+			0x4d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut p_id, &mut p_idx); },
 
-			0x50 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000, &mut payment_id, &mut payment_idx); },
-			0x51 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000, &mut payment_id, &mut payment_idx); },
-			0x52 => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000, &mut payment_id, &mut payment_idx); },
-			0x53 => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000, &mut payment_id, &mut payment_idx); },
-			0x54 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut payment_id, &mut payment_idx); },
-			0x55 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut payment_id, &mut payment_idx); },
+			0x50 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000, &mut p_id, &mut p_idx); },
+			0x51 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000, &mut p_id, &mut p_idx); },
+			0x52 => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000, &mut p_id, &mut p_idx); },
+			0x53 => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000, &mut p_id, &mut p_idx); },
+			0x54 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut p_id, &mut p_idx); },
+			0x55 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut p_id, &mut p_idx); },
 
-			0x58 => { send_payment(&nodes[0], &nodes[1], chan_a, 100, &mut payment_id, &mut payment_idx); },
-			0x59 => { send_payment(&nodes[1], &nodes[0], chan_a, 100, &mut payment_id, &mut payment_idx); },
-			0x5a => { send_payment(&nodes[1], &nodes[2], chan_b, 100, &mut payment_id, &mut payment_idx); },
-			0x5b => { send_payment(&nodes[2], &nodes[1], chan_b, 100, &mut payment_id, &mut payment_idx); },
-			0x5c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut payment_id, &mut payment_idx); },
-			0x5d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut payment_id, &mut payment_idx); },
+			0x58 => { send_payment(&nodes[0], &nodes[1], chan_a, 100, &mut p_id, &mut p_idx); },
+			0x59 => { send_payment(&nodes[1], &nodes[0], chan_a, 100, &mut p_id, &mut p_idx); },
+			0x5a => { send_payment(&nodes[1], &nodes[2], chan_b, 100, &mut p_id, &mut p_idx); },
+			0x5b => { send_payment(&nodes[2], &nodes[1], chan_b, 100, &mut p_id, &mut p_idx); },
+			0x5c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut p_id, &mut p_idx); },
+			0x5d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut p_id, &mut p_idx); },
 
-			0x60 => { send_payment(&nodes[0], &nodes[1], chan_a, 10, &mut payment_id, &mut payment_idx); },
-			0x61 => { send_payment(&nodes[1], &nodes[0], chan_a, 10, &mut payment_id, &mut payment_idx); },
-			0x62 => { send_payment(&nodes[1], &nodes[2], chan_b, 10, &mut payment_id, &mut payment_idx); },
-			0x63 => { send_payment(&nodes[2], &nodes[1], chan_b, 10, &mut payment_id, &mut payment_idx); },
-			0x64 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut payment_id, &mut payment_idx); },
-			0x65 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut payment_id, &mut payment_idx); },
+			0x60 => { send_payment(&nodes[0], &nodes[1], chan_a, 10, &mut p_id, &mut p_idx); },
+			0x61 => { send_payment(&nodes[1], &nodes[0], chan_a, 10, &mut p_id, &mut p_idx); },
+			0x62 => { send_payment(&nodes[1], &nodes[2], chan_b, 10, &mut p_id, &mut p_idx); },
+			0x63 => { send_payment(&nodes[2], &nodes[1], chan_b, 10, &mut p_id, &mut p_idx); },
+			0x64 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut p_id, &mut p_idx); },
+			0x65 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut p_id, &mut p_idx); },
 
-			0x68 => { send_payment(&nodes[0], &nodes[1], chan_a, 1, &mut payment_id, &mut payment_idx); },
-			0x69 => { send_payment(&nodes[1], &nodes[0], chan_a, 1, &mut payment_id, &mut payment_idx); },
-			0x6a => { send_payment(&nodes[1], &nodes[2], chan_b, 1, &mut payment_id, &mut payment_idx); },
-			0x6b => { send_payment(&nodes[2], &nodes[1], chan_b, 1, &mut payment_id, &mut payment_idx); },
-			0x6c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut payment_id, &mut payment_idx); },
-			0x6d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut payment_id, &mut payment_idx); },
+			0x68 => { send_payment(&nodes[0], &nodes[1], chan_a, 1, &mut p_id, &mut p_idx); },
+			0x69 => { send_payment(&nodes[1], &nodes[0], chan_a, 1, &mut p_id, &mut p_idx); },
+			0x6a => { send_payment(&nodes[1], &nodes[2], chan_b, 1, &mut p_id, &mut p_idx); },
+			0x6b => { send_payment(&nodes[2], &nodes[1], chan_b, 1, &mut p_id, &mut p_idx); },
+			0x6c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut p_id, &mut p_idx); },
+			0x6d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut p_id, &mut p_idx); },
 
 			0x80 => {
 				let mut max_feerate = last_htlc_clear_fee_a;
@@ -1377,21 +1389,25 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 				// Next, make sure peers are all connected to each other
 				if chan_a_disconnected {
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &Init {
+					let init_1 = Init {
 						features: nodes[1].init_features(), networks: None, remote_network_address: None
-					}, true).unwrap();
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &Init {
+					};
+					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &init_1, true).unwrap();
+					let init_0 = Init {
 						features: nodes[0].init_features(), networks: None, remote_network_address: None
-					}, false).unwrap();
+					};
+					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &init_0, false).unwrap();
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &Init {
+					let init_2 = Init {
 						features: nodes[2].init_features(), networks: None, remote_network_address: None
-					}, true).unwrap();
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &Init {
+					};
+					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &init_2, true).unwrap();
+					let init_1 = Init {
 						features: nodes[1].init_features(), networks: None, remote_network_address: None
-					}, false).unwrap();
+					};
+					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &init_1, false).unwrap();
 					chan_b_disconnected = false;
 				}
 
@@ -1411,11 +1427,11 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 				// Finally, make sure that at least one end of each channel can make a substantial payment
 				assert!(
-					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut payment_id, &mut payment_idx) ||
-					send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut payment_id, &mut payment_idx));
+					send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut p_id, &mut p_idx) ||
+					send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx));
 				assert!(
-					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut payment_id, &mut payment_idx) ||
-					send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut payment_id, &mut payment_idx));
+					send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx) ||
+					send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut p_id, &mut p_idx));
 
 				last_htlc_clear_fee_a = fee_est_a.ret_val.load(atomic::Ordering::Acquire);
 				last_htlc_clear_fee_b = fee_est_b.ret_val.load(atomic::Ordering::Acquire);
