@@ -75,6 +75,7 @@ use std::sync::atomic::{AtomicU64,AtomicUsize,AtomicBool,Ordering};
 use bech32::u5;
 
 #[inline]
+#[rustfmt::skip]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
 	((v[0] as u16) << 8*1) |
 	((v[1] as u16) << 8*0)
@@ -89,6 +90,7 @@ pub fn be16_to_array(u: u16) -> [u8; 2] {
 }
 
 #[inline]
+#[rustfmt::skip]
 pub fn slice_to_be24(v: &[u8]) -> u32 {
 	((v[0] as u32) << 8*2) |
 	((v[1] as u32) << 8*1) |
@@ -313,8 +315,11 @@ struct KeyProvider {
 impl EntropySource for KeyProvider {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
-		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
+		#[rustfmt::skip]
+		let random_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8,
+			(ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8];
+		random_bytes
 	}
 }
 
@@ -514,12 +519,15 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	let gossip_sync = Arc::new(P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
-	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
+	let message_handler = MessageHandler {
 		chan_handler: channelmanager.clone(),
 		route_handler: gossip_sync.clone(),
 		onion_message_handler: IgnoringMessageHandler {},
 		custom_message_handler: IgnoringMessageHandler {},
-	}, 0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger), keys_manager.clone()));
+	};
+	let random_data = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0];
+	let peer_manager = PeerManager::new(message_handler, 0, &random_data, Arc::clone(&logger), keys_manager.clone());
+	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), peer_manager);
 
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
@@ -539,7 +547,8 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 					}
 				}
 				if new_id == 0 { return; }
-				loss_detector.handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}, None).unwrap();
+				let peer = Peer{id: (new_id - 1) as u8, peers_connected: &peers};
+				loss_detector.handler.new_outbound_connection(get_pubkey!(), peer, None).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
 			},
 			1 => {
@@ -551,19 +560,22 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 					}
 				}
 				if new_id == 0 { return; }
-				loss_detector.handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}, None).unwrap();
+				let peer = Peer{id: (new_id - 1) as u8, peers_connected: &peers};
+				loss_detector.handler.new_inbound_connection(peer, None).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
 			},
 			2 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
-				loss_detector.handler.socket_disconnected(&Peer{id: peer_id, peers_connected: &peers});
+				let peer = Peer{id: peer_id, peers_connected: &peers};
+				loss_detector.handler.socket_disconnected(&peer);
 				peers.borrow_mut()[peer_id as usize] = false;
 			},
 			3 => {
 				let peer_id = get_slice!(1)[0];
 				if !peers.borrow()[peer_id as usize] { return; }
-				match loss_detector.handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0])) {
+				let mut peer = Peer{id: peer_id, peers_connected: &peers};
+				match loss_detector.handler.read_event(&mut peer, get_slice!(get_slice!(1)[0])) {
 					Ok(res) => assert!(!res),
 					Err(_) => { peers.borrow_mut()[peer_id as usize] = false; }
 				}
@@ -921,32 +933,45 @@ mod tests {
 		ext_from_hex("0c005e", &mut test);
 		// the funding transaction
 		ext_from_hex("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae0000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions, one per line
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// by now client should have sent a channel_ready (CHECK 3: SendChannelReady to 03000000 for chan 3d000000)
 
 		// inbound read from peer id 0 of len 18
@@ -1316,28 +1341,35 @@ mod tests {
 		ext_from_hex("0c007d", &mut test);
 		// the commitment transaction for channel 3f00000000000000000000000000000000000000000000000000000000000000
 		ext_from_hex("02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c0000000000000160014280000000000000000000000000000000000000005000020", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		//
 		// connect a block with one transaction of len 94
 		ext_from_hex("0c005e", &mut test);
 		// the HTLC timeout transaction
 		ext_from_hex("0200000001730000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020b20000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);
@@ -1347,16 +1379,26 @@ mod tests {
 		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
 
 		let log_entries = logger.lines.lock().unwrap();
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1)); // 1
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingSigned event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 2
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 3
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel 3a00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 4
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendRevokeAndACK event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&4)); // 5
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3)); // 6
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 adds, 0 fulfills, 0 fails for channel 3a00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3)); // 7
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 1 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 8
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 1 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 9
-		assert_eq!(log_entries.get(&("lightning::chain::channelmonitor".to_string(), "Input spending counterparty commitment tx (0000000000000000000000000000000000000000000000000000000000000073:0) in 0000000000000000000000000000000000000000000000000000000000000067 resolves outbound HTLC with payment hash ff00000000000000000000000000000000000000000000000000000000000000 with timeout".to_string())), Some(&1)); // 10
+		// 1
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1));
+		// 2
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingSigned event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		// 3
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		// 4
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel 3a00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		// 5
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendRevokeAndACK event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&4));
+		// 6
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
+		// 7
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 adds, 0 fulfills, 0 fails for channel 3a00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
+		// 8
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 1 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		// 9
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 1 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2));
+		// 10
+		assert_eq!(log_entries.get(&("lightning::chain::channelmonitor".to_string(), "Input spending counterparty commitment tx (0000000000000000000000000000000000000000000000000000000000000073:0) in 0000000000000000000000000000000000000000000000000000000000000067 resolves outbound HTLC with payment hash ff00000000000000000000000000000000000000000000000000000000000000 with timeout".to_string())), Some(&1));
 	}
 
 	#[test]
