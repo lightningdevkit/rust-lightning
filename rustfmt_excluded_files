@@ -1,6 +1,4 @@
 ./bench/benches/bench.rs
-./fuzz/src/full_stack.rs
-./fuzz/src/lib.rs
 ./lightning-background-processor/src/lib.rs
 ./lightning-block-sync/src/convert.rs
 ./lightning-block-sync/src/gossip.rs
