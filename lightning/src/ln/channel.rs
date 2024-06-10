@@ -5460,8 +5460,18 @@ impl<SP: Deref> Channel<SP> where
 			self.context.signer_pending_funding = false;
 			self.context.get_funding_signed_msg(logger).1
 		} else { None };
-		let channel_ready = if funding_signed.is_some() {
-			self.check_get_channel_ready(0, logger)
+		if !self.context.holder_commitment_point.is_available() {
+			log_trace!(logger, "Attempting to update holder per-commitment point...");
+			self.context.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		}
+		// Provide a `channel_ready` message if we need to, but only if we're _not_ still pending
+		// funding.
+		let channel_ready = if self.context.signer_pending_channel_ready && !self.context.signer_pending_funding {
+			log_trace!(logger, "Attempting to generate pending channel_ready...");
+			self.get_channel_ready(logger).map(|msg| {
+				self.context.signer_pending_channel_ready = false;
+				msg
+			})
 		} else { None };
 
 		let mut commitment_update = if self.context.signer_pending_commitment_update {
@@ -6602,14 +6612,6 @@ impl<SP: Deref> Channel<SP> where
 			return None;
 		}
 
-		// If we're still pending the signature on a funding transaction, then we're not ready to send a
-		// channel_ready yet.
-		if self.context.signer_pending_funding {
-			// TODO: set signer_pending_channel_ready
-			log_debug!(logger, "Can't produce channel_ready: the signer is pending funding.");
-			return None;
-		}
-
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
 		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()).is_empty()) {
@@ -6652,6 +6654,17 @@ impl<SP: Deref> Channel<SP> where
 
 		if self.context.channel_state.is_peer_disconnected() {
 			log_debug!(logger, "Not producing channel_ready: the peer is disconnected.");
+			return None;
+		}
+
+		// If we're still pending the signature on a funding transaction, then we're not ready to send a
+		// channel_ready yet.
+		if self.context.signer_pending_funding {
+			log_debug!(logger, "Can't produce channel_ready: the signer is pending funding.");
+			// We make sure to set the channel ready flag here so that we try to
+			// generate a channel ready for 0conf channels once our signer unblocked
+			// for funding.
+			self.context.signer_pending_channel_ready = true;
 			return None;
 		}
 
