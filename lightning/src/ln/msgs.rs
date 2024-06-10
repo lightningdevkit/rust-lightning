@@ -1605,6 +1605,14 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// If it's `None`, then no particular network chain hash compatibility will be enforced when
 	/// connecting to peers.
 	fn get_chain_hashes(&self) -> Option<Vec<ChainHash>>;
+
+	/// Indicates that a message was received from any peer for any handler.
+	/// Called before the message is passed to the appropriate handler.
+	/// Useful for indicating that a network connection is active.
+	///
+	/// Note: Since this function is called frequently, it should be as
+	/// efficient as possible for its intended purpose.
+	fn message_received(&self);
 }
 
 /// A trait to describe an object which can receive routing messages.
