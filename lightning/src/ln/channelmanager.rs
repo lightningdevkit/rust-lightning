@@ -61,7 +61,7 @@ use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
+use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
 use crate::ln::wire::Encode;
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
@@ -3105,7 +3105,7 @@ where
 
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
 			pending_inbound_payments: Mutex::new(new_hash_map()),
-			pending_outbound_payments: OutboundPayments::new(),
+			pending_outbound_payments: OutboundPayments::new(new_hash_map()),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
@@ -9005,7 +9005,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
 		$self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat, None,
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
@@ -9131,9 +9131,14 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let expiration = StaleExpiration::TimerTicks(1);
+		let retryable_invoice_request = RetryableInvoiceRequest {
+			invoice_request: invoice_request.clone(),
+			nonce,
+		};
 		self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, max_total_routing_fee_msat
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
+				Some(retryable_invoice_request)
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
@@ -12227,10 +12232,7 @@ where
 			}
 			pending_outbound_payments = Some(outbounds);
 		}
-		let pending_outbounds = OutboundPayments {
-			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
-			retry_lock: Mutex::new(())
-		};
+		let pending_outbounds = OutboundPayments::new(pending_outbound_payments.unwrap());
 
 		// We have to replay (or skip, if they were completed after we wrote the `ChannelManager`)
 		// each `ChannelMonitorUpdate` in `in_flight_monitor_updates`. After doing so, we have to
