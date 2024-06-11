@@ -6613,7 +6613,7 @@ where
 		log_trace!(logger, "ChannelMonitor updated to {}. Current highest is {}. {} pending in-flight updates.",
 			highest_applied_update_id, channel.context.get_latest_monitor_update_id(),
 			remaining_in_flight);
-		if !channel.is_awaiting_monitor_update() || channel.context.get_latest_monitor_update_id() != highest_applied_update_id {
+		if !channel.is_awaiting_monitor_update() || remaining_in_flight != 0 {
 			return;
 		}
 		handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, channel);

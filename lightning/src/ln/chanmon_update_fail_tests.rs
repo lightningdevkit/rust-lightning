@@ -3337,6 +3337,93 @@ fn test_durable_preimages_on_closed_channel() {
 	do_test_durable_preimages_on_closed_channel(false, false, false);
 }
 
+#[test]
+fn test_sync_async_persist_doesnt_hang() {
+	// Previously, we checked if a channel was a candidate for making forward progress based on if
+	// the `MonitorEvent::Completed` matched the channel's latest monitor update id. However, this
+	// could lead to a rare race when `ChannelMonitor`s were being persisted both synchronously and
+	// asynchronously leading to channel hangs.
+	//
+	// To hit this case, we need to generate a `MonitorEvent::Completed` prior to a new channel
+	// update, but which is only processed after the channel update.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_id_ab = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	// Send two payments from A to B, then claim the first, marking the very last
+	// ChannelMonitorUpdate as InProgress...
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	nodes[1].node.claim_funds(payment_preimage_1);
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
+
+	let bs_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
+	expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+	let (as_raa, as_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
+	check_added_monitors(&nodes[1], 1);
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_cs);
+	check_added_monitors(&nodes[1], 1);
+
+	let bs_final_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_final_raa);
+	check_added_monitors(&nodes[0], 1);
+
+	// Immediately complete the monitor update, but before the ChannelManager has a chance to see
+	// the MonitorEvent::Completed, create a channel update by receiving a claim on the second
+	// payment.
+	let (outpoint, _, ab_update_id) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id_ab).unwrap().clone();
+	nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(outpoint, ab_update_id).unwrap();
+
+	nodes[1].node.claim_funds(payment_preimage_2);
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash_2, 1_000_000);
+
+	let bs_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &bs_updates.update_fulfill_htlcs[0]);
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+
+	// At this point, we have completed an extra `ChannelMonitorUpdate` but the `ChannelManager`
+	// hasn't yet seen our `MonitorEvent::Completed`. When we call
+	// `get_and_clear_pending_msg_events` here, the `ChannelManager` finally sees that event and
+	// should return the channel to normal operation.
+	let (as_raa, as_cs) = get_revoke_commit_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+
+	// Now that we've completed our test, process the events we have queued up (which we were not
+	// able to check until now as they would have caused the `ChannelManager` to look at the
+	// pending `MonitorEvent`s).
+	let pending_events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(pending_events.len(), 2);
+	if let Event::PaymentPathSuccessful { ref payment_hash, ..} = pending_events[1] {
+		assert_eq!(payment_hash.unwrap(), payment_hash_1);
+	} else { panic!(); }
+	if let Event::PaymentSent { ref payment_hash, ..} = pending_events[0] {
+		assert_eq!(*payment_hash, payment_hash_2);
+	} else { panic!(); }
+
+	// Finally, complete the claiming of the second payment
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_raa);
+	check_added_monitors(&nodes[1], 1);
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_cs);
+	check_added_monitors(&nodes[1], 1);
+
+	let bs_final_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_final_raa);
+	check_added_monitors(&nodes[0], 1);
+	expect_payment_path_successful!(nodes[0]);
+}
+
 fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	// Test that if a `ChannelMonitorUpdate` completes but a `ChannelManager` isn't serialized
 	// before restart we run the monitor update completion action on startup.
