@@ -372,7 +372,7 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn } => {
 				f.write_str("user force-closed the channel")?;
 				if let Some(brodcasted) = broadcasted_latest_txn {
-					write!(f, " and {} the latest transaction", if *brodcasted { "broadcasted" } else { "did not broadcast" })
+					write!(f, " and {} the latest transaction", if *brodcasted { "broadcasted" } else { "elected not to broadcast" })
 				} else {
 					Ok(())
 				}
