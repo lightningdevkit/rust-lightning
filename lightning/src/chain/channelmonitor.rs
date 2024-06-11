@@ -51,7 +51,7 @@ use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
-use crate::events::{ClosureReason, Event, EventHandler};
+use crate::events::{ClaimInfo, ClaimMetadata, ClosureReason, Event, EventHandler};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 
 #[allow(unused_imports)]
@@ -1191,6 +1191,7 @@ macro_rules! _process_events_body {
 	}
 }
 pub(super) use _process_events_body as process_events_body;
+use crate::events::Event::PersistClaimInfo;
 
 pub(crate) struct WithChannelMonitor<'a, L: Deref> where L::Target: Logger {
 	logger: &'a L,
@@ -2548,6 +2549,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				for &mut (_, ref mut source_opt) in self.counterparty_claimable_outpoints.get_mut(&txid).unwrap() {
 					*source_opt = None;
 				}
+				let htlcs = self.counterparty_claimable_outpoints.get(&txid).unwrap().iter().map(|(htlc, _)| htlc.clone()).collect();
+				self.pending_events.push(PersistClaimInfo {
+					monitor_id: self.funding_info.0,
+					claim_key: txid,
+					claim_info: ClaimInfo { htlcs },
+				})
 			} else {
 				assert!(cfg!(fuzzing), "Commitment txids are unique outside of fuzzing, where hashes can collide");
 			}
@@ -3243,6 +3250,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		let commitment_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 		let per_commitment_option = self.counterparty_claimable_outpoints.get(&commitment_txid);
+
+		self.pending_events.push(Event::ClaimInfoRequest {
+			monitor_id: self.get_funding_txo().0,
+			claim_key: commitment_txid,
+			claim_metadata: ClaimMetadata {
+				block_hash: block_hash.clone(),
+				tx: tx.clone(),
+				height,
+			},
+		});
 
 		macro_rules! ignore_error {
 			( $thing : expr ) => {
@@ -3965,10 +3982,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		});
 		#[cfg(test)]
 		{
-		        // If we see a transaction for which we registered outputs previously,
+			// If we see a transaction for which we registered outputs previously,
 			// make sure the registered scriptpubkey at the expected index match
 			// the actual transaction output one. We failed this case before #653.
-			for tx in &txn_matched {
+			for tx in txn_matched {
 				if let Some(outputs) = self.get_outputs_to_watch().get(&tx.txid()) {
 					for idx_and_script in outputs.iter() {
 						assert!((idx_and_script.0 as usize) < tx.output.len());

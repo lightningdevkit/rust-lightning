@@ -1709,7 +1709,7 @@ macro_rules! check_closed_event {
 }
 
 pub fn handle_bump_htlc_event(node: &Node, count: usize) {
-	let events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+	let events: Vec<_> = node.chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
 	assert_eq!(events.len(), count);
 	for event in events {
 		match event {

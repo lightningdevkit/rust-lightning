@@ -34,7 +34,7 @@ use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::events;
-use crate::events::{Event, EventHandler};
+use crate::events::{ClaimInfo, Event, EventHandler};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
@@ -490,6 +490,32 @@ where C::Target: chain::Filter,
 		}], monitor_data.monitor.get_counterparty_node_id()));
 
 		self.event_notifier.notify();
+		Ok(())
+	}
+
+	/// Provides the stored [`ClaimInfo`] and associated [`ClaimMetadata`] for a specified transaction.
+	///
+	/// This function is called in response to a [`ClaimInfoRequest`] to provide the necessary claim data
+	/// that was previously persisted using the [`PersistClaimInfo`] event.
+	///
+	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
+	/// [`ClaimInfoRequest`]: Event::ClaimInfoRequest
+	/// [`ClaimMetadata`]: events::ClaimMetadata
+	pub fn provide_claim_info(&self, _claim_info: ClaimInfo, _claim_info_request: Event) -> Result<(), APIError> {
+
+		Ok(())
+	}
+
+	/// Notifies the system that [`ClaimInfo`] associated with a given transaction has been successfully
+	/// persisted.
+	///
+	/// This method should be called after [`ClaimInfo`] is persisted via the [`PersistClaimInfo`] event
+	/// to confirm that the data is durably stored. Upon this call, the [`ClaimInfo`] is removed from
+	/// both in-memory and on-disk storage within the [`ChannelMonitor`], thereby optimizing memory and
+	/// disk usage.
+	///
+	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
+	pub fn claim_info_persisted(&self, _funding_txo: OutPoint, _claim_key: Txid) -> Result<(), APIError> {
 		Ok(())
 	}
 

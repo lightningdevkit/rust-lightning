@@ -551,7 +551,7 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 1000000);
 
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
-	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().iter().filter(|&e| !matches!(e, Event::PersistClaimInfo {..} | Event::ClaimInfoRequest {..})).collect::<Vec<_>>().is_empty());
 
 	disconnect_blocks(&nodes[0], 1);
 	disconnect_blocks(&nodes[1], 1);
@@ -574,7 +574,7 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 
 	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 	assert!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
-	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().iter().filter(|&e| !matches!(e, Event::PersistClaimInfo {..} | Event::ClaimInfoRequest {..})).collect::<Vec<_>>().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
@@ -601,7 +601,7 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	mine_transaction(&nodes[1], &remote_txn_a[0]);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	let mut node_b_spendable = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	let mut node_b_spendable = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..} | Event::ClaimInfoRequest {..})).collect::<Vec<_>>();
 	assert_eq!(node_b_spendable.len(), 1);
 	if let Event::SpendableOutputs { outputs, channel_id } = node_b_spendable.pop().unwrap() {
 		assert_eq!(outputs.len(), 1);

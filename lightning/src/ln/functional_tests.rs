@@ -55,6 +55,7 @@ use crate::prelude::*;
 use alloc::collections::BTreeSet;
 use core::iter::repeat;
 use bitcoin::hashes::Hash;
+use crate::events::Event::PersistClaimInfo;
 use crate::sync::{Arc, Mutex, RwLock};
 
 use crate::ln::functional_test_utils::*;
@@ -4524,6 +4525,12 @@ macro_rules! check_spendable_outputs {
 							all_outputs.push(outp);
 						}
 					},
+					Event::PersistClaimInfo{..}  => {
+						// Do Nothing
+					},
+					Event::ClaimInfoRequest{..}  => {
+						// Do Nothing
+					}
 					_ => panic!("Unexpected event"),
 				};
 			}
@@ -8558,6 +8565,10 @@ fn test_update_err_monitor_lockdown() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events: Vec<_> = monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8631,6 +8642,10 @@ fn test_concurrent_monitor_claim() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events: Vec<_> = monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8663,6 +8678,10 @@ fn test_concurrent_monitor_claim() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events: Vec<_> = monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -9610,7 +9629,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		// If we confirmed the close transaction, but timelocks have not yet expired, we should not
 		// generate any events or broadcast any transactions
 		assert!(nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
-		assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+		assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().iter().filter(|&e| !matches!(e, PersistClaimInfo {..})).collect::<Vec<_>>().is_empty());
 	} else {
 		// We should broadcast an HTLC transaction spending our funding transaction first
 		let spending_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
