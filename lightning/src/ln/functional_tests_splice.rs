@@ -1394,6 +1394,7 @@ fn test_v2_payment_splice_in_payment() {
 
 	// === Send a payment
 	let payment1_amount_msat = 6001_000;
+	println!("Send a payment, amount {}", payment1_amount_msat);
 
 	let _payment_res = send_payment(&initiator_node, &[acceptor_node], payment1_amount_msat);
 
@@ -1724,10 +1725,22 @@ fn test_v2_payment_splice_in_payment() {
 		assert_eq!(channel.confirmations.unwrap(), 10);
 	}
 
+	let events = initiator_node.node.get_and_clear_pending_events();
+	if events.len() > 0 {
+		panic!("Unexpected event {:?}", events[0]);
+	}
+	assert_eq!(events.len(), 0);
+	let events = acceptor_node.node.get_and_clear_pending_events();
+	if events.len() > 0 {
+		panic!("Unexpected event {:?}", events[0]);
+	}
+	assert_eq!(events.len(), 0);
+
 	// === End of Splicing
 
 	// === Send another payment
 	let payment2_amount_msat = 3002_000;
+	println!("Send another payment, amount {}", payment2_amount_msat);
 
 	let _payment_res = send_payment(&initiator_node, &[acceptor_node], payment2_amount_msat);
 
@@ -1735,14 +1748,14 @@ fn test_v2_payment_splice_in_payment() {
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
 	{
 		let channel = &initiator_node.node.list_channels()[0];
-		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
-		assert_eq!(channel.balance_msat, 1000 * channel_value_sat - payment1_amount_msat - payment2_amount_msat);
+		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
+		assert_eq!(channel.balance_msat, 1000 * post_splice_channel_value - payment1_amount_msat - payment2_amount_msat);
 	}
 	// do checks on the acceptor node as well
 	assert_eq!(acceptor_node.node.list_channels().len(), 1);
 	{
 		let channel = &acceptor_node.node.list_channels()[0];
-		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
+		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
 		assert_eq!(channel.balance_msat, payment1_amount_msat + payment2_amount_msat);
 	}
 

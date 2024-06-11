@@ -699,7 +699,7 @@ pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &
 			assert_eq!(node_id, recipient);
 			(*msg).clone()
 		},
-		_ => panic!("Unexpected event"),
+		_ => panic!("Unexpected event {:?}", events[0]),
 	}, match events[1] {
 		MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
 			assert_eq!(node_id, recipient);

@@ -149,14 +149,14 @@ impl ChannelSigner for TestChannelSigner {
 		Ok(())
 	}
 
-	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
+	fn validate_counterparty_revocation(&self, idx: u64, secret: &SecretKey) -> Result<(), ()> {
 		if !*self.available.lock().unwrap() {
 			return Err(());
 		}
 		let mut state = self.state.lock().unwrap();
 		assert!(idx == state.last_counterparty_revoked_commitment || idx == state.last_counterparty_revoked_commitment - 1, "expecting to validate the current or next counterparty revocation - trying {}, current {}", idx, state.last_counterparty_revoked_commitment);
 		state.last_counterparty_revoked_commitment = idx;
-		Ok(())
+		self.inner.validate_counterparty_revocation(idx, secret)
 	}
 
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
@@ -185,7 +185,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			// Ensure that the counterparty doesn't get more than two broadcastable commitments -
 			// the last and the one we are trying to sign
 			assert!(actual_commitment_number >= state.last_counterparty_revoked_commitment - 2, "cannot sign a commitment if second to last wasn't revoked - signing {} revoked {}", actual_commitment_number, state.last_counterparty_revoked_commitment);
-			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number)
+			state.last_counterparty_commitment = cmp::min(last_commitment_number, actual_commitment_number);
 		}
 
 		Ok(self.inner.sign_counterparty_commitment(commitment_tx, inbound_htlc_preimages, outbound_htlc_preimages, secp_ctx).unwrap())
