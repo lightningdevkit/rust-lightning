@@ -291,7 +291,7 @@ fn close_on_unfunded_channel() {
 	let _open_chan = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 	nodes[0].node.close_channel(&chan_id, &nodes[1].node.get_our_node_id()).unwrap();
-	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed, [nodes[1].node.get_our_node_id()], 1_000_000);
+	check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }, [nodes[1].node.get_our_node_id()], 1_000_000);
 }
 
 #[test]
@@ -324,7 +324,7 @@ fn expect_channel_shutdown_state_with_force_closure() {
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_broadcast!(nodes[0], true);
 	check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
-	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed, [nodes[0].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[0].node.get_our_node_id()], 100000);
 }
 
 #[test]
