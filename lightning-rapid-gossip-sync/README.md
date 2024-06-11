@@ -12,19 +12,24 @@ updates are known.
 
 Essentially, the serialization structure is as follows:
 
-1. Fixed prefix bytes `76, 68, 75, 1` (the first three bytes are ASCII for `LDK`)
+1. Fixed prefix bytes `76, 68, 75` (the first three bytes are ASCII for `LDK`)
     - The purpose of this prefix is to identify the serialization format, should other rapid gossip
       sync formats arise in the future
-    - The fourth byte is the protocol version in case our format gets updated
-2. Chain hash (32 bytes)
-3. Latest seen timestamp (`u32`)
-4. An unsigned int indicating the number of node IDs to follow
-5. An array of compressed node ID pubkeys (all pubkeys are presumed to be standard
+2. Version byte
+   - Currently supported versions are 1 and 2
+3. Chain hash (32 bytes)
+4. Latest seen timestamp (`u32`)
+5. Version 2 only:
+   - A byte indicating the number of default node features
+   - An array of node features
+6. An unsigned int indicating the number of node IDs to follow
+7. An array of compressed node ID pubkeys (all pubkeys are presumed to be standard
    compressed 33-byte-serializations)
-6. An unsigned int indicating the number of channel announcement messages to follow
-7. An array of significantly stripped down customized channel announcements
-8. An unsigned int indicating the number of channel update messages to follow
-9. A series of default values used for non-incremental channel updates
+   - Version 2 only: Each pubkey is optionally followed by supplemental feature or address information.
+8. An unsigned int indicating the number of channel announcement messages to follow
+9. An array of significantly stripped down customized channel announcements
+10. An unsigned int indicating the number of channel update messages to follow
+11. A series of default values used for non-incremental channel updates
     - The values are defined as follows:
         1. `default_cltv_expiry_delta`
         2. `default_htlc_minimum_msat`
@@ -33,7 +38,7 @@ Essentially, the serialization structure is as follows:
         5. `default_htlc_maximum_msat` (`u64`, and if the default is no maximum, `u64::MAX`)
     - The defaults are calculated by the server based on the frequency among non-incremental
       updates within a given delta set
-10. An array of customized channel updates
+12. An array of customized channel updates
 
 You will also notice that `NodeAnnouncement` messages are omitted altogether as the node IDs are
 implicitly extracted from the channel announcements and updates.
@@ -41,6 +46,25 @@ implicitly extracted from the channel announcements and updates.
 The data is then applied to the current network graph, artificially dated to the timestamp of the
 latest seen message less one week, be it an announcement or an update, from the server's
 perspective. The network graph should not be pruned until the graph sync completes.
+
+### Custom Node Announcement (V2 Only)
+
+In version 2 of the RGS protocol, node IDs may be followed by supplemental feature and socket address data. The presence
+of those additional fields is indicated by utilizing the unused bits of the 33-byte-pubkey parity byte as follows:
+
+| 128             | 64       | 32           | 16           | 8            | 4            | 2          | 1                |
+|-----------------|----------|--------------|--------------|--------------|--------------|------------|------------------|
+| Additional data | Reminder | Feature data | Feature data | Feature data | Address data | Always set | Odd y-coordinate |
+
+Note that bit indices 3-5 all indicate feature data. Specifically, if none of the bits are set, that means there is
+no feature data that follows the pubkey. If a subset of them are set, the bit triplet is interpreted as an index (less
+one) of the default node features that were supplied prior. If all three bits are set, a custom feature combination is
+sent.
+
+If there have been no changes to a node, bit index 6 can be set to function as a reminder absent any address or feature
+data.
+
+Lastly, bit index 7 indicates the presence of additional data, which will allow forwards compatibility.
 
 ### Custom Channel Announcement
 
