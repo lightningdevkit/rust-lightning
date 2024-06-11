@@ -10130,7 +10130,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				transaction_number: cur_holder_commitment_transaction_number, current,
 			},
 			(_, _) => {
-				// TODO(async_signing): remove this expect with the Uninitialized variant
 				let current = holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number, &secp_ctx)
 					.expect("Must be able to derive the current commitment point upon channel restoration");
 				let next = holder_signer.get_per_commitment_point(cur_holder_commitment_transaction_number - 1, &secp_ctx)
