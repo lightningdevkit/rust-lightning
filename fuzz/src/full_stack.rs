@@ -1366,8 +1366,8 @@ mod tests {
 
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);
-		// Two feerate requests to check dust exposure
-		ext_from_hex("00fd00fd", &mut test);
+		// Three feerate requests to check dust exposure
+		ext_from_hex("00fd00fd00fd", &mut test);
 		// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7: UpdateHTLCs event for node 03020000 with 1 HTLCs for channel 3f000000)
 
 		// we respond with commitment_signed then revoke_and_ack (a weird, but valid, order)
@@ -1478,8 +1478,8 @@ mod tests {
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);
 
-		// Two feerate requests to check dust exposure
-		ext_from_hex("00fd00fd", &mut test);
+		// Three feerate requests to check dust exposure
+		ext_from_hex("00fd00fd00fd", &mut test);
 
 		// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 		// we respond with revoke_and_ack, then commitment_signed, then update_fail_htlc
@@ -1602,8 +1602,8 @@ mod tests {
 
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);
-		// Two feerate requests to check dust exposure
-		ext_from_hex("00fd00fd", &mut test);
+		// Three feerate requests to check dust exposure
+		ext_from_hex("00fd00fd00fd", &mut test);
 		// client now sends id 1 update_add_htlc and commitment_signed (CHECK 7 duplicate)
 
 		// connect a block with one transaction of len 125

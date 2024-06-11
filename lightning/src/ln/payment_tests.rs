@@ -2053,22 +2053,28 @@ fn accept_underpaying_htlcs_config() {
 fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let max_in_flight_percent = 10;
 	let mut intercept_forwards_config = test_default_channel_config();
 	intercept_forwards_config.accept_intercept_htlcs = true;
+	intercept_forwards_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = max_in_flight_percent;
 	let mut underpay_config = test_default_channel_config();
 	underpay_config.channel_config.accept_underpaying_htlcs = true;
+	underpay_config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = max_in_flight_percent;
 	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(intercept_forwards_config), Some(underpay_config)]);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
+	let amt_msat = 900_000;
+
 	let mut chan_ids = Vec::new();
 	for _ in 0..num_mpp_parts {
-		let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000, 0);
-		let channel_id = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 2_000_000, 0).0.channel_id;
+		// We choose the channel size so that there can be at most one part pending on each channel.
+		let channel_size = amt_msat / 1000 / num_mpp_parts as u64 * 100 / max_in_flight_percent as u64 + 100;
+		let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_size, 0);
+		let channel_id = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, channel_size, 0).0.channel_id;
 		chan_ids.push(channel_id);
 	}
 
 	// Send the initial payment.
-	let amt_msat = 900_000;
 	let skimmed_fee_msat = 20;
 	let mut route_hints = Vec::new();
 	for _ in 0..num_mpp_parts {
@@ -4098,7 +4104,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 
 	// Create a new channel between C and D as A will refuse to retry on the existing one because
 	// it just failed.
-	let chan_id_cd_2 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).2;
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
 
 	// Now retry the failed HTLC.
 	nodes[0].node.process_pending_htlc_forwards();
@@ -4110,6 +4116,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	expect_pending_htlcs_forwardable!(nodes[2]);
 	check_added_monitors(&nodes[2], 1);
 	let cs_forward = SendEvent::from_node(&nodes[2]);
+	let cd_channel_used = cs_forward.msgs[0].channel_id;
 	nodes[3].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &cs_forward.msgs[0]);
 	commitment_signed_dance!(nodes[3], nodes[2], cs_forward.commitment_msg, false, true);
 
@@ -4129,7 +4136,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 		nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &ds_fail.update_fail_htlcs[0]);
 		commitment_signed_dance!(nodes[2], nodes[3], ds_fail.commitment_signed, false, true);
 		expect_pending_htlcs_forwardable_conditions(nodes[2].node.get_and_clear_pending_events(),
-			&[HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: chan_id_cd_2 }]);
+			&[HTLCDestination::NextHopChannel { node_id: Some(nodes[3].node.get_our_node_id()), channel_id: cd_channel_used }]);
 	} else {
 		expect_pending_htlcs_forwardable!(nodes[3]);
 		expect_payment_claimable!(nodes[3], payment_hash, payment_secret, amt_msat);
@@ -4293,4 +4300,95 @@ fn peel_payment_onion_custom_tlvs() {
 		},
 		_ => panic!()
 	}
+}
+
+#[test]
+fn test_non_strict_forwarding() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(config), Some(config), Some(config)]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// Create a routing node with two outbound channels, each of which can forward 2 payments of
+	// the given value.
+	let payment_value = 1_500_000;
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+	let (chan_update_1, _, channel_id_1, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 4_950, 0);
+	let (chan_update_2, _, channel_id_2, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 5_000, 0);
+
+	// Create a route once.
+	let payment_params = PaymentParameters::from_node_id(nodes[2].node.get_our_node_id(), TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[2].node.bolt11_invoice_features()).unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, payment_value);
+	let route = functional_test_utils::get_route(&nodes[0], &route_params).unwrap();
+
+	// Send 4 payments over the same route.
+	for i in 0..4 {
+		let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(payment_value), None);
+		nodes[0].node.send_payment_with_route(&route, payment_hash,
+			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+		check_added_monitors!(nodes[0], 1);
+		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1);
+		let mut send_event = SendEvent::from_event(msg_events.remove(0));
+		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+		commitment_signed_dance!(nodes[1], nodes[0], &send_event.commitment_msg, false);
+
+		expect_pending_htlcs_forwardable!(nodes[1]);
+		check_added_monitors!(nodes[1], 1);
+		msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1);
+		send_event = SendEvent::from_event(msg_events.remove(0));
+		// The HTLC will be forwarded over the most appropriate channel with the corresponding peer,
+		// applying non-strict forwarding.
+		// The channel with the least amount of outbound liquidity will be used to maximize the
+		// probability of being able to successfully forward a subsequent HTLC.
+		assert_eq!(send_event.msgs[0].channel_id, if i < 2 {
+			channel_id_1
+		} else {
+			channel_id_2
+		});
+		nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_event.msgs[0]);
+		commitment_signed_dance!(nodes[2], nodes[1], &send_event.commitment_msg, false);
+
+		expect_pending_htlcs_forwardable!(nodes[2]);
+		let events = nodes[2].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		assert!(matches!(events[0], Event::PaymentClaimable { .. }));
+
+		claim_payment_along_route(
+			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
+		);
+	}
+
+	// Send a 5th payment which will fail.
+	let (_, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(payment_value), None);
+	nodes[0].node.send_payment_with_route(&route, payment_hash,
+		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	let mut send_event = SendEvent::from_event(msg_events.remove(0));
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+	commitment_signed_dance!(nodes[1], nodes[0], &send_event.commitment_msg, false);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+	check_added_monitors!(nodes[1], 1);
+	let routed_scid = route.paths[0].hops[1].short_channel_id;
+	let routed_channel_id = match routed_scid {
+		scid if scid == chan_update_1.contents.short_channel_id => channel_id_1,
+		scid if scid == chan_update_2.contents.short_channel_id => channel_id_2,
+		_ => panic!("Unexpected short channel id in route"),
+	};
+	// The failure to forward will refer to the channel given in the onion.
+	expect_pending_htlcs_forwardable_conditions(nodes[1].node.get_and_clear_pending_events(),
+		&[HTLCDestination::NextHopChannel { node_id: Some(nodes[2].node.get_our_node_id()), channel_id: routed_channel_id }]);
+
+	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
+	commitment_signed_dance!(nodes[0], nodes[1], updates.commitment_signed, false);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	expect_payment_failed_conditions_event(events, payment_hash, false, PaymentFailedConditions::new().blamed_scid(routed_scid));
 }
