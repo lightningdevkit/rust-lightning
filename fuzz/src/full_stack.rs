@@ -71,7 +71,7 @@ use std::cell::RefCell;
 use std::convert::TryInto;
 use std::cmp;
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64,AtomicUsize,Ordering};
+use std::sync::atomic::{AtomicU64,AtomicUsize,AtomicBool,Ordering};
 use bech32::u5;
 
 #[inline]
@@ -98,6 +98,7 @@ pub fn slice_to_be24(v: &[u8]) -> u32 {
 struct InputData {
 	data: Vec<u8>,
 	read_pos: AtomicUsize,
+	halt_fee_est_reads: AtomicBool,
 }
 impl InputData {
 	fn get_slice(&self, len: usize) -> Option<&[u8]> {
@@ -124,6 +125,9 @@ struct FuzzEstimator {
 }
 impl FeeEstimator for FuzzEstimator {
 	fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
+		if self.input.halt_fee_est_reads.load(Ordering::Acquire) {
+			return 253;
+		}
 		//TODO: We should actually be testing at least much more than 64k...
 		match self.input.get_slice(2) {
 			Some(slice) => cmp::max(slice_to_be16(slice) as u32, 253),
@@ -446,6 +450,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),
+		halt_fee_est_reads: AtomicBool::new(false),
 	});
 	let fee_est = Arc::new(FuzzEstimator {
 		input: input.clone(),
@@ -703,10 +708,12 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			11 => {
 				let mut txn = broadcast.txn_broadcasted.lock().unwrap().split_off(0);
 				if !txn.is_empty() {
+					input.halt_fee_est_reads.store(true, Ordering::Release);
 					loss_detector.connect_block(&txn[..]);
 					for _ in 2..100 {
 						loss_detector.connect_block(&[]);
 					}
+					input.halt_fee_est_reads.store(false, Ordering::Release);
 				}
 				for tx in txn.drain(..) {
 					loss_detector.funding_txn.push(tx);
@@ -914,19 +921,32 @@ mod tests {
 		ext_from_hex("0c005e", &mut test);
 		// the funding transaction
 		ext_from_hex("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae0000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions, one per line
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// by now client should have sent a channel_ready (CHECK 3: SendChannelReady to 03000000 for chan 3d000000)
 
 		// inbound read from peer id 0 of len 18
@@ -1296,21 +1316,28 @@ mod tests {
 		ext_from_hex("0c007d", &mut test);
 		// the commitment transaction for channel 3f00000000000000000000000000000000000000000000000000000000000000
 		ext_from_hex("02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c0000000000000160014280000000000000000000000000000000000000005000020", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		//
 		// connect a block with one transaction of len 94
 		ext_from_hex("0c005e", &mut test);
 		// the HTLC timeout transaction
 		ext_from_hex("0200000001730000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020b20000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
+		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
 
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);

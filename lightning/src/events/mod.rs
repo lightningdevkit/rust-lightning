@@ -331,6 +331,21 @@ pub enum ClosureReason {
 	FundingBatchClosure,
 	/// One of our HTLCs timed out in a channel, causing us to force close the channel.
 	HTLCsTimedOut,
+	/// Our peer provided a feerate which violated our required minimum (fetched from our
+	/// [`FeeEstimator`] either as [`ConfirmationTarget::MinAllowedAnchorChannelRemoteFee`] or
+	/// [`ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee`]).
+	///
+	/// [`FeeEstimator`]: crate::chain::chaininterface::FeeEstimator
+	/// [`ConfirmationTarget::MinAllowedAnchorChannelRemoteFee`]: crate::chain::chaininterface::ConfirmationTarget::MinAllowedAnchorChannelRemoteFee
+	/// [`ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee`]: crate::chain::chaininterface::ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee
+	PeerFeerateTooLow {
+		/// The feerate on our channel set by our peer.
+		peer_feerate_sat_per_kw: u32,
+		/// The required feerate we enforce, from our [`FeeEstimator`].
+		///
+		/// [`FeeEstimator`]: crate::chain::chaininterface::FeeEstimator
+		required_feerate_sat_per_kw: u32,
+	},
 }
 
 impl core::fmt::Display for ClosureReason {
@@ -355,6 +370,11 @@ impl core::fmt::Display for ClosureReason {
 			ClosureReason::CounterpartyCoopClosedUnfundedChannel => f.write_str("the peer requested the unfunded channel be closed"),
 			ClosureReason::FundingBatchClosure => f.write_str("another channel in the same funding batch closed"),
 			ClosureReason::HTLCsTimedOut => f.write_str("htlcs on the channel timed out"),
+			ClosureReason::PeerFeerateTooLow { peer_feerate_sat_per_kw, required_feerate_sat_per_kw } =>
+				f.write_fmt(format_args!(
+					"peer provided a feerate ({} sat/kw) which was below our lower bound ({} sat/kw)",
+					peer_feerate_sat_per_kw, required_feerate_sat_per_kw,
+				)),
 		}
 	}
 }
@@ -373,6 +393,10 @@ impl_writeable_tlv_based_enum_upgradable!(ClosureReason,
 	(17, CounterpartyInitiatedCooperativeClosure) => {},
 	(19, LocallyInitiatedCooperativeClosure) => {},
 	(21, HTLCsTimedOut) => {},
+	(23, PeerFeerateTooLow) => {
+		(0, peer_feerate_sat_per_kw, required),
+		(2, required_feerate_sat_per_kw, required),
+	},
 );
 
 /// Intended destination of a failed HTLC as indicated in [`Event::HTLCHandlingFailed`].

@@ -710,7 +710,7 @@ pub const MIN_THEIR_CHAN_RESERVE_SATOSHIS: u64 = 1000;
 pub(super) enum ChannelError {
 	Ignore(String),
 	Warn(String),
-	Close(String),
+	Close((String, ClosureReason)),
 }
 
 impl fmt::Debug for ChannelError {
@@ -718,7 +718,7 @@ impl fmt::Debug for ChannelError {
 		match self {
 			&ChannelError::Ignore(ref e) => write!(f, "Ignore : {}", e),
 			&ChannelError::Warn(ref e) => write!(f, "Warn : {}", e),
-			&ChannelError::Close(ref e) => write!(f, "Close : {}", e),
+			&ChannelError::Close((ref e, _)) => write!(f, "Close : {}", e),
 		}
 	}
 }
@@ -728,8 +728,14 @@ impl fmt::Display for ChannelError {
 		match self {
 			&ChannelError::Ignore(ref e) => write!(f, "{}", e),
 			&ChannelError::Warn(ref e) => write!(f, "{}", e),
-			&ChannelError::Close(ref e) => write!(f, "{}", e),
+			&ChannelError::Close((ref e, _)) => write!(f, "{}", e),
 		}
+	}
+}
+
+impl ChannelError {
+	pub(super) fn close(err: String) -> Self {
+		ChannelError::Close((err.clone(), ClosureReason::ProcessingError { err }))
 	}
 }
 
@@ -767,7 +773,7 @@ macro_rules! secp_check {
 	($res: expr, $err: expr) => {
 		match $res {
 			Ok(thing) => thing,
-			Err(_) => return Err(ChannelError::Close($err)),
+			Err(_) => return Err(ChannelError::close($err)),
 		}
 	};
 }
@@ -1467,90 +1473,90 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		if config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
-			return Err(ChannelError::Close(format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}", config.channel_handshake_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
+			return Err(ChannelError::close(format!("Configured with an unreasonable our_to_self_delay ({}) putting user funds at risks. It must be greater than {}", config.channel_handshake_config.our_to_self_delay, BREAKDOWN_TIMEOUT)));
 		}
 
 		// Check sanity of message fields:
 		if channel_value_satoshis > config.channel_handshake_limits.max_funding_satoshis {
-			return Err(ChannelError::Close(format!(
+			return Err(ChannelError::close(format!(
 				"Per our config, funding must be at most {}. It was {}. Peer contribution: {}. Our contribution: {}",
 				config.channel_handshake_limits.max_funding_satoshis, channel_value_satoshis,
 				open_channel_fields.funding_satoshis, our_funding_satoshis)));
 		}
 		if channel_value_satoshis >= TOTAL_BITCOIN_SUPPLY_SATOSHIS {
-			return Err(ChannelError::Close(format!("Funding must be smaller than the total bitcoin supply. It was {}", channel_value_satoshis)));
+			return Err(ChannelError::close(format!("Funding must be smaller than the total bitcoin supply. It was {}", channel_value_satoshis)));
 		}
 		if msg_channel_reserve_satoshis > channel_value_satoshis {
-			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must be no greater than channel_value_satoshis: {}", msg_channel_reserve_satoshis, channel_value_satoshis)));
+			return Err(ChannelError::close(format!("Bogus channel_reserve_satoshis ({}). Must be no greater than channel_value_satoshis: {}", msg_channel_reserve_satoshis, channel_value_satoshis)));
 		}
 		let full_channel_value_msat = (channel_value_satoshis - msg_channel_reserve_satoshis) * 1000;
 		if msg_push_msat > full_channel_value_msat {
-			return Err(ChannelError::Close(format!("push_msat {} was larger than channel amount minus reserve ({})", msg_push_msat, full_channel_value_msat)));
+			return Err(ChannelError::close(format!("push_msat {} was larger than channel amount minus reserve ({})", msg_push_msat, full_channel_value_msat)));
 		}
 		if open_channel_fields.dust_limit_satoshis > channel_value_satoshis {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis {} was larger than channel_value_satoshis {}. Peer never wants payout outputs?", open_channel_fields.dust_limit_satoshis, channel_value_satoshis)));
+			return Err(ChannelError::close(format!("dust_limit_satoshis {} was larger than channel_value_satoshis {}. Peer never wants payout outputs?", open_channel_fields.dust_limit_satoshis, channel_value_satoshis)));
 		}
 		if open_channel_fields.htlc_minimum_msat >= full_channel_value_msat {
-			return Err(ChannelError::Close(format!("Minimum htlc value ({}) was larger than full channel value ({})", open_channel_fields.htlc_minimum_msat, full_channel_value_msat)));
+			return Err(ChannelError::close(format!("Minimum htlc value ({}) was larger than full channel value ({})", open_channel_fields.htlc_minimum_msat, full_channel_value_msat)));
 		}
 		Channel::<SP>::check_remote_fee(&channel_type, fee_estimator, open_channel_fields.commitment_feerate_sat_per_1000_weight, None, &&logger)?;
 
 		let max_counterparty_selected_contest_delay = u16::min(config.channel_handshake_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if open_channel_fields.to_self_delay > max_counterparty_selected_contest_delay {
-			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_counterparty_selected_contest_delay, open_channel_fields.to_self_delay)));
+			return Err(ChannelError::close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_counterparty_selected_contest_delay, open_channel_fields.to_self_delay)));
 		}
 		if open_channel_fields.max_accepted_htlcs < 1 {
-			return Err(ChannelError::Close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
+			return Err(ChannelError::close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
 		}
 		if open_channel_fields.max_accepted_htlcs > MAX_HTLCS {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs was {}. It must not be larger than {}", open_channel_fields.max_accepted_htlcs, MAX_HTLCS)));
+			return Err(ChannelError::close(format!("max_accepted_htlcs was {}. It must not be larger than {}", open_channel_fields.max_accepted_htlcs, MAX_HTLCS)));
 		}
 
 		// Now check against optional parameters as set by config...
 		if channel_value_satoshis < config.channel_handshake_limits.min_funding_satoshis {
-			return Err(ChannelError::Close(format!("Funding satoshis ({}) is less than the user specified limit ({})", channel_value_satoshis, config.channel_handshake_limits.min_funding_satoshis)));
+			return Err(ChannelError::close(format!("Funding satoshis ({}) is less than the user specified limit ({})", channel_value_satoshis, config.channel_handshake_limits.min_funding_satoshis)));
 		}
 		if open_channel_fields.htlc_minimum_msat > config.channel_handshake_limits.max_htlc_minimum_msat {
-			return Err(ChannelError::Close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", open_channel_fields.htlc_minimum_msat, config.channel_handshake_limits.max_htlc_minimum_msat)));
+			return Err(ChannelError::close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", open_channel_fields.htlc_minimum_msat, config.channel_handshake_limits.max_htlc_minimum_msat)));
 		}
 		if open_channel_fields.max_htlc_value_in_flight_msat < config.channel_handshake_limits.min_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", open_channel_fields.max_htlc_value_in_flight_msat, config.channel_handshake_limits.min_max_htlc_value_in_flight_msat)));
+			return Err(ChannelError::close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", open_channel_fields.max_htlc_value_in_flight_msat, config.channel_handshake_limits.min_max_htlc_value_in_flight_msat)));
 		}
 		if msg_channel_reserve_satoshis > config.channel_handshake_limits.max_channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg_channel_reserve_satoshis, config.channel_handshake_limits.max_channel_reserve_satoshis)));
+			return Err(ChannelError::close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg_channel_reserve_satoshis, config.channel_handshake_limits.max_channel_reserve_satoshis)));
 		}
 		if open_channel_fields.max_accepted_htlcs < config.channel_handshake_limits.min_max_accepted_htlcs {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", open_channel_fields.max_accepted_htlcs, config.channel_handshake_limits.min_max_accepted_htlcs)));
+			return Err(ChannelError::close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", open_channel_fields.max_accepted_htlcs, config.channel_handshake_limits.min_max_accepted_htlcs)));
 		}
 		if open_channel_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if open_channel_fields.dust_limit_satoshis >  MAX_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", open_channel_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 
 		// Convert things into internal flags and prep our state:
 
 		if config.channel_handshake_limits.force_announced_channel_preference {
 			if config.channel_handshake_config.announced_channel != announced_channel {
-				return Err(ChannelError::Close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
+				return Err(ChannelError::close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
 			}
 		}
 
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			// Protocol level safety check in place, although it should never happen because
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
-			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
+			return Err(ChannelError::close(format!("Suitable channel reserve not found. remote_channel_reserve was ({}). dust_limit_satoshis is ({}).", holder_selected_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if holder_selected_channel_reserve_satoshis * 1000 >= full_channel_value_msat {
-			return Err(ChannelError::Close(format!("Suitable channel reserve not found. remote_channel_reserve was ({})msats. Channel value is ({} - {})msats.", holder_selected_channel_reserve_satoshis * 1000, full_channel_value_msat, msg_push_msat)));
+			return Err(ChannelError::close(format!("Suitable channel reserve not found. remote_channel_reserve was ({})msats. Channel value is ({} - {})msats.", holder_selected_channel_reserve_satoshis * 1000, full_channel_value_msat, msg_push_msat)));
 		}
 		if msg_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			log_debug!(logger, "channel_reserve_satoshis ({}) is smaller than our dust limit ({}). We can broadcast stale states without any risk, implying this channel is very insecure for our counterparty.",
 				msg_channel_reserve_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
 		}
 		if holder_selected_channel_reserve_satoshis < open_channel_fields.dust_limit_satoshis {
-			return Err(ChannelError::Close(format!("Dust limit ({}) too high for the channel reserve we require the remote to keep ({})", open_channel_fields.dust_limit_satoshis, holder_selected_channel_reserve_satoshis)));
+			return Err(ChannelError::close(format!("Dust limit ({}) too high for the channel reserve we require the remote to keep ({})", open_channel_fields.dust_limit_satoshis, holder_selected_channel_reserve_satoshis)));
 		}
 
 		// check if the funder's amount for the initial commitment tx is sufficient
@@ -1563,14 +1569,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let funders_amount_msat = open_channel_fields.funding_satoshis * 1000 - msg_push_msat;
 		let commitment_tx_fee = commit_tx_fee_msat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) / 1000;
 		if (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value) < commitment_tx_fee {
-			return Err(ChannelError::Close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value), commitment_tx_fee)));
+			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value), commitment_tx_fee)));
 		}
 
 		let to_remote_satoshis = funders_amount_msat / 1000 - commitment_tx_fee - anchor_outputs_value;
 		// While it's reasonable for us to not meet the channel reserve initially (if they don't
 		// want to push much to us), our counterparty should always have more than our reserve.
 		if to_remote_satoshis < holder_selected_channel_reserve_satoshis {
-			return Err(ChannelError::Close("Insufficient funding amount for initial reserve".to_owned()));
+			return Err(ChannelError::close("Insufficient funding amount for initial reserve".to_owned()));
 		}
 
 		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
@@ -1581,14 +1587,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 						None
 					} else {
 						if !script::is_bolt2_compliant(&script, their_features) {
-							return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)))
+							return Err(ChannelError::close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)))
 						}
 						Some(script.clone())
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
 				&None => {
-					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
+					return Err(ChannelError::close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
 				}
 			}
 		} else { None };
@@ -1596,19 +1602,19 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
 			match signer_provider.get_shutdown_scriptpubkey() {
 				Ok(scriptpubkey) => Some(scriptpubkey),
-				Err(_) => return Err(ChannelError::Close("Failed to get upfront shutdown scriptpubkey".to_owned())),
+				Err(_) => return Err(ChannelError::close("Failed to get upfront shutdown scriptpubkey".to_owned())),
 			}
 		} else { None };
 
 		if let Some(shutdown_scriptpubkey) = &shutdown_scriptpubkey {
 			if !shutdown_scriptpubkey.is_compatible(&their_features) {
-				return Err(ChannelError::Close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
+				return Err(ChannelError::close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
 			}
 		}
 
 		let destination_script = match signer_provider.get_destination_script(channel_keys_id) {
 			Ok(script) => script,
-			Err(_) => return Err(ChannelError::Close("Failed to get destination script".to_owned())),
+			Err(_) => return Err(ChannelError::close("Failed to get destination script".to_owned())),
 		};
 
 		let mut secp_ctx = Secp256k1::new();
@@ -3581,7 +3587,12 @@ impl<SP: Deref> Channel<SP> where
 					return Ok(());
 				}
 			}
-			return Err(ChannelError::Close(format!("Peer's feerate much too low. Actual: {}. Our expected lower limit: {}", feerate_per_kw, lower_limit)));
+			return Err(ChannelError::Close((format!(
+				"Peer's feerate much too low. Actual: {}. Our expected lower limit: {}", feerate_per_kw, lower_limit
+			), ClosureReason::PeerFeerateTooLow {
+				peer_feerate_sat_per_kw: feerate_per_kw,
+				required_feerate_sat_per_kw: lower_limit,
+			})));
 		}
 		Ok(())
 	}
@@ -4031,7 +4042,7 @@ impl<SP: Deref> Channel<SP> where
 			}
 			// If we reconnected before sending our `channel_ready` they may still resend theirs.
 			ChannelState::ChannelReady(_) => check_reconnection = true,
-			_ => return Err(ChannelError::Close("Peer sent a channel_ready at a strange time".to_owned())),
+			_ => return Err(ChannelError::close("Peer sent a channel_ready at a strange time".to_owned())),
 		}
 		if check_reconnection {
 			// They probably disconnected/reconnected and re-sent the channel_ready, which is
@@ -4054,7 +4065,7 @@ impl<SP: Deref> Channel<SP> where
 						).expect("We already advanced, so previous secret keys should have been validated already")))
 				};
 			if expected_point != Some(msg.next_per_commitment_point) {
-				return Err(ChannelError::Close("Peer sent a reconnect channel_ready with a different point".to_owned()));
+				return Err(ChannelError::close("Peer sent a reconnect channel_ready with a different point".to_owned()));
 			}
 			return Ok(None);
 		}
@@ -4072,32 +4083,32 @@ impl<SP: Deref> Channel<SP> where
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Result<(), ChannelError> where F::Target: FeeEstimator {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state".to_owned()));
+			return Err(ChannelError::close("Got add HTLC message when channel was not in an operational state".to_owned()));
 		}
 		// If the remote has sent a shutdown prior to adding this HTLC, then they are in violation of the spec.
 		if self.context.channel_state.is_remote_shutdown_sent() {
-			return Err(ChannelError::Close("Got add HTLC message when channel was not in an operational state".to_owned()));
+			return Err(ChannelError::close("Got add HTLC message when channel was not in an operational state".to_owned()));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::Close("Peer sent update_add_htlc when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close("Peer sent update_add_htlc when we needed a channel_reestablish".to_owned()));
 		}
 		if msg.amount_msat > self.context.channel_value_satoshis * 1000 {
-			return Err(ChannelError::Close("Remote side tried to send more than the total value of the channel".to_owned()));
+			return Err(ChannelError::close("Remote side tried to send more than the total value of the channel".to_owned()));
 		}
 		if msg.amount_msat == 0 {
-			return Err(ChannelError::Close("Remote side tried to send a 0-msat HTLC".to_owned()));
+			return Err(ChannelError::close("Remote side tried to send a 0-msat HTLC".to_owned()));
 		}
 		if msg.amount_msat < self.context.holder_htlc_minimum_msat {
-			return Err(ChannelError::Close(format!("Remote side tried to send less than our minimum HTLC value. Lower limit: ({}). Actual: ({})", self.context.holder_htlc_minimum_msat, msg.amount_msat)));
+			return Err(ChannelError::close(format!("Remote side tried to send less than our minimum HTLC value. Lower limit: ({}). Actual: ({})", self.context.holder_htlc_minimum_msat, msg.amount_msat)));
 		}
 
 		let dust_exposure_limiting_feerate = self.context.get_dust_exposure_limiting_feerate(&fee_estimator);
 		let htlc_stats = self.context.get_pending_htlc_stats(None, dust_exposure_limiting_feerate);
 		if htlc_stats.pending_inbound_htlcs + 1 > self.context.holder_max_accepted_htlcs as usize {
-			return Err(ChannelError::Close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.context.holder_max_accepted_htlcs)));
+			return Err(ChannelError::close(format!("Remote tried to push more than our max accepted HTLCs ({})", self.context.holder_max_accepted_htlcs)));
 		}
 		if htlc_stats.pending_inbound_htlcs_value_msat + msg.amount_msat > self.context.holder_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Close(format!("Remote HTLC add would put them over our max HTLC value ({})", self.context.holder_max_htlc_value_in_flight_msat)));
+			return Err(ChannelError::close(format!("Remote HTLC add would put them over our max HTLC value ({})", self.context.holder_max_htlc_value_in_flight_msat)));
 		}
 
 		// Check holder_selected_channel_reserve_satoshis (we're getting paid, so they have to at least meet
@@ -4126,7 +4137,7 @@ impl<SP: Deref> Channel<SP> where
 		let pending_remote_value_msat =
 			self.context.channel_value_satoshis * 1000 - pending_value_to_self_msat;
 		if pending_remote_value_msat < msg.amount_msat {
-			return Err(ChannelError::Close("Remote HTLC add would overdraw remaining funds".to_owned()));
+			return Err(ChannelError::close("Remote HTLC add would overdraw remaining funds".to_owned()));
 		}
 
 		// Check that the remote can afford to pay for this HTLC on-chain at the current
@@ -4142,10 +4153,10 @@ impl<SP: Deref> Channel<SP> where
 				0
 			};
 			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(anchor_outputs_value_msat) < remote_commit_tx_fee_msat {
-				return Err(ChannelError::Close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
+				return Err(ChannelError::close("Remote HTLC add would not leave enough to pay for fees".to_owned()));
 			};
 			if pending_remote_value_msat.saturating_sub(msg.amount_msat).saturating_sub(remote_commit_tx_fee_msat).saturating_sub(anchor_outputs_value_msat) < self.context.holder_selected_channel_reserve_satoshis * 1000 {
-				return Err(ChannelError::Close("Remote HTLC add would put them under remote reserve value".to_owned()));
+				return Err(ChannelError::close("Remote HTLC add would put them under remote reserve value".to_owned()));
 			}
 		}
 
@@ -4159,14 +4170,14 @@ impl<SP: Deref> Channel<SP> where
 			let htlc_candidate = HTLCCandidate::new(msg.amount_msat, HTLCInitiator::RemoteOffered);
 			let local_commit_tx_fee_msat = self.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
 			if self.context.value_to_self_msat < self.context.counterparty_selected_channel_reserve_satoshis.unwrap() * 1000 + local_commit_tx_fee_msat + anchor_outputs_value_msat {
-				return Err(ChannelError::Close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
+				return Err(ChannelError::close("Cannot accept HTLC that would put our balance under counterparty-announced channel reserve value".to_owned()));
 			}
 		}
 		if self.context.next_counterparty_htlc_id != msg.htlc_id {
-			return Err(ChannelError::Close(format!("Remote skipped HTLC ID (skipped ID: {})", self.context.next_counterparty_htlc_id)));
+			return Err(ChannelError::close(format!("Remote skipped HTLC ID (skipped ID: {})", self.context.next_counterparty_htlc_id)));
 		}
 		if msg.cltv_expiry >= 500000000 {
-			return Err(ChannelError::Close("Remote provided CLTV expiry in seconds instead of block height".to_owned()));
+			return Err(ChannelError::close("Remote provided CLTV expiry in seconds instead of block height".to_owned()));
 		}
 
 		if self.context.channel_state.is_local_shutdown_sent() {
@@ -4200,32 +4211,32 @@ impl<SP: Deref> Channel<SP> where
 					Some(payment_preimage) => {
 						let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 						if payment_hash != htlc.payment_hash {
-							return Err(ChannelError::Close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
+							return Err(ChannelError::close(format!("Remote tried to fulfill HTLC ({}) with an incorrect preimage", htlc_id)));
 						}
 						OutboundHTLCOutcome::Success(Some(payment_preimage))
 					}
 				};
 				match htlc.state {
 					OutboundHTLCState::LocalAnnounced(_) =>
-						return Err(ChannelError::Close(format!("Remote tried to fulfill/fail HTLC ({}) before it had been committed", htlc_id))),
+						return Err(ChannelError::close(format!("Remote tried to fulfill/fail HTLC ({}) before it had been committed", htlc_id))),
 					OutboundHTLCState::Committed => {
 						htlc.state = OutboundHTLCState::RemoteRemoved(outcome);
 					},
 					OutboundHTLCState::AwaitingRemoteRevokeToRemove(_) | OutboundHTLCState::AwaitingRemovedRemoteRevoke(_) | OutboundHTLCState::RemoteRemoved(_) =>
-						return Err(ChannelError::Close(format!("Remote tried to fulfill/fail HTLC ({}) that they'd already fulfilled/failed", htlc_id))),
+						return Err(ChannelError::close(format!("Remote tried to fulfill/fail HTLC ({}) that they'd already fulfilled/failed", htlc_id))),
 				}
 				return Ok(htlc);
 			}
 		}
-		Err(ChannelError::Close("Remote tried to fulfill/fail an HTLC we couldn't find".to_owned()))
+		Err(ChannelError::close("Remote tried to fulfill/fail an HTLC we couldn't find".to_owned()))
 	}
 
 	pub fn update_fulfill_htlc(&mut self, msg: &msgs::UpdateFulfillHTLC) -> Result<(HTLCSource, u64, Option<u64>), ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Close("Got fulfill HTLC message when channel was not in an operational state".to_owned()));
+			return Err(ChannelError::close("Got fulfill HTLC message when channel was not in an operational state".to_owned()));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::Close("Peer sent update_fulfill_htlc when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close("Peer sent update_fulfill_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, Some(msg.payment_preimage), None).map(|htlc| (htlc.source.clone(), htlc.amount_msat, htlc.skimmed_fee_msat))
@@ -4233,10 +4244,10 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn update_fail_htlc(&mut self, msg: &msgs::UpdateFailHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Close("Got fail HTLC message when channel was not in an operational state".to_owned()));
+			return Err(ChannelError::close("Got fail HTLC message when channel was not in an operational state".to_owned()));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::Close("Peer sent update_fail_htlc when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close("Peer sent update_fail_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))?;
@@ -4245,10 +4256,10 @@ impl<SP: Deref> Channel<SP> where
 
 	pub fn update_fail_malformed_htlc(&mut self, msg: &msgs::UpdateFailMalformedHTLC, fail_reason: HTLCFailReason) -> Result<(), ChannelError> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Close("Got fail malformed HTLC message when channel was not in an operational state".to_owned()));
+			return Err(ChannelError::close("Got fail malformed HTLC message when channel was not in an operational state".to_owned()));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::Close("Peer sent update_fail_malformed_htlc when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close("Peer sent update_fail_malformed_htlc when we needed a channel_reestablish".to_owned()));
 		}
 
 		self.mark_outbound_htlc_removed(msg.htlc_id, None, Some(fail_reason))?;
@@ -4259,13 +4270,13 @@ impl<SP: Deref> Channel<SP> where
 		where L::Target: Logger
 	{
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Close("Got commitment signed message when channel was not in an operational state".to_owned()));
+			return Err(ChannelError::close("Got commitment signed message when channel was not in an operational state".to_owned()));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::Close("Peer sent commitment_signed when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close("Peer sent commitment_signed when we needed a channel_reestablish".to_owned()));
 		}
 		if self.context.channel_state.is_both_sides_shutdown() && self.context.last_sent_closing_fee.is_some() {
-			return Err(ChannelError::Close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
+			return Err(ChannelError::close("Peer sent commitment_signed after we'd started exchanging closing_signeds".to_owned()));
 		}
 
 		let funding_script = self.context.get_funding_redeemscript();
@@ -4283,7 +4294,7 @@ impl<SP: Deref> Channel<SP> where
 				log_bytes!(self.context.counterparty_funding_pubkey().serialize()), encode::serialize_hex(&bitcoin_tx.transaction),
 				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script), &self.context.channel_id());
 			if let Err(_) = self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.context.counterparty_funding_pubkey()) {
-				return Err(ChannelError::Close("Invalid commitment tx signature from peer".to_owned()));
+				return Err(ChannelError::close("Invalid commitment tx signature from peer".to_owned()));
 			}
 			bitcoin_tx.txid
 		};
@@ -4298,7 +4309,7 @@ impl<SP: Deref> Channel<SP> where
 			debug_assert!(!self.context.is_outbound());
 			let counterparty_reserve_we_require_msat = self.context.holder_selected_channel_reserve_satoshis * 1000;
 			if commitment_stats.remote_balance_msat < commitment_stats.total_fee_sat * 1000 + counterparty_reserve_we_require_msat {
-				return Err(ChannelError::Close("Funding remote cannot afford proposed new fee".to_owned()));
+				return Err(ChannelError::close("Funding remote cannot afford proposed new fee".to_owned()));
 			}
 		}
 		#[cfg(any(test, fuzzing))]
@@ -4320,7 +4331,7 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		if msg.htlc_signatures.len() != commitment_stats.num_nondust_htlcs {
-			return Err(ChannelError::Close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.num_nondust_htlcs)));
+			return Err(ChannelError::close(format!("Got wrong number of HTLC signatures ({}) from remote. It must be {}", msg.htlc_signatures.len(), commitment_stats.num_nondust_htlcs)));
 		}
 
 		// Up to LDK 0.0.115, HTLC information was required to be duplicated in the
@@ -4353,7 +4364,7 @@ impl<SP: Deref> Channel<SP> where
 					log_bytes!(msg.htlc_signatures[idx].serialize_compact()[..]), log_bytes!(keys.countersignatory_htlc_key.to_public_key().serialize()),
 					encode::serialize_hex(&htlc_tx), log_bytes!(htlc_sighash[..]), encode::serialize_hex(&htlc_redeemscript), &self.context.channel_id());
 				if let Err(_) = self.context.secp_ctx.verify_ecdsa(&htlc_sighash, &msg.htlc_signatures[idx], &keys.countersignatory_htlc_key.to_public_key()) {
-					return Err(ChannelError::Close("Invalid HTLC tx signature from peer".to_owned()));
+					return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
 				}
 				if !separate_nondust_htlc_sources {
 					htlcs_and_sigs.push((htlc, Some(msg.htlc_signatures[idx]), source_opt.take()));
@@ -4378,7 +4389,7 @@ impl<SP: Deref> Channel<SP> where
 		);
 
 		self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, commitment_stats.outbound_htlc_preimages)
-			.map_err(|_| ChannelError::Close("Failed to validate our commitment".to_owned()))?;
+			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
 
 		// Update state now that we've passed all the can-fail calls...
 		let mut need_commitment = false;
@@ -4631,20 +4642,20 @@ impl<SP: Deref> Channel<SP> where
 	where F::Target: FeeEstimator, L::Target: Logger,
 	{
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Err(ChannelError::Close("Got revoke/ACK message when channel was not in an operational state".to_owned()));
+			return Err(ChannelError::close("Got revoke/ACK message when channel was not in an operational state".to_owned()));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::Close("Peer sent revoke_and_ack when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close("Peer sent revoke_and_ack when we needed a channel_reestablish".to_owned()));
 		}
 		if self.context.channel_state.is_both_sides_shutdown() && self.context.last_sent_closing_fee.is_some() {
-			return Err(ChannelError::Close("Peer sent revoke_and_ack after we'd started exchanging closing_signeds".to_owned()));
+			return Err(ChannelError::close("Peer sent revoke_and_ack after we'd started exchanging closing_signeds".to_owned()));
 		}
 
 		let secret = secp_check!(SecretKey::from_slice(&msg.per_commitment_secret), "Peer provided an invalid per_commitment_secret".to_owned());
 
 		if let Some(counterparty_prev_commitment_point) = self.context.counterparty_prev_commitment_point {
 			if PublicKey::from_secret_key(&self.context.secp_ctx, &secret) != counterparty_prev_commitment_point {
-				return Err(ChannelError::Close("Got a revoke commitment secret which didn't correspond to their current pubkey".to_owned()));
+				return Err(ChannelError::close("Got a revoke commitment secret which didn't correspond to their current pubkey".to_owned()));
 			}
 		}
 
@@ -4656,7 +4667,7 @@ impl<SP: Deref> Channel<SP> where
 			// lot of work, and there's some chance this is all a misunderstanding anyway.
 			// We have to do *something*, though, since our signer may get mad at us for otherwise
 			// jumping a remote commitment number, so best to just force-close and move on.
-			return Err(ChannelError::Close("Received an unexpected revoke_and_ack".to_owned()));
+			return Err(ChannelError::close("Received an unexpected revoke_and_ack".to_owned()));
 		}
 
 		#[cfg(any(test, fuzzing))]
@@ -4670,7 +4681,7 @@ impl<SP: Deref> Channel<SP> where
 				ecdsa.validate_counterparty_revocation(
 					self.context.cur_counterparty_commitment_transaction_number + 1,
 					&secret
-				).map_err(|_| ChannelError::Close("Failed to validate revocation from peer".to_owned()))?;
+				).map_err(|_| ChannelError::close("Failed to validate revocation from peer".to_owned()))?;
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -4678,7 +4689,7 @@ impl<SP: Deref> Channel<SP> where
 		};
 
 		self.context.commitment_secrets.provide_secret(self.context.cur_counterparty_commitment_transaction_number + 1, msg.per_commitment_secret)
-			.map_err(|_| ChannelError::Close("Previous secrets did not match new one".to_owned()))?;
+			.map_err(|_| ChannelError::close("Previous secrets did not match new one".to_owned()))?;
 		self.context.latest_monitor_update_id += 1;
 		let mut monitor_update = ChannelMonitorUpdate {
 			update_id: self.context.latest_monitor_update_id,
@@ -5176,14 +5187,34 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
+	pub fn check_for_stale_feerate<L: Logger>(&mut self, logger: &L, min_feerate: u32) -> Result<(), ClosureReason> {
+		if self.context.is_outbound() {
+			// While its possible our fee is too low for an outbound channel because we've been
+			// unable to increase the fee, we don't try to force-close directly here.
+			return Ok(());
+		}
+		if self.context.feerate_per_kw < min_feerate {
+			log_info!(logger,
+				"Closing channel as feerate of {} is below required {} (the minimum required rate over the past day)",
+				self.context.feerate_per_kw, min_feerate
+			);
+			Err(ClosureReason::PeerFeerateTooLow {
+				peer_feerate_sat_per_kw: self.context.feerate_per_kw,
+				required_feerate_sat_per_kw: min_feerate,
+			})
+		} else {
+			Ok(())
+		}
+	}
+
 	pub fn update_fee<F: Deref, L: Deref>(&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::UpdateFee, logger: &L) -> Result<(), ChannelError>
 		where F::Target: FeeEstimator, L::Target: Logger
 	{
 		if self.context.is_outbound() {
-			return Err(ChannelError::Close("Non-funding remote tried to update channel fee".to_owned()));
+			return Err(ChannelError::close("Non-funding remote tried to update channel fee".to_owned()));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::Close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close("Peer sent update_fee when we needed a channel_reestablish".to_owned()));
 		}
 		Channel::<SP>::check_remote_fee(&self.context.channel_type, fee_estimator, msg.feerate_per_kw, Some(self.context.feerate_per_kw), logger)?;
 
@@ -5194,11 +5225,11 @@ impl<SP: Deref> Channel<SP> where
 		let htlc_stats = self.context.get_pending_htlc_stats(None, dust_exposure_limiting_feerate);
 		let max_dust_htlc_exposure_msat = self.context.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
 		if htlc_stats.on_holder_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
-			return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
+			return Err(ChannelError::close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our own transactions (totaling {} msat)",
 				msg.feerate_per_kw, htlc_stats.on_holder_tx_dust_exposure_msat)));
 		}
 		if htlc_stats.on_counterparty_tx_dust_exposure_msat > max_dust_htlc_exposure_msat {
-			return Err(ChannelError::Close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
+			return Err(ChannelError::close(format!("Peer sent update_fee with a feerate ({}) which may over-expose us to dust-in-flight on our counterparty's transactions (totaling {} msat)",
 				msg.feerate_per_kw, htlc_stats.on_counterparty_tx_dust_exposure_msat)));
 		}
 		Ok(())
@@ -5360,21 +5391,21 @@ impl<SP: Deref> Channel<SP> where
 			// While BOLT 2 doesn't indicate explicitly we should error this channel here, it
 			// almost certainly indicates we are going to end up out-of-sync in some way, so we
 			// just close here instead of trying to recover.
-			return Err(ChannelError::Close("Peer sent a loose channel_reestablish not after reconnect".to_owned()));
+			return Err(ChannelError::close("Peer sent a loose channel_reestablish not after reconnect".to_owned()));
 		}
 
 		if msg.next_local_commitment_number >= INITIAL_COMMITMENT_NUMBER || msg.next_remote_commitment_number >= INITIAL_COMMITMENT_NUMBER ||
 			msg.next_local_commitment_number == 0 {
-			return Err(ChannelError::Close("Peer sent an invalid channel_reestablish to force close in a non-standard way".to_owned()));
+			return Err(ChannelError::close("Peer sent an invalid channel_reestablish to force close in a non-standard way".to_owned()));
 		}
 
 		let our_commitment_transaction = INITIAL_COMMITMENT_NUMBER - self.context.holder_commitment_point.transaction_number() - 1;
 		if msg.next_remote_commitment_number > 0 {
 			let expected_point = self.context.holder_signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - msg.next_remote_commitment_number + 1, &self.context.secp_ctx);
 			let given_secret = SecretKey::from_slice(&msg.your_last_per_commitment_secret)
-				.map_err(|_| ChannelError::Close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
+				.map_err(|_| ChannelError::close("Peer sent a garbage channel_reestablish with unparseable secret key".to_owned()))?;
 			if expected_point != PublicKey::from_secret_key(&self.context.secp_ctx, &given_secret) {
-				return Err(ChannelError::Close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
+				return Err(ChannelError::close("Peer sent a garbage channel_reestablish with secret key not matching the commitment height provided".to_owned()));
 			}
 			if msg.next_remote_commitment_number > our_commitment_transaction {
 				macro_rules! log_and_panic {
@@ -5418,7 +5449,7 @@ impl<SP: Deref> Channel<SP> where
 			if !self.context.channel_state.is_our_channel_ready() ||
 					self.context.channel_state.is_monitor_update_in_progress() {
 				if msg.next_remote_commitment_number != 0 {
-					return Err(ChannelError::Close("Peer claimed they saw a revoke_and_ack but we haven't sent channel_ready yet".to_owned()));
+					return Err(ChannelError::close("Peer claimed they saw a revoke_and_ack but we haven't sent channel_ready yet".to_owned()));
 				}
 				// Short circuit the whole handler as there is nothing we can resend them
 				return Ok(ReestablishResponses {
@@ -5451,7 +5482,7 @@ impl<SP: Deref> Channel<SP> where
 			}
 		} else {
 			debug_assert!(false, "All values should have been handled in the four cases above");
-			return Err(ChannelError::Close(format!(
+			return Err(ChannelError::close(format!(
 				"Peer attempted to reestablish channel expecting a future local commitment transaction: {} (received) vs {} (expected)",
 				msg.next_remote_commitment_number,
 				our_commitment_transaction
@@ -5509,13 +5540,13 @@ impl<SP: Deref> Channel<SP> where
 				})
 			}
 		} else if msg.next_local_commitment_number < next_counterparty_commitment_number {
-			Err(ChannelError::Close(format!(
+			Err(ChannelError::close(format!(
 				"Peer attempted to reestablish channel with a very old remote commitment transaction: {} (received) vs {} (expected)",
 				msg.next_local_commitment_number,
 				next_counterparty_commitment_number,
 			)))
 		} else {
-			Err(ChannelError::Close(format!(
+			Err(ChannelError::close(format!(
 				"Peer attempted to reestablish channel with a future remote commitment transaction: {} (received) vs {} (expected)",
 				msg.next_local_commitment_number,
 				next_counterparty_commitment_number,
@@ -5590,7 +5621,7 @@ impl<SP: Deref> Channel<SP> where
 	pub fn timer_check_closing_negotiation_progress(&mut self) -> Result<(), ChannelError> {
 		if self.closing_negotiation_ready() {
 			if self.context.closing_signed_in_flight {
-				return Err(ChannelError::Close("closing_signed negotiation failed to finish within two timer ticks".to_owned()));
+				return Err(ChannelError::close("closing_signed negotiation failed to finish within two timer ticks".to_owned()));
 			} else {
 				self.context.closing_signed_in_flight = true;
 			}
@@ -5635,7 +5666,7 @@ impl<SP: Deref> Channel<SP> where
 			ChannelSignerType::Ecdsa(ecdsa) => {
 				let sig = ecdsa
 					.sign_closing_transaction(&closing_tx, &self.context.secp_ctx)
-					.map_err(|()| ChannelError::Close("Failed to get signature for closing transaction.".to_owned()))?;
+					.map_err(|()| ChannelError::close("Failed to get signature for closing transaction.".to_owned()))?;
 
 				self.context.last_sent_closing_fee = Some((total_fee_satoshis, sig.clone()));
 				Ok((Some(msgs::ClosingSigned {
@@ -5681,17 +5712,17 @@ impl<SP: Deref> Channel<SP> where
 	) -> Result<(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>), ChannelError>
 	{
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::Close("Peer sent shutdown when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close("Peer sent shutdown when we needed a channel_reestablish".to_owned()));
 		}
 		if self.context.channel_state.is_pre_funded_state() {
 			// Spec says we should fail the connection, not the channel, but that's nonsense, there
 			// are plenty of reasons you may want to fail a channel pre-funding, and spec says you
 			// can do that via error message without getting a connection fail anyway...
-			return Err(ChannelError::Close("Peer sent shutdown pre-funding generation".to_owned()));
+			return Err(ChannelError::close("Peer sent shutdown pre-funding generation".to_owned()));
 		}
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
-				return Err(ChannelError::Close("Got shutdown with remote pending HTLCs".to_owned()));
+				return Err(ChannelError::close("Got shutdown with remote pending HTLCs".to_owned()));
 			}
 		}
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
@@ -5719,10 +5750,10 @@ impl<SP: Deref> Channel<SP> where
 				assert!(send_shutdown);
 				let shutdown_scriptpubkey = match signer_provider.get_shutdown_scriptpubkey() {
 					Ok(scriptpubkey) => scriptpubkey,
-					Err(_) => return Err(ChannelError::Close("Failed to get shutdown scriptpubkey".to_owned())),
+					Err(_) => return Err(ChannelError::close("Failed to get shutdown scriptpubkey".to_owned())),
 				};
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
-					return Err(ChannelError::Close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
+					return Err(ChannelError::close(format!("Provided a scriptpubkey format not accepted by peer: {}", shutdown_scriptpubkey)));
 				}
 				self.context.shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
 				true
@@ -5804,20 +5835,20 @@ impl<SP: Deref> Channel<SP> where
 		where F::Target: FeeEstimator
 	{
 		if !self.context.channel_state.is_both_sides_shutdown() {
-			return Err(ChannelError::Close("Remote end sent us a closing_signed before both sides provided a shutdown".to_owned()));
+			return Err(ChannelError::close("Remote end sent us a closing_signed before both sides provided a shutdown".to_owned()));
 		}
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::Close("Peer sent closing_signed when we needed a channel_reestablish".to_owned()));
+			return Err(ChannelError::close("Peer sent closing_signed when we needed a channel_reestablish".to_owned()));
 		}
 		if !self.context.pending_inbound_htlcs.is_empty() || !self.context.pending_outbound_htlcs.is_empty() {
-			return Err(ChannelError::Close("Remote end sent us a closing_signed while there were still pending HTLCs".to_owned()));
+			return Err(ChannelError::close("Remote end sent us a closing_signed while there were still pending HTLCs".to_owned()));
 		}
 		if msg.fee_satoshis > TOTAL_BITCOIN_SUPPLY_SATOSHIS { // this is required to stop potential overflow in build_closing_transaction
-			return Err(ChannelError::Close("Remote tried to send us a closing tx with > 21 million BTC fee".to_owned()));
+			return Err(ChannelError::close("Remote tried to send us a closing tx with > 21 million BTC fee".to_owned()));
 		}
 
 		if self.context.is_outbound() && self.context.last_sent_closing_fee.is_none() {
-			return Err(ChannelError::Close("Remote tried to send a closing_signed when we were supposed to propose the first one".to_owned()));
+			return Err(ChannelError::close("Remote tried to send a closing_signed when we were supposed to propose the first one".to_owned()));
 		}
 
 		if self.context.channel_state.is_monitor_update_in_progress() {
@@ -5828,7 +5859,7 @@ impl<SP: Deref> Channel<SP> where
 		let funding_redeemscript = self.context.get_funding_redeemscript();
 		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, false);
 		if used_total_fee != msg.fee_satoshis {
-			return Err(ChannelError::Close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
+			return Err(ChannelError::close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
 		}
 		let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.context.channel_value_satoshis);
 
@@ -5845,7 +5876,7 @@ impl<SP: Deref> Channel<SP> where
 
 		for outp in closing_tx.trust().built_transaction().output.iter() {
 			if !outp.script_pubkey.is_witness_program() && outp.value < Amount::from_sat(MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS) {
-				return Err(ChannelError::Close("Remote sent us a closing_signed with a dust output. Always use segwit closing scripts!".to_owned()));
+				return Err(ChannelError::close("Remote sent us a closing_signed with a dust output. Always use segwit closing scripts!".to_owned()));
 			}
 		}
 
@@ -5891,7 +5922,7 @@ impl<SP: Deref> Channel<SP> where
 					ChannelSignerType::Ecdsa(ecdsa) => {
 						let sig = ecdsa
 							.sign_closing_transaction(&closing_tx, &self.context.secp_ctx)
-							.map_err(|_| ChannelError::Close("External signer refused to sign closing transaction".to_owned()))?;
+							.map_err(|_| ChannelError::close("External signer refused to sign closing transaction".to_owned()))?;
 						let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
 							let shutdown_result = ShutdownResult {
 								closure_reason,
@@ -5933,7 +5964,7 @@ impl<SP: Deref> Channel<SP> where
 
 		if let Some(msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis }) = msg.fee_range {
 			if msg.fee_satoshis < min_fee_satoshis || msg.fee_satoshis > max_fee_satoshis {
-				return Err(ChannelError::Close(format!("Peer sent a bogus closing_signed - suggested fee of {} sat was not in their desired range of {} sat - {} sat", msg.fee_satoshis, min_fee_satoshis, max_fee_satoshis)));
+				return Err(ChannelError::close(format!("Peer sent a bogus closing_signed - suggested fee of {} sat was not in their desired range of {} sat - {} sat", msg.fee_satoshis, min_fee_satoshis, max_fee_satoshis)));
 			}
 			if max_fee_satoshis < our_min_fee {
 				return Err(ChannelError::Warn(format!("Unable to come to consensus about closing feerate, remote's max fee ({} sat) was smaller than our min fee ({} sat)", max_fee_satoshis, our_min_fee)));
@@ -5949,7 +5980,7 @@ impl<SP: Deref> Channel<SP> where
 				propose_fee!(cmp::min(max_fee_satoshis, our_max_fee));
 			} else {
 				if msg.fee_satoshis < our_min_fee || msg.fee_satoshis > our_max_fee {
-					return Err(ChannelError::Close(format!("Peer sent a bogus closing_signed - suggested fee of {} sat was not in our desired range of {} sat - {} sat after we informed them of our range.",
+					return Err(ChannelError::close(format!("Peer sent a bogus closing_signed - suggested fee of {} sat was not in our desired range of {} sat - {} sat after we informed them of our range.",
 						msg.fee_satoshis, our_min_fee, our_max_fee)));
 				}
 				// The proposed fee is in our acceptable range, accept it and broadcast!
@@ -5965,7 +5996,7 @@ impl<SP: Deref> Channel<SP> where
 					} else if last_fee < our_max_fee {
 						propose_fee!(our_max_fee);
 					} else {
-						return Err(ChannelError::Close(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) higher than our max fee ({} sat)", msg.fee_satoshis, our_max_fee)));
+						return Err(ChannelError::close(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) higher than our max fee ({} sat)", msg.fee_satoshis, our_max_fee)));
 					}
 				} else {
 					if msg.fee_satoshis > our_min_fee {
@@ -5973,7 +6004,7 @@ impl<SP: Deref> Channel<SP> where
 					} else if last_fee > our_min_fee {
 						propose_fee!(our_min_fee);
 					} else {
-						return Err(ChannelError::Close(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) lower than our min fee ({} sat)", msg.fee_satoshis, our_min_fee)));
+						return Err(ChannelError::close(format!("Unable to come to consensus about closing feerate, remote wants something ({} sat) lower than our min fee ({} sat)", msg.fee_satoshis, our_min_fee)));
 					}
 				}
 			} else {
@@ -6740,12 +6771,12 @@ impl<SP: Deref> Channel<SP> where
 		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
 
 		if self.context.secp_ctx.verify_ecdsa(&msghash, &msg.node_signature, &self.context.get_counterparty_node_id()).is_err() {
-			return Err(ChannelError::Close(format!(
+			return Err(ChannelError::close(format!(
 				"Bad announcement_signatures. Failed to verify node_signature. UnsignedChannelAnnouncement used for verification is {:?}. their_node_key is {:?}",
 				 &announcement, self.context.get_counterparty_node_id())));
 		}
 		if self.context.secp_ctx.verify_ecdsa(&msghash, &msg.bitcoin_signature, self.context.counterparty_funding_pubkey()).is_err() {
-			return Err(ChannelError::Close(format!(
+			return Err(ChannelError::close(format!(
 				"Bad announcement_signatures. Failed to verify bitcoin_signature. UnsignedChannelAnnouncement used for verification is {:?}. their_bitcoin_key is ({:?})",
 				&announcement, self.context.counterparty_funding_pubkey())));
 		}
@@ -7471,72 +7502,72 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// Check sanity of message fields:
 		if !self.context.is_outbound() {
-			return Err(ChannelError::Close("Got an accept_channel message from an inbound peer".to_owned()));
+			return Err(ChannelError::close("Got an accept_channel message from an inbound peer".to_owned()));
 		}
 		if !matches!(self.context.channel_state, ChannelState::NegotiatingFunding(flags) if flags == NegotiatingFundingFlags::OUR_INIT_SENT) {
-			return Err(ChannelError::Close("Got an accept_channel message at a strange time".to_owned()));
+			return Err(ChannelError::close("Got an accept_channel message at a strange time".to_owned()));
 		}
 		if msg.common_fields.dust_limit_satoshis > 21000000 * 100000000 {
-			return Err(ChannelError::Close(format!("Peer never wants payout outputs? dust_limit_satoshis was {}", msg.common_fields.dust_limit_satoshis)));
+			return Err(ChannelError::close(format!("Peer never wants payout outputs? dust_limit_satoshis was {}", msg.common_fields.dust_limit_satoshis)));
 		}
 		if msg.channel_reserve_satoshis > self.context.channel_value_satoshis {
-			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than ({})", msg.channel_reserve_satoshis, self.context.channel_value_satoshis)));
+			return Err(ChannelError::close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than ({})", msg.channel_reserve_satoshis, self.context.channel_value_satoshis)));
 		}
 		if msg.common_fields.dust_limit_satoshis > self.context.holder_selected_channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("Dust limit ({}) is bigger than our channel reserve ({})", msg.common_fields.dust_limit_satoshis, self.context.holder_selected_channel_reserve_satoshis)));
+			return Err(ChannelError::close(format!("Dust limit ({}) is bigger than our channel reserve ({})", msg.common_fields.dust_limit_satoshis, self.context.holder_selected_channel_reserve_satoshis)));
 		}
 		if msg.channel_reserve_satoshis > self.context.channel_value_satoshis - self.context.holder_selected_channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than channel value minus our reserve ({})",
+			return Err(ChannelError::close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than channel value minus our reserve ({})",
 				msg.channel_reserve_satoshis, self.context.channel_value_satoshis - self.context.holder_selected_channel_reserve_satoshis)));
 		}
 		let full_channel_value_msat = (self.context.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000;
 		if msg.common_fields.htlc_minimum_msat >= full_channel_value_msat {
-			return Err(ChannelError::Close(format!("Minimum htlc value ({}) is full channel value ({})", msg.common_fields.htlc_minimum_msat, full_channel_value_msat)));
+			return Err(ChannelError::close(format!("Minimum htlc value ({}) is full channel value ({})", msg.common_fields.htlc_minimum_msat, full_channel_value_msat)));
 		}
 		let max_delay_acceptable = u16::min(peer_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
 		if msg.common_fields.to_self_delay > max_delay_acceptable {
-			return Err(ChannelError::Close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_delay_acceptable, msg.common_fields.to_self_delay)));
+			return Err(ChannelError::close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_delay_acceptable, msg.common_fields.to_self_delay)));
 		}
 		if msg.common_fields.max_accepted_htlcs < 1 {
-			return Err(ChannelError::Close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
+			return Err(ChannelError::close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
 		}
 		if msg.common_fields.max_accepted_htlcs > MAX_HTLCS {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs was {}. It must not be larger than {}", msg.common_fields.max_accepted_htlcs, MAX_HTLCS)));
+			return Err(ChannelError::close(format!("max_accepted_htlcs was {}. It must not be larger than {}", msg.common_fields.max_accepted_htlcs, MAX_HTLCS)));
 		}
 
 		// Now check against optional parameters as set by config...
 		if msg.common_fields.htlc_minimum_msat > peer_limits.max_htlc_minimum_msat {
-			return Err(ChannelError::Close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", msg.common_fields.htlc_minimum_msat, peer_limits.max_htlc_minimum_msat)));
+			return Err(ChannelError::close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", msg.common_fields.htlc_minimum_msat, peer_limits.max_htlc_minimum_msat)));
 		}
 		if msg.common_fields.max_htlc_value_in_flight_msat < peer_limits.min_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::Close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", msg.common_fields.max_htlc_value_in_flight_msat, peer_limits.min_max_htlc_value_in_flight_msat)));
+			return Err(ChannelError::close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", msg.common_fields.max_htlc_value_in_flight_msat, peer_limits.min_max_htlc_value_in_flight_msat)));
 		}
 		if msg.channel_reserve_satoshis > peer_limits.max_channel_reserve_satoshis {
-			return Err(ChannelError::Close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg.channel_reserve_satoshis, peer_limits.max_channel_reserve_satoshis)));
+			return Err(ChannelError::close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg.channel_reserve_satoshis, peer_limits.max_channel_reserve_satoshis)));
 		}
 		if msg.common_fields.max_accepted_htlcs < peer_limits.min_max_accepted_htlcs {
-			return Err(ChannelError::Close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.common_fields.max_accepted_htlcs, peer_limits.min_max_accepted_htlcs)));
+			return Err(ChannelError::close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.common_fields.max_accepted_htlcs, peer_limits.min_max_accepted_htlcs)));
 		}
 		if msg.common_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.common_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.common_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if msg.common_fields.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::Close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.common_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.common_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
 		}
 		if msg.common_fields.minimum_depth > peer_limits.max_minimum_depth {
-			return Err(ChannelError::Close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, msg.common_fields.minimum_depth)));
+			return Err(ChannelError::close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, msg.common_fields.minimum_depth)));
 		}
 
 		if let Some(ty) = &msg.common_fields.channel_type {
 			if *ty != self.context.channel_type {
-				return Err(ChannelError::Close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
+				return Err(ChannelError::close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
 			}
 		} else if their_features.supports_channel_type() {
 			// Assume they've accepted the channel type as they said they understand it.
 		} else {
 			let channel_type = ChannelTypeFeatures::from_init(&their_features);
 			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
-				return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
+				return Err(ChannelError::close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
 			}
 			self.context.channel_type = channel_type.clone();
 			self.context.channel_transaction_parameters.channel_type_features = channel_type;
@@ -7550,14 +7581,14 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 						None
 					} else {
 						if !script::is_bolt2_compliant(&script, their_features) {
-							return Err(ChannelError::Close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)));
+							return Err(ChannelError::close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)));
 						}
 						Some(script.clone())
 					}
 				},
 				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
 				&None => {
-					return Err(ChannelError::Close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
+					return Err(ChannelError::close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
 				}
 			}
 		} else { None };
@@ -7607,10 +7638,10 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		L::Target: Logger
 	{
 		if !self.context.is_outbound() {
-			return Err((self, ChannelError::Close("Received funding_signed for an inbound channel?".to_owned())));
+			return Err((self, ChannelError::close("Received funding_signed for an inbound channel?".to_owned())));
 		}
 		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
-			return Err((self, ChannelError::Close("Received funding_signed in strange state!".to_owned())));
+			return Err((self, ChannelError::close("Received funding_signed in strange state!".to_owned())));
 		}
 		if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
@@ -7636,7 +7667,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.context.channel_value_satoshis);
 			// They sign our commitment transaction, allowing us to broadcast the tx if we wish.
 			if let Err(_) = self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, &self.context.get_counterparty_pubkeys().funding_pubkey) {
-				return Err((self, ChannelError::Close("Invalid funding_signed signature from peer".to_owned())));
+				return Err((self, ChannelError::close("Invalid funding_signed signature from peer".to_owned())));
 			}
 		}
 
@@ -7651,7 +7682,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let validated =
 			self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new());
 		if validated.is_err() {
-			return Err((self, ChannelError::Close("Failed to validate our commitment".to_owned())));
+			return Err((self, ChannelError::close("Failed to validate our commitment".to_owned())));
 		}
 
 		let funding_redeemscript = self.context.get_funding_redeemscript();
@@ -7723,28 +7754,28 @@ pub(super) fn channel_type_from_open_channel(
 ) -> Result<ChannelTypeFeatures, ChannelError> {
 	if let Some(channel_type) = &common_fields.channel_type {
 		if channel_type.supports_any_optional_bits() {
-			return Err(ChannelError::Close("Channel Type field contained optional bits - this is not allowed".to_owned()));
+			return Err(ChannelError::close("Channel Type field contained optional bits - this is not allowed".to_owned()));
 		}
 
 		// We only support the channel types defined by the `ChannelManager` in
 		// `provided_channel_type_features`. The channel type must always support
 		// `static_remote_key`.
 		if !channel_type.requires_static_remote_key() {
-			return Err(ChannelError::Close("Channel Type was not understood - we require static remote key".to_owned()));
+			return Err(ChannelError::close("Channel Type was not understood - we require static remote key".to_owned()));
 		}
 		// Make sure we support all of the features behind the channel type.
 		if !channel_type.is_subset(our_supported_features) {
-			return Err(ChannelError::Close("Channel Type contains unsupported features".to_owned()));
+			return Err(ChannelError::close("Channel Type contains unsupported features".to_owned()));
 		}
 		let announced_channel = if (common_fields.channel_flags & 1) == 1 { true } else { false };
 		if channel_type.requires_scid_privacy() && announced_channel {
-			return Err(ChannelError::Close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
+			return Err(ChannelError::close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
 		}
 		Ok(channel_type.clone())
 	} else {
 		let channel_type = ChannelTypeFeatures::from_init(&their_features);
 		if channel_type != ChannelTypeFeatures::only_static_remote_key() {
-			return Err(ChannelError::Close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
+			return Err(ChannelError::close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
 		}
 		Ok(channel_type)
 	}
@@ -7896,7 +7927,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		L::Target: Logger
 	{
 		if self.context.is_outbound() {
-			return Err((self, ChannelError::Close("Received funding_created for an outbound channel?".to_owned())));
+			return Err((self, ChannelError::close("Received funding_created for an outbound channel?".to_owned())));
 		}
 		if !matches!(
 			self.context.channel_state, ChannelState::NegotiatingFunding(flags)
@@ -7905,7 +7936,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			// BOLT 2 says that if we disconnect before we send funding_signed we SHOULD NOT
 			// remember the channel, so it's safe to just send an error_message here and drop the
 			// channel.
-			return Err((self, ChannelError::Close("Received funding_created after we got the channel!".to_owned())));
+			return Err((self, ChannelError::close("Received funding_created after we got the channel!".to_owned())));
 		}
 		if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
@@ -7941,7 +7972,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		);
 
 		if let Err(_) = self.context.holder_signer.as_ref().validate_holder_commitment(&holder_commitment_tx, Vec::new()) {
-			return Err((self, ChannelError::Close("Failed to validate our commitment".to_owned())));
+			return Err((self, ChannelError::close("Failed to validate our commitment".to_owned())));
 		}
 
 		// Now that we're past error-generating stuff, update our local state:
@@ -8145,7 +8176,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		// First check the channel type is known, failing before we do anything else if we don't
 		// support this channel type.
 		if msg.common_fields.channel_type.is_none() {
-			return Err(ChannelError::Close(format!("Rejecting V2 channel {} missing channel_type",
+			return Err(ChannelError::close(format!("Rejecting V2 channel {} missing channel_type",
 				msg.common_fields.temporary_channel_id)))
 		}
 		let channel_type = channel_type_from_open_channel(&msg.common_fields, their_features, our_supported_features)?;

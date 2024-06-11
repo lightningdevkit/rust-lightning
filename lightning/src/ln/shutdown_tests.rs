@@ -1464,3 +1464,59 @@ fn batch_funding_failure() {
 	check_closed_events(&nodes[0], &close);
 	assert_eq!(nodes[0].node.list_channels().len(), 0);
 }
+
+#[test]
+fn test_force_closure_on_low_stale_fee() {
+	// Check that we force-close channels if they have a low fee and that has gotten stale (without
+	// update).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	// Start by connecting lots of blocks to give LDK some feerate history
+	for _ in 0..super::channelmanager::FEERATE_TRACKING_BLOCKS * 2 {
+		connect_blocks(&nodes[1], 1);
+	}
+
+	// Now connect a handful of blocks with a "high" feerate
+	{
+		let mut feerate_lock = chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock *= 2;
+	}
+	for _ in 0..super::channelmanager::FEERATE_TRACKING_BLOCKS - 1 {
+		connect_blocks(&nodes[1], 1);
+	}
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Now, note that one more block would cause us to force-close, it won't because we've dropped
+	// the feerate
+	{
+		let mut feerate_lock = chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock /= 2;
+	}
+	connect_blocks(&nodes[1], super::channelmanager::FEERATE_TRACKING_BLOCKS as u32 * 2);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Now, connect another FEERATE_TRACKING_BLOCKS - 1 blocks at a high feerate, note that none of
+	// these will cause a force-closure because LDK only looks at the minimium feerate over the
+	// last FEERATE_TRACKING_BLOCKS blocks.
+	{
+		let mut feerate_lock = chanmon_cfgs[1].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock *= 2;
+	}
+
+	for _ in 0..super::channelmanager::FEERATE_TRACKING_BLOCKS - 1 {
+		connect_blocks(&nodes[1], 1);
+	}
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Finally, connect one more block and check the force-close happened.
+	connect_blocks(&nodes[1], 1);
+	check_added_monitors!(nodes[1], 1);
+	check_closed_broadcast(&nodes[1], 1, true);
+	let reason = ClosureReason::PeerFeerateTooLow { peer_feerate_sat_per_kw: 253, required_feerate_sat_per_kw: 253 * 2 };
+	check_closed_events(&nodes[1], &[ExpectedCloseEvent::from_id_reason(chan_id, false, reason)]);
+}

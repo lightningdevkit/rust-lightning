@@ -7263,7 +7263,10 @@ fn test_user_configurable_csv_delay() {
 		&low_our_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{
 		match error {
-			ChannelError::Close(err) => { assert!(regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap().is_match(err.as_str()));  },
+			ChannelError::Close((err, _)) => {
+				let regex = regex::Regex::new(r"Configured with an unreasonable our_to_self_delay \(\d+\) putting user funds at risks").unwrap();
+				assert!(regex.is_match(err.as_str()));
+			},
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false); }
@@ -7295,7 +7298,10 @@ fn test_user_configurable_csv_delay() {
 		&high_their_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{
 		match error {
-			ChannelError::Close(err) => { assert!(regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap().is_match(err.as_str())); },
+			ChannelError::Close((err, _)) => {
+				let regex = regex::Regex::new(r"They wanted our payments to be delayed by a needlessly long period\. Upper limit: \d+\. Actual: \d+").unwrap();
+				assert!(regex.is_match(err.as_str()));
+			},
 			_ => panic!("Unexpected event"),
 		}
 	} else { assert!(false); }
@@ -10402,9 +10408,9 @@ fn accept_busted_but_better_fee() {
 	match events[0] {
 		MessageSendEvent::UpdateHTLCs { updates: msgs::CommitmentUpdate { ref update_fee, .. }, .. } => {
 			nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), update_fee.as_ref().unwrap());
-			check_closed_event!(nodes[1], 1, ClosureReason::ProcessingError {
-				err: "Peer's feerate much too low. Actual: 1000. Our expected lower limit: 5000".to_owned() },
-				[nodes[0].node.get_our_node_id()], 100000);
+			check_closed_event!(nodes[1], 1, ClosureReason::PeerFeerateTooLow {
+				peer_feerate_sat_per_kw: 1000, required_feerate_sat_per_kw: 5000,
+			}, [nodes[0].node.get_our_node_id()], 100000);
 			check_closed_broadcast!(nodes[1], true);
 			check_added_monitors!(nodes[1], 1);
 		},

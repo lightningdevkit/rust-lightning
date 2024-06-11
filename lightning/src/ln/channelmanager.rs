@@ -636,7 +636,7 @@ impl MsgHandleErrInternal {
 					err: msg,
 					action: msgs::ErrorAction::IgnoreError,
 				},
-				ChannelError::Close(msg) => LightningError {
+				ChannelError::Close((msg, _reason)) => LightningError {
 					err: msg.clone(),
 					action: msgs::ErrorAction::SendErrorMessage {
 						msg: msgs::ErrorMessage {
@@ -961,6 +961,11 @@ pub(super) struct InboundChannelRequest {
 /// The number of ticks that may elapse while we're waiting for an unaccepted inbound channel to be
 /// accepted. An unaccepted channel that exceeds this limit will be abandoned.
 const UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS: i32 = 2;
+
+/// The number of blocks of historical feerate estimates we keep around and consider when deciding
+/// to force-close a channel for having too-low fees. Also the number of blocks we have to see
+/// after startup before we consider force-closing channels for having too-low fees.
+pub(super) const FEERATE_TRACKING_BLOCKS: usize = 144;
 
 /// Stores a PaymentSecret and any other data we may need to validate an inbound payment is
 /// actually ours and not some duplicate HTLC sent to us by a node along the route.
@@ -2098,6 +2103,21 @@ where
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
 
+	/// We only want to force-close our channels on peers based on stale feerates when we're
+	/// confident the feerate on the channel is *really* stale, not just became stale recently.
+	/// Thus, we store the fee estimates we had as of the last [`FEERATE_TRACKING_BLOCKS`] blocks
+	/// (after startup completed) here, and only force-close when channels have a lower feerate
+	/// than we predicted any time in the last [`FEERATE_TRACKING_BLOCKS`] blocks.
+	///
+	/// We only keep this in memory as we assume any feerates we receive immediately after startup
+	/// may be bunk (as they often are if Bitcoin Core crashes) and want to delay taking any
+	/// actions for a day anyway.
+	///
+	/// The first element in the pair is the
+	/// [`ConfirmationTarget::MinAllowedAnchorChannelRemoteFee`] estimate, the second the
+	/// [`ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee`] estimate.
+	last_days_feerates: Mutex<VecDeque<(u32, u32)>>,
+
 	entropy_source: ES,
 	node_signer: NS,
 	signer_provider: SP,
@@ -2446,11 +2466,10 @@ macro_rules! convert_chan_phase_err {
 			ChannelError::Ignore(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Ignore(msg), *$channel_id))
 			},
-			ChannelError::Close(msg) => {
+			ChannelError::Close((msg, reason)) => {
 				let logger = WithChannelContext::from(&$self.logger, &$channel.context, None);
 				log_error!(logger, "Closing channel {} due to close-required error: {}", $channel_id, msg);
 				update_maps_on_chan_removal!($self, $channel.context);
-				let reason = ClosureReason::ProcessingError { err: msg.clone() };
 				let shutdown_res = $channel.context.force_shutdown(true, reason);
 				let err =
 					MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, shutdown_res, $channel_update);
@@ -2875,6 +2894,8 @@ where
 
 			pending_offers_messages: Mutex::new(Vec::new()),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
+
+			last_days_feerates: Mutex::new(VecDeque::new()),
 
 			entropy_source,
 			node_signer,
@@ -4201,10 +4222,9 @@ where
 			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
 				macro_rules! close_chan { ($err: expr, $api_err: expr, $chan: expr) => { {
 					let counterparty;
-					let err = if let ChannelError::Close(msg) = $err {
+					let err = if let ChannelError::Close((msg, reason)) = $err {
 						let channel_id = $chan.context.channel_id();
 						counterparty = chan.context.get_counterparty_node_id();
-						let reason = ClosureReason::ProcessingError { err: msg.clone() };
 						let shutdown_res = $chan.context.force_shutdown(false, reason);
 						MsgHandleErrInternal::from_finish_shutdown(msg, channel_id, shutdown_res, None)
 					} else { unreachable!(); };
@@ -4217,7 +4237,7 @@ where
 				match find_funding_output(&chan, &funding_transaction) {
 					Ok(found_funding_txo) => funding_txo = found_funding_txo,
 					Err(err) => {
-						let chan_err = ChannelError::Close(err.to_owned());
+						let chan_err = ChannelError::close(err.to_owned());
 						let api_err = APIError::APIMisuseError { err: err.to_owned() };
 						return close_chan!(chan_err, api_err, chan);
 					},
@@ -7016,7 +7036,7 @@ where
 				},
 				Some(mut phase) => {
 					let err_msg = format!("Got an unexpected funding_created message from peer with counterparty_node_id {}", counterparty_node_id);
-					let err = ChannelError::Close(err_msg);
+					let err = ChannelError::close(err_msg);
 					return Err(convert_chan_phase_err!(self, err, &mut phase, &msg.temporary_channel_id).1);
 				},
 				None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.temporary_channel_id))
@@ -7031,7 +7051,7 @@ where
 			// `update_maps_on_chan_removal`), we'll remove the existing channel
 			// from `outpoint_to_peer`. Thus, we must first unset the funding outpoint
 			// on the channel.
-			let err = ChannelError::Close($err.to_owned());
+			let err = ChannelError::close($err.to_owned());
 			chan.unset_funding_info(msg.temporary_channel_id);
 			return Err(convert_chan_phase_err!(self, err, chan, &funded_channel_id, UNFUNDED_CHANNEL).1);
 		} } }
@@ -7116,7 +7136,7 @@ where
 								} else { unreachable!(); }
 								Ok(())
 							} else {
-								let e = ChannelError::Close("Channel funding outpoint was a duplicate".to_owned());
+								let e = ChannelError::close("Channel funding outpoint was a duplicate".to_owned());
 								// We weren't able to watch the channel to begin with, so no
 								// updates should be made on it. Previously, full_stack_target
 								// found an (unreachable) panic when the monitor update contained
@@ -7187,7 +7207,7 @@ where
 
 					Ok(())
 				} else {
-					try_chan_phase_entry!(self, Err(ChannelError::Close(
+					try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got a channel_ready message for an unfunded channel!".into())), chan_phase_entry)
 				}
 			},
@@ -7302,7 +7322,7 @@ where
 							(tx, Some(remove_channel_phase!(self, chan_phase_entry)), shutdown_result)
 						} else { (tx, None, shutdown_result) }
 					} else {
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+						return try_chan_phase_entry!(self, Err(ChannelError::close(
 							"Got a closing_signed message for an unfunded channel!".into())), chan_phase_entry);
 					}
 				},
@@ -7402,7 +7422,7 @@ where
 					}
 					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info, &self.fee_estimator), chan_phase_entry);
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7446,7 +7466,7 @@ where
 						next_user_channel_id = chan.context.get_user_id();
 						res
 					} else {
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+						return try_chan_phase_entry!(self, Err(ChannelError::close(
 							"Got an update_fulfill_htlc message for an unfunded channel!".into())), chan_phase_entry);
 					}
 				},
@@ -7477,7 +7497,7 @@ where
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					try_chan_phase_entry!(self, chan.update_fail_htlc(&msg, HTLCFailReason::from_msg(msg)), chan_phase_entry);
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an update_fail_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7500,13 +7520,13 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if (msg.failure_code & 0x8000) == 0 {
-					let chan_err: ChannelError = ChannelError::Close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
+					let chan_err = ChannelError::close("Got update_fail_malformed_htlc with BADONION not set".to_owned());
 					try_chan_phase_entry!(self, Err(chan_err), chan_phase_entry);
 				}
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 					try_chan_phase_entry!(self, chan.update_fail_malformed_htlc(&msg, HTLCFailReason::reason(msg.failure_code, msg.sha256_of_onion.to_vec())), chan_phase_entry);
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an update_fail_malformed_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
 				Ok(())
@@ -7536,7 +7556,7 @@ where
 					}
 					Ok(())
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got a commitment_signed message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7732,7 +7752,7 @@ where
 						}
 						htlcs_to_fail
 					} else {
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+						return try_chan_phase_entry!(self, Err(ChannelError::close(
 							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_phase_entry);
 					}
 				},
@@ -7758,7 +7778,7 @@ where
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 					try_chan_phase_entry!(self, chan.update_fee(&self.fee_estimator, &msg, &&logger), chan_phase_entry);
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an update_fee message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7793,7 +7813,7 @@ where
 						update_msg: Some(self.get_channel_update_for_broadcast(chan).unwrap()),
 					});
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got an announcement_signatures message for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7845,7 +7865,7 @@ where
 						}
 					}
 				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					return try_chan_phase_entry!(self, Err(ChannelError::close(
 						"Got a channel_update for an unfunded channel!".into())), chan_phase_entry);
 				}
 			},
@@ -7907,7 +7927,7 @@ where
 						}
 						need_lnd_workaround
 					} else {
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+						return try_chan_phase_entry!(self, Err(ChannelError::close(
 							"Got a channel_reestablish message for an unfunded channel!".into())), chan_phase_entry);
 					}
 				},
@@ -9175,7 +9195,38 @@ where
 				self, || -> NotifyOption { NotifyOption::DoPersist });
 		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
-		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None)));
+		let mut min_anchor_feerate = None;
+		let mut min_non_anchor_feerate = None;
+		if self.background_events_processed_since_startup.load(Ordering::Relaxed) {
+			// If we're past the startup phase, update our feerate cache
+			let mut last_days_feerates = self.last_days_feerates.lock().unwrap();
+			if last_days_feerates.len() >= FEERATE_TRACKING_BLOCKS {
+				last_days_feerates.pop_front();
+			}
+			let anchor_feerate = self.fee_estimator
+				.bounded_sat_per_1000_weight(ConfirmationTarget::MinAllowedAnchorChannelRemoteFee);
+			let non_anchor_feerate = self.fee_estimator
+				.bounded_sat_per_1000_weight(ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee);
+			last_days_feerates.push_back((anchor_feerate, non_anchor_feerate));
+			if last_days_feerates.len() >= FEERATE_TRACKING_BLOCKS {
+				min_anchor_feerate = last_days_feerates.iter().map(|(f, _)| f).min().copied();
+				min_non_anchor_feerate = last_days_feerates.iter().map(|(_, f)| f).min().copied();
+			}
+		}
+
+		self.do_chain_event(Some(height), |channel| {
+			let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+			if channel.context.get_channel_type().supports_anchors_zero_fee_htlc_tx() {
+				if let Some(feerate) = min_anchor_feerate {
+					channel.check_for_stale_feerate(&logger, feerate)?;
+				}
+			} else {
+				if let Some(feerate) = min_non_anchor_feerate {
+					channel.check_for_stale_feerate(&logger, feerate)?;
+				}
+			}
+			channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context, None))
+		});
 
 		macro_rules! max_time {
 			($timestamp: expr) => {
@@ -11993,6 +12044,8 @@ where
 			entropy_source: args.entropy_source,
 			node_signer: args.node_signer,
 			signer_provider: args.signer_provider,
+
+			last_days_feerates: Mutex::new(VecDeque::new()),
 
 			logger: args.logger,
 			default_configuration: args.default_config,
