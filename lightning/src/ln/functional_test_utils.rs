@@ -559,6 +559,11 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 			entry.insert(signer_op);
 		};
 	}
+
+	#[cfg(test)]
+	pub fn disable_next_channel_signer_op(&self, signer_op: SignerOp) {
+		self.keys_manager.next_signer_disabled_ops.lock().unwrap().insert(signer_op);
+	}
 }
 
 /// If we need an unsafe pointer to a `Node` (ie to reference it in a thread

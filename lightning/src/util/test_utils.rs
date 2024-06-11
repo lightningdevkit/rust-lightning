@@ -1260,6 +1260,7 @@ pub struct TestKeysInterface {
 	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 	pub unavailable_signers_ops: Mutex<HashMap<[u8; 32], HashSet<SignerOp>>>,
+	pub next_signer_disabled_ops: Mutex<HashSet<SignerOp>>,
 }
 
 impl EntropySource for TestKeysInterface {
@@ -1325,6 +1326,10 @@ impl SignerProvider for TestKeysInterface {
 				signer.disable_op(op);
 			}
 		}
+		#[cfg(test)]
+		for op in self.next_signer_disabled_ops.lock().unwrap().drain() {
+			signer.disable_op(op);
+		}
 		signer
 	}
 
@@ -1364,6 +1369,7 @@ impl TestKeysInterface {
 			enforcement_states: Mutex::new(new_hash_map()),
 			expectations: Mutex::new(None),
 			unavailable_signers_ops: Mutex::new(new_hash_map()),
+			next_signer_disabled_ops: Mutex::new(new_hash_set()),
 		}
 	}
 
