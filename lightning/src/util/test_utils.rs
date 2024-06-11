@@ -1277,9 +1277,6 @@ impl SignerProvider for TestKeysInterface {
 		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
 		let mut signer = TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check);
-		if self.unavailable_signers.lock().unwrap().contains(&channel_keys_id) {
-			signer.set_available(false);
-		}
 		if let Some(ops) = self.unavailable_signers_ops.lock().unwrap().get(&channel_keys_id) {
 			for &op in ops {
 				signer.disable_op(op);

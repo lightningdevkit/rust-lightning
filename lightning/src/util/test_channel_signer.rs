@@ -71,9 +71,6 @@ pub struct TestChannelSigner {
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
-	/// When `true` (the default), the signer will respond immediately with signatures. When `false`,
-	/// the signer will return an error indicating that it is unavailable.
-	pub available: Arc<Mutex<bool>>,
 	/// Set of signer operations that are disabled. If an operation is disabled,
 	/// the signer will return `Err` when the corresponding method is called.
 	pub disabled_signer_ops: Arc<Mutex<HashSet<SignerOp>>>,
@@ -130,7 +127,6 @@ impl TestChannelSigner {
 			inner,
 			state,
 			disable_revocation_policy_check: false,
-			available: Arc::new(Mutex::new(true)),
 			disabled_signer_ops: Arc::new(Mutex::new(new_hash_set())),
 		}
 	}
@@ -145,7 +141,6 @@ impl TestChannelSigner {
 			inner,
 			state,
 			disable_revocation_policy_check,
-			available: Arc::new(Mutex::new(true)),
 			disabled_signer_ops: Arc::new(Mutex::new(new_hash_set())),
 		}
 	}
@@ -155,15 +150,6 @@ impl TestChannelSigner {
 	#[cfg(test)]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
 		self.state.lock().unwrap()
-	}
-
-	/// Marks the signer's availability.
-	///
-	/// When `true`, methods are forwarded to the underlying signer as normal. When `false`, some
-	/// methods will return `Err` indicating that the signer is unavailable. Intended to be used for
-	/// testing asynchronous signing.
-	pub fn set_available(&self, available: bool) {
-		*self.available.lock().unwrap() = available;
 	}
 
 	pub fn enable_op(&mut self, signer_op: SignerOp) {

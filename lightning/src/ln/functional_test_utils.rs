@@ -484,47 +484,6 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	pub fn get_block_header(&self, height: u32) -> Header {
 		self.blocks.lock().unwrap()[height as usize].0.header
 	}
-	/// Changes the channel signer's availability for the specified peer and channel.
-	///
-	/// When `available` is set to `true`, the channel signer will behave normally. When set to
-	/// `false`, the channel signer will act like an off-line remote signer and will return `Err` for
-	/// several of the signing methods. Currently, only `get_per_commitment_point` and
-	/// `release_commitment_secret` are affected by this setting.
-	#[cfg(test)]
-	pub fn set_channel_signer_available(&self, peer_id: &PublicKey, chan_id: &ChannelId, available: bool) {
-		use crate::sign::ChannelSigner;
-		log_debug!(self.logger, "Setting channel signer for {} as available={}", chan_id, available);
-
-		let per_peer_state = self.node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(peer_id).unwrap().lock().unwrap();
-
-		let mut channel_keys_id = None;
-		if let Some(chan) = chan_lock.channel_by_id.get(chan_id).map(|phase| phase.context()) {
-			chan.get_signer().as_ecdsa().unwrap().set_available(available);
-			channel_keys_id = Some(chan.channel_keys_id);
-		}
-
-		let mut monitor = None;
-		for (funding_txo, channel_id) in self.chain_monitor.chain_monitor.list_monitors() {
-			if *chan_id == channel_id {
-				monitor = self.chain_monitor.chain_monitor.get_monitor(funding_txo).ok();
-			}
-		}
-		if let Some(monitor) = monitor {
-			monitor.do_signer_call(|signer| {
-				channel_keys_id = channel_keys_id.or(Some(signer.inner.channel_keys_id()));
-				signer.set_available(available)
-			});
-		}
-
-		if available {
-			self.keys_manager.unavailable_signers.lock().unwrap()
-				.remove(channel_keys_id.as_ref().unwrap());
-		} else {
-			self.keys_manager.unavailable_signers.lock().unwrap()
-				.insert(channel_keys_id.unwrap());
-		}
-	}
 
 	/// Toggles this node's signer to be available for the given signer operation.
 	/// This is useful for testing behavior for restoring an async signer that previously
