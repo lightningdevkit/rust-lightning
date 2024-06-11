@@ -7638,7 +7638,19 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => {
 				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.context.secp_ctx)
-					.map(|(sig, _)| sig).ok()?
+					.map(|(sig, _)| sig)
+					.map_err(|()| {
+						#[cfg(not(async_signing))] {
+							panic!("Failed to get signature for new funding creation");
+						}
+						#[cfg(async_signing)] {
+							if !self.context.signer_pending_funding {
+								log_trace!(logger, "funding_created awaiting signer; setting signer_pending_funding");
+								self.context.signer_pending_funding = true;
+							}
+						}
+					})
+					.ok()?
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -7701,18 +7713,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
 
 		let funding_created = self.get_funding_created_msg(logger);
-		if funding_created.is_none() {
-			#[cfg(not(async_signing))] {
-				panic!("Failed to get signature for new funding creation");
-			}
-			#[cfg(async_signing)] {
-				if !self.context.signer_pending_funding {
-					log_trace!(logger, "funding_created awaiting signer; setting signer_pending_funding");
-					self.context.signer_pending_funding = true;
-				}
-			}
-		}
-
 		Ok(funding_created)
 	}
 

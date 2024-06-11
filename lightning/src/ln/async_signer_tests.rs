@@ -24,7 +24,59 @@ use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFie
 use crate::util::test_channel_signer::SignerOp;
 
 #[test]
-fn test_async_commitment_signature_for_funding_created() {
+fn test_open_channel() {
+	// Simulate acquiring the signature for `funding_created` asynchronously.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Open an outbound channel simulating an async signer.
+	let channel_value_satoshis = 100000;
+	let user_channel_id = 42;
+	nodes[0].disable_next_channel_signer_op(SignerOp::GetPerCommitmentPoint);
+	let channel_id_0 = nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), channel_value_satoshis, 10001, user_channel_id, None, None).unwrap();
+
+	{
+		let msgs = nodes[0].node.get_and_clear_pending_msg_events();
+		assert!(msgs.is_empty(), "Expected no message events; got {:?}", msgs);
+	}
+
+	nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &channel_id_0, SignerOp::GetPerCommitmentPoint);
+	nodes[0].node.signer_unblocked(None);
+
+	// nodes[0] --- open_channel --> nodes[1]
+	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+	// Handle an inbound channel simulating an async signer.
+	nodes[1].disable_next_channel_signer_op(SignerOp::GetPerCommitmentPoint);
+	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_chan_msg);
+
+	{
+		let msgs = nodes[1].node.get_and_clear_pending_msg_events();
+		assert!(msgs.is_empty(), "Expected no message events; got {:?}", msgs);
+	}
+
+	let channel_id_1 = {
+		let channels = nodes[1].node.list_channels();
+		assert_eq!(channels.len(), 1, "expected one channel, not {}", channels.len());
+		channels[0].channel_id
+	};
+
+	nodes[1].enable_channel_signer_op(&nodes[0].node.get_our_node_id(), &channel_id_1, SignerOp::GetPerCommitmentPoint);
+	nodes[1].node.signer_unblocked(None);
+
+	// nodes[0] <-- accept_channel --- nodes[1]
+	get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+}
+
+#[test]
+fn test_funding_created() {
+	do_test_funding_created(vec![SignerOp::SignCounterpartyCommitment, SignerOp::GetPerCommitmentPoint]);
+	do_test_funding_created(vec![SignerOp::GetPerCommitmentPoint, SignerOp::SignCounterpartyCommitment]);
+}
+
+fn do_test_funding_created(signer_ops: Vec<SignerOp>) {
 	// Simulate acquiring the signature for `funding_created` asynchronously.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -45,7 +97,9 @@ fn test_async_commitment_signature_for_funding_created() {
 	// But! Let's make node[0]'s signer be unavailable: we should *not* broadcast a funding_created
 	// message...
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
-	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
+	for op in signer_ops.iter() {
+		nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &temporary_channel_id, *op);
+	}
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors(&nodes[0], 0);
 
@@ -59,8 +113,10 @@ fn test_async_commitment_signature_for_funding_created() {
 		channels[0].channel_id
 	};
 
-	nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	nodes[0].node.signer_unblocked(Some((nodes[1].node.get_our_node_id(), chan_id)));
+	for op in signer_ops.iter() {
+		nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, *op);
+		nodes[0].node.signer_unblocked(Some((nodes[1].node.get_our_node_id(), chan_id)));
+	}
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
@@ -75,7 +131,12 @@ fn test_async_commitment_signature_for_funding_created() {
 }
 
 #[test]
-fn test_async_commitment_signature_for_funding_signed() {
+fn test_funding_signed() {
+	do_test_funding_signed(vec![SignerOp::SignCounterpartyCommitment, SignerOp::GetPerCommitmentPoint]);
+	do_test_funding_signed(vec![SignerOp::GetPerCommitmentPoint, SignerOp::SignCounterpartyCommitment]);
+}
+
+fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 	// Simulate acquiring the signature for `funding_signed` asynchronously.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -100,7 +161,9 @@ fn test_async_commitment_signature_for_funding_signed() {
 
 	// Now let's make node[1]'s signer be unavailable while handling the `funding_created`. It should
 	// *not* broadcast a `funding_signed`...
-	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
+	for op in signer_ops.iter() {
+		nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, *op);
+	}
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors(&nodes[1], 1);
 
@@ -113,8 +176,10 @@ fn test_async_commitment_signature_for_funding_signed() {
 		assert_eq!(channels.len(), 1, "expected one channel, not {}", channels.len());
 		channels[0].channel_id
 	};
-	nodes[1].enable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	nodes[1].node.signer_unblocked(Some((nodes[0].node.get_our_node_id(), chan_id)));
+	for op in signer_ops.iter() {
+		nodes[1].enable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_id, *op);
+		nodes[1].node.signer_unblocked(Some((nodes[0].node.get_our_node_id(), chan_id)));
+	}
 
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
@@ -189,7 +254,12 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(test_
 }
 
 #[test]
-fn test_async_commitment_signature_for_funding_signed_0conf() {
+fn test_funding_signed_0conf() {
+	do_test_funding_signed_0conf(vec![SignerOp::SignCounterpartyCommitment, SignerOp::SignCounterpartyCommitment]);
+	do_test_funding_signed_0conf(vec![SignerOp::SignCounterpartyCommitment, SignerOp::GetPerCommitmentPoint]);
+}
+
+fn do_test_funding_signed_0conf(signer_ops: Vec<SignerOp>) {
 	// Simulate acquiring the signature for `funding_signed` asynchronously for a zero-conf channel.
 	let mut manually_accept_config = test_default_channel_config();
 	manually_accept_config.manually_accept_inbound_channels = true;
@@ -232,7 +302,9 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 
 	// Now let's make node[1]'s signer be unavailable while handling the `funding_created`. It should
 	// *not* broadcast a `funding_signed`...
-	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
+	for op in signer_ops.iter() {
+		nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, *op);
+	}
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors(&nodes[1], 1);
 
@@ -247,8 +319,10 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 	};
 
 	// At this point, we basically expect the channel to open like a normal zero-conf channel.
-	nodes[1].enable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	nodes[1].node.signer_unblocked(Some((nodes[0].node.get_our_node_id(), chan_id)));
+	for op in signer_ops.iter() {
+		nodes[1].enable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_id, *op);
+		nodes[1].node.signer_unblocked(Some((nodes[0].node.get_our_node_id(), chan_id)));
+	}
 
 	let (funding_signed, channel_ready_1) = {
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
