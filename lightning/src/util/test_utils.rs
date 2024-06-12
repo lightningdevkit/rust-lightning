@@ -20,6 +20,7 @@ use crate::chain::chainmonitor;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
+use crate::ln::channelmanager::PaymentId;
 use crate::routing::router::{CandidateRouteHop, FirstHopCandidate, PublicHopCandidate, PrivateHopCandidate};
 use crate::sign;
 use crate::events;
@@ -252,17 +253,17 @@ impl<'a> MessageRouter for TestRouter<'a> {
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>, payment_id: Option<PaymentId>
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.router.create_blinded_paths(recipient, peers, secp_ctx)
+		self.router.create_blinded_paths(recipient, peers, secp_ctx, payment_id)
 	}
 
 	fn create_compact_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>, payment_id: Option<PaymentId>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.router.create_compact_blinded_paths(recipient, peers, secp_ctx)
+		self.router.create_compact_blinded_paths(recipient, peers, secp_ctx, payment_id)
 	}
 }
 
@@ -295,15 +296,15 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>, payment_id: Option<PaymentId>
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.inner.create_blinded_paths(recipient, peers, secp_ctx)
+		self.inner.create_blinded_paths(recipient, peers, secp_ctx, payment_id)
 	}
 
 	fn create_compact_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>, payment_id: Option<PaymentId>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.inner.create_compact_blinded_paths(recipient, peers, secp_ctx)
+		self.inner.create_compact_blinded_paths(recipient, peers, secp_ctx, payment_id)
 	}
 }
 

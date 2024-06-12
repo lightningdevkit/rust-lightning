@@ -8375,7 +8375,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		let entropy = &*$self.entropy_source;
 		let secp_ctx = &$self.secp_ctx;
 
-		let path = $self.create_blinded_path_using_absolute_expiry(absolute_expiry)
+		let path = $self.create_blinded_path_using_absolute_expiry(absolute_expiry, None)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = OfferBuilder::deriving_signing_pubkey(
 			node_id, expanded_key, entropy, secp_ctx
@@ -8447,7 +8447,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let entropy = &*$self.entropy_source;
 		let secp_ctx = &$self.secp_ctx;
 
-		let path = $self.create_blinded_path_using_absolute_expiry(Some(absolute_expiry))
+		let path = $self.create_blinded_path_using_absolute_expiry(Some(absolute_expiry), Some(payment_id))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = RefundBuilder::deriving_payer_id(
 			node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
@@ -8570,7 +8570,7 @@ where
 			Some(payer_note) => builder.payer_note(payer_note),
 		};
 		let invoice_request = builder.build_and_sign()?;
-		let reply_path = self.create_blinded_path().map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let reply_path = self.create_blinded_path(Some(payment_id)).map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -8670,7 +8670,7 @@ where
 				)?;
 				let builder: InvoiceBuilder<DerivedSigningPubkey> = builder.into();
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
-				let reply_path = self.create_blinded_path()
+				let reply_path = self.create_blinded_path(None)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
@@ -8803,15 +8803,15 @@ where
 	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
 	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
 	fn create_blinded_path_using_absolute_expiry(
-		&self, absolute_expiry: Option<Duration>
+		&self, absolute_expiry: Option<Duration>, payment_id: Option<PaymentId>
 	) -> Result<BlindedPath, ()> {
 		let now = self.duration_since_epoch();
 		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
 
 		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
-			self.create_compact_blinded_path()
+			self.create_compact_blinded_path(payment_id)
 		} else {
-			self.create_blinded_path()
+			self.create_blinded_path(payment_id)
 		}
 	}
 
@@ -8831,7 +8831,7 @@ where
 	/// Creates a blinded path by delegating to [`MessageRouter::create_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors or returns an empty `Vec`.
-	fn create_blinded_path(&self) -> Result<BlindedPath, ()> {
+	fn create_blinded_path(&self, payment_id: Option<PaymentId>) -> Result<BlindedPath, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
@@ -8844,14 +8844,14 @@ where
 			.collect::<Vec<_>>();
 
 		self.router
-			.create_blinded_paths(recipient, peers, secp_ctx)
+			.create_blinded_paths(recipient, peers, secp_ctx, payment_id)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 	}
 
 	/// Creates a blinded path by delegating to [`MessageRouter::create_compact_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors or returns an empty `Vec`.
-	fn create_compact_blinded_path(&self) -> Result<BlindedPath, ()> {
+	fn create_compact_blinded_path(&self, payment_id: Option<PaymentId>) -> Result<BlindedPath, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
@@ -8871,7 +8871,7 @@ where
 			.collect::<Vec<_>>();
 
 		self.router
-			.create_compact_blinded_paths(recipient, peers, secp_ctx)
+			.create_compact_blinded_paths(recipient, peers, secp_ctx, payment_id)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 	}
 
@@ -10252,7 +10252,9 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	fn handle_message(&self, message: OffersMessage, responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
+	fn handle_message(
+		&self, message: OffersMessage, responder: Option<Responder>, _payment_id: Option<PaymentId>
+	) -> ResponseInstruction<OffersMessage> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 

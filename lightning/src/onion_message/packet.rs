@@ -321,6 +321,7 @@ impl Readable for ControlTlvs {
 			(4, next_node_id, option),
 			(6, path_id, option),
 			(8, next_blinding_override, option),
+			(65537, payment_id, option),
 		});
 		let _padding: Option<Padding> = _padding;
 
@@ -342,6 +343,7 @@ impl Readable for ControlTlvs {
 		} else if valid_recv_fmt {
 			ControlTlvs::Receive(ReceiveTlvs {
 				path_id,
+				payment_id,
 			})
 		} else {
 			return Err(DecodeError::InvalidValue)
