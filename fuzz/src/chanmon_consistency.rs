@@ -423,6 +423,11 @@ fn get_payment_secret_hash(dest: &ChanMan, payment_id: &mut u8) -> Option<(Payme
 }
 
 #[inline]
+fn send_noret(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8, payment_idx: &mut u64) {
+	send_payment(source, dest, dest_chan_id, amt, payment_id, payment_idx);
+}
+
+#[inline]
 fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8, payment_idx: &mut u64) -> bool {
 	let (payment_secret, payment_hash) =
 		if let Some((secret, hash)) = get_payment_secret_hash(dest, payment_id) { (secret, hash) } else { return true; };
@@ -456,6 +461,12 @@ fn send_payment(source: &ChanMan, dest: &ChanMan, dest_chan_id: u64, amt: u64, p
 		true
 	}
 }
+
+#[inline]
+fn send_hop_noret(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8, payment_idx: &mut u64) {
+	send_hop_payment(source, middle, middle_chan_id, dest, dest_chan_id, amt, payment_id, payment_idx);
+}
+
 #[inline]
 fn send_hop_payment(source: &ChanMan, middle: &ChanMan, middle_chan_id: u64, dest: &ChanMan, dest_chan_id: u64, amt: u64, payment_id: &mut u8, payment_idx: &mut u64) -> bool {
 	let (payment_secret, payment_hash) =
@@ -980,6 +991,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			} }
 		}
 
+		macro_rules! process_msg_noret {
+			($node: expr, $corrupt_forward: expr, $limit_events: expr) => { {
+				process_msg_events!($node, $corrupt_forward, $limit_events);
+			} }
+		}
+
 		macro_rules! drain_msg_events_on_disconnect {
 			($counterparty_id: expr) => { {
 				if $counterparty_id == 0 {
@@ -1091,6 +1108,12 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			} }
 		}
 
+		macro_rules! process_ev_noret {
+			($node: expr, $fail: expr) => { {
+				process_events!($node, $fail);
+			} }
+		}
+
 		let complete_first = |v: &mut Vec<_>| if !v.is_empty() { Some(v.remove(0)) } else { None };
 		let complete_second = |v: &mut Vec<_>| if v.len() > 1 { Some(v.remove(1)) } else { None };
 		let complete_monitor_update = |
@@ -1190,35 +1213,35 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				}
 			},
 
-			0x10 => { process_msg_events!(0, true, ProcessMessages::AllMessages); },
-			0x11 => { process_msg_events!(0, false, ProcessMessages::AllMessages); },
-			0x12 => { process_msg_events!(0, true, ProcessMessages::OneMessage); },
-			0x13 => { process_msg_events!(0, false, ProcessMessages::OneMessage); },
-			0x14 => { process_msg_events!(0, true, ProcessMessages::OnePendingMessage); },
-			0x15 => { process_msg_events!(0, false, ProcessMessages::OnePendingMessage); },
+			0x10 => process_msg_noret!(0, true, ProcessMessages::AllMessages),
+			0x11 => process_msg_noret!(0, false, ProcessMessages::AllMessages),
+			0x12 => process_msg_noret!(0, true, ProcessMessages::OneMessage),
+			0x13 => process_msg_noret!(0, false, ProcessMessages::OneMessage),
+			0x14 => process_msg_noret!(0, true, ProcessMessages::OnePendingMessage),
+			0x15 => process_msg_noret!(0, false, ProcessMessages::OnePendingMessage),
 
-			0x16 => { process_events!(0, true); },
-			0x17 => { process_events!(0, false); },
+			0x16 => process_ev_noret!(0, true),
+			0x17 => process_ev_noret!(0, false),
 
-			0x18 => { process_msg_events!(1, true, ProcessMessages::AllMessages); },
-			0x19 => { process_msg_events!(1, false, ProcessMessages::AllMessages); },
-			0x1a => { process_msg_events!(1, true, ProcessMessages::OneMessage); },
-			0x1b => { process_msg_events!(1, false, ProcessMessages::OneMessage); },
-			0x1c => { process_msg_events!(1, true, ProcessMessages::OnePendingMessage); },
-			0x1d => { process_msg_events!(1, false, ProcessMessages::OnePendingMessage); },
+			0x18 => process_msg_noret!(1, true, ProcessMessages::AllMessages),
+			0x19 => process_msg_noret!(1, false, ProcessMessages::AllMessages),
+			0x1a => process_msg_noret!(1, true, ProcessMessages::OneMessage),
+			0x1b => process_msg_noret!(1, false, ProcessMessages::OneMessage),
+			0x1c => process_msg_noret!(1, true, ProcessMessages::OnePendingMessage),
+			0x1d => process_msg_noret!(1, false, ProcessMessages::OnePendingMessage),
 
-			0x1e => { process_events!(1, true); },
-			0x1f => { process_events!(1, false); },
+			0x1e => process_ev_noret!(1, true),
+			0x1f => process_ev_noret!(1, false),
 
-			0x20 => { process_msg_events!(2, true, ProcessMessages::AllMessages); },
-			0x21 => { process_msg_events!(2, false, ProcessMessages::AllMessages); },
-			0x22 => { process_msg_events!(2, true, ProcessMessages::OneMessage); },
-			0x23 => { process_msg_events!(2, false, ProcessMessages::OneMessage); },
-			0x24 => { process_msg_events!(2, true, ProcessMessages::OnePendingMessage); },
-			0x25 => { process_msg_events!(2, false, ProcessMessages::OnePendingMessage); },
+			0x20 => process_msg_noret!(2, true, ProcessMessages::AllMessages),
+			0x21 => process_msg_noret!(2, false, ProcessMessages::AllMessages),
+			0x22 => process_msg_noret!(2, true, ProcessMessages::OneMessage),
+			0x23 => process_msg_noret!(2, false, ProcessMessages::OneMessage),
+			0x24 => process_msg_noret!(2, true, ProcessMessages::OnePendingMessage),
+			0x25 => process_msg_noret!(2, false, ProcessMessages::OnePendingMessage),
 
-			0x26 => { process_events!(2, true); },
-			0x27 => { process_events!(2, false); },
+			0x26 => process_ev_noret!(2, true),
+			0x27 => process_ev_noret!(2, false),
 
 			0x2c => {
 				if !chan_a_disconnected {
@@ -1265,61 +1288,61 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 
 			// 1/10th the channel size:
-			0x30 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut p_id, &mut p_idx); },
-			0x31 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx); },
-			0x32 => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx); },
-			0x33 => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut p_id, &mut p_idx); },
-			0x34 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx); },
-			0x35 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx); },
+			0x30 => send_noret(&nodes[0], &nodes[1], chan_a, 10_000_000, &mut p_id, &mut p_idx),
+			0x31 => send_noret(&nodes[1], &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx),
+			0x32 => send_noret(&nodes[1], &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx),
+			0x33 => send_noret(&nodes[2], &nodes[1], chan_b, 10_000_000, &mut p_id, &mut p_idx),
+			0x34 => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000_000, &mut p_id, &mut p_idx),
+			0x35 => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000_000, &mut p_id, &mut p_idx),
 
-			0x38 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut p_id, &mut p_idx); },
-			0x39 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut p_id, &mut p_idx); },
-			0x3a => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut p_id, &mut p_idx); },
-			0x3b => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut p_id, &mut p_idx); },
-			0x3c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut p_id, &mut p_idx); },
-			0x3d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut p_id, &mut p_idx); },
+			0x38 => send_noret(&nodes[0], &nodes[1], chan_a, 1_000_000, &mut p_id, &mut p_idx),
+			0x39 => send_noret(&nodes[1], &nodes[0], chan_a, 1_000_000, &mut p_id, &mut p_idx),
+			0x3a => send_noret(&nodes[1], &nodes[2], chan_b, 1_000_000, &mut p_id, &mut p_idx),
+			0x3b => send_noret(&nodes[2], &nodes[1], chan_b, 1_000_000, &mut p_id, &mut p_idx),
+			0x3c => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000_000, &mut p_id, &mut p_idx),
+			0x3d => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000_000, &mut p_id, &mut p_idx),
 
-			0x40 => { send_payment(&nodes[0], &nodes[1], chan_a, 100_000, &mut p_id, &mut p_idx); },
-			0x41 => { send_payment(&nodes[1], &nodes[0], chan_a, 100_000, &mut p_id, &mut p_idx); },
-			0x42 => { send_payment(&nodes[1], &nodes[2], chan_b, 100_000, &mut p_id, &mut p_idx); },
-			0x43 => { send_payment(&nodes[2], &nodes[1], chan_b, 100_000, &mut p_id, &mut p_idx); },
-			0x44 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut p_id, &mut p_idx); },
-			0x45 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut p_id, &mut p_idx); },
+			0x40 => send_noret(&nodes[0], &nodes[1], chan_a, 100_000, &mut p_id, &mut p_idx),
+			0x41 => send_noret(&nodes[1], &nodes[0], chan_a, 100_000, &mut p_id, &mut p_idx),
+			0x42 => send_noret(&nodes[1], &nodes[2], chan_b, 100_000, &mut p_id, &mut p_idx),
+			0x43 => send_noret(&nodes[2], &nodes[1], chan_b, 100_000, &mut p_id, &mut p_idx),
+			0x44 => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100_000, &mut p_id, &mut p_idx),
+			0x45 => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100_000, &mut p_id, &mut p_idx),
 
-			0x48 => { send_payment(&nodes[0], &nodes[1], chan_a, 10_000, &mut p_id, &mut p_idx); },
-			0x49 => { send_payment(&nodes[1], &nodes[0], chan_a, 10_000, &mut p_id, &mut p_idx); },
-			0x4a => { send_payment(&nodes[1], &nodes[2], chan_b, 10_000, &mut p_id, &mut p_idx); },
-			0x4b => { send_payment(&nodes[2], &nodes[1], chan_b, 10_000, &mut p_id, &mut p_idx); },
-			0x4c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut p_id, &mut p_idx); },
-			0x4d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut p_id, &mut p_idx); },
+			0x48 => send_noret(&nodes[0], &nodes[1], chan_a, 10_000, &mut p_id, &mut p_idx),
+			0x49 => send_noret(&nodes[1], &nodes[0], chan_a, 10_000, &mut p_id, &mut p_idx),
+			0x4a => send_noret(&nodes[1], &nodes[2], chan_b, 10_000, &mut p_id, &mut p_idx),
+			0x4b => send_noret(&nodes[2], &nodes[1], chan_b, 10_000, &mut p_id, &mut p_idx),
+			0x4c => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10_000, &mut p_id, &mut p_idx),
+			0x4d => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10_000, &mut p_id, &mut p_idx),
 
-			0x50 => { send_payment(&nodes[0], &nodes[1], chan_a, 1_000, &mut p_id, &mut p_idx); },
-			0x51 => { send_payment(&nodes[1], &nodes[0], chan_a, 1_000, &mut p_id, &mut p_idx); },
-			0x52 => { send_payment(&nodes[1], &nodes[2], chan_b, 1_000, &mut p_id, &mut p_idx); },
-			0x53 => { send_payment(&nodes[2], &nodes[1], chan_b, 1_000, &mut p_id, &mut p_idx); },
-			0x54 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut p_id, &mut p_idx); },
-			0x55 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut p_id, &mut p_idx); },
+			0x50 => send_noret(&nodes[0], &nodes[1], chan_a, 1_000, &mut p_id, &mut p_idx),
+			0x51 => send_noret(&nodes[1], &nodes[0], chan_a, 1_000, &mut p_id, &mut p_idx),
+			0x52 => send_noret(&nodes[1], &nodes[2], chan_b, 1_000, &mut p_id, &mut p_idx),
+			0x53 => send_noret(&nodes[2], &nodes[1], chan_b, 1_000, &mut p_id, &mut p_idx),
+			0x54 => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1_000, &mut p_id, &mut p_idx),
+			0x55 => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1_000, &mut p_id, &mut p_idx),
 
-			0x58 => { send_payment(&nodes[0], &nodes[1], chan_a, 100, &mut p_id, &mut p_idx); },
-			0x59 => { send_payment(&nodes[1], &nodes[0], chan_a, 100, &mut p_id, &mut p_idx); },
-			0x5a => { send_payment(&nodes[1], &nodes[2], chan_b, 100, &mut p_id, &mut p_idx); },
-			0x5b => { send_payment(&nodes[2], &nodes[1], chan_b, 100, &mut p_id, &mut p_idx); },
-			0x5c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut p_id, &mut p_idx); },
-			0x5d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut p_id, &mut p_idx); },
+			0x58 => send_noret(&nodes[0], &nodes[1], chan_a, 100, &mut p_id, &mut p_idx),
+			0x59 => send_noret(&nodes[1], &nodes[0], chan_a, 100, &mut p_id, &mut p_idx),
+			0x5a => send_noret(&nodes[1], &nodes[2], chan_b, 100, &mut p_id, &mut p_idx),
+			0x5b => send_noret(&nodes[2], &nodes[1], chan_b, 100, &mut p_id, &mut p_idx),
+			0x5c => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 100, &mut p_id, &mut p_idx),
+			0x5d => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 100, &mut p_id, &mut p_idx),
 
-			0x60 => { send_payment(&nodes[0], &nodes[1], chan_a, 10, &mut p_id, &mut p_idx); },
-			0x61 => { send_payment(&nodes[1], &nodes[0], chan_a, 10, &mut p_id, &mut p_idx); },
-			0x62 => { send_payment(&nodes[1], &nodes[2], chan_b, 10, &mut p_id, &mut p_idx); },
-			0x63 => { send_payment(&nodes[2], &nodes[1], chan_b, 10, &mut p_id, &mut p_idx); },
-			0x64 => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut p_id, &mut p_idx); },
-			0x65 => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut p_id, &mut p_idx); },
+			0x60 => send_noret(&nodes[0], &nodes[1], chan_a, 10, &mut p_id, &mut p_idx),
+			0x61 => send_noret(&nodes[1], &nodes[0], chan_a, 10, &mut p_id, &mut p_idx),
+			0x62 => send_noret(&nodes[1], &nodes[2], chan_b, 10, &mut p_id, &mut p_idx),
+			0x63 => send_noret(&nodes[2], &nodes[1], chan_b, 10, &mut p_id, &mut p_idx),
+			0x64 => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 10, &mut p_id, &mut p_idx),
+			0x65 => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 10, &mut p_id, &mut p_idx),
 
-			0x68 => { send_payment(&nodes[0], &nodes[1], chan_a, 1, &mut p_id, &mut p_idx); },
-			0x69 => { send_payment(&nodes[1], &nodes[0], chan_a, 1, &mut p_id, &mut p_idx); },
-			0x6a => { send_payment(&nodes[1], &nodes[2], chan_b, 1, &mut p_id, &mut p_idx); },
-			0x6b => { send_payment(&nodes[2], &nodes[1], chan_b, 1, &mut p_id, &mut p_idx); },
-			0x6c => { send_hop_payment(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut p_id, &mut p_idx); },
-			0x6d => { send_hop_payment(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut p_id, &mut p_idx); },
+			0x68 => send_noret(&nodes[0], &nodes[1], chan_a, 1, &mut p_id, &mut p_idx),
+			0x69 => send_noret(&nodes[1], &nodes[0], chan_a, 1, &mut p_id, &mut p_idx),
+			0x6a => send_noret(&nodes[1], &nodes[2], chan_b, 1, &mut p_id, &mut p_idx),
+			0x6b => send_noret(&nodes[2], &nodes[1], chan_b, 1, &mut p_id, &mut p_idx),
+			0x6c => send_hop_noret(&nodes[0], &nodes[1], chan_a, &nodes[2], chan_b, 1, &mut p_id, &mut p_idx),
+			0x6d => send_hop_noret(&nodes[2], &nodes[1], chan_b, &nodes[0], chan_a, 1, &mut p_id, &mut p_idx),
 
 			0x80 => {
 				let mut max_feerate = last_htlc_clear_fee_a;
