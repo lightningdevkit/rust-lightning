@@ -300,7 +300,9 @@ impl CounterpartyCommitmentSecrets {
 		for i in 0..pos {
 			let (old_secret, old_idx) = self.old_secrets[i as usize];
 			if Self::derive_secret(secret, pos, old_idx) != old_secret {
-				return Err(());
+				if old_idx != (1 << 48) && old_secret != [0; 32] { // ignore empty entries from the check
+					return Err(());
+				}
 			}
 		}
 		if self.get_min_seen_secret() <= idx {

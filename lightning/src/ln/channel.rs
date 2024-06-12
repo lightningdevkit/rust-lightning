@@ -2429,6 +2429,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		context.channel_pending_event_emitted = false;
 		context.channel_ready_event_emitted = false;
 
+		context.interactive_tx_constructor = None;
+		context.next_funding_txid = None;
+
+		// Note on commitment transaction numbers and commitment points:
+		// we could step 'back' here (i.e. increase number by one, set cur to prev), but that does not work,
+		// because latest commitment point would be lost.
+		// Instead, we take the previous values in relevant cases when splicing is pending.
+
 		log_debug!(logger, "Splicing channel context: value {} old {}, dir {}, value to self {}, funding keys local {} cp {}",
 			context.channel_value_satoshis, pre_channel_value,
 			if is_outgoing { "outgoing" } else { "incoming" },
@@ -3173,8 +3181,15 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let revocation_basepoint = &self.get_holder_pubkeys().revocation_basepoint;
 		let htlc_basepoint = &self.get_holder_pubkeys().htlc_basepoint;
 		let counterparty_pubkeys = self.get_counterparty_pubkeys();
+		let is_splice_pending = self.is_splice_pending();
+		let counterparty_commitment_point = if !is_splice_pending {
+			self.counterparty_cur_commitment_point.unwrap()
+		} else {
+			// During splicing negotiation don't advance the commitment point
+			self.counterparty_prev_commitment_point.unwrap()
+		};
 
-		TxCreationKeys::derive_new(&self.secp_ctx, &self.counterparty_cur_commitment_point.unwrap(), &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint)
+		TxCreationKeys::derive_new(&self.secp_ctx, &counterparty_commitment_point, &counterparty_pubkeys.delayed_payment_basepoint, &counterparty_pubkeys.htlc_basepoint, revocation_basepoint, htlc_basepoint)
 	}
 
 	/// Gets the redeemscript for the funding transaction output (ie the funding transaction output
@@ -4962,8 +4977,6 @@ impl<SP: Deref> Channel<SP> where
 			return Ok(None);
 		}
 
-		self.context.counterparty_prev_commitment_point = self.context.counterparty_cur_commitment_point;
-
 		log_info!(logger, "Received splice_locked from peer for channel {}", &self.context.channel_id());
 
 		Ok(self.get_announcement_sigs(node_signer, chain_hash, user_config, best_block.height, logger))
@@ -5166,8 +5179,8 @@ impl<SP: Deref> Channel<SP> where
 		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
 			return Err(ChannelError::Close("Received initial commitment_signed before funding transaction constructed!".to_owned()));
 		}
-		let is_splice = self.context.is_splice_pending();
-		if !is_splice {
+		let is_splice_pending = self.context.is_splice_pending();
+		if !is_splice_pending {
 			if self.context.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 					self.context.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
 					self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
@@ -5181,15 +5194,19 @@ impl<SP: Deref> Channel<SP> where
 		let funding_script = self.context.get_funding_redeemscript();
 
 		let counterparty_keys = self.context.build_remote_transaction_keys();
-		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		// During splicing negotiation don't advance the commitment point
+		let comm_number_delta = if !is_splice_pending { 0 } else { 1 };
+		let holder_commitment_transaction_number = self.context.cur_holder_commitment_transaction_number + comm_number_delta;
+		let counterparty_commitment_transaction_number = self.context.cur_counterparty_commitment_transaction_number + comm_number_delta;
+		let counterparty_initial_commitment_tx = self.context.build_commitment_transaction(counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
 
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			&self.context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		let holder_signer = self.context.build_holder_transaction_keys(self.context.cur_holder_commitment_transaction_number);
-		let initial_commitment_tx = self.context.build_commitment_transaction(self.context.cur_holder_commitment_transaction_number, &holder_signer, true, false, logger).tx;
+		let holder_signer = self.context.build_holder_transaction_keys(holder_commitment_transaction_number);
+		let initial_commitment_tx = self.context.build_commitment_transaction(holder_commitment_transaction_number, &holder_signer, true, false, logger).tx;
 		{
 			let trusted_tx = initial_commitment_tx.trust();
 			let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
@@ -5226,23 +5243,30 @@ impl<SP: Deref> Channel<SP> where
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id, self.context.channel_id());
 
+		let counterparty_commitment_point = if !is_splice_pending {
+			self.context.counterparty_cur_commitment_point.unwrap()
+		} else {
+			// During splicing negotiation don't advance the commitment point
+			self.context.counterparty_prev_commitment_point.unwrap()
+		};
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_bitcoin_tx.txid, Vec::new(),
-			self.context.cur_counterparty_commitment_transaction_number,
-			self.context.counterparty_cur_commitment_point.unwrap(),
+			counterparty_commitment_transaction_number,
+			counterparty_commitment_point,
 			counterparty_initial_commitment_tx.feerate_per_kw(),
 			counterparty_initial_commitment_tx.to_broadcaster_value_sat(),
 			counterparty_initial_commitment_tx.to_countersignatory_value_sat(), logger);
 
 		assert!(!self.context.channel_state.is_monitor_update_in_progress()); // We have no had any monitor(s) yet to fail update!
-		self.context.cur_holder_commitment_transaction_number -= 1;
-		self.context.cur_counterparty_commitment_transaction_number -= 1;
+		// Update to next (unless splicing when it in fact stays the same)
+		self.context.cur_holder_commitment_transaction_number = holder_commitment_transaction_number - 1;
+		self.context.cur_counterparty_commitment_transaction_number = counterparty_commitment_transaction_number - 1;
 
 		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
 
 		let need_channel_ready = { let res = self.check_get_channel_ready(0); res.0.is_some() || res.1.is_some() };
 		self.context.channel_state = ChannelState::AwaitingChannelReady(
-			if is_splice { AwaitingChannelReadyFlags::IS_SPLICE } else { AwaitingChannelReadyFlags::new() }
+			if is_splice_pending { AwaitingChannelReadyFlags::IS_SPLICE } else { AwaitingChannelReadyFlags::new() }
 		);
 		self.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
@@ -5920,7 +5944,8 @@ impl<SP: Deref> Channel<SP> where
 				return Err(ChannelError::Close(format!("Witness count does not match contributed input count, {} {}",
 					msg.witnesses.len(), expected_witness_count)));
 			}
-			let expected_shared = if self.context.is_splice_pending() { 1 } else { 0 };
+			let is_splice_pending = self.context.is_splice_pending();
+			let expected_shared = if is_splice_pending { 1 } else { 0 };
 			let funding_sig_count = if msg.funding_outpoint_sig.is_some() { 1 } else { 0 };
 			if funding_sig_count != expected_shared {
 				return Err(ChannelError::Close(format!("Shared signature count (funding_outpoint_sig) presence does not match expected, {} {}",
@@ -5949,7 +5974,7 @@ impl<SP: Deref> Channel<SP> where
 			let (tx_signatures_opt, mut funding_tx_opt) = signing_session.received_tx_signatures(msg.clone());
 			#[cfg(splicing)]
 			if let Some(funding_tx) = &funding_tx_opt {
-				if self.context.is_splice_pending() {
+				if is_splice_pending {
 					if let Some(cp_sig) = &msg.funding_outpoint_sig {
 						// Update signature on previous funding input:
 						// - our signature is (re)generated (was overwritten by witness received in tx_signatures)
@@ -9636,9 +9661,16 @@ where
 	SP::Target: SignerProvider,
 	L::Target: Logger
 {
+	let is_splice_pending = context.is_splice_pending();
+	let counterparty_commitment_transaction_number = if !is_splice_pending {
+		context.cur_counterparty_commitment_transaction_number
+	} else {
+		// During splicing negotiation don't advance the commitment point
+		context.cur_counterparty_commitment_transaction_number + 1
+	};
 	let counterparty_keys = context.build_remote_transaction_keys();
 	let counterparty_initial_commitment_tx = context.build_commitment_transaction(
-		context.cur_counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
+		counterparty_commitment_transaction_number, &counterparty_keys, false, false, logger).tx;
 	match context.holder_signer {
 		// TODO (taproot|arik): move match into calling method for Taproot
 		ChannelSignerType::Ecdsa(ref ecdsa) => {

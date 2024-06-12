@@ -1213,7 +1213,6 @@ fn test_v2_splice_in() {
 /// #SPLICING Builds on test_channel_open_v2_and_close()
 /// Splicing test, simple splice-in flow. Starts with opening a V2 channel first.
 /// The steps are mostly on ChannelManager level.
-#[ignore]
 #[test]
 fn test_v2_payment_splice_in_payment() {
 	// Set up a network of 2 nodes
