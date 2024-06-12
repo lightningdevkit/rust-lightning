@@ -306,6 +306,7 @@ pub(super) struct PendingAddHTLCInfo {
 	// Note that this may be an outbound SCID alias for the associated channel.
 	prev_short_channel_id: u64,
 	prev_htlc_id: u64,
+	prev_counterparty_node_id: Option<PublicKey>,
 	prev_channel_id: ChannelId,
 	prev_funding_outpoint: OutPoint,
 	prev_user_channel_id: u128,
@@ -349,9 +350,10 @@ pub(crate) struct HTLCPreviousHopData {
 	blinded_failure: Option<BlindedFailure>,
 	channel_id: ChannelId,
 
-	// This field is consumed by `claim_funds_from_hop()` when updating a force-closed backwards
+	// These fields are consumed by `claim_funds_from_hop()` when updating a force-closed backwards
 	// channel with a preimage provided by the forward channel.
 	outpoint: OutPoint,
+	counterparty_node_id: Option<PublicKey>,
 }
 
 enum OnionPayload {
@@ -4692,6 +4694,7 @@ where
 
 		let mut per_source_pending_forward = [(
 			payment.prev_short_channel_id,
+			payment.prev_counterparty_node_id,
 			payment.prev_funding_outpoint,
 			payment.prev_channel_id,
 			payment.prev_user_channel_id,
@@ -4722,6 +4725,7 @@ where
 				user_channel_id: Some(payment.prev_user_channel_id),
 				outpoint: payment.prev_funding_outpoint,
 				channel_id: payment.prev_channel_id,
+				counterparty_node_id: payment.prev_counterparty_node_id,
 				htlc_id: payment.prev_htlc_id,
 				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
 				phantom_shared_secret: None,
@@ -4851,8 +4855,10 @@ where
 
 			// Process all of the forwards and failures for the channel in which the HTLCs were
 			// proposed to as a batch.
-			let pending_forwards = (incoming_scid, incoming_funding_txo, incoming_channel_id,
-				incoming_user_channel_id, htlc_forwards.drain(..).collect());
+			let pending_forwards = (
+				incoming_scid, Some(incoming_counterparty_node_id), incoming_funding_txo,
+				incoming_channel_id, incoming_user_channel_id, htlc_forwards.drain(..).collect()
+			);
 			self.forward_htlcs_without_forward_event(&mut [pending_forwards]);
 			for (htlc_fail, htlc_destination) in htlc_fails.drain(..) {
 				let failure = match htlc_fail {
@@ -4886,7 +4892,7 @@ where
 
 		let mut new_events = VecDeque::new();
 		let mut failed_forwards = Vec::new();
-		let mut phantom_receives: Vec<(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)> = Vec::new();
+		let mut phantom_receives: Vec<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)> = Vec::new();
 		{
 			let mut forward_htlcs = new_hash_map();
 			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
@@ -4900,7 +4906,7 @@ where
 								match forward_info {
 									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 										prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
-										prev_user_channel_id, forward_info: PendingHTLCInfo {
+										prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
 											outgoing_cltv_value, ..
 										}
@@ -4915,6 +4921,7 @@ where
 													user_channel_id: Some(prev_user_channel_id),
 													channel_id: prev_channel_id,
 													outpoint: prev_funding_outpoint,
+													counterparty_node_id: prev_counterparty_node_id,
 													htlc_id: prev_htlc_id,
 													incoming_packet_shared_secret: incoming_shared_secret,
 													phantom_shared_secret: $phantom_ss,
@@ -4977,7 +4984,10 @@ where
 															outgoing_cltv_value, Some(phantom_shared_secret), false, None,
 															current_height, self.default_configuration.accept_mpp_keysend)
 														{
-															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)])),
+															Ok(info) => phantom_receives.push((
+																prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+																prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)]
+															)),
 															Err(InboundHTLCErr { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
 														}
 													},
@@ -5022,7 +5032,7 @@ where
 						let queue_fail_htlc_res = match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
-								prev_user_channel_id, forward_info: PendingHTLCInfo {
+								prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
 									incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
 									routing: PendingHTLCRouting::Forward {
 										ref onion_packet, blinded, ..
@@ -5032,6 +5042,7 @@ where
 								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 									short_channel_id: prev_short_channel_id,
 									user_channel_id: Some(prev_user_channel_id),
+									counterparty_node_id: prev_counterparty_node_id,
 									channel_id: prev_channel_id,
 									outpoint: prev_funding_outpoint,
 									htlc_id: prev_htlc_id,
@@ -5160,7 +5171,7 @@ where
 						match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
-								prev_user_channel_id, forward_info: PendingHTLCInfo {
+								prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
 									routing, incoming_shared_secret, payment_hash, incoming_amt_msat, outgoing_amt_msat,
 									skimmed_fee_msat, ..
 								}
@@ -5198,6 +5209,7 @@ where
 									prev_hop: HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
 										user_channel_id: Some(prev_user_channel_id),
+										counterparty_node_id: prev_counterparty_node_id,
 										channel_id: prev_channel_id,
 										outpoint: prev_funding_outpoint,
 										htlc_id: prev_htlc_id,
@@ -5230,6 +5242,7 @@ where
 										failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
 												short_channel_id: $htlc.prev_hop.short_channel_id,
 												user_channel_id: $htlc.prev_hop.user_channel_id,
+												counterparty_node_id: $htlc.prev_hop.counterparty_node_id,
 												channel_id: prev_channel_id,
 												outpoint: prev_funding_outpoint,
 												htlc_id: $htlc.prev_hop.htlc_id,
@@ -6586,7 +6599,7 @@ where
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>)
-	-> (Option<(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
+	-> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement",
 			&channel.context.channel_id(),
@@ -6602,8 +6615,11 @@ where
 
 		let mut htlc_forwards = None;
 		if !pending_forwards.is_empty() {
-			htlc_forwards = Some((short_channel_id, channel.context.get_funding_txo().unwrap(),
-				channel.context.channel_id(), channel.context.get_user_id(), pending_forwards));
+			htlc_forwards = Some((
+				short_channel_id, Some(channel.context.get_counterparty_node_id()),
+				channel.context.get_funding_txo().unwrap(), channel.context.channel_id(),
+				channel.context.get_user_id(), pending_forwards
+			));
 		}
 		let mut decode_update_add_htlcs = None;
 		if !pending_update_adds.is_empty() {
@@ -7646,15 +7662,15 @@ where
 	}
 
 	#[inline]
-	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) {
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) {
 		let push_forward_event = self.forward_htlcs_without_forward_event(per_source_pending_forwards);
 		if push_forward_event { self.push_pending_forwards_ev() }
 	}
 
 	#[inline]
-	fn forward_htlcs_without_forward_event(&self, per_source_pending_forwards: &mut [(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) -> bool {
+	fn forward_htlcs_without_forward_event(&self, per_source_pending_forwards: &mut [(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) -> bool {
 		let mut push_forward_event = false;
-		for &mut (prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_user_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
+		for &mut (prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint, prev_channel_id, prev_user_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
 			let mut new_intercept_events = VecDeque::new();
 			let mut failed_intercept_forwards = Vec::new();
 			if !pending_forwards.is_empty() {
@@ -7673,7 +7689,9 @@ where
 					match forward_htlcs.entry(scid) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-								prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info }));
+								prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+								prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info
+							}));
 						},
 						hash_map::Entry::Vacant(entry) => {
 							if !is_our_scid && forward_info.incoming_amt_msat.is_some() &&
@@ -7691,7 +7709,9 @@ where
 											intercept_id
 										}, None));
 										entry.insert(PendingAddHTLCInfo {
-											prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info });
+											prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+											prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info
+										});
 									},
 									hash_map::Entry::Occupied(_) => {
 										let logger = WithContext::from(&self.logger, None, Some(prev_channel_id), Some(forward_info.payment_hash));
@@ -7699,6 +7719,7 @@ where
 										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 											short_channel_id: prev_short_channel_id,
 											user_channel_id: Some(prev_user_channel_id),
+											counterparty_node_id: prev_counterparty_node_id,
 											outpoint: prev_funding_outpoint,
 											channel_id: prev_channel_id,
 											htlc_id: prev_htlc_id,
@@ -7718,7 +7739,9 @@ where
 								// payments are being processed.
 								push_forward_event |= forward_htlcs_empty && decode_update_add_htlcs_empty;
 								entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-									prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info })));
+									prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+									prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info
+								})));
 							}
 						}
 					}
@@ -9507,6 +9530,7 @@ where
 						htlc_id: htlc.prev_htlc_id,
 						incoming_packet_shared_secret: htlc.forward_info.incoming_shared_secret,
 						phantom_shared_secret: None,
+						counterparty_node_id: htlc.prev_counterparty_node_id,
 						outpoint: htlc.prev_funding_outpoint,
 						channel_id: htlc.prev_channel_id,
 						blinded_failure: htlc.forward_info.routing.blinded_failure(),
@@ -10616,6 +10640,7 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	// Note that by the time we get past the required read for type 2 above, outpoint will be
 	// filled in, so we can safely unwrap it here.
 	(9, channel_id, (default_value, ChannelId::v1_from_funding_outpoint(outpoint.0.unwrap()))),
+	(11, counterparty_node_id, option),
 });
 
 impl Writeable for ClaimableHTLC {
@@ -10772,6 +10797,7 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	// Note that by the time we get past the required read for type 6 above, prev_funding_outpoint will be
 	// filled in, so we can safely unwrap it here.
 	(7, prev_channel_id, (default_value, ChannelId::v1_from_funding_outpoint(prev_funding_outpoint.0.unwrap()))),
+	(9, prev_counterparty_node_id, option),
 });
 
 impl Writeable for HTLCForwardInfo {
