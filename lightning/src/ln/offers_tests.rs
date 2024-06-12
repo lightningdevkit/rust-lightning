@@ -985,8 +985,18 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
-	let (_, reply_path) = extract_invoice_request(alice, &onion_message);
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	assert_ne!(invoice_request.payer_id(), bob_id);
 	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(alice_id));
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+
+	let invoice = extract_invoice(bob, &onion_message);
+	assert_ne!(invoice.signing_pubkey(), alice_id);
+	assert!(!invoice.payment_paths().is_empty());
+	for (_, path) in invoice.payment_paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+	}
 }
 
 /// Checks that a refund can be created using an unannounced node as a blinded path's introduction
@@ -1019,6 +1029,18 @@ fn creates_refund_with_blinded_path_using_unannounced_introduction_node() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
 	}
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+
+	let invoice = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+	assert_ne!(invoice.signing_pubkey(), alice_id);
+	assert!(!invoice.payment_paths().is_empty());
+	for (_, path) in invoice.payment_paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+	}
 }
 
 /// Fails creating or paying an offer when a blinded path cannot be created because no peers are
