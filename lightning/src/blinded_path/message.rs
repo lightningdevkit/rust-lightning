@@ -30,7 +30,7 @@ use core::mem;
 use core::ops::Deref;
 
 /// An intermediate node, and possibly a short channel id leading to the next node.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct ForwardNode {
 	/// This node's pubkey.
 	pub node_id: PublicKey,
