@@ -102,12 +102,11 @@
 //!
 //! ```
 
-use bitcoin::{WitnessProgram, Network, WitnessVersion, WPubkeyHash, WScriptHash};
+use bitcoin::{WitnessProgram, Network, WitnessVersion};
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::address::{Address, Payload};
-use bitcoin::key::TweakedPublicKey;
 use core::time::Duration;
 use core::hash::{Hash, Hasher};
 use crate::io;
@@ -117,6 +116,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
+use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
 use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
@@ -200,7 +200,7 @@ pub struct ExplicitSigningPubkey {}
 /// [`Bolt12Invoice::signing_pubkey`] was derived.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub struct DerivedSigningPubkey(Keypair);
+pub struct DerivedSigningPubkey(pub(super) Keypair);
 
 impl SigningPubkeyStrategy for ExplicitSigningPubkey {}
 impl SigningPubkeyStrategy for DerivedSigningPubkey {}
@@ -371,65 +371,6 @@ macro_rules! invoice_builder_methods { (
 
 		Ok(Self { invreq_bytes, invoice: contents, signing_pubkey_strategy })
 	}
-
-	/// Sets the [`Bolt12Invoice::relative_expiry`] as seconds since [`Bolt12Invoice::created_at`].
-	/// Any expiry that has already passed is valid and can be checked for using
-	/// [`Bolt12Invoice::is_expired`].
-	///
-	/// Successive calls to this method will override the previous setting.
-	pub fn relative_expiry($($self_mut)* $self: $self_type, relative_expiry_secs: u32) -> $return_type {
-		let relative_expiry = Duration::from_secs(relative_expiry_secs as u64);
-		$self.invoice.fields_mut().relative_expiry = Some(relative_expiry);
-		$return_value
-	}
-
-	/// Adds a P2WSH address to [`Bolt12Invoice::fallbacks`].
-	///
-	/// Successive calls to this method will add another address. Caller is responsible for not
-	/// adding duplicate addresses and only calling if capable of receiving to P2WSH addresses.
-	pub fn fallback_v0_p2wsh($($self_mut)* $self: $self_type, script_hash: &WScriptHash) -> $return_type {
-		use bitcoin::hashes::Hash;
-		let address = FallbackAddress {
-			version: WitnessVersion::V0.to_num(),
-			program: Vec::from(script_hash.to_byte_array()),
-		};
-		$self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
-		$return_value
-	}
-
-	/// Adds a P2WPKH address to [`Bolt12Invoice::fallbacks`].
-	///
-	/// Successive calls to this method will add another address. Caller is responsible for not
-	/// adding duplicate addresses and only calling if capable of receiving to P2WPKH addresses.
-	pub fn fallback_v0_p2wpkh($($self_mut)* $self: $self_type, pubkey_hash: &WPubkeyHash) -> $return_type {
-		use bitcoin::hashes::Hash;
-		let address = FallbackAddress {
-			version: WitnessVersion::V0.to_num(),
-			program: Vec::from(pubkey_hash.to_byte_array()),
-		};
-		$self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
-		$return_value
-	}
-
-	/// Adds a P2TR address to [`Bolt12Invoice::fallbacks`].
-	///
-	/// Successive calls to this method will add another address. Caller is responsible for not
-	/// adding duplicate addresses and only calling if capable of receiving to P2TR addresses.
-	pub fn fallback_v1_p2tr_tweaked($($self_mut)* $self: $self_type, output_key: &TweakedPublicKey) -> $return_type {
-		let address = FallbackAddress {
-			version: WitnessVersion::V1.to_num(),
-			program: Vec::from(&output_key.serialize()[..]),
-		};
-		$self.invoice.fields_mut().fallbacks.get_or_insert_with(Vec::new).push(address);
-		$return_value
-	}
-
-	/// Sets [`Bolt12Invoice::invoice_features`] to indicate MPP may be used. Otherwise, MPP is
-	/// disallowed.
-	pub fn allow_mpp($($self_mut)* $self: $self_type) -> $return_type {
-		$self.invoice.fields_mut().features.set_basic_mpp_optional();
-		$return_value
-	}
 } }
 
 impl<'a> InvoiceBuilder<'a, ExplicitSigningPubkey> {
@@ -442,30 +383,35 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 
 impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	invoice_builder_methods!(self, Self, Self, self, S, mut);
+	invoice_builder_methods_common!(self, Self, self.invoice.fields_mut(), Self, self, S, Bolt12Invoice, mut);
 }
 
 #[cfg(all(c_bindings, not(test)))]
 impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, (), (), ExplicitSigningPubkey);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), (), (), ExplicitSigningPubkey, Bolt12Invoice);
 }
 
 #[cfg(all(c_bindings, test))]
 impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, ExplicitSigningPubkey);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, ExplicitSigningPubkey, Bolt12Invoice);
 }
 
 #[cfg(all(c_bindings, not(test)))]
 impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
 	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, (), (), DerivedSigningPubkey);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), (), (), DerivedSigningPubkey, Bolt12Invoice);
 }
 
 #[cfg(all(c_bindings, test))]
 impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
 	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, DerivedSigningPubkey);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, DerivedSigningPubkey, Bolt12Invoice);
 }
 
 #[cfg(c_bindings)]
@@ -794,35 +740,6 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 		$contents.payer_note()
 	}
 
-	/// Paths to the recipient originating from publicly reachable nodes, including information
-	/// needed for routing payments across them.
-	///
-	/// Blinded paths provide recipient privacy by obfuscating its node id. Note, however, that this
-	/// privacy is lost if a public node id is used for [`Bolt12Invoice::signing_pubkey`].
-	///
-	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
-	/// matched in another language.
-	pub fn payment_paths(&$self) -> &[(BlindedPayInfo, BlindedPath)] {
-		$contents.payment_paths()
-	}
-
-	/// Duration since the Unix epoch when the invoice was created.
-	pub fn created_at(&$self) -> Duration {
-		$contents.created_at()
-	}
-
-	/// Duration since [`Bolt12Invoice::created_at`] when the invoice has expired and therefore
-	/// should no longer be paid.
-	pub fn relative_expiry(&$self) -> Duration {
-		$contents.relative_expiry()
-	}
-
-	/// Whether the invoice has expired.
-	#[cfg(feature = "std")]
-	pub fn is_expired(&$self) -> bool {
-		$contents.is_expired()
-	}
-
 	/// SHA256 hash of the payment preimage that will be given in return for paying the invoice.
 	pub fn payment_hash(&$self) -> PaymentHash {
 		$contents.payment_hash()
@@ -832,29 +749,15 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	pub fn amount_msats(&$self) -> u64 {
 		$contents.amount_msats()
 	}
-
-	/// Fallback addresses for paying the invoice on-chain, in order of most-preferred to
-	/// least-preferred.
-	pub fn fallbacks(&$self) -> Vec<Address> {
-		$contents.fallbacks()
-	}
-
-	/// Features pertaining to paying an invoice.
-	pub fn invoice_features(&$self) -> &Bolt12InvoiceFeatures {
-		$contents.features()
-	}
-
-	/// The public key corresponding to the key used to sign the invoice.
-	pub fn signing_pubkey(&$self) -> PublicKey {
-		$contents.signing_pubkey()
-	}
 } }
 
 impl UnsignedBolt12Invoice {
+	invoice_accessors_common!(self, self.contents, Bolt12Invoice);
 	invoice_accessors!(self, self.contents);
 }
 
 impl Bolt12Invoice {
+	invoice_accessors_common!(self, self.contents, Bolt12Invoice);
 	invoice_accessors!(self, self.contents);
 
 	/// Signature of the invoice verified using [`Bolt12Invoice::signing_pubkey`].
@@ -1055,14 +958,7 @@ impl InvoiceContents {
 
 	#[cfg(feature = "std")]
 	fn is_expired(&self) -> bool {
-		let absolute_expiry = self.created_at().checked_add(self.relative_expiry());
-		match absolute_expiry {
-			Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
-				Ok(elapsed) => elapsed > seconds_from_epoch,
-				Err(_) => false,
-			},
-			None => false,
-		}
+		is_expired(self.created_at(), self.relative_expiry())
 	}
 
 	fn payment_hash(&self) -> PaymentHash {
@@ -1074,36 +970,9 @@ impl InvoiceContents {
 	}
 
 	fn fallbacks(&self) -> Vec<Address> {
-		let chain = self.chain();
-		let network = if chain == ChainHash::using_genesis_block(Network::Bitcoin) {
-			Network::Bitcoin
-		} else if chain == ChainHash::using_genesis_block(Network::Testnet) {
-			Network::Testnet
-		} else if chain == ChainHash::using_genesis_block(Network::Signet) {
-			Network::Signet
-		} else if chain == ChainHash::using_genesis_block(Network::Regtest) {
-			Network::Regtest
-		} else {
-			return Vec::new()
-		};
-
-		let to_valid_address = |address: &FallbackAddress| {
-			let version = match WitnessVersion::try_from(address.version) {
-				Ok(version) => version,
-				Err(_) => return None,
-			};
-
-			let program = address.program.clone();
-			let witness_program = match WitnessProgram::new(version, program) {
-				Ok(witness_program) => witness_program,
-				Err(_) => return None,
-			};
-			Some(Address::new(network, Payload::WitnessProgram(witness_program)))
-		};
-
 		self.fields().fallbacks
 			.as_ref()
-			.map(|fallbacks| fallbacks.iter().filter_map(to_valid_address).collect())
+			.map(|fallbacks| filter_fallbacks(self.chain(), fallbacks))
 			.unwrap_or_else(Vec::new)
 	}
 
@@ -1172,6 +1041,50 @@ impl InvoiceContents {
 	}
 }
 
+#[cfg(feature = "std")]
+pub(super) fn is_expired(created_at: Duration, relative_expiry: Duration) -> bool {
+	let absolute_expiry = created_at.checked_add(relative_expiry);
+	match absolute_expiry {
+		Some(seconds_from_epoch) => match SystemTime::UNIX_EPOCH.elapsed() {
+			Ok(elapsed) => elapsed > seconds_from_epoch,
+			Err(_) => false,
+		},
+		None => false,
+	}
+}
+
+pub(super) fn filter_fallbacks(
+	chain: ChainHash, fallbacks: &Vec<FallbackAddress>
+) -> Vec<Address> {
+	let network = if chain == ChainHash::using_genesis_block(Network::Bitcoin) {
+		Network::Bitcoin
+	} else if chain == ChainHash::using_genesis_block(Network::Testnet) {
+		Network::Testnet
+	} else if chain == ChainHash::using_genesis_block(Network::Signet) {
+		Network::Signet
+	} else if chain == ChainHash::using_genesis_block(Network::Regtest) {
+		Network::Regtest
+	} else {
+		return Vec::new()
+	};
+
+	let to_valid_address = |address: &FallbackAddress| {
+		let version = match WitnessVersion::try_from(address.version) {
+			Ok(version) => version,
+			Err(_) => return None,
+		};
+
+		let program = address.program.clone();
+		let witness_program = match WitnessProgram::new(version, program) {
+			Ok(witness_program) => witness_program,
+			Err(_) => return None,
+		};
+		Some(Address::new(network, Payload::WitnessProgram(witness_program)))
+	};
+
+	fallbacks.iter().filter_map(to_valid_address).collect()
+}
+
 impl InvoiceFields {
 	fn as_tlv_stream(&self) -> InvoiceTlvStreamRef {
 		let features = {
@@ -1189,6 +1102,7 @@ impl InvoiceFields {
 			fallbacks: self.fallbacks.as_ref(),
 			features,
 			node_id: Some(&self.signing_pubkey),
+			message_paths: None,
 		}
 	}
 }
@@ -1249,14 +1163,16 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
 	(172, fallbacks: (Vec<FallbackAddress>, WithoutLength)),
 	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
 	(176, node_id: PublicKey),
+	// Only present in `StaticInvoice`s.
+	(238, message_paths: (Vec<BlindedPath>, WithoutLength)),
 });
 
-type BlindedPathIter<'a> = core::iter::Map<
+pub(super) type BlindedPathIter<'a> = core::iter::Map<
 	core::slice::Iter<'a, (BlindedPayInfo, BlindedPath)>,
 	for<'r> fn(&'r (BlindedPayInfo, BlindedPath)) -> &'r BlindedPath,
 >;
 
-type BlindedPayInfoIter<'a> = core::iter::Map<
+pub(super) type BlindedPayInfoIter<'a> = core::iter::Map<
 	core::slice::Iter<'a, (BlindedPayInfo, BlindedPath)>,
 	for<'r> fn(&'r (BlindedPayInfo, BlindedPath)) -> &'r BlindedPayInfo,
 >;
@@ -1302,8 +1218,8 @@ impl_writeable!(BlindedPayInfo, {
 /// Wire representation for an on-chain fallback address.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct FallbackAddress {
-	version: u8,
-	program: Vec<u8>,
+	pub(super) version: u8,
+	pub(super) program: Vec<u8>,
 }
 
 impl_writeable!(FallbackAddress, { version, program });
@@ -1365,10 +1281,9 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for Bolt12Invoice {
 			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream)
 		)?;
 
-		let signature = match signature {
-			None => return Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)),
-			Some(signature) => signature,
-		};
+		let signature = signature.ok_or(
+			Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSignature)
+		)?;
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 		let pubkey = contents.fields().signing_pubkey;
 		merkle::verify_signature(&signature, &tagged_hash, pubkey)?;
@@ -1387,21 +1302,13 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			invoice_request_tlv_stream,
 			InvoiceTlvStream {
 				paths, blindedpay, created_at, relative_expiry, payment_hash, amount, fallbacks,
-				features, node_id,
+				features, node_id, message_paths,
 			},
 		) = tlv_stream;
 
-		let payment_paths = match (blindedpay, paths) {
-			(_, None) => return Err(Bolt12SemanticError::MissingPaths),
-			(None, _) => return Err(Bolt12SemanticError::InvalidPayInfo),
-			(_, Some(paths)) if paths.is_empty() => return Err(Bolt12SemanticError::MissingPaths),
-			(Some(blindedpay), Some(paths)) if paths.len() != blindedpay.len() => {
-				return Err(Bolt12SemanticError::InvalidPayInfo);
-			},
-			(Some(blindedpay), Some(paths)) => {
-				blindedpay.into_iter().zip(paths.into_iter()).collect::<Vec<_>>()
-			},
-		};
+		if message_paths.is_some() { return Err(Bolt12SemanticError::UnexpectedPaths) }
+
+		let payment_paths = construct_payment_paths(blindedpay, paths)?;
 
 		let created_at = match created_at {
 			None => return Err(Bolt12SemanticError::MissingCreationTime),
@@ -1412,61 +1319,72 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			.map(Into::<u64>::into)
 			.map(Duration::from_secs);
 
-		let payment_hash = match payment_hash {
-			None => return Err(Bolt12SemanticError::MissingPaymentHash),
-			Some(payment_hash) => payment_hash,
-		};
+		let payment_hash = payment_hash.ok_or(Bolt12SemanticError::MissingPaymentHash)?;
 
-		let amount_msats = match amount {
-			None => return Err(Bolt12SemanticError::MissingAmount),
-			Some(amount) => amount,
-		};
+		let amount_msats = amount.ok_or(Bolt12SemanticError::MissingAmount)?;
 
 		let features = features.unwrap_or_else(Bolt12InvoiceFeatures::empty);
 
-		let signing_pubkey = match node_id {
-			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
-			Some(node_id) => node_id,
-		};
+		let signing_pubkey = node_id.ok_or(Bolt12SemanticError::MissingSigningPubkey)?;
 
 		let fields = InvoiceFields {
 			payment_paths, created_at, relative_expiry, payment_hash, amount_msats, fallbacks,
 			features, signing_pubkey,
 		};
 
-		match (offer_tlv_stream.node_id, &offer_tlv_stream.paths) {
-			(Some(expected_signing_pubkey), _) => {
-				if fields.signing_pubkey != expected_signing_pubkey {
-					return Err(Bolt12SemanticError::InvalidSigningPubkey);
-				}
+		check_invoice_signing_pubkey(&fields.signing_pubkey, &offer_tlv_stream)?;
 
-				let invoice_request = InvoiceRequestContents::try_from(
-					(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
-				)?;
-				Ok(InvoiceContents::ForOffer { invoice_request, fields })
-			},
-			(None, Some(paths)) => {
-				if !paths
-					.iter()
-					.filter_map(|path| path.blinded_hops.last())
-					.any(|last_hop| fields.signing_pubkey == last_hop.blinded_node_id)
-				{
-					return Err(Bolt12SemanticError::InvalidSigningPubkey);
-				}
-
-				let invoice_request = InvoiceRequestContents::try_from(
-					(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
-				)?;
-				Ok(InvoiceContents::ForOffer { invoice_request, fields })
-			},
-			(None, None) => {
-				let refund = RefundContents::try_from(
-					(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
-				)?;
-				Ok(InvoiceContents::ForRefund { refund, fields })
-			},
+		if offer_tlv_stream.node_id.is_none() && offer_tlv_stream.paths.is_none() {
+			let refund = RefundContents::try_from(
+				(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
+			)?;
+			Ok(InvoiceContents::ForRefund { refund, fields })
+		} else {
+			let invoice_request = InvoiceRequestContents::try_from(
+				(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
+			)?;
+			Ok(InvoiceContents::ForOffer { invoice_request, fields })
 		}
 	}
+}
+
+pub(super) fn construct_payment_paths(
+	blinded_payinfos: Option<Vec<BlindedPayInfo>>, blinded_paths: Option<Vec<BlindedPath>>
+) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, Bolt12SemanticError> {
+	match (blinded_payinfos, blinded_paths) {
+		(_, None) => Err(Bolt12SemanticError::MissingPaths),
+		(None, _) => Err(Bolt12SemanticError::InvalidPayInfo),
+		(_, Some(paths)) if paths.is_empty() => Err(Bolt12SemanticError::MissingPaths),
+		(Some(blindedpay), Some(paths)) if paths.len() != blindedpay.len() => {
+			Err(Bolt12SemanticError::InvalidPayInfo)
+		},
+		(Some(blindedpay), Some(paths)) => {
+			Ok(blindedpay.into_iter().zip(paths.into_iter()).collect::<Vec<_>>())
+		},
+	}
+}
+
+pub(super) fn check_invoice_signing_pubkey(
+	invoice_signing_pubkey: &PublicKey, offer_tlv_stream: &OfferTlvStream
+) -> Result<(), Bolt12SemanticError> {
+	match (&offer_tlv_stream.node_id, &offer_tlv_stream.paths) {
+		(Some(expected_signing_pubkey), _) => {
+			if invoice_signing_pubkey != expected_signing_pubkey {
+				return Err(Bolt12SemanticError::InvalidSigningPubkey);
+			}
+		},
+		(None, Some(paths)) => {
+			if !paths
+				.iter()
+				.filter_map(|path| path.blinded_hops.last())
+				.any(|last_hop| invoice_signing_pubkey == &last_hop.blinded_node_id)
+			{
+				return Err(Bolt12SemanticError::InvalidSigningPubkey);
+			}
+		},
+		_ => {},
+	}
+	Ok(())
 }
 
 #[cfg(test)]
@@ -1566,10 +1484,8 @@ mod tests {
 		#[cfg(feature = "std")]
 		assert!(!unsigned_invoice.is_expired());
 		assert_eq!(unsigned_invoice.payment_hash(), payment_hash);
-		assert_eq!(unsigned_invoice.amount_msats(), 1000);
 		assert!(unsigned_invoice.fallbacks().is_empty());
 		assert_eq!(unsigned_invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
-		assert_eq!(unsigned_invoice.signing_pubkey(), recipient_pubkey());
 
 		match UnsignedBolt12Invoice::try_from(buffer) {
 			Err(e) => panic!("error parsing unsigned invoice: {:?}", e),
@@ -1610,10 +1526,8 @@ mod tests {
 		#[cfg(feature = "std")]
 		assert!(!invoice.is_expired());
 		assert_eq!(invoice.payment_hash(), payment_hash);
-		assert_eq!(invoice.amount_msats(), 1000);
 		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
-		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
@@ -1659,6 +1573,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
+					message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 			),
@@ -1708,10 +1623,8 @@ mod tests {
 		#[cfg(feature = "std")]
 		assert!(!invoice.is_expired());
 		assert_eq!(invoice.payment_hash(), payment_hash);
-		assert_eq!(invoice.amount_msats(), 1000);
 		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
-		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
@@ -1752,6 +1665,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
+					message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 			),
@@ -2520,6 +2434,37 @@ mod tests {
 		match Bolt12Invoice::try_from(encoded_invoice) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_with_message_paths() {
+		let invoice = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.build().unwrap()
+			.sign(recipient_sign).unwrap();
+
+		let blinded_path = BlindedPath {
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
+			blinding_point: pubkey(41),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
+			],
+		};
+
+		let mut tlv_stream = invoice.as_tlv_stream();
+		let message_paths = vec![blinded_path];
+		tlv_stream.3.message_paths = Some(&message_paths);
+
+		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedPaths)),
 		}
 	}
 }

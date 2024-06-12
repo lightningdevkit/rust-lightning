@@ -664,6 +664,12 @@ impl Offer {
 	pub fn expects_quantity(&self) -> bool {
 		self.contents.expects_quantity()
 	}
+
+	pub(super) fn verify<T: secp256k1::Signing>(
+		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<(OfferId, Option<Keypair>), ()> {
+		self.contents.verify(&self.bytes, key, secp_ctx)
+	}
 }
 
 macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => {

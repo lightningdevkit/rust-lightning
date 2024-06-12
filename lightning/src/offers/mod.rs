@@ -17,11 +17,14 @@ pub mod offer;
 
 pub mod invoice;
 pub mod invoice_error;
+mod invoice_macros;
 pub mod invoice_request;
 pub mod merkle;
 pub mod parse;
 mod payer;
 pub mod refund;
 pub(crate) mod signer;
+#[allow(unused)]
+pub(crate) mod static_invoice;
 #[cfg(test)]
 pub(crate) mod test_utils;
