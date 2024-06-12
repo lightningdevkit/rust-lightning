@@ -3334,7 +3334,6 @@ mod tests {
 	use crate::routing::scoring::{ChannelUsage, FixedPenaltyScorer, ScoreLookUp, ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
 	use crate::routing::test_utils::{add_channel, add_or_update_node, build_graph, build_line_graph, id_to_feature_flags, get_nodes, update_channel};
 	use crate::chain::transaction::OutPoint;
-	use crate::sign::EntropySource;
 	use crate::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
 	use crate::ln::types::ChannelId;
 	use crate::ln::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
@@ -3409,8 +3408,7 @@ mod tests {
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let mut payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// Simple route to 2 via 1
 
@@ -3453,8 +3451,7 @@ mod tests {
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// Simple route to 2 via 1
 
@@ -3478,8 +3475,7 @@ mod tests {
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// Simple route to 2 via 1
 
@@ -3613,8 +3609,7 @@ mod tests {
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
 			.unwrap();
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// A route to node#2 via two paths.
 		// One path allows transferring 35-40 sats, another one also allows 35-40 sats.
@@ -3759,8 +3754,7 @@ mod tests {
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42).with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config)).unwrap();
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// Route to node2 over a single path which requires overpaying the recipient themselves.
 
@@ -3819,8 +3813,7 @@ mod tests {
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// // Disable channels 4 and 12 by flags=2
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
@@ -3886,8 +3879,7 @@ mod tests {
 		let (_, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// Disable nodes 1, 2, and 8 by requiring unknown feature bits
 		let mut unknown_features = NodeFeatures::empty();
@@ -3936,8 +3928,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// Route to 1 via 2 and 3 because our channel to 1 is disabled
 		let payment_params = PaymentParameters::from_node_id(nodes[0], 42);
@@ -4073,8 +4064,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// Simple test across 2, 3, 5, and 4 via a last_hop channel
 		// Tests the behaviour when the RouteHint contains a suboptimal hop.
@@ -4182,8 +4172,7 @@ mod tests {
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(empty_last_hop(&nodes)).unwrap();
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// Test handling of an empty RouteHint passed in Invoice.
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
@@ -4263,8 +4252,8 @@ mod tests {
 		let last_hops = multi_hop_last_hops_hint([nodes[2], nodes[3]]);
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops.clone()).unwrap();
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
+
 		// Test through channels 2, 3, 0xff00, 0xff01.
 		// Test shows that multi-hop route hints are considered and factored correctly into the
 		// max path length.
@@ -4452,8 +4441,8 @@ mod tests {
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops_with_public_channel(&nodes)).unwrap();
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
+
 		// This test shows that public routes can be present in the invoice
 		// which would be handled in the same manner.
 
@@ -4505,8 +4494,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// Simple test with outbound channel to 4 to test that last_hops and first_hops connect
 		let our_chans = vec![get_channel_details(Some(42), nodes[3].clone(), InitFeatures::from_le_bytes(vec![0b11]), 250_000_000)];
@@ -4638,8 +4626,7 @@ mod tests {
 		let payment_params = PaymentParameters::from_node_id(target_node_id, 42).with_route_hints(vec![last_hops]).unwrap();
 		let our_chans = vec![get_channel_details(Some(42), middle_node_id, InitFeatures::from_le_bytes(vec![0b11]), outbound_capacity_msat)];
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let logger = ln_test_utils::TestLogger::new();
 		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, route_val);
@@ -4700,8 +4687,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, chain_monitor, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
@@ -5010,8 +4996,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
@@ -5147,8 +5132,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 
 		// Path via node0 is channels {1, 3}. Limit them to 100 and 50 sats (total limit 50).
@@ -5254,8 +5238,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// We need a route consisting of 3 paths:
 		// From our node to node2 via node0, node7, node1 (three paths one hop each).
@@ -5444,8 +5427,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
@@ -5629,8 +5611,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
@@ -5816,8 +5797,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[3], 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
@@ -6029,8 +6009,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(PublicKey::from_slice(&[02; 33]).unwrap(), 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config)).unwrap()
@@ -6125,8 +6104,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
@@ -6297,8 +6275,7 @@ mod tests {
 		let gossip_sync = P2PGossipSync::new(Arc::clone(&network), None, Arc::clone(&logger));
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42);
 
 		add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
@@ -6443,8 +6420,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42);
 
 		// We modify the graph to set the htlc_maximum of channel 2 to below the value we wish to
@@ -6511,8 +6487,7 @@ mod tests {
 		let (secp_ctx, network_graph, gossip_sync, _, logger) = build_graph();
 		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
@@ -6591,8 +6566,7 @@ mod tests {
 		let payment_params = PaymentParameters::from_node_id(nodes[0], 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
 			.unwrap();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		{
 			let route_params = RouteParameters::from_payment_params_and_value(
@@ -6666,8 +6640,7 @@ mod tests {
 
 		// Without penalizing each hop 100 msats, a longer path with lower fees is chosen.
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 100);
 		let route = get_route( &our_id, &route_params, &network_graph.read_only(), None,
@@ -6732,8 +6705,7 @@ mod tests {
 
 		// A path to nodes[6] exists when no penalties are applied to any channel.
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, 100);
 		let route = get_route( &our_id, &route_params, &network_graph, None, Arc::clone(&logger),
@@ -6848,8 +6820,7 @@ mod tests {
 		let feasible_max_total_cltv_delta = 1008;
 		let feasible_payment_params = PaymentParameters::from_node_id(nodes[6], 0).with_route_hints(last_hops(&nodes)).unwrap()
 			.with_max_total_cltv_expiry_delta(feasible_max_total_cltv_delta);
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let route_params = RouteParameters::from_payment_params_and_value(
 			feasible_payment_params, 100);
 		let route = get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
@@ -6884,8 +6855,7 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::new();
 		let mut payment_params = PaymentParameters::from_node_id(nodes[6], 0).with_route_hints(last_hops(&nodes)).unwrap()
 			.with_max_path_count(1);
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// We should be able to find a route initially, and then after we fail a few random
 		// channels eventually we won't be able to any longer.
@@ -6916,8 +6886,7 @@ mod tests {
 		let network_graph = network.read_only();
 
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		// First check we can actually create a long route on this graph.
 		let feasible_payment_params = PaymentParameters::from_node_id(nodes[18], 0);
@@ -6950,8 +6919,7 @@ mod tests {
 		let scorer = ln_test_utils::TestScorer::new();
 
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42).with_route_hints(last_hops(&nodes)).unwrap();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 100);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
@@ -6986,8 +6954,7 @@ mod tests {
 		let network_channels = network_graph.channels();
 		let scorer = ln_test_utils::TestScorer::new();
 		let payment_params = PaymentParameters::from_node_id(nodes[3], 0);
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[4u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params.clone(), 100);
@@ -7051,9 +7018,7 @@ mod tests {
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let network_graph = network.read_only();
 
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-
+		let random_seed_bytes = [42; 32];
 		let payment_params = PaymentParameters::from_node_id(nodes[3], 0);
 		let hops = [nodes[1], nodes[2], nodes[4], nodes[3]];
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
@@ -7104,8 +7069,8 @@ mod tests {
 		let payment_params = PaymentParameters::from_node_id(nodes[2], 42)
 			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
 			.unwrap();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
+
 		// 100,000 sats is less than the available liquidity on each channel, set above.
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, 100_000_000);
@@ -7128,11 +7093,11 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn generate_routes() {
-		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
 		let logger = ln_test_utils::TestLogger::new();
-		let graph = match super::bench_utils::read_network_graph(&logger) {
-			Ok(f) => f,
+		let (graph, mut scorer) = match super::bench_utils::read_graph_scorer(&logger) {
+			Ok(res) => res,
 			Err(e) => {
 				eprintln!("{}", e);
 				return;
@@ -7140,7 +7105,6 @@ mod tests {
 		};
 
 		let params = ProbabilisticScoringFeeParameters::default();
-		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
 		let features = super::Bolt11InvoiceFeatures::empty();
 
 		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 0, 2);
@@ -7149,11 +7113,11 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn generate_routes_mpp() {
-		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
 		let logger = ln_test_utils::TestLogger::new();
-		let graph = match super::bench_utils::read_network_graph(&logger) {
-			Ok(f) => f,
+		let (graph, mut scorer) = match super::bench_utils::read_graph_scorer(&logger) {
+			Ok(res) => res,
 			Err(e) => {
 				eprintln!("{}", e);
 				return;
@@ -7161,7 +7125,6 @@ mod tests {
 		};
 
 		let params = ProbabilisticScoringFeeParameters::default();
-		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
 		let features = channelmanager::provided_bolt11_invoice_features(&UserConfig::default());
 
 		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 0, 2);
@@ -7170,11 +7133,11 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn generate_large_mpp_routes() {
-		use crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
 		let logger = ln_test_utils::TestLogger::new();
-		let graph = match super::bench_utils::read_network_graph(&logger) {
-			Ok(f) => f,
+		let (graph, mut scorer) = match super::bench_utils::read_graph_scorer(&logger) {
+			Ok(res) => res,
 			Err(e) => {
 				eprintln!("{}", e);
 				return;
@@ -7182,7 +7145,6 @@ mod tests {
 		};
 
 		let params = ProbabilisticScoringFeeParameters::default();
-		let mut scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &graph, &logger);
 		let features = channelmanager::provided_bolt11_invoice_features(&UserConfig::default());
 
 		super::bench_utils::generate_test_routes(&graph, &mut scorer, &params, features, random_init_seed(), 1_000_000, 2);
@@ -7193,9 +7155,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_line_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-
+		let random_seed_bytes = [42; 32];
 		let mut scorer_params = ProbabilisticScoringFeeParameters::default();
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), Arc::clone(&network_graph), Arc::clone(&logger));
 
@@ -7244,8 +7204,7 @@ mod tests {
 		let netgraph = network_graph.read_only();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		let max_htlc_msat = 50_000;
@@ -7302,8 +7261,7 @@ mod tests {
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		let our_node_id = ln_test_utils::pubkey(42);
@@ -7565,8 +7523,7 @@ mod tests {
 		let network_graph = network.read_only();
 
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		let mut blinded_path = BlindedPath {
 			introduction_node: IntroductionNode::NodeId(nodes[2]),
@@ -7623,8 +7580,7 @@ mod tests {
 		let network_graph = network.read_only();
 
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		let mut invalid_blinded_path = BlindedPath {
 			introduction_node: IntroductionNode::NodeId(nodes[2]),
@@ -7692,8 +7648,7 @@ mod tests {
 		let network_graph = network.read_only();
 
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
@@ -7760,8 +7715,7 @@ mod tests {
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		let amt_msat = 10_000_000;
 		let (_, _, privkeys, nodes) = get_nodes(&secp_ctx);
@@ -7852,8 +7806,7 @@ mod tests {
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		// Values are taken from the fuzz input that uncovered this panic.
@@ -7912,8 +7865,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		// Values are taken from the fuzz input that uncovered this panic.
@@ -7964,8 +7916,7 @@ mod tests {
 		let (secp_ctx, network_graph, _, _, logger) = build_graph();
 		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		// Values are taken from the fuzz input that uncovered this panic.
@@ -8026,8 +7977,7 @@ mod tests {
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		// Values are taken from the fuzz input that uncovered this panic.
@@ -8106,8 +8056,7 @@ mod tests {
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		// Values are taken from the fuzz input that uncovered this panic.
@@ -8188,8 +8137,7 @@ mod tests {
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let gossip_sync = P2PGossipSync::new(network_graph.clone(), None, logger.clone());
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), network_graph.clone(), logger.clone());
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		// Values are taken from the fuzz input that uncovered this panic.
@@ -8258,8 +8206,7 @@ mod tests {
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), network_graph.clone(), logger.clone());
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		// Values are taken from the fuzz input that uncovered this panic.
@@ -8318,8 +8265,7 @@ mod tests {
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		let amt_msat = 1_000_000;
@@ -8462,8 +8408,7 @@ mod tests {
 		let logger = Arc::new(ln_test_utils::TestLogger::new());
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
 		let scorer = ln_test_utils::TestScorer::new();
-		let keys_manager = ln_test_utils::TestKeysInterface::new(&[0u8; 32], Network::Testnet);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 		let config = UserConfig::default();
 
 		let (_, our_node_id, _, nodes) = get_nodes(&secp_ctx);
@@ -8511,56 +8456,70 @@ mod tests {
 pub(crate) mod bench_utils {
 	use super::*;
 	use std::fs::File;
-	use std::time::Duration;
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::SecretKey;
 
 	use crate::chain::transaction::OutPoint;
-	use crate::routing::scoring::ScoreUpdate;
-	use crate::sign::KeysManager;
+	use crate::routing::scoring::{ProbabilisticScorer, ScoreUpdate};
 	use crate::ln::channel_state::{ChannelCounterparty, ChannelShutdownState};
 	use crate::ln::channelmanager;
 	use crate::ln::types::ChannelId;
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils::TestLogger;
+	use crate::sync::Arc;
 
 	/// Tries to open a network graph file, or panics with a URL to fetch it.
-	pub(crate) fn get_route_file() -> Result<std::fs::File, &'static str> {
-		let res = File::open("net_graph-2023-01-18.bin") // By default we're run in RL/lightning
-			.or_else(|_| File::open("lightning/net_graph-2023-01-18.bin")) // We may be run manually in RL/
-			.or_else(|_| { // Fall back to guessing based on the binary location
-				// path is likely something like .../rust-lightning/target/debug/deps/lightning-...
-				let mut path = std::env::current_exe().unwrap();
-				path.pop(); // lightning-...
-				path.pop(); // deps
-				path.pop(); // debug
-				path.pop(); // target
-				path.push("lightning");
-				path.push("net_graph-2023-01-18.bin");
-				File::open(path)
-			})
-			.or_else(|_| { // Fall back to guessing based on the binary location for a subcrate
-				// path is likely something like .../rust-lightning/bench/target/debug/deps/bench..
-				let mut path = std::env::current_exe().unwrap();
-				path.pop(); // bench...
-				path.pop(); // deps
-				path.pop(); // debug
-				path.pop(); // target
-				path.pop(); // bench
-				path.push("lightning");
-				path.push("net_graph-2023-01-18.bin");
-				File::open(path)
-			})
-		.map_err(|_| "Please fetch https://bitcoin.ninja/ldk-net_graph-v0.0.113-2023-01-18.bin and place it at lightning/net_graph-2023-01-18.bin");
+	pub(crate) fn get_graph_scorer_file() -> Result<(std::fs::File, std::fs::File), &'static str> {
+		let load_file = |fname, err_str| {
+			File::open(fname) // By default we're run in RL/lightning
+				.or_else(|_| File::open(&format!("lightning/{}", fname))) // We may be run manually in RL/
+				.or_else(|_| { // Fall back to guessing based on the binary location
+					// path is likely something like .../rust-lightning/target/debug/deps/lightning-...
+					let mut path = std::env::current_exe().unwrap();
+					path.pop(); // lightning-...
+					path.pop(); // deps
+					path.pop(); // debug
+					path.pop(); // target
+					path.push("lightning");
+					path.push(fname);
+					File::open(path)
+				})
+				.or_else(|_| { // Fall back to guessing based on the binary location for a subcrate
+					// path is likely something like .../rust-lightning/bench/target/debug/deps/bench..
+					let mut path = std::env::current_exe().unwrap();
+					path.pop(); // bench...
+					path.pop(); // deps
+					path.pop(); // debug
+					path.pop(); // target
+					path.pop(); // bench
+					path.push("lightning");
+					path.push(fname);
+					File::open(path)
+				})
+			.map_err(|_| err_str)
+		};
+		let graph_res = load_file(
+			"net_graph-2023-12-10.bin",
+			"Please fetch https://bitcoin.ninja/ldk-net_graph-v0.0.118-2023-12-10.bin and place it at lightning/net_graph-2023-12-10.bin"
+		);
+		let scorer_res = load_file(
+			"scorer-2023-12-10.bin",
+			"Please fetch https://bitcoin.ninja/ldk-scorer-v0.0.118-2023-12-10.bin and place it at lightning/scorer-2023-12-10.bin"
+		);
 		#[cfg(require_route_graph_test)]
-		return Ok(res.unwrap());
+		return Ok((graph_res.unwrap(), scorer_res.unwrap()));
 		#[cfg(not(require_route_graph_test))]
-		return res;
+		return Ok((graph_res?, scorer_res?));
 	}
 
-	pub(crate) fn read_network_graph(logger: &TestLogger) -> Result<NetworkGraph<&TestLogger>, &'static str> {
-		get_route_file().map(|mut f| NetworkGraph::read(&mut f, logger).unwrap())
+	pub(crate) fn read_graph_scorer(logger: &TestLogger)
+	-> Result<(Arc<NetworkGraph<&TestLogger>>, ProbabilisticScorer<Arc<NetworkGraph<&TestLogger>>, &TestLogger>), &'static str> {
+		let (mut graph_file, mut scorer_file) = get_graph_scorer_file()?;
+		let graph = Arc::new(NetworkGraph::read(&mut graph_file, logger).unwrap());
+		let scorer_args = (Default::default(), Arc::clone(&graph), logger);
+		let scorer = ProbabilisticScorer::read(&mut scorer_file, scorer_args).unwrap();
+		Ok((graph, scorer))
 	}
 
 	pub(crate) fn payer_pubkey() -> PublicKey {
@@ -8617,14 +8576,11 @@ pub(crate) mod bench_utils {
 		starting_amount: u64, route_count: usize,
 	) -> Vec<(ChannelDetails, PaymentParameters, u64)> {
 		let payer = payer_pubkey();
-		let keys_manager = KeysManager::new(&[0u8; 32], 42, 42);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
+		let random_seed_bytes = [42; 32];
 
 		let nodes = graph.read_only().nodes().clone();
 		let mut route_endpoints = Vec::new();
-		// Fetch 1.5x more routes than we need as after we do some scorer updates we may end up
-		// with some routes we picked being un-routable.
-		for _ in 0..route_count * 3 / 2 {
+		for _ in 0..route_count {
 			loop {
 				seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
 				let src = PublicKey::from_slice(nodes.unordered_keys()
@@ -8642,54 +8598,12 @@ pub(crate) mod bench_utils {
 					get_route(&payer, &route_params, &graph.read_only(), Some(&[&first_hop]),
 						&TestLogger::new(), scorer, score_params, &random_seed_bytes).is_ok();
 				if path_exists {
-					// ...and seed the scorer with success and failure data...
-					seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
-					let mut score_amt = seed % 1_000_000_000;
-					loop {
-						// Generate fail/success paths for a wider range of potential amounts with
-						// MPP enabled to give us a chance to apply penalties for more potential
-						// routes.
-						let mpp_features = channelmanager::provided_bolt11_invoice_features(&UserConfig::default());
-						let params = PaymentParameters::from_node_id(dst, 42)
-							.with_bolt11_features(mpp_features).unwrap();
-						let route_params = RouteParameters::from_payment_params_and_value(
-							params.clone(), score_amt);
-						let route_res = get_route(&payer, &route_params, &graph.read_only(),
-							Some(&[&first_hop]), &TestLogger::new(), scorer, score_params,
-							&random_seed_bytes);
-						if let Ok(route) = route_res {
-							for path in route.paths {
-								if seed & 0x80 == 0 {
-									scorer.payment_path_successful(&path, Duration::ZERO);
-								} else {
-									let short_channel_id = path.hops[path.hops.len() / 2].short_channel_id;
-									scorer.payment_path_failed(&path, short_channel_id, Duration::ZERO);
-								}
-								seed = seed.overflowing_mul(6364136223846793005).0.overflowing_add(1).0;
-							}
-							break;
-						}
-						// If we couldn't find a path with a higher amount, reduce and try again.
-						score_amt /= 100;
-					}
-
 					route_endpoints.push((first_hop, params, amt_msat));
 					break;
 				}
 			}
 		}
 
-		// Because we've changed channel scores, it's possible we'll take different routes to the
-		// selected destinations, possibly causing us to fail because, eg, the newly-selected path
-		// requires a too-high CLTV delta.
-		route_endpoints.retain(|(first_hop, params, amt_msat)| {
-			let route_params = RouteParameters::from_payment_params_and_value(
-				params.clone(), *amt_msat);
-			get_route(&payer, &route_params, &graph.read_only(), Some(&[first_hop]),
-				&TestLogger::new(), scorer, score_params, &random_seed_bytes).is_ok()
-		});
-		route_endpoints.truncate(route_count);
-		assert_eq!(route_endpoints.len(), route_count);
 		route_endpoints
 	}
 }
@@ -8698,11 +8612,10 @@ pub(crate) mod bench_utils {
 pub mod benches {
 	use super::*;
 	use crate::routing::scoring::{ScoreUpdate, ScoreLookUp};
-	use crate::sign::{EntropySource, KeysManager};
 	use crate::ln::channelmanager;
 	use crate::ln::features::Bolt11InvoiceFeatures;
 	use crate::routing::gossip::NetworkGraph;
-	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringFeeParameters, ProbabilisticScoringDecayParameters};
+	use crate::routing::scoring::{FixedPenaltyScorer, ProbabilisticScoringFeeParameters};
 	use crate::util::config::UserConfig;
 	use crate::util::logger::{Logger, Record};
 	use crate::util::test_utils::TestLogger;
@@ -8716,7 +8629,7 @@ pub mod benches {
 
 	pub fn generate_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, _) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
 		generate_routes(bench, &network_graph, scorer, &Default::default(),
 			Bolt11InvoiceFeatures::empty(), 0, "generate_routes_with_zero_penalty_scorer");
@@ -8724,7 +8637,7 @@ pub mod benches {
 
 	pub fn generate_mpp_routes_with_zero_penalty_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, _) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let scorer = FixedPenaltyScorer::with_penalty(0);
 		generate_routes(bench, &network_graph, scorer, &Default::default(),
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
@@ -8733,18 +8646,16 @@ pub mod benches {
 
 	pub fn generate_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params, Bolt11InvoiceFeatures::empty(), 0,
 			"generate_routes_with_probabilistic_scorer");
 	}
 
 	pub fn generate_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_mpp_routes_with_probabilistic_scorer");
@@ -8752,9 +8663,8 @@ pub mod benches {
 
 	pub fn generate_large_mpp_routes_with_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let params = ProbabilisticScoringFeeParameters::default();
-		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 100_000_000,
 			"generate_large_mpp_routes_with_probabilistic_scorer");
@@ -8762,11 +8672,9 @@ pub mod benches {
 
 	pub fn generate_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let mut params = ProbabilisticScoringFeeParameters::default();
 		params.linear_success_probability = false;
-		let scorer = ProbabilisticScorer::new(
-			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_routes_with_nonlinear_probabilistic_scorer");
@@ -8774,11 +8682,9 @@ pub mod benches {
 
 	pub fn generate_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let mut params = ProbabilisticScoringFeeParameters::default();
 		params.linear_success_probability = false;
-		let scorer = ProbabilisticScorer::new(
-			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 0,
 			"generate_mpp_routes_with_nonlinear_probabilistic_scorer");
@@ -8786,11 +8692,9 @@ pub mod benches {
 
 	pub fn generate_large_mpp_routes_with_nonlinear_probabilistic_scorer(bench: &mut Criterion) {
 		let logger = TestLogger::new();
-		let network_graph = bench_utils::read_network_graph(&logger).unwrap();
+		let (network_graph, scorer) = bench_utils::read_graph_scorer(&logger).unwrap();
 		let mut params = ProbabilisticScoringFeeParameters::default();
 		params.linear_success_probability = false;
-		let scorer = ProbabilisticScorer::new(
-			ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
 		generate_routes(bench, &network_graph, scorer, &params,
 			channelmanager::provided_bolt11_invoice_features(&UserConfig::default()), 100_000_000,
 			"generate_large_mpp_routes_with_nonlinear_probabilistic_scorer");
@@ -8801,14 +8705,22 @@ pub mod benches {
 		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, starting_amount: u64,
 		bench_name: &'static str,
 	) {
-		let payer = bench_utils::payer_pubkey();
-		let keys_manager = KeysManager::new(&[0u8; 32], 42, 42);
-		let random_seed_bytes = keys_manager.get_secure_random_bytes();
-
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...
 		let route_endpoints = bench_utils::generate_test_routes(graph, &mut scorer, score_params, features, 0xdeadbeef, starting_amount, 50);
 
 		// ...then benchmark finding paths between the nodes we learned.
+		do_route_bench(bench, graph, scorer, score_params, bench_name, route_endpoints);
+	}
+
+	#[inline(never)]
+	fn do_route_bench<S: ScoreLookUp + ScoreUpdate>(
+		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, scorer: S,
+		score_params: &S::ScoreParams, bench_name: &'static str,
+		route_endpoints: Vec<(ChannelDetails, PaymentParameters, u64)>,
+	) {
+		let payer = bench_utils::payer_pubkey();
+		let random_seed_bytes = [42; 32];
+
 		let mut idx = 0;
 		bench.bench_function(bench_name, |b| b.iter(|| {
 			let (first_hop, params, amt) = &route_endpoints[idx % route_endpoints.len()];
