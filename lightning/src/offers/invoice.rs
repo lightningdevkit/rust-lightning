@@ -1102,7 +1102,7 @@ impl InvoiceFields {
 			fallbacks: self.fallbacks.as_ref(),
 			features,
 			node_id: Some(&self.signing_pubkey),
-			message_paths: None,
+			invoice_message_paths: None,
 		}
 	}
 }
@@ -1171,7 +1171,7 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
 	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
 	(176, node_id: PublicKey),
 	// Only present in `StaticInvoice`s.
-	(238, message_paths: (Vec<BlindedPath>, WithoutLength)),
+	(238, invoice_message_paths: (Vec<BlindedPath>, WithoutLength)),
 });
 
 pub(super) type BlindedPathIter<'a> = core::iter::Map<
@@ -1309,11 +1309,11 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			invoice_request_tlv_stream,
 			InvoiceTlvStream {
 				paths, blindedpay, created_at, relative_expiry, payment_hash, amount, fallbacks,
-				features, node_id, message_paths,
+				features, node_id, invoice_message_paths,
 			},
 		) = tlv_stream;
 
-		if message_paths.is_some() { return Err(Bolt12SemanticError::UnexpectedPaths) }
+		if invoice_message_paths.is_some() { return Err(Bolt12SemanticError::UnexpectedPaths) }
 
 		let payment_paths = construct_payment_paths(blindedpay, paths)?;
 
@@ -1580,7 +1580,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
-					message_paths: None,
+					invoice_message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 			),
@@ -1672,7 +1672,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
-					message_paths: None,
+					invoice_message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 			),
@@ -2445,7 +2445,7 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_parsing_invoice_with_message_paths() {
+	fn fails_parsing_invoice_with_invoice_message_paths() {
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
@@ -2466,8 +2466,8 @@ mod tests {
 		};
 
 		let mut tlv_stream = invoice.as_tlv_stream();
-		let message_paths = vec![blinded_path];
-		tlv_stream.3.message_paths = Some(&message_paths);
+		let invoice_message_paths = vec![blinded_path];
+		tlv_stream.3.invoice_message_paths = Some(&invoice_message_paths);
 
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
