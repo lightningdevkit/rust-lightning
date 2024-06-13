@@ -15,8 +15,8 @@ use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
-	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks, BlindedPathIter,
-	BlindedPayInfo, BlindedPayInfoIter, FallbackAddress, InvoiceTlvStream, InvoiceTlvStreamRef,
+	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks, BlindedPayInfo,
+	FallbackAddress, InvoiceTlvStream, InvoiceTlvStreamRef,
 };
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 use crate::offers::merkle::{
@@ -26,9 +26,7 @@ use crate::offers::offer::{
 	Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, Quantity,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
-use crate::util::ser::{
-	HighZeroBytesDroppedBigSize, Iterable, SeekReadable, WithoutLength, Writeable, Writer,
-};
+use crate::util::ser::{Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 use bitcoin::address::Address;
 use bitcoin::blockdata::constants::ChainHash;
