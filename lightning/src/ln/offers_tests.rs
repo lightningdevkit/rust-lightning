@@ -986,10 +986,19 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_id: invoice_request.payer_id(),
+			quantity: None,
+			payer_note_truncated: None,
+		},
+	});
 	assert_ne!(invoice_request.payer_id(), bob_id);
 	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(alice_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
 	let invoice = extract_invoice(bob, &onion_message);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
@@ -997,6 +1006,12 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	for (_, path) in invoice.payment_paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
 	}
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	claim_bolt12_payment(bob, &[alice], payment_context);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
 /// Checks that a refund can be created using an unannounced node as a blinded path's introduction

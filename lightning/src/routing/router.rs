@@ -1045,6 +1045,13 @@ impl Payee {
 		}
 	}
 
+	pub(crate) fn blinded_route_hints_mut(&mut self) -> &mut [(BlindedPayInfo, BlindedPath)] {
+		match self {
+			Self::Blinded { route_hints, .. } => &mut route_hints[..],
+			Self::Clear { .. } => &mut []
+		}
+	}
+
 	fn unblinded_route_hints(&self) -> &[RouteHint] {
 		match self {
 			Self::Blinded { .. } => &[],

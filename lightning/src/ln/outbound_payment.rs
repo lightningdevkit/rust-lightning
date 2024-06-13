@@ -13,6 +13,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
+use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
+use crate::blinded_path::payment::advance_path_by_one;
 use crate::events::{self, PaymentFailureReason};
 use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel_state::ChannelDetails;
@@ -775,10 +777,13 @@ impl OutboundPayments {
 		}
 	}
 
-	pub(super) fn send_payment_for_bolt12_invoice<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
+	pub(super) fn send_payment_for_bolt12_invoice<
+		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
+	>(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
-		best_block_height: u32, logger: &L,
+		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
+		logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		send_payment_along_path: SP,
 	) -> Result<(), Bolt12PaymentError>
@@ -786,6 +791,7 @@ impl OutboundPayments {
 		R::Target: Router,
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
+		NL::Target: NodeIdLookUp,
 		L::Target: Logger,
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
@@ -807,7 +813,26 @@ impl OutboundPayments {
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
 		};
 
-		let payment_params = PaymentParameters::from_bolt12_invoice(&invoice);
+		let mut payment_params = PaymentParameters::from_bolt12_invoice(&invoice);
+
+		// Advance any blinded path where the introduction node is our node.
+		if let Ok(our_node_id) = node_signer.get_node_id(Recipient::Node) {
+			for (_, path) in payment_params.payee.blinded_route_hints_mut().iter_mut() {
+				let introduction_node_id = match path.introduction_node {
+					IntroductionNode::NodeId(pubkey) => pubkey,
+					IntroductionNode::DirectedShortChannelId(direction, scid) => {
+						match node_id_lookup.next_node_id(scid) {
+							Some(next_node_id) => *direction.select_pubkey(&our_node_id, &next_node_id),
+							None => continue,
+						}
+					},
+				};
+				if introduction_node_id == our_node_id {
+					let _ = advance_path_by_one(path, node_signer, node_id_lookup, secp_ctx);
+				}
+			}
+		}
+
 		let amount_msat = invoice.amount_msats();
 		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amount_msat
@@ -1858,6 +1883,7 @@ mod tests {
 
 	use core::time::Duration;
 
+	use crate::blinded_path::EmptyNodeIdLookUp;
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
 	use crate::ln::types::PaymentHash;
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
@@ -2201,6 +2227,7 @@ mod tests {
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
+		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2229,7 +2256,8 @@ mod tests {
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
+				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
+				|_| panic!()
 			),
 			Ok(()),
 		);
@@ -2252,6 +2280,7 @@ mod tests {
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
+		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2288,7 +2317,8 @@ mod tests {
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
+				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
+				|_| panic!()
 			),
 			Ok(()),
 		);
@@ -2311,6 +2341,7 @@ mod tests {
 		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
+		let secp_ctx = Secp256k1::new();
 		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
 
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2360,7 +2391,8 @@ mod tests {
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
+				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
+				|_| panic!()
 			),
 			Err(Bolt12PaymentError::UnexpectedInvoice),
 		);
@@ -2377,7 +2409,8 @@ mod tests {
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, 0, &&logger, &pending_events, |_| Ok(())
+				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
+				|_| Ok(())
 			),
 			Ok(()),
 		);
@@ -2387,7 +2420,8 @@ mod tests {
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
 				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, 0, &&logger, &pending_events, |_| panic!()
+				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
+				|_| panic!()
 			),
 			Err(Bolt12PaymentError::DuplicateInvoice),
 		);

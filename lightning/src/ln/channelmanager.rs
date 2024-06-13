@@ -4031,8 +4031,8 @@ where
 		self.pending_outbound_payments
 			.send_payment_for_bolt12_invoice(
 				invoice, payment_id, &self.router, self.list_usable_channels(),
-				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer,
-				best_block_height, &self.logger, &self.pending_events,
+				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, &self,
+				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
 				|args| self.send_payment_along_path(args)
 			)
 	}
