@@ -3598,3 +3598,117 @@ fn test_glacial_peer_cant_hang() {
 	do_test_glacial_peer_cant_hang(false);
 	do_test_glacial_peer_cant_hang(true);
 }
+
+#[test]
+fn test_partial_claim_mon_update_compl_actions() {
+	// Test that if we have an MPP claim that we ensure the preimage for the claim is retained in
+	// all the `ChannelMonitor`s until the preimage reaches every `ChannelMonitor` for a channel
+	// which was a part of the MPP.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let mut nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+
+	let chan_1_scid = create_announced_chan_between_nodes(&nodes, 0, 1).0.contents.short_channel_id;
+	let chan_2_scid = create_announced_chan_between_nodes(&nodes, 0, 2).0.contents.short_channel_id;
+	let (chan_3_update, _, chan_3_id, ..) = create_announced_chan_between_nodes(&nodes, 1, 3);
+	let chan_3_scid = chan_3_update.contents.short_channel_id;
+	let (chan_4_update, _, chan_4_id, ..) = create_announced_chan_between_nodes(&nodes, 2, 3);
+	let chan_4_scid = chan_4_update.contents.short_channel_id;
+
+	let (mut route, payment_hash, preimage, payment_secret) = get_route_and_payment_hash!(&nodes[0], nodes[3], 100000);
+	let path = route.paths[0].clone();
+	route.paths.push(path);
+	route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
+	route.paths[0].hops[0].short_channel_id = chan_1_scid;
+	route.paths[0].hops[1].short_channel_id = chan_3_scid;
+	route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
+	route.paths[1].hops[0].short_channel_id = chan_2_scid;
+	route.paths[1].hops[1].short_channel_id = chan_4_scid;
+	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 200_000, payment_hash, payment_secret);
+
+	// Claim along both paths, but only complete one of the two monitor updates.
+	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[3].node.claim_funds(preimage);
+	assert_eq!(nodes[3].node.get_and_clear_pending_msg_events(), Vec::new());
+	assert_eq!(nodes[3].node.get_and_clear_pending_events(), Vec::new());
+	check_added_monitors(&nodes[3], 2);
+
+	// Complete the 1<->3 monitor update and play the commitment_signed dance forward until it
+	// blocks.
+	nodes[3].chain_monitor.complete_sole_pending_chan_update(&chan_3_id);
+	expect_payment_claimed!(&nodes[3], payment_hash, 200_000);
+	let updates = get_htlc_update_msgs(&nodes[3], &nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_update_fulfill_htlc(&nodes[3].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[3], Some(1000), false, false);
+	let _bs_updates_for_a = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	nodes[1].node.handle_commitment_signed(&nodes[3].node.get_our_node_id(), &updates.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &nodes[3].node.get_our_node_id());
+
+	nodes[3].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
+	check_added_monitors(&nodes[3], 0);
+
+	nodes[3].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_cs);
+	check_added_monitors(&nodes[3], 0);
+	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Now double-check that the preimage is still in the 1<->3 channel and complete the pending
+	// monitor update, allowing node 3 to claim the payment on the 2<->3 channel. This also
+	// unblocks the 1<->3 channel, allowing node 3 to release the two blocked monitor updates and
+	// respond to the final commitment_signed.
+	assert!(get_monitor!(nodes[3], chan_3_id).get_stored_preimages().contains_key(&payment_hash));
+
+	nodes[3].chain_monitor.complete_sole_pending_chan_update(&chan_4_id);
+	let mut ds_msgs = nodes[3].node.get_and_clear_pending_msg_events();
+	assert_eq!(ds_msgs.len(), 2);
+	check_added_monitors(&nodes[3], 2);
+
+	match remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut ds_msgs) {
+		MessageSendEvent::SendRevokeAndACK { msg, .. } => {
+			nodes[1].node.handle_revoke_and_ack(&nodes[3].node.get_our_node_id(), &msg);
+			check_added_monitors(&nodes[1], 1);
+		}
+		_ => panic!(),
+	}
+
+	match remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut ds_msgs) {
+		MessageSendEvent::UpdateHTLCs { updates, .. } => {
+			nodes[2].node.handle_update_fulfill_htlc(&nodes[3].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
+			check_added_monitors(&nodes[2], 1);
+			expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
+			let _cs_updates_for_a = get_htlc_update_msgs(&nodes[2], &nodes[0].node.get_our_node_id());
+
+			nodes[2].node.handle_commitment_signed(&nodes[3].node.get_our_node_id(), &updates.commitment_signed);
+			check_added_monitors(&nodes[2], 1);
+		},
+		_ => panic!(),
+	}
+
+	let (cs_raa, cs_cs) = get_revoke_commit_msgs(&nodes[2], &nodes[3].node.get_our_node_id());
+
+	nodes[3].node.handle_revoke_and_ack(&nodes[2].node.get_our_node_id(), &cs_raa);
+	check_added_monitors(&nodes[3], 1);
+
+	nodes[3].node.handle_commitment_signed(&nodes[2].node.get_our_node_id(), &cs_cs);
+	check_added_monitors(&nodes[3], 1);
+
+	let ds_raa = get_event_msg!(nodes[3], MessageSendEvent::SendRevokeAndACK, nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_revoke_and_ack(&nodes[3].node.get_our_node_id(), &ds_raa);
+	check_added_monitors(&nodes[2], 1);
+
+	// Our current `ChannelMonitor`s store preimages one RAA longer than they need to. That's nice
+	// for safety, but means we have to send one more payment here to wipe the preimage.
+	assert!(get_monitor!(nodes[3], chan_3_id).get_stored_preimages().contains_key(&payment_hash));
+	assert!(get_monitor!(nodes[3], chan_4_id).get_stored_preimages().contains_key(&payment_hash));
+
+	send_payment(&nodes[1], &[&nodes[3]], 100_000);
+	assert!(!get_monitor!(nodes[3], chan_3_id).get_stored_preimages().contains_key(&payment_hash));
+
+	send_payment(&nodes[2], &[&nodes[3]], 100_000);
+	assert!(!get_monitor!(nodes[3], chan_4_id).get_stored_preimages().contains_key(&payment_hash));
+}
