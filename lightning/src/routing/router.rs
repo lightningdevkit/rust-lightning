@@ -20,6 +20,8 @@ use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, Recipien
 use crate::ln::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::ln::onion_utils;
+#[cfg(async_payments)]
+use crate::offers::static_invoice::StaticInvoice;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId};
@@ -872,6 +874,16 @@ impl PaymentParameters {
 	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
 	/// [`PaymentParameters::expiry_time`].
 	pub fn from_bolt12_invoice(invoice: &Bolt12Invoice) -> Self {
+		Self::blinded(invoice.payment_paths().to_vec())
+			.with_bolt12_features(invoice.invoice_features().clone()).unwrap()
+			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs()))
+	}
+
+	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets
+	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
+	/// [`PaymentParameters::expiry_time`].
+	#[cfg(async_payments)]
+	pub fn from_static_invoice(invoice: &StaticInvoice) -> Self {
 		Self::blinded(invoice.payment_paths().to_vec())
 			.with_bolt12_features(invoice.invoice_features().clone()).unwrap()
 			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs()))
