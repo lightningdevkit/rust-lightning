@@ -20,12 +20,13 @@ use crate::offers::invoice::{
 	InvoiceTlvStream, InvoiceTlvStreamRef,
 };
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
+use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::merkle::{
-	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash,
+	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
-	Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, Quantity,
+	Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, Quantity, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::util::ser::{CursorReadable, Iterable, WithoutLength, Writeable, Writer};
@@ -311,6 +312,16 @@ impl StaticInvoice {
 	/// Signature of the invoice verified using [`StaticInvoice::signing_pubkey`].
 	pub fn signature(&self) -> Signature {
 		self.signature
+	}
+
+	pub(crate) fn from_same_offer(&self, invreq: &InvoiceRequest) -> bool {
+		let invoice_offer_tlv_stream = TlvStream::new(&self.bytes)
+			.range(OFFER_TYPES)
+			.map(|tlv_record| tlv_record.record_bytes);
+		let invreq_offer_tlv_stream = TlvStream::new(invreq.bytes())
+			.range(OFFER_TYPES)
+			.map(|tlv_record| tlv_record.record_bytes);
+		invoice_offer_tlv_stream.eq(invreq_offer_tlv_stream)
 	}
 }
 
