@@ -18,19 +18,19 @@ use crate::util::ser::Readable;
 
 /// Configuration we set when applicable.
 ///
-/// Default::default() provides sane defaults.
+/// `Default::default()` provides sane defaults.
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelHandshakeConfig {
 	/// Confirmations we will wait for before considering the channel locked in.
-	/// Applied only for inbound channels (see ChannelHandshakeLimits::max_minimum_depth for the
+	/// Applied only for inbound channels (see [`ChannelHandshakeLimits::max_minimum_depth`] for the
 	/// equivalent limit applied to outbound channels).
 	///
-	/// A lower-bound of 1 is applied, requiring all channels to have a confirmed commitment
+	/// A lower-bound of `1` is applied, requiring all channels to have a confirmed commitment
 	/// transaction before operation. If you wish to accept channels with zero confirmations, see
 	/// [`UserConfig::manually_accept_inbound_channels`] and
 	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`].
 	///
-	/// Default value: 6.
+	/// Default value: `6`
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer_0conf
@@ -48,16 +48,16 @@ pub struct ChannelHandshakeConfig {
 	/// case of an honest unilateral channel close, which implicitly decrease the economic value of
 	/// our channel.
 	///
-	/// Default value: [`BREAKDOWN_TIMEOUT`], we enforce it as a minimum at channel opening so you
-	/// can tweak config to ask for more security, not less.
+	/// Default value: [`BREAKDOWN_TIMEOUT`] (We enforce it as a minimum at channel opening so you
+	/// can tweak config to ask for more security, not less.)
 	pub our_to_self_delay: u16,
 	/// Set to the smallest value HTLC we will accept to process.
 	///
 	/// This value is sent to our counterparty on channel-open and we close the channel any time
 	/// our counterparty misbehaves by sending us an HTLC with a value smaller than this.
 	///
-	/// Default value: 1. If the value is less than 1, it is ignored and set to 1, as is required
-	/// by the protocol.
+	/// Default value: `1` (If the value is less than `1`, it is ignored and set to `1`, as is
+	/// required by the protocol.
 	pub our_htlc_minimum_msat: u64,
 	/// Sets the percentage of the channel value we will cap the total value of outstanding inbound
 	/// HTLCs to.
@@ -66,7 +66,7 @@ pub struct ChannelHandshakeConfig {
 	/// channel value in whole percentages.
 	///
 	/// Note that:
-	/// * If configured to another value than the default value 10, any new channels created with
+	/// * If configured to another value than the default value `10`, any new channels created with
 	/// the non default value will cause versions of LDK prior to 0.0.104 to refuse to read the
 	/// `ChannelManager`.
 	///
@@ -79,9 +79,11 @@ pub struct ChannelHandshakeConfig {
 	/// See [`ChannelHandshakeConfig::our_to_self_delay`] and [`ChannelConfig::cltv_expiry_delta`]
 	/// for more information.
 	///
-	/// Default value: 10.
-	/// Minimum value: 1, any values less than 1 will be treated as 1 instead.
-	/// Maximum value: 100, any values larger than 100 will be treated as 100 instead.
+	/// Default value: `10`
+	///
+	/// Minimum value: `1` (Any values less will be treated as `1` instead.)
+	///
+	/// Maximum value: `100` (Any values larger will be treated as `100` instead.)
 	pub max_inbound_htlc_value_in_flight_percent_of_channel: u8,
 	/// If set, we attempt to negotiate the `scid_privacy` (referred to as `scid_alias` in the
 	/// BOLTs) option for outbound private channels. This provides better privacy by not including
@@ -100,7 +102,7 @@ pub struct ChannelHandshakeConfig {
 	/// [`ChannelHandshakeConfig::announced_channel`] and
 	/// [`ChannelHandshakeLimits::force_announced_channel_preference`] for more.
 	///
-	/// Default value: false. This value is likely to change to true in the future.
+	/// Default value: `false` (This value is likely to change to `true` in the future.)
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
@@ -113,7 +115,7 @@ pub struct ChannelHandshakeConfig {
 	/// As the node which funds a channel picks this value this will only apply for new outbound
 	/// channels unless [`ChannelHandshakeLimits::force_announced_channel_preference`] is set.
 	///
-	/// Default value: false.
+	/// Default value: `false`
 	pub announced_channel: bool,
 	/// When set, we commit to an upfront shutdown_pubkey at channel open. If our counterparty
 	/// supports it, they will then enforce the mutual-close output to us matches what we provided
@@ -125,7 +127,7 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// The upfront key committed is provided from [`SignerProvider::get_shutdown_scriptpubkey`].
 	///
-	/// Default value: true.
+	/// Default value: `true`
 	///
 	/// [`SignerProvider::get_shutdown_scriptpubkey`]: crate::sign::SignerProvider::get_shutdown_scriptpubkey
 	pub commit_upfront_shutdown_pubkey: bool,
@@ -146,11 +148,15 @@ pub struct ChannelHandshakeConfig {
 	/// Note: Versions of LDK earlier than v0.0.104 will fail to read channels with any channel reserve
 	/// other than the default value.
 	///
-	/// Default value: 1% of channel value, i.e., configured as 10,000 millionths.
-	/// Minimum value: If the calculated proportional value is less than 1000 sats, it will be treated
-	///                as 1000 sats instead, which is a safe implementation-specific lower bound.
-	/// Maximum value: 1,000,000, any values larger than 1 Million will be treated as 1 Million (or 100%)
-	///                instead, although channel negotiations will fail in that case.
+	/// Default value: `10_000` millionths (i.e., 1% of channel value)
+	///
+	/// Minimum value: If the calculated proportional value is less than `1000` sats, it will be
+	///                treated as `1000` sats instead, which is a safe implementation-specific lower
+	///                bound.
+	///
+	/// Maximum value: `1_000_000` (i.e., 100% of channel value. Any values larger than one million
+	///                will be treated as one million instead, although channel negotiations will
+	///                fail in that case.)
 	pub their_channel_reserve_proportional_millionths: u32,
 	/// If set, we attempt to negotiate the `anchors_zero_fee_htlc_tx`option for all future
 	/// channels. This feature requires having a reserve of onchain funds readily available to bump
@@ -174,7 +180,7 @@ pub struct ChannelHandshakeConfig {
 	/// vulnerability after its deployment. For more context, see the [`SIGHASH_SINGLE + update_fee
 	/// Considered Harmful`] mailing list post.
 	///
-	/// Default value: false. This value is likely to change to true in the future.
+	/// Default value: `false` (This value is likely to change to `true` in the future.)
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
@@ -190,9 +196,10 @@ pub struct ChannelHandshakeConfig {
 	/// Note: Versions of LDK earlier than v0.0.115 will fail to read channels with a configuration
 	/// other than the default value.
 	///
-	/// Default value: 50
-	/// Maximum value: 483, any values larger will be treated as 483.
-	///                     This is the BOLT #2 spec limit on `max_accepted_htlcs`.
+	/// Default value: `50`
+	///
+	/// Maximum value: `483` (Any values larger will be treated as `483`. This is the BOLT #2 spec
+	/// limit on `max_accepted_htlcs`.)
 	pub our_max_accepted_htlcs: u16,
 }
 
@@ -238,7 +245,7 @@ impl Readable for ChannelHandshakeConfig {
 ///
 /// These limits are only applied to our counterparty's limits, not our own.
 ///
-/// Use 0/`<type>::max_value()` as appropriate to skip checking.
+/// Use `0` or `<type>::max_value()` as appropriate to skip checking.
 ///
 /// Provides sane defaults for most configurations.
 ///
@@ -250,40 +257,40 @@ pub struct ChannelHandshakeLimits {
 	/// Minimum allowed satoshis when a channel is funded. This is supplied by the sender and so
 	/// only applies to inbound channels.
 	///
-	/// Default value: 0.
+	/// Default value: `0`
 	pub min_funding_satoshis: u64,
 	/// Maximum allowed satoshis when a channel is funded. This is supplied by the sender and so
 	/// only applies to inbound channels.
 	///
-	/// Default value: 2^24 - 1.
+	/// Default value: `2^24 - 1`
 	pub max_funding_satoshis: u64,
 	/// The remote node sets a limit on the minimum size of HTLCs we can send to them. This allows
 	/// you to limit the maximum minimum-size they can require.
 	///
-	/// Default value: u64::max_value.
+	/// Default value: `u64::max_value`
 	pub max_htlc_minimum_msat: u64,
 	/// The remote node sets a limit on the maximum value of pending HTLCs to them at any given
 	/// time to limit their funds exposure to HTLCs. This allows you to set a minimum such value.
 	///
-	/// Default value: 0.
+	/// Default value: `0`
 	pub min_max_htlc_value_in_flight_msat: u64,
 	/// The remote node will require we keep a certain amount in direct payment to ourselves at all
 	/// time, ensuring that we are able to be punished if we broadcast an old state. This allows to
 	/// you limit the amount which we will have to keep to ourselves (and cannot use for HTLCs).
 	///
-	/// Default value: u64::max_value.
+	/// Default value: `u64::max_value`.
 	pub max_channel_reserve_satoshis: u64,
 	/// The remote node sets a limit on the maximum number of pending HTLCs to them at any given
 	/// time. This allows you to set a minimum such value.
 	///
-	/// Default value: 0.
+	/// Default value: `0`
 	pub min_max_accepted_htlcs: u16,
 	/// Before a channel is usable the funding transaction will need to be confirmed by at least a
 	/// certain number of blocks, specified by the node which is not the funder (as the funder can
 	/// assume they aren't going to double-spend themselves).
 	/// This config allows you to set a limit on the maximum amount of time to wait.
 	///
-	/// Default value: 144, or roughly one day and only applies to outbound channels.
+	/// Default value: `144`, or roughly one day and only applies to outbound channels
 	pub max_minimum_depth: u32,
 	/// Whether we implicitly trust funding transactions generated by us for our own outbound
 	/// channels to not be double-spent.
@@ -296,12 +303,12 @@ pub struct ChannelHandshakeLimits {
 	/// You may wish to un-set this if you allow the user to (or do in an automated fashion)
 	/// double-spend the funding transaction to RBF with an alternative channel open.
 	///
-	/// This only applies if our counterparty set their confirmations-required value to 0, and we
-	/// always trust our own funding transaction at 1 confirmation irrespective of this value.
+	/// This only applies if our counterparty set their confirmations-required value to `0`, and we
+	/// always trust our own funding transaction at `1` confirmation irrespective of this value.
 	/// Thus, this effectively acts as a `min_minimum_depth`, with the only possible values being
-	/// `true` (0) and `false` (1).
+	/// `true` (`0`) and `false` (`1`).
 	///
-	/// Default value: true
+	/// Default value: `true`
 	pub trust_own_funding_0conf: bool,
 	/// Set to force an incoming channel to match our announced channel preference in
 	/// [`ChannelHandshakeConfig::announced_channel`].
@@ -310,14 +317,14 @@ pub struct ChannelHandshakeLimits {
 	/// [`ChannelHandshakeConfig::announced_channel`] set to false, ensuring that no announced (aka public)
 	/// channels will ever be opened.
 	///
-	/// Default value: true.
+	/// Default value: `true`
 	pub force_announced_channel_preference: bool,
 	/// Set to the amount of time we're willing to wait to claim money back to us.
 	///
 	/// Not checking this value would be a security issue, as our peer would be able to set it to
 	/// max relative lock-time (a year) and we would "lose" money as it would be locked for a long time.
 	///
-	/// Default value: 2016, which we also enforce as a maximum value so you can tweak config to
+	/// Default value: `2016`, which we also enforce as a maximum value so you can tweak config to
 	/// reduce the loss of having useless locked funds (if your peer accepts)
 	pub their_to_self_delay: u16
 }
@@ -417,7 +424,7 @@ pub struct ChannelConfig {
 	/// This may be allowed to change at runtime in a later update, however doing so must result in
 	/// update messages sent to notify all nodes of our updated relay fee.
 	///
-	/// Default value: 0.
+	/// Default value: `0`
 	pub forwarding_fee_proportional_millionths: u32,
 	/// Amount (in milli-satoshi) charged for payments forwarded outbound over the channel, in
 	/// excess of [`forwarding_fee_proportional_millionths`].
@@ -428,7 +435,7 @@ pub struct ChannelConfig {
 	/// as of July 2021. Adjusting it upwards or downwards may change whether nodes route through
 	/// this node.
 	///
-	/// Default value: 1000.
+	/// Default value: `1000`
 	///
 	/// [`forwarding_fee_proportional_millionths`]: ChannelConfig::forwarding_fee_proportional_millionths
 	pub forwarding_fee_base_msat: u32,
@@ -446,9 +453,10 @@ pub struct ChannelConfig {
 	/// enough time to broadcast and confirm a transaction, possibly with time in between to RBF
 	/// the spending transaction).
 	///
-	/// Default value: 72 (12 hours at an average of 6 blocks/hour).
-	/// Minimum value: [`MIN_CLTV_EXPIRY_DELTA`], any values less than this will be treated as
-	///                [`MIN_CLTV_EXPIRY_DELTA`] instead.
+	/// Default value: `72` (12 hours at an average of 6 blocks/hour)
+	///
+	/// Minimum value: [`MIN_CLTV_EXPIRY_DELTA`] (Any values less than this will be treated as
+	///                [`MIN_CLTV_EXPIRY_DELTA`] instead.)
 	///
 	/// [`MIN_CLTV_EXPIRY_DELTA`]: crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA
 	pub cltv_expiry_delta: u16,
@@ -508,7 +516,7 @@ pub struct ChannelConfig {
 	/// while we use [`ConfirmationTarget::OnChainSweep`] (which should be relatively high) and
 	/// feerate disagreement force-closures should only occur when theirs is higher than ours.
 	///
-	/// Default value: [`MaxDustHTLCExposure::FeeRateMultiplier`] with a multiplier of 10_000.
+	/// Default value: [`MaxDustHTLCExposure::FeeRateMultiplier`] with a multiplier of `10_000`
 	///
 	/// [`ConfirmationTarget::OnChainSweep`]: crate::chain::chaininterface::ConfirmationTarget::OnChainSweep
 	pub max_dust_htlc_exposure: MaxDustHTLCExposure,
@@ -530,7 +538,7 @@ pub struct ChannelConfig {
 	/// [`ChannelCloseMinimum`] fee estimate, but allow our counterparty to pay as much fee as they like.
 	/// Thus, this value is ignored when we are not the funder.
 	///
-	/// Default value: 1000 satoshis.
+	/// Default value: `1000`
 	///
 	/// [`NonAnchorChannelFee`]: crate::chain::chaininterface::ConfirmationTarget::NonAnchorChannelFee
 	/// [`ChannelCloseMinimum`]: crate::chain::chaininterface::ConfirmationTarget::ChannelCloseMinimum
@@ -558,7 +566,7 @@ pub struct ChannelConfig {
 	/// Switching this config flag on may break compatibility with versions of LDK prior to 0.0.116.
 	/// Unsetting this flag between restarts may lead to payment receive failures.
 	///
-	/// Default value: false.
+	/// Default value: `false`
 	///
 	/// [intercept scids]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
 	/// [`forward_intercepted_htlc`]: crate::ln::channelmanager::ChannelManager::forward_intercepted_htlc
@@ -781,8 +789,8 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 
 /// Top-level config which holds ChannelHandshakeLimits and ChannelConfig.
 ///
-/// Default::default() provides sane defaults for most configurations
-/// (but currently with 0 relay fees!)
+/// `Default::default()` provides sane defaults for most configurations
+/// (but currently with zero relay fees!)
 #[derive(Copy, Clone, Debug)]
 pub struct UserConfig {
 	/// Channel handshake config that we propose to our counterparty.
@@ -791,13 +799,13 @@ pub struct UserConfig {
 	pub channel_handshake_limits: ChannelHandshakeLimits,
 	/// Channel config which affects behavior during channel lifetime.
 	pub channel_config: ChannelConfig,
-	/// If this is set to false, we will reject any HTLCs which were to be forwarded over private
+	/// If this is set to `false`, we will reject any HTLCs which were to be forwarded over private
 	/// channels. This prevents us from taking on HTLC-forwarding risk when we intend to run as a
 	/// node which is not online reliably.
 	///
 	/// For nodes which are not online reliably, you should set all channels to *not* be announced
 	/// (using [`ChannelHandshakeConfig::announced_channel`] and
-	/// [`ChannelHandshakeLimits::force_announced_channel_preference`]) and set this to false to
+	/// [`ChannelHandshakeLimits::force_announced_channel_preference`]) and set this to `false` to
 	/// ensure you are not exposed to any forwarding risk.
 	///
 	/// Note that because you cannot change a channel's announced state after creation, there is no
@@ -806,47 +814,62 @@ pub struct UserConfig {
 	/// all your channels and open new ones. For privacy, you should also change your node_id
 	/// (swapping all private and public key material for new ones) at that time.
 	///
-	/// Default value: false.
+	/// Default value: `false`
 	pub accept_forwards_to_priv_channels: bool,
-	/// If this is set to false, we do not accept inbound requests to open a new channel.
-	/// Default value: true.
+	/// If this is set to `false`, we do not accept inbound requests to open a new channel.
+	///
+	/// Default value: `true`
 	pub accept_inbound_channels: bool,
-	/// If this is set to true, the user needs to manually accept inbound requests to open a new
+	/// If this is set to `true`, the user needs to manually accept inbound requests to open a new
 	/// channel.
 	///
-	/// When set to true, [`Event::OpenChannelRequest`] will be triggered once a request to open a
+	/// When set to `true`, [`Event::OpenChannelRequest`] will be triggered once a request to open a
 	/// new inbound channel is received through a [`msgs::OpenChannel`] message. In that case, a
 	/// [`msgs::AcceptChannel`] message will not be sent back to the counterparty node unless the
 	/// user explicitly chooses to accept the request.
 	///
-	/// Default value: false.
+	/// Default value: `false`
 	///
 	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
 	/// [`msgs::OpenChannel`]: crate::ln::msgs::OpenChannel
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
 	pub manually_accept_inbound_channels: bool,
-	///  If this is set to true, LDK will intercept HTLCs that are attempting to be forwarded over
+	///  If this is set to `true`, LDK will intercept HTLCs that are attempting to be forwarded over
 	///  fake short channel ids generated via [`ChannelManager::get_intercept_scid`]. Upon HTLC
 	///  intercept, LDK will generate an [`Event::HTLCIntercepted`] which MUST be handled by the user.
 	///
-	///  Setting this to true may break backwards compatibility with LDK versions < 0.0.113.
+	///  Setting this to `true` may break backwards compatibility with LDK versions < 0.0.113.
 	///
-	///  Default value: false.
+	///  Default value: `false`
 	///
 	/// [`ChannelManager::get_intercept_scid`]: crate::ln::channelmanager::ChannelManager::get_intercept_scid
 	/// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
 	pub accept_intercept_htlcs: bool,
-	/// If this is set to false, when receiving a keysend payment we'll fail it if it has multiple
-	/// parts. If this is set to true, we'll accept the payment.
+	/// If this is set to `false`, when receiving a keysend payment we'll fail it if it has multiple
+	/// parts. If this is set to `true`, we'll accept the payment.
 	///
-	/// Setting this to true will break backwards compatibility upon downgrading to an LDK
-	/// version < 0.0.116 while receiving an MPP keysend. If we have already received an MPP
+	/// Setting this to `true` will break backwards compatibility upon downgrading to an LDK
+	/// version prior to 0.0.116 while receiving an MPP keysend. If we have already received an MPP
 	/// keysend, downgrading will cause us to fail to deserialize [`ChannelManager`].
 	///
-	/// Default value: false.
+	/// Default value: `false`
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub accept_mpp_keysend: bool,
+	/// If this is set to `true`, the user needs to manually pay [`Bolt12Invoice`]s when received.
+	///
+	/// When set to `true`, [`Event::InvoiceReceived`] will be generated for each received
+	/// [`Bolt12Invoice`] instead of being automatically paid after verification. Use
+	/// [`ChannelManager::send_payment_for_bolt12_invoice`] to pay the invoice or
+	/// [`ChannelManager::abandon_payment`] to abandon the associated payment.
+	///
+	/// Default value: `false`
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`Event::InvoiceReceived`]: crate::events::Event::InvoiceReceived
+	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	pub manually_handle_bolt12_invoices: bool,
 }
 
 impl Default for UserConfig {
@@ -860,6 +883,7 @@ impl Default for UserConfig {
 			manually_accept_inbound_channels: false,
 			accept_intercept_htlcs: false,
 			accept_mpp_keysend: false,
+			manually_handle_bolt12_invoices: false,
 		}
 	}
 }
@@ -879,6 +903,7 @@ impl Readable for UserConfig {
 			manually_accept_inbound_channels: Readable::read(reader)?,
 			accept_intercept_htlcs: Readable::read(reader)?,
 			accept_mpp_keysend: Readable::read(reader)?,
+			manually_handle_bolt12_invoices: Readable::read(reader)?,
 		})
 	}
 }

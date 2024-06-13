@@ -58,7 +58,7 @@ use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
 #[cfg(test)]
 use crate::ln::outbound_payment;
-use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
+use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
 use crate::ln::wire::Encode;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
@@ -105,7 +105,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub use crate::ln::outbound_payment::{Bolt12PaymentError, PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -3996,7 +3996,36 @@ where
 		self.pending_outbound_payments.test_set_payment_metadata(payment_id, new_payment_metadata);
 	}
 
-	pub(super) fn send_payment_for_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
+	/// Pays the [`Bolt12Invoice`] associated with the `payment_id` encoded in its `payer_metadata`.
+	///
+	/// The invoice's `payer_metadata` is used to authenticate that the invoice was indeed requested
+	/// before attempting a payment. [`Bolt12PaymentError::UnexpectedInvoice`] is returned if this
+	/// fails or if the encoded `payment_id` is not recognized. The latter may happen once the
+	/// payment is no longer tracked because the payment was attempted after:
+	/// - an invoice for the `payment_id` was already paid,
+	/// - one full [timer tick] has elapsed since initially requesting the invoice when paying an
+	///   offer, or
+	/// - the refund corresponding to the invoice has already expired.
+	///
+	/// To retry the payment, request another invoice using a new `payment_id`.
+	///
+	/// Attempting to pay the same invoice twice while the first payment is still pending will
+	/// result in a [`Bolt12PaymentError::DuplicateInvoice`].
+	///
+	/// Otherwise, either [`Event::PaymentSent`] or [`Event::PaymentFailed`] are used to indicate
+	/// whether or not the payment was successful.
+	///
+	/// [timer tick]: Self::timer_tick_occurred
+	pub fn send_payment_for_bolt12_invoice(&self, invoice: &Bolt12Invoice) -> Result<(), Bolt12PaymentError> {
+		let secp_ctx = &self.secp_ctx;
+		let expanded_key = &self.inbound_payment_key;
+		match invoice.verify(expanded_key, secp_ctx) {
+			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
+			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
+		}
+	}
+
+	fn send_payment_for_verified_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments
@@ -10272,42 +10301,45 @@ where
 				};
 
 				match response {
-					Ok(invoice) => return responder.respond(OffersMessage::Invoice(invoice)),
-					Err(error) => return responder.respond(OffersMessage::InvoiceError(error.into())),
+					Ok(invoice) => responder.respond(OffersMessage::Invoice(invoice)),
+					Err(error) => responder.respond(OffersMessage::InvoiceError(error.into())),
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				let response = invoice
-					.verify(expanded_key, secp_ctx)
-					.map_err(|()| InvoiceError::from_string("Unrecognized invoice".to_owned()))
-					.and_then(|payment_id| {
+				let result = match invoice.verify(expanded_key, secp_ctx) {
+					Ok(payment_id) => {
 						let features = self.bolt12_invoice_features();
 						if invoice.invoice_features().requires_unknown_bits_from(&features) {
 							Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
+						} else if self.default_configuration.manually_handle_bolt12_invoices {
+							let event = Event::InvoiceReceived { payment_id, invoice, responder };
+							self.pending_events.lock().unwrap().push_back((event, None));
+							return ResponseInstruction::NoResponse;
 						} else {
-							self.send_payment_for_bolt12_invoice(&invoice, payment_id)
+							self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id)
 								.map_err(|e| {
 									log_trace!(self.logger, "Failed paying invoice: {:?}", e);
 									InvoiceError::from_string(format!("{:?}", e))
 								})
 						}
-					});
+					},
+					Err(()) => Err(InvoiceError::from_string("Unrecognized invoice".to_owned())),
+				};
 
-				match (responder, response) {
-					(Some(responder), Err(e)) => responder.respond(OffersMessage::InvoiceError(e)),
-					(None, Err(_)) => {
-						log_trace!(
-							self.logger,
-							"A response was generated, but there is no reply_path specified for sending the response."
-						);
-						return ResponseInstruction::NoResponse;
-					}
-					_ => return ResponseInstruction::NoResponse,
+				match result {
+					Ok(()) => ResponseInstruction::NoResponse,
+					Err(e) => match responder {
+						Some(responder) => responder.respond(OffersMessage::InvoiceError(e)),
+						None => {
+							log_trace!(self.logger, "No reply path for sending invoice error: {:?}", e);
+							ResponseInstruction::NoResponse
+						},
+					},
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
 				log_trace!(self.logger, "Received invoice_error: {}", invoice_error);
-				return ResponseInstruction::NoResponse;
+				ResponseInstruction::NoResponse
 			},
 		}
 	}
