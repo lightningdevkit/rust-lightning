@@ -67,6 +67,8 @@ use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
+#[cfg(async_payments)]
+use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
@@ -4043,6 +4045,34 @@ where
 				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
 				|args| self.send_payment_along_path(args)
 			)
+	}
+
+	#[cfg(async_payments)]
+	fn initiate_async_payment(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId
+	) -> Result<(), InvoiceError> {
+		if invoice.message_paths().is_empty() { return Err(Bolt12SemanticError::MissingPaths.into()) }
+
+		let reply_path = self.create_blinded_path(Some(payment_id))
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let payment_release_secret = self.pending_outbound_payments.static_invoice_received(
+			invoice, payment_id, &*self.entropy_source
+		).map_err(|e| InvoiceError::from_string(format!("{:?}", e)))?;
+
+		let mut pending_async_payments_messages = self.pending_async_payments_messages.lock().unwrap();
+		const HTLC_AVAILABLE_LIMIT: usize = 10;
+		for path in invoice.message_paths().into_iter().take(HTLC_AVAILABLE_LIMIT) {
+			let message = new_pending_onion_message(
+				AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable { payment_release_secret }),
+				Destination::BlindedPath(path.clone()),
+				Some(reply_path.clone()),
+			);
+			pending_async_payments_messages.push(message);
+		}
+
+		Ok(())
 	}
 
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
@@ -10388,14 +10418,22 @@ where
 				}
 			},
 			#[cfg(async_payments)]
-			OffersMessage::StaticInvoice(_invoice) => {
-				match responder {
-					Some(responder) => {
-						responder.respond(OffersMessage::InvoiceError(
-								InvoiceError::from_string("Static invoices not yet supported".to_string())
-						))
-					},
+			OffersMessage::StaticInvoice(invoice) => {
+				let responder = match responder {
+					Some(responder) => responder,
 					None => return ResponseInstruction::NoResponse,
+				};
+				let payment_id = match _payment_id {
+					Some(id) => id,
+					None => {
+						return responder.respond(OffersMessage::InvoiceError(
+							InvoiceError::from_string("Unrecognized invoice".to_string())
+						))
+					}
+				};
+				match self.initiate_async_payment(&invoice, payment_id) {
+					Ok(()) => return ResponseInstruction::NoResponse,
+					Err(e) => responder.respond(OffersMessage::InvoiceError(e)),
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
@@ -10431,7 +10469,7 @@ where
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _payment_id: Option<PaymentId>) {}
 
 	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<AsyncPaymentsMessage>> {
-		Vec::new()
+		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
 	}
 }
 

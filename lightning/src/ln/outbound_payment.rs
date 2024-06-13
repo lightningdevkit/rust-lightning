@@ -23,6 +23,8 @@ use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
+#[cfg(async_payments)]
+use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters, Route, RouteParameters, Router};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::util::errors::APIError;
@@ -862,6 +864,38 @@ impl OutboundPayments {
 		);
 
 		Ok(())
+	}
+
+	#[cfg(async_payments)]
+	pub(super) fn static_invoice_received<ES: Deref>(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId, entropy_source: ES
+	) -> Result<[u8; 32], Bolt12PaymentError> where ES::Target: EntropySource {
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingInvoice { retry_strategy, invoice_request, .. } => {
+					let invreq = invoice_request.as_ref().ok_or(Bolt12PaymentError::UnexpectedInvoice)?;
+					if !invoice.matches_invreq(invreq) {
+						return Err(Bolt12PaymentError::UnexpectedInvoice)
+					}
+					let amount_msat = invreq.amount_msats().ok_or(Bolt12PaymentError::UnexpectedInvoice)?;
+					let keysend_preimage = PaymentPreimage(entropy_source.get_secure_random_bytes());
+					let payment_hash = PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
+					let payment_release_secret = entropy_source.get_secure_random_bytes();
+					let pay_params = PaymentParameters::from_static_invoice(invoice);
+					let route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
+					*entry.into_mut() = PendingOutboundPayment::StaticInvoiceReceived {
+						payment_hash,
+						keysend_preimage,
+						retry_strategy: *retry_strategy,
+						payment_release_secret,
+						route_params,
+					};
+					return Ok(payment_release_secret)
+				},
+				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
+			},
+			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+		};
 	}
 
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
