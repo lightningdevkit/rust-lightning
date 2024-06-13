@@ -2060,6 +2060,8 @@ where
 //
 // `pending_offers_messages`
 //
+// `pending_async_payments_messages`
+//
 // `total_consistency_lock`
 //  |
 //  |__`forward_htlcs`
@@ -2315,6 +2317,7 @@ where
 	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
+	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
@@ -3135,6 +3138,7 @@ where
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
 			pending_offers_messages: Mutex::new(Vec::new()),
+			pending_async_payments_messages: Mutex::new(Vec::new()),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
 			last_days_feerates: Mutex::new(VecDeque::new()),
@@ -12827,6 +12831,7 @@ where
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
 			pending_offers_messages: Mutex::new(Vec::new()),
+			pending_async_payments_messages: Mutex::new(Vec::new()),
 
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
