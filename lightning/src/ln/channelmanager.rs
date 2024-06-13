@@ -1848,6 +1848,8 @@ where
 //
 // `pending_offers_messages`
 //
+// `pending_async_payments_messages`
+//
 // `total_consistency_lock`
 //  |
 //  |__`forward_htlcs`
@@ -2100,6 +2102,7 @@ where
 	needs_persist_flag: AtomicBool,
 
 	pending_offers_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
+	pending_async_payments_messages: Mutex<Vec<PendingOnionMessage<AsyncPaymentsMessage>>>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
@@ -2894,6 +2897,7 @@ where
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
 			pending_offers_messages: Mutex::new(Vec::new()),
+			pending_async_payments_messages: Mutex::new(Vec::new()),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
 			last_days_feerates: Mutex::new(VecDeque::new()),
@@ -10421,7 +10425,7 @@ where
 		ResponseInstruction::NoResponse
 	}
 
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _payment_id: Option<PaymentId>) {}
 
 	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<AsyncPaymentsMessage>> {
 		Vec::new()
@@ -12149,6 +12153,7 @@ where
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
 			pending_offers_messages: Mutex::new(Vec::new()),
+			pending_async_payments_messages: Mutex::new(Vec::new()),
 
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
