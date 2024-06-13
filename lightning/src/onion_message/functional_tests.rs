@@ -90,7 +90,7 @@ impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 	) -> ResponseInstruction<ReleaseHeldHtlc> {
 		ResponseInstruction::NoResponse
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _payment_id: Option<PaymentId>) {}
 }
 
 #[derive(Clone, Debug, PartialEq)]

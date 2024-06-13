@@ -1467,7 +1467,7 @@ where
 					},
 					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::ReleaseHeldHtlc(msg)) => {
-						self.async_payments_handler.release_held_htlc(msg);
+						self.async_payments_handler.release_held_htlc(msg, payment_id);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
 						let response_instructions = self.custom_handler.handle_custom_message(msg, responder);

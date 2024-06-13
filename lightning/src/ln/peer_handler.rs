@@ -152,11 +152,11 @@ impl OffersMessageHandler for IgnoringMessageHandler {
 }
 impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
 	fn held_htlc_available(
-		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
+		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
 	) -> ResponseInstruction<ReleaseHeldHtlc> {
 		ResponseInstruction::NoResponse
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _payment_id: Option<PaymentId>) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
