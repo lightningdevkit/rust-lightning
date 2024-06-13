@@ -799,7 +799,13 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// [`events::Event::PaymentClaimed`] to the user if we haven't yet generated such an event for
 	/// this payment. Note that this is only best-effort. On restart it's possible such a duplicate
 	/// event can be generated.
-	PaymentClaimed { payment_hash: PaymentHash },
+	PaymentClaimed {
+		payment_hash: PaymentHash,
+		/// A pending MPP claim which hasn't yet completed.
+		///
+		/// Not written to disk.
+		pending_mpp_claim: Option<(PublicKey, ChannelId, u64, PendingMPPClaimPointer)>,
+	},
 	/// Indicates an [`events::Event`] should be surfaced to the user and possibly resume the
 	/// operation of another channel.
 	///
@@ -833,7 +839,10 @@ pub(crate) enum MonitorUpdateCompletionAction {
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
-	(0, PaymentClaimed) => { (0, payment_hash, required) },
+	(0, PaymentClaimed) => {
+		(0, payment_hash, required),
+		(9999999999, pending_mpp_claim, (static_value, None)),
+	},
 	// Note that FreeOtherChannelImmediately should never be written - we were supposed to free
 	// *immediately*. However, for simplicity we implement read/write here.
 	(1, FreeOtherChannelImmediately) => {
@@ -6295,12 +6304,43 @@ where
 			return;
 		}
 		if valid_mpp {
-			for htlc in sources.drain(..) {
+			let mut pending_claim_ptr_opt = None;
+			let mut source_claim_pairs = Vec::with_capacity(sources.len());
+			if sources.len() > 1 {
+				let mut pending_claims = PendingMPPClaim {
+					channels_without_preimage: Vec::new(),
+					channels_with_preimage: Vec::new(),
+				};
+				for htlc in sources.drain(..) {
+					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
+						let htlc_id = htlc.prev_hop.htlc_id;
+						let chan_id = htlc.prev_hop.channel_id;
+						let chan_outpoint = htlc.prev_hop.outpoint;
+						pending_claims.channels_without_preimage.push((cp_id, chan_outpoint, chan_id, htlc_id));
+						source_claim_pairs.push((htlc, Some((cp_id, chan_id, htlc_id))));
+					}
+				}
+				pending_claim_ptr_opt = Some(Arc::new(Mutex::new(pending_claims)));
+			} else {
+				for htlc in sources.drain(..) {
+					source_claim_pairs.push((htlc, None));
+				}
+			}
+			for (htlc, mpp_claim) in source_claim_pairs.drain(..) {
+				let mut pending_mpp_claim = None;
+				let pending_claim_ptr = pending_claim_ptr_opt.as_ref().map(|pending_claim| {
+					pending_mpp_claim = mpp_claim.map(|(cp_id, chan_id, htlc_id)|
+						(cp_id, chan_id, htlc_id, PendingMPPClaimPointer(Arc::clone(pending_claim)))
+					);
+					RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+						pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
+					}
+				});
 				self.claim_funds_from_hop(
 					htlc.prev_hop, payment_preimage,
 					|_, definitely_duplicate| {
 						debug_assert!(!definitely_duplicate, "We shouldn't claim duplicatively from a payment");
-						Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash })
+						(Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim }), pending_claim_ptr)
 					}
 				);
 			}
@@ -6324,7 +6364,9 @@ where
 		}
 	}
 
-	fn claim_funds_from_hop<ComplFunc: FnOnce(Option<u64>, bool) -> Option<MonitorUpdateCompletionAction>>(
+	fn claim_funds_from_hop<
+		ComplFunc: FnOnce(Option<u64>, bool) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>)
+	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		completion_action: ComplFunc,
 	) {
@@ -6364,10 +6406,14 @@ where
 
 						match fulfill_res {
 							UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } => {
-								if let Some(action) = completion_action(Some(htlc_value_msat), false) {
+								let (action_opt, raa_blocker_opt) = completion_action(Some(htlc_value_msat), false);
+								if let Some(action) = action_opt {
 									log_trace!(logger, "Tracking monitor update completion action for channel {}: {:?}",
 										chan_id, action);
 									peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
+								}
+								if let Some(raa_blocker) = raa_blocker_opt {
+									peer_state.actions_blocking_raa_monitor_updates.entry(chan_id).or_insert_with(Vec::new).push(raa_blocker);
 								}
 								if !during_init {
 									handle_new_monitor_update!(self, prev_hop.outpoint, monitor_update, peer_state_lock,
@@ -6386,11 +6432,16 @@ where
 								}
 							}
 							UpdateFulfillCommitFetch::DuplicateClaim {} => {
-								let action = if let Some(action) = completion_action(None, true) {
+								let (action_opt, raa_blocker_opt) = completion_action(None, true);
+								let action = if let Some(action) = action_opt {
 									action
 								} else {
 									return;
 								};
+								if let Some(raa_blocker) = raa_blocker_opt {
+									debug_assert!(peer_state.actions_blocking_raa_monitor_updates.get(&chan_id).unwrap().contains(&raa_blocker));
+								}
+
 								mem::drop(peer_state_lock);
 
 								log_trace!(logger, "Completing monitor update completion action for channel {} as claim was redundant: {:?}",
@@ -6477,7 +6528,47 @@ where
 		// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
 		// generally always allowed to be duplicative (and it's specifically noted in
 		// `PaymentForwarded`).
-		self.handle_monitor_update_completion_actions(completion_action(None, false));
+		let (action_opt, raa_blocker_opt) = completion_action(None, false);
+
+		if let Some(raa_blocker) = raa_blocker_opt {
+			let counterparty_node_id = prev_hop.counterparty_node_id.or_else(||
+				// prev_hop.counterparty_node_id is always available for payments received after
+				// LDK 0.0.123, but for those received on 0.0.123 and claimed later, we need to
+				// look up the counterparty in the `action_opt`, if possible.
+				if let Some(action) = &action_opt {
+					if let MonitorUpdateCompletionAction::PaymentClaimed { pending_mpp_claim, .. } = action {
+						if let Some((node_id, _, _, _)) = pending_mpp_claim {
+							Some(*node_id)
+						} else { None }
+					} else { None }
+				} else { None });
+			if let Some(counterparty_node_id) = counterparty_node_id {
+				// TODO: Avoid always blocking the world for the write lock here.
+				let mut per_peer_state = self.per_peer_state.write().unwrap();
+				let peer_state_mutex = per_peer_state.entry(counterparty_node_id).or_insert_with(||
+					Mutex::new(PeerState {
+						channel_by_id: new_hash_map(),
+						inbound_channel_request_by_id: new_hash_map(),
+						latest_features: InitFeatures::empty(),
+						pending_msg_events: Vec::new(),
+						in_flight_monitor_updates: BTreeMap::new(),
+						monitor_update_blocked_actions: BTreeMap::new(),
+						actions_blocking_raa_monitor_updates: BTreeMap::new(),
+						is_connected: false,
+					}));
+				let mut peer_state = peer_state_mutex.lock().unwrap();
+
+				peer_state.actions_blocking_raa_monitor_updates
+					.entry(prev_hop.channel_id)
+					.or_insert_with(Vec::new)
+					.push(raa_blocker);
+			} else {
+				debug_assert!(false,
+					"RAA ChannelMonitorUpdate blockers are only set with PaymentClaimed completion actions, so we should always have a counterparty node id");
+			}
+		}
+
+		self.handle_monitor_update_completion_actions(action_opt);
 	}
 
 	fn finalize_claims(&self, sources: Vec<HTLCSource>) {
@@ -6576,16 +6667,16 @@ where
 									}
 								}), "{:?}", *background_events);
 							}
-							None
+							(None, None)
 						} else if definitely_duplicate {
 							if let Some(other_chan) = chan_to_release {
-								Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+								(Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
 									downstream_counterparty_node_id: other_chan.counterparty_node_id,
 									downstream_funding_outpoint: other_chan.funding_txo,
 									downstream_channel_id: other_chan.channel_id,
 									blocking_action: other_chan.blocking_action,
-								})
-							} else { None }
+								}), None)
+							} else { (None, None) }
 						} else {
 							let total_fee_earned_msat = if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
 								if let Some(claimed_htlc_value) = htlc_claim_value_msat {
@@ -6594,7 +6685,7 @@ where
 							} else { None };
 							debug_assert!(skimmed_fee_msat <= total_fee_earned_msat,
 								"skimmed_fee_msat must always be included in total_fee_earned_msat");
-							Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+							(Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 								event: events::Event::PaymentForwarded {
 									prev_channel_id: Some(prev_channel_id),
 									next_channel_id: Some(next_channel_id),
@@ -6606,7 +6697,7 @@ where
 									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
 								},
 								downstream_counterparty_and_funding_outpoint: chan_to_release,
-							})
+							}), None)
 						}
 					});
 			},
@@ -6623,9 +6714,44 @@ where
 		debug_assert_ne!(self.claimable_payments.held_by_thread(), LockHeldState::HeldByThread);
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 
+		let mut freed_channels = Vec::new();
+
 		for action in actions.into_iter() {
 			match action {
-				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash } => {
+				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim } => {
+					if let Some((counterparty_node_id, chan_id, htlc_id, claim_ptr)) = pending_mpp_claim {
+						let per_peer_state = self.per_peer_state.read().unwrap();
+						per_peer_state.get(&counterparty_node_id).map(|peer_state_mutex| {
+							let mut peer_state = peer_state_mutex.lock().unwrap();
+							let blockers_entry = peer_state.actions_blocking_raa_monitor_updates.entry(chan_id);
+							if let btree_map::Entry::Occupied(mut blockers) = blockers_entry {
+								blockers.get_mut().retain(|blocker|
+									if let &RAAMonitorUpdateBlockingAction::ClaimedMPPPayment { pending_claim } = &blocker {
+										if *pending_claim == claim_ptr {
+											let mut pending_claim_state_lock = pending_claim.0.lock().unwrap();
+											let pending_claim_state = &mut *pending_claim_state_lock;
+											pending_claim_state.channels_without_preimage.retain(|(cp, outp, cid, hid)| {
+												if *cp == counterparty_node_id && *cid == chan_id && *hid == htlc_id {
+													pending_claim_state.channels_with_preimage.push((*cp, *outp, *cid));
+													false
+												} else { true }
+											});
+											if pending_claim_state.channels_without_preimage.is_empty() {
+												for (cp, outp, cid) in pending_claim_state.channels_with_preimage.iter() {
+													freed_channels.push((*cp, *outp, *cid, blocker.clone()));
+												}
+											}
+											!pending_claim_state.channels_without_preimage.is_empty()
+										} else { true }
+									} else { true }
+								);
+								if blockers.get().is_empty() {
+									blockers.remove();
+								}
+							}
+						});
+					}
+
 					let payment = self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
 					if let Some(ClaimingPayment {
 						amount_msat,
@@ -6668,6 +6794,10 @@ where
 					);
 				},
 			}
+		}
+
+		for (node_id, funding_outpoint, channel_id, blocker) in freed_channels {
+			self.handle_monitor_update_release(node_id, funding_outpoint, channel_id, Some(blocker));
 		}
 	}
 
