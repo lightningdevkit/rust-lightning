@@ -15,66 +15,75 @@
 
 use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::{Builder, ScriptBuf};
-use bitcoin::blockdata::opcodes;
 use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::blockdata::opcodes;
+use bitcoin::blockdata::script::{Builder, ScriptBuf};
+use bitcoin::blockdata::transaction::{Transaction, TxOut};
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::Network;
 use bitcoin::transaction::Version;
 
-use bitcoin::WPubkeyHash;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::hashes::Hash as _;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
-use bitcoin::hash_types::{Txid, BlockHash};
+use bitcoin::hashes::Hash as _;
+use bitcoin::WPubkeyHash;
 
-use lightning::blinded_path::BlindedPath;
 use lightning::blinded_path::payment::ReceiveTlvs;
+use lightning::blinded_path::BlindedPath;
 use lightning::chain;
-use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator};
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
-use lightning::sign::{InMemorySigner, Recipient, KeyMaterial, EntropySource, NodeSigner, SignerProvider};
+use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::events::Event;
-use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::ln::channel_state::ChannelDetails;
-use lightning::ln::channelmanager::{ChainParameters, ChannelManager, PaymentId, RecipientOnionFields, Retry, InterceptId};
-use lightning::ln::peer_handler::{MessageHandler,PeerManager,SocketDescriptor,IgnoringMessageHandler};
-use lightning::ln::msgs::{self, DecodeError};
-use lightning::ln::script::ShutdownScript;
+use lightning::ln::channelmanager::{
+	ChainParameters, ChannelManager, InterceptId, PaymentId, RecipientOnionFields, Retry,
+};
 use lightning::ln::functional_test_utils::*;
+use lightning::ln::msgs::{self, DecodeError};
+use lightning::ln::peer_handler::{
+	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
+};
+use lightning::ln::script::ShutdownScript;
+use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
-use lightning::routing::gossip::{P2PGossipSync, NetworkGraph};
+use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
+use lightning::routing::router::{
+	InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router,
+};
 use lightning::routing::utxo::UtxoLookup;
-use lightning::routing::router::{InFlightHtlcs, PaymentParameters, Route, RouteParameters, Router};
+use lightning::sign::{
+	EntropySource, InMemorySigner, KeyMaterial, NodeSigner, Recipient, SignerProvider,
+};
 use lightning::util::config::{ChannelConfig, UserConfig};
-use lightning::util::hash_tables::*;
 use lightning::util::errors::APIError;
-use lightning::util::test_channel_signer::{TestChannelSigner, EnforcementState};
+use lightning::util::hash_tables::*;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, ReadableArgs, Writeable};
+use lightning::util::test_channel_signer::{EnforcementState, TestChannelSigner};
 
 use crate::utils::test_logger;
 use crate::utils::test_persister::TestPersister;
 
-use bitcoin::secp256k1::{Message, PublicKey, SecretKey, Scalar, Secp256k1, self};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
+use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use std::cell::RefCell;
-use std::convert::TryInto;
-use std::cmp;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64,AtomicUsize,AtomicBool,Ordering};
 use bech32::u5;
+use std::cell::RefCell;
+use std::cmp;
+use std::convert::TryInto;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 #[inline]
+#[rustfmt::skip]
 pub fn slice_to_be16(v: &[u8]) -> u16 {
 	((v[0] as u16) << 8*1) |
 	((v[1] as u16) << 8*0)
@@ -83,12 +92,13 @@ pub fn slice_to_be16(v: &[u8]) -> u16 {
 #[inline]
 pub fn be16_to_array(u: u16) -> [u8; 2] {
 	let mut v = [0; 2];
-	v[0] = ((u >> 8*1) & 0xff) as u8;
-	v[1] = ((u >> 8*0) & 0xff) as u8;
+	v[0] = ((u >> 8 * 1) & 0xff) as u8;
+	v[1] = ((u >> 8 * 0) & 0xff) as u8;
 	v
 }
 
 #[inline]
+#[rustfmt::skip]
 pub fn slice_to_be24(v: &[u8]) -> u32 {
 	((v[0] as u32) << 8*2) |
 	((v[1] as u32) << 8*1) |
@@ -131,7 +141,7 @@ impl FeeEstimator for FuzzEstimator {
 		//TODO: We should actually be testing at least much more than 64k...
 		match self.input.get_slice(2) {
 			Some(slice) => cmp::max(slice_to_be16(slice) as u32, 253),
-			None => 253
+			None => 253,
 		}
 	}
 }
@@ -140,12 +150,12 @@ struct FuzzRouter {}
 
 impl Router for FuzzRouter {
 	fn find_route(
-		&self, _payer: &PublicKey, _params: &RouteParameters, _first_hops: Option<&[&ChannelDetails]>,
-		_inflight_htlcs: InFlightHtlcs
+		&self, _payer: &PublicKey, _params: &RouteParameters,
+		_first_hops: Option<&[&ChannelDetails]>, _inflight_htlcs: InFlightHtlcs,
 	) -> Result<Route, msgs::LightningError> {
 		Err(msgs::LightningError {
 			err: String::from("Not implemented"),
-			action: msgs::ErrorAction::IgnoreError
+			action: msgs::ErrorAction::IgnoreError,
 		})
 	}
 
@@ -159,7 +169,7 @@ impl Router for FuzzRouter {
 
 impl MessageRouter for FuzzRouter {
 	fn find_path(
-		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination
+		&self, _sender: PublicKey, _peers: Vec<PublicKey>, _destination: Destination,
 	) -> Result<OnionMessagePath, ()> {
 		unreachable!()
 	}
@@ -202,19 +212,52 @@ impl<'a> PartialEq for Peer<'a> {
 }
 impl<'a> Eq for Peer<'a> {}
 impl<'a> std::hash::Hash for Peer<'a> {
-	fn hash<H : std::hash::Hasher>(&self, h: &mut H) {
+	fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
 		self.id.hash(h)
 	}
 }
 
 type ChannelMan<'a> = ChannelManager<
-	Arc<chainmonitor::ChainMonitor<TestChannelSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
-	Arc<TestBroadcaster>, Arc<KeyProvider>, Arc<KeyProvider>, Arc<KeyProvider>, Arc<FuzzEstimator>, &'a FuzzRouter, Arc<dyn Logger>>;
-type PeerMan<'a> = PeerManager<Peer<'a>, Arc<ChannelMan<'a>>, Arc<P2PGossipSync<Arc<NetworkGraph<Arc<dyn Logger>>>, Arc<dyn UtxoLookup>, Arc<dyn Logger>>>, IgnoringMessageHandler, Arc<dyn Logger>, IgnoringMessageHandler, Arc<KeyProvider>>;
+	Arc<
+		chainmonitor::ChainMonitor<
+			TestChannelSigner,
+			Arc<dyn chain::Filter>,
+			Arc<TestBroadcaster>,
+			Arc<FuzzEstimator>,
+			Arc<dyn Logger>,
+			Arc<TestPersister>,
+		>,
+	>,
+	Arc<TestBroadcaster>,
+	Arc<KeyProvider>,
+	Arc<KeyProvider>,
+	Arc<KeyProvider>,
+	Arc<FuzzEstimator>,
+	&'a FuzzRouter,
+	Arc<dyn Logger>,
+>;
+type PeerMan<'a> = PeerManager<
+	Peer<'a>,
+	Arc<ChannelMan<'a>>,
+	Arc<P2PGossipSync<Arc<NetworkGraph<Arc<dyn Logger>>>, Arc<dyn UtxoLookup>, Arc<dyn Logger>>>,
+	IgnoringMessageHandler,
+	Arc<dyn Logger>,
+	IgnoringMessageHandler,
+	Arc<KeyProvider>,
+>;
 
 struct MoneyLossDetector<'a> {
 	manager: Arc<ChannelMan<'a>>,
-	monitor: Arc<chainmonitor::ChainMonitor<TestChannelSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
+	monitor: Arc<
+		chainmonitor::ChainMonitor<
+			TestChannelSigner,
+			Arc<dyn chain::Filter>,
+			Arc<TestBroadcaster>,
+			Arc<FuzzEstimator>,
+			Arc<dyn Logger>,
+			Arc<TestPersister>,
+		>,
+	>,
 	handler: PeerMan<'a>,
 
 	peers: &'a RefCell<[bool; 256]>,
@@ -227,10 +270,20 @@ struct MoneyLossDetector<'a> {
 	error_message: String,
 }
 impl<'a> MoneyLossDetector<'a> {
-	pub fn new(peers: &'a RefCell<[bool; 256]>,
-	           manager: Arc<ChannelMan<'a>>,
-	           monitor: Arc<chainmonitor::ChainMonitor<TestChannelSigner, Arc<dyn chain::Filter>, Arc<TestBroadcaster>, Arc<FuzzEstimator>, Arc<dyn Logger>, Arc<TestPersister>>>,
-	           handler: PeerMan<'a>) -> Self {
+	pub fn new(
+		peers: &'a RefCell<[bool; 256]>, manager: Arc<ChannelMan<'a>>,
+		monitor: Arc<
+			chainmonitor::ChainMonitor<
+				TestChannelSigner,
+				Arc<dyn chain::Filter>,
+				Arc<TestBroadcaster>,
+				Arc<FuzzEstimator>,
+				Arc<dyn Logger>,
+				Arc<TestPersister>,
+			>,
+		>,
+		handler: PeerMan<'a>,
+	) -> Self {
 		MoneyLossDetector {
 			manager,
 			monitor,
@@ -275,14 +328,15 @@ impl<'a> MoneyLossDetector<'a> {
 
 	fn disconnect_block(&mut self) {
 		if self.height > 0 && (self.max_height < 6 || self.height >= self.max_height - 6) {
-			let header = create_dummy_header(self.header_hashes[self.height - 1].0, self.header_hashes[self.height].1);
+			let header = create_dummy_header(
+				self.header_hashes[self.height - 1].0,
+				self.header_hashes[self.height].1,
+			);
 			self.manager.block_disconnected(&header, self.height as u32);
 			self.monitor.block_disconnected(&header, self.height as u32);
 			self.height -= 1;
 			let removal_height = self.height;
-			self.txids_confirmed.retain(|_, height| {
-				removal_height != *height
-			});
+			self.txids_confirmed.retain(|_, height| removal_height != *height);
 		}
 	}
 }
@@ -293,12 +347,14 @@ impl<'a> Drop for MoneyLossDetector<'a> {
 			// Disconnect all peers
 			for (idx, peer) in self.peers.borrow().iter().enumerate() {
 				if *peer {
-					self.handler.socket_disconnected(&Peer{id: idx as u8, peers_connected: &self.peers});
+					self.handler
+						.socket_disconnected(&Peer { id: idx as u8, peers_connected: &self.peers });
 				}
 			}
 
 			// Force all channels onto the chain (and time out claim txn)
-			self.manager.force_close_all_channels_broadcasting_latest_txn(self.error_message.to_string());
+			self.manager
+				.force_close_all_channels_broadcasting_latest_txn(self.error_message.to_string());
 		}
 	}
 }
@@ -307,14 +363,17 @@ struct KeyProvider {
 	node_secret: SecretKey,
 	inbound_payment_key: KeyMaterial,
 	counter: AtomicU64,
-	signer_state: RefCell<HashMap<u8, (bool, Arc<Mutex<EnforcementState>>)>>
+	signer_state: RefCell<HashMap<u8, (bool, Arc<Mutex<EnforcementState>>)>>,
 }
 
 impl EntropySource for KeyProvider {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed);
-		[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8, (ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8]
+		#[rustfmt::skip]
+		let random_bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			(ctr >> 8*7) as u8, (ctr >> 8*6) as u8, (ctr >> 8*5) as u8, (ctr >> 8*4) as u8,
+			(ctr >> 8*3) as u8, (ctr >> 8*2) as u8, (ctr >> 8*1) as u8, 14, (ctr >> 8*0) as u8];
+		random_bytes
 	}
 }
 
@@ -322,15 +381,17 @@ impl NodeSigner for KeyProvider {
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		let node_secret = match recipient {
 			Recipient::Node => Ok(&self.node_secret),
-			Recipient::PhantomNode => Err(())
+			Recipient::PhantomNode => Err(()),
 		}?;
 		Ok(PublicKey::from_secret_key(&Secp256k1::signing_only(), node_secret))
 	}
 
-	fn ecdh(&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>) -> Result<SharedSecret, ()> {
+	fn ecdh(
+		&self, recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>,
+	) -> Result<SharedSecret, ()> {
 		let mut node_secret = match recipient {
 			Recipient::Node => Ok(self.node_secret.clone()),
-			Recipient::PhantomNode => Err(())
+			Recipient::PhantomNode => Err(()),
 		}?;
 		if let Some(tweak) = tweak {
 			node_secret = node_secret.mul_tweak(tweak).map_err(|_| ())?;
@@ -342,12 +403,14 @@ impl NodeSigner for KeyProvider {
 		self.inbound_payment_key.clone()
 	}
 
-	fn sign_invoice(&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(
+		&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient,
+	) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}
 
 	fn sign_bolt12_invoice_request(
-		&self, _invoice_request: &UnsignedInvoiceRequest
+		&self, _invoice_request: &UnsignedInvoiceRequest,
 	) -> Result<schnorr::Signature, ()> {
 		unreachable!()
 	}
@@ -358,7 +421,9 @@ impl NodeSigner for KeyProvider {
 		unreachable!()
 	}
 
-	fn sign_gossip_message(&self, msg: lightning::ln::msgs::UnsignedGossipMessage) -> Result<Signature, ()> {
+	fn sign_gossip_message(
+		&self, msg: lightning::ln::msgs::UnsignedGossipMessage,
+	) -> Result<Signature, ()> {
 		let msg_hash = Message::from_digest(Sha256dHash::hash(&msg.encode()[..]).to_byte_array());
 		let secp_ctx = Secp256k1::signing_only();
 		Ok(secp_ctx.sign_ecdsa(&msg_hash, &self.node_secret))
@@ -370,74 +435,144 @@ impl SignerProvider for KeyProvider {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(&self, inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
+	fn generate_channel_keys_id(
+		&self, inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
+	) -> [u8; 32] {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
-		self.signer_state.borrow_mut().insert(ctr, (inbound, Arc::new(Mutex::new(EnforcementState::new()))));
+		self.signer_state
+			.borrow_mut()
+			.insert(ctr, (inbound, Arc::new(Mutex::new(EnforcementState::new()))));
 		[ctr; 32]
 	}
 
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
+	fn derive_channel_signer(
+		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+	) -> Self::EcdsaSigner {
 		let secp_ctx = Secp256k1::signing_only();
 		let ctr = channel_keys_id[0];
 		let (inbound, state) = self.signer_state.borrow().get(&ctr).unwrap().clone();
-		TestChannelSigner::new_with_revoked(if inbound {
-			InMemorySigner::new(
-				&secp_ctx,
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, ctr]).unwrap(),
-				[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, ctr],
-				channel_value_satoshis,
-				channel_keys_id,
-				channel_keys_id,
-			)
-		} else {
-			InMemorySigner::new(
-				&secp_ctx,
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, ctr]).unwrap(),
-				SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 11, ctr]).unwrap(),
-				[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 12, ctr],
-				channel_value_satoshis,
-				channel_keys_id,
-				channel_keys_id,
-			)
-		}, state, false)
+		TestChannelSigner::new_with_revoked(
+			if inbound {
+				InMemorySigner::new(
+					&secp_ctx,
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 1, ctr,
+					])
+					.unwrap(),
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 2, ctr,
+					])
+					.unwrap(),
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 3, ctr,
+					])
+					.unwrap(),
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 4, ctr,
+					])
+					.unwrap(),
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 5, ctr,
+					])
+					.unwrap(),
+					[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 6, ctr,
+					],
+					channel_value_satoshis,
+					channel_keys_id,
+					channel_keys_id,
+				)
+			} else {
+				InMemorySigner::new(
+					&secp_ctx,
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 7, ctr,
+					])
+					.unwrap(),
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 8, ctr,
+					])
+					.unwrap(),
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 9, ctr,
+					])
+					.unwrap(),
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 10, ctr,
+					])
+					.unwrap(),
+					SecretKey::from_slice(&[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 11, ctr,
+					])
+					.unwrap(),
+					[
+						0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+						0, 0, 0, 0, 0, 12, ctr,
+					],
+					channel_value_satoshis,
+					channel_keys_id,
+					channel_keys_id,
+				)
+			},
+			state,
+			false,
+		)
 	}
 
 	fn read_chan_signer(&self, mut data: &[u8]) -> Result<TestChannelSigner, DecodeError> {
 		let inner: InMemorySigner = ReadableArgs::read(&mut data, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
-		Ok(TestChannelSigner::new_with_revoked(
-			inner,
-			state,
-			false
-		))
+		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
 		let secp_ctx = Secp256k1::signing_only();
-		let channel_monitor_claim_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
-		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());
-		Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(our_channel_monitor_claim_key_hash).into_script())
+		let channel_monitor_claim_key = SecretKey::from_slice(
+			&<Vec<u8>>::from_hex(
+				"0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+			)
+			.unwrap()[..],
+		)
+		.unwrap();
+		let our_channel_monitor_claim_key_hash = WPubkeyHash::hash(
+			&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize(),
+		);
+		Ok(Builder::new()
+			.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+			.push_slice(our_channel_monitor_claim_key_hash)
+			.into_script())
 	}
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		let secp_ctx = Secp256k1::signing_only();
-		let secret_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).unwrap();
-		let pubkey_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
+		let secret_key = SecretKey::from_slice(&[
+			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 1,
+		])
+		.unwrap();
+		let pubkey_hash =
+			WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &secret_key).serialize());
 		Ok(ShutdownScript::new_p2wpkh(&pubkey_hash))
 	}
 }
 
 #[inline]
 pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
-	if data.len() < 32 { return; }
+	if data.len() < 32 {
+		return;
+	}
 
 	let our_network_key = match SecretKey::from_slice(&data[..32]) {
 		Ok(key) => key,
@@ -445,16 +580,18 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	};
 	data = &data[32..];
 
-	let config: UserConfig = if let Ok(config) = Readable::read(&mut data) { config } else { return; };
+	let config: UserConfig = if let Ok(config) = Readable::read(&mut data) {
+		config
+	} else {
+		return;
+	};
 
 	let input = Arc::new(InputData {
 		data: data.to_vec(),
 		read_pos: AtomicUsize::new(0),
 		halt_fee_est_reads: AtomicBool::new(false),
 	});
-	let fee_est = Arc::new(FuzzEstimator {
-		input: input.clone(),
-	});
+	let fee_est = Arc::new(FuzzEstimator { input: input.clone() });
 	let router = FuzzRouter {};
 
 	macro_rules! get_slice {
@@ -463,18 +600,18 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				Some(slice) => slice,
 				None => return,
 			}
-		}
+		};
 	}
 
 	macro_rules! get_bytes {
-		($len: expr) => { {
+		($len: expr) => {{
 			let mut res = [0; $len];
 			match input.get_slice($len as usize) {
 				Some(slice) => res.copy_from_slice(slice),
 				None => return,
 			}
 			res
-		} }
+		}};
 	}
 
 	macro_rules! get_pubkey {
@@ -483,43 +620,73 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				Ok(key) => key,
 				Err(_) => return,
 			}
-		}
+		};
 	}
 
+	let inbound_payment_key = [
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0, 42,
+	];
 
-	let inbound_payment_key = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42];
-
-	let broadcast = Arc::new(TestBroadcaster{ txn_broadcasted: Mutex::new(Vec::new()) });
-	let monitor = Arc::new(chainmonitor::ChainMonitor::new(None, broadcast.clone(), Arc::clone(&logger), fee_est.clone(),
-		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) })));
+	let broadcast = Arc::new(TestBroadcaster { txn_broadcasted: Mutex::new(Vec::new()) });
+	let monitor = Arc::new(chainmonitor::ChainMonitor::new(
+		None,
+		broadcast.clone(),
+		Arc::clone(&logger),
+		fee_est.clone(),
+		Arc::new(TestPersister { update_ret: Mutex::new(ChannelMonitorUpdateStatus::Completed) }),
+	));
 
 	let keys_manager = Arc::new(KeyProvider {
 		node_secret: our_network_key.clone(),
 		inbound_payment_key: KeyMaterial(inbound_payment_key.try_into().unwrap()),
 		counter: AtomicU64::new(0),
-		signer_state: RefCell::new(new_hash_map())
+		signer_state: RefCell::new(new_hash_map()),
 	});
 	let network = Network::Bitcoin;
 	let best_block_timestamp = genesis_block(network).header.time;
-	let params = ChainParameters {
-		network,
-		best_block: BestBlock::from_network(network),
-	};
-	let channelmanager = Arc::new(ChannelManager::new(fee_est.clone(), monitor.clone(), broadcast.clone(), &router, Arc::clone(&logger), keys_manager.clone(), keys_manager.clone(), keys_manager.clone(), config, params, best_block_timestamp));
+	let params = ChainParameters { network, best_block: BestBlock::from_network(network) };
+	let channelmanager = Arc::new(ChannelManager::new(
+		fee_est.clone(),
+		monitor.clone(),
+		broadcast.clone(),
+		&router,
+		Arc::clone(&logger),
+		keys_manager.clone(),
+		keys_manager.clone(),
+		keys_manager.clone(),
+		config,
+		params,
+		best_block_timestamp,
+	));
 	// Adding new calls to `EntropySource::get_secure_random_bytes` during startup can change all the
 	// keys subsequently generated in this test. Rather than regenerating all the messages manually,
 	// it's easier to just increment the counter here so the keys don't change.
 	keys_manager.counter.fetch_sub(3, Ordering::AcqRel);
 	let network_graph = Arc::new(NetworkGraph::new(network, Arc::clone(&logger)));
-	let gossip_sync = Arc::new(P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger)));
+	let gossip_sync =
+		Arc::new(P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger)));
 
 	let peers = RefCell::new([false; 256]);
-	let mut loss_detector = MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), PeerManager::new(MessageHandler {
+	let message_handler = MessageHandler {
 		chan_handler: channelmanager.clone(),
 		route_handler: gossip_sync.clone(),
 		onion_message_handler: IgnoringMessageHandler {},
 		custom_message_handler: IgnoringMessageHandler {},
-	}, 0, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 0], Arc::clone(&logger), keys_manager.clone()));
+	};
+	let random_data = [
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		15, 0,
+	];
+	let peer_manager = PeerManager::new(
+		message_handler,
+		0,
+		&random_data,
+		Arc::clone(&logger),
+		keys_manager.clone(),
+	);
+	let mut loss_detector =
+		MoneyLossDetector::new(&peers, channelmanager.clone(), monitor.clone(), peer_manager);
 
 	let mut should_forward = false;
 	let mut payments_received: Vec<PaymentHash> = Vec::new();
@@ -533,60 +700,81 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			0 => {
 				let mut new_id = 0;
 				for i in 1..256 {
-					if !peers.borrow()[i-1] {
+					if !peers.borrow()[i - 1] {
 						new_id = i;
 						break;
 					}
 				}
-				if new_id == 0 { return; }
-				loss_detector.handler.new_outbound_connection(get_pubkey!(), Peer{id: (new_id - 1) as u8, peers_connected: &peers}, None).unwrap();
+				if new_id == 0 {
+					return;
+				}
+				let peer = Peer { id: (new_id - 1) as u8, peers_connected: &peers };
+				loss_detector.handler.new_outbound_connection(get_pubkey!(), peer, None).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
 			},
 			1 => {
 				let mut new_id = 0;
 				for i in 1..256 {
-					if !peers.borrow()[i-1] {
+					if !peers.borrow()[i - 1] {
 						new_id = i;
 						break;
 					}
 				}
-				if new_id == 0 { return; }
-				loss_detector.handler.new_inbound_connection(Peer{id: (new_id - 1) as u8, peers_connected: &peers}, None).unwrap();
+				if new_id == 0 {
+					return;
+				}
+				let peer = Peer { id: (new_id - 1) as u8, peers_connected: &peers };
+				loss_detector.handler.new_inbound_connection(peer, None).unwrap();
 				peers.borrow_mut()[new_id - 1] = true;
 			},
 			2 => {
 				let peer_id = get_slice!(1)[0];
-				if !peers.borrow()[peer_id as usize] { return; }
-				loss_detector.handler.socket_disconnected(&Peer{id: peer_id, peers_connected: &peers});
+				if !peers.borrow()[peer_id as usize] {
+					return;
+				}
+				let peer = Peer { id: peer_id, peers_connected: &peers };
+				loss_detector.handler.socket_disconnected(&peer);
 				peers.borrow_mut()[peer_id as usize] = false;
 			},
 			3 => {
 				let peer_id = get_slice!(1)[0];
-				if !peers.borrow()[peer_id as usize] { return; }
-				match loss_detector.handler.read_event(&mut Peer{id: peer_id, peers_connected: &peers}, get_slice!(get_slice!(1)[0])) {
+				if !peers.borrow()[peer_id as usize] {
+					return;
+				}
+				let mut peer = Peer { id: peer_id, peers_connected: &peers };
+				match loss_detector.handler.read_event(&mut peer, get_slice!(get_slice!(1)[0])) {
 					Ok(res) => assert!(!res),
-					Err(_) => { peers.borrow_mut()[peer_id as usize] = false; }
+					Err(_) => {
+						peers.borrow_mut()[peer_id as usize] = false;
+					},
 				}
 			},
 			4 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
 				let payment_params = PaymentParameters::from_node_id(get_pubkey!(), 42);
 				let params = RouteParameters::from_payment_params_and_value(
-					payment_params, final_value_msat);
+					payment_params,
+					final_value_msat,
+				);
 				let mut payment_hash = PaymentHash([0; 32]);
 				payment_hash.0[0..2].copy_from_slice(&be16_to_array(payments_sent));
 				payment_hash.0 = Sha256::hash(&payment_hash.0[..]).to_byte_array();
 				payments_sent += 1;
 				let _ = channelmanager.send_payment(
-					payment_hash, RecipientOnionFields::spontaneous_empty(),
-					PaymentId(payment_hash.0), params, Retry::Attempts(2)
+					payment_hash,
+					RecipientOnionFields::spontaneous_empty(),
+					PaymentId(payment_hash.0),
+					params,
+					Retry::Attempts(2),
 				);
 			},
 			15 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
 				let payment_params = PaymentParameters::from_node_id(get_pubkey!(), 42);
 				let params = RouteParameters::from_payment_params_and_value(
-					payment_params, final_value_msat);
+					payment_params,
+					final_value_msat,
+				);
 				let mut payment_hash = PaymentHash([0; 32]);
 				payment_hash.0[0..2].copy_from_slice(&be16_to_array(payments_sent));
 				payment_hash.0 = Sha256::hash(&payment_hash.0[..]).to_byte_array();
@@ -595,15 +783,20 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				payment_secret.0[0..2].copy_from_slice(&be16_to_array(payments_sent));
 				payments_sent += 1;
 				let _ = channelmanager.send_payment(
-					payment_hash, RecipientOnionFields::secret_only(payment_secret),
-					PaymentId(payment_hash.0), params, Retry::Attempts(2)
+					payment_hash,
+					RecipientOnionFields::secret_only(payment_secret),
+					PaymentId(payment_hash.0),
+					params,
+					Retry::Attempts(2),
 				);
 			},
 			17 => {
 				let final_value_msat = slice_to_be24(get_slice!(3)) as u64;
 				let payment_params = PaymentParameters::from_node_id(get_pubkey!(), 42);
 				let params = RouteParameters::from_payment_params_and_value(
-					payment_params, final_value_msat);
+					payment_params,
+					final_value_msat,
+				);
 				let _ = channelmanager.send_preflight_probes(params, None);
 			},
 			18 => {
@@ -614,18 +807,35 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			5 => {
 				let peer_id = get_slice!(1)[0];
-				if !peers.borrow()[peer_id as usize] { return; }
+				if !peers.borrow()[peer_id as usize] {
+					return;
+				}
 				let their_key = get_pubkey!();
 				let chan_value = slice_to_be24(get_slice!(3)) as u64;
 				let push_msat_value = slice_to_be24(get_slice!(3)) as u64;
-				if channelmanager.create_channel(their_key, chan_value, push_msat_value, 0, None, None).is_err() { return; }
+				if channelmanager
+					.create_channel(their_key, chan_value, push_msat_value, 0, None, None)
+					.is_err()
+				{
+					return;
+				}
 			},
 			6 => {
 				let mut channels = channelmanager.list_channels();
 				let channel_id = get_slice!(1)[0] as usize;
-				if channel_id >= channels.len() { return; }
-				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
-				if channelmanager.close_channel(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id).is_err() { return; }
+				if channel_id >= channels.len() {
+					return;
+				}
+				channels.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
+				if channelmanager
+					.close_channel(
+						&channels[channel_id].channel_id,
+						&channels[channel_id].counterparty.node_id,
+					)
+					.is_err()
+				{
+					return;
+				}
 			},
 			7 => {
 				if should_forward {
@@ -650,7 +860,8 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			16 => {
 				let payment_preimage = PaymentPreimage(keys_manager.get_secure_random_bytes());
-				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
+				let payment_hash =
+					PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 				// Note that this may fail - our hashes may collide and we'll end up trying to
 				// double-register the same payment_hash.
 				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1, None);
@@ -661,11 +872,17 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 			},
 			10 => {
-				let mut tx = Transaction { version: Version(0), lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+				let mut tx = Transaction {
+					version: Version(0),
+					lock_time: LockTime::ZERO,
+					input: Vec::new(),
+					output: Vec::new(),
+				};
 				let mut channels = Vec::new();
 				for funding_generation in pending_funding_generation.drain(..) {
 					let txout = TxOut {
-						value: Amount::from_sat(funding_generation.2), script_pubkey: funding_generation.3,
+						value: Amount::from_sat(funding_generation.2),
+						script_pubkey: funding_generation.3,
 					};
 					if !tx.output.contains(&txout) {
 						tx.output.push(txout);
@@ -693,10 +910,15 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				}
 				if tx.version.0 <= 0xff && !channels.is_empty() {
 					let chans = channels.iter().map(|(a, b)| (a, b)).collect::<Vec<_>>();
-					if let Err(e) = channelmanager.batch_funding_transaction_generated(&chans, tx.clone()) {
+					if let Err(e) =
+						channelmanager.batch_funding_transaction_generated(&chans, tx.clone())
+					{
 						// It's possible the channel has been closed in the mean time, but any other
 						// failure may be a bug.
-						if let APIError::ChannelUnavailable { .. } = e { } else { panic!(); }
+						if let APIError::ChannelUnavailable { .. } = e {
+						} else {
+							panic!();
+						}
 					}
 					let funding_txid = tx.txid();
 					for idx in 0..tx.output.len() {
@@ -728,9 +950,13 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 					if let Ok(tx) = txres {
 						let mut output_val = Amount::ZERO;
 						for out in tx.output.iter() {
-							if out.value > Amount::MAX_MONEY { return; }
+							if out.value > Amount::MAX_MONEY {
+								return;
+							}
 							output_val += out.value;
-							if output_val > Amount::MAX_MONEY { return; }
+							if output_val > Amount::MAX_MONEY {
+								return;
+							}
 						}
 						loss_detector.connect_block(&[tx]);
 					} else {
@@ -745,9 +971,17 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 				let mut channels = channelmanager.list_channels();
 				let channel_id = get_slice!(1)[0] as usize;
 				let error_message = "Channel force-closed";
-				if channel_id >= channels.len() { return; }
-				channels.sort_by(|a, b| { a.channel_id.cmp(&b.channel_id) });
-				channelmanager.force_close_broadcasting_latest_txn(&channels[channel_id].channel_id, &channels[channel_id].counterparty.node_id, error_message.to_string()).unwrap();
+				if channel_id >= channels.len() {
+					return;
+				}
+				channels.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
+				channelmanager
+					.force_close_broadcasting_latest_txn(
+						&channels[channel_id].channel_id,
+						&channels[channel_id].counterparty.node_id,
+						error_message.to_string(),
+					)
+					.unwrap();
 			},
 			// 15, 16, 17, 18 is above
 			19 => {
@@ -759,14 +993,13 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 			},
 			20 => loss_detector.handler.disconnect_all_peers(),
 			21 => loss_detector.handler.timer_tick_occurred(),
-			22 =>
-				loss_detector.handler.broadcast_node_announcement([42; 3], [43; 32], Vec::new()),
+			22 => loss_detector.handler.broadcast_node_announcement([42; 3], [43; 32], Vec::new()),
 			32 => channelmanager.timer_tick_occurred(),
 			33 => {
 				for id in intercepted_htlcs.drain(..) {
 					channelmanager.fail_intercepted_htlc(id).unwrap();
 				}
-			}
+			},
 			34 => {
 				let amt = u64::from_be_bytes(get_bytes!(8));
 				let chans = channelmanager.list_channels();
@@ -775,33 +1008,56 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 						channelmanager.fail_intercepted_htlc(id).unwrap();
 					} else {
 						let chan = &chans[amt as usize % chans.len()];
-						channelmanager.forward_intercepted_htlc(id, &chan.channel_id, chan.counterparty.node_id, amt).unwrap();
+						channelmanager
+							.forward_intercepted_htlc(
+								id,
+								&chan.channel_id,
+								chan.counterparty.node_id,
+								amt,
+							)
+							.unwrap();
 					}
 				}
-			}
+			},
 			35 => {
-				let config: ChannelConfig =
-					if let Ok(c) = Readable::read(&mut &*input) { c } else { return; };
+				let config: ChannelConfig = if let Ok(c) = Readable::read(&mut &*input) {
+					c
+				} else {
+					return;
+				};
 				let chans = channelmanager.list_channels();
 				if let Some(chan) = chans.get(0) {
 					let _ = channelmanager.update_channel_config(
-						&chan.counterparty.node_id, &[chan.channel_id], &config
+						&chan.counterparty.node_id,
+						&[chan.channel_id],
+						&config,
 					);
 				}
-			}
+			},
 			_ => return,
 		}
 		loss_detector.handler.process_events();
 		for event in loss_detector.manager.get_and_clear_pending_events() {
 			match event {
-				Event::FundingGenerationReady { temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script, .. } => {
-					pending_funding_generation.push((temporary_channel_id, counterparty_node_id, channel_value_satoshis, output_script));
+				Event::FundingGenerationReady {
+					temporary_channel_id,
+					counterparty_node_id,
+					channel_value_satoshis,
+					output_script,
+					..
+				} => {
+					pending_funding_generation.push((
+						temporary_channel_id,
+						counterparty_node_id,
+						channel_value_satoshis,
+						output_script,
+					));
 				},
 				Event::PaymentClaimable { payment_hash, .. } => {
 					//TODO: enhance by fetching random amounts from fuzz input?
 					payments_received.push(payment_hash);
 				},
-				Event::PendingHTLCsForwardable {..} => {
+				Event::PendingHTLCsForwardable { .. } => {
 					should_forward = true;
 				},
 				Event::HTLCIntercepted { intercept_id, .. } => {
@@ -822,7 +1078,8 @@ pub fn full_stack_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 #[no_mangle]
 pub extern "C" fn full_stack_run(data: *const u8, datalen: usize) {
-	let logger: Arc<dyn Logger> = Arc::new(test_logger::TestLogger::new("".to_owned(), test_logger::DevNull {}));
+	let logger: Arc<dyn Logger> =
+		Arc::new(test_logger::TestLogger::new("".to_owned(), test_logger::DevNull {}));
 	do_test(unsafe { std::slice::from_raw_parts(data, datalen) }, &logger);
 }
 
@@ -839,8 +1096,20 @@ mod tests {
 	}
 	impl Logger for TrackingLogger {
 		fn log(&self, record: Record) {
-			*self.lines.lock().unwrap().entry((record.module_path.to_string(), format!("{}", record.args))).or_insert(0) += 1;
-			println!("{:<5} [{} : {}, {}] {}", record.level.to_string(), record.module_path, record.file, record.line, record.args);
+			*self
+				.lines
+				.lock()
+				.unwrap()
+				.entry((record.module_path.to_string(), format!("{}", record.args)))
+				.or_insert(0) += 1;
+			println!(
+				"{:<5} [{} : {}, {}] {}",
+				record.level.to_string(),
+				record.module_path,
+				record.file,
+				record.line,
+				record.args
+			);
 		}
 	}
 
@@ -875,7 +1144,10 @@ mod tests {
 		// new outbound connection with id 0
 		ext_from_hex("00", &mut test);
 		// peer's pubkey
-		ext_from_hex("030000000000000000000000000000000000000000000000000000000000000002", &mut test);
+		ext_from_hex(
+			"030000000000000000000000000000000000000000000000000000000000000002",
+			&mut test,
+		);
 		// inbound read from peer id 0 of len 50
 		ext_from_hex("030032", &mut test);
 		// noise act two (0||pubkey||mac)
@@ -888,7 +1160,10 @@ mod tests {
 		// inbound read from peer id 0 of len 32
 		ext_from_hex("030020", &mut test);
 		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-		ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 03000000000000000000000000000000", &mut test);
+		ext_from_hex(
+			"0010 00021aaa 0008aaa20aaa2a0a9aaa 03000000000000000000000000000000",
+			&mut test,
+		);
 
 		// inbound read from peer id 0 of len 18
 		ext_from_hex("030012", &mut test);
@@ -921,32 +1196,45 @@ mod tests {
 		ext_from_hex("0c005e", &mut test);
 		// the funding transaction
 		ext_from_hex("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0150c3000000000000220020ae0000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions, one per line
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// by now client should have sent a channel_ready (CHECK 3: SendChannelReady to 03000000 for chan 3d000000)
 
 		// inbound read from peer id 0 of len 18
@@ -976,7 +1264,10 @@ mod tests {
 		// inbound read from peer id 1 of len 32
 		ext_from_hex("030120", &mut test);
 		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-		ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 01000000000000000000000000000000", &mut test);
+		ext_from_hex(
+			"0010 00021aaa 0008aaa20aaa2a0a9aaa 01000000000000000000000000000000",
+			&mut test,
+		);
 
 		// create outbound channel to peer 1 for 50k sat
 		ext_from_hex("05 01 030200000000000000000000000000000000000000000000000000000000000000 00c350 0003e8", &mut test);
@@ -994,7 +1285,10 @@ mod tests {
 		// inbound read from peer id 1 of len 35
 		ext_from_hex("030123", &mut test);
 		// rest of accept_channel and mac
-		ext_from_hex("0000000000000000000000000000000000 0000 01000000000000000000000000000000", &mut test);
+		ext_from_hex(
+			"0000000000000000000000000000000000 0000 01000000000000000000000000000000",
+			&mut test,
+		);
 
 		// create the funding transaction (client should send funding_created now)
 		ext_from_hex("0a", &mut test);
@@ -1316,28 +1610,35 @@ mod tests {
 		ext_from_hex("0c007d", &mut test);
 		// the commitment transaction for channel 3f00000000000000000000000000000000000000000000000000000000000000
 		ext_from_hex("02000000013a000000000000000000000000000000000000000000000000000000000000000000000000000000800258020000000000002200204b0000000000000000000000000000000000000000000000000000000000000014c0000000000000160014280000000000000000000000000000000000000005000020", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		//
 		// connect a block with one transaction of len 94
 		ext_from_hex("0c005e", &mut test);
 		// the HTLC timeout transaction
 		ext_from_hex("0200000001730000000000000000000000000000000000000000000000000000000000000000000000000000000001a701000000000000220020b20000000000000000000000000000000000000000000000000000000000000000000000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 		// connect a block with no transactions
 		ext_from_hex("0c0000", &mut test);
-		ext_from_hex("00fd00fd", &mut test); // Two feerate requests during block connection
+		// Two feerate requests during block connection
+		ext_from_hex("00fd00fd", &mut test);
 
 		// process the now-pending HTLC forward
 		ext_from_hex("07", &mut test);
@@ -1347,16 +1648,26 @@ mod tests {
 		super::do_test(&test, &(Arc::clone(&logger) as Arc<dyn Logger>));
 
 		let log_entries = logger.lines.lock().unwrap();
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1)); // 1
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingSigned event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 2
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 3
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel 3a00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 4
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendRevokeAndACK event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&4)); // 5
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3)); // 6
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 adds, 0 fulfills, 0 fails for channel 3a00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3)); // 7
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 1 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1)); // 8
-		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 1 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2)); // 9
-		assert_eq!(log_entries.get(&("lightning::chain::channelmonitor".to_string(), "Input spending counterparty commitment tx (0000000000000000000000000000000000000000000000000000000000000073:0) in 0000000000000000000000000000000000000000000000000000000000000067 resolves outbound HTLC with payment hash ff00000000000000000000000000000000000000000000000000000000000000 with timeout".to_string())), Some(&1)); // 10
+		// 1
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendAcceptChannel event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel ff4f00f805273c1b203bb5ebf8436bfde57b3be8c2f5e95d9491dbb181909679".to_string())), Some(&1));
+		// 2
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendFundingSigned event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		// 3
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		// 4
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendChannelReady event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 for channel 3a00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		// 5
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendRevokeAndACK event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&4));
+		// 6
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
+		// 7
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030200000000000000000000000000000000000000000000000000000000000000 with 1 adds, 0 fulfills, 0 fails for channel 3a00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&3));
+		// 8
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 1 fulfills, 0 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
+		// 9
+		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling UpdateHTLCs event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 with 0 adds, 0 fulfills, 1 fails for channel 3d00000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&2));
+		// 10
+		assert_eq!(log_entries.get(&("lightning::chain::channelmonitor".to_string(), "Input spending counterparty commitment tx (0000000000000000000000000000000000000000000000000000000000000073:0) in 0000000000000000000000000000000000000000000000000000000000000067 resolves outbound HTLC with payment hash ff00000000000000000000000000000000000000000000000000000000000000 with timeout".to_string())), Some(&1));
 	}
 
 	#[test]
@@ -1388,7 +1699,10 @@ mod tests {
 		// new outbound connection with id 0
 		ext_from_hex("00", &mut test);
 		// peer's pubkey
-		ext_from_hex("030000000000000000000000000000000000000000000000000000000000000002", &mut test);
+		ext_from_hex(
+			"030000000000000000000000000000000000000000000000000000000000000002",
+			&mut test,
+		);
 		// inbound read from peer id 0 of len 50
 		ext_from_hex("030032", &mut test);
 		// noise act two (0||pubkey||mac)
@@ -1401,7 +1715,10 @@ mod tests {
 		// inbound read from peer id 0 of len 32
 		ext_from_hex("030020", &mut test);
 		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-		ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 03000000000000000000000000000000", &mut test);
+		ext_from_hex(
+			"0010 00021aaa 0008aaa20aaa2a0a9aaa 03000000000000000000000000000000",
+			&mut test,
+		);
 
 		// new inbound connection with id 1
 		ext_from_hex("01", &mut test);
@@ -1421,7 +1738,10 @@ mod tests {
 		// inbound read from peer id 1 of len 32
 		ext_from_hex("030120", &mut test);
 		// init message (type 16) with static_remotekey required, no channel_type/anchors/taproot, and other bits optional and mac
-		ext_from_hex("0010 00021aaa 0008aaa20aaa2a0a9aaa 01000000000000000000000000000000", &mut test);
+		ext_from_hex(
+			"0010 00021aaa 0008aaa20aaa2a0a9aaa 01000000000000000000000000000000",
+			&mut test,
+		);
 
 		// inbound read from peer id 0 of len 18
 		ext_from_hex("030012", &mut test);
