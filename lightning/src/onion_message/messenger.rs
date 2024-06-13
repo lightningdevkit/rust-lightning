@@ -24,7 +24,9 @@ use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};
-use super::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler};
+use super::async_payments::AsyncPaymentsMessageHandler;
+#[cfg(async_payments)]
+use super::async_payments::AsyncPaymentsMessage;
 use super::packet::OnionMessageContents;
 use super::packet::ParsedOnionMessageContents;
 use super::offers::OffersMessageHandler;
@@ -254,6 +256,7 @@ pub struct OnionMessenger<
 	node_id_lookup: NL,
 	message_router: MR,
 	offers_handler: OMH,
+	#[allow(unused)]
 	async_payments_handler: APH,
 	custom_handler: CMH,
 	intercept_messages_for_offline_peers: bool,
@@ -1444,12 +1447,14 @@ where
 						let response_instructions = self.offers_handler.handle_message(msg, responder);
 						let _ = self.handle_onion_message_response(response_instructions);
 					},
+					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::HeldHtlcAvailable(msg)) => {
 						let response_instructions = self.async_payments_handler.held_htlc_available(
 							msg, responder
 						);
 						let _ = self.handle_onion_message_response(response_instructions);
 					},
+					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::ReleaseHeldHtlc(msg)) => {
 						self.async_payments_handler.release_held_htlc(msg);
 					},

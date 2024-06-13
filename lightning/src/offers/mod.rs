@@ -24,7 +24,7 @@ pub mod parse;
 mod payer;
 pub mod refund;
 pub(crate) mod signer;
-#[allow(unused)]
-pub(crate) mod static_invoice;
+#[cfg(async_payments)]
+pub mod static_invoice;
 #[cfg(test)]
 pub(crate) mod test_utils;

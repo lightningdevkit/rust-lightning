@@ -10337,6 +10337,7 @@ where
 					},
 				}
 			},
+			#[cfg(async_payments)]
 			OffersMessage::StaticInvoice(_invoice) => {
 				match responder {
 					Some(responder) => {

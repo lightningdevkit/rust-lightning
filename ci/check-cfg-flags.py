@@ -104,6 +104,8 @@ def check_cfg_tag(cfg):
         pass
     elif cfg == "splicing":
         pass
+    elif cfg == "async_payments":
+        pass
     else:
         print("Bad cfg tag: " + cfg)
         assert False
