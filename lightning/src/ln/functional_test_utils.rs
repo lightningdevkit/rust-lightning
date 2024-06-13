@@ -11,7 +11,7 @@
 //! nodes for functional tests.
 
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
-use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
@@ -630,6 +630,10 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			if !events.is_empty() {
 				panic!("Had excess events on node {}: {:?}", self.logger.id, events);
 			}
+			// let monitor_events = self.chain_monitor.chain_monitor.get_and_clear_pending_events();
+			// if !monitor_events.is_empty() {
+			// 	panic!("Had excess events on ChannelMonitor {}: {:?}", self.logger.id, monitor_events);
+			// }
 			let added_monitors = self.chain_monitor.added_monitors.lock().unwrap().split_off(0);
 			if !added_monitors.is_empty() {
 				panic!("Had {} excess added monitors on node {}", added_monitors.len(), self.logger.id);
@@ -1077,8 +1081,17 @@ macro_rules! unwrap_send_err {
 /// Check whether N channel monitor(s) have been added.
 pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, count: usize) {
 	if let Some(chain_monitor) = node.chain_monitor() {
-		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap().split_off(0);
 		let n = added_monitors.len();
+		for (_, _, updates_opt) in added_monitors.iter() {
+			if let Some(updates) = updates_opt {
+				for update in updates.updates.iter() {
+					if let ChannelMonitorUpdateStep::CommitmentSecret { .. } = update {
+						assert_eq!(chain_monitor.chain_monitor.free_claim_info_events().len(), 1);
+					}
+				}
+			}
+		}
 		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
 		added_monitors.clear();
 	}
@@ -1756,7 +1769,7 @@ macro_rules! check_closed_event {
 }
 
 pub fn handle_bump_htlc_event(node: &Node, count: usize) {
-	let events: Vec<_> = node.chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
+	let events: Vec<_> = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(events.len(), count);
 	for event in events {
 		match event {

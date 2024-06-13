@@ -78,7 +78,7 @@ fn test_monitor_and_persister_update_fail() {
 			let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 				&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
 			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
-			let events: Vec<_> = monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
+			let events = monitor.get_and_clear_pending_events();
 			let new_events = new_monitor.get_and_clear_pending_events();
 			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);

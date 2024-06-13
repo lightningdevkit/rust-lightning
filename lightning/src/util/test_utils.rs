@@ -357,7 +357,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 }
 
 pub struct TestChainMonitor<'a> {
-	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<TestChannelSigner>)>>,
+	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<TestChannelSigner>, Option<channelmonitor::ChannelMonitorUpdate>)>>,
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<channelmonitor::ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (OutPoint, u64, u64)>>,
 	pub chain_monitor: chainmonitor::ChainMonitor<TestChannelSigner, &'a TestChainSource, &'a dyn chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a dyn chainmonitor::Persist<TestChannelSigner>>,
@@ -399,7 +399,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(monitor.channel_id(),
 			(funding_txo, monitor.get_latest_update_id(), monitor.get_latest_update_id()));
-		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
+		self.added_monitors.lock().unwrap().push((funding_txo, monitor, None));
 		self.chain_monitor.watch_channel(funding_txo, new_monitor)
 	}
 
@@ -435,13 +435,12 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			assert_eq!(chan_id, channel_id);
 			assert!(new_monitor != *monitor);
 		} else {
-			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
-			// let events: Vec<_> = monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
-			// let new_events = new_monitor.get_and_clear_pending_events();
-			// assert_eq!(new_events, events);
-			// assert!(new_monitor == *monitor);
+			let expected_monitor = monitor.clone();
+			// Compare without [`Event::PersistClaimInfo`] events since we don't persist them.
+			expected_monitor.free_claim_info_events();
+			assert!(new_monitor == expected_monitor);
 		}
-		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
+		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor, Some(update.clone())));
 		update_res
 	}
 

@@ -96,7 +96,7 @@ fn chanmon_fail_from_stale_commitment() {
 }
 
 fn test_spendable_output<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, spendable_tx: &Transaction, has_anchors_htlc_event: bool) -> Vec<SpendableOutputDescriptor> {
-	let mut spendable:Vec<_> = node.chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
+	let mut spendable = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(spendable.len(), if has_anchors_htlc_event { 2 } else { 1 });
 	if has_anchors_htlc_event {
 		if let Event::BumpTransaction(BumpTransactionEvent::HTLCResolution { .. }) = spendable.pop().unwrap() {}
@@ -554,8 +554,8 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	// generate any `SpendableOutputs` events. Thus, the same balances will still be listed
 	// available in `get_claimable_balances`. However, both will swap from `ClaimableOnClose` to
 	// other Balance variants, as close has already happened.
-	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect::<Vec<_>>().is_empty());
-	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect::<Vec<_>>().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	let commitment_tx_fee = chan_feerate as u64 *
 		(channel::commitment_tx_base_weight(&channel_type_features) + 2 * channel::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
