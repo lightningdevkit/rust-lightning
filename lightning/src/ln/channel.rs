@@ -2146,6 +2146,143 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 	}
 
+	/// Performs checks against necessary constraints after receiving either an `accept_channel` or
+	/// `accept_channel2` message.
+	pub fn do_accept_channel_checks(
+		&mut self, default_limits: &ChannelHandshakeLimits, their_features: &InitFeatures,
+		common_fields: &msgs::CommonAcceptChannelFields, channel_reserve_satoshis: u64,
+	) -> Result<(), ChannelError> {
+		let peer_limits = if let Some(ref limits) = self.inbound_handshake_limits_override { limits } else { default_limits };
+
+		// Check sanity of message fields:
+		if !self.is_outbound() {
+			return Err(ChannelError::close("Got an accept_channel message from an inbound peer".to_owned()));
+		}
+		if !matches!(self.channel_state, ChannelState::NegotiatingFunding(flags) if flags == NegotiatingFundingFlags::OUR_INIT_SENT) {
+			return Err(ChannelError::close("Got an accept_channel message at a strange time".to_owned()));
+		}
+		if common_fields.dust_limit_satoshis > 21000000 * 100000000 {
+			return Err(ChannelError::close(format!("Peer never wants payout outputs? dust_limit_satoshis was {}", common_fields.dust_limit_satoshis)));
+		}
+		if channel_reserve_satoshis > self.channel_value_satoshis {
+			return Err(ChannelError::close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than ({})", channel_reserve_satoshis, self.channel_value_satoshis)));
+		}
+		if common_fields.dust_limit_satoshis > self.holder_selected_channel_reserve_satoshis {
+			return Err(ChannelError::close(format!("Dust limit ({}) is bigger than our channel reserve ({})", common_fields.dust_limit_satoshis, self.holder_selected_channel_reserve_satoshis)));
+		}
+		if channel_reserve_satoshis > self.channel_value_satoshis - self.holder_selected_channel_reserve_satoshis {
+			return Err(ChannelError::close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than channel value minus our reserve ({})",
+				channel_reserve_satoshis, self.channel_value_satoshis - self.holder_selected_channel_reserve_satoshis)));
+		}
+		let full_channel_value_msat = (self.channel_value_satoshis - channel_reserve_satoshis) * 1000;
+		if common_fields.htlc_minimum_msat >= full_channel_value_msat {
+			return Err(ChannelError::close(format!("Minimum htlc value ({}) is full channel value ({})", common_fields.htlc_minimum_msat, full_channel_value_msat)));
+		}
+		let max_delay_acceptable = u16::min(peer_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
+		if common_fields.to_self_delay > max_delay_acceptable {
+			return Err(ChannelError::close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_delay_acceptable, common_fields.to_self_delay)));
+		}
+		if common_fields.max_accepted_htlcs < 1 {
+			return Err(ChannelError::close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
+		}
+		if common_fields.max_accepted_htlcs > MAX_HTLCS {
+			return Err(ChannelError::close(format!("max_accepted_htlcs was {}. It must not be larger than {}", common_fields.max_accepted_htlcs, MAX_HTLCS)));
+		}
+
+		// Now check against optional parameters as set by config...
+		if common_fields.htlc_minimum_msat > peer_limits.max_htlc_minimum_msat {
+			return Err(ChannelError::close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", common_fields.htlc_minimum_msat, peer_limits.max_htlc_minimum_msat)));
+		}
+		if common_fields.max_htlc_value_in_flight_msat < peer_limits.min_max_htlc_value_in_flight_msat {
+			return Err(ChannelError::close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", common_fields.max_htlc_value_in_flight_msat, peer_limits.min_max_htlc_value_in_flight_msat)));
+		}
+		if channel_reserve_satoshis > peer_limits.max_channel_reserve_satoshis {
+			return Err(ChannelError::close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", channel_reserve_satoshis, peer_limits.max_channel_reserve_satoshis)));
+		}
+		if common_fields.max_accepted_htlcs < peer_limits.min_max_accepted_htlcs {
+			return Err(ChannelError::close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", common_fields.max_accepted_htlcs, peer_limits.min_max_accepted_htlcs)));
+		}
+		if common_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", common_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
+		}
+		if common_fields.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
+			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", common_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
+		}
+		if common_fields.minimum_depth > peer_limits.max_minimum_depth {
+			return Err(ChannelError::close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, common_fields.minimum_depth)));
+		}
+
+		if let Some(ty) = &common_fields.channel_type {
+			if *ty != self.channel_type {
+				return Err(ChannelError::close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
+			}
+		} else if their_features.supports_channel_type() {
+			// Assume they've accepted the channel type as they said they understand it.
+		} else {
+			let channel_type = ChannelTypeFeatures::from_init(&their_features);
+			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
+				return Err(ChannelError::close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
+			}
+			self.channel_type = channel_type.clone();
+			self.channel_transaction_parameters.channel_type_features = channel_type;
+		}
+
+		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
+			match &common_fields.shutdown_scriptpubkey {
+				&Some(ref script) => {
+					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
+					if script.len() == 0 {
+						None
+					} else {
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)));
+						}
+						Some(script.clone())
+					}
+				},
+				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
+				&None => {
+					return Err(ChannelError::close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
+				}
+			}
+		} else { None };
+
+		self.counterparty_dust_limit_satoshis = common_fields.dust_limit_satoshis;
+		self.counterparty_max_htlc_value_in_flight_msat = cmp::min(common_fields.max_htlc_value_in_flight_msat, self.channel_value_satoshis * 1000);
+		self.counterparty_selected_channel_reserve_satoshis = Some(channel_reserve_satoshis);
+		self.counterparty_htlc_minimum_msat = common_fields.htlc_minimum_msat;
+		self.counterparty_max_accepted_htlcs = common_fields.max_accepted_htlcs;
+
+		if peer_limits.trust_own_funding_0conf {
+			self.minimum_depth = Some(common_fields.minimum_depth);
+		} else {
+			self.minimum_depth = Some(cmp::max(1, common_fields.minimum_depth));
+		}
+
+		let counterparty_pubkeys = ChannelPublicKeys {
+			funding_pubkey: common_fields.funding_pubkey,
+			revocation_basepoint: RevocationBasepoint::from(common_fields.revocation_basepoint),
+			payment_point: common_fields.payment_basepoint,
+			delayed_payment_basepoint: DelayedPaymentBasepoint::from(common_fields.delayed_payment_basepoint),
+			htlc_basepoint: HtlcBasepoint::from(common_fields.htlc_basepoint)
+		};
+
+		self.channel_transaction_parameters.counterparty_parameters = Some(CounterpartyChannelTransactionParameters {
+			selected_contest_delay: common_fields.to_self_delay,
+			pubkeys: counterparty_pubkeys,
+		});
+
+		self.counterparty_cur_commitment_point = Some(common_fields.first_per_commitment_point);
+		self.counterparty_shutdown_scriptpubkey = counterparty_shutdown_scriptpubkey;
+
+		self.channel_state = ChannelState::NegotiatingFunding(
+			NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
+		);
+		self.inbound_handshake_limits_override = None; // We're done enforcing limits on our peer's handshake now.
+
+		Ok(())
+	}
+
 	/// Returns the block hash in which our funding transaction was confirmed.
 	pub fn get_funding_tx_confirmed_in(&self) -> Option<BlockHash> {
 		self.funding_tx_confirmed_in
@@ -7497,136 +7634,11 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	// Message handlers
-	pub fn accept_channel(&mut self, msg: &msgs::AcceptChannel, default_limits: &ChannelHandshakeLimits, their_features: &InitFeatures) -> Result<(), ChannelError> {
-		let peer_limits = if let Some(ref limits) = self.context.inbound_handshake_limits_override { limits } else { default_limits };
-
-		// Check sanity of message fields:
-		if !self.context.is_outbound() {
-			return Err(ChannelError::close("Got an accept_channel message from an inbound peer".to_owned()));
-		}
-		if !matches!(self.context.channel_state, ChannelState::NegotiatingFunding(flags) if flags == NegotiatingFundingFlags::OUR_INIT_SENT) {
-			return Err(ChannelError::close("Got an accept_channel message at a strange time".to_owned()));
-		}
-		if msg.common_fields.dust_limit_satoshis > 21000000 * 100000000 {
-			return Err(ChannelError::close(format!("Peer never wants payout outputs? dust_limit_satoshis was {}", msg.common_fields.dust_limit_satoshis)));
-		}
-		if msg.channel_reserve_satoshis > self.context.channel_value_satoshis {
-			return Err(ChannelError::close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than ({})", msg.channel_reserve_satoshis, self.context.channel_value_satoshis)));
-		}
-		if msg.common_fields.dust_limit_satoshis > self.context.holder_selected_channel_reserve_satoshis {
-			return Err(ChannelError::close(format!("Dust limit ({}) is bigger than our channel reserve ({})", msg.common_fields.dust_limit_satoshis, self.context.holder_selected_channel_reserve_satoshis)));
-		}
-		if msg.channel_reserve_satoshis > self.context.channel_value_satoshis - self.context.holder_selected_channel_reserve_satoshis {
-			return Err(ChannelError::close(format!("Bogus channel_reserve_satoshis ({}). Must not be greater than channel value minus our reserve ({})",
-				msg.channel_reserve_satoshis, self.context.channel_value_satoshis - self.context.holder_selected_channel_reserve_satoshis)));
-		}
-		let full_channel_value_msat = (self.context.channel_value_satoshis - msg.channel_reserve_satoshis) * 1000;
-		if msg.common_fields.htlc_minimum_msat >= full_channel_value_msat {
-			return Err(ChannelError::close(format!("Minimum htlc value ({}) is full channel value ({})", msg.common_fields.htlc_minimum_msat, full_channel_value_msat)));
-		}
-		let max_delay_acceptable = u16::min(peer_limits.their_to_self_delay, MAX_LOCAL_BREAKDOWN_TIMEOUT);
-		if msg.common_fields.to_self_delay > max_delay_acceptable {
-			return Err(ChannelError::close(format!("They wanted our payments to be delayed by a needlessly long period. Upper limit: {}. Actual: {}", max_delay_acceptable, msg.common_fields.to_self_delay)));
-		}
-		if msg.common_fields.max_accepted_htlcs < 1 {
-			return Err(ChannelError::close("0 max_accepted_htlcs makes for a useless channel".to_owned()));
-		}
-		if msg.common_fields.max_accepted_htlcs > MAX_HTLCS {
-			return Err(ChannelError::close(format!("max_accepted_htlcs was {}. It must not be larger than {}", msg.common_fields.max_accepted_htlcs, MAX_HTLCS)));
-		}
-
-		// Now check against optional parameters as set by config...
-		if msg.common_fields.htlc_minimum_msat > peer_limits.max_htlc_minimum_msat {
-			return Err(ChannelError::close(format!("htlc_minimum_msat ({}) is higher than the user specified limit ({})", msg.common_fields.htlc_minimum_msat, peer_limits.max_htlc_minimum_msat)));
-		}
-		if msg.common_fields.max_htlc_value_in_flight_msat < peer_limits.min_max_htlc_value_in_flight_msat {
-			return Err(ChannelError::close(format!("max_htlc_value_in_flight_msat ({}) is less than the user specified limit ({})", msg.common_fields.max_htlc_value_in_flight_msat, peer_limits.min_max_htlc_value_in_flight_msat)));
-		}
-		if msg.channel_reserve_satoshis > peer_limits.max_channel_reserve_satoshis {
-			return Err(ChannelError::close(format!("channel_reserve_satoshis ({}) is higher than the user specified limit ({})", msg.channel_reserve_satoshis, peer_limits.max_channel_reserve_satoshis)));
-		}
-		if msg.common_fields.max_accepted_htlcs < peer_limits.min_max_accepted_htlcs {
-			return Err(ChannelError::close(format!("max_accepted_htlcs ({}) is less than the user specified limit ({})", msg.common_fields.max_accepted_htlcs, peer_limits.min_max_accepted_htlcs)));
-		}
-		if msg.common_fields.dust_limit_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is less than the implementation limit ({})", msg.common_fields.dust_limit_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS)));
-		}
-		if msg.common_fields.dust_limit_satoshis > MAX_CHAN_DUST_LIMIT_SATOSHIS {
-			return Err(ChannelError::close(format!("dust_limit_satoshis ({}) is greater than the implementation limit ({})", msg.common_fields.dust_limit_satoshis, MAX_CHAN_DUST_LIMIT_SATOSHIS)));
-		}
-		if msg.common_fields.minimum_depth > peer_limits.max_minimum_depth {
-			return Err(ChannelError::close(format!("We consider the minimum depth to be unreasonably large. Expected minimum: ({}). Actual: ({})", peer_limits.max_minimum_depth, msg.common_fields.minimum_depth)));
-		}
-
-		if let Some(ty) = &msg.common_fields.channel_type {
-			if *ty != self.context.channel_type {
-				return Err(ChannelError::close("Channel Type in accept_channel didn't match the one sent in open_channel.".to_owned()));
-			}
-		} else if their_features.supports_channel_type() {
-			// Assume they've accepted the channel type as they said they understand it.
-		} else {
-			let channel_type = ChannelTypeFeatures::from_init(&their_features);
-			if channel_type != ChannelTypeFeatures::only_static_remote_key() {
-				return Err(ChannelError::close("Only static_remote_key is supported for non-negotiated channel types".to_owned()));
-			}
-			self.context.channel_type = channel_type.clone();
-			self.context.channel_transaction_parameters.channel_type_features = channel_type;
-		}
-
-		let counterparty_shutdown_scriptpubkey = if their_features.supports_upfront_shutdown_script() {
-			match &msg.common_fields.shutdown_scriptpubkey {
-				&Some(ref script) => {
-					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
-					if script.len() == 0 {
-						None
-					} else {
-						if !script::is_bolt2_compliant(&script, their_features) {
-							return Err(ChannelError::close(format!("Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {}", script)));
-						}
-						Some(script.clone())
-					}
-				},
-				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-				&None => {
-					return Err(ChannelError::close("Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out".to_owned()));
-				}
-			}
-		} else { None };
-
-		self.context.counterparty_dust_limit_satoshis = msg.common_fields.dust_limit_satoshis;
-		self.context.counterparty_max_htlc_value_in_flight_msat = cmp::min(msg.common_fields.max_htlc_value_in_flight_msat, self.context.channel_value_satoshis * 1000);
-		self.context.counterparty_selected_channel_reserve_satoshis = Some(msg.channel_reserve_satoshis);
-		self.context.counterparty_htlc_minimum_msat = msg.common_fields.htlc_minimum_msat;
-		self.context.counterparty_max_accepted_htlcs = msg.common_fields.max_accepted_htlcs;
-
-		if peer_limits.trust_own_funding_0conf {
-			self.context.minimum_depth = Some(msg.common_fields.minimum_depth);
-		} else {
-			self.context.minimum_depth = Some(cmp::max(1, msg.common_fields.minimum_depth));
-		}
-
-		let counterparty_pubkeys = ChannelPublicKeys {
-			funding_pubkey: msg.common_fields.funding_pubkey,
-			revocation_basepoint: RevocationBasepoint::from(msg.common_fields.revocation_basepoint),
-			payment_point: msg.common_fields.payment_basepoint,
-			delayed_payment_basepoint: DelayedPaymentBasepoint::from(msg.common_fields.delayed_payment_basepoint),
-			htlc_basepoint: HtlcBasepoint::from(msg.common_fields.htlc_basepoint)
-		};
-
-		self.context.channel_transaction_parameters.counterparty_parameters = Some(CounterpartyChannelTransactionParameters {
-			selected_contest_delay: msg.common_fields.to_self_delay,
-			pubkeys: counterparty_pubkeys,
-		});
-
-		self.context.counterparty_cur_commitment_point = Some(msg.common_fields.first_per_commitment_point);
-		self.context.counterparty_shutdown_scriptpubkey = counterparty_shutdown_scriptpubkey;
-
-		self.context.channel_state = ChannelState::NegotiatingFunding(
-			NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
-		);
-		self.context.inbound_handshake_limits_override = None; // We're done enforcing limits on our peer's handshake now.
-
-		Ok(())
+	pub fn accept_channel(
+		&mut self, msg: &msgs::AcceptChannel, default_limits: &ChannelHandshakeLimits,
+		their_features: &InitFeatures
+	) -> Result<(), ChannelError> {
+		self.context.do_accept_channel_checks(default_limits, their_features, &msg.common_fields, msg.channel_reserve_satoshis)
 	}
 
 	/// Handles a funding_signed message from the remote end.
