@@ -1075,7 +1075,7 @@ impl<'a> DirectedChannelInfo<'a> {
 
 	/// Returns information for the direction.
 	#[inline]
-	pub(super) fn direction(&self) -> &'a ChannelUpdateInfo { self.direction }
+	pub(crate) fn direction(&self) -> &'a ChannelUpdateInfo { self.direction }
 
 	/// Returns the `node_id` of the source hop.
 	///

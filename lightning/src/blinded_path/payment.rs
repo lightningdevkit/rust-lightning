@@ -23,6 +23,7 @@ use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::invoice_request::InvoiceRequestFields;
 use crate::offers::offer::OfferId;
+use crate::routing::gossip::DirectedChannelInfo;
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, Writeable, Writer};
 
 #[allow(unused_imports)]
@@ -170,6 +171,19 @@ impl PaymentContext {
 	}
 }
 
+impl PaymentRelay {
+	fn normalize_cltv_expiry_delta(cltv_expiry_delta: u16) -> Result<u16, ()> {
+		// Avoid exposing esoteric CLTV expiry deltas, which could de-anonymize the path.
+		match cltv_expiry_delta {
+			0..=40 => Ok(40),
+			41..=80 => Ok(80),
+			81..=144 => Ok(144),
+			145..=216 => Ok(216),
+			_ => Err(()),
+		}
+	}
+}
+
 impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 	type Error = ();
 
@@ -178,16 +192,25 @@ impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 			fee_base_msat, fee_proportional_millionths, cltv_expiry_delta
 		} = info;
 
-		// Avoid exposing esoteric CLTV expiry deltas
-		let cltv_expiry_delta = match cltv_expiry_delta {
-			0..=40 => 40,
-			41..=80 => 80,
-			81..=144 => 144,
-			145..=216 => 216,
-			_ => return Err(()),
-		};
+		Ok(Self {
+			cltv_expiry_delta: Self::normalize_cltv_expiry_delta(cltv_expiry_delta)?,
+			fee_proportional_millionths,
+			fee_base_msat
+		})
+	}
+}
 
-		Ok(Self { cltv_expiry_delta, fee_proportional_millionths, fee_base_msat })
+impl<'a> TryFrom<DirectedChannelInfo<'a>> for PaymentRelay {
+	type Error = ();
+
+	fn try_from(info: DirectedChannelInfo<'a>) -> Result<Self, ()> {
+		let direction = info.direction();
+
+		Ok(Self {
+			cltv_expiry_delta: Self::normalize_cltv_expiry_delta(direction.cltv_expiry_delta)?,
+			fee_proportional_millionths: direction.fees.proportional_millionths,
+			fee_base_msat: direction.fees.base_msat,
+		})
 	}
 }
 

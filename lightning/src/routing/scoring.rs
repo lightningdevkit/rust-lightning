@@ -57,7 +57,7 @@
 //! [`find_route`]: crate::routing::router::find_route
 
 use crate::ln::msgs::DecodeError;
-use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
+use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::router::{Path, CandidateRouteHop, PublicHopCandidate};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::logger::Logger;
@@ -96,6 +96,7 @@ pub trait ScoreLookUp {
 	/// on a per-routefinding-call basis through to the scorer methods,
 	/// which are used to determine the parameters for the suitability of channels for use.
 	type ScoreParams;
+
 	/// Returns the fee in msats willing to be paid to avoid routing `send_amt_msat` through the
 	/// given channel in the direction from `source` to `target`.
 	///
@@ -107,6 +108,28 @@ pub trait ScoreLookUp {
 	fn channel_penalty_msat(
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64;
+
+	/// Returns the success probability of sending an HTLC through a channel.
+	///
+	/// Expected to return a value between `0.0` and `1.0`, inclusive, where `0.0` indicates
+	/// highly unlikely and `1.0` highly likely.
+	///
+	/// This is useful to determine whether a channel should be included in a blinded path and the
+	/// preferred ordering of blinded paths.
+	fn channel_success_probability(
+		&self, _short_channel_id: u64, _info: &DirectedChannelInfo, _usage: ChannelUsage,
+		_score_params: &Self::ScoreParams
+	) -> f64 { 0.5 }
+
+	/// Returns how certain any knowledge gained about the channel's liquidity balance is.
+	///
+	/// Expected to return a value between `0.0` and `1.0`, inclusive, where `0.0` indicates
+	/// complete uncertainty and `1.0` complete certainty.
+	///
+	/// This is useful to determine whether a channel should be included in a blinded path.
+	fn channel_balance_certainty(
+		&self, _short_channel_id: u64, _info: &DirectedChannelInfo
+	) -> f64 { 0.5 }
 }
 
 /// `ScoreUpdate` is used to update the scorer's internal state after a payment attempt.
@@ -1228,6 +1251,27 @@ DirectedChannelLiquidity< L, BRT, T> {
 		liquidity_penalty_msat.saturating_add(amount_penalty_msat)
 	}
 
+	fn success_probability(
+		&self, usage: ChannelUsage, score_params: &ProbabilisticScoringFeeParameters
+	) -> f64 {
+		let amount_msat = usage.amount_msat;
+		let available_capacity = self.capacity_msat;
+		let max_liquidity_msat = self.max_liquidity_msat();
+		let min_liquidity_msat = core::cmp::min(self.min_liquidity_msat(), max_liquidity_msat);
+
+		if amount_msat <= min_liquidity_msat {
+			1.0
+		} else if amount_msat >= max_liquidity_msat {
+			0.0
+		} else {
+			let (numerator, denominator) = success_probability(
+				amount_msat, min_liquidity_msat, max_liquidity_msat, available_capacity,
+				score_params, false
+			);
+			numerator as f64 / denominator as f64
+		}
+	}
+
 	/// Returns the lower bound of the channel liquidity balance in this direction.
 	#[inline(always)]
 	fn min_liquidity_msat(&self) -> u64 {
@@ -1365,6 +1409,28 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ScoreLookUp for Probabilistic
 			.penalty_msat(amount_msat, score_params)
 			.saturating_add(anti_probing_penalty_msat)
 			.saturating_add(base_penalty_msat)
+	}
+
+	fn channel_success_probability(
+		&self, short_channel_id: u64, info: &DirectedChannelInfo, usage: ChannelUsage,
+		score_params: &ProbabilisticScoringFeeParameters
+	) -> f64 {
+		self.channel_liquidities
+			.get(&short_channel_id)
+			.unwrap_or(&ChannelLiquidity::new(Duration::ZERO))
+			.as_directed(info.source(), info.target(), usage.effective_capacity.as_msat())
+			.success_probability(usage, score_params)
+	}
+
+	fn channel_balance_certainty(&self, short_channel_id: u64, info: &DirectedChannelInfo) -> f64 {
+		self.channel_liquidities
+			.get(&short_channel_id)
+			.map(|channel|
+				((channel.min_liquidity_offset_msat + channel.max_liquidity_offset_msat) as f64)
+				/ info.effective_capacity().as_msat() as f64
+			)
+			.and_then(|certainty| certainty.is_finite().then(|| certainty))
+			.unwrap_or(0.0)
 	}
 }
 
