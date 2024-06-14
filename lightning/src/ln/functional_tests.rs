@@ -750,6 +750,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		channel_id: chan.2,
 		signature: res.0,
 		htlc_signatures: res.1,
+		batch: None,
 		#[cfg(taproot)]
 		partial_signature_with_nonce: None,
 	};
@@ -1498,6 +1499,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		channel_id: chan.2,
 		signature: res.0,
 		htlc_signatures: res.1,
+		batch: None,
 		#[cfg(taproot)]
 		partial_signature_with_nonce: None,
 	};
