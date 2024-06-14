@@ -961,6 +961,10 @@ pub enum Event {
 		/// check that whatever fee you want has been included here or subtract it as required. Further,
 		/// LDK will not stop you from forwarding more than you received.
 		expected_outbound_amount_msat: u64,
+		/// The binary encoded onion packet as described in bolt 4
+		onion: Vec<u8>,
+		/// The CLTV timeout for this HTLC.
+		outgoing_cltv_value: u32
 	},
 	/// Used to indicate that an output which you should know how to spend was confirmed on chain
 	/// and is now spendable.
@@ -1350,7 +1354,7 @@ impl Writeable for Event {
 					(1, channel_id, option),
 				});
 			},
-			&Event::HTLCIntercepted { requested_next_hop_scid, payment_hash, inbound_amount_msat, expected_outbound_amount_msat, intercept_id } => {
+			&Event::HTLCIntercepted { requested_next_hop_scid, payment_hash, inbound_amount_msat, expected_outbound_amount_msat, intercept_id, ref onion, outgoing_cltv_value } => {
 				6u8.write(writer)?;
 				let intercept_scid = InterceptNextHop::FakeScid { requested_next_hop_scid };
 				write_tlv_fields!(writer, {
@@ -1359,6 +1363,8 @@ impl Writeable for Event {
 					(4, payment_hash, required),
 					(6, inbound_amount_msat, required),
 					(8, expected_outbound_amount_msat, required),
+					(10, onion, required),
+					(12, outgoing_cltv_value, required),
 				});
 			}
 			&Event::PaymentForwarded {
@@ -1672,12 +1678,16 @@ impl MaybeReadable for Event {
 				let mut requested_next_hop_scid = InterceptNextHop::FakeScid { requested_next_hop_scid: 0 };
 				let mut inbound_amount_msat = 0;
 				let mut expected_outbound_amount_msat = 0;
+				let mut onion = vec![];
+				let mut outgoing_cltv_value = 0;
 				read_tlv_fields!(reader, {
 					(0, intercept_id, required),
 					(2, requested_next_hop_scid, required),
 					(4, payment_hash, required),
 					(6, inbound_amount_msat, required),
 					(8, expected_outbound_amount_msat, required),
+					(10, onion, required),
+					(12, outgoing_cltv_value, required),
 				});
 				let next_scid = match requested_next_hop_scid {
 					InterceptNextHop::FakeScid { requested_next_hop_scid: scid } => scid
@@ -1688,6 +1698,8 @@ impl MaybeReadable for Event {
 					inbound_amount_msat,
 					expected_outbound_amount_msat,
 					intercept_id,
+					onion,
+					outgoing_cltv_value
 				}))
 			},
 			7u8 => {
