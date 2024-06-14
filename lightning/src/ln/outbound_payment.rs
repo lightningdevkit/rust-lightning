@@ -807,9 +807,11 @@ impl OutboundPayments {
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
 		};
 
-		let pay_params = PaymentParameters::from_bolt12_invoice(&invoice);
+		let payment_params = PaymentParameters::from_bolt12_invoice(&invoice);
 		let amount_msat = invoice.amount_msats();
-		let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
+		let mut route_params = RouteParameters::from_payment_params_and_value(
+			payment_params, amount_msat
+		);
 		if let Some(max_fee_msat) = max_total_routing_fee_msat {
 			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
 		}
