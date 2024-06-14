@@ -1062,10 +1062,20 @@ impl_writeable_tlv_based_enum!(EventCompletionAction,
 	}
 );
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// The source of an HTLC which is being claimed as a part of an incoming payment. Each part is
+/// tracked in [`PendingMPPClaim`].
+struct MPPClaimHTLCSource {
+	counterparty_node_id: PublicKey,
+	funding_txo: OutPoint,
+	channel_id: ChannelId,
+	htlc_id: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct PendingMPPClaim {
-	channels_without_preimage: Vec<(PublicKey, OutPoint, ChannelId, u64)>,
-	channels_with_preimage: Vec<(PublicKey, OutPoint, ChannelId)>,
+	channels_without_preimage: Vec<MPPClaimHTLCSource>,
+	channels_with_preimage: Vec<MPPClaimHTLCSource>,
 }
 
 #[derive(Clone)]
@@ -6765,8 +6775,12 @@ where
 			let pending_mpp_claim_ptr_opt = if sources.len() > 1 {
 				let channels_without_preimage = sources.iter().filter_map(|htlc| {
 					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
-						let prev_hop = &htlc.prev_hop;
-						Some((cp_id, prev_hop.outpoint, prev_hop.channel_id, prev_hop.htlc_id))
+						Some(MPPClaimHTLCSource {
+							counterparty_node_id: cp_id,
+							funding_txo: htlc.prev_hop.outpoint,
+							channel_id: htlc.prev_hop.channel_id,
+							htlc_id: htlc.prev_hop.htlc_id,
+						})
 					} else {
 						None
 					}
@@ -7184,15 +7198,25 @@ where
 										if *pending_claim == claim_ptr {
 											let mut pending_claim_state_lock = pending_claim.0.lock().unwrap();
 											let pending_claim_state = &mut *pending_claim_state_lock;
-											pending_claim_state.channels_without_preimage.retain(|(cp, outp, cid, hid)| {
-												if *cp == counterparty_node_id && *cid == chan_id && *hid == htlc_id {
-													pending_claim_state.channels_with_preimage.push((*cp, *outp, *cid));
+											pending_claim_state.channels_without_preimage.retain(|htlc_info| {
+												let this_claim =
+													htlc_info.counterparty_node_id == counterparty_node_id
+													&& htlc_info.channel_id == chan_id
+													&& htlc_info.htlc_id == htlc_id;
+												if this_claim {
+													pending_claim_state.channels_with_preimage.push(htlc_info.clone());
 													false
 												} else { true }
 											});
 											if pending_claim_state.channels_without_preimage.is_empty() {
-												for (cp, outp, cid) in pending_claim_state.channels_with_preimage.iter() {
-													freed_channels.push((*cp, *outp, *cid, blocker.clone()));
+												for htlc_info in pending_claim_state.channels_with_preimage.iter() {
+													let freed_chan = (
+														htlc_info.counterparty_node_id,
+														htlc_info.funding_txo,
+														htlc_info.channel_id,
+														blocker.clone()
+													);
+													freed_channels.push(freed_chan);
 												}
 											}
 											!pending_claim_state.channels_without_preimage.is_empty()
