@@ -545,12 +545,16 @@ pub struct TestPersister {
 	///
 	/// [`ChannelMonitor`]: channelmonitor::ChannelMonitor
 	pub offchain_monitor_updates: Mutex<HashMap<OutPoint, HashSet<u64>>>,
+	/// When we get an update_persisted_channel call with no ChannelMonitorUpdate, we insert the
+	/// monitor's funding outpoint here.
+	pub chain_sync_monitor_persistences: Mutex<VecDeque<OutPoint>>
 }
 impl TestPersister {
 	pub fn new() -> Self {
 		Self {
 			update_rets: Mutex::new(VecDeque::new()),
 			offchain_monitor_updates: Mutex::new(new_hash_map()),
+			chain_sync_monitor_persistences: Mutex::new(VecDeque::new())
 		}
 	}
 
@@ -573,15 +577,18 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer> for 
 			ret = update_ret;
 		}
 
-		if let Some(update) = update  {
+		if let Some(update) = update {
 			self.offchain_monitor_updates.lock().unwrap().entry(funding_txo).or_insert(new_hash_set()).insert(update.update_id);
+		} else {
+			self.chain_sync_monitor_persistences.lock().unwrap().push_back(funding_txo);
 		}
 		ret
 	}
 
 	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
-		// remove the channel from the offchain_monitor_updates map
+		// remove the channel from the offchain_monitor_updates and chain_sync_monitor_persistences.
 		self.offchain_monitor_updates.lock().unwrap().remove(&funding_txo);
+		self.chain_sync_monitor_persistences.lock().unwrap().retain(|x| x != &funding_txo);
 	}
 }
 
