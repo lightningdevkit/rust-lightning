@@ -186,6 +186,18 @@ impl PendingOutboundPayment {
 		}
 	}
 
+	fn keysend_preimage(&self) -> Option<PaymentPreimage> {
+		match self {
+			PendingOutboundPayment::StaticInvoiceReceived { keysend_preimage, .. } => Some(*keysend_preimage),
+			PendingOutboundPayment::Retryable { keysend_preimage, .. } => *keysend_preimage,
+			PendingOutboundPayment::Legacy { .. } => None,
+			PendingOutboundPayment::AwaitingInvoice { .. } => None,
+			PendingOutboundPayment::InvoiceReceived { .. } => None,
+			PendingOutboundPayment::Fulfilled { .. } => None,
+			PendingOutboundPayment::Abandoned { .. } => None,
+		}
+	}
+
 	fn mark_fulfilled(&mut self) {
 		let mut session_privs = new_hash_set();
 		core::mem::swap(&mut session_privs, match self {
@@ -898,6 +910,47 @@ impl OutboundPayments {
 		};
 	}
 
+	#[cfg(async_payments)]
+	pub(super) fn send_payment_for_static_invoice<R: Deref, ES: Deref, NS: Deref, IH, SP, L: Deref>(
+		&self, payment_id: PaymentId, payment_release_secret: [u8; 32], router: &R,
+		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
+		best_block_height: u32, logger: &L,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		send_payment_along_path: SP,
+	) -> Result<(), Bolt12PaymentError>
+	where
+		R::Target: Router,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		L::Target: Logger,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
+	{
+		let (payment_hash, route_params) =
+			match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+				hash_map::Entry::Occupied(entry) => match entry.get() {
+					PendingOutboundPayment::StaticInvoiceReceived {
+						payment_hash, payment_release_secret: release_secret, route_params, ..
+					} => {
+						if payment_release_secret != *release_secret {
+							return Err(Bolt12PaymentError::UnexpectedInvoice)
+						}
+						(*payment_hash, route_params.clone())
+					},
+					_ => return Err(Bolt12PaymentError::DuplicateInvoice),
+				},
+				hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+			};
+
+		self.find_route_and_send_payment(
+			payment_hash, payment_id, route_params, router, first_hops, &inflight_htlcs,
+			entropy_source, node_signer, best_block_height, logger, pending_events,
+			&send_payment_along_path
+		);
+
+		Ok(())
+	}
+
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
 		&self, router: &R, first_hops: FH, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
 		best_block_height: u32,
@@ -1103,10 +1156,10 @@ impl OutboundPayments {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			match outbounds.entry(payment_id) {
 				hash_map::Entry::Occupied(mut payment) => {
+					let keysend_preimage = payment.get().keysend_preimage();
 					match payment.get() {
 						PendingOutboundPayment::Retryable {
-							total_msat, keysend_preimage, payment_secret, payment_metadata,
-							custom_tlvs, pending_amt_msat, ..
+							total_msat, payment_secret, payment_metadata, custom_tlvs, pending_amt_msat, ..
 						} => {
 							const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
 							let retry_amt_msat = route.get_total_amount();
@@ -1128,7 +1181,6 @@ impl OutboundPayments {
 								payment_metadata: payment_metadata.clone(),
 								custom_tlvs: custom_tlvs.clone(),
 							};
-							let keysend_preimage = *keysend_preimage;
 
 							let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 							for _ in 0..route.paths.len() {
@@ -1151,7 +1203,9 @@ impl OutboundPayments {
 							log_error!(logger, "Payment not yet sent");
 							return
 						},
-						PendingOutboundPayment::InvoiceReceived { payment_hash, retry_strategy, .. } => {
+						PendingOutboundPayment::InvoiceReceived { payment_hash, retry_strategy, .. } |
+							PendingOutboundPayment::StaticInvoiceReceived { payment_hash, retry_strategy, .. } =>
+						{
 							let total_amount = route_params.final_value_msat;
 							let recipient_onion = RecipientOnionFields {
 								payment_secret: None,
@@ -1161,13 +1215,12 @@ impl OutboundPayments {
 							let retry_strategy = Some(*retry_strategy);
 							let payment_params = Some(route_params.payment_params.clone());
 							let (retryable_payment, onion_session_privs) = self.create_pending_payment(
-								*payment_hash, recipient_onion.clone(), None, &route,
+								*payment_hash, recipient_onion.clone(), keysend_preimage, &route,
 								retry_strategy, payment_params, entropy_source, best_block_height
 							);
 							*payment.into_mut() = retryable_payment;
-							(total_amount, recipient_onion, None, onion_session_privs)
+							(total_amount, recipient_onion, keysend_preimage, onion_session_privs)
 						},
-						PendingOutboundPayment::StaticInvoiceReceived { .. } => todo!(),
 						PendingOutboundPayment::Fulfilled { .. } => {
 							log_error!(logger, "Payment already completed");
 							return
