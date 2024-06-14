@@ -9090,7 +9090,7 @@ pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider 
 }
 
 /// Calculate funding values for interactive tx for splicing, based on channel value changes
-#[cfg(any(dual_funding, splicing))]
+#[cfg(splicing)]
 fn calculate_funding_values(
 	pre_channel_value: u64,
 	relative_satoshis: i64,
@@ -9185,6 +9185,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	/// Create new channel for splice
+	#[cfg(splicing)]
 	pub fn new_spliced<L: Deref>(
 		pre_splice_context: ChannelContext<SP>,
 		signer_provider: &SP,
@@ -9439,6 +9440,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	/// Create new channel for splice
+	#[cfg(splicing)]
 	pub fn new_spliced<L: Deref>(
 		pre_splice_context: ChannelContext<SP>,
 		signer_provider: &SP,
