@@ -12,6 +12,7 @@
 //! [`BlindedPath`]: crate::blinded_path::BlindedPath
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
+
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -133,7 +134,7 @@ impl_writeable_tlv_based_enum!(OffersContext,
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[ForwardNode], recipient_node_id: PublicKey,
-	session_priv: &SecretKey
+	context: MessageContext, session_priv: &SecretKey
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let pks = intermediate_nodes.iter().map(|node| &node.node_id)
 		.chain(core::iter::once(&recipient_node_id));
@@ -145,7 +146,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 			None => NextMessageHop::NodeId(*pubkey),
 		})
 		.map(|next_hop| ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None }))
-		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { context: None })));
+		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs{ context: Some(context) })));
 
 	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
 }

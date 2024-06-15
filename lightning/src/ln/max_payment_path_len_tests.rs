@@ -13,7 +13,7 @@
 use bitcoin::secp256k1::{Secp256k1, PublicKey};
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, ReceiveTlvs};
-use crate::events::MessageSendEventsProvider;
+use crate::events::{Event, MessageSendEventsProvider};
 use crate::ln::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
 use crate::ln::channelmanager::PaymentId;
@@ -389,4 +389,13 @@ fn bolt12_invoice_too_large_blinded_paths() {
 	nodes[0].onion_messenger.handle_onion_message(&nodes[1].node.get_our_node_id(), &invoice_om);
 	// TODO: assert on the invoice error once we support replying to invoice OMs with failure info
 	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Failed paying invoice: OnionPacketSizeExceeded", 1);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::PaymentFailed { payment_id: id, .. } => {
+			assert_eq!(id, payment_id)
+		},
+		_ => panic!("Unexpected event"),
+	}
 }

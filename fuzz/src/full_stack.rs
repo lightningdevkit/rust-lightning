@@ -30,6 +30,7 @@ use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash as _;
 use bitcoin::WPubkeyHash;
 
+use lightning::blinded_path::message::MessageContext;
 use lightning::blinded_path::payment::ReceiveTlvs;
 use lightning::blinded_path::BlindedPath;
 use lightning::chain;
@@ -175,7 +176,8 @@ impl MessageRouter for FuzzRouter {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
+		&self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>,
+		_secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		unreachable!()
 	}
