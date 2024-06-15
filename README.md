@@ -20,14 +20,14 @@ Splicing Prototype
 'Happy Path' PoC for Splicing
 
 Objective, Restrictions:
-- Splice-in supported (increase channel capacity)
+- Splice-in supported (increase channel capacity), splice-out not
 - between two LDK instances
 - No quiscence is used/checked
 - Happy path only, no complex combinations, not all error scenarios
-- Splice from only V2 channel is supported, channel ID is not changed
+- Splice from V2 channel is supported, from V1 channel not, the channel ID is not changed
+- Acceptor does not contribute inputs
 - It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
-- Only a single pending splicing is supported at a time
-- Splice-in with contributions from the acceptor is not supported
+- RBF of pending splice is not supported, only a single pending splicing is supported at a time
 
 Up-to-date with main branch as of v0.0.123 (May 8, 475f736; originally branched off v0.0.115).
 
@@ -44,7 +44,7 @@ Client  LDK                                       Counterparty node (acceptor)
 -->
         splice_channel() - ChannelManager API
         Do checks, save pending splice parameters
-        get_splice() - Channel
+        get_splice_init() - Channel
         message out: splice_init
         ---
                                                   message in: splice_init
