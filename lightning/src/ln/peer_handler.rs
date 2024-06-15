@@ -18,6 +18,7 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
+use crate::blinded_path::message::OffersContext;
 use crate::sign::{NodeSigner, Recipient};
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::types::ChannelId;
@@ -145,7 +146,7 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 }
 
 impl OffersMessageHandler for IgnoringMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
+	fn handle_message(&self, _message: OffersMessage, _context: OffersContext, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
 }
@@ -159,7 +160,7 @@ impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
-	fn handle_custom_message(&self, _message: Self::CustomMessage, _responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
+	fn handle_custom_message(&self, _message: Self::CustomMessage, _context: Option<Vec<u8>>, _responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}
