@@ -45,11 +45,11 @@ Client  LDK                                       Counterparty node (acceptor)
         splice_channel() - ChannelManager API
         Do checks, save pending splice parameters
         get_splice() - Channel
-        message out: splice
+        message out: splice_init
         ---
-                                                  message in: splice
-                                                  handle_splice() - ChannelManager
-                                                  internal_splice() - ChannelManager
+                                                  message in: splice_init
+                                                  handle_splice_init() - ChannelManager
+                                                  internal_splice_init() - ChannelManager
                                                   Do checks. Check if channel ID would change. Cycle back the channel to UnfundedInboundV2
                                                   splice_start() -- ChannelContext
                                                   Start the splice, update capacity, state to NegotiatingFunding, reset funding transaction

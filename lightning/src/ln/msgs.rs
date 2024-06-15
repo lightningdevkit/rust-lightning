@@ -410,8 +410,8 @@ pub struct ChannelReady {
 /// construction.
 pub type SerialId = u64;
 
-/// An stfu (quiescence) message to be sent by or received from the stfu initiator.
-// TODO(splicing): Add spec link for `stfu`; still in draft, using from https://github.com/lightning/bolts/pull/863
+/// An [`stfu`] (quiescence) message to be sent by or received from the stfu initiator.
+// TODO(splicing): Add spec link for `stfu`; still in draft, using from https://github.com/lightning/bolts/pull/1160
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stfu {
 	/// The channel ID where quiescence is intended
@@ -420,48 +420,50 @@ pub struct Stfu {
 	pub initiator: u8,
 }
 
-/// A splice message to be sent by or received from the stfu initiator (splice initiator).
-// TODO(splicing): Add spec link for `splice`; still in draft, using from https://github.com/lightning/bolts/pull/863
+/// A [`splice_init`] message to be sent by or received from the stfu initiator (splice initiator).
+// TODO(splicing): Add spec link for `splice_init`; still in draft, using from https://github.com/lightning/bolts/pull/1160
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Splice {
+pub struct SpliceInit {
 	/// The channel ID where splicing is intended
 	pub channel_id: ChannelId,
-	/// The genesis hash of the blockchain where the channel is intended to be spliced
-	pub chain_hash: ChainHash,
-	/// The intended change in channel capacity: the amount to be added (positive value)
-	/// or removed (negative value) by the sender (splice initiator) by splicing into/from the channel.
-	pub relative_satoshis: i64,
+	/// The amount the splice initiator is intending to add to its channel balance (splice-in)
+	/// or remove from its channel balance (splice-out).
+	pub funding_contribution_satoshis: i64,
 	/// The feerate for the new funding transaction, set by the splice initiator
 	pub funding_feerate_perkw: u32,
 	/// The locktime for the new funding transaction
 	pub locktime: u32,
 	/// The key of the sender (splice initiator) controlling the new funding transaction
 	pub funding_pubkey: PublicKey,
+	/// If set, only confirmed inputs added (by the splice acceptor) will be accepted
+	pub require_confirmed_inputs: Option<bool>,
 }
 
-/// A splice_ack message to be received by or sent to the splice initiator.
+/// A [`splice_ack`] message to be received by or sent to the splice initiator.
 ///
-// TODO(splicing): Add spec link for `splice_ack`; still in draft, using from https://github.com/lightning/bolts/pull/863
+// TODO(splicing): Add spec link for `splice_ack`; still in draft, using from https://github.com/lightning/bolts/pull/1160
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpliceAck {
 	/// The channel ID where splicing is intended
 	pub channel_id: ChannelId,
-	/// The genesis hash of the blockchain where the channel is intended to be spliced
-	pub chain_hash: ChainHash,
-	/// The intended change in channel capacity: the amount to be added (positive value)
-	/// or removed (negative value) by the sender (splice acceptor) by splicing into/from the channel.
-	pub relative_satoshis: i64,
+	/// The amount the splice acceptor is intending to add to its channel balance (splice-in)
+	/// or remove from its channel balance (splice-out).
+	pub funding_contribution_satoshis: i64,
 	/// The key of the sender (splice acceptor) controlling the new funding transaction
 	pub funding_pubkey: PublicKey,
+	/// If set, only confirmed inputs added (by the splice initiator) will be accepted
+	pub require_confirmed_inputs: Option<bool>,
 }
 
-/// A splice_locked message to be sent to or received from a peer.
+/// A [`splice_locked`] message to be sent to or received from a peer.
 ///
-// TODO(splicing): Add spec link for `splice_locked`; still in draft, using from https://github.com/lightning/bolts/pull/863
+// TODO(splicing): Add spec link for `splice_locked`; still in draft, using from https://github.com/lightning/bolts/pull/1160
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpliceLocked {
 	/// The channel ID
 	pub channel_id: ChannelId,
+	/// The ID of the new funding transaction that has been locked
+	pub splice_txid: Txid,
 }
 
 /// A tx_add_input message for adding an input during interactive transaction construction
@@ -481,6 +483,8 @@ pub struct TxAddInput {
 	pub prevtx_out: u32,
 	/// The sequence number of this input
 	pub sequence: u32,
+	/// The ID of the previous funding transaction, when it is being added as an input during splicing
+	pub shared_input_txid: Option<Txid>,
 }
 
 /// A tx_add_output message for adding an output during interactive transaction construction.
@@ -544,7 +548,7 @@ pub struct TxSignatures {
 	/// The list of witnesses
 	pub witnesses: Vec<Witness>,
 	/// Optional signature for the shared input -- the previous funding outpoint -- signed by both peers
-	pub funding_outpoint_sig: Option<Signature>,
+	pub shared_input_signature: Option<Signature>,
 }
 
 /// A tx_init_rbf message which initiates a replacement of the transaction after it's been
@@ -708,6 +712,15 @@ pub struct UpdateFailMalformedHTLC {
 	pub failure_code: u16,
 }
 
+/// Optional batch parameters for [`commitment_signed`] message.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct CommitmentSignedBatch {
+	/// Batch size N: all N [`commitment_signed`] messages must be received before being processed
+	pub batch_size: u16,
+	/// The funding transaction, to discriminate among multiple pending funding transactions (e.g. in case of splicing)
+	pub funding_txid: Txid,
+}
+
 /// A [`commitment_signed`] message to be sent to or received from a peer.
 ///
 /// [`commitment_signed`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#committing-updates-so-far-commitment_signed
@@ -719,6 +732,8 @@ pub struct CommitmentSigned {
 	pub signature: Signature,
 	/// Signatures on the HTLC transactions
 	pub htlc_signatures: Vec<Signature>,
+	/// Optional batch size and other parameters
+	pub batch: Option<CommitmentSignedBatch>,
 	#[cfg(taproot)]
 	/// The partial Taproot signature on the commitment transaction
 	pub partial_signature_with_nonce: Option<PartialSignatureWithNonce>,
@@ -1464,9 +1479,9 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_stfu(&self, their_node_id: &PublicKey, msg: &Stfu);
 
 	// Splicing
-	/// Handle an incoming `splice` message from the given peer.
+	/// Handle an incoming `splice_init` message from the given peer.
 	#[cfg(splicing)]
-	fn handle_splice(&self, their_node_id: &PublicKey, msg: &Splice);
+	fn handle_splice_init(&self, their_node_id: &PublicKey, msg: &SpliceInit);
 	/// Handle an incoming `splice_ack` message from the given peer.
 	#[cfg(splicing)]
 	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
@@ -2080,24 +2095,27 @@ impl_writeable_msg!(Stfu, {
 	initiator,
 }, {});
 
-impl_writeable_msg!(Splice, {
+impl_writeable_msg!(SpliceInit, {
 	channel_id,
-	chain_hash,
-	relative_satoshis,
+	funding_contribution_satoshis,
 	funding_feerate_perkw,
 	locktime,
 	funding_pubkey,
-}, {});
+}, {
+	(2, require_confirmed_inputs, option), // `splice_init_tlvs`
+});
 
 impl_writeable_msg!(SpliceAck, {
 	channel_id,
-	chain_hash,
-	relative_satoshis,
+	funding_contribution_satoshis,
 	funding_pubkey,
-}, {});
+}, {
+	(2, require_confirmed_inputs, option), // `splice_init_tlvs`
+});
 
 impl_writeable_msg!(SpliceLocked, {
 	channel_id,
+	splice_txid,
 }, {});
 
 impl_writeable_msg!(TxAddInput, {
@@ -2106,7 +2124,9 @@ impl_writeable_msg!(TxAddInput, {
 	prevtx,
 	prevtx_out,
 	sequence,
-}, {});
+}, {
+	(0, shared_input_txid, option), // `funding_txid`
+});
 
 impl_writeable_msg!(TxAddOutput, {
 	channel_id,
@@ -2134,7 +2154,7 @@ impl_writeable_msg!(TxSignatures, {
 	tx_hash,
 	witnesses,
 }, {
-	(0, funding_outpoint_sig, option),
+	(0, shared_input_signature, option), // `signature`
 });
 
 impl_writeable_msg!(TxInitRbf, {
@@ -2183,12 +2203,19 @@ impl_writeable!(ClosingSignedFeeRange, {
 	max_fee_satoshis
 });
 
+impl_writeable_msg!(CommitmentSignedBatch, {
+	batch_size,
+	funding_txid,
+}, {});
+
 #[cfg(not(taproot))]
 impl_writeable_msg!(CommitmentSigned, {
 	channel_id,
 	signature,
 	htlc_signatures
-}, {});
+}, {
+	(0, batch, option),
+});
 
 #[cfg(taproot)]
 impl_writeable_msg!(CommitmentSigned, {
@@ -2196,7 +2223,8 @@ impl_writeable_msg!(CommitmentSigned, {
 	signature,
 	htlc_signatures
 }, {
-	(2, partial_signature_with_nonce, option)
+	(0, batch, option),
+	(2, partial_signature_with_nonce, option),
 });
 
 impl_writeable!(DecodedOnionErrorPacket, {
@@ -3845,16 +3873,16 @@ mod tests {
 	fn encoding_splice() {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let splice = msgs::Splice {
-			chain_hash: ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+		let splice_init = msgs::SpliceInit {
 			channel_id: ChannelId::from_bytes([2; 32]),
-			relative_satoshis: 123456,
+			funding_contribution_satoshis: -123456,
 			funding_feerate_perkw: 2000,
 			locktime: 0,
 			funding_pubkey: pubkey_1,
+			require_confirmed_inputs: Some(true),
 		};
-		let encoded_value = splice.encode();
-		assert_eq!(encoded_value.as_hex().to_string(), "02020202020202020202020202020202020202020202020202020202020202026fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000000000000001e240000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+		let encoded_value = splice_init.encode();
+		assert_eq!(encoded_value.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020202fffffffffffe1dc0000007d000000000031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f020101");
 	}
 
 	#[test]
@@ -3871,23 +3899,24 @@ mod tests {
 	fn encoding_splice_ack() {
 		let secp_ctx = Secp256k1::new();
 		let (_, pubkey_1,) = get_keys_from!("0101010101010101010101010101010101010101010101010101010101010101", secp_ctx);
-		let splice = msgs::SpliceAck {
-			chain_hash: ChainHash::from_hex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000").unwrap(),
+		let splice_ack = msgs::SpliceAck {
 			channel_id: ChannelId::from_bytes([2; 32]),
-			relative_satoshis: 123456,
+			funding_contribution_satoshis: -123456,
 			funding_pubkey: pubkey_1,
+			require_confirmed_inputs: Some(true),
 		};
-		let encoded_value = splice.encode();
-		assert_eq!(encoded_value.as_hex().to_string(), "02020202020202020202020202020202020202020202020202020202020202026fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000000000000001e240031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f");
+		let encoded_value = splice_ack.encode();
+		assert_eq!(encoded_value.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020202fffffffffffe1dc0031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f020101");
 	}
 
 	#[test]
 	fn encoding_splice_locked() {
-		let splice = msgs::SpliceLocked {
+		let splice_locked = msgs::SpliceLocked {
 			channel_id: ChannelId::from_bytes([2; 32]),
+			splice_txid: Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap(),
 		};
-		let encoded_value = splice.encode();
-		assert_eq!(encoded_value.as_hex().to_string(), "0202020202020202020202020202020202020202020202020202020202020202");
+		let encoded_value = splice_locked.encode();
+		assert_eq!(encoded_value.as_hex().to_string(), "02020202020202020202020202020202020202020202020202020202020202026e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2");
 	}
 
 	#[test]
@@ -3919,10 +3948,11 @@ mod tests {
 			}).unwrap(),
 			prevtx_out: 305419896,
 			sequence: 305419896,
+			shared_input_txid: Some(Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap()),
 		};
 		let encoded_value = tx_add_input.encode();
-		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202000000012345678900de02000000000101779ced6c148293f86b60cb222108553d22c89207326bb7b6b897e23e64ab5b300200000000fdffffff0236dbc1000000000016001417d29e4dd454bac3b1cde50d1926da80cfc5287b9cbd03000000000016001436ec78d514df462da95e6a00c24daa8915362d420247304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701210301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd6944000000001234567812345678").unwrap();
-		assert_eq!(encoded_value, target_value);
+		let target_value = "0202020202020202020202020202020202020202020202020202020202020202000000012345678900de02000000000101779ced6c148293f86b60cb222108553d22c89207326bb7b6b897e23e64ab5b300200000000fdffffff0236dbc1000000000016001417d29e4dd454bac3b1cde50d1926da80cfc5287b9cbd03000000000016001436ec78d514df462da95e6a00c24daa8915362d420247304402206af85b7dd67450ad12c979302fac49dfacbc6a8620f49c5da2b5721cf9565ca502207002b32fed9ce1bf095f57aeb10c36928ac60b12e723d97d2964a54640ceefa701210301ab7dc16488303549bfcdd80f6ae5ee4c20bf97ab5410bbd6b1bfa85dcd694400000000123456781234567800206e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2";
+		assert_eq!(encoded_value.as_hex().to_string(), target_value);
 	}
 
 	#[test]
@@ -3987,7 +4017,7 @@ mod tests {
 					<Vec<u8>>::from_hex("3045022100ee00dbf4a862463e837d7c08509de814d620e4d9830fa84818713e0fa358f145022021c3c7060c4d53fe84fd165d60208451108a778c13b92ca4c6bad439236126cc01").unwrap(),
 					<Vec<u8>>::from_hex("028fbbf0b16f5ba5bcb5dd37cd4047ce6f726a21c06682f9ec2f52b057de1dbdb5").unwrap()]),
 			],
-			funding_outpoint_sig: Some(sig_1),
+			shared_input_signature: Some(sig_1),
 		};
 		let encoded_value = tx_signatures.encode();
 		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap(); // channel_id
@@ -4216,17 +4246,19 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			signature: sig_1,
 			htlc_signatures: if htlcs { vec![sig_2, sig_3, sig_4] } else { Vec::new() },
+			batch: Some(msgs::CommitmentSignedBatch { batch_size: 3, funding_txid: Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap() }),
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
 		};
 		let encoded_value = commitment_signed.encode();
-		let mut target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a").unwrap();
+		let mut target_value = "0202020202020202020202020202020202020202020202020202020202020202d977cb9b53d93a6ff64bb5f1e158b4094b66e798fb12911168a3ccdf80a83096340a6a95da0ae8d9f776528eecdbb747eb6b545495a4319ed5378e35b21e073a".to_string();
 		if htlcs {
-			target_value.append(&mut <Vec<u8>>::from_hex("00031735b6a427e80d5fe7cd90a2f4ee08dc9c27cda7c35a4172e5d85b12c49d4232537e98f9b1f3c5e6989a8b9644e90e8918127680dbd0d4043510840fc0f1e11a216c280b5395a2546e7e4b2663e04f811622f15a4f91e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d2692b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd").unwrap());
+			target_value += "00031735b6a427e80d5fe7cd90a2f4ee08dc9c27cda7c35a4172e5d85b12c49d4232537e98f9b1f3c5e6989a8b9644e90e8918127680dbd0d4043510840fc0f1e11a216c280b5395a2546e7e4b2663e04f811622f15a4f91e83aa2e92ba2a573c139142c54ae63072a1ec1ee7dc0c04bde5c847806172aa05c92c22ae8e308d1d2692b12cc195ce0a2d1bda6a88befa19fa07f51caa75ce83837f28965600b8aacab0855ffb0e741ec5f7c41421e9829a9d48611c8c831f71be5ea73e66594977ffd";
 		} else {
-			target_value.append(&mut <Vec<u8>>::from_hex("0000").unwrap());
+			target_value += "0000";
 		}
-		assert_eq!(encoded_value, target_value);
+		target_value += "002200036e96fe9f8b0ddcd729ba03cfafa5a27b050b39d354dd980814268dfa9a44d4c2"; // batch
+		assert_eq!(encoded_value.as_hex().to_string(), target_value);
 	}
 
 	#[test]

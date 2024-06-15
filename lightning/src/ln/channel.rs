@@ -5946,9 +5946,9 @@ impl<SP: Deref> Channel<SP> where
 			}
 			let is_splice_pending = self.context.is_splice_pending();
 			let expected_shared = if is_splice_pending { 1 } else { 0 };
-			let funding_sig_count = if msg.funding_outpoint_sig.is_some() { 1 } else { 0 };
+			let funding_sig_count = if msg.shared_input_signature.is_some() { 1 } else { 0 };
 			if funding_sig_count != expected_shared {
-				return Err(ChannelError::Close(format!("Shared signature count (funding_outpoint_sig) presence does not match expected, {} {}",
+				return Err(ChannelError::Close(format!("Shared signature count (shared_input_signature) presence does not match expected, {} {}",
 				funding_sig_count, expected_shared)));
 			}
 
@@ -5975,10 +5975,10 @@ impl<SP: Deref> Channel<SP> where
 			#[cfg(splicing)]
 			if let Some(funding_tx) = &funding_tx_opt {
 				if is_splice_pending {
-					if let Some(cp_sig) = &msg.funding_outpoint_sig {
+					if let Some(cp_sig) = &msg.shared_input_signature {
 						// Update signature on previous funding input:
 						// - our signature is (re)generated (was overwritten by witness received in tx_signatures)
-						// - counterparty signature is set, taken from tx_signatures funding_outpoint_sig field
+						// - counterparty signature is set, taken from tx_signatures shared_input_signature field
 						let (updated_funding_tx, _) = self.context.prev_funding_tx_sign(funding_tx, Some(cp_sig.clone()), logger)?;
 						funding_tx_opt = Some(updated_funding_tx);
 					}
@@ -7511,7 +7511,10 @@ impl<SP: Deref> Channel<SP> where
 						}), None);
 					} else {
 						// #SPLICING
-						return (None, Some(msgs::SpliceLocked { channel_id: self.context.channel_id }));
+						return (None, Some(msgs::SpliceLocked {
+							channel_id: self.context.channel_id,
+							splice_txid: self.context.channel_transaction_parameters.funding_outpoint.unwrap().txid,
+						}));
 					}
 				}
 			} else {
@@ -7996,9 +7999,9 @@ impl<SP: Deref> Channel<SP> where
 	#[cfg(splicing)]
 	pub fn get_splice(&mut self, chain_hash: ChainHash,
 		// TODO; should this be a param, or stored in the channel?
-		relative_satoshis: i64, signer_provider: &SP,
+		funding_contribution_satoshis: i64, signer_provider: &SP,
 		funding_feerate_perkw: u32, locktime: u32
-	) -> msgs::Splice {
+	) -> msgs::SpliceInit {
 		if !self.context.is_outbound() {
 			panic!("Tried to initiate a splice on an inbound channel?");
 		}
@@ -8021,7 +8024,8 @@ impl<SP: Deref> Channel<SP> where
 		// channel value.
 		// Note that channel_keys_id is supposed NOT to change
 		let funding_pubkey = {
-			let post_splice_channel_value = PendingSpliceInfoPre::add_checked(self.context.channel_value_satoshis, relative_satoshis);
+			// TODO this is NOT the final post_splice value
+			let post_splice_channel_value = PendingSpliceInfoPre::add_checked(self.context.channel_value_satoshis, funding_contribution_satoshis);
 			let holder_signer = signer_provider.derive_channel_signer(post_splice_channel_value, self.context.channel_keys_id);
 			holder_signer.pubkeys().funding_pubkey
 		};
@@ -8030,13 +8034,13 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_state = ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
 
 		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
-		msgs::Splice {
-			chain_hash,
+		msgs::SpliceInit {
 			channel_id: self.context.channel_id,
-			relative_satoshis,
+			funding_contribution_satoshis,
 			funding_feerate_perkw,
 			locktime,
 			funding_pubkey,
+			require_confirmed_inputs: None,
 		}
 	}
 
@@ -8315,6 +8319,7 @@ impl<SP: Deref> Channel<SP> where
 					channel_id: self.context.channel_id,
 					signature,
 					htlc_signatures,
+					batch: None,
 					#[cfg(taproot)]
 					partial_signature_with_nonce: None,
 				}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))
@@ -9603,7 +9608,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// Get the splice_ack message that can be sent in response to splice initiation
 	/// TODO move to ChannelContext
 	#[cfg(splicing)]
-	pub fn get_splice_ack(&mut self, chain_hash: ChainHash) -> Result<msgs::SpliceAck, ChannelError> {
+	pub fn get_splice_ack(&mut self, _chain_hash: ChainHash) -> Result<msgs::SpliceAck, ChannelError> {
 		if self.context.is_outbound() {
 			panic!("Tried to accept a splice on an outound channel?");
 		}
@@ -9622,10 +9627,10 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		let funding_pubkey = self.context.get_holder_pubkeys().funding_pubkey;
 		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
 		Ok(msgs::SpliceAck {
-			chain_hash,
 			channel_id: self.context.channel_id, // pending_splice.pre_channel_id.unwrap(), // TODO
-			relative_satoshis: pending_splice.relative_satoshis(), //self.context.get_value_satoshis()),
+			funding_contribution_satoshis: pending_splice.relative_satoshis(), // TODO, should be acceptor's side, 0 currently
 			funding_pubkey,
+			require_confirmed_inputs: None,
 		})
 	}
 }
@@ -9740,6 +9745,7 @@ where
 		channel_id: context.channel_id.clone(),
 		htlc_signatures: vec![],
 		signature,
+		batch: None,
 		#[cfg(taproot)]
 		partial_signature_with_nonce: None,
 	})

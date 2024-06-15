@@ -785,8 +785,8 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::Stfu(msg.clone()));
 	}
 	#[cfg(splicing)]
-	fn handle_splice(&self, _their_node_id: &PublicKey, msg: &msgs::Splice) {
-		self.received_msg(wire::Message::Splice(msg.clone()));
+	fn handle_splice_init(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceInit) {
+		self.received_msg(wire::Message::SpliceInit(msg.clone()));
 	}
 	#[cfg(splicing)]
 	fn handle_splice_ack(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceAck) {

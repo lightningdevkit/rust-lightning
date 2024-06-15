@@ -891,9 +891,9 @@ fn test_v2_splice_in() {
 	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_splice_funding_input_sats, &custom_input_pubkey)];
 	let _res = initiator_node.node.splice_channel(&channel_id1, &acceptor_node.node.get_our_node_id(), splice_in_sats as i64, funding_inputs, funding_feerate_perkw, locktime).unwrap();
 	// Extract the splice message from node0 to node1
-	let splice_msg = get_event_msg!(initiator_node, MessageSendEvent::SendSplice, acceptor_node.node.get_our_node_id());
+	let splice_msg = get_event_msg!(initiator_node, MessageSendEvent::SendSpliceInit, acceptor_node.node.get_our_node_id());
 
-	let _res = acceptor_node.node.handle_splice(&initiator_node.node.get_our_node_id(), &splice_msg);
+	let _res = acceptor_node.node.handle_splice_init(&initiator_node.node.get_our_node_id(), &splice_msg);
 	// Extract the splice_ack message from node1 to node0
 	let splice_ack_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendSpliceAck, initiator_node.node.get_our_node_id());
 
@@ -1058,7 +1058,7 @@ fn test_v2_splice_in() {
 			assert_eq!(*node_id, initiator_node.node.get_our_node_id());
 			// Here we only get the signature for the shared input
 			assert_eq!(msg.witnesses.len(), 0);
-			assert!(msg.funding_outpoint_sig.is_some());
+			assert!(msg.shared_input_signature.is_some());
 			msg
 		},
 		_ => panic!("Unexpected event {:?}", msg_events[0]),
@@ -1090,7 +1090,7 @@ fn test_v2_splice_in() {
 			assert_eq!(msg.witnesses.len(), 2);
 			assert_eq!(msg.witnesses[1].len(), 4);
 			assert_eq!(msg.witnesses[0].len(), 1);
-			assert!(msg.funding_outpoint_sig.is_some());
+			assert!(msg.shared_input_signature.is_some());
 			msg
 		},
 		_ => panic!("Unexpected event {:?}", msg_events[0]),
@@ -1430,9 +1430,9 @@ fn test_v2_payment_splice_in_payment() {
 	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_splice_funding_input_sats, &custom_input_pubkey)];
 	let _res = initiator_node.node.splice_channel(&channel_id1, &acceptor_node.node.get_our_node_id(), splice_in_sats as i64, funding_inputs, funding_feerate_perkw, locktime).unwrap();
 	// Extract the splice message from node0 to node1
-	let splice_msg = get_event_msg!(initiator_node, MessageSendEvent::SendSplice, acceptor_node.node.get_our_node_id());
+	let splice_msg = get_event_msg!(initiator_node, MessageSendEvent::SendSpliceInit, acceptor_node.node.get_our_node_id());
 
-	let _res = acceptor_node.node.handle_splice(&initiator_node.node.get_our_node_id(), &splice_msg);
+	let _res = acceptor_node.node.handle_splice_init(&initiator_node.node.get_our_node_id(), &splice_msg);
 	// Extract the splice_ack message from node1 to node0
 	let splice_ack_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendSpliceAck, initiator_node.node.get_our_node_id());
 
@@ -1597,7 +1597,7 @@ fn test_v2_payment_splice_in_payment() {
 			assert_eq!(*node_id, initiator_node.node.get_our_node_id());
 			// Here we only get the signature for the shared input
 			assert_eq!(msg.witnesses.len(), 0);
-			assert!(msg.funding_outpoint_sig.is_some());
+			assert!(msg.shared_input_signature.is_some());
 			msg
 		},
 		_ => panic!("Unexpected event {:?}", msg_events[0]),
@@ -1629,7 +1629,7 @@ fn test_v2_payment_splice_in_payment() {
 			assert_eq!(msg.witnesses.len(), 2);
 			assert_eq!(msg.witnesses[0].len(), 4);
 			assert_eq!(msg.witnesses[1].len(), 1);
-			assert!(msg.funding_outpoint_sig.is_some());
+			assert!(msg.shared_input_signature.is_some());
 			msg
 		},
 		_ => panic!("Unexpected event {:?}", msg_events[0]),

@@ -627,7 +627,7 @@ mod tests {
 		fn handle_accept_channel_v2(&self, _their_node_id: &PublicKey, _msg: &AcceptChannelV2) {}
 		fn handle_stfu(&self, _their_node_id: &PublicKey, _msg: &Stfu) {}
 		#[cfg(splicing)]
-		fn handle_splice(&self, _their_node_id: &PublicKey, _msg: &Splice) {}
+		fn handle_splice_init(&self, _their_node_id: &PublicKey, _msg: &SpliceInit) {}
 		#[cfg(splicing)]
 		fn handle_splice_ack(&self, _their_node_id: &PublicKey, _msg: &SpliceAck) {}
 		#[cfg(splicing)]

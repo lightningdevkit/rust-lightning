@@ -330,7 +330,7 @@ impl InteractiveTxSigningSession {
 			channel_id,
 			tx_hash: self.unsigned_tx.txid(),
 			witnesses: witnesses.into_iter().map(|witness| witness).collect(),
-			funding_outpoint_sig: shared_signature,
+			shared_input_signature: shared_signature,
 		});
 
 		(self.get_tx_signatures(), self.get_finalized_funding_tx())
@@ -1259,6 +1259,7 @@ impl InteractiveTxConstructor {
 				prevtx,
 				prevtx_out: input.previous_output.vout,
 				sequence: input.sequence.to_consensus_u32(),
+				shared_input_txid: None,
 			};
 			do_state_transition!(self, sent_tx_add_input, &msg)?;
 			Ok(InteractiveTxMessageSend::TxAddInput(msg))
@@ -2017,6 +2018,7 @@ mod tests {
 			channel_id,
 			signature,
 			htlc_signatures: vec![],
+			batch: None,
 			#[cfg(taproot)]
 			partial_signature_with_nonce: None,
 		};
@@ -2024,7 +2026,7 @@ mod tests {
 			channel_id,
 			tx_hash,
 			witnesses: vec![],
-			funding_outpoint_sig: None,
+			shared_input_signature: None,
 		};
 
 		// Order: local signature, received commitment, received signatures; CP sends first

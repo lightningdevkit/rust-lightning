@@ -63,7 +63,7 @@ pub(crate) enum Message<T> where T: core::fmt::Debug + Type + TestEq {
 	FundingSigned(msgs::FundingSigned),
 	Stfu(msgs::Stfu),
 	#[cfg(splicing)]
-	Splice(msgs::Splice),
+	SpliceInit(msgs::SpliceInit),
 	#[cfg(splicing)]
 	SpliceAck(msgs::SpliceAck),
 	#[cfg(splicing)]
@@ -132,7 +132,7 @@ impl<T> Writeable for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::FundingSigned(ref msg) => msg.write(writer),
 			&Message::Stfu(ref msg) => msg.write(writer),
 			#[cfg(splicing)]
-			&Message::Splice(ref msg) => msg.write(writer),
+			&Message::SpliceInit(ref msg) => msg.write(writer),
 			#[cfg(splicing)]
 			&Message::SpliceAck(ref msg) => msg.write(writer),
 			#[cfg(splicing)]
@@ -201,7 +201,7 @@ impl<T> Type for Message<T> where T: core::fmt::Debug + Type + TestEq {
 			&Message::FundingSigned(ref msg) => msg.type_id(),
 			&Message::Stfu(ref msg) => msg.type_id(),
 			#[cfg(splicing)]
-			&Message::Splice(ref msg) => msg.type_id(),
+			&Message::SpliceInit(ref msg) => msg.type_id(),
 			#[cfg(splicing)]
 			&Message::SpliceAck(ref msg) => msg.type_id(),
 			#[cfg(splicing)]
@@ -315,8 +315,8 @@ fn do_read<R: io::Read, T, H: core::ops::Deref>(buffer: &mut R, message_type: u1
 			Ok(Message::FundingSigned(Readable::read(buffer)?))
 		},
 		#[cfg(splicing)]
-		msgs::Splice::TYPE => {
-			Ok(Message::Splice(Readable::read(buffer)?))
+		msgs::SpliceInit::TYPE => {
+			Ok(Message::SpliceInit(Readable::read(buffer)?))
 		},
 		msgs::Stfu::TYPE => {
 			Ok(Message::Stfu(Readable::read(buffer)?))
@@ -548,13 +548,13 @@ impl Encode for msgs::AcceptChannelV2 {
 	const TYPE: u16 = 65;
 }
 
-impl Encode for msgs::Splice {
-	// TODO(splicing) Double check with finalized spec; draft spec contains 74, which is probably wrong as it is used by tx_Abort; CLN uses 75
-	const TYPE: u16 = 75;
+impl Encode for msgs::SpliceInit {
+	// TODO(splicing) Double check with finalized spec; draft spec contains 80; previously it was 74 (conflict with tx_abort); CLN used 75
+	const TYPE: u16 = 80;
 }
 
 impl Encode for msgs::SpliceAck {
-	const TYPE: u16 = 76;
+	const TYPE: u16 = 81;
 }
 
 impl Encode for msgs::SpliceLocked {

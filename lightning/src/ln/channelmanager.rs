@@ -3489,7 +3489,7 @@ where
 	///   [new funding tx can be broadcast]
 	#[cfg(splicing)]
 	pub fn splice_channel(
-		&self, channel_id: &ChannelId, their_network_key: &PublicKey, relative_satoshis: i64,
+		&self, channel_id: &ChannelId, their_network_key: &PublicKey, funding_contribution_satoshis: i64,
 		funding_inputs: Vec<(TxIn, Transaction)>, funding_feerate_perkw: u32, locktime: u32
 	) -> Result<(), APIError> {
 		let funding_inputs = Self::length_limit_holder_input_prev_txs(funding_inputs)?;
@@ -3509,17 +3509,17 @@ where
 			hash_map::Entry::Vacant(_) => return Err(APIError::ChannelUnavailable{err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, their_network_key) }),
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
-					if relative_satoshis < 0 {
-						return Err(APIError::APIMisuseError { err: format!("Splice/out not supported, only splice in, relative {}, channel_id {}", -relative_satoshis, channel_id) });
+					if funding_contribution_satoshis < 0 {
+						return Err(APIError::APIMisuseError { err: format!("Splice-out not supported, only splice in, relative {}, channel_id {}", -funding_contribution_satoshis, channel_id) });
 					}
 
 					let pre_channel_value = chan.context.get_value_satoshis();
 					// TODO check for i64 overflow
-					if relative_satoshis < 0 && -relative_satoshis > (pre_channel_value as i64) {
-						return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value cannot be negative. It was {} - {}", pre_channel_value, -relative_satoshis) });
+					if funding_contribution_satoshis < 0 && -funding_contribution_satoshis > (pre_channel_value as i64) {
+						return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value cannot be negative. It was {} - {}", pre_channel_value, -funding_contribution_satoshis) });
 					}
 
-					let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, relative_satoshis);
+					let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, funding_contribution_satoshis);
 					if post_channel_value < 1000 {
 						return Err(APIError::APIMisuseError { err: format!("Post-splicing channel value must be at least 1000 satoshis. It was {}", post_channel_value) });
 					}
@@ -3528,7 +3528,7 @@ where
 						return Err(APIError::ChannelUnavailable { err: format!("Channel has already a splice pending, channel id {}", channel_id) });
 					}
 
-					chan.context.pending_splice_pre = Some(PendingSpliceInfoPre::new(relative_satoshis, pre_channel_value, None, funding_feerate_perkw, locktime, funding_inputs));
+					chan.context.pending_splice_pre = Some(PendingSpliceInfoPre::new(funding_contribution_satoshis, pre_channel_value, None, funding_feerate_perkw, locktime, funding_inputs));
 
 					// Check channel id
 					let post_splice_v2_channel_id = chan.context.generate_v2_channel_id_from_revocation_basepoints();
@@ -3537,9 +3537,9 @@ where
 							chan.context.channel_id(), post_splice_v2_channel_id) });
 					}
 
-					let msg = chan.get_splice(self.chain_hash.clone(), relative_satoshis, &self.signer_provider, funding_feerate_perkw, locktime);
+					let msg = chan.get_splice(self.chain_hash.clone(), funding_contribution_satoshis, &self.signer_provider, funding_feerate_perkw, locktime);
 
-					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSplice {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceInit {
 						node_id: *their_network_key,
 						msg,
 					});
@@ -9227,11 +9227,7 @@ where
 	// Inspired by handle_open_channel()
 	// Logic for incoming splicing request
 	#[cfg(splicing)]
-	fn internal_splice(&self, counterparty_node_id: &PublicKey, msg: &msgs::Splice) -> Result<(), MsgHandleErrInternal> {
-		if msg.chain_hash != self.chain_hash {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(), msg.channel_id.clone()));
-		}
-
+	fn internal_splice_init(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceInit) -> Result<(), MsgHandleErrInternal> {
 		// TODO checks
 		// TODO check if we accept splicing, quiscence
 
@@ -9249,17 +9245,17 @@ where
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}, channel_id {}", counterparty_node_id, msg.channel_id), msg.channel_id)),
 			hash_map::Entry::Occupied(chan_entry) => {
 				if let ChannelPhase::Funded(chan) = chan_entry.get() {
-					if msg.relative_satoshis < 0 {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Splice/out not supported, only splice in, relative {}", -msg.relative_satoshis), msg.channel_id));
+					if msg.funding_contribution_satoshis < 0 {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Splice-out not supported, only splice in, relative {}", -msg.funding_contribution_satoshis), msg.channel_id));
 					}
 
 					let pre_channel_value = chan.context.get_value_satoshis();
 					// TODO check for i64 overflow
-					if msg.relative_satoshis < 0 && -msg.relative_satoshis > (pre_channel_value as i64) {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Post-splicing channel value cannot be negative. It was {} - {}", pre_channel_value, -msg.relative_satoshis), msg.channel_id));
+					if msg.funding_contribution_satoshis < 0 && -msg.funding_contribution_satoshis > (pre_channel_value as i64) {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Post-splicing channel value cannot be negative. It was {} - {}", pre_channel_value, -msg.funding_contribution_satoshis), msg.channel_id));
 					}
 
-					let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, msg.relative_satoshis);
+					let post_channel_value = PendingSpliceInfoPre::add_checked(pre_channel_value, msg.funding_contribution_satoshis);
 					if post_channel_value < 1000 {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Post-splicing channel value must be at least 1000 satoshis. It was {}", post_channel_value), msg.channel_id));
 					}
@@ -9299,7 +9295,7 @@ where
 			prev_chan.context,
 			&self.signer_provider,
 			&msg.funding_pubkey,
-			msg.relative_satoshis,
+			msg.funding_contribution_satoshis, // TODO
 			0,
 			Vec::new(),
 			LockTime::from_consensus(msg.locktime),
@@ -9343,10 +9339,6 @@ where
 	// Logic for incoming splicing_ack message
 	#[cfg(splicing)]
 	fn internal_splice_ack(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceAck) -> Result<(), MsgHandleErrInternal> {
-		if msg.chain_hash != self.chain_hash {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(), msg.channel_id.clone()));
-		}
-
 		// TODO checks
 		// TODO check if we have initiated splicing
 
@@ -9370,8 +9362,8 @@ where
 					if let Some(pending_splice) = &chan.context.pending_splice_pre {
 						// Check the splice_ack parameters (relative amnt) match saved splice parematers
 						let pending_relative = pending_splice.relative_satoshis(chan.context.get_value_satoshis());
-						if msg.relative_satoshis != pending_relative {
-							return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("The splice_ack parameters do not match the pending splice parameters. {} vs. {}", msg.relative_satoshis, pending_relative), msg.channel_id.clone()));
+						if msg.funding_contribution_satoshis != pending_relative {
+							return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("The splice_ack parameters do not match the pending splice parameters. {} vs. {}", msg.funding_contribution_satoshis, pending_relative), msg.channel_id.clone()));
 						}
 						pending_splice.clone()
 					} else {
@@ -9401,8 +9393,8 @@ where
 			prev_chan.context,
 			&self.signer_provider,
 			&msg.funding_pubkey,
-			msg.relative_satoshis,
-			msg.relative_satoshis,
+			msg.funding_contribution_satoshis, // TODO
+			msg.funding_contribution_satoshis, // TODO
 			pending_splice.our_funding_inputs,
 			LockTime::from_consensus(pending_splice.locktime),
 			pending_splice.funding_feerate_perkw,
@@ -11052,9 +11044,9 @@ where
 	}
 
 	#[cfg(splicing)]
-	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &msgs::Splice) {
+	fn handle_splice_init(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceInit) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let _ = handle_error!(self, self.internal_splice(counterparty_node_id, msg), *counterparty_node_id);
+		let _ = handle_error!(self, self.internal_splice_init(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
 	#[cfg(splicing)]
@@ -11267,7 +11259,7 @@ where
 						// Quiescence
 						&events::MessageSendEvent::SendStfu { .. } => false,
 						// Splicing
-						&events::MessageSendEvent::SendSplice { .. } => false,
+						&events::MessageSendEvent::SendSpliceInit { .. } => false,
 						&events::MessageSendEvent::SendSpliceAck { .. } => false,
 						&events::MessageSendEvent::SendSpliceLocked { .. } => false,
 						// Interactive Transaction Construction

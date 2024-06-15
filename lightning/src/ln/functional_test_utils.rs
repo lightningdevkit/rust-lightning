@@ -893,7 +893,7 @@ pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut 
 		MessageSendEvent::SendStfu { node_id, .. } => {
 			node_id == msg_node_id
 		},
-		MessageSendEvent::SendSplice { node_id, .. } => {
+		MessageSendEvent::SendSpliceInit { node_id, .. } => {
 			node_id == msg_node_id
 		},
 		MessageSendEvent::SendSpliceAck { node_id, .. } => {
