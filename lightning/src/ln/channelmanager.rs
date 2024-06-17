@@ -6159,21 +6159,13 @@ where
 		}
 		if valid_mpp {
 			for htlc in sources.drain(..) {
-				let prev_hop_chan_id = htlc.prev_hop.channel_id;
-				if let Err((pk, err)) = self.claim_funds_from_hop(
+				self.claim_funds_from_hop(
 					htlc.prev_hop, payment_preimage,
 					|_, definitely_duplicate| {
 						debug_assert!(!definitely_duplicate, "We shouldn't claim duplicatively from a payment");
 						Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash })
 					}
-				) {
-					if let msgs::ErrorAction::IgnoreError = err.err.action {
-						// We got a temporary failure updating monitor, but will claim the
-						// HTLC when the monitor updating is restored (or on chain).
-						let logger = WithContext::from(&self.logger, None, Some(prev_hop_chan_id), Some(payment_hash));
-						log_error!(logger, "Temporary failure claiming HTLC, treating as success: {}", err.err.err);
-					} else { errs.push((pk, err)); }
-				}
+				);
 			}
 		}
 		if !valid_mpp {
@@ -6195,9 +6187,10 @@ where
 		}
 	}
 
-	fn claim_funds_from_hop<ComplFunc: FnOnce(Option<u64>, bool) -> Option<MonitorUpdateCompletionAction>>(&self,
-		prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage, completion_action: ComplFunc)
-	-> Result<(), (PublicKey, MsgHandleErrInternal)> {
+	fn claim_funds_from_hop<ComplFunc: FnOnce(Option<u64>, bool) -> Option<MonitorUpdateCompletionAction>>(
+		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
+		completion_action: ComplFunc,
+	) {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 
 		// If we haven't yet run background events assume we're still deserializing and shouldn't
@@ -6259,7 +6252,7 @@ where
 								let action = if let Some(action) = completion_action(None, true) {
 									action
 								} else {
-									return Ok(());
+									return;
 								};
 								mem::drop(peer_state_lock);
 
@@ -6275,7 +6268,7 @@ where
 								} else {
 									debug_assert!(false,
 										"Duplicate claims should always free another channel immediately");
-									return Ok(());
+									return;
 								};
 								if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
 									let mut peer_state = peer_state_mtx.lock().unwrap();
@@ -6300,7 +6293,7 @@ where
 							}
 						}
 					}
-					return Ok(());
+					return;
 				}
 			}
 		}
@@ -6348,7 +6341,6 @@ where
 		// generally always allowed to be duplicative (and it's specifically noted in
 		// `PaymentForwarded`).
 		self.handle_monitor_update_completion_actions(completion_action(None, false));
-		Ok(())
 	}
 
 	fn finalize_claims(&self, sources: Vec<HTLCSource>) {
@@ -6381,7 +6373,7 @@ where
 				let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 				#[cfg(debug_assertions)]
 				let claiming_chan_funding_outpoint = hop_data.outpoint;
-				let res = self.claim_funds_from_hop(hop_data, payment_preimage,
+				self.claim_funds_from_hop(hop_data, payment_preimage,
 					|htlc_claim_value_msat, definitely_duplicate| {
 						let chan_to_release =
 							if let Some(node_id) = next_channel_counterparty_node_id {
@@ -6475,10 +6467,6 @@ where
 							})
 						}
 					});
-				if let Err((pk, err)) = res {
-					let result: Result<(), _> = Err(err);
-					let _ = handle_error!(self, result, pk);
-				}
 			},
 		}
 	}
