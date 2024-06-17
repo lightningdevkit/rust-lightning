@@ -119,9 +119,10 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 			.filter(|details| amount_msats <= details.inbound_capacity_msat)
 			.filter(|details| amount_msats >= details.inbound_htlc_minimum_msat.unwrap_or(0))
 			.filter(|details| amount_msats <= details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX))
+			// Limit to peers with announced channels unless the recipient is unannounced.
 			.filter(|details| network_graph
 					.node(&NodeId::from_pubkey(&details.counterparty.node_id))
-					.map(|node_info| node_info.channels.len() >= MIN_PEER_CHANNELS)
+					.map(|node| !is_recipient_announced || node.channels.len() >= MIN_PEER_CHANNELS)
 					// Allow payments directly with the only peer when unannounced.
 					.unwrap_or(!is_recipient_announced && has_one_peer)
 			)

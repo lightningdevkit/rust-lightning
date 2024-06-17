@@ -511,7 +511,9 @@ where
 			.filter_map(|peer|
 				network_graph
 					.node(&NodeId::from_pubkey(&peer.node_id))
-					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
+					.filter(|info|
+						!is_recipient_announced || info.channels.len() >= MIN_PEER_CHANNELS
+					)
 					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
 					// Allow messages directly with the only peer when unannounced.
 					.or_else(|| (!is_recipient_announced && has_one_peer)
