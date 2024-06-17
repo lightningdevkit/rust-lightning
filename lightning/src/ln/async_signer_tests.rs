@@ -20,6 +20,7 @@ use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureR
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
+use crate::util::test_channel_signer::SignerOp;
 
 #[test]
 fn test_async_commitment_signature_for_funding_created() {
@@ -43,7 +44,7 @@ fn test_async_commitment_signature_for_funding_created() {
 	// But! Let's make node[0]'s signer be unavailable: we should *not* broadcast a funding_created
 	// message...
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
-	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &temporary_channel_id, false);
+	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors(&nodes[0], 0);
 
@@ -57,7 +58,7 @@ fn test_async_commitment_signature_for_funding_created() {
 		channels[0].channel_id
 	};
 
-	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, true);
+	nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	nodes[0].node.signer_unblocked(Some((nodes[1].node.get_our_node_id(), chan_id)));
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
@@ -98,7 +99,7 @@ fn test_async_commitment_signature_for_funding_signed() {
 
 	// Now let's make node[1]'s signer be unavailable while handling the `funding_created`. It should
 	// *not* broadcast a `funding_signed`...
-	nodes[1].set_channel_signer_available(&nodes[0].node.get_our_node_id(), &temporary_channel_id, false);
+	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors(&nodes[1], 1);
 
@@ -111,7 +112,7 @@ fn test_async_commitment_signature_for_funding_signed() {
 		assert_eq!(channels.len(), 1, "expected one channel, not {}", channels.len());
 		channels[0].channel_id
 	};
-	nodes[1].set_channel_signer_available(&nodes[0].node.get_our_node_id(), &chan_id, true);
+	nodes[1].enable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	nodes[1].node.signer_unblocked(Some((nodes[0].node.get_our_node_id(), chan_id)));
 
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -152,14 +153,14 @@ fn test_async_commitment_signature_for_commitment_signed() {
 
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
-	dst.set_channel_signer_available(&src.node.get_our_node_id(), &chan_id, false);
+	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
 
 	// Mark dst's signer as available and retry: we now expect to see dst's `commitment_signed`.
-	dst.set_channel_signer_available(&src.node.get_our_node_id(), &chan_id, true);
+	dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
 
 	let events = dst.node.get_and_clear_pending_msg_events();
@@ -215,7 +216,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 
 	// Now let's make node[1]'s signer be unavailable while handling the `funding_created`. It should
 	// *not* broadcast a `funding_signed`...
-	nodes[1].set_channel_signer_available(&nodes[0].node.get_our_node_id(), &temporary_channel_id, false);
+	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors(&nodes[1], 1);
 
@@ -230,7 +231,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 	};
 
 	// At this point, we basically expect the channel to open like a normal zero-conf channel.
-	nodes[1].set_channel_signer_available(&nodes[0].node.get_our_node_id(), &chan_id, true);
+	nodes[1].enable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	nodes[1].node.signer_unblocked(Some((nodes[0].node.get_our_node_id(), chan_id)));
 
 	let (funding_signed, channel_ready_1) = {
@@ -299,7 +300,7 @@ fn test_async_commitment_signature_for_peer_disconnect() {
 
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
-	dst.set_channel_signer_available(&src.node.get_our_node_id(), &chan_id, false);
+	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
@@ -314,7 +315,7 @@ fn test_async_commitment_signature_for_peer_disconnect() {
 	reconnect_nodes(reconnect_args);
 
 	// Mark dst's signer as available and retry: we now expect to see dst's `commitment_signed`.
-	dst.set_channel_signer_available(&src.node.get_our_node_id(), &chan_id, true);
+	dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
 
 	{
@@ -366,7 +367,6 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 	let error_message = "Channel force-closed";
 
-	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, false);
 
 	if remote_commitment {
 		// Make the counterparty broadcast its latest commitment.
@@ -375,6 +375,8 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 		check_closed_broadcast(&nodes[1], 1, true);
 		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[0].node.get_our_node_id()], 100_000);
 	} else {
+		nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignHolderCommitment);
+		nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignHolderHtlcTransaction);
 		// We'll connect blocks until the sender has to go onchain to time out the HTLC.
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 
@@ -383,7 +385,8 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 		assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 
 		// Mark it as available now, we should see the signed commitment transaction.
-		nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, true);
+		nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignHolderCommitment);
+		nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignHolderHtlcTransaction);
 		get_monitor!(nodes[0], chan_id).signer_unblocked(nodes[0].tx_broadcaster, nodes[0].fee_estimator, &nodes[0].logger);
 	}
 
@@ -409,7 +412,13 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 
 	// Mark it as unavailable again to now test the HTLC transaction. We'll mine the commitment such
 	// that the HTLC transaction is retried.
-	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, false);
+	let sign_htlc_op = if remote_commitment {
+		SignerOp::SignCounterpartyHtlcTransaction
+	} else {
+		SignerOp::SignHolderHtlcTransaction
+	};
+	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignHolderCommitment);
+	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, sign_htlc_op);
 	mine_transaction(&nodes[0], &commitment_tx);
 
 	check_added_monitors(&nodes[0], 1);
@@ -426,10 +435,12 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	if anchors && !remote_commitment {
 		handle_bump_htlc_event(&nodes[0], 1);
 	}
-	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+	let txn = nodes[0].tx_broadcaster.txn_broadcast();
+	assert!(txn.is_empty(), "expected no transaction to be broadcast, got {:?}", txn);
 
 	// Mark it as available now, we should see the signed HTLC transaction.
-	nodes[0].set_channel_signer_available(&nodes[1].node.get_our_node_id(), &chan_id, true);
+	nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignHolderCommitment);
+	nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, sign_htlc_op);
 	get_monitor!(nodes[0], chan_id).signer_unblocked(nodes[0].tx_broadcaster, nodes[0].fee_estimator, &nodes[0].logger);
 
 	if anchors && !remote_commitment {
@@ -443,9 +454,21 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 }
 
 #[test]
-fn test_async_holder_signatures() {
+fn test_async_holder_signatures_no_anchors() {
 	do_test_async_holder_signatures(false, false);
+}
+
+#[test]
+fn test_async_holder_signatures_remote_commitment_no_anchors() {
 	do_test_async_holder_signatures(false, true);
+}
+
+#[test]
+fn test_async_holder_signatures_anchors() {
 	do_test_async_holder_signatures(true, false);
+}
+
+#[test]
+fn test_async_holder_signatures_remote_commitment_anchors() {
 	do_test_async_holder_signatures(true, true);
 }
