@@ -912,7 +912,7 @@ pub(crate) enum RAAMonitorUpdateBlockingAction {
 	},
 	/// We claimed an MPP payment across multiple channels. We have to block removing the payment
 	/// preimage from any monitor until the last monitor is updated to contain the payment
-	/// preimage. Otherwise we may not be able to replay the preimage on the monitor(s) which
+	/// preimage. Otherwise we may not be able to replay the preimage on the monitor(s) that
 	/// weren't updated on startup.
 	///
 	/// This variant is *not* written to disk, instead being inferred from [`ChannelMonitor`]
