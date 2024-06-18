@@ -757,7 +757,7 @@ enum BackgroundEvent {
 	},
 }
 
-/// A pointer to a channel which is unblocked when an event is surfaced
+/// A pointer to a channel that is unblocked when an event is surfaced
 #[derive(Debug)]
 pub(crate) struct EventUnblockedChannel {
 	counterparty_node_id: PublicKey,
