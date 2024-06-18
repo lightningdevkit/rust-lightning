@@ -427,14 +427,13 @@ fn async_response_over_one_blinded_hop() {
 
 	// 2. Define the message sent from Bob to Alice.
 	let message = TestCustomMessage::Ping;
-	let path_id = Some([2; 32]);
 
 	// 3. Simulate the creation of a Blinded Reply path provided by Bob.
 	let secp_ctx = Secp256k1::new();
 	let reply_path = BlindedPath::new_for_message(&[], nodes[1].node_id, &*nodes[1].entropy_source, &secp_ctx).unwrap();
 
 	// 4. Create a responder using the reply path for Alice.
-	let responder = Some(Responder::new(reply_path, path_id));
+	let responder = Some(Responder::new(reply_path));
 
 	// 5. Expect Alice to receive the message and create a response instruction for it.
 	alice.custom_message_handler.expect_message(message.clone());
@@ -466,11 +465,10 @@ fn async_response_with_reply_path_succeeds() {
 
 	// Alice receives a message from Bob with an added reply_path for responding back.
 	let message = TestCustomMessage::Ping;
-	let path_id = Some([2; 32]);
 	let reply_path = BlindedPath::new_for_message(&[], bob.node_id, &*bob.entropy_source, &secp_ctx).unwrap();
 
 	// Alice asynchronously responds to Bob, expecting a response back from him.
-	let responder = Responder::new(reply_path, path_id);
+	let responder = Responder::new(reply_path);
 	alice.custom_message_handler.expect_message_and_response(message.clone());
 	let response_instruction = alice.custom_message_handler.handle_custom_message(message, Some(responder));
 
@@ -503,13 +501,12 @@ fn async_response_with_reply_path_fails() {
 
 	// Alice receives a message from Bob with an added reply_path for responding back.
 	let message = TestCustomMessage::Ping;
-	let path_id = Some([2; 32]);
 	let reply_path = BlindedPath::new_for_message(&[], bob.node_id, &*bob.entropy_source, &secp_ctx).unwrap();
 
 	// Alice tries to asynchronously respond to Bob, but fails because the nodes are unannounced and
 	// disconnected. Thus, a reply path could no be created for the response.
 	disconnect_peers(alice, bob);
-	let responder = Responder::new(reply_path, path_id);
+	let responder = Responder::new(reply_path);
 	alice.custom_message_handler.expect_message_and_response(message.clone());
 	let response_instruction = alice.custom_message_handler.handle_custom_message(message, Some(responder));
 

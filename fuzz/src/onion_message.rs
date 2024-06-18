@@ -346,9 +346,9 @@ mod tests {
 						"Received an onion message with path_id None and a reply_path: Custom(TestCustomMessage)"
 						.to_string())), Some(&1));
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
-						"Constructing onion message when responding with Custom Message to an onion message with path_id None: TestCustomMessage".to_string())), Some(&1));
+						"Constructing onion message when responding with Custom Message to an onion message: TestCustomMessage".to_string())), Some(&1));
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
-						"Buffered onion message when responding with Custom Message to an onion message with path_id None".to_string())), Some(&1));
+						"Buffered onion message when responding with Custom Message to an onion message".to_string())), Some(&1));
 		}
 
 		let two_unblinded_hops_om = "\
