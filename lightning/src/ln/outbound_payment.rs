@@ -71,7 +71,7 @@ pub(crate) enum PendingOutboundPayment {
 		keysend_preimage: Option<PaymentPreimage>,
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
 		pending_amt_msat: u64,
-		/// Used to track the fee paid. Only present if the payment was serialized on 0.0.103+.
+		/// Used to track the fee paid. Present iff the payment was serialized on 0.0.103+.
 		pending_fee_msat: Option<u64>,
 		/// The total payment amount across all paths, used to verify that a retry is not overpaying.
 		total_msat: u64,
