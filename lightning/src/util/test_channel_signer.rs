@@ -18,7 +18,7 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use core::{cmp, fmt};
+use core::cmp;
 use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;
 
@@ -71,9 +71,6 @@ pub struct TestChannelSigner {
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
-	/// Set of signer operations that are disabled. If an operation is disabled,
-	/// the signer will return `Err` when the corresponding method is called.
-	pub disabled_signer_ops: Arc<Mutex<HashSet<SignerOp>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -93,23 +90,23 @@ pub enum SignerOp {
 	SignChannelAnnouncementWithFundingKey,
 }
 
-impl fmt::Display for SignerOp {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		match self {
-			SignerOp::GetPerCommitmentPoint => write!(f, "get_per_commitment_point"),
-			SignerOp::ReleaseCommitmentSecret => write!(f, "release_commitment_secret"),
-			SignerOp::ValidateHolderCommitment => write!(f, "validate_holder_commitment"),
-			SignerOp::SignCounterpartyCommitment => write!(f, "sign_counterparty_commitment"),
-			SignerOp::ValidateCounterpartyRevocation => write!(f, "validate_counterparty_revocation"),
-			SignerOp::SignHolderCommitment => write!(f, "sign_holder_commitment"),
-			SignerOp::SignJusticeRevokedOutput => write!(f, "sign_justice_revoked_output"),
-			SignerOp::SignJusticeRevokedHtlc => write!(f, "sign_justice_revoked_htlc"),
-			SignerOp::SignHolderHtlcTransaction => write!(f, "sign_holder_htlc_transaction"),
-			SignerOp::SignCounterpartyHtlcTransaction => write!(f, "sign_counterparty_htlc_transaction"),
-			SignerOp::SignClosingTransaction => write!(f, "sign_closing_transaction"),
-			SignerOp::SignHolderAnchorInput => write!(f, "sign_holder_anchor_input"),
-			SignerOp::SignChannelAnnouncementWithFundingKey => write!(f, "sign_channel_announcement_with_funding_key"),
-		}
+impl SignerOp {
+	pub fn all() -> Vec<Self> {
+		vec![
+			SignerOp::GetPerCommitmentPoint,
+			SignerOp::ReleaseCommitmentSecret,
+			SignerOp::ValidateHolderCommitment,
+			SignerOp::SignCounterpartyCommitment,
+			SignerOp::ValidateCounterpartyRevocation,
+			SignerOp::SignHolderCommitment,
+			SignerOp::SignJusticeRevokedOutput,
+			SignerOp::SignJusticeRevokedHtlc,
+			SignerOp::SignHolderHtlcTransaction,
+			SignerOp::SignCounterpartyHtlcTransaction,
+			SignerOp::SignClosingTransaction,
+			SignerOp::SignHolderAnchorInput,
+			SignerOp::SignChannelAnnouncementWithFundingKey,
+		]
 	}
 }
 
@@ -127,7 +124,6 @@ impl TestChannelSigner {
 			inner,
 			state,
 			disable_revocation_policy_check: false,
-			disabled_signer_ops: Arc::new(Mutex::new(new_hash_set())),
 		}
 	}
 
@@ -141,7 +137,6 @@ impl TestChannelSigner {
 			inner,
 			state,
 			disable_revocation_policy_check,
-			disabled_signer_ops: Arc::new(Mutex::new(new_hash_set())),
 		}
 	}
 
@@ -152,16 +147,19 @@ impl TestChannelSigner {
 		self.state.lock().unwrap()
 	}
 
-	pub fn enable_op(&mut self, signer_op: SignerOp) {
-		self.disabled_signer_ops.lock().unwrap().remove(&signer_op);
+	#[cfg(test)]
+	pub fn enable_op(&self, signer_op: SignerOp) {
+		self.get_enforcement_state().disabled_signer_ops.remove(&signer_op);
 	}
 
-	pub fn disable_op(&mut self, signer_op: SignerOp) {
-		self.disabled_signer_ops.lock().unwrap().insert(signer_op);
+	#[cfg(test)]
+	pub fn disable_op(&self, signer_op: SignerOp) {
+		self.get_enforcement_state().disabled_signer_ops.insert(signer_op);
 	}
 
+	#[cfg(test)]
 	fn is_signer_available(&self, signer_op: SignerOp) -> bool {
-		!self.disabled_signer_ops.lock().unwrap().contains(&signer_op)
+		!self.get_enforcement_state().disabled_signer_ops.contains(&signer_op)
 	}
 }
 
@@ -189,6 +187,7 @@ impl ChannelSigner for TestChannelSigner {
 	}
 
 	fn validate_counterparty_revocation(&self, idx: u64, _secret: &SecretKey) -> Result<(), ()> {
+		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::ValidateCounterpartyRevocation) {
 			return Err(());
 		}
@@ -212,6 +211,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		self.verify_counterparty_commitment_tx(commitment_tx, secp_ctx);
 
 		{
+			#[cfg(test)]
 			if !self.is_signer_available(SignerOp::SignCounterpartyCommitment) {
 				return Err(());
 			}
@@ -231,6 +231,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_holder_commitment(&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignHolderCommitment) {
 			return Err(());
 		}
@@ -252,6 +253,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_justice_revoked_output(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignJusticeRevokedOutput) {
 			return Err(());
 		}
@@ -259,6 +261,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_justice_revoked_htlc(&self, justice_tx: &Transaction, input: usize, amount: u64, per_commitment_key: &SecretKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignJusticeRevokedHtlc) {
 			return Err(());
 		}
@@ -269,6 +272,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		&self, htlc_tx: &Transaction, input: usize, htlc_descriptor: &HTLCDescriptor,
 		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()> {
+		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignHolderHtlcTransaction) {
 			return Err(());
 		}
@@ -305,6 +309,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	}
 
 	fn sign_counterparty_htlc_transaction(&self, htlc_tx: &Transaction, input: usize, amount: u64, per_commitment_point: &PublicKey, htlc: &HTLCOutputInCommitment, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignCounterpartyHtlcTransaction) {
 			return Err(());
 		}
@@ -324,6 +329,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		// As long as our minimum dust limit is enforced and is greater than our anchor output
 		// value, an anchor output can only have an index within [0, 1].
 		assert!(anchor_tx.input[input].previous_output.vout == 0 || anchor_tx.input[input].previous_output.vout == 1);
+		#[cfg(test)]
 		if !self.is_signer_available(SignerOp::SignHolderAnchorInput) {
 			return Err(());
 		}
@@ -417,6 +423,9 @@ pub struct EnforcementState {
 	pub last_holder_revoked_commitment: u64,
 	/// The last validated holder commitment number, backwards counting
 	pub last_holder_commitment: u64,
+	/// Set of signer operations that are disabled. If an operation is disabled,
+	/// the signer will return `Err` when the corresponding method is called.
+	pub disabled_signer_ops: HashSet<SignerOp>,
 }
 
 impl EnforcementState {
@@ -427,6 +436,7 @@ impl EnforcementState {
 			last_counterparty_revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 			last_holder_revoked_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
 			last_holder_commitment: INITIAL_REVOKED_COMMITMENT_NUMBER,
+			disabled_signer_ops: new_hash_set(),
 		}
 	}
 }
