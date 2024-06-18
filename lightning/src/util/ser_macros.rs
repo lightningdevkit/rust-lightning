@@ -1104,7 +1104,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 		$crate::_impl_writeable_tlv_based_enum_common!($st,
 			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*
 			$(, $((255, $unread_variant) => {}),*)?
-			$(; $(($tuple_variant_id, $tuple_variant_name)),*)*);
+			; $($(($tuple_variant_id, $tuple_variant_name)),*)?);
 
 		impl $crate::util::ser::MaybeReadable for $st {
 			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Option<Self>, $crate::ln::msgs::DecodeError> {
