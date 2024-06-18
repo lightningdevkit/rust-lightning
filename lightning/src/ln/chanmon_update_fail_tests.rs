@@ -1612,7 +1612,10 @@ fn test_monitor_update_fail_claim() {
 	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	// As long as the preimage isn't on-chain, we shouldn't expose the `PaymentClaimed` event to
+	// users nor send the preimage to peers in the new commitment update.
 	nodes[1].node.claim_funds(payment_preimage_1);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 
