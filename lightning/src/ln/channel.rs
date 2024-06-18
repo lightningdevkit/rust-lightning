@@ -992,6 +992,34 @@ impl HolderCommitmentPoint {
 		}
 	}
 
+	/// If we are pending the next commitment point, this method tries asking the signer again,
+	/// and transitions to the next state if successful.
+	///
+	/// This method is used for the following transitions:
+	/// - `PendingNext` -> `Available`
+	pub fn try_resolve_pending<SP: Deref, L: Deref>(&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L)
+		where SP::Target: SignerProvider, L::Target: Logger
+	{
+		if let HolderCommitmentPoint::PendingNext { transaction_number, current } = self {
+			let next = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx);
+			log_trace!(logger, "Retrieved next per-commitment point {}", *transaction_number - 1);
+			*self = HolderCommitmentPoint::Available { transaction_number: *transaction_number, current: *current, next };
+		}
+	}
+
+	/// If we are not pending the next commitment point, this method advances the commitment number
+	/// and requests the next commitment point from the signer.
+	///
+	/// If our signer is not ready to provide the next commitment point, we will
+	/// only advance to `PendingNext`, and should be tried again later in `signer_unblocked`
+	/// via `try_resolve_pending`.
+	///
+	/// If our signer is ready to provide the next commitment point, we will advance all the
+	/// way to `Available`.
+	///
+	/// This method is used for the following transitions:
+	/// - `Available` -> `PendingNext`
+	/// - `Available` -> `PendingNext` -> `Available` (in one fell swoop)
 	pub fn advance<SP: Deref, L: Deref>(&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L)
 		where SP::Target: SignerProvider, L::Target: Logger
 	{
@@ -1000,12 +1028,7 @@ impl HolderCommitmentPoint {
 				transaction_number: *transaction_number - 1,
 				current: *next,
 			};
-		}
-
-		if let HolderCommitmentPoint::PendingNext { transaction_number, current } = self {
-			let next = signer.as_ref().get_per_commitment_point(*transaction_number - 1, secp_ctx);
-			log_trace!(logger, "Retrieved next per-commitment point {}", *transaction_number - 1);
-			*self = HolderCommitmentPoint::Available { transaction_number: *transaction_number, current: *current, next };
+			self.try_resolve_pending(signer, secp_ctx, logger);
 		}
 	}
 }
