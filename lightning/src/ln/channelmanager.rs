@@ -889,11 +889,7 @@ impl Eq for PendingMPPClaimPointer {}
 
 impl core::fmt::Debug for PendingMPPClaimPointer {
 	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
-		let state = self.0.lock().unwrap();
-		f.debug_struct("PendingMPPClaimPointer")
-			.field("channels_without_preimage", &state.channels_without_preimage)
-			.field("channels_with_preimage", &state.channels_with_preimage)
-			.finish()
+		self.0.lock().unwrap().fmt(f)
 	}
 }
 
