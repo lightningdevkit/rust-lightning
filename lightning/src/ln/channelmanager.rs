@@ -927,55 +927,14 @@ impl RAAMonitorUpdateBlockingAction {
 	}
 }
 
-impl Writeable for RAAMonitorUpdateBlockingAction {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		match self {
-			RAAMonitorUpdateBlockingAction::ForwardedPaymentInboundClaim { channel_id, htlc_id } => {
-				0u8.write(writer)?;
-				write_tlv_fields!(writer, {
-					(0, channel_id, required),
-					(2, htlc_id, required),
-				});
-			},
-			RAAMonitorUpdateBlockingAction::ClaimedMPPPayment { .. } => {
-				1u8.write(writer)?;
-				write_tlv_fields!(writer, {});
-				// This is rebuilt on restart, so we don't bother writing it.
-			},
-		}
-		Ok(())
-	}
-}
+impl_writeable_tlv_based_enum_upgradable!(RAAMonitorUpdateBlockingAction,
+	(0, ForwardedPaymentInboundClaim) => { (0, channel_id, required), (2, htlc_id, required) },
+	unread_variants: ClaimedMPPPayment
+);
 
 impl Readable for Option<RAAMonitorUpdateBlockingAction> {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		Ok(RAAMonitorUpdateBlockingAction::read(reader)?)
-	}
-}
-
-impl MaybeReadable for RAAMonitorUpdateBlockingAction {
-	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
-		match <u8 as Readable>::read(reader)? {
-			0 => {
-				_init_and_read_len_prefixed_tlv_fields!(reader, {
-					(0, channel_id, required),
-					(2, htlc_id, required),
-				});
-				Ok(Some(RAAMonitorUpdateBlockingAction::ForwardedPaymentInboundClaim {
-					channel_id: channel_id.0.unwrap(),
-					htlc_id: htlc_id.0.unwrap(),
-				}))
-			},
-			// 1 is ClaimedMPPPayment and is handled in the general odd handling below
-			x if x % 2 == 1 => {
-				// Discard the contents
-				let tlv_len: BigSize = Readable::read(reader)?;
-				FixedLengthReader::new(reader, tlv_len.0)
-					.eat_remaining().map_err(|_| DecodeError::ShortRead)?;
-				Ok(None)
-			},
-			_ => Err(DecodeError::InvalidValue),
-		}
 	}
 }
 
