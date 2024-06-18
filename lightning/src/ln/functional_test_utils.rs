@@ -31,6 +31,8 @@ use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::scid_utils;
 use crate::util::test_channel_signer::TestChannelSigner;
+#[cfg(test)]
+use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_utils;
 use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
@@ -482,46 +484,74 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	pub fn get_block_header(&self, height: u32) -> Header {
 		self.blocks.lock().unwrap()[height as usize].0.header
 	}
-	/// Changes the channel signer's availability for the specified peer and channel.
-	///
-	/// When `available` is set to `true`, the channel signer will behave normally. When set to
-	/// `false`, the channel signer will act like an off-line remote signer and will return `Err` for
-	/// several of the signing methods. Currently, only `get_per_commitment_point` and
-	/// `release_commitment_secret` are affected by this setting.
+
+	/// Toggles this node's signer to be available for the given signer operation.
+	/// This is useful for testing behavior for restoring an async signer that previously
+	/// could not return a signature immediately.
 	#[cfg(test)]
-	pub fn set_channel_signer_available(&self, peer_id: &PublicKey, chan_id: &ChannelId, available: bool) {
+	pub fn enable_channel_signer_op(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp) {
+		self.set_channel_signer_ops(peer_id, chan_id, signer_op, true);
+	}
+
+	/// Toggles this node's signer to be unavailable, returning `Err` for the given signer operation.
+	/// This is useful for testing behavior for an async signer that cannot return a signature
+	/// immediately.
+	#[cfg(test)]
+	pub fn disable_channel_signer_op(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp) {
+		self.set_channel_signer_ops(peer_id, chan_id, signer_op, false);
+	}
+
+	/// Changes the channel signer's availability for the specified peer, channel, and signer
+	/// operation.
+	///
+	/// For the specified signer operation, when `available` is set to `true`, the channel signer
+	/// will behave normally, returning `Ok`. When set to `false`, and the channel signer will
+	/// act like an off-line remote signer, returning `Err`. This applies to the signer in all
+	/// relevant places, i.e. the channel manager, chain monitor, and the keys manager.
+	#[cfg(test)]
+	fn set_channel_signer_ops(&self, peer_id: &PublicKey, chan_id: &ChannelId, signer_op: SignerOp, available: bool) {
 		use crate::sign::ChannelSigner;
 		log_debug!(self.logger, "Setting channel signer for {} as available={}", chan_id, available);
 
 		let per_peer_state = self.node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(peer_id).unwrap().lock().unwrap();
+		let mut chan_lock = per_peer_state.get(peer_id).unwrap().lock().unwrap();
 
 		let mut channel_keys_id = None;
-		if let Some(chan) = chan_lock.channel_by_id.get(chan_id).map(|phase| phase.context()) {
-			chan.get_signer().as_ecdsa().unwrap().set_available(available);
+		if let Some(chan) = chan_lock.channel_by_id.get_mut(chan_id).map(|phase| phase.context_mut()) {
+			let signer = chan.get_mut_signer().as_mut_ecdsa().unwrap();
+			if available {
+				signer.enable_op(signer_op);
+			} else {
+				signer.disable_op(signer_op);
+			}
 			channel_keys_id = Some(chan.channel_keys_id);
 		}
 
-		let mut monitor = None;
-		for (funding_txo, channel_id) in self.chain_monitor.chain_monitor.list_monitors() {
-			if *chan_id == channel_id {
-				monitor = self.chain_monitor.chain_monitor.get_monitor(funding_txo).ok();
-			}
-		}
+		let monitor = self.chain_monitor.chain_monitor.list_monitors().into_iter()
+			.find(|(_, channel_id)| *channel_id == *chan_id)
+			.and_then(|(funding_txo, _)| self.chain_monitor.chain_monitor.get_monitor(funding_txo).ok());
 		if let Some(monitor) = monitor {
-			monitor.do_signer_call(|signer| {
+			monitor.do_mut_signer_call(|signer| {
 				channel_keys_id = channel_keys_id.or(Some(signer.inner.channel_keys_id()));
-				signer.set_available(available)
+				if available {
+					signer.enable_op(signer_op);
+				} else {
+					signer.disable_op(signer_op);
+				}
 			});
 		}
 
+		let channel_keys_id = channel_keys_id.unwrap();
+		let mut unavailable_signers_ops = self.keys_manager.unavailable_signers_ops.lock().unwrap();
+		let entry = unavailable_signers_ops.entry(channel_keys_id).or_insert(new_hash_set());
 		if available {
-			self.keys_manager.unavailable_signers.lock().unwrap()
-				.remove(channel_keys_id.as_ref().unwrap());
+			entry.remove(&signer_op);
+			if entry.is_empty() {
+				unavailable_signers_ops.remove(&channel_keys_id);
+			}
 		} else {
-			self.keys_manager.unavailable_signers.lock().unwrap()
-				.insert(channel_keys_id.unwrap());
-		}
+			entry.insert(signer_op);
+		};
 	}
 }
 

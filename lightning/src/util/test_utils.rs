@@ -79,6 +79,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
 
+use super::test_channel_signer::SignerOp;
+
 pub fn pubkey(byte: u8) -> PublicKey {
 	let secp_ctx = Secp256k1::new();
 	PublicKey::from_secret_key(&secp_ctx, &privkey(byte))
@@ -1215,6 +1217,7 @@ pub struct TestKeysInterface {
 	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 	pub unavailable_signers: Mutex<HashSet<[u8; 32]>>,
+	pub unavailable_signers_ops: Mutex<HashMap<[u8; 32], HashSet<SignerOp>>>,
 }
 
 impl EntropySource for TestKeysInterface {
@@ -1273,9 +1276,11 @@ impl SignerProvider for TestKeysInterface {
 	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
-		let signer = TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check);
-		if self.unavailable_signers.lock().unwrap().contains(&channel_keys_id) {
-			signer.set_available(false);
+		let mut signer = TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check);
+		if let Some(ops) = self.unavailable_signers_ops.lock().unwrap().get(&channel_keys_id) {
+			for &op in ops {
+				signer.disable_op(op);
+			}
 		}
 		signer
 	}
@@ -1316,6 +1321,7 @@ impl TestKeysInterface {
 			enforcement_states: Mutex::new(new_hash_map()),
 			expectations: Mutex::new(None),
 			unavailable_signers: Mutex::new(new_hash_set()),
+			unavailable_signers_ops: Mutex::new(new_hash_map()),
 		}
 	}
 

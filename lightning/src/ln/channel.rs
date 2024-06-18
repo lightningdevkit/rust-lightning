@@ -2118,8 +2118,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Returns the holder signer for this channel.
 	#[cfg(test)]
-	pub fn get_signer(&self) -> &ChannelSignerType<SP> {
-		return &self.holder_signer
+	pub fn get_mut_signer(&mut self) -> &mut ChannelSignerType<SP> {
+		return &mut self.holder_signer
 	}
 
 	/// Only allowed immediately after deserialization if get_outbound_scid_alias returns 0,

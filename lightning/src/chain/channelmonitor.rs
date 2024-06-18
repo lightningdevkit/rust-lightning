@@ -1924,9 +1924,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	#[cfg(test)]
-	pub fn do_signer_call<F: FnMut(&Signer) -> ()>(&self, mut f: F) {
-		let inner = self.inner.lock().unwrap();
-		f(&inner.onchain_tx_handler.signer);
+	pub fn do_mut_signer_call<F: FnMut(&mut Signer) -> ()>(&self, mut f: F) {
+		let mut inner = self.inner.lock().unwrap();
+		f(&mut inner.onchain_tx_handler.signer);
 	}
 }
 
