@@ -1008,7 +1008,9 @@ impl HolderCommitmentPoint {
 	}
 
 	/// If we are not pending the next commitment point, this method advances the commitment number
-	/// and requests the next commitment point from the signer.
+	/// and requests the next commitment point from the signer. Returns `Ok` if we were at
+	/// `Available` and were able to advance our commitment number (even if we are still pending
+	/// the next commitment point).
 	///
 	/// If our signer is not ready to provide the next commitment point, we will remain in the
 	/// only advance to `PendingNext`, and should be tried again later in `signer_unblocked`
@@ -1020,7 +1022,9 @@ impl HolderCommitmentPoint {
 	/// This method is used for the following transitions:
 	/// - `Available` -> `PendingNext`
 	/// - `Available` -> `PendingNext` -> `Available` (in one fell swoop)
-	pub fn advance<SP: Deref, L: Deref>(&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L)
+	pub fn advance<SP: Deref, L: Deref>(
+		&mut self, signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>, logger: &L
+	) -> Result<(), ()>
 		where SP::Target: SignerProvider, L::Target: Logger
 	{
 		if let HolderCommitmentPoint::Available { transaction_number, next, .. } = self {
@@ -1029,7 +1033,9 @@ impl HolderCommitmentPoint {
 				current: *next,
 			};
 			self.try_resolve_pending(signer, secp_ctx, logger);
+			return Ok(());
 		}
+		Err(())
 	}
 }
 
@@ -4615,7 +4621,8 @@ impl<SP: Deref> Channel<SP> where
 			channel_id: Some(self.context.channel_id()),
 		};
 
-		self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger)
+			.map_err(|_| ChannelError::close("Failed to advance our commitment point".to_owned()))?;
 		self.context.expecting_peer_commitment_signed = false;
 		// Note that if we need_commitment & !AwaitingRemoteRevoke we'll call
 		// build_commitment_no_status_check() next which will reset this to RAAFirst.
@@ -7789,7 +7796,9 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		} else {
 			self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		}
-		self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		if self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
+			return Err((self, ChannelError::close("Failed to advance holder commitment point".to_owned())));
+		}
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
@@ -8057,7 +8066,9 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 		self.context.channel_id = ChannelId::v1_from_funding_outpoint(funding_txo);
 		self.context.cur_counterparty_commitment_transaction_number -= 1;
-		self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		if self.context.holder_commitment_point.advance(&self.context.holder_signer, &self.context.secp_ctx, logger).is_err() {
+			return Err((self, ChannelError::close("Failed to advance holder commitment point".to_owned())));
+		}
 
 		let (counterparty_initial_commitment_tx, funding_signed) = self.context.get_funding_signed_msg(logger);
 
