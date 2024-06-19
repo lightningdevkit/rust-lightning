@@ -6535,13 +6535,12 @@ where
 				// prev_hop.counterparty_node_id is always available for payments received after
 				// LDK 0.0.123, but for those received on 0.0.123 and claimed later, we need to
 				// look up the counterparty in the `action_opt`, if possible.
-				if let Some(action) = &action_opt {
+				action_opt.as_ref().and_then(|action|
 					if let MonitorUpdateCompletionAction::PaymentClaimed { pending_mpp_claim, .. } = action {
-						if let Some((node_id, _, _, _)) = pending_mpp_claim {
-							Some(*node_id)
-						} else { None }
+						pending_mpp_claim.as_ref().map(|(node_id, _, _, _)| *node_id)
 					} else { None }
-				} else { None });
+				)
+			);
 			if let Some(counterparty_node_id) = counterparty_node_id {
 				// TODO: Avoid always blocking the world for the write lock here.
 				let mut per_peer_state = self.per_peer_state.write().unwrap();
