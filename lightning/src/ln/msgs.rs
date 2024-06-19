@@ -183,10 +183,10 @@ pub struct Pong {
 	pub byteslen: u16,
 }
 
-/// Contains fields that are both common to [`open_channel`] and `open_channel2` messages.
+/// Contains fields that are both common to [`open_channel`] and [`open_channel2`] messages.
 ///
 /// [`open_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
-// TODO(dual_funding): Add spec link for `open_channel2`.
+/// [`open_channel2`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel2-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CommonOpenChannelFields {
 	/// The genesis hash of the blockchain where the channel is to be opened
@@ -288,11 +288,11 @@ pub struct OpenChannel {
 	pub channel_reserve_satoshis: u64,
 }
 
-/// An open_channel2 message to be sent by or received from the channel initiator.
+/// An [`open_channel2`] message to be sent by or received from the channel initiator.
 ///
 /// Used in V2 channel establishment
 ///
-// TODO(dual_funding): Add spec link for `open_channel2`.
+/// [`open_channel2`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel2-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct OpenChannelV2 {
 	/// Common fields of `open_channel(2)`-like messages
@@ -307,10 +307,10 @@ pub struct OpenChannelV2 {
 	pub require_confirmed_inputs: Option<()>,
 }
 
-/// Contains fields that are both common to [`accept_channel`] and `accept_channel2` messages.
+/// Contains fields that are both common to [`accept_channel`] and [`accept_channel2`] messages.
 ///
 /// [`accept_channel`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel-message
-// TODO(dual_funding): Add spec link for `accept_channel2`.
+/// [`accept_channel2`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel2-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CommonAcceptChannelFields {
 	/// The same `temporary_channel_id` received from the initiator's `open_channel2` or `open_channel` message.
@@ -370,11 +370,11 @@ pub struct AcceptChannel {
 	pub next_local_nonce: Option<musig2::types::PublicNonce>,
 }
 
-/// An accept_channel2 message to be sent by or received from the channel accepter.
+/// An [`accept_channel2`] message to be sent by or received from the channel accepter.
 ///
 /// Used in V2 channel establishment
 ///
-// TODO(dual_funding): Add spec link for `accept_channel2`.
+/// [`accept_channel2`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel2-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct AcceptChannelV2 {
 	/// Common fields of `accept_channel(2)`-like messages
@@ -504,9 +504,9 @@ pub struct SpliceLocked {
 	pub splice_txid: Txid,
 }
 
-/// A tx_add_input message for adding an input during interactive transaction construction
+/// A [`tx_add_input`] message for adding an input during interactive transaction construction
 ///
-// TODO(dual_funding): Add spec link for `tx_add_input`.
+/// [`tx_add_input`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-tx_add_input-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxAddInput {
 	/// The channel ID
@@ -525,9 +525,9 @@ pub struct TxAddInput {
 	pub shared_input_txid: Option<Txid>,
 }
 
-/// A tx_add_output message for adding an output during interactive transaction construction.
+/// A [`tx_add_output`] message for adding an output during interactive transaction construction.
 ///
-// TODO(dual_funding): Add spec link for `tx_add_output`.
+/// [`tx_add_output`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-tx_add_output-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxAddOutput {
 	/// The channel ID
@@ -541,9 +541,9 @@ pub struct TxAddOutput {
 	pub script: ScriptBuf,
 }
 
-/// A tx_remove_input message for removing an input during interactive transaction construction.
+/// A [`tx_remove_input`] message for removing an input during interactive transaction construction.
 ///
-// TODO(dual_funding): Add spec link for `tx_remove_input`.
+/// [`tx_remove_input`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-tx_remove_input-and-tx_remove_output-messages
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxRemoveInput {
 	/// The channel ID
@@ -552,9 +552,9 @@ pub struct TxRemoveInput {
 	pub serial_id: SerialId,
 }
 
-/// A tx_remove_output message for removing an output during interactive transaction construction.
+/// A [`tx_remove_output`] message for removing an output during interactive transaction construction.
 ///
-// TODO(dual_funding): Add spec link for `tx_remove_output`.
+/// [`tx_remove_output`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-tx_remove_input-and-tx_remove_output-messages
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxRemoveOutput {
 	/// The channel ID
@@ -563,20 +563,20 @@ pub struct TxRemoveOutput {
 	pub serial_id: SerialId,
 }
 
-/// A tx_complete message signalling the conclusion of a peer's transaction contributions during
+/// [`A tx_complete`] message signalling the conclusion of a peer's transaction contributions during
 /// interactive transaction construction.
 ///
-// TODO(dual_funding): Add spec link for `tx_complete`.
+/// [`tx_complete`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-tx_complete-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxComplete {
 	/// The channel ID
 	pub channel_id: ChannelId,
 }
 
-/// A tx_signatures message containing the sender's signatures for a transaction constructed with
+/// A [`tx_signatures`] message containing the sender's signatures for a transaction constructed with
 /// interactive transaction construction.
 ///
-// TODO(dual_funding): Add spec link for `tx_signatures`.
+/// [`tx_signatures`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-tx_signatures-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxSignatures {
 	/// The channel ID
@@ -589,10 +589,10 @@ pub struct TxSignatures {
 	pub shared_input_signature: Option<Signature>,
 }
 
-/// A tx_init_rbf message which initiates a replacement of the transaction after it's been
+/// A [`tx_init_rbf`] message which initiates a replacement of the transaction after it's been
 /// completed.
 ///
-// TODO(dual_funding): Add spec link for `tx_init_rbf`.
+/// [`tx_init_rbf`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-tx_init_rbf-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxInitRbf {
 	/// The channel ID
@@ -606,10 +606,10 @@ pub struct TxInitRbf {
 	pub funding_output_contribution: Option<i64>,
 }
 
-/// A tx_ack_rbf message which acknowledges replacement of the transaction after it's been
+/// A [`tx_ack_rbf`] message which acknowledges replacement of the transaction after it's been
 /// completed.
 ///
-// TODO(dual_funding): Add spec link for `tx_ack_rbf`.
+/// [`tx_ack_rbf`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-tx_ack_rbf-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxAckRbf {
 	/// The channel ID
@@ -619,9 +619,9 @@ pub struct TxAckRbf {
 	pub funding_output_contribution: Option<i64>,
 }
 
-/// A tx_abort message which signals the cancellation of an in-progress transaction negotiation.
+/// A [`tx_abort`] message which signals the cancellation of an in-progress transaction negotiation.
 ///
-// TODO(dual_funding): Add spec link for `tx_abort`.
+/// [`tx_abort`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-tx_abort-message
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct TxAbort {
 	/// The channel ID
