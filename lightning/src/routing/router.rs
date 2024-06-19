@@ -1190,13 +1190,17 @@ pub struct FirstHopCandidate<'a> {
 	pub payer_node_id: &'a NodeId,
 	/// A unique ID which describes the payer.
 	///
-	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but may be equal
-	/// to one if the payer is a public node.
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but may be equal to one if the
+	/// payer is a public node.
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
 	pub(crate) payer_node_counter: u32,
 	/// A unique ID which describes the first hop counterparty.
 	///
-	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but may be equal
-	/// to one if the counterparty is a public node.
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but may be equal to one if the
+	/// counterparty is a public node.
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
 	pub(crate) target_node_counter: u32,
 }
 
@@ -1226,13 +1230,17 @@ pub struct PrivateHopCandidate<'a> {
 	pub target_node_id: &'a NodeId,
 	/// A unique ID which describes the source node of the hop (further from the payment target).
 	///
-	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but may be equal
-	/// to one if the node is a public node.
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but may be equal to one if the
+	/// node is a public node.
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
 	pub(crate) source_node_counter: u32,
 	/// A unique ID which describes the destination node of the hop (towards the payment target).
 	///
-	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but may be equal
-	/// to one if the node is a public node.
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but may be equal to one if the
+	/// node is a public node.
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
 	pub(crate) target_node_counter: u32,
 }
 
@@ -1256,9 +1264,10 @@ pub struct BlindedPathCandidate<'a> {
 	hint_idx: usize,
 	/// A unique ID which describes the introduction point of the blinded path.
 	///
-	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but will generally
-	/// be equal to one from the public network graph (assuming the introduction point is a public
-	/// node).
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but will generally be equal to
+	/// one from the public network graph (assuming the introduction point is a public node).
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
 	source_node_counter: u32,
 }
 
@@ -1284,9 +1293,10 @@ pub struct OneHopBlindedPathCandidate<'a> {
 	hint_idx: usize,
 	/// A unique ID which describes the introduction point of the blinded path.
 	///
-	/// It will not conflict with any [`super::gossip::NodeInfo::node_counter`]s, but will generally
-	/// be equal to one from the public network graph (assuming the introduction point is a public
-	/// node).
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but will generally be equal to
+	/// one from the public network graph (assuming the introduction point is a public node).
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
 	source_node_counter: u32,
 }
 
