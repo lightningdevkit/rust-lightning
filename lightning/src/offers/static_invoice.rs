@@ -565,6 +565,7 @@ mod tests {
 	use crate::offers::invoice::InvoiceTlvStreamRef;
 	use crate::offers::merkle;
 	use crate::offers::merkle::{SignatureTlvStreamRef, TaggedHash};
+	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{Offer, OfferBuilder, OfferTlvStreamRef, Quantity};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::static_invoice::{
@@ -608,13 +609,13 @@ mod tests {
 		let now = now();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
-				.path(blinded_path())
-				.build()
-				.unwrap();
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
 
 		StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
@@ -647,13 +648,13 @@ mod tests {
 		let now = now();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
-				.path(blinded_path())
-				.build()
-				.unwrap();
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
 
 		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
@@ -742,13 +743,14 @@ mod tests {
 		let now = now();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
 
 		let valid_offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.absolute_expiry(future_expiry)
 				.build()
@@ -769,7 +771,7 @@ mod tests {
 		assert_eq!(invoice.absolute_expiry(), Some(future_expiry));
 
 		let expired_offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.absolute_expiry(past_expiry)
 				.build()
@@ -797,10 +799,11 @@ mod tests {
 		let now = now();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		let valid_offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.build()
 				.unwrap();
@@ -860,10 +863,11 @@ mod tests {
 		let now = now();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		let valid_offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.build()
 				.unwrap();
@@ -916,10 +920,11 @@ mod tests {
 		let now = now();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		let offer_with_extra_chain =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.chain(Network::Bitcoin)
 				.chain(Network::Testnet)
@@ -947,13 +952,13 @@ mod tests {
 		let now = now();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
-				.path(blinded_path())
-				.build()
-				.unwrap();
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
 
 		const TEST_RELATIVE_EXPIRY: u32 = 3600;
 		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
@@ -988,13 +993,13 @@ mod tests {
 		let now = now();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
-				.path(blinded_path())
-				.build()
-				.unwrap();
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
 
 		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
 			&offer,
