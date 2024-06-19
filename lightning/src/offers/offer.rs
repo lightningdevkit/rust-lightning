@@ -253,11 +253,10 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 	///
 	/// [`InvoiceRequest::verify`]: crate::offers::invoice_request::InvoiceRequest::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-	pub fn deriving_signing_pubkey<ES: Deref>(
-		node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+	pub fn deriving_signing_pubkey(
+		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'a Secp256k1<$secp_context>
-	) -> Self where ES::Target: EntropySource {
-		let nonce = Nonce::from_entropy_source(entropy_source);
+	) -> Self {
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, None);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Self {
@@ -1163,6 +1162,7 @@ mod tests {
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+	use crate::offers::nonce::Nonce;
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Writeable};
@@ -1277,12 +1277,12 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
-			::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.build().unwrap();
 		assert_eq!(offer.signing_pubkey(), Some(node_id));
@@ -1328,6 +1328,7 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		let blinded_path = BlindedPath {
@@ -1341,8 +1342,7 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
-			::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.path(blinded_path)
 			.build().unwrap();
