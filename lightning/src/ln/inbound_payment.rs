@@ -104,7 +104,7 @@ impl ExpandedKey {
 /// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
 /// [`Offer::signing_pubkey`]: crate::offers::offer::Offer::signing_pubkey
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Nonce(pub(crate) [u8; Self::LENGTH]);
+pub struct Nonce(pub(crate) [u8; Self::LENGTH]);
 
 impl Nonce {
 	/// Number of bytes in the nonce.
