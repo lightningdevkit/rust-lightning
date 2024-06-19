@@ -20,6 +20,7 @@ pub mod invoice_error;
 mod invoice_macros;
 pub mod invoice_request;
 pub mod merkle;
+pub mod nonce;
 pub mod parse;
 mod payer;
 pub mod refund;

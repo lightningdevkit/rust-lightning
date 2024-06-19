@@ -16,8 +16,9 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey, self};
 use core::fmt;
 use crate::ln::channelmanager::PaymentId;
-use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
+use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::offers::merkle::TlvRecord;
+use crate::offers::nonce::Nonce;
 use crate::util::ser::Writeable;
 
 use crate::prelude::*;
