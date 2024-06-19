@@ -6433,14 +6433,14 @@ where
 							}
 							UpdateFulfillCommitFetch::DuplicateClaim {} => {
 								let (action_opt, raa_blocker_opt) = completion_action(None, true);
+								if let Some(raa_blocker) = raa_blocker_opt {
+									debug_assert!(peer_state.actions_blocking_raa_monitor_updates.get(&chan_id).unwrap().contains(&raa_blocker));
+								}
 								let action = if let Some(action) = action_opt {
 									action
 								} else {
 									return;
 								};
-								if let Some(raa_blocker) = raa_blocker_opt {
-									debug_assert!(peer_state.actions_blocking_raa_monitor_updates.get(&chan_id).unwrap().contains(&raa_blocker));
-								}
 
 								mem::drop(peer_state_lock);
 
