@@ -2106,7 +2106,7 @@ where L::Target: Logger {
 		}
 	}
 
-	// Step (1). Prep first and last hop targets.
+	// Step (1). Prepare first and last hop targets.
 	//
 	// First cache all our direct channels so that we can insert them in the heap at startup.
 	// Then process any blinded routes, resolving their introduction node and caching it.
