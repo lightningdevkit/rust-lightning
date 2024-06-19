@@ -55,8 +55,8 @@ impl SplicingChannelValues {
 pub(crate) struct PendingSpliceInfoPre {
 	/// Previous and next channel values
 	values: SplicingChannelValues,
-	/// Reference to the post-splice channel (may be missing if channel_id is not yet known or the same)
-	pub post_channel_id: Option<ChannelId>,
+	// /// Reference to the post-splice channel (may be missing if channel_id is not yet known or the same)
+	// pub post_channel_id: Option<ChannelId>,
 	pub funding_feerate_perkw: u32,
 	pub locktime: u32,
 	/// The funding inputs we will be contributing to the splice.
@@ -65,12 +65,12 @@ pub(crate) struct PendingSpliceInfoPre {
 
 impl PendingSpliceInfoPre {
 	pub(crate) fn new(pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64,
-		post_channel_id: Option<ChannelId>, funding_feerate_perkw: u32, locktime: u32,
+		funding_feerate_perkw: u32, locktime: u32,
 		our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
 	) -> Self {
 		Self {
 			values: SplicingChannelValues { pre_channel_value, our_funding_contribution, their_funding_contribution },
-			post_channel_id, funding_feerate_perkw, locktime, our_funding_inputs,
+			funding_feerate_perkw, locktime, our_funding_inputs,
 		}
 	}
 
@@ -83,9 +83,8 @@ impl PendingSpliceInfoPre {
 pub(crate) struct PendingSpliceInfoPost {
 	/// Previous and next channel values
 	values: SplicingChannelValues,
-	/// Reference to the pre-splice channel (may be missing if channel_id was the same)
-	#[allow(unused)]
-	pub pre_channel_id: Option<ChannelId>,
+	// /// Reference to the pre-splice channel (may be missing if channel_id was the same)
+	// pub pre_channel_id: Option<ChannelId>,
 
 	/// Save here the previous funding transaction
 	pub pre_funding_transaction: Option<Transaction>,
@@ -96,12 +95,11 @@ pub(crate) struct PendingSpliceInfoPost {
 impl PendingSpliceInfoPost {
 	pub(crate) fn new(
 		pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64,
-		pre_channel_id: Option<ChannelId>,
 		pre_funding_transaction: Option<Transaction>, pre_funding_txo: Option<OutPoint>,
 	) -> Self {
 		Self {
 			values: SplicingChannelValues { pre_channel_value, our_funding_contribution, their_funding_contribution },
-			pre_channel_id, pre_funding_transaction, pre_funding_txo,
+			pre_funding_transaction, pre_funding_txo,
 		}
 	}
 
@@ -154,7 +152,7 @@ mod tests {
 	use crate::ln::channel_splice::PendingSpliceInfoPost;
 
 	fn create_pending_splice_info(pre_channel_value: u64, our_funding_contribution: i64, their_funding_contribution: i64) -> PendingSpliceInfoPost {
-		PendingSpliceInfoPost::new(pre_channel_value, our_funding_contribution, their_funding_contribution, None, None, None)
+		PendingSpliceInfoPost::new(pre_channel_value, our_funding_contribution, their_funding_contribution, None, None)
 	}
 
 	#[test]

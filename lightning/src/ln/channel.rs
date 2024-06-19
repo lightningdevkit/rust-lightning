@@ -2377,7 +2377,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			pre_channel_value,
 			our_funding_contribution,
 			their_funding_contribution,
-			Some(context.channel_id),
 			pre_funding_transaction,
 			pre_funding_txo,
 		);

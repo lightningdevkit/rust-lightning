@@ -3529,7 +3529,7 @@ where
 					let their_funding_contribution = 0i64; // not yet known
 					chan.context.pending_splice_pre = Some(PendingSpliceInfoPre::new(
 						pre_channel_value, our_funding_contribution_satoshis, their_funding_contribution,
-						None, funding_feerate_perkw, locktime, funding_inputs
+						funding_feerate_perkw, locktime, funding_inputs
 					));
 
 					// Check channel id
