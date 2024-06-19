@@ -489,7 +489,7 @@ where
 	}
 
 	fn create_blinded_paths_from_iter<
-		I: Iterator<Item = ForwardNode>,
+		I: ExactSizeIterator<Item = ForwardNode>,
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
 		&self, recipient: PublicKey, peers: I, secp_ctx: &Secp256k1<T>, compact_paths: bool
@@ -505,13 +505,20 @@ where
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
 
+		let has_one_peer = peers.len() == 1;
 		let mut peer_info = peers
-			// Limit to peers with announced channels
+			// Limit to peers with announced channels unless the recipient is unannounced.
 			.filter_map(|peer|
 				network_graph
 					.node(&NodeId::from_pubkey(&peer.node_id))
-					.filter(|info| info.channels.len() >= MIN_PEER_CHANNELS)
+					.filter(|info|
+						!is_recipient_announced || info.channels.len() >= MIN_PEER_CHANNELS
+					)
 					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
+					// Allow messages directly with the only peer when unannounced.
+					.or_else(|| (!is_recipient_announced && has_one_peer)
+						.then(|| (peer, false, 0))
+					)
 			)
 			// Exclude Tor-only nodes when the recipient is announced.
 			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))

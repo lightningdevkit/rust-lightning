@@ -100,16 +100,31 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 		// recipient's node_id.
 		const MIN_PEER_CHANNELS: usize = 3;
 
+		let has_one_peer = first_hops
+			.first()
+			.map(|details| details.counterparty.node_id)
+			.map(|node_id| first_hops
+				.iter()
+				.skip(1)
+				.all(|details| details.counterparty.node_id == node_id)
+			)
+			.unwrap_or(false);
+
 		let network_graph = self.network_graph.deref().read_only();
+		let is_recipient_announced =
+			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
+
 		let paths = first_hops.into_iter()
 			.filter(|details| details.counterparty.features.supports_route_blinding())
 			.filter(|details| amount_msats <= details.inbound_capacity_msat)
 			.filter(|details| amount_msats >= details.inbound_htlc_minimum_msat.unwrap_or(0))
 			.filter(|details| amount_msats <= details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX))
+			// Limit to peers with announced channels unless the recipient is unannounced.
 			.filter(|details| network_graph
 					.node(&NodeId::from_pubkey(&details.counterparty.node_id))
-					.map(|node_info| node_info.channels.len() >= MIN_PEER_CHANNELS)
-					.unwrap_or(false)
+					.map(|node| !is_recipient_announced || node.channels.len() >= MIN_PEER_CHANNELS)
+					// Allow payments directly with the only peer when unannounced.
+					.unwrap_or(!is_recipient_announced && has_one_peer)
 			)
 			.filter_map(|details| {
 				let short_channel_id = match details.get_inbound_payment_scid() {
@@ -1028,6 +1043,13 @@ impl Payee {
 		match self {
 			Self::Blinded { route_hints, .. } => &route_hints[..],
 			Self::Clear { .. } => &[]
+		}
+	}
+
+	pub(crate) fn blinded_route_hints_mut(&mut self) -> &mut [(BlindedPayInfo, BlindedPath)] {
+		match self {
+			Self::Blinded { route_hints, .. } => &mut route_hints[..],
+			Self::Clear { .. } => &mut []
 		}
 	}
 

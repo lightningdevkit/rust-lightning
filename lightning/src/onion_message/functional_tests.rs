@@ -492,8 +492,9 @@ fn async_response_with_reply_path_fails() {
 	let path_id = Some([2; 32]);
 	let reply_path = BlindedPath::new_for_message(&[], bob.node_id, &*bob.entropy_source, &secp_ctx).unwrap();
 
-	// Alice tries to asynchronously respond to Bob, but fails because the nodes are unannounced.
-	// Therefore, the reply_path cannot be used for the response.
+	// Alice tries to asynchronously respond to Bob, but fails because the nodes are unannounced and
+	// disconnected. Thus, a reply path could no be created for the response.
+	disconnect_peers(alice, bob);
 	let responder = Responder::new(reply_path, path_id);
 	alice.custom_message_handler.expect_message_and_response(message.clone());
 	let response_instruction = alice.custom_message_handler.handle_custom_message(message, Some(responder));

@@ -950,9 +950,12 @@ fn pays_bolt12_invoice_asynchronously() {
 	);
 }
 
-/// Fails creating an offer when a blinded path cannot be created without exposing the node's id.
+/// Checks that an offer can be created using an unannounced node as a blinded path's introduction
+/// node. This is only preferred if there are no other options which may indicated either the offer
+/// is intended for the unannounced node or that the node is actually announced (e.g., an LSP) but
+/// the recipient doesn't have a network graph.
 #[test]
-fn fails_creating_offer_without_blinded_paths() {
+fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -960,33 +963,99 @@ fn fails_creating_offer_without_blinded_paths() {
 
 	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
 
-	match nodes[0].node.create_offer_builder(None) {
-		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder(None).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert!(!offer.paths().is_empty());
+	for path in offer.paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
 	}
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
+
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_id: invoice_request.payer_id(),
+			quantity: None,
+			payer_note_truncated: None,
+		},
+	});
+	assert_ne!(invoice_request.payer_id(), bob_id);
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(alice_id));
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let invoice = extract_invoice(bob, &onion_message);
+	assert_ne!(invoice.signing_pubkey(), alice_id);
+	assert!(!invoice.payment_paths().is_empty());
+	for (_, path) in invoice.payment_paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+	}
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	claim_bolt12_payment(bob, &[alice], payment_context);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
-/// Fails creating a refund when a blinded path cannot be created without exposing the node's id.
+/// Checks that a refund can be created using an unannounced node as a blinded path's introduction
+/// node. This is only preferred if there are no other options which may indicated either the refund
+/// is intended for the unannounced node or that the node is actually announced (e.g., an LSP) but
+/// the sender doesn't have a network graph.
 #[test]
-fn fails_creating_refund_without_blinded_paths() {
+fn creates_refund_with_blinded_path_using_unannounced_introduction_node() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
 
 	let absolute_expiry = Duration::from_secs(u64::MAX);
 	let payment_id = PaymentId([1; 32]);
-
-	match nodes[0].node.create_refund_builder(
-		10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
-	) {
-		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+	let refund = bob.node
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
+		.unwrap()
+		.build().unwrap();
+	assert_ne!(refund.payer_id(), bob_id);
+	assert!(!refund.paths().is_empty());
+	for path in refund.paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
 	}
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	assert!(nodes[0].node.list_recent_payments().is_empty());
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+
+	let invoice = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+	assert_ne!(invoice.signing_pubkey(), alice_id);
+	assert!(!invoice.payment_paths().is_empty());
+	for (_, path) in invoice.payment_paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+	}
 }
 
 /// Fails creating or paying an offer when a blinded path cannot be created because no peers are
@@ -1165,8 +1234,7 @@ fn fails_sending_invoice_with_unsupported_chain_for_refund() {
 	}
 }
 
-/// Fails creating an invoice request when a blinded reply path cannot be created without exposing
-/// the node's id.
+/// Fails creating an invoice request when a blinded reply path cannot be created.
 #[test]
 fn fails_creating_invoice_request_without_blinded_reply_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(6);
@@ -1183,7 +1251,7 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
 
 	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
-	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, charlie, &nodes[4], &nodes[5]]);
 
 	let offer = alice.node
 		.create_offer_builder(None).unwrap()
