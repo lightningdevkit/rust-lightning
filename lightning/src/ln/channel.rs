@@ -1129,6 +1129,7 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
+	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	UnfundedOutboundV2(OutboundV2Channel<SP>),
 	UnfundedInboundV2(InboundV2Channel<SP>),
 	Funded(Channel<SP>),
@@ -4182,6 +4183,7 @@ pub(super) struct DualFundingChannelContext {
 	/// Note that the `our_funding_satoshis` field is equal to the total value of `our_funding_inputs`
 	/// minus any fees paid for our contributed weight. This means that change will never be generated
 	/// and the maximum value possible will go towards funding the channel.
+	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
 }
 
@@ -8710,6 +8712,7 @@ pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider 
 }
 
 impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
+	#[allow(dead_code)] // TODO(dual_funding): Remove once creating V2 channels is enabled.
 	pub fn new<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
 		counterparty_node_id: PublicKey, their_features: &InitFeatures, funding_satoshis: u64,
@@ -9021,6 +9024,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	///
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
 	#[cfg(test)]
+	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub fn get_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
 		self.generate_accept_channel_v2_message()
 	}

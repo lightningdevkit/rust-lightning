@@ -88,6 +88,7 @@ mod async_signer_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod offers_tests;
+#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 pub(crate) mod interactivetxs;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
