@@ -3602,7 +3602,7 @@ fn test_glacial_peer_cant_hang() {
 #[test]
 fn test_partial_claim_mon_update_compl_actions() {
 	// Test that if we have an MPP claim that we ensure the preimage for the claim is retained in
-	// the all `ChannelMonitor`s until the preimage reaches every `ChannelMonitor` for a channel
+	// all the `ChannelMonitor`s until the preimage reaches every `ChannelMonitor` for a channel
 	// which was a part of the MPP.
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -3626,8 +3626,6 @@ fn test_partial_claim_mon_update_compl_actions() {
 	route.paths[1].hops[0].short_channel_id = chan_2_scid;
 	route.paths[1].hops[1].short_channel_id = chan_4_scid;
 	send_along_route_with_secret(&nodes[0], route, &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], 200_000, payment_hash, payment_secret);
-
-	let ds_chan_4_mon = get_monitor!(nodes[3], chan_4_id).encode();
 
 	// Claim along both paths, but only complete one of the two monitor updates.
 	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
