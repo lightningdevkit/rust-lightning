@@ -1,13 +1,16 @@
-use crate::{AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError, UnboundedCache};
 use crate::poll::{Validate, ValidatedBlockHeader};
+use crate::{
+	AsyncBlockSourceResult, BlockData, BlockHeaderData, BlockSource, BlockSourceError,
+	UnboundedCache,
+};
 
 use bitcoin::blockdata::block::{Block, Header, Version};
 use bitcoin::blockdata::constants::genesis_block;
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::network::Network;
-use bitcoin::Transaction;
 use bitcoin::transaction;
+use bitcoin::Transaction;
 
 use lightning::chain;
 
@@ -48,7 +51,7 @@ impl Blockchain {
 				version: transaction::Version(0),
 				lock_time: LockTime::ZERO,
 				input: vec![],
-				output: vec![]
+				output: vec![],
 			};
 			let merkle_root = TxMerkleNode::from_raw_hash(coinbase.txid().to_raw_hash());
 			self.blocks.push(Block {
@@ -135,7 +138,9 @@ impl Blockchain {
 }
 
 impl BlockSource for Blockchain {
-	fn get_header<'a>(&'a self, header_hash: &'a BlockHash, _height_hint: Option<u32>) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
+	fn get_header<'a>(
+		&'a self, header_hash: &'a BlockHash, _height_hint: Option<u32>,
+	) -> AsyncBlockSourceResult<'a, BlockHeaderData> {
 		Box::pin(async move {
 			if self.without_headers {
 				return Err(BlockSourceError::persistent("header not found"));
@@ -155,7 +160,9 @@ impl BlockSource for Blockchain {
 		})
 	}
 
-	fn get_block<'a>(&'a self, header_hash: &'a BlockHash) -> AsyncBlockSourceResult<'a, BlockData> {
+	fn get_block<'a>(
+		&'a self, header_hash: &'a BlockHash,
+	) -> AsyncBlockSourceResult<'a, BlockData> {
 		Box::pin(async move {
 			for (height, block) in self.blocks.iter().enumerate() {
 				if block.header.block_hash() == *header_hash {
@@ -192,7 +199,10 @@ impl BlockSource for Blockchain {
 pub struct NullChainListener;
 
 impl chain::Listen for NullChainListener {
-	fn filtered_block_connected(&self, _header: &Header, _txdata: &chain::transaction::TransactionData, _height: u32) {}
+	fn filtered_block_connected(
+		&self, _header: &Header, _txdata: &chain::transaction::TransactionData, _height: u32,
+	) {
+	}
 	fn block_disconnected(&self, _header: &Header, _height: u32) {}
 }
 
@@ -240,7 +250,9 @@ impl chain::Listen for MockChainListener {
 		}
 	}
 
-	fn filtered_block_connected(&self, header: &Header, _txdata: &chain::transaction::TransactionData, height: u32) {
+	fn filtered_block_connected(
+		&self, header: &Header, _txdata: &chain::transaction::TransactionData, height: u32,
+	) {
 		match self.expected_filtered_blocks_connected.borrow_mut().pop_front() {
 			None => {
 				panic!("Unexpected filtered block connected: {:?}", header.block_hash());
