@@ -1121,9 +1121,7 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV1(OutboundV1Channel<SP>),
 	UnfundedInboundV1(InboundV1Channel<SP>),
-	#[cfg(any(dual_funding, splicing))]
 	UnfundedOutboundV2(OutboundV2Channel<SP>),
-	#[cfg(any(dual_funding, splicing))]
 	UnfundedInboundV2(InboundV2Channel<SP>),
 	Funded(Channel<SP>),
 }
@@ -1137,9 +1135,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::Funded(chan) => &chan.context,
 			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
 			ChannelPhase::UnfundedInboundV1(chan) => &chan.context,
-			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedOutboundV2(chan) => &chan.context,
-			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
 		}
 	}
@@ -1149,9 +1145,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::Funded(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedOutboundV1(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedInboundV1(ref mut chan) => &mut chan.context,
-			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedOutboundV2(ref mut chan) => &mut chan.context,
-			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
 		}
 	}
@@ -3822,7 +3816,6 @@ pub(crate) fn get_legacy_default_holder_selected_channel_reserve_satoshis(channe
 ///
 /// This is used both for outbound and inbound channels and has lower bound
 /// of `dust_limit_satoshis`.
-#[cfg(any(dual_funding, splicing))]
 fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satoshis: u64) -> u64 {
 	// Fixed at 1% of channel value by spec.
 	let (q, _) = channel_value_satoshis.overflowing_div(100);
@@ -3830,7 +3823,6 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 }
 
 /// Context for dual-funded channels.
-#[cfg(any(dual_funding, splicing))]
 pub(super) struct DualFundingChannelContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
@@ -3847,7 +3839,6 @@ pub(super) struct DualFundingChannelContext {
 // Counterparty designates channel data owned by the another channel participant entity.
 pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
-	#[cfg(any(dual_funding, splicing))]
 	pub dual_funding_channel_context: Option<DualFundingChannelContext>,
 }
 
@@ -8032,7 +8023,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		let mut channel = Channel {
 			context: self.context,
-			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
 		};
 
@@ -8262,7 +8252,6 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		// `ChannelMonitor`.
 		let mut channel = Channel {
 			context: self.context,
-			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
@@ -8273,15 +8262,12 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 }
 
 // A not-yet-funded outbound (from holder) channel using V2 channel establishment.
-#[cfg(any(dual_funding, splicing))]
 pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
-	#[cfg(any(dual_funding, splicing))]
 	pub dual_funding_context: DualFundingChannelContext,
 }
 
-#[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	pub fn new<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
@@ -8401,14 +8387,12 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 }
 
 // A not-yet-funded inbound (from counterparty) channel using V2 channel establishment.
-#[cfg(any(dual_funding, splicing))]
 pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
 	pub dual_funding_context: DualFundingChannelContext,
 }
 
-#[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// Creates a new dual-funded channel from a remote side's request for one.
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
@@ -9619,7 +9603,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 				is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
 			},
-			#[cfg(any(dual_funding, splicing))]
 			dual_funding_channel_context: None,
 		})
 	}
