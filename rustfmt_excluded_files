@@ -1,5 +1,4 @@
 ./lightning-background-processor/src/lib.rs
-./lightning-block-sync/src/lib.rs
 ./lightning-custom-message/src/lib.rs
 ./lightning-invoice/fuzz/fuzz_targets/serde_data_part.rs
 ./lightning-invoice/src/de.rs
