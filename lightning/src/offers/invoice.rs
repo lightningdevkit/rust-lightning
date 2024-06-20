@@ -1776,7 +1776,7 @@ mod tests {
 			.sign(payer_sign).unwrap();
 
 		if let Err(e) = invoice_request.clone()
-			.verify(&expanded_key, &secp_ctx).unwrap()
+			.verify_using_nonce(nonce, &expanded_key, &secp_ctx).unwrap()
 			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build_and_sign(&secp_ctx)
 		{

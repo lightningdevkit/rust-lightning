@@ -399,13 +399,13 @@ macro_rules! offer_builder_methods { (
 				}
 
 				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
-				metadata = derived_metadata;
-				if let Some(keys) = keys {
-					$self.offer.signing_pubkey = Some(keys.public_key());
+				match keys {
+					Some(keys) => $self.offer.signing_pubkey = Some(keys.public_key()),
+					None => $self.offer.metadata = Some(derived_metadata),
 				}
+			} else {
+				$self.offer.metadata = Some(metadata);
 			}
-
-			$self.offer.metadata = Some(metadata);
 		}
 
 		let mut bytes = Vec::new();
@@ -666,9 +666,9 @@ impl Offer {
 	}
 
 	pub(super) fn verify<T: secp256k1::Signing>(
-		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+		&self, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
-		self.contents.verify(&self.bytes, key, secp_ctx)
+		self.contents.verify_using_nonce(&self.bytes, nonce, key, secp_ctx)
 	}
 }
 
@@ -1295,6 +1295,7 @@ mod tests {
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.build().unwrap();
+		assert!(offer.metadata().is_some());
 		assert_eq!(offer.signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
@@ -1361,15 +1362,8 @@ mod tests {
 			.amount_msats(1000)
 			.path(blinded_path)
 			.build().unwrap();
+		assert!(offer.metadata().is_none());
 		assert_ne!(offer.signing_pubkey(), Some(node_id));
-
-		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
-		match invoice_request.verify(&expanded_key, &secp_ctx) {
-			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
-			Err(_) => panic!("unexpected error"),
-		}
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
