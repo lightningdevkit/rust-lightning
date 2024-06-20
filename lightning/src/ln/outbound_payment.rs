@@ -218,20 +218,26 @@ impl PendingOutboundPayment {
 	}
 
 	fn mark_abandoned(&mut self, reason: PaymentFailureReason) {
-		if let PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } = self {
-			let mut our_session_privs = new_hash_set();
-			core::mem::swap(&mut our_session_privs, session_privs);
-			*self = PendingOutboundPayment::Abandoned {
-				session_privs: our_session_privs,
-				payment_hash: *payment_hash,
-				reason: Some(reason)
-			};
-		} else if let PendingOutboundPayment::InvoiceReceived { payment_hash, .. } = self {
-			*self = PendingOutboundPayment::Abandoned {
-				session_privs: new_hash_set(),
-				payment_hash: *payment_hash,
-				reason: Some(reason)
-			};
+		let session_privs = match self {
+			PendingOutboundPayment::Retryable { session_privs, .. } => {
+				let mut our_session_privs = new_hash_set();
+				core::mem::swap(&mut our_session_privs, session_privs);
+				our_session_privs
+			},
+			_ => new_hash_set(),
+		};
+		match self {
+			Self::Retryable { payment_hash, .. } |
+				Self::InvoiceReceived { payment_hash, .. } |
+				Self::StaticInvoiceReceived { payment_hash, .. } =>
+			{
+				*self = Self::Abandoned {
+					session_privs,
+					payment_hash: *payment_hash,
+					reason: Some(reason),
+				};
+			},
+			_ => {}
 		}
 	}
 
@@ -2787,6 +2793,46 @@ mod tests {
 			payment_hash: Some(payment_hash),
 			payment_id,
 			reason: Some(PaymentFailureReason::PaymentExpired),
+		}, None));
+	}
+
+	#[test]
+	fn abandon_unreleased_async_payment() {
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new(new_hash_map());
+		let payment_id = PaymentId([0; 32]);
+		let absolute_expiry = 60;
+
+		let mut outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		let payment_params = PaymentParameters::from_node_id(test_utils::pubkey(42), 0)
+			.with_expiry_time(absolute_expiry);
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 0,
+			max_total_routing_fee_msat: None,
+		};
+		let payment_hash = PaymentHash([0; 32]);
+		let outbound = PendingOutboundPayment::StaticInvoiceReceived {
+			payment_hash,
+			keysend_preimage: PaymentPreimage([0; 32]),
+			retry_strategy: Retry::Attempts(0),
+			payment_release_secret: [0; 32],
+			route_params,
+		};
+		outbounds.insert(payment_id, outbound);
+		core::mem::drop(outbounds);
+
+		outbound_payments.abandon_payment(
+			payment_id, PaymentFailureReason::UserAbandoned, &pending_events
+		);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 0);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 1);
+		assert_eq!(events[0], (Event::PaymentFailed {
+			payment_hash: Some(payment_hash),
+			payment_id,
+			reason: Some(PaymentFailureReason::UserAbandoned),
 		}, None));
 	}
 }
