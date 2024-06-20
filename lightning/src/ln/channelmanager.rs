@@ -1629,7 +1629,7 @@ where
 /// let mut channel_monitors = read_channel_monitors();
 /// let args = ChannelManagerReadArgs::new(
 ///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
-///     router, message_router, logger, default_config, channel_monitors.iter_mut().collect(),
+///     router, message_router, logger, default_config, channel_monitors.iter().collect(),
 /// );
 /// let (block_hash, channel_manager) =
 ///     <(BlockHash, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
@@ -12231,9 +12231,12 @@ impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 /// 3) If you are not fetching full blocks, register all relevant [`ChannelMonitor`] outpoints the
 ///    same way you would handle a [`chain::Filter`] call using
 ///    [`ChannelMonitor::get_outputs_to_watch`] and [`ChannelMonitor::get_funding_txo`].
-/// 4) Reconnect blocks on your [`ChannelMonitor`]s.
-/// 5) Disconnect/connect blocks on the [`ChannelManager`].
-/// 6) Re-persist the [`ChannelMonitor`]s to ensure the latest state is on disk.
+/// 4) Disconnect/connect blocks on your [`ChannelMonitor`]s to get them in sync with the chain.
+/// 5) Disconnect/connect blocks on the [`ChannelManager`] to get it in sync with the chain.
+/// 6) Optionally re-persist the [`ChannelMonitor`]s to ensure the latest state is on disk.
+///    This is important if you have replayed a nontrivial number of blocks in step (4), allowing
+///    you to avoid having to replay the same blocks if you shut down quickly after startup. It is
+///    otherwise not required.
 ///    Note that if you're using a [`ChainMonitor`] for your [`chain::Watch`] implementation, you
 ///    will likely accomplish this as a side-effect of calling [`chain::Watch::watch_channel`] in
 ///    the next step.
@@ -12316,7 +12319,7 @@ where
 	/// this struct.
 	///
 	/// This is not exported to bindings users because we have no HashMap bindings
-	pub channel_monitors: HashMap<OutPoint, &'a mut ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+	pub channel_monitors: HashMap<OutPoint, &'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 }
 
 impl<'a, M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
@@ -12339,7 +12342,7 @@ where
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
 		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		default_config: UserConfig,
-		mut channel_monitors: Vec<&'a mut ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 	) -> Self {
 		Self {
 			entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor,

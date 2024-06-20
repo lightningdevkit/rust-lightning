@@ -686,7 +686,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// them to ensure we can write and reload our ChannelManager.
 			{
 				let mut channel_monitors = new_hash_map();
-				for monitor in deserialized_monitors.iter_mut() {
+				for monitor in deserialized_monitors.iter() {
 					channel_monitors.insert(monitor.get_funding_txo().0, monitor);
 				}
 
@@ -1128,7 +1128,7 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 	let mut node_read = &chanman_encoded[..];
 	let (_, node_deserialized) = {
 		let mut channel_monitors = new_hash_map();
-		for monitor in monitors_read.iter_mut() {
+		for monitor in monitors_read.iter() {
 			assert!(channel_monitors.insert(monitor.get_funding_txo().0, monitor).is_none());
 		}
 		<(BlockHash, TestChannelManager<'b, 'c>)>::read(&mut node_read, ChannelManagerReadArgs {

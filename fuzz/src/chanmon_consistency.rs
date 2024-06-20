@@ -768,7 +768,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				chain_monitor.latest_monitors.lock().unwrap().insert(outpoint, prev_state);
 			}
 			let mut monitor_refs = new_hash_map();
-			for (outpoint, monitor) in monitors.iter_mut() {
+			for (outpoint, monitor) in monitors.iter() {
 				monitor_refs.insert(*outpoint, monitor);
 			}
 
