@@ -1,4 +1,3 @@
-./bench/benches/bench.rs
 ./lightning-background-processor/src/lib.rs
 ./lightning-block-sync/src/convert.rs
 ./lightning-block-sync/src/gossip.rs
@@ -24,9 +23,6 @@
 ./lightning-persister/src/lib.rs
 ./lightning-persister/src/test_utils.rs
 ./lightning-persister/src/utils.rs
-./lightning-rapid-gossip-sync/src/error.rs
-./lightning-rapid-gossip-sync/src/lib.rs
-./lightning-rapid-gossip-sync/src/processing.rs
 ./lightning/src/blinded_path/message.rs
 ./lightning/src/blinded_path/mod.rs
 ./lightning/src/blinded_path/payment.rs
