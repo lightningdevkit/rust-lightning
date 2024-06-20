@@ -85,7 +85,7 @@ mod async_signer_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod offers_tests;
-#[allow(dead_code)] // TODO(dual_funding): Exchange for dual_funding cfg
+#[allow(dead_code)] // TODO(splicing): Exchange for splicing cfg
 pub(crate) mod interactivetxs;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
