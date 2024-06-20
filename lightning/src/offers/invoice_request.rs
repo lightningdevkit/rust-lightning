@@ -605,8 +605,9 @@ pub struct InvoiceRequest {
 	signature: Signature,
 }
 
-/// An [`InvoiceRequest`] that has been verified by [`InvoiceRequest::verify`] and exposes different
-/// ways to respond depending on whether the signing keys were derived.
+/// An [`InvoiceRequest`] that has been verified by [`InvoiceRequest::verify`] or
+/// [`InvoiceRequest::verify_using_recipient_data`] and exposes different ways to respond depending
+/// on whether the signing keys were derived.
 #[derive(Clone, Debug)]
 pub struct VerifiedInvoiceRequest {
 	/// The identifier of the [`Offer`] for which the [`InvoiceRequest`] was made.
@@ -737,7 +738,8 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// # Note
 	///
 	/// If the originating [`Offer`] was created using [`OfferBuilder::deriving_signing_pubkey`],
-	/// then use [`InvoiceRequest::verify`] and [`VerifiedInvoiceRequest`] methods instead.
+	/// then first use [`InvoiceRequest::verify`] or [`InvoiceRequest::verify_using_recipient_data`]
+	/// and then [`VerifiedInvoiceRequest`] methods instead.
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey

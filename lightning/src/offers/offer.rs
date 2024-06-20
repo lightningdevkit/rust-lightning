@@ -249,9 +249,12 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 	///
 	/// Also, sets the metadata when [`OfferBuilder::build`] is called such that it can be used by
 	/// [`InvoiceRequest::verify`] to determine if the request was produced for the offer given an
-	/// [`ExpandedKey`].
+	/// [`ExpandedKey`]. However, if [`OfferBuilder::path`] is called, then the metadata will not be
+	/// set and must be included in each [`BlindedPath`] instead. In this case, use
+	/// [`InvoiceRequest::verify_using_recipient_data`].
 	///
 	/// [`InvoiceRequest::verify`]: crate::offers::invoice_request::InvoiceRequest::verify
+	/// [`InvoiceRequest::verify_using_recipient_data`]: crate::offers::invoice_request::InvoiceRequest::verify_using_recipient_data
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn deriving_signing_pubkey(
 		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
@@ -384,9 +387,12 @@ macro_rules! offer_builder_methods { (
 	}
 
 	fn build_without_checks($($self_mut)* $self: $self_type) -> Offer {
-		// Create the metadata for stateless verification of an InvoiceRequest.
 		if let Some(mut metadata) = $self.offer.metadata.take() {
+			// Create the metadata for stateless verification of an InvoiceRequest.
 			if metadata.has_derivation_material() {
+
+				// Don't derive keys if no blinded paths were given since this means the signing
+				// pubkey must be the node id of an announced node.
 				if $self.offer.paths.is_none() {
 					metadata = metadata.without_keys();
 				}
@@ -398,14 +404,17 @@ macro_rules! offer_builder_methods { (
 					tlv_stream.node_id = None;
 				}
 
+				// Either replace the signing pubkey with the derived pubkey or include the metadata
+				// for verification. In the former case, the blinded paths must include
+				// `OffersContext::InvoiceRequest` instead.
 				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
-				metadata = derived_metadata;
-				if let Some(keys) = keys {
-					$self.offer.signing_pubkey = Some(keys.public_key());
+				match keys {
+					Some(keys) => $self.offer.signing_pubkey = Some(keys.public_key()),
+					None => $self.offer.metadata = Some(derived_metadata),
 				}
+			} else {
+				$self.offer.metadata = Some(metadata);
 			}
-
-			$self.offer.metadata = Some(metadata);
 		}
 
 		let mut bytes = Vec::new();
@@ -667,9 +676,9 @@ impl Offer {
 
 	#[cfg(async_payments)]
 	pub(super) fn verify<T: secp256k1::Signing>(
-		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+		&self, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
-		self.contents.verify(&self.bytes, key, secp_ctx)
+		self.contents.verify_using_recipient_data(&self.bytes, nonce, key, secp_ctx)
 	}
 }
 
@@ -1296,6 +1305,7 @@ mod tests {
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.build().unwrap();
+		assert!(offer.metadata().is_some());
 		assert_eq!(offer.signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
@@ -1365,15 +1375,8 @@ mod tests {
 			.amount_msats(1000)
 			.path(blinded_path)
 			.build().unwrap();
+		assert!(offer.metadata().is_none());
 		assert_ne!(offer.signing_pubkey(), Some(node_id));
-
-		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
-		match invoice_request.verify(&expanded_key, &secp_ctx) {
-			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
-			Err(_) => panic!("unexpected error"),
-		}
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -1382,6 +1385,12 @@ mod tests {
 			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
 			Err(_) => panic!("unexpected error"),
 		}
+
+		// Fails verification when using the wrong method
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1394,7 +1403,9 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(
+			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
+		);
 
 		// Fails verification with altered signing pubkey
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1408,7 +1419,9 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(
+			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
+		);
 	}
 
 	#[test]

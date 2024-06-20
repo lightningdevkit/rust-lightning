@@ -1776,7 +1776,7 @@ mod tests {
 			.sign(payer_sign).unwrap();
 
 		if let Err(e) = invoice_request.clone()
-			.verify(&expanded_key, &secp_ctx).unwrap()
+			.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap()
 			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build_and_sign(&secp_ctx)
 		{
@@ -1784,7 +1784,9 @@ mod tests {
 		}
 
 		let expanded_key = ExpandedKey::new(&KeyMaterial([41; 32]));
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(
+			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
+		);
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)

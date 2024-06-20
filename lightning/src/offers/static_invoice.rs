@@ -22,6 +22,7 @@ use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_me
 use crate::offers::merkle::{
 	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash,
 };
+use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
 	Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, Quantity,
 };
@@ -97,7 +98,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 	pub fn for_offer_using_derived_keys<T: secp256k1::Signing>(
 		offer: &'a Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
 		message_paths: Vec<BlindedPath>, created_at: Duration, expanded_key: &ExpandedKey,
-		secp_ctx: &Secp256k1<T>,
+		nonce: Nonce, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, Bolt12SemanticError> {
 		if offer.chains().len() > 1 {
 			return Err(Bolt12SemanticError::UnexpectedChain);
@@ -111,7 +112,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 			offer.signing_pubkey().ok_or(Bolt12SemanticError::MissingSigningPubkey)?;
 
 		let keys = offer
-			.verify(&expanded_key, &secp_ctx)
+			.verify(nonce, &expanded_key, &secp_ctx)
 			.map_err(|()| Bolt12SemanticError::InvalidMetadata)?
 			.1
 			.ok_or(Bolt12SemanticError::MissingSigningPubkey)?;
@@ -623,6 +624,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		)
 		.unwrap()
@@ -662,6 +664,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		)
 		.unwrap()
@@ -672,7 +675,7 @@ mod tests {
 		invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(invoice.bytes, buffer.as_slice());
-		assert!(invoice.metadata().is_some());
+		assert_eq!(invoice.metadata(), None);
 		assert_eq!(invoice.amount(), None);
 		assert_eq!(invoice.description(), None);
 		assert_eq!(invoice.offer_features(), &OfferFeatures::empty());
@@ -698,13 +701,12 @@ mod tests {
 		);
 
 		let paths = vec![blinded_path()];
-		let metadata = vec![42; 16];
 		assert_eq!(
 			invoice.as_tlv_stream(),
 			(
 				OfferTlvStreamRef {
 					chains: None,
-					metadata: Some(&metadata),
+					metadata: None,
 					currency: None,
 					amount: None,
 					description: None,
@@ -762,6 +764,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		)
 		.unwrap()
@@ -782,6 +785,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		)
 		.unwrap()
@@ -815,6 +819,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		) {
 			assert_eq!(e, Bolt12SemanticError::MissingPaths);
@@ -829,6 +834,7 @@ mod tests {
 			Vec::new(),
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		) {
 			assert_eq!(e, Bolt12SemanticError::MissingPaths);
@@ -849,6 +855,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		) {
 			assert_eq!(e, Bolt12SemanticError::MissingPaths);
@@ -886,6 +893,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		) {
 			assert_eq!(e, Bolt12SemanticError::MissingSigningPubkey);
@@ -906,6 +914,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		) {
 			assert_eq!(e, Bolt12SemanticError::InvalidMetadata);
@@ -937,6 +946,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		) {
 			assert_eq!(e, Bolt12SemanticError::UnexpectedChain);
@@ -967,6 +977,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		)
 		.unwrap()
@@ -1007,6 +1018,7 @@ mod tests {
 			vec![blinded_path()],
 			now,
 			&expanded_key,
+			nonce,
 			&secp_ctx,
 		)
 		.unwrap()
