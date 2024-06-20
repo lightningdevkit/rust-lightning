@@ -1,5 +1,4 @@
 ./lightning-background-processor/src/lib.rs
-./lightning-block-sync/src/init.rs
 ./lightning-block-sync/src/lib.rs
 ./lightning-block-sync/src/poll.rs
 ./lightning-block-sync/src/rest.rs
