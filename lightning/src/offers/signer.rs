@@ -43,6 +43,9 @@ pub(super) enum Metadata {
 	/// Metadata as parsed, supplied by the user, or derived from the message contents.
 	Bytes(Vec<u8>),
 
+	/// Metadata for deriving keys included as recipient data in a blinded path.
+	RecipientData(Nonce),
+
 	/// Metadata to be derived from message contents and given material.
 	Derived(MetadataMaterial),
 
@@ -54,6 +57,7 @@ impl Metadata {
 	pub fn as_bytes(&self) -> Option<&Vec<u8>> {
 		match self {
 			Metadata::Bytes(bytes) => Some(bytes),
+			Metadata::RecipientData(_) => None,
 			Metadata::Derived(_) => None,
 			Metadata::DerivedSigningPubkey(_) => None,
 		}
@@ -62,6 +66,7 @@ impl Metadata {
 	pub fn has_derivation_material(&self) -> bool {
 		match self {
 			Metadata::Bytes(_) => false,
+			Metadata::RecipientData(_) => false,
 			Metadata::Derived(_) => true,
 			Metadata::DerivedSigningPubkey(_) => true,
 		}
@@ -75,6 +80,7 @@ impl Metadata {
 			// derived, as wouldn't be the case if a Metadata::Bytes with length PaymentId::LENGTH +
 			// Nonce::LENGTH had been set explicitly.
 			Metadata::Bytes(bytes) => bytes.len() == PaymentId::LENGTH + Nonce::LENGTH,
+			Metadata::RecipientData(_) => false,
 			Metadata::Derived(_) => false,
 			Metadata::DerivedSigningPubkey(_) => true,
 		}
@@ -88,6 +94,7 @@ impl Metadata {
 			// derived, as wouldn't be the case if a Metadata::Bytes with length Nonce::LENGTH had
 			// been set explicitly.
 			Metadata::Bytes(bytes) => bytes.len() == Nonce::LENGTH,
+			Metadata::RecipientData(_) => true,
 			Metadata::Derived(_) => false,
 			Metadata::DerivedSigningPubkey(_) => true,
 		}
@@ -96,6 +103,7 @@ impl Metadata {
 	pub fn without_keys(self) -> Self {
 		match self {
 			Metadata::Bytes(_) => self,
+			Metadata::RecipientData(_) => self,
 			Metadata::Derived(_) => self,
 			Metadata::DerivedSigningPubkey(material) => Metadata::Derived(material),
 		}
@@ -106,6 +114,7 @@ impl Metadata {
 	) -> (Self, Option<Keypair>) {
 		match self {
 			Metadata::Bytes(_) => (self, None),
+			Metadata::RecipientData(_) => (self, None),
 			Metadata::Derived(mut metadata_material) => {
 				tlv_stream.write(&mut metadata_material.hmac).unwrap();
 				(Metadata::Bytes(metadata_material.derive_metadata()), None)
@@ -126,10 +135,22 @@ impl Default for Metadata {
 	}
 }
 
+impl AsRef<[u8]> for Metadata {
+	fn as_ref(&self) -> &[u8] {
+		match self {
+			Metadata::Bytes(bytes) => &bytes,
+			Metadata::RecipientData(nonce) => &nonce.0,
+			Metadata::Derived(_) => &[],
+			Metadata::DerivedSigningPubkey(_) => &[],
+		}
+	}
+}
+
 impl fmt::Debug for Metadata {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Metadata::Bytes(bytes) => bytes.fmt(f),
+			Metadata::RecipientData(Nonce(bytes)) => bytes.fmt(f),
 			Metadata::Derived(_) => f.write_str("Derived"),
 			Metadata::DerivedSigningPubkey(_) => f.write_str("DerivedSigningPubkey"),
 		}
@@ -145,6 +166,7 @@ impl PartialEq for Metadata {
 			} else {
 				false
 			},
+			Metadata::RecipientData(_) => false,
 			Metadata::Derived(_) => false,
 			Metadata::DerivedSigningPubkey(_) => false,
 		}

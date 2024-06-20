@@ -913,18 +913,28 @@ impl OfferContents {
 		self.signing_pubkey
 	}
 
-	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
 	pub(super) fn verify<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
-		match self.metadata() {
+		self.verify_using_metadata(bytes, self.metadata.as_ref(), key, secp_ctx)
+	}
+
+	pub(super) fn verify_using_recipient_data<T: secp256k1::Signing>(
+		&self, bytes: &[u8], nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<(OfferId, Option<Keypair>), ()> {
+		self.verify_using_metadata(bytes, Some(&Metadata::RecipientData(nonce)), key, secp_ctx)
+	}
+
+	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
+	fn verify_using_metadata<T: secp256k1::Signing>(
+		&self, bytes: &[u8], metadata: Option<&Metadata>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<(OfferId, Option<Keypair>), ()> {
+		match metadata {
 			Some(metadata) => {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
 					match record.r#type {
 						OFFER_METADATA_TYPE => false,
-						OFFER_NODE_ID_TYPE => {
-							!self.metadata.as_ref().unwrap().derives_recipient_keys()
-						},
+						OFFER_NODE_ID_TYPE => !metadata.derives_recipient_keys(),
 						_ => true,
 					}
 				});
@@ -933,7 +943,7 @@ impl OfferContents {
 					None => return Err(()),
 				};
 				let keys = signer::verify_recipient_metadata(
-					metadata, key, IV_BYTES, signing_pubkey, tlv_stream, secp_ctx
+					metadata.as_ref(), key, IV_BYTES, signing_pubkey, tlv_stream, secp_ctx
 				)?;
 
 				let offer_id = OfferId::from_valid_invreq_tlv_stream(bytes);
@@ -1296,6 +1306,14 @@ mod tests {
 			Err(_) => panic!("unexpected error"),
 		}
 
+		// Fails verification when using the wrong method
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(
+			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
+		);
+
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
 		tlv_stream.amount = Some(100);
@@ -1353,6 +1371,14 @@ mod tests {
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
 		match invoice_request.verify(&expanded_key, &secp_ctx) {
+			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
+			Err(_) => panic!("unexpected error"),
+		}
+
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		match invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx) {
 			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
 			Err(_) => panic!("unexpected error"),
 		}

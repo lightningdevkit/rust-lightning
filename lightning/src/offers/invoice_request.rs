@@ -774,9 +774,11 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 } }
 
 macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
-	/// Verifies that the request was for an offer created using the given key. Returns the verified
-	/// request which contains the derived keys needed to sign a [`Bolt12Invoice`] for the request
-	/// if they could be extracted from the metadata.
+	/// Verifies that the request was for an offer created using the given key by checking the
+	/// metadata from the offer.
+	///
+	/// Returns the verified request which contains the derived keys needed to sign a
+	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn verify<
@@ -800,6 +802,35 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 		})
 	}
 
+	/// Verifies that the request was for an offer created using the given key by checking a nonce
+	/// included with the [`BlindedPath`] for which the request was sent through.
+	///
+	/// Returns the verified request which contains the derived keys needed to sign a
+	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub fn verify_using_recipient_data<
+		#[cfg(not(c_bindings))]
+		T: secp256k1::Signing
+	>(
+		$self: $self_type, nonce: Nonce, key: &ExpandedKey,
+		#[cfg(not(c_bindings))]
+		secp_ctx: &Secp256k1<T>,
+		#[cfg(c_bindings)]
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<VerifiedInvoiceRequest, ()> {
+		let (offer_id, keys) = $self.contents.inner.offer.verify_using_recipient_data(
+			&$self.bytes, nonce, key, secp_ctx
+		)?;
+		Ok(VerifiedInvoiceRequest {
+			offer_id,
+			#[cfg(not(c_bindings))]
+			inner: $self,
+			#[cfg(c_bindings)]
+			inner: $self.clone(),
+			keys,
+		})
+	}
 } }
 
 #[cfg(not(c_bindings))]
