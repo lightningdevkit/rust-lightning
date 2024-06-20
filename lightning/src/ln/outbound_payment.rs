@@ -1892,6 +1892,22 @@ impl OutboundPayments {
 					true
 				}
 			},
+			PendingOutboundPayment::StaticInvoiceReceived { route_params, payment_hash, .. } => {
+				let is_stale =
+					route_params.payment_params.expiry_time.unwrap_or(u64::MAX) <
+					duration_since_epoch.as_secs();
+				if is_stale {
+					let fail_ev = events::Event::PaymentFailed {
+						payment_id: *payment_id,
+						payment_hash: Some(*payment_hash),
+						reason: Some(PaymentFailureReason::PaymentExpired)
+					};
+					pending_events.push_back((fail_ev, None));
+					false
+				} else {
+					true
+				}
+			},
 			_ => true,
 		});
 	}
@@ -2172,11 +2188,11 @@ mod tests {
 
 	use crate::blinded_path::EmptyNodeIdLookUp;
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
-	use crate::ln::types::PaymentHash;
+	use crate::ln::types::{PaymentHash, PaymentPreimage};
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
-	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, Retry, RetryableSendFailure, StaleExpiration};
+	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, Retry, RetryableSendFailure, StaleExpiration};
 	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
 	use crate::offers::offer::OfferBuilder;
@@ -2725,5 +2741,52 @@ mod tests {
 		);
 		assert!(outbound_payments.has_pending_payments());
 		assert!(pending_events.lock().unwrap().is_empty());
+	}
+
+	#[test]
+	fn time_out_unreleased_async_payments() {
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new(new_hash_map());
+		let payment_id = PaymentId([0; 32]);
+		let absolute_expiry = 60;
+
+		let mut outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		let payment_params = PaymentParameters::from_node_id(test_utils::pubkey(42), 0)
+			.with_expiry_time(absolute_expiry);
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 0,
+			max_total_routing_fee_msat: None,
+		};
+		let payment_hash = PaymentHash([0; 32]);
+		let outbound = PendingOutboundPayment::StaticInvoiceReceived {
+			payment_hash,
+			keysend_preimage: PaymentPreimage([0; 32]),
+			retry_strategy: Retry::Attempts(0),
+			payment_release_secret: [0; 32],
+			route_params,
+		};
+		outbounds.insert(payment_id, outbound);
+		core::mem::drop(outbounds);
+
+		// The payment will not be removed if it isn't expired yet.
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry), &pending_events);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 1);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 0);
+		core::mem::drop(outbounds);
+		core::mem::drop(events);
+
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry + 1), &pending_events);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 0);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 1);
+		assert_eq!(events[0], (Event::PaymentFailed {
+			payment_hash: Some(payment_hash),
+			payment_id,
+			reason: Some(PaymentFailureReason::PaymentExpired),
+		}, None));
 	}
 }
