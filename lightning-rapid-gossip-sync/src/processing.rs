@@ -234,7 +234,8 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			let node_id_1_index: BigSize = Readable::read(read_cursor)?;
 			let mut node_id_2_index: BigSize = Readable::read(read_cursor)?;
 			let has_additional_data = (node_id_2_index.0 & (1 << 63)) > 0;
-			node_id_2_index.0 &= !(1 << 63); // ensure 63rd bit isn't set
+			// ensure 63rd bit isn't set
+			node_id_2_index.0 &= !(1 << 63);
 
 			if max(node_id_1_index.0, node_id_2_index.0) >= node_id_count as u64 {
 				return Err(DecodeError::InvalidValue.into());
@@ -282,7 +283,8 @@ impl<NG: Deref<Target=NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L> where L
 			}
 		}
 
-		previous_scid = 0; // updates start at a new scid
+		// updates start at a new scid
+		previous_scid = 0;
 
 		let update_count: u32 = Readable::read(read_cursor)?;
 		log_debug!(self.logger, "Processing RGS update from {} with {} nodes, {} channel announcements and {} channel updates.",
