@@ -1,6 +1,5 @@
 ./lightning-background-processor/src/lib.rs
 ./lightning-block-sync/src/lib.rs
-./lightning-block-sync/src/rpc.rs
 ./lightning-block-sync/src/test_utils.rs
 ./lightning-block-sync/src/utils.rs
 ./lightning-custom-message/src/lib.rs
