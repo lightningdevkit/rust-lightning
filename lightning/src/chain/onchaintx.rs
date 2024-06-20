@@ -535,6 +535,13 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
+	/// Returns true if we are currently tracking any pending claim requests that are not fully 
+	/// confirmed yet.
+	pub(super) fn has_pending_claims(&self) -> bool
+	{
+		self.pending_claim_requests.len() != 0
+	}
+
 	/// Lightning security model (i.e being able to redeem/timeout HTLC or penalize counterparty
 	/// onchain) lays on the assumption of claim transactions getting confirmed before timelock
 	/// expiration (CSV or CLTV following cases). In case of high-fee spikes, claim tx may get stuck

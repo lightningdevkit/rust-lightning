@@ -1812,6 +1812,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		);
 	}
 
+	/// Returns true if the monitor has pending claim requests that are not fully confirmed yet.
+	pub fn has_pending_claims(&self) -> bool
+	{
+		self.inner.lock().unwrap().onchain_tx_handler.has_pending_claims()
+	}
+
 	/// Triggers rebroadcasts of pending claims from a force-closed channel after a transaction
 	/// signature generation failure.
 	pub fn signer_unblocked<B: Deref, F: Deref, L: Deref>(
