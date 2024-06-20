@@ -1,5 +1,4 @@
 ./lightning-background-processor/src/lib.rs
-./lightning-block-sync/src/convert.rs
 ./lightning-block-sync/src/gossip.rs
 ./lightning-block-sync/src/http.rs
 ./lightning-block-sync/src/init.rs
