@@ -19,6 +19,7 @@ use crate::routing::test_utils::{add_channel, add_or_update_node};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
+use super::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
 use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, PendingOnionMessage, Responder, ResponseInstruction, SendError, SendSuccess};
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
@@ -50,6 +51,7 @@ struct MessengerNode {
 			Arc<test_utils::TestKeysInterface>
 		>>,
 		Arc<TestOffersMessageHandler>,
+		Arc<TestAsyncPaymentsMessageHandler>,
 		Arc<TestCustomMessageHandler>
 	>,
 	custom_message_handler: Arc<TestCustomMessageHandler>,
@@ -77,6 +79,17 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 	fn handle_message(&self, _message: OffersMessage, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
+}
+
+struct TestAsyncPaymentsMessageHandler {}
+
+impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
+	fn held_htlc_available(
+		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
+	) -> ResponseInstruction<ReleaseHeldHtlc> {
+		ResponseInstruction::NoResponse
+	}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -249,18 +262,19 @@ fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 			DefaultMessageRouter::new(network_graph.clone(), entropy_source.clone())
 		);
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
+		let async_payments_message_handler = Arc::new(TestAsyncPaymentsMessageHandler {});
 		let custom_message_handler = Arc::new(TestCustomMessageHandler::new());
 		let messenger = if cfg.intercept_offline_peer_oms {
 			OnionMessenger::new_with_offline_peer_interception(
 				entropy_source.clone(), node_signer.clone(), logger.clone(),
 				node_id_lookup, message_router, offers_message_handler,
-				custom_message_handler.clone()
+				async_payments_message_handler, custom_message_handler.clone()
 			)
 		} else {
 			OnionMessenger::new(
 				entropy_source.clone(), node_signer.clone(), logger.clone(),
 				node_id_lookup, message_router, offers_message_handler,
-				custom_message_handler.clone()
+				async_payments_message_handler, custom_message_handler.clone()
 			)
 		};
 		nodes.push(MessengerNode {

@@ -633,7 +633,7 @@ macro_rules! impl_writeable_msg {
 				$($crate::_init_tlv_field_var!($tlvfield, $fieldty);)*
 				$crate::decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
 				Ok(Self {
-					$($field),*,
+					$($field,)*
 					$($tlvfield),*
 				})
 			}
@@ -1530,5 +1530,19 @@ mod tests {
 	#[test]
 	fn simple_test_tlv_write() {
 		do_simple_test_tlv_write().unwrap();
+	}
+
+	#[derive(Debug, Eq, PartialEq)]
+	struct EmptyMsg {}
+	impl_writeable_msg!(EmptyMsg, {}, {});
+
+	#[test]
+	fn impl_writeable_msg_empty() {
+		let msg = EmptyMsg {};
+		let mut encoded_msg = msg.encode();
+		assert!(encoded_msg.is_empty());
+		let mut encoded_msg_stream = Cursor::new(&mut encoded_msg);
+		let decoded_msg: EmptyMsg = Readable::read(&mut encoded_msg_stream).unwrap();
+		assert_eq!(msg, decoded_msg);
 	}
 }

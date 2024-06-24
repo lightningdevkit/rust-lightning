@@ -192,8 +192,12 @@ fn extract_invoice_request<'a, 'b, 'c>(
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
 				OffersMessage::InvoiceRequest(invoice_request) => (invoice_request, reply_path.unwrap()),
 				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
+				#[cfg(async_payments)]
+				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
 				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 			},
+			#[cfg(async_payments)]
+			ParsedOnionMessageContents::AsyncPayments(message) => panic!("Unexpected async payments message: {:?}", message),
 			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
@@ -207,8 +211,12 @@ fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) 
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
 				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
 				OffersMessage::Invoice(invoice) => invoice,
+				#[cfg(async_payments)]
+				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
 				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 			},
+			#[cfg(async_payments)]
+			ParsedOnionMessageContents::AsyncPayments(message) => panic!("Unexpected async payments message: {:?}", message),
 			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
@@ -224,8 +232,12 @@ fn extract_invoice_error<'a, 'b, 'c>(
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
 				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
 				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
+				#[cfg(async_payments)]
+				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
 				OffersMessage::InvoiceError(error) => error,
 			},
+			#[cfg(async_payments)]
+			ParsedOnionMessageContents::AsyncPayments(message) => panic!("Unexpected async payments message: {:?}", message),
 			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
