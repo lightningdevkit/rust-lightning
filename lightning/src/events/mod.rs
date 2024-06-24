@@ -203,6 +203,15 @@ impl PaymentPurpose {
 					payment_context: context,
 				}
 			},
+			Some(PaymentContext::AsyncBolt12Offer(_context)) => {
+				debug_assert!(false, "Receiving async payments is not yet supported");
+				// This code will change to return Self::Bolt12OfferPayment when we add support for async
+				// receive.
+				PaymentPurpose::Bolt11InvoicePayment {
+					payment_preimage,
+					payment_secret,
+				}
+			},
 		}
 	}
 }
