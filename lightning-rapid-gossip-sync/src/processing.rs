@@ -537,7 +537,7 @@ mod tests {
 	use lightning::util::test_utils::TestLogger;
 
 	use crate::processing::STALE_RGS_UPDATE_AGE_LIMIT_SECS;
-	use crate::{GraphSyncError, RapidGossipSync};
+	use crate::{GraphSyncError, NodeFlag, RapidGossipSync};
 
 	const VALID_RGS_BINARY: [u8; 300] = [
 		76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247, 79,
@@ -556,6 +556,68 @@ mod tests {
 		216, 255, 2, 68, 226, 0, 6, 11, 0, 1, 0, 0, 1,
 	];
 	const VALID_BINARY_TIMESTAMP: u64 = 1642291930;
+
+	#[test]
+	fn node_flag_round_trips() {
+		for i in 0..2 {
+			let byte = NodeFlag::AddressChanged.write(0, i).unwrap();
+			let value = NodeFlag::AddressChanged.value(byte);
+			assert_eq!(value, i);
+		}
+		for i in 0..=7 {
+			let byte = NodeFlag::Features.write(0, i).unwrap();
+			let value = NodeFlag::Features.value(byte);
+			assert_eq!(value, i);
+		}
+		for i in 0..2 {
+			let byte = NodeFlag::Reminder.write(0, i).unwrap();
+			let value = NodeFlag::Reminder.value(byte);
+			assert_eq!(value, i);
+		}
+		for i in 0..2 {
+			let byte = NodeFlag::AdditionalData.write(0, i).unwrap();
+			let value = NodeFlag::AdditionalData.value(byte);
+			assert_eq!(value, i);
+		}
+	}
+
+	#[test]
+	fn node_flag_envelopes() {
+		for i in 2..=255 {
+			let result = NodeFlag::AddressChanged.write(0, i);
+			assert!(result.is_err());
+		}
+		for i in 8..=255 {
+			let result = NodeFlag::Features.write(0, i);
+			assert!(result.is_err());
+		}
+		for i in 2..=255 {
+			let result = NodeFlag::Reminder.write(0, i);
+			assert!(result.is_err());
+		}
+		for i in 2..=255 {
+			let result = NodeFlag::AdditionalData.write(0, i);
+			assert!(result.is_err());
+		}
+	}
+
+	#[test]
+	fn node_flag_independence() {
+		let byte = 0;
+		let byte = NodeFlag::AddressChanged.write(byte, 1).unwrap();
+		let byte = NodeFlag::Features.write(byte, 5).unwrap();
+		let byte = NodeFlag::AdditionalData.write(byte, 1).unwrap();
+
+		let address_changed = NodeFlag::AddressChanged.value(byte);
+		let features = NodeFlag::Features.value(byte);
+		let reminder = NodeFlag::Reminder.value(byte);
+		let additional_data = NodeFlag::AdditionalData.value(byte);
+
+		assert_eq!(address_changed, 1);
+		assert_eq!(features, 5);
+		assert_eq!(reminder, 0);
+		assert_eq!(additional_data, 1);
+	}
 
 	#[test]
 	#[cfg(feature = "std")]
