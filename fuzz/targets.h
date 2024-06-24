@@ -59,6 +59,6 @@ void msg_tx_init_rbf_run(const unsigned char* data, size_t data_len);
 void msg_tx_ack_rbf_run(const unsigned char* data, size_t data_len);
 void msg_tx_abort_run(const unsigned char* data, size_t data_len);
 void msg_stfu_run(const unsigned char* data, size_t data_len);
-void msg_splice_run(const unsigned char* data, size_t data_len);
+void msg_splice_init_run(const unsigned char* data, size_t data_len);
 void msg_splice_ack_run(const unsigned char* data, size_t data_len);
 void msg_splice_locked_run(const unsigned char* data, size_t data_len);

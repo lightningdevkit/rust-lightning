@@ -64,6 +64,6 @@ GEN_TEST lightning::ln::msgs::TxAbort test_msg_simple ""
 
 GEN_TEST lightning::ln::msgs::Stfu test_msg_simple ""
 
-GEN_TEST lightning::ln::msgs::Splice test_msg_simple ""
+GEN_TEST lightning::ln::msgs::SpliceInit test_msg_simple ""
 GEN_TEST lightning::ln::msgs::SpliceAck test_msg_simple ""
 GEN_TEST lightning::ln::msgs::SpliceLocked test_msg_simple ""

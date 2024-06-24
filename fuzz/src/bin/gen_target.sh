@@ -74,6 +74,6 @@ GEN_TEST msg_tx_abort msg_targets::
 
 GEN_TEST msg_stfu msg_targets::
 
-GEN_TEST msg_splice msg_targets::
+GEN_TEST msg_splice_init msg_targets::
 GEN_TEST msg_splice_ack msg_targets::
 GEN_TEST msg_splice_locked msg_targets::

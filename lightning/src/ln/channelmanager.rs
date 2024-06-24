@@ -9652,7 +9652,7 @@ where
 	}
 
 	#[cfg(splicing)]
-	fn handle_splice(&self, counterparty_node_id: &PublicKey, msg: &msgs::Splice) {
+	fn handle_splice_init(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceInit) {
 		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
 			"Splicing not supported".to_owned(),
 			 msg.channel_id.clone())), *counterparty_node_id);
@@ -9859,7 +9859,7 @@ where
 						// Quiescence
 						&events::MessageSendEvent::SendStfu { .. } => false,
 						// Splicing
-						&events::MessageSendEvent::SendSplice { .. } => false,
+						&events::MessageSendEvent::SendSpliceInit { .. } => false,
 						&events::MessageSendEvent::SendSpliceAck { .. } => false,
 						&events::MessageSendEvent::SendSpliceLocked { .. } => false,
 						// Interactive Transaction Construction

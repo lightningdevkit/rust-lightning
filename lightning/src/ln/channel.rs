@@ -7135,6 +7135,7 @@ impl<SP: Deref> Channel<SP> where
 					channel_id: self.context.channel_id,
 					signature,
 					htlc_signatures,
+					batch: None,
 					#[cfg(taproot)]
 					partial_signature_with_nonce: None,
 				}, (counterparty_commitment_txid, commitment_stats.htlcs_included)))

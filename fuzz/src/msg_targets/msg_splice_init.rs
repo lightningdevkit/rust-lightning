@@ -16,12 +16,12 @@ use crate::msg_targets::utils::VecWriter;
 use crate::utils::test_logger;
 
 #[inline]
-pub fn msg_splice_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
-	test_msg_simple!(lightning::ln::msgs::Splice, data);
+pub fn msg_splice_init_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
+	test_msg_simple!(lightning::ln::msgs::SpliceInit, data);
 }
 
 #[no_mangle]
-pub extern "C" fn msg_splice_run(data: *const u8, datalen: usize) {
+pub extern "C" fn msg_splice_init_run(data: *const u8, datalen: usize) {
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
-	test_msg_simple!(lightning::ln::msgs::Splice, data);
+	test_msg_simple!(lightning::ln::msgs::SpliceInit, data);
 }

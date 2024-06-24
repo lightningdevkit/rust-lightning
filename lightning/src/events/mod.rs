@@ -2057,12 +2057,12 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: msgs::Stfu,
 	},
-	/// Used to indicate that a splice message should be sent to the peer with the given node id.
-	SendSplice {
+	/// Used to indicate that a splice_init message should be sent to the peer with the given node id.
+	SendSpliceInit {
 		/// The node_id of the node which should receive this message
 		node_id: PublicKey,
 		/// The message which should be sent.
-		msg: msgs::Splice,
+		msg: msgs::SpliceInit,
 	},
 	/// Used to indicate that a splice_ack message should be sent to the peer with the given node id.
 	SendSpliceAck {
