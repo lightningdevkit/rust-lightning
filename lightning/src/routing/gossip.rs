@@ -1102,6 +1102,14 @@ impl<'a> DirectedChannelInfo<'a> {
 	/// Refers to the `node_id` receiving the payment from the previous hop.
 	#[inline]
 	pub fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
+
+	/// Returns the source node's counter
+	#[inline]
+	pub(super) fn source_counter(&self) -> u32 { if self.from_node_one { self.channel.node_one_counter } else { self.channel.node_two_counter } }
+
+	/// Returns the target node's counter
+	#[inline]
+	pub(super) fn target_counter(&self) -> u32 { if self.from_node_one { self.channel.node_two_counter } else { self.channel.node_one_counter } }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
@@ -1854,21 +1862,21 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			(&mut channel_info.node_one_counter, node_id_a),
 			(&mut channel_info.node_two_counter, node_id_b)
 		];
-		for (node_counter, current_node_id) in node_counter_id.iter_mut() {
+		for (chan_info_node_counter, current_node_id) in node_counter_id.iter_mut() {
 			match nodes.entry(current_node_id.clone()) {
 				IndexedMapEntry::Occupied(node_entry) => {
 					let node = node_entry.into_mut();
 					node.channels.push(short_channel_id);
-					**node_counter = node.node_counter;
+					**chan_info_node_counter = node.node_counter;
 				},
 				IndexedMapEntry::Vacant(node_entry) => {
 					let mut removed_node_counters = self.removed_node_counters.lock().unwrap();
-					**node_counter = removed_node_counters.pop()
+					**chan_info_node_counter = removed_node_counters.pop()
 						.unwrap_or(self.next_node_counter.fetch_add(1, Ordering::Relaxed) as u32);
 					node_entry.insert(NodeInfo {
 						channels: vec!(short_channel_id),
 						announcement_info: None,
-						node_counter: **node_counter,
+						node_counter: **chan_info_node_counter,
 					});
 				}
 			};
