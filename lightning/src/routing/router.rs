@@ -2696,6 +2696,11 @@ where L::Target: Logger {
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
+		debug_assert_eq!(
+			payment_params.payee.blinded_route_hints().len(),
+			introduction_node_id_cache.len(),
+			"introduction_node_id_cache was built by iterating the blinded_route_hints, so they should be the same len"
+		);
 		for (hint_idx, hint) in payment_params.payee.blinded_route_hints().iter().enumerate() {
 			// Only add the hops in this route to our candidate set if either
 			// we have a direct channel to the first hop or the first hop is
