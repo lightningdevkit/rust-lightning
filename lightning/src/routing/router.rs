@@ -1510,13 +1510,13 @@ enum CandidateHopId {
 ///
 /// It is first built by passing all [`NodeId`]s that we'll ever care about (which are not in our
 /// [`NetworkGraph`], e.g. those from first- and last-hop hints and blinded path introduction
-/// points) either though [`NodeCountersBuilder::node_counter_from_pubkey`] or
-/// [`NodeCountersBuilder::node_counter_from_id`], then calling [`NodeCountersBuilder::build`] and
-/// using the resulting [`NodeCounters`] to look up any counters.
+/// points) either though [`NodeCountersBuilder::select_node_counter_for_pubkey`] or
+/// [`NodeCountersBuilder::select_node_counter_for_id`], then calling [`NodeCountersBuilder::build`]
+/// and using the resulting [`NodeCounters`] to look up any counters.
 ///
 /// [`NodeCounters::private_node_counter_from_pubkey`], specifically, will return `Some` iff
-/// [`NodeCountersBuilder::node_counter_from_pubkey`] was called on the same key (not
-/// [`NodeCountersBuilder::node_counter_from_id`]). It will also return a cached copy of the
+/// [`NodeCountersBuilder::select_node_counter_for_pubkey`] was called on the same key (not
+/// [`NodeCountersBuilder::select_node_counter_for_id`]). It will also return a cached copy of the
 /// [`PublicKey`] -> [`NodeId`] conversion.
 struct NodeCounters<'a> {
 	network_graph: &'a ReadOnlyNetworkGraph<'a>,
@@ -1535,14 +1535,14 @@ impl<'a> NodeCountersBuilder<'a> {
 		})
 	}
 
-	fn node_counter_from_pubkey(&mut self, pubkey: PublicKey) -> u32 {
+	fn select_node_counter_for_pubkey(&mut self, pubkey: PublicKey) -> u32 {
 		let id = NodeId::from_pubkey(&pubkey);
-		let counter = self.node_counter_from_id(id);
+		let counter = self.select_node_counter_for_id(id);
 		self.0.private_hop_key_cache.insert(pubkey, (id, counter));
 		counter
 	}
 
-	fn node_counter_from_id(&mut self, node_id: NodeId) -> u32 {
+	fn select_node_counter_for_id(&mut self, node_id: NodeId) -> u32 {
 		// For any node_id, we first have to check if its in the existing network graph, and then
 		// ensure that we always look up in our internal map first.
 		self.0.network_graph.nodes().get(&node_id)
@@ -2128,14 +2128,14 @@ where L::Target: Logger {
 		}
 	}
 
-	let mut node_counters = NodeCountersBuilder::new(&network_graph);
+	let mut node_counter_builder = NodeCountersBuilder::new(&network_graph);
 
-	let payer_node_counter = node_counters.node_counter_from_pubkey(*our_node_pubkey);
-	let payee_node_counter = node_counters.node_counter_from_pubkey(maybe_dummy_payee_pk);
+	let payer_node_counter = node_counter_builder.select_node_counter_for_pubkey(*our_node_pubkey);
+	let payee_node_counter = node_counter_builder.select_node_counter_for_pubkey(maybe_dummy_payee_pk);
 
 	for route in payment_params.payee.unblinded_route_hints().iter() {
 		for hop in route.0.iter() {
-			node_counters.node_counter_from_pubkey(hop.src_node_id);
+			node_counter_builder.select_node_counter_for_pubkey(hop.src_node_id);
 		}
 	}
 
@@ -2158,7 +2158,7 @@ where L::Target: Logger {
 				.entry(counterparty_id)
 				.or_insert_with(|| {
 					// Make sure there's a counter assigned for the counterparty
-					node_counters.node_counter_from_id(counterparty_id);
+					node_counter_builder.select_node_counter_for_id(counterparty_id);
 					Vec::new()
 				})
 				.push(chan);
@@ -2182,7 +2182,7 @@ where L::Target: Logger {
 		}
 	}
 
-	let node_counters = node_counters.build();
+	let node_counters = node_counter_builder.build();
 
 	// The main heap containing all candidate next-hops sorted by their score (max(fee,
 	// htlc_minimum)). Ideally this would be a heap which allowed cheap score reduction instead of
