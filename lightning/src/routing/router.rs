@@ -2849,7 +2849,7 @@ where L::Target: Logger {
     						.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys during setup, so is always Some here");
 					let (_src_id, private_source_node_counter) =
 						node_counters.private_node_counter_from_pubkey(&hop.src_node_id)
-						.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys during setup, so is always Some here");
+							.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys during setup, so is always Some here");
 
 					if let Some((first_channels, _)) = first_hop_targets.get(target) {
 						if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {
