@@ -2165,7 +2165,10 @@ where L::Target: Logger {
 			for route in route_hints.iter() {
 				for hop in &route.0 {
 					if hop.src_node_id == *node_id {
-						return Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError});
+						return Err(LightningError {
+							err: "Route hint cannot have the payee as the source.".to_owned(),
+							action: ErrorAction::IgnoreError
+						});
 					}
 				}
 			}
