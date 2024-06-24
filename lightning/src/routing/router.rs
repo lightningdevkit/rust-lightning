@@ -2759,7 +2759,7 @@ where L::Target: Logger {
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
 					let (target, _private_target_node_counter) =
 						node_counters.private_node_counter_from_pubkey(&prev_hop_id)
-						.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys during setup, so is always Some here");
+							.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys during setup, so is always Some here");
 
 					if let Some(first_channels) = first_hop_targets.get(target) {
 						if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {
