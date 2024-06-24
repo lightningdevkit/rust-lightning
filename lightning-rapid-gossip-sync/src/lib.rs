@@ -81,6 +81,8 @@ use lightning::util::logger::Logger;
 /// Core functionality of this crate
 mod processing;
 
+pub use processing::NodeFlag;
+
 /// All-encompassing standard error type that processing can return
 #[derive(Debug)]
 pub enum GraphSyncError {
