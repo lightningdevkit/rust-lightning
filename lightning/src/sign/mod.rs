@@ -621,7 +621,7 @@ impl HTLCDescriptor {
 	) -> TxOut {
 		TxOut {
 			script_pubkey: self.witness_script(secp).to_p2wsh(),
-			value: self.htlc.to_bitcoin_amount(),
+			value: self.htlc.satoshi_amount(),
 		}
 	}
 
@@ -1439,7 +1439,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 					.p2wsh_signature_hash(
 						0,
 						&htlc_redeemscript,
-						htlc.to_bitcoin_amount(),
+						htlc.satoshi_amount(),
 						htlc_sighashtype
 					)
 					.unwrap()[..]
@@ -1593,7 +1593,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 			.p2wsh_signature_hash(
 				input,
 				&witness_script,
-				htlc_descriptor.htlc.to_bitcoin_amount(),
+				htlc_descriptor.htlc.satoshi_amount(),
 				EcdsaSighashType::All,
 			)
 			.map_err(|_| ())?;
