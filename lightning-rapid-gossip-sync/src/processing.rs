@@ -22,6 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(all(not(feature = "std"), not(test)))]
 use alloc::{borrow::ToOwned, vec::Vec};
+use core::borrow::Borrow;
 use lightning::ln::features::NodeFeatures;
 
 /// The purpose of this prefix is to identify the serialization format, should other rapid gossip
@@ -37,6 +38,63 @@ const MAX_INITIAL_NODE_ID_VECTOR_CAPACITY: u32 = 50_000;
 /// We disallow gossip data that's more than two weeks old, per BOLT 7's
 /// suggestion.
 const STALE_RGS_UPDATE_AGE_LIMIT_SECS: u64 = 60 * 60 * 24 * 14;
+
+/// Tooling for parsing node flag bitmasks.
+pub enum NodeFlag {
+	/// Indicate that the socket addresses have changed
+	AddressChanged,
+	/// Index of the node's feature set
+	Features,
+	/// Indicate that the node information ought not get purged
+	Reminder,
+	/// Indicate that additional data is present
+	AdditionalData,
+}
+
+struct Bitmask {
+	offset: u8,
+	mask: u8,
+}
+
+impl NodeFlag {
+	fn bitmask(&self) -> Bitmask {
+		match self {
+			NodeFlag::AddressChanged => Bitmask { offset: 2, mask: 1 },
+			NodeFlag::Features => Bitmask { offset: 3, mask: 0b111 },
+			NodeFlag::Reminder => Bitmask { offset: 6, mask: 1 },
+			NodeFlag::AdditionalData => Bitmask { offset: 7, mask: 1 },
+		}
+	}
+
+	fn value<B: Borrow<u8>>(&self, byte: B) -> u8 {
+		let mask = self.bitmask();
+		(byte.borrow() & (mask.mask << mask.offset)) >> mask.offset
+	}
+
+	fn is_present<B: Borrow<u8>>(&self, byte: B) -> bool {
+		let value = self.value(byte);
+		value > 0
+	}
+
+	/// Set a byte's value for a specific bitmask
+	pub fn write<B: Borrow<u8>>(&self, byte: B, value: B) -> Result<u8, DecodeError> {
+		let mask = self.bitmask();
+		if value.borrow() > &mask.mask {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		let mut output = byte.borrow().clone();
+
+		// 1. initialize the affected bits
+		let inverted_bitmask = !(mask.mask << mask.offset);
+		output = output & inverted_bitmask;
+
+		// 2. set the value
+		let value_mask = value.borrow() << mask.offset;
+		output = output | value_mask;
+		Ok(output)
+	}
+}
 
 impl<NG: Deref<Target = NetworkGraph<L>>, L: Deref> RapidGossipSync<NG, L>
 where
@@ -145,10 +203,10 @@ where
 				*/
 				let node_detail_flag = pubkey_bytes.first().ok_or(DecodeError::ShortRead)?;
 
-				let has_address_details = (node_detail_flag & (1 << 2)) > 0;
-				let feature_detail_marker = (node_detail_flag & (0b111 << 3)) >> 3;
-				let is_reminder = (node_detail_flag & (1 << 6)) > 0;
-				let has_additional_data = (node_detail_flag & (1 << 7)) > 0;
+				let has_address_details = NodeFlag::AddressChanged.is_present(node_detail_flag);
+				let feature_detail_marker = NodeFlag::Features.value(node_detail_flag);
+				let is_reminder = NodeFlag::Reminder.is_present(node_detail_flag);
+				let has_additional_data = NodeFlag::AdditionalData.is_present(node_detail_flag);
 
 				// extract the relevant bits for pubkey parity
 				let key_parity = node_detail_flag & 0b_0000_0011;
