@@ -95,7 +95,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: u64, secp_ctx: &Secp256k1<T>
+		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PAYMENT_PATHS: usize = 3;
@@ -103,6 +103,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 		// Ensure peers have at least three channels so that it is more difficult to infer the
 		// recipient's node_id.
 		const MIN_PEER_CHANNELS: usize = 3;
+
+		const DEFAULT_AMT_MSAT: u64 = 100_000_000;
+		let amount_msats = amount_msats.unwrap_or(DEFAULT_AMT_MSAT);
 
 		let has_one_peer = first_hops
 			.first()
@@ -218,7 +221,7 @@ pub trait Router {
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
-		amount_msats: u64, secp_ctx: &Secp256k1<T>
+		amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>
 	) -> Result<Vec<BlindedPaymentPath>, ()>;
 }
 
