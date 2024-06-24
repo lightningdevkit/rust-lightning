@@ -2181,8 +2181,10 @@ where L::Target: Logger {
 				if blinded_path.blinded_hops.len() == 0 {
 					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
 				}
-				if info_opt.is_none() { continue }
-				let introduction_node_id = info_opt.unwrap().0;
+				let introduction_node_id = match info_opt {
+					None => continue,
+					Some(info) => info.0,
+				};
 				if *introduction_node_id == our_node_id {
 					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
 				} else if blinded_path.blinded_hops.len() == 1 &&
