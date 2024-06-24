@@ -2146,17 +2146,16 @@ where L::Target: Logger {
 					node_counters.node_counter_from_id(&NodeId::from_pubkey(&pubkey))
 				},
 				IntroductionNode::DirectedShortChannelId(direction, scid) => {
-					let node_id = if let Some(node_id) = path.public_introduction_node_id(network_graph) {
-						Some(*node_id)
-					} else {
-						let counterparty_opt = first_hop_targets.iter().find(|(_, channels)|
-							channels
-								.iter()
-								.any(|details| Some(*scid) == details.get_outbound_payment_scid())
-						).map(|(counterparty_node_id, _)| counterparty_node_id);
-						counterparty_opt.map(|cp| direction.select_node_id(our_node_id, *cp))
-					};
-					node_id.and_then(|node_id| node_counters.node_counter_from_id(&node_id),)
+					path.public_introduction_node_id(network_graph)
+						.map(|node_id_ref| *node_id_ref)
+						.or_else(|| {
+							first_hop_targets.iter().find(|(_, channels)|
+								channels
+									.iter()
+									.any(|details| Some(*scid) == details.get_outbound_payment_scid())
+							).map(|(cp, _)| direction.select_node_id(our_node_id, *cp))
+						})
+						.and_then(|node_id| node_counters.node_counter_from_id(&node_id))
 				},
 			}
 		})
