@@ -6253,11 +6253,16 @@ where
 								match claimable_htlc.onion_payload {
 									OnionPayload::Invoice { .. } => {
 										let payment_data = payment_data.unwrap();
-										let purpose = events::PaymentPurpose::from_parts(
+										let purpose = match events::PaymentPurpose::from_parts(
 											payment_preimage,
 											payment_data.payment_secret,
 											payment_context,
-										);
+										) {
+											Ok(purpose) => purpose,
+											Err(()) => {
+												fail_htlc!(claimable_htlc, payment_hash);
+											},
+										};
 										check_total_value!(purpose);
 									},
 									OnionPayload::Spontaneous(preimage) => {
