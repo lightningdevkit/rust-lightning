@@ -10182,7 +10182,7 @@ where
 			Ok((payment_hash, payment_secret)) => {
 				let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
 				let payment_paths = self.create_blinded_payment_paths(
-					amount_msats, payment_secret, payment_context
+					Some(amount_msats), payment_secret, payment_context
 				)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -10489,7 +10489,7 @@ where
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
 	fn create_blinded_payment_paths(
-		&self, amount_msats: u64, payment_secret: PaymentSecret, payment_context: PaymentContext
+		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
@@ -12048,7 +12048,7 @@ where
 					invoice_request: invoice_request.fields(),
 				});
 				let payment_paths = match self.create_blinded_payment_paths(
-					amount_msats, payment_secret, payment_context
+					Some(amount_msats), payment_secret, payment_context
 				) {
 					Ok(payment_paths) => payment_paths,
 					Err(()) => {
