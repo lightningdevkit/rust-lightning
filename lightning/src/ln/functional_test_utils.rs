@@ -422,7 +422,7 @@ type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
 	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
-	IgnoringMessageHandler,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
 	IgnoringMessageHandler,
 >;
 
@@ -3259,7 +3259,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 		let dedicated_entropy = DedicatedEntropy(RandomBytes::new([i as u8; 32]));
 		let onion_messenger = OnionMessenger::new(
 			dedicated_entropy, cfgs[i].keys_manager, cfgs[i].logger, &chan_mgrs[i],
-			&cfgs[i].message_router, &chan_mgrs[i], IgnoringMessageHandler {}, IgnoringMessageHandler {},
+			&cfgs[i].message_router, &chan_mgrs[i], &chan_mgrs[i], IgnoringMessageHandler {},
 		);
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
 		let wallet_source = Arc::new(test_utils::TestWalletSource::new(SecretKey::from_slice(&[i as u8 + 1; 32]).unwrap()));

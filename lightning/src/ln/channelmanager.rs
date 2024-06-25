@@ -66,6 +66,7 @@ use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
+use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
@@ -10397,6 +10398,31 @@ where
 
 	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> {
 		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
+	}
+}
+
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
+AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	L::Target: Logger,
+{
+	fn held_htlc_available(
+		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
+	) -> ResponseInstruction<ReleaseHeldHtlc> {
+		ResponseInstruction::NoResponse
+	}
+
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+
+	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<AsyncPaymentsMessage>> {
+		Vec::new()
 	}
 }
 
