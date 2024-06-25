@@ -6209,7 +6209,7 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let mut sources = {
+		let sources = {
 			let mut claimable_payments = self.claimable_payments.lock().unwrap();
 			if let Some(payment) = claimable_payments.claimable_payments.remove(&payment_hash) {
 				let mut receiver_node_id = self.our_network_pubkey;
@@ -6304,29 +6304,30 @@ where
 			return;
 		}
 		if valid_mpp {
-			let mut pending_claim_ptr_opt = None;
-			let mut source_claim_pairs = Vec::with_capacity(sources.len());
-			if sources.len() > 1 {
+			let (source_claim_pairs, pending_claim_ptr_opt) = if sources.len() > 1 {
 				let mut pending_claims = PendingMPPClaim {
 					channels_without_preimage: Vec::new(),
 					channels_with_preimage: Vec::new(),
 				};
-				for htlc in sources.drain(..) {
+				let (source_claim_pairs, channels_without_preimage) = sources.into_iter().filter_map(|htlc| {
 					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
 						let htlc_id = htlc.prev_hop.htlc_id;
 						let chan_id = htlc.prev_hop.channel_id;
 						let chan_outpoint = htlc.prev_hop.outpoint;
-						pending_claims.channels_without_preimage.push((cp_id, chan_outpoint, chan_id, htlc_id));
-						source_claim_pairs.push((htlc, Some((cp_id, chan_id, htlc_id))));
+						Some((
+							(htlc, Some((cp_id, chan_id, htlc_id))),
+							(cp_id, chan_outpoint, chan_id, htlc_id),
+						))
+					} else {
+						None
 					}
-				}
-				pending_claim_ptr_opt = Some(Arc::new(Mutex::new(pending_claims)));
+				}).unzip::<_, _, Vec<_>, _>();
+				pending_claims.channels_without_preimage = channels_without_preimage;
+				(source_claim_pairs, Some(Arc::new(Mutex::new(pending_claims))))
 			} else {
-				for htlc in sources.drain(..) {
-					source_claim_pairs.push((htlc, None));
-				}
-			}
-			for (htlc, mpp_claim) in source_claim_pairs.drain(..) {
+				(sources.into_iter().map(|htlc| (htlc, None)).collect(), None)
+			};
+			for (htlc, mpp_claim) in source_claim_pairs {
 				let mut pending_mpp_claim = None;
 				let pending_claim_ptr = pending_claim_ptr_opt.as_ref().map(|pending_claim| {
 					pending_mpp_claim = mpp_claim.map(|(cp_id, chan_id, htlc_id)|
@@ -6344,9 +6345,8 @@ where
 					}
 				);
 			}
-		}
-		if !valid_mpp {
-			for htlc in sources.drain(..) {
+		} else {
+			for htlc in sources {
 				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
 				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height.to_be_bytes());
 				let source = HTLCSource::PreviousHopData(htlc.prev_hop);
