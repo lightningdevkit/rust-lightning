@@ -39,14 +39,17 @@ GEN_TEST lightning::ln::msgs::ChannelReestablish test_msg_simple ""
 
 GEN_TEST lightning::ln::msgs::DecodedOnionErrorPacket test_msg ""
 
+# Gossip messages need to use `test_msg_exact` to ensure that messages
+# round-trip exactly when doing signature validation.
 GEN_TEST lightning::ln::msgs::ChannelAnnouncement test_msg_exact ""
 GEN_TEST lightning::ln::msgs::NodeAnnouncement test_msg_exact ""
+GEN_TEST lightning::ln::msgs::ChannelUpdate test_msg_exact ""
+
 GEN_TEST lightning::ln::msgs::QueryShortChannelIds test_msg ""
 GEN_TEST lightning::ln::msgs::ReplyChannelRange test_msg ""
 
 GEN_TEST lightning::ln::msgs::ErrorMessage test_msg_hole ", 32, 2"
 GEN_TEST lightning::ln::msgs::WarningMessage test_msg_hole ", 32, 2"
-GEN_TEST lightning::ln::msgs::ChannelUpdate test_msg_hole ", 108, 1"
 
 GEN_TEST lightning::ln::channel_state::ChannelDetails test_msg_simple ""
 
