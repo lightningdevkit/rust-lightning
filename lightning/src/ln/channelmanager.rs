@@ -18,7 +18,7 @@
 //! imply it needs to fail HTLCs/payments/channels it manages).
 
 use bitcoin::blockdata::block::Header;
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::blockdata::transaction::{Transaction, TxIn};
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::key::constants::SECRET_KEY_SIZE;
 use bitcoin::network::Network;
@@ -39,23 +39,29 @@ use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::events;
+use crate::events::{self, InboundChannelFunds};
 use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason};
 // Since this struct is returned in `list_channels` methods, expose it here in case users want to
 // construct one themselves.
 use crate::ln::inbound_payment;
 use crate::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::channel::{self, Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
+use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
 use crate::ln::channel_state::ChannelDetails;
+#[cfg(any(dual_funding, splicing))]
+use crate::ln::channel::{calculate_our_funding_satoshis, InboundV2Channel, MIN_CHAN_DUST_LIMIT_SATOSHIS, OutboundV2Channel, InteractivelyFunded as _};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
+#[cfg(any(dual_funding, splicing))]
+use crate::ln::interactivetxs::{InteractiveTxConstructor, InteractiveTxMessageSend};
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
+#[cfg(any(dual_funding, splicing))]
+use crate::ln::msgs::CommitmentUpdate;
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutboundPayment, SendAlongPathArgs, StaleExpiration};
@@ -75,6 +81,7 @@ use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
 use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
+use crate::util::ser::TransactionU16LenLimited;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 
@@ -949,11 +956,18 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 	}
 }
 
+#[derive(Clone)]
+pub(super) enum OpenChannelMessage {
+	V1(msgs::OpenChannel),
+	#[cfg(any(dual_funding, splicing))]
+	V2(msgs::OpenChannelV2),
+}
+
 /// A not-yet-accepted inbound (from counterparty) channel. Once
 /// accepted, the parameters will be used to construct a channel.
 pub(super) struct InboundChannelRequest {
 	/// The original OpenChannel message.
-	pub open_channel_msg: msgs::OpenChannel,
+	pub open_channel_msg: OpenChannelMessage,
 	/// The number of ticks remaining before the request expires.
 	pub ticks_remaining: i32,
 }
@@ -2962,8 +2976,71 @@ where
 	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
 	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
 	pub fn create_channel(&self, their_network_key: PublicKey, channel_value_satoshis: u64, push_msat: u64, user_channel_id: u128, temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>) -> Result<ChannelId, APIError> {
-		if channel_value_satoshis < 1000 {
-			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", channel_value_satoshis) });
+		self.create_channel_internal(false, their_network_key, channel_value_satoshis, vec![], None,
+			push_msat, user_channel_id, temporary_channel_id, override_config)
+	}
+
+	/// Creates a new outbound dual-funded channel to the given remote node and with the given value
+	/// contributed by us.
+	///
+	/// `user_channel_id` will be provided back as in
+	/// [`Event::FundingGenerationReady::user_channel_id`] to allow tracking of which events
+	/// correspond with which `create_channel` call. Note that the `user_channel_id` defaults to a
+	/// randomized value for inbound channels. `user_channel_id` has no meaning inside of LDK, it
+	/// is simply copied to events and otherwise ignored.
+	///
+	/// `funding_satoshis` is the amount we are contributing to the channel.
+	/// Raises [`APIError::APIMisuseError`] when `funding_satoshis` > 2**24.
+	///
+	/// The `funding_conf_target` parameter sets the priority of the funding transaction for appropriate
+	/// fee estimation. If `None`, then [`ConfirmationTarget::Normal`] is used.
+	///
+	/// Raises [`APIError::ChannelUnavailable`] if the channel cannot be opened due to failing to
+	/// generate a shutdown scriptpubkey or destination script set by
+	/// [`SignerProvider::get_shutdown_scriptpubkey`] or [`SignerProvider::get_destination_script`].
+	///
+	/// Note that we do not check if you are currently connected to the given peer. If no
+	/// connection is available, the outbound `open_channel` message may fail to send, resulting in
+	/// the channel eventually being silently forgotten (dropped on reload).
+	///
+	/// Returns the new Channel's temporary `channel_id`. This ID will appear as
+	/// [`Event::FundingGenerationReady::temporary_channel_id`] and in
+	/// [`ChannelDetails::channel_id`] until after
+	/// [`ChannelManager::funding_transaction_generated`] is called, swapping the Channel's ID for
+	/// one derived from the funding transaction's TXID. If the counterparty rejects the channel
+	/// immediately, this temporary ID will appear in [`Event::ChannelClosed::channel_id`].
+	///
+	/// [`Event::FundingGenerationReady::user_channel_id`]: events::Event::FundingGenerationReady::user_channel_id
+	/// [`Event::FundingGenerationReady::temporary_channel_id`]: events::Event::FundingGenerationReady::temporary_channel_id
+	/// [`Event::ChannelClosed::channel_id`]: events::Event::ChannelClosed::channel_id
+	/// [`ConfirmationTarget::Normal`]: chain::chaininterface::ConfirmationTarget
+	#[cfg(any(dual_funding, splicing))]
+	pub fn create_dual_funded_channel(
+		&self, their_network_key: PublicKey, funding_inputs: Vec<(TxIn, Transaction)>,
+		funding_conf_target: Option<ConfirmationTarget>, user_channel_id: u128,
+		override_config: Option<UserConfig>
+	) -> Result<ChannelId, APIError> {
+
+		let funding_feerate_sat_per_1000_weight = self.fee_estimator.bounded_sat_per_1000_weight(
+			funding_conf_target.unwrap_or(ConfirmationTarget::NonAnchorChannelFee)
+		);
+		let funding_inputs = Self::length_limit_holder_input_prev_txs(funding_inputs)?;
+		let funding_satoshis = calculate_our_funding_satoshis(
+			true, &funding_inputs, funding_feerate_sat_per_1000_weight, MIN_CHAN_DUST_LIMIT_SATOSHIS
+		)?;
+		self.create_channel_internal(true, their_network_key, funding_satoshis, funding_inputs,
+			funding_conf_target, 0, user_channel_id, None, override_config)
+	}
+
+	// TODO(dual_funding): Remove param _-prefix once #[cfg(dual_funding)] is dropped.
+	fn create_channel_internal(
+		&self, _is_v2: bool, their_network_key: PublicKey, funding_satoshis: u64,
+		_funding_inputs: Vec<(TxIn,TransactionU16LenLimited)>,
+		_funding_conf_target: Option<ConfirmationTarget>, push_msat: u64, user_channel_id: u128,
+		temporary_channel_id: Option<ChannelId>, override_config: Option<UserConfig>,
+	) -> Result<ChannelId, APIError> {
+		if funding_satoshis < 1000 {
+			return Err(APIError::APIMisuseError { err: format!("Channel value must be at least 1000 satoshis. It was {}", funding_satoshis) });
 		}
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -2983,24 +3060,76 @@ where
 			}
 		}
 
-		let channel = {
-			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
-			let their_features = &peer_state.latest_features;
-			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
-			match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
-				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
-				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id)
-			{
-				Ok(res) => res,
-				Err(e) => {
-					self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
-					return Err(e);
-				},
-			}
-		};
-		let res = channel.get_open_channel(self.chain_hash);
+		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
+		let their_features = &peer_state.latest_features;
+		let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
 
-		let temporary_channel_id = channel.context.channel_id();
+		// TODO(dual_funding): Merge this with below when cfg is removed.
+		#[cfg(not(any(dual_funding, splicing)))]
+		let (channel_phase, msg_send_event) = {
+			let channel = {
+				match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
+					their_features, funding_satoshis, push_msat, user_channel_id, config,
+					self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id)
+				{
+					Ok(res) => res,
+					Err(e) => {
+						self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
+						return Err(e);
+					},
+				}
+			};
+			let res = channel.get_open_channel(self.chain_hash);
+			let event = events::MessageSendEvent::SendOpenChannel {
+				node_id: their_network_key,
+				msg: res,
+			};
+			(ChannelPhase::UnfundedOutboundV1(channel), event)
+		};
+
+		#[cfg(any(dual_funding, splicing))]
+		let (channel_phase, msg_send_event) = if _is_v2 {
+			let channel = {
+				match OutboundV2Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
+					their_features, funding_satoshis, _funding_inputs, user_channel_id, config,
+					self.best_block.read().unwrap().height, outbound_scid_alias,
+					_funding_conf_target.unwrap_or(ConfirmationTarget::NonAnchorChannelFee))
+				{
+					Ok(res) => res,
+					Err(e) => {
+						self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
+						return Err(e);
+					},
+				}
+			};
+			let res = channel.get_open_channel_v2(self.chain_hash);
+			let event = events::MessageSendEvent::SendOpenChannelV2 {
+				node_id: their_network_key,
+				msg: res,
+			};
+			(ChannelPhase::UnfundedOutboundV2(channel), event)
+		} else {
+			let channel = {
+				match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
+					their_features, funding_satoshis, push_msat, user_channel_id, config,
+					self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id)
+				{
+					Ok(res) => res,
+					Err(e) => {
+						self.outbound_scid_aliases.lock().unwrap().remove(&outbound_scid_alias);
+						return Err(e);
+					},
+				}
+			};
+			let res = channel.get_open_channel(self.chain_hash);
+			let event = events::MessageSendEvent::SendOpenChannel {
+				node_id: their_network_key,
+				msg: res,
+			};
+			(ChannelPhase::UnfundedOutboundV1(channel), event)
+		};
+
+		let temporary_channel_id = channel_phase.context().channel_id();
 		match peer_state.channel_by_id.entry(temporary_channel_id) {
 			hash_map::Entry::Occupied(_) => {
 				if cfg!(fuzzing) {
@@ -3009,13 +3138,10 @@ where
 					panic!("RNG is bad???");
 				}
 			},
-			hash_map::Entry::Vacant(entry) => { entry.insert(ChannelPhase::UnfundedOutboundV1(channel)); }
+			hash_map::Entry::Vacant(entry) => { entry.insert(channel_phase); }
 		}
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-			node_id: their_network_key,
-			msg: res,
-		});
+		peer_state.pending_msg_events.push(msg_send_event);
 		Ok(temporary_channel_id)
 	}
 
@@ -4504,6 +4630,54 @@ where
 			}
 		}
 		result
+	}
+
+	/// Handles a signed funding transaction generated by interactive transaction construction and
+	/// provided by the client.
+	///
+	/// Do NOT broadcast the funding transaction yourself. When we have safely received our
+	/// counterparty's signature(s) the funding transaction will automatically be broadcast via the
+	/// [`BroadcasterInterface`] provided when this `ChannelManager` was constructed.
+	#[cfg(any(dual_funding, splicing))]
+	pub fn funding_transaction_signed(
+		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, transaction: Transaction
+	) -> Result<(), APIError> {
+		let witnesses: Vec<_> = transaction.input.into_iter().filter_map(|input| {
+			if input.witness.is_empty() { None } else { Some(input.witness) }
+		}).collect();
+
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| APIError::ChannelUnavailable {
+				err: format!("Can't find a peer matching the passed counterparty node_id {}",
+					counterparty_node_id) })?;
+
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		match peer_state.channel_by_id.get_mut(channel_id) {
+			Some(ChannelPhase::Funded(chan)) => {
+				chan.verify_interactive_tx_signatures(&witnesses);
+				if let Some(ref mut signing_session) = chan.interactive_tx_signing_session {
+					if let Some(tx_signatures) = signing_session.provide_holder_witnesses(*channel_id, witnesses) {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+							node_id: *counterparty_node_id,
+							msg: tx_signatures,
+						});
+					}
+				} else {
+					return Err(APIError::APIMisuseError {
+						err: format!("Channel with id {} not expecting funding signatures", channel_id)});
+				}
+			},
+			Some(_) => return Err(APIError::APIMisuseError {
+				err: format!("Channel with id {} not expecting funding signatures", channel_id)}),
+			None => return Err(APIError::ChannelUnavailable{
+				err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id,
+					counterparty_node_id) }),
+		}
+
+		Ok(())
 	}
 
 	/// Atomically applies partial updates to the [`ChannelConfig`] of the given channels.
@@ -6525,7 +6699,7 @@ where
 
 	/// Gets the node_id held by this ChannelManager
 	pub fn get_our_node_id(&self) -> PublicKey {
-		self.our_network_pubkey.clone()
+		self.our_network_pubkey
 	}
 
 	fn handle_monitor_update_completion_actions<I: IntoIterator<Item=MonitorUpdateCompletionAction>>(&self, actions: I) {
@@ -6725,7 +6899,7 @@ where
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
 	pub fn accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
-		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id)
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id, vec![])
 	}
 
 	/// Accepts a request to open a channel after a [`events::Event::OpenChannelRequest`], treating
@@ -6747,11 +6921,59 @@ where
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
 	pub fn accept_inbound_channel_from_trusted_peer_0conf(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {
-		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id)
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, true, user_channel_id, vec![])
 	}
 
-	fn do_accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool, user_channel_id: u128) -> Result<(), APIError> {
+	/// Accepts a request to open a dual-funded channel with a contribution provided by us after an
+	/// [`Event::OpenChannelRequest`].
+	///
+	/// The `temporary_channel_id` parameter indicates which inbound channel should be accepted,
+	/// and the `counterparty_node_id` parameter is the id of the peer which has requested to open
+	/// the channel.
+	///
+	/// The `user_channel_id` parameter will be provided back in
+	/// [`Event::ChannelClosed::user_channel_id`] to allow tracking of which events correspond
+	/// with which `accept_inbound_channel_*` call.
+	///
+	/// The `funding_inputs` parameter provides the `txin`s along with their previous transactions that
+	/// will be used to contribute towards our portion of the channel value. Our contribution will be
+	/// calculated as the total value of these inputs minus the fees we need to cover for the
+	/// interactive funding transaction.
+	///
+	/// Note that this method will return an error and reject the channel, if it requires support
+	/// for zero confirmations.
+	// TODO(dual_funding): Discussion on complications with 0conf dual-funded channels where "locking"
+	// of UTXOs used for funding would be required and other issues.
+	// See: https://lists.linuxfoundation.org/pipermail/lightning-dev/2023-May/003920.html
+	/// 
+	///
+	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
+	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
+	#[cfg(any(dual_funding, splicing))]
+	pub fn accept_inbound_channel_with_contribution(&self, temporary_channel_id: &ChannelId,
+		counterparty_node_id: &PublicKey, user_channel_id: u128, funding_inputs: Vec<(TxIn, Transaction)>,
+	) -> Result<(), APIError> {
+		let funding_inputs = Self::length_limit_holder_input_prev_txs(funding_inputs)?;
+		self.do_accept_inbound_channel(temporary_channel_id, counterparty_node_id, false, user_channel_id,
+			funding_inputs)
+	}
 
+	#[cfg(any(dual_funding, splicing))]
+	fn length_limit_holder_input_prev_txs(funding_inputs: Vec<(TxIn, Transaction)>) -> Result<Vec<(TxIn, TransactionU16LenLimited)>, APIError> {
+		funding_inputs.into_iter().map(|(txin, tx)| {
+			match TransactionU16LenLimited::new(tx) {
+				Ok(tx) => Ok((txin, tx)),
+				Err(err) => Err(err)
+			}
+		}).collect::<Result<Vec<(TxIn, TransactionU16LenLimited)>, ()>>()
+		.map_err(|_| APIError::APIMisuseError { err: "One or more transactions had a serialized length exceeding 65535 bytes".into() })
+	}
+
+	// TODO(dual_funding): Remove param _-prefix once #[cfg(dual_funding)] is dropped.
+	fn do_accept_inbound_channel(
+		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, accept_0conf: bool,
+		user_channel_id: u128, _funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+	) -> Result<(), APIError> {
 		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(*temporary_channel_id), None);
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -6776,12 +6998,61 @@ where
 		let res = match peer_state.inbound_channel_request_by_id.remove(temporary_channel_id) {
 			Some(unaccepted_channel) => {
 				let best_block_height = self.best_block.read().unwrap().height;
-				InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
-					counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features,
-					&unaccepted_channel.open_channel_msg, user_channel_id, &self.default_configuration, best_block_height,
-					&self.logger, accept_0conf).map_err(|err| MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id))
+				match unaccepted_channel.open_channel_msg {
+					OpenChannelMessage::V1(open_channel_msg) => {
+						InboundV1Channel::new(
+							&self.fee_estimator, &self.entropy_source, &self.signer_provider, *counterparty_node_id,
+							&self.channel_type_features(), &peer_state.latest_features, &open_channel_msg,
+							user_channel_id, &self.default_configuration, best_block_height, &self.logger, accept_0conf
+						)
+						.map(|channel| ChannelPhase::UnfundedInboundV1(channel))
+						.map_err(|err| MsgHandleErrInternal::from_chan_no_close(err, *temporary_channel_id))
+					},
+					#[cfg(any(dual_funding, splicing))]
+					OpenChannelMessage::V2(open_channel_msg) => {
+						let channel_res = InboundV2Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
+							counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features,
+							&open_channel_msg, _funding_inputs, user_channel_id, &self.default_configuration, best_block_height,
+							&self.logger);
+						match channel_res {
+							Ok(mut channel) => {
+								let tx_msg_opt_res = channel.begin_interactive_funding_tx_construction(
+									&self.entropy_source, self.get_our_node_id()
+								);
+								match tx_msg_opt_res {
+									Ok(tx_msg_opt) => {
+										if let Some(tx_msg) = tx_msg_opt {
+											let msg_send_event = match tx_msg {
+												InteractiveTxMessageSend::TxAddInput(msg) => events::MessageSendEvent::SendTxAddInput {
+													node_id: *counterparty_node_id, msg },
+												InteractiveTxMessageSend::TxAddOutput(msg) => events::MessageSendEvent::SendTxAddOutput {
+													node_id: *counterparty_node_id, msg },
+												InteractiveTxMessageSend::TxComplete(msg) => events::MessageSendEvent::SendTxComplete {
+													node_id: *counterparty_node_id, msg },
+											};
+											peer_state.pending_msg_events.push(msg_send_event);
+										}
+										Ok(ChannelPhase::UnfundedInboundV2(channel))
+									},
+									Err(_) => {
+										Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Close(
+											(
+												"V2 channel rejected due to sender error".into(),
+												ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+											)), *temporary_channel_id))
+									}
+								}
+							},
+							Err(_) => Err(MsgHandleErrInternal::from_chan_no_close(ChannelError::Close(
+								(
+									"V2 channel rejected due to sender error".into(),
+									ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+								)), *temporary_channel_id)),
+						}
+					},
+				}
 			},
-			_ => {
+			None => {
 				let err_str = "No such channel awaiting to be accepted.".to_owned();
 				log_error!(logger, "{}", err_str);
 
@@ -6796,19 +7067,19 @@ where
 				match handle_error!(self, Result::<(), MsgHandleErrInternal>::Err(err), *counterparty_node_id) {
 					Ok(_) => unreachable!("`handle_error` only returns Err as we've passed in an Err"),
 					Err(e) => {
-						return Err(APIError::ChannelUnavailable { err: e.err });
+						Err(APIError::ChannelUnavailable { err: e.err })
 					},
 				}
 			}
-			Ok(mut channel) => {
+			Ok(mut channel_phase) => {
 				if accept_0conf {
-					// This should have been correctly configured by the call to InboundV1Channel::new.
-					debug_assert!(channel.context.minimum_depth().unwrap() == 0);
-				} else if channel.context.get_channel_type().requires_zero_conf() {
+					// This should have been correctly configured by the call to Inbound(V1/V2)Channel::new.
+					debug_assert!(channel_phase.context().minimum_depth().unwrap() == 0);
+				} else if channel_phase.context().get_channel_type().requires_zero_conf() {
 					let send_msg_err_event = events::MessageSendEvent::HandleError {
-						node_id: channel.context.get_counterparty_node_id(),
+						node_id: channel_phase.context().get_counterparty_node_id(),
 						action: msgs::ErrorAction::SendErrorMessage{
-							msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "No zero confirmation channels accepted".to_owned(), }
+							msg: msgs::ErrorMessage { channel_id: *temporary_channel_id, data: "No zero confirmation channels accepted".to_owned(), }
 						}
 					};
 					peer_state.pending_msg_events.push(send_msg_err_event);
@@ -6822,9 +7093,9 @@ where
 					// channels per-peer we can accept channels from a peer with existing ones.
 					if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
 						let send_msg_err_event = events::MessageSendEvent::HandleError {
-							node_id: channel.context.get_counterparty_node_id(),
+							node_id: channel_phase.context().get_counterparty_node_id(),
 							action: msgs::ErrorAction::SendErrorMessage{
-								msg: msgs::ErrorMessage { channel_id: temporary_channel_id.clone(), data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
+								msg: msgs::ErrorMessage { channel_id: *temporary_channel_id, data: "Have too many peers with unfunded channels, not accepting new ones".to_owned(), }
 							}
 						};
 						peer_state.pending_msg_events.push(send_msg_err_event);
@@ -6837,17 +7108,66 @@ where
 
 				// Now that we know we have a channel, assign an outbound SCID alias.
 				let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
-				channel.context.set_outbound_scid_alias(outbound_scid_alias);
+				channel_phase.context_mut().set_outbound_scid_alias(outbound_scid_alias);
 
-				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-					node_id: channel.context.get_counterparty_node_id(),
-					msg: channel.accept_inbound_channel(),
-				});
-
-				peer_state.channel_by_id.insert(temporary_channel_id.clone(), ChannelPhase::UnfundedInboundV1(channel));
+				match channel_phase {
+					ChannelPhase::UnfundedInboundV1(mut channel) => {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+							node_id: channel.context.get_counterparty_node_id(),
+							msg: channel.accept_inbound_channel() });
+						peer_state.channel_by_id.insert(*temporary_channel_id,
+							ChannelPhase::UnfundedInboundV1(channel));
+					},
+					#[cfg(any(dual_funding, splicing))]
+					ChannelPhase::UnfundedInboundV2(mut channel) => {
+						peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannelV2 {
+							node_id: channel.context.get_counterparty_node_id(),
+							msg: channel.accept_inbound_dual_funded_channel() });
+						peer_state.channel_by_id.insert(channel.context.channel_id(),
+							ChannelPhase::UnfundedInboundV2(channel));
+					},
+					_ => {
+						debug_assert!(false);
+						// This should be unreachable, but if it is then we would have dropped the inbound channel request
+						// and there'd be nothing to clean up as we haven't added anything to the channel_by_id map yet.
+						return Err(APIError::APIMisuseError {
+							err: "Channel somehow changed to a non-inbound channel before accepting".to_owned() })
+					}
+				}
 
 				Ok(())
 			},
+		}
+	}
+
+	/// Checks related to inputs and their amounts related to establishing dual-funded channels.
+	#[cfg(any(dual_funding, splicing))]
+	fn dual_funding_amount_checks(funding_satoshis: u64, funding_inputs: &Vec<(TxIn, Transaction)>)
+	-> Result<(), APIError> {
+		if funding_satoshis < 1000 {
+			return Err(APIError::APIMisuseError {
+				err: format!("Funding amount must be at least 1000 satoshis. It was {} sats", funding_satoshis),
+			});
+		}
+
+		// Check that vouts exist for each TxIn in provided transactions.
+		for (idx, input) in funding_inputs.iter().enumerate() {
+			if input.1.output.get(input.0.previous_output.vout as usize).is_none() {
+				return Err(APIError::APIMisuseError {
+					err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
+						input.1.txid(), input.0.previous_output.vout, idx),
+				});
+			}
+		}
+
+		let total_input_satoshis: u64 = funding_inputs.iter().map(
+			|input| input.1.output[input.0.previous_output.vout as usize].value.to_sat()).sum();
+		if total_input_satoshis < funding_satoshis {
+			Err(APIError::APIMisuseError {
+				err: format!("Total value of funding inputs must be at least funding amount. It was {} sats",
+					total_input_satoshis) })
+		} else {
+			Ok(())
 		}
 	}
 
@@ -6919,17 +7239,25 @@ where
 		num_unfunded_channels + peer.inbound_channel_request_by_id.len()
 	}
 
-	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, msg: &msgs::OpenChannel) -> Result<(), MsgHandleErrInternal> {
+	fn internal_open_channel(&self, counterparty_node_id: &PublicKey, msg: OpenChannelMessage) -> Result<(), MsgHandleErrInternal> {
+		let (chain_hash, temporary_channel_id) = match msg {
+			OpenChannelMessage::V1(ref msg) => (msg.common_fields.chain_hash, msg.common_fields.temporary_channel_id),
+			#[cfg(any(dual_funding, splicing))]
+			OpenChannelMessage::V2(ref msg) => (msg.common_fields.chain_hash, msg.common_fields.temporary_channel_id),
+		};
+
+		// Do common open_channel(2) checks
+
 		// Note that the ChannelManager is NOT re-persisted on disk after this, so any changes are
 		// likely to be lost on restart!
-		if msg.common_fields.chain_hash != self.chain_hash {
+		if chain_hash != self.chain_hash {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("Unknown genesis block hash".to_owned(),
-				 msg.common_fields.temporary_channel_id.clone()));
+				 temporary_channel_id));
 		}
 
 		if !self.default_configuration.accept_inbound_channels {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close("No inbound channels accepted".to_owned(),
-				 msg.common_fields.temporary_channel_id.clone()));
+				 temporary_channel_id));
 		}
 
 		// Get the number of peers with channels, but without funded ones. We don't care too much
@@ -6944,7 +7272,7 @@ where
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(
 					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
-					msg.common_fields.temporary_channel_id.clone())
+					temporary_channel_id.clone())
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
@@ -6958,80 +7286,133 @@ where
 		{
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(
 				"Have too many peers with unfunded channels, not accepting new ones".to_owned(),
-				msg.common_fields.temporary_channel_id.clone()));
+				temporary_channel_id.clone()));
 		}
 
 		let best_block_height = self.best_block.read().unwrap().height;
 		if Self::unfunded_channel_count(peer_state, best_block_height) >= MAX_UNFUNDED_CHANS_PER_PEER {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(
 				format!("Refusing more than {} unfunded channels.", MAX_UNFUNDED_CHANS_PER_PEER),
-				msg.common_fields.temporary_channel_id.clone()));
+				temporary_channel_id.clone()));
 		}
 
-		let channel_id = msg.common_fields.temporary_channel_id;
+		let channel_id = temporary_channel_id;
 		let channel_exists = peer_state.has_channel(&channel_id);
 		if channel_exists {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(
 				"temporary_channel_id collision for the same peer!".to_owned(),
-				msg.common_fields.temporary_channel_id.clone()));
+				temporary_channel_id.clone()));
 		}
 
-		// If we're doing manual acceptance checks on the channel, then defer creation until we're sure we want to accept.
-		if self.default_configuration.manually_accept_inbound_channels {
-			let channel_type = channel::channel_type_from_open_channel(
-					&msg.common_fields, &peer_state.latest_features, &self.channel_type_features()
-				).map_err(|e|
-					MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id)
-				)?;
-			let mut pending_events = self.pending_events.lock().unwrap();
-			pending_events.push_back((events::Event::OpenChannelRequest {
-				temporary_channel_id: msg.common_fields.temporary_channel_id.clone(),
-				counterparty_node_id: counterparty_node_id.clone(),
-				funding_satoshis: msg.common_fields.funding_satoshis,
-				push_msat: msg.push_msat,
-				channel_type,
-			}, None));
-			peer_state.inbound_channel_request_by_id.insert(channel_id, InboundChannelRequest {
-				open_channel_msg: msg.clone(),
-				ticks_remaining: UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS,
-			});
-			return Ok(());
-		}
+		// Version-specific checks and logic
+		match msg {
+			OpenChannelMessage::V1(ref msg) => {
+				// If we're doing manual acceptance checks on the channel, then defer creation until we're sure we want to accept.
+				if self.default_configuration.manually_accept_inbound_channels {
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push_back((events::Event::OpenChannelRequest {
+						temporary_channel_id: msg.common_fields.temporary_channel_id.clone(),
+						counterparty_node_id: counterparty_node_id.clone(),
+						funding_satoshis: msg.common_fields.funding_satoshis,
+						acceptor_funds: InboundChannelFunds::PushMsat(msg.push_msat),
+						channel_type: msg.common_fields.channel_type.clone().unwrap(),
+					}, None));
+					peer_state.inbound_channel_request_by_id.insert(temporary_channel_id, InboundChannelRequest {
+						open_channel_msg: OpenChannelMessage::V1(msg.clone()),
+						ticks_remaining: UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS,
+					});
+					return Ok(());
+				}
 
-		// Otherwise create the channel right now.
-		let mut random_bytes = [0u8; 16];
-		random_bytes.copy_from_slice(&self.entropy_source.get_secure_random_bytes()[..16]);
-		let user_channel_id = u128::from_be_bytes(random_bytes);
-		let mut channel = match InboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
-			counterparty_node_id.clone(), &self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
-			&self.default_configuration, best_block_height, &self.logger, /*is_0conf=*/false)
-		{
-			Err(e) => {
-				return Err(MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id));
+				// Otherwise create the channel right now.
+				let mut random_bytes = [0u8; 16];
+				random_bytes.copy_from_slice(&self.entropy_source.get_secure_random_bytes()[..16]);
+				let user_channel_id = u128::from_be_bytes(random_bytes);
+				let mut channel = match InboundV1Channel::new(
+					&self.fee_estimator, &self.entropy_source, &self.signer_provider, counterparty_node_id.clone(),
+					&self.channel_type_features(), &peer_state.latest_features, &msg, user_channel_id,
+					&self.default_configuration, best_block_height, &self.logger, /*is_0conf=*/false
+				) {
+					Err(e) => {
+						return Err(MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id));
+					},
+					Ok(res) => res
+				};
+
+				let channel_type = channel.context.get_channel_type();
+				if channel_type.requires_zero_conf() {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), msg.common_fields.temporary_channel_id.clone()));
+				}
+				if channel_type.requires_anchors_zero_fee_htlc_tx() {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("No channels with anchor outputs accepted".to_owned(), msg.common_fields.temporary_channel_id.clone()));
+				}
+
+				let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
+				channel.context.set_outbound_scid_alias(outbound_scid_alias);
+
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
+					node_id: counterparty_node_id.clone(),
+					msg: channel.accept_inbound_channel(),
+				});
+				peer_state.channel_by_id.insert(temporary_channel_id, ChannelPhase::UnfundedInboundV1(channel));
 			},
-			Ok(res) => res
-		};
+			#[cfg(any(dual_funding, splicing))]
+			OpenChannelMessage::V2(ref msg) => {
+				// If we're doing manual acceptance checks on the channel, then defer creation until we're sure
+				// we want to accept and, optionally, contribute to the channel value.
+				if self.default_configuration.manually_accept_inbound_channels {
+					let mut pending_events = self.pending_events.lock().unwrap();
+					pending_events.push_back((events::Event::OpenChannelRequest {
+						temporary_channel_id: msg.common_fields.temporary_channel_id.clone(),
+						counterparty_node_id: counterparty_node_id.clone(),
+						funding_satoshis: msg.common_fields.funding_satoshis,
+						acceptor_funds: InboundChannelFunds::DualFunded,
+						channel_type: msg.common_fields.channel_type.clone().unwrap(),
+					}, None));
+					peer_state.inbound_channel_request_by_id.insert(temporary_channel_id, InboundChannelRequest {
+						open_channel_msg: OpenChannelMessage::V2(msg.clone()),
+						ticks_remaining: UNACCEPTED_INBOUND_CHANNEL_AGE_LIMIT_TICKS,
+					});
+					return Ok(());
+				}
 
-		let channel_type = channel.context.get_channel_type();
-		if channel_type.requires_zero_conf() {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close(
-				"No zero confirmation channels accepted".to_owned(),
-				msg.common_fields.temporary_channel_id.clone()));
+				// Otherwise create the channel right now.
+				let mut random_bytes = [0u8; 16];
+				random_bytes.copy_from_slice(&self.entropy_source.get_secure_random_bytes()[..16]);
+				let user_channel_id = u128::from_be_bytes(random_bytes);
+				let mut channel = match InboundV2Channel::new(&self.fee_estimator, &self.entropy_source,
+					&self.signer_provider, counterparty_node_id.clone(), &self.channel_type_features(),
+					&peer_state.latest_features, &msg, vec![], user_channel_id, &self.default_configuration,
+					best_block_height, &self.logger)
+				{
+					Err(e) => {
+						return Err(MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id));
+					},
+					Ok(res) => res
+				};
+
+				let channel_type = channel.context.get_channel_type();
+				if channel_type.requires_zero_conf() {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("No zero confirmation channels accepted".to_owned(), msg.common_fields.temporary_channel_id.clone()));
+				}
+				if channel_type.requires_anchors_zero_fee_htlc_tx() {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close("No channels with anchor outputs accepted".to_owned(), msg.common_fields.temporary_channel_id.clone()));
+				}
+
+				let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
+				channel.context.set_outbound_scid_alias(outbound_scid_alias);
+
+				channel.begin_interactive_funding_tx_construction(&self.entropy_source, self.get_our_node_id())
+					.map_err(|_| MsgHandleErrInternal::send_err_msg_no_close(
+						"Failed to start interactive transaction construction".to_owned(), msg.common_fields.temporary_channel_id))?;
+
+				peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannelV2 {
+					node_id: counterparty_node_id.clone(),
+					msg: channel.accept_inbound_dual_funded_channel(),
+				});
+				peer_state.channel_by_id.insert(channel.context.channel_id(), ChannelPhase::UnfundedInboundV2(channel));
+			},
 		}
-		if channel_type.requires_anchors_zero_fee_htlc_tx() {
-			return Err(MsgHandleErrInternal::send_err_msg_no_close(
-				"No channels with anchor outputs accepted".to_owned(),
-				msg.common_fields.temporary_channel_id.clone()));
-		}
-
-		let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
-		channel.context.set_outbound_scid_alias(outbound_scid_alias);
-
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendAcceptChannel {
-			node_id: counterparty_node_id.clone(),
-			msg: channel.accept_inbound_channel(),
-		});
-		peer_state.channel_by_id.insert(channel_id, ChannelPhase::UnfundedInboundV1(channel));
 		Ok(())
 	}
 
@@ -7070,6 +7451,65 @@ where
 			output_script,
 			user_channel_id: user_id,
 		}, None));
+		Ok(())
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_accept_channel_v2(&self, counterparty_node_id: &PublicKey, msg: &msgs::AcceptChannelV2) -> Result<(), MsgHandleErrInternal> {
+		// Note that the ChannelManager is NOT re-persisted on disk after this, so any changes are
+		// likely to be lost on restart!
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.common_fields.temporary_channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+
+		let (mut chan, channel_id) = {
+			match peer_state.channel_by_id.remove(&msg.common_fields.temporary_channel_id) {
+				Some(phase) => {
+					match phase {
+						ChannelPhase::UnfundedOutboundV2(mut chan) => {
+							if let Err(err) = chan.accept_channel_v2(
+								&msg, &self.default_configuration.channel_handshake_limits, &peer_state.latest_features,
+								&self.signer_provider
+							) {
+								let (_, res) = convert_chan_phase_err!(self, err, chan, &msg.common_fields.temporary_channel_id, UNFUNDED_CHANNEL);
+								let _: Result<(), _> = handle_error!(self, Err(res), *counterparty_node_id);
+							}
+							let channel_id = chan.context.channel_id();
+							(chan, channel_id)
+						},
+						_ => {
+							peer_state.channel_by_id.insert(msg.common_fields.temporary_channel_id, phase);
+							return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got an unexpected accept_channel2 message from peer with counterparty_node_id {}", counterparty_node_id), msg.common_fields.temporary_channel_id));
+						}
+					}
+				},
+				None => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.common_fields.temporary_channel_id))
+			}
+		};
+		let tx_msg_opt = chan.begin_interactive_funding_tx_construction(&self.entropy_source, self.get_our_node_id())
+			.map_err(|_| MsgHandleErrInternal::from_chan_no_close(
+				ChannelError::Close(
+					(
+						"V2 channel rejected due to sender error".into(),
+						ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+					)), channel_id))?;
+		if let Some(tx_msg) = tx_msg_opt {
+			let msg_send_event = match tx_msg {
+				InteractiveTxMessageSend::TxAddInput(msg) => events::MessageSendEvent::SendTxAddInput {
+					node_id: *counterparty_node_id, msg },
+				InteractiveTxMessageSend::TxAddOutput(msg) => events::MessageSendEvent::SendTxAddOutput {
+					node_id: *counterparty_node_id, msg },
+				InteractiveTxMessageSend::TxComplete(msg) => events::MessageSendEvent::SendTxComplete {
+					node_id: *counterparty_node_id, msg },
+			};
+			peer_state.pending_msg_events.push(msg_send_event);
+		}
+		peer_state.channel_by_id.insert(chan.context.channel_id(), ChannelPhase::UnfundedOutboundV2(chan));
 		Ok(())
 	}
 
@@ -7231,6 +7671,350 @@ where
 		}
 	}
 
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_tx_add_input(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAddInput) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(
+					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				let channel_phase = chan_phase_entry.get_mut();
+				let msg_send_event = match channel_phase {
+					ChannelPhase::UnfundedInboundV2(ref mut channel) => {
+						channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id)
+					},
+					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+						channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id)
+					},
+					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
+						"Got a tx_add_input message with no interactive transaction construction expected"
+						.into())), chan_phase_entry)
+				};
+				peer_state.pending_msg_events.push(msg_send_event);
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			}
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_tx_add_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAddOutput) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(
+					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				let channel_phase = chan_phase_entry.get_mut();
+				let msg_send_event = match channel_phase {
+					ChannelPhase::UnfundedInboundV2(ref mut channel) => {
+						channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
+					},
+					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+						channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
+					},
+					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
+						"Got a tx_add_output message with no interactive transaction construction expected or in-progress"
+						.into())), chan_phase_entry)
+				};
+				peer_state.pending_msg_events.push(msg_send_event);
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			}
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_tx_remove_input(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxRemoveInput) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(
+					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				let channel_phase = chan_phase_entry.get_mut();
+				let msg_send_event = match channel_phase {
+					ChannelPhase::UnfundedInboundV2(ref mut channel) => {
+						channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id)
+					},
+					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+						channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id)
+					},
+					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
+						"Got a tx_remove_input message with no interactive transaction construction expected or in-progress"
+						.into())), chan_phase_entry)
+				};
+				peer_state.pending_msg_events.push(msg_send_event);
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			}
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_tx_remove_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxRemoveOutput) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(
+					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				let channel_phase = chan_phase_entry.get_mut();
+				let msg_send_event = match channel_phase {
+					ChannelPhase::UnfundedInboundV2(ref mut channel) => {
+						channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id)
+					},
+					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+						channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id)
+					},
+					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
+						"Got a tx_remove_output message with no interactive transaction construction expected or in-progress"
+						.into())), chan_phase_entry)
+				};
+				peer_state.pending_msg_events.push(msg_send_event);
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			}
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_tx_complete(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxComplete) -> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(
+					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				let channel_phase = chan_phase_entry.get_mut();
+				let (msg_send_event_opt, signing_session_opt) = match channel_phase {
+					ChannelPhase::UnfundedInboundV2(channel) => {
+						channel.tx_complete(msg).into_msg_send_event(counterparty_node_id)
+					},
+					ChannelPhase::UnfundedOutboundV2(channel) => {
+						channel.tx_complete(msg).into_msg_send_event(counterparty_node_id)
+					},
+					_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
+						(
+							"Got a tx_complete message with no interactive transaction construction expected or in-progress".into(),
+							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+						))), chan_phase_entry)
+				};
+				if let Some(msg_send_event) = msg_send_event_opt {
+					peer_state.pending_msg_events.push(msg_send_event);
+				}
+				if let Some(signing_session) = signing_session_opt {
+					let funding_txid = signing_session.unsigned_tx.txid();
+					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
+					let res = match channel_phase {
+						ChannelPhase::UnfundedOutboundV2(chan) => {
+							chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.signer_provider, &self.logger).map_err(
+								|(chan, err)| {
+									(ChannelPhase::UnfundedOutboundV2(chan), err)
+								}
+							)
+						},
+						ChannelPhase::UnfundedInboundV2(chan) => {
+							chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.signer_provider, &self.logger).map_err(
+								|(chan, err)| {
+									(ChannelPhase::UnfundedInboundV2(chan), err)
+								}
+							)
+						},
+						_ => Err((channel_phase, ChannelError::Warn(
+							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
+							.into()))),
+					};
+					match res {
+						Ok((mut channel, commitment_signed, funding_ready_for_sig_event_opt)) => {
+							if let Some(funding_ready_for_sig_event) = funding_ready_for_sig_event_opt {
+								let mut pending_events = self.pending_events.lock().unwrap();
+								pending_events.push_back((funding_ready_for_sig_event, None));
+							}
+							peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+								node_id: counterparty_node_id.clone(),
+								updates: CommitmentUpdate {
+									commitment_signed,
+									update_add_htlcs: vec![],
+									update_fulfill_htlcs: vec![],
+									update_fail_htlcs: vec![],
+									update_fail_malformed_htlcs: vec![],
+									update_fee: None,
+								},
+							});
+							channel.set_next_funding_txid(&funding_txid);
+							peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::Funded(channel));
+						},
+						Err((channel_phase, err)) => {
+							peer_state.channel_by_id.insert(channel_id, channel_phase);
+							return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))
+						},
+					}
+				}
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			}
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_tx_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxSignatures)
+	-> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(
+					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				let channel_phase = chan_phase_entry.get_mut();
+				match channel_phase {
+					ChannelPhase::Funded(chan) => {
+						let (tx_signatures_opt, funding_tx_opt) = try_chan_phase_entry!(self, chan.tx_signatures(&msg), chan_phase_entry);
+						chan.clear_next_funding_txid();
+						if let Some(tx_signatures) = tx_signatures_opt {
+							peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+								node_id: *counterparty_node_id,
+								msg: tx_signatures,
+							});
+						}
+						if let Some(ref funding_tx) = funding_tx_opt {
+							self.tx_broadcaster.broadcast_transactions(&[funding_tx]);
+							{
+								let mut pending_events = self.pending_events.lock().unwrap();
+								emit_channel_pending_event!(pending_events, chan);
+							}
+						}
+					},
+					_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
+						(
+							"Got an unexpected tx_signatures message".into(),
+							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+						))), chan_phase_entry)
+				}
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			}
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_tx_init_rbf(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxInitRbf) {
+		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Dual-funded channels not supported".to_owned(),
+			 msg.channel_id.clone())), *counterparty_node_id);
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_tx_ack_rbf(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAckRbf) {
+		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+			"Dual-funded channels not supported".to_owned(),
+			 msg.channel_id.clone())), *counterparty_node_id);
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn maybe_reset_interactive_tx_state(
+		tx_constructor: &mut Option<InteractiveTxConstructor>,
+		channel_id: ChannelId,
+	) -> Option<msgs::TxAbort> {
+		// If we have not reset the negtotiation state yet, we must echo back a `tx_abort`.
+		tx_constructor.take().map(|_| msgs::TxAbort {
+			channel_id,
+			data: "Acknowledged tx_abort".to_string().into_bytes(),
+		})
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn internal_tx_abort(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAbort)
+	-> Result<(), MsgHandleErrInternal> {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+			.ok_or_else(|| {
+				debug_assert!(false);
+				MsgHandleErrInternal::send_err_msg_no_close(
+					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
+					msg.channel_id)
+			})?;
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				let channel_phase = chan_phase_entry.get_mut();
+				let tx_abort_opt = match channel_phase {
+					ChannelPhase::UnfundedInboundV2(chan) => Self::maybe_reset_interactive_tx_state(
+						chan.interactive_tx_constructor_mut(), msg.channel_id),
+					ChannelPhase::UnfundedOutboundV2(chan) => Self::maybe_reset_interactive_tx_state(
+						chan.interactive_tx_constructor_mut(), msg.channel_id),
+					ChannelPhase::Funded(chan) => Self::maybe_reset_interactive_tx_state(
+						&mut chan.interactive_tx_constructor, msg.channel_id),
+					_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
+						(
+							"Got an unexpected tx_signatures message".into(),
+							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+						))), chan_phase_entry)
+				};
+				if let Some(tx_abort) = tx_abort_opt {
+					peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxAbort {
+						node_id: *counterparty_node_id,
+						msg: tx_abort,
+					});
+				}
+				Ok(())
+			},
+			hash_map::Entry::Vacant(_) => {
+				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			}
+		}
+	}
+
 	fn internal_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) -> Result<(), MsgHandleErrInternal> {
 		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
 		// closing a channel), so any changes are likely to be lost on restart!
@@ -7339,7 +8123,6 @@ where
 					// TODO(dual_funding): Combine this match arm with above.
 					#[cfg(any(dual_funding, splicing))]
 					ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => {
-						let context = phase.context_mut();
 						log_error!(self.logger, "Immediately closing unfunded channel {} as peer asked to cooperatively shut it down (which is unnecessary)", &msg.channel_id);
 						let mut chan = remove_channel_phase!(self, chan_phase_entry);
 						finish_shutdown = Some(chan.context_mut().force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel));
@@ -7605,6 +8388,8 @@ where
 	}
 
 	fn internal_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), MsgHandleErrInternal> {
+		#[cfg(any(dual_funding, splicing))]
+		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
@@ -7615,18 +8400,57 @@ where
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
-					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let funding_txo = chan.context.get_funding_txo();
-					let monitor_update_opt = try_chan_phase_entry!(self, chan.commitment_signed(&msg, &&logger), chan_phase_entry);
-					if let Some(monitor_update) = monitor_update_opt {
-						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
-							peer_state, per_peer_state, chan);
-					}
-					Ok(())
-				} else {
-					return try_chan_phase_entry!(self, Err(ChannelError::close(
-						"Got a commitment_signed message for an unfunded channel!".into())), chan_phase_entry);
+				match chan_phase_entry.get_mut() {
+					ChannelPhase::Funded(chan) => {
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						let funding_txo = chan.context.get_funding_txo();
+
+						// TODO(dual_funding): Remove this allow directive after #[cfg(dual_funding)] is dropped.
+						#[allow(unused_mut, unused_assignments)]
+						let mut interactive_tx_signing_in_progress = false;
+						#[cfg(any(dual_funding, splicing))]
+						{
+							interactive_tx_signing_in_progress = chan.interactive_tx_signing_session.is_some();
+						}
+
+						if interactive_tx_signing_in_progress {
+							#[cfg(any(dual_funding, splicing))]
+							{
+								let monitor = try_chan_phase_entry!(self,
+									chan.commitment_signed_initial_v2(&msg, best_block, &self.signer_provider, &&logger), chan_phase_entry);
+								if let Ok(persist_status) = self.chain_monitor.watch_channel(chan.context.get_funding_txo().unwrap(), monitor) {
+									if let Some(tx_signatures) = chan.interactive_tx_signing_session.as_mut().map(|session| session.received_commitment_signed(msg.clone())).flatten() {
+										// At this point we have received a commitment signed and we are watching the channel so
+										// we're good to send our tx_signatures if we're up first.
+										peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+											node_id: *counterparty_node_id,
+											msg: tx_signatures,
+										});
+									}
+									handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, chan, INITIAL_MONITOR);
+								} else {
+									try_chan_phase_entry!(self, Err(ChannelError::Close(
+										(
+											"Channel funding outpoint was a duplicate".to_owned(),
+											ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+										)
+									)), chan_phase_entry)
+								}
+							}
+						} else {
+							let monitor_update_opt = try_chan_phase_entry!(self, chan.commitment_signed(&msg, &&logger), chan_phase_entry);
+							if let Some(monitor_update) = monitor_update_opt {
+								handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
+									peer_state, per_peer_state, chan);
+							}
+						}
+						Ok(())
+					},
+					_ => return try_chan_phase_entry!(self, Err(ChannelError::Close(
+						(
+							"Got a commitment_signed message for an unfunded channel!".into(),
+							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+						))), chan_phase_entry),
 				}
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -9624,7 +10448,7 @@ where
 		// open_channel message - pre-funded channels are never written so there should be no
 		// change to the contents.
 		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
-			let res = self.internal_open_channel(counterparty_node_id, msg);
+			let res = self.internal_open_channel(counterparty_node_id, OpenChannelMessage::V1(msg.clone()));
 			let persist = match &res {
 				Err(e) if e.closes_channel() => {
 					debug_assert!(false, "We shouldn't close a new channel");
@@ -9638,9 +10462,30 @@ where
 	}
 
 	fn handle_open_channel_v2(&self, counterparty_node_id: &PublicKey, msg: &msgs::OpenChannelV2) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			 msg.common_fields.temporary_channel_id.clone())), *counterparty_node_id);
+		#[cfg(any(dual_funding, splicing))]
+		{
+			// Note that we never need to persist the updated ChannelManager for an inbound
+			// open_channel message - pre-funded channels are never written so there should be no
+			// change to the contents.
+			let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+				let res = self.internal_open_channel(counterparty_node_id, OpenChannelMessage::V2(msg.clone()));
+				let persist = match &res {
+					Err(e) if e.closes_channel() => {
+						debug_assert!(false, "We shouldn't close a new channel");
+						NotifyOption::DoPersist
+					},
+					_ => NotifyOption::SkipPersistHandleEvents,
+				};
+				let _ = handle_error!(self, res, *counterparty_node_id);
+				persist
+			});
+		};
+		#[cfg(not(any(dual_funding, splicing)))]
+		{
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				 msg.common_fields.temporary_channel_id.clone())), *counterparty_node_id);
+		};
 	}
 
 	fn handle_accept_channel(&self, counterparty_node_id: &PublicKey, msg: &msgs::AcceptChannel) {
@@ -9654,9 +10499,20 @@ where
 	}
 
 	fn handle_accept_channel_v2(&self, counterparty_node_id: &PublicKey, msg: &msgs::AcceptChannelV2) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			 msg.common_fields.temporary_channel_id.clone())), *counterparty_node_id);
+		#[cfg(any(dual_funding, splicing))]
+		{
+			// Note that we never need to persist the updated ChannelManager for an inbound
+			// accept_channel2 message - pre-funded channels are never written so there should be no
+			// change to the contents.
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+			let _ = handle_error!(self, self.internal_accept_channel_v2(counterparty_node_id, msg), *counterparty_node_id);
+		};
+		#[cfg(not(any(dual_funding, splicing)))]
+		{
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				 msg.common_fields.temporary_channel_id.clone())), *counterparty_node_id);
+		};
 	}
 
 	fn handle_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) {
@@ -10049,7 +10905,7 @@ where
 
 						// TODO(dual_funding): Combine this match arm with above once #[cfg(any(dual_funding, splicing))] is removed.
 						#[cfg(any(dual_funding, splicing))]
-						ChannelPhase::UnfundedInboundV2(channel) => {
+						ChannelPhase::UnfundedInboundV2(_) => {
 							// Since unfunded inbound channel maps are cleared upon disconnecting a peer,
 							// they are not persisted and won't be recovered after a crash.
 							// Therefore, they shouldn't exist at this point.
@@ -10185,39 +11041,112 @@ where
 	}
 
 	fn handle_tx_add_input(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAddInput) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			 msg.channel_id.clone())), *counterparty_node_id);
+		#[cfg(any(dual_funding, splicing))]
+		{
+			// Note that we never need to persist the updated ChannelManager for an inbound
+			// tx_add_input message - interactive transaction construction does not need to
+			// be persisted before any signatures are exchanged.
+			let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+				let _ = handle_error!(self, self.internal_tx_add_input(counterparty_node_id, msg), *counterparty_node_id);
+				NotifyOption::SkipPersistHandleEvents
+			});
+		};
+		#[cfg(not(any(dual_funding, splicing)))]
+		{
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				 msg.channel_id.clone())), *counterparty_node_id);
+		};
 	}
 
 	fn handle_tx_add_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAddOutput) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			 msg.channel_id.clone())), *counterparty_node_id);
+		#[cfg(any(dual_funding, splicing))]
+		{
+			// Note that we never need to persist the updated ChannelManager for an inbound
+			// tx_add_input message - interactive transaction construction does not need to
+			// be persisted before any signatures are exchanged.
+			let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+				let _ = handle_error!(self, self.internal_tx_add_output(counterparty_node_id, msg), *counterparty_node_id);
+				NotifyOption::SkipPersistHandleEvents
+			});
+		};
+		#[cfg(not(any(dual_funding, splicing)))]
+		{
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				 msg.channel_id.clone())), *counterparty_node_id);
+		};
 	}
 
 	fn handle_tx_remove_input(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxRemoveInput) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			 msg.channel_id.clone())), *counterparty_node_id);
+		#[cfg(any(dual_funding, splicing))]
+		{
+			// Note that we never need to persist the updated ChannelManager for an inbound
+			// tx_add_input message - interactive transaction construction does not need to
+			// be persisted before any signatures are exchanged.
+			let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+				let _ = handle_error!(self, self.internal_tx_remove_input(counterparty_node_id, msg), *counterparty_node_id);
+				NotifyOption::SkipPersistHandleEvents
+			});
+		};
+		#[cfg(not(any(dual_funding, splicing)))]
+		{
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				 msg.channel_id.clone())), *counterparty_node_id);
+		};
 	}
 
 	fn handle_tx_remove_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxRemoveOutput) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			 msg.channel_id.clone())), *counterparty_node_id);
+		#[cfg(any(dual_funding, splicing))]
+		{
+			// Note that we never need to persist the updated ChannelManager for an inbound
+			// tx_add_input message - interactive transaction construction does not need to
+			// be persisted before any signatures are exchanged.
+			let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+				let _ = handle_error!(self, self.internal_tx_remove_output(counterparty_node_id, msg), *counterparty_node_id);
+				NotifyOption::SkipPersistHandleEvents
+			});
+		};
+		#[cfg(not(any(dual_funding, splicing)))]
+		{
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				 msg.channel_id.clone())), *counterparty_node_id);
+		};
 	}
 
 	fn handle_tx_complete(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxComplete) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			 msg.channel_id.clone())), *counterparty_node_id);
+		#[cfg(any(dual_funding, splicing))]
+		{
+			// Note that we never need to persist the updated ChannelManager for an inbound
+			// tx_add_input message - interactive transaction construction does not need to
+			// be persisted before any signatures are exchanged.
+			let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+				let _ = handle_error!(self, self.internal_tx_complete(counterparty_node_id, msg), *counterparty_node_id);
+				NotifyOption::SkipPersistHandleEvents
+			});
+		};
+		#[cfg(not(any(dual_funding, splicing)))]
+		{
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				 msg.channel_id.clone())), *counterparty_node_id);
+		};
 	}
 
 	fn handle_tx_signatures(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxSignatures) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			 msg.channel_id.clone())), *counterparty_node_id);
+		#[cfg(any(dual_funding, splicing))]
+		{
+			let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+			let _ = handle_error!(self, self.internal_tx_signatures(counterparty_node_id, msg), *counterparty_node_id);
+		};
+		#[cfg(not(any(dual_funding, splicing)))]
+		{
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				 msg.channel_id.clone())), *counterparty_node_id);
+		};
 	}
 
 	fn handle_tx_init_rbf(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxInitRbf) {
@@ -10233,9 +11162,22 @@ where
 	}
 
 	fn handle_tx_abort(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAbort) {
-		let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
-			"Dual-funded channels not supported".to_owned(),
-			 msg.channel_id.clone())), *counterparty_node_id);
+		#[cfg(any(dual_funding, splicing))]
+		{
+			// Note that we never need to persist the updated ChannelManager for an inbound
+			// tx_add_input message - interactive transaction construction does not need to
+			// be persisted before any signatures are exchanged.
+			let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || {
+				let _ = handle_error!(self, self.internal_tx_abort(counterparty_node_id, msg), *counterparty_node_id);
+				NotifyOption::SkipPersistHandleEvents
+			});
+		};
+		#[cfg(not(any(dual_funding, splicing)))]
+		{
+			let _: Result<(), _> = handle_error!(self, Err(MsgHandleErrInternal::send_err_msg_no_close(
+				"Dual-funded channels not supported".to_owned(),
+				 msg.channel_id.clone())), *counterparty_node_id);
+		};
 	}
 }
 
@@ -10475,6 +11417,8 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
+	#[cfg(any(dual_funding, splicing))]
+	features.set_dual_fund_optional();
 	features
 }
 
@@ -12160,11 +13104,17 @@ where
 
 #[cfg(test)]
 mod tests {
+	#[cfg(any(dual_funding, splicing))]
+	use bitcoin::Witness;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
+	#[cfg(any(dual_funding, splicing))]
+	use crate::chain::chaininterface::ConfirmationTarget;
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
+	#[cfg(any(dual_funding, splicing))]
+	use crate::events::InboundChannelFunds;
 	use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::{create_recv_pending_htlc_info, HTLCForwardInfo, inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
 	use crate::ln::functional_test_utils::*;
@@ -13564,6 +14514,234 @@ mod tests {
 		core::mem::drop(deserialized_fwd_htlcs);
 
 		expect_pending_htlcs_forwardable!(nodes[0]);
+	}
+
+	// Dual-funding: V2 Channel Establishment Tests
+	#[cfg(any(dual_funding, splicing))]
+	struct V2ChannelEstablishmentTestSession {
+		initiator_input_value_satoshis: u64,
+		acceptor_input_value_satoshis: u64,
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) {
+		let acceptor_will_fund = session.acceptor_input_value_satoshis > 0;
+
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let acceptor_config = if acceptor_will_fund {
+			let mut acceptor_config = test_default_channel_config();
+			acceptor_config.manually_accept_inbound_channels = true;
+			Some(acceptor_config)
+		} else {
+			None
+		};
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, acceptor_config]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		// Create a funding input for the new channel along with its previous transaction.
+		let initiator_funding_inputs = create_dual_funding_utxos_with_prev_txs(&nodes[0], &[session.initiator_input_value_satoshis]);
+
+		// Alice creates a dual-funded channel as initiator.
+		nodes[0].node.create_dual_funded_channel(
+			nodes[1].node.get_our_node_id(), initiator_funding_inputs,
+			Some(ConfirmationTarget::NonAnchorChannelFee), 42, None,
+		).unwrap();
+		let open_channel_v2_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannelV2, nodes[1].node.get_our_node_id());
+
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+		nodes[1].node.handle_open_channel_v2(&nodes[0].node.get_our_node_id(), &open_channel_v2_msg);
+
+		if acceptor_will_fund {
+			// Since `manually_accept_inbound_channels` is set to true for Bob's node, he can contribute to
+			// the dual-funded channel.
+			let temporary_channel_id = if let Event::OpenChannelRequest {
+				temporary_channel_id,
+				counterparty_node_id,
+				acceptor_funds,
+				..
+			} = get_event!(nodes[1], Event::OpenChannelRequest) {
+				assert_eq!(counterparty_node_id, nodes[0].node.get_our_node_id());
+				assert!(matches!(acceptor_funds, InboundChannelFunds::DualFunded));
+				temporary_channel_id
+			} else { panic!(); };
+
+			// Bob contributes to the channel providing an input.
+			let acceptor_funding_inputs = create_dual_funding_utxos_with_prev_txs(&nodes[1], &[session.acceptor_input_value_satoshis]);
+
+			nodes[1].node.accept_inbound_channel_with_contribution(
+				&temporary_channel_id, &nodes[0].node.get_our_node_id(), 1337, acceptor_funding_inputs
+			).unwrap();
+		}
+
+		let accept_channel_v2_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannelV2, nodes[0].node.get_our_node_id());
+
+		nodes[0].node.handle_accept_channel_v2(&nodes[1].node.get_our_node_id(), &accept_channel_v2_msg);
+
+		let tx_add_input_msg = get_event_msg!(&nodes[0], MessageSendEvent::SendTxAddInput, nodes[1].node.get_our_node_id());
+		let input_value = tx_add_input_msg.prevtx.as_transaction().output[tx_add_input_msg.prevtx_out as usize].value;
+		assert_eq!(input_value.to_sat(), session.initiator_input_value_satoshis);
+
+		nodes[1].node.handle_tx_add_input(&nodes[0].node.get_our_node_id(), &tx_add_input_msg);
+
+		if acceptor_will_fund {
+			let tx_add_input_msg = get_event_msg!(nodes[1], MessageSendEvent::SendTxAddInput, nodes[0].node.get_our_node_id());
+			let input_value = tx_add_input_msg.prevtx.as_transaction().output[tx_add_input_msg.prevtx_out as usize].value;
+			assert_eq!(input_value.to_sat(), session.acceptor_input_value_satoshis);
+			nodes[0].node.handle_tx_add_input(&nodes[1].node.get_our_node_id(), &tx_add_input_msg);
+		} else {
+			let tx_complete_msg = get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_tx_complete(&nodes[1].node.get_our_node_id(), &tx_complete_msg);
+		};
+
+		let tx_add_output_msg = get_event_msg!(&nodes[0], MessageSendEvent::SendTxAddOutput, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_tx_add_output(&nodes[0].node.get_our_node_id(), &tx_add_output_msg);
+
+		let tx_complete_msg = get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_tx_complete(&nodes[1].node.get_our_node_id(), &tx_complete_msg);
+
+		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 2);
+		let tx_complete_msg = match msg_events[0] {
+			MessageSendEvent::SendTxComplete { ref node_id, ref msg } => {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+				(*msg).clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+		let msg_commitment_signed_from_0 = match msg_events[1] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				assert_eq!(*node_id, nodes[1].node.get_our_node_id());
+				updates.commitment_signed.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+		if let Event::FundingTransactionReadyForSigning {
+			channel_id,
+			counterparty_node_id,
+			mut unsigned_transaction,
+			..
+		} = get_event!(nodes[0], Event::FundingTransactionReadyForSigning) {
+			assert_eq!(counterparty_node_id, nodes[1].node.get_our_node_id());
+
+			let mut witness = Witness::new();
+			witness.push(vec![0]);
+			unsigned_transaction.input[0].witness = witness;
+
+			nodes[0].node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
+		} else { panic!(); }
+
+		nodes[1].node.handle_tx_complete(&nodes[0].node.get_our_node_id(), &tx_complete_msg);
+		let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1);
+		let msg_commitment_signed_from_1 = match msg_events[0] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+				updates.commitment_signed.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		if acceptor_will_fund {
+			if let Event::FundingTransactionReadyForSigning {
+				channel_id,
+				counterparty_node_id,
+				mut unsigned_transaction,
+				..
+			} = get_event!(nodes[1], Event::FundingTransactionReadyForSigning) {
+				assert_eq!(counterparty_node_id, nodes[0].node.get_our_node_id());
+
+				let mut witness = Witness::new();
+				witness.push(vec![0]);
+				unsigned_transaction.input[0].witness = witness;
+
+				nodes[1].node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
+			} else { panic!(); }
+		}
+
+		// Handle the initial commitment_signed exchange. Order is not important here.
+		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &msg_commitment_signed_from_0);
+		nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &msg_commitment_signed_from_1);
+		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[1], 1);
+
+		let tx_signatures_exchange = |first: usize, second: usize| {
+			let msg_events = nodes[second].node.get_and_clear_pending_msg_events();
+			assert!(msg_events.is_empty());
+			let tx_signatures_from_first = get_event_msg!(nodes[first], MessageSendEvent::SendTxSignatures, nodes[second].node.get_our_node_id());
+
+			nodes[second].node.handle_tx_signatures(&nodes[first].node.get_our_node_id(), &tx_signatures_from_first);
+			let events_0 = nodes[second].node.get_and_clear_pending_events();
+			assert_eq!(events_0.len(), 1);
+			match events_0[0] {
+				Event::ChannelPending{ ref counterparty_node_id, .. } => {
+					assert_eq!(*counterparty_node_id, nodes[first].node.get_our_node_id());
+				},
+				_ => panic!("Unexpected event"),
+			}
+			let tx_signatures_from_second = get_event_msg!(nodes[second], MessageSendEvent::SendTxSignatures, nodes[first].node.get_our_node_id());
+			nodes[first].node.handle_tx_signatures(&nodes[second].node.get_our_node_id(), &tx_signatures_from_second);
+			let events_1 = nodes[first].node.get_and_clear_pending_events();
+			assert_eq!(events_1.len(), 1);
+			match events_1[0] {
+				Event::ChannelPending{ ref counterparty_node_id, .. } => {
+					assert_eq!(*counterparty_node_id, nodes[second].node.get_our_node_id());
+				},
+				_ => panic!("Unexpected event"),
+			}
+		};
+
+		if session.initiator_input_value_satoshis < session.acceptor_input_value_satoshis
+			|| session.initiator_input_value_satoshis == session.acceptor_input_value_satoshis
+			&& nodes[0].node.our_network_pubkey.serialize() < nodes[1].node.our_network_pubkey.serialize() {
+			// Alice contributed less input value than Bob so he should send tx_signatures only after
+			// receiving tx_signatures from Alice.
+			tx_signatures_exchange(0, 1);
+		} else {
+			// Alice contributed more input value than Bob so she should send tx_signatures only after
+			// receiving tx_signatures from Bob.
+			tx_signatures_exchange(1, 0);
+		}
+
+		let tx = {
+			let tx_0 = &nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0];
+			let tx_1 = &nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap()[0];
+			assert_eq!(tx_0, tx_1);
+			tx_0.clone()
+		};
+
+		let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
+		let (announcement, nodes_0_update, nodes_1_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
+		update_nodes_with_chan_announce(&nodes, 0, 1, &announcement, &nodes_0_update, &nodes_1_update);
+	}
+
+	#[test]
+	#[cfg(any(dual_funding, splicing))]
+	fn test_v2_channel_establishment() {
+		// Only initiator contributes
+		do_test_v2_channel_establishment(V2ChannelEstablishmentTestSession {
+			initiator_input_value_satoshis: 100_000,
+			acceptor_input_value_satoshis: 0,
+		});
+
+		// Both peers contribute but initiator contributes more input value
+		do_test_v2_channel_establishment(V2ChannelEstablishmentTestSession {
+			initiator_input_value_satoshis: 100_000,
+			acceptor_input_value_satoshis: 80_000,
+		});
+
+		// Both peers contribute but acceptor contributes more input value
+		do_test_v2_channel_establishment(V2ChannelEstablishmentTestSession {
+			initiator_input_value_satoshis: 80_000,
+			acceptor_input_value_satoshis: 100_000,
+		});
+
+		// Both peers contribute the same input value
+		do_test_v2_channel_establishment(V2ChannelEstablishmentTestSession {
+			initiator_input_value_satoshis: 80_000,
+			acceptor_input_value_satoshis: 80_000,
+		});
 	}
 }
 
