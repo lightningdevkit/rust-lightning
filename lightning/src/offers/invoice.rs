@@ -1160,6 +1160,13 @@ impl TryFrom<Vec<u8>> for Bolt12Invoice {
 	}
 }
 
+impl Readable for Bolt12Invoice {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
+	}
+}
+
 tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
 	(160, paths: (Vec<BlindedPath>, WithoutLength, Iterable<'a, BlindedPathIter<'a>, BlindedPath>)),
 	(162, blindedpay: (Vec<BlindedPayInfo>, WithoutLength, Iterable<'a, BlindedPayInfoIter<'a>, BlindedPayInfo>)),
