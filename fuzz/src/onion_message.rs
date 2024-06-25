@@ -13,7 +13,7 @@ use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::async_payments::{
-	AsyncPaymentsMessage, AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc,
+	AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc,
 };
 use lightning::onion_message::messenger::{
 	CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger,
@@ -114,9 +114,14 @@ struct TestAsyncPaymentsMessageHandler {}
 
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 	fn held_htlc_available(
-		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
+		&self, message: HeldHtlcAvailable, responder: Option<Responder>,
 	) -> ResponseInstruction<ReleaseHeldHtlc> {
-		ResponseInstruction::NoResponse
+		let responder = match responder {
+			Some(resp) => resp,
+			None => return ResponseInstruction::NoResponse,
+		};
+		responder
+			.respond(ReleaseHeldHtlc { payment_release_secret: message.payment_release_secret })
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
