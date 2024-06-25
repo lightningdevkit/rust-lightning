@@ -10,7 +10,6 @@
 // Splicing related utilities
 
 use crate::chain::transaction::OutPoint;
-use crate::ln::ChannelId;
 use crate::ln::channel::ChannelError;
 use crate::prelude::*;
 use crate::util::ser::TransactionU16LenLimited;

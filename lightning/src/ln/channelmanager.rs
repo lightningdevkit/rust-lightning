@@ -52,6 +52,8 @@ pub use crate::ln::channel::{InboundHTLCDetails, InboundHTLCStateDetails, Outbou
 #[cfg(any(dual_funding, splicing))]
 use crate::ln::channel::{InboundV2Channel, OutboundV2Channel, InteractivelyFunded as _};
 #[cfg(splicing)]
+use crate::ln::channel::RenegotiatingChannel;
+#[cfg(splicing)]
 use crate::ln::channel_splice::{PendingSpliceInfoPre, SplicingChannelValues};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
@@ -941,6 +943,9 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 				ChannelPhase::UnfundedOutboundV2(_) => true,
 				#[cfg(any(dual_funding, splicing))]
 				ChannelPhase::UnfundedInboundV2(_) => false,
+				#[cfg(splicing)]
+				ChannelPhase::RenegotiatingFundingOutbound(chan) |
+				ChannelPhase::RenegotiatingFundingInbound(chan) => chan.is_outbound,
 			}
 		)
 			&& self.monitor_update_blocked_actions.is_empty()
@@ -2817,6 +2822,9 @@ macro_rules! convert_chan_phase_err {
 			ChannelPhase::UnfundedInboundV2(channel) => {
 				convert_chan_phase_err!($self, $err, channel, $channel_id, UNFUNDED_CHANNEL)
 			},
+			#[cfg(splicing)]
+			ChannelPhase::RenegotiatingFundingOutbound(_chan) |
+			ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
 		}
 	};
 }
@@ -3918,6 +3926,9 @@ where
 						// Unfunded channel has no update
 						(None, chan_phase.context().get_counterparty_node_id())
 					},
+					#[cfg(splicing)]
+					ChannelPhase::RenegotiatingFundingOutbound(_chan) |
+					ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
 				}
 			} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
 				log_error!(logger, "Force-closing channel {}", &channel_id);
@@ -6278,6 +6289,9 @@ where
 								process_unfunded_channel_tick(chan_id, &mut chan.context, &mut chan.unfunded_context,
 									pending_msg_events, counterparty_node_id)
 							},
+							#[cfg(splicing)]
+							ChannelPhase::RenegotiatingFundingOutbound(_chan) |
+							ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
 						}
 					});
 
@@ -7605,7 +7619,10 @@ where
 				ChannelPhase::UnfundedOutboundV2(_) => {
 					// Outbound channels don't contribute to the unfunded count in the DoS context.
 					continue;
-				}
+				},
+				#[cfg(splicing)]
+				ChannelPhase::RenegotiatingFundingOutbound(_chan) |
+				ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
 			}
 		}
 		num_unfunded_channels + peer.inbound_channel_request_by_id.len()
@@ -8056,6 +8073,11 @@ where
 					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
 						channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id)
 					},
+					#[cfg(splicing)]
+					ChannelPhase::RenegotiatingFundingInbound(ref mut channel) |
+					ChannelPhase::RenegotiatingFundingOutbound(ref mut channel) => {
+						channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id)
+					},
 					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
 						"Got a tx_add_input message with no interactive transaction construction expected or in-progress"
 						.into())), chan_phase_entry)
@@ -8089,6 +8111,11 @@ where
 						channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
 					},
 					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+						channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
+					},
+					#[cfg(splicing)]
+					ChannelPhase::RenegotiatingFundingInbound(ref mut channel) |
+					ChannelPhase::RenegotiatingFundingOutbound(ref mut channel) => {
 						channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
 					},
 					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
@@ -8196,6 +8223,11 @@ where
 					ChannelPhase::UnfundedOutboundV2(channel) => {
 						channel.tx_complete(msg).into_msg_send_event(counterparty_node_id)
 					},
+					#[cfg(splicing)]
+					ChannelPhase::RenegotiatingFundingInbound(channel) |
+					ChannelPhase::RenegotiatingFundingOutbound(channel) => {
+						channel.tx_complete(msg).into_msg_send_event(counterparty_node_id)
+					},
 					_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got a tx_complete message with no interactive transaction construction expected or in-progress"
 						.into())), chan_phase_entry)
@@ -8218,6 +8250,22 @@ where
 							chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger).map_err(
 								|(chan, err)| {
 									(ChannelPhase::UnfundedInboundV2(chan), err)
+								}
+							)
+						},
+						#[cfg(splicing)]
+						ChannelPhase::RenegotiatingFundingInbound(chan) => {
+							chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger).map_err(
+								|(chan, err)| {
+									(ChannelPhase::RenegotiatingFundingInbound(chan), err)
+								}
+							)
+						},
+						#[cfg(splicing)]
+						ChannelPhase::RenegotiatingFundingOutbound(chan) => {
+							chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger).map_err(
+								|(chan, err)| {
+									(ChannelPhase::RenegotiatingFundingOutbound(chan), err)
 								}
 							)
 						},
@@ -8497,6 +8545,9 @@ where
 						let mut chan = remove_channel_phase!(self, chan_phase_entry);
 						finish_shutdown = Some(chan.context_mut().force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel));
 					},
+					#[cfg(splicing)]
+					ChannelPhase::RenegotiatingFundingOutbound(_chan) |
+					ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -9295,7 +9346,8 @@ where
 			}
 		};
 
-		let post_chan = InboundV2Channel::new_spliced(
+		let post_chan = RenegotiatingChannel::new_spliced(
+			false,
 			prev_chan.context,
 			&self.signer_provider,
 			&msg.funding_pubkey,
@@ -9309,13 +9361,13 @@ where
 
 		// Add the modified channel
 		let post_chan_id = post_chan.context.channel_id();
-		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::UnfundedInboundV2(post_chan));
+		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::RenegotiatingFundingInbound(post_chan));
 
 		// Perform state changes
 		match peer_state.channel_by_id.entry(post_chan_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal consistency error".to_string(), post_chan_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let ChannelPhase::UnfundedInboundV2(post_chan) = chan_entry.get_mut() {
+				if let ChannelPhase::RenegotiatingFundingInbound(post_chan) = chan_entry.get_mut() {
 					// Apply start of splice change in the state 
 					post_chan.context.splice_start(false, &self.logger);
 
@@ -9389,7 +9441,8 @@ where
 			}
 		};
 
-		let post_chan = OutboundV2Channel::new_spliced(
+		let post_chan = RenegotiatingChannel::new_spliced(
+			true,
 			prev_chan.context,
 			&self.signer_provider,
 			&msg.funding_pubkey,
@@ -9403,13 +9456,13 @@ where
 
 		// Add the modified channel
 		let post_chan_id = post_chan.context.channel_id();
-		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::UnfundedOutboundV2(post_chan));
+		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::RenegotiatingFundingOutbound(post_chan));
 
 		// Perform state changes
 		match peer_state.channel_by_id.entry(post_chan_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal consistency error".to_string(), post_chan_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let ChannelPhase::UnfundedOutboundV2(post_chan) = chan_entry.get_mut() {
+				if let ChannelPhase::RenegotiatingFundingOutbound(post_chan) = chan_entry.get_mut() {
 					// Apply start of splice change in the state
 					post_chan.context.splice_start(true, &self.logger);
 
@@ -10809,6 +10862,9 @@ where
 							}
 							true
 						}
+						#[cfg(splicing)]
+						ChannelPhase::RenegotiatingFundingOutbound(_chan) |
+						ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
 					}
 				});
 			}
@@ -11234,6 +11290,9 @@ where
 						ChannelPhase::UnfundedInboundV2(chan) => {
 							&mut chan.context
 						},
+						#[cfg(splicing)]
+						ChannelPhase::RenegotiatingFundingOutbound(_chan) |
+						ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
 					};
 					// Clean up for removal.
 					update_maps_on_chan_removal!(self, &context);
@@ -11415,6 +11474,10 @@ where
 							// Therefore, they shouldn't exist at this point.
 							debug_assert!(false);
 						},
+
+						#[cfg(splicing)]
+						ChannelPhase::RenegotiatingFundingOutbound(_chan) |
+						ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
 					}
 				}
 			}
@@ -11524,6 +11587,9 @@ where
 					None | Some(ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::Funded(_)) => (),
 					#[cfg(any(dual_funding, splicing))]
 					Some(ChannelPhase::UnfundedInboundV2(_)) => (),
+					#[cfg(splicing)]
+					Some(ChannelPhase::RenegotiatingFundingOutbound(_chan) |
+					ChannelPhase::RenegotiatingFundingInbound(_chan)) => todo!("splicing"),
 				}
 			}
 

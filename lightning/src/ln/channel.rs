@@ -1212,6 +1212,10 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV2(OutboundV2Channel<SP>),
 	#[cfg(any(dual_funding, splicing))]
 	UnfundedInboundV2(InboundV2Channel<SP>),
+	#[cfg(splicing)]
+	RenegotiatingFundingOutbound(RenegotiatingChannel<SP>),
+	#[cfg(splicing)]
+	RenegotiatingFundingInbound(RenegotiatingChannel<SP>),
 	Funded(Channel<SP>),
 }
 
@@ -1228,6 +1232,10 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedOutboundV2(chan) => &chan.context,
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
+			#[cfg(splicing)]
+			ChannelPhase::RenegotiatingFundingOutbound(chan) => &chan.context,
+			#[cfg(splicing)]
+			ChannelPhase::RenegotiatingFundingInbound(chan) => &chan.context,
 		}
 	}
 
@@ -1240,6 +1248,10 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedOutboundV2(ref mut chan) => &mut chan.context,
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
+			#[cfg(splicing)]
+			ChannelPhase::RenegotiatingFundingOutbound(ref mut chan) => &mut chan.context,
+			#[cfg(splicing)]
+			ChannelPhase::RenegotiatingFundingInbound(ref mut chan) => &mut chan.context,
 		}
 	}
 }
@@ -1740,6 +1752,13 @@ impl<SP: Deref> HasChannelContext<SP> for InboundV2Channel<SP> where SP::Target:
     }
 }
 
+#[cfg(splicing)]
+impl<SP: Deref> HasChannelContext<SP> for RenegotiatingChannel<SP> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP> { &self.context }
+
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> { &mut self.context }
+}
+
 #[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> HasDualFundingChannelContext for OutboundV2Channel<SP> where SP::Target: SignerProvider {
     fn dual_funding_context(&self) -> &DualFundingChannelContext {
@@ -1762,11 +1781,21 @@ impl<SP: Deref> HasDualFundingChannelContext for InboundV2Channel<SP> where SP::
     }
 }
 
+#[cfg(splicing)]
+impl<SP: Deref> HasDualFundingChannelContext for RenegotiatingChannel<SP> where SP::Target: SignerProvider {
+	fn dual_funding_context(&self) -> &DualFundingChannelContext { &self.dual_funding_context }
+
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext { &mut self.dual_funding_context }
+}
+
 #[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Target: SignerProvider {}
 
 #[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {}
+
+#[cfg(splicing)]
+impl<SP: Deref> InteractivelyFunded<SP> for RenegotiatingChannel<SP> where SP::Target: SignerProvider {}
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	fn new_for_inbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
@@ -9083,7 +9112,6 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
-	#[cfg(any(dual_funding, splicing))]
 	pub dual_funding_context: DualFundingChannelContext,
 }
 
@@ -9169,72 +9197,6 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			}
 		};
 		Ok(chan)
-	}
-
-	/// Create new channel for splice
-	#[cfg(splicing)]
-	pub fn new_spliced<L: Deref>(
-		pre_splice_context: ChannelContext<SP>,
-		signer_provider: &SP,
-		counterparty_funding_pubkey: &PublicKey,
-		our_funding_contribution: i64,
-		their_funding_contribution: i64,
-		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
-		funding_tx_locktime: LockTime,
-		funding_feerate_sat_per_1000_weight: u32,
-		logger: &L,
-	) -> Result<Self, ChannelError> where L::Target: Logger
-	{
-		let pre_channel_value = pre_splice_context.get_value_satoshis();
-		let post_channel_value = SplicingChannelValues::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
-		// Create new signer, using the new channel value.
-		// Note: channel_keys_id is not changed
-		let holder_signer = signer_provider.derive_channel_signer(post_channel_value, pre_splice_context.channel_keys_id);
-
-		/*
-		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
-
-		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
-
-		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
-		let funding_tx_locktime = LockTime::from_height(current_chain_height)
-			.map_err(|_| APIError::APIMisuseError {
-				err: format!(
-					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
-					current_chain_height) })?;
-		*/
-
-		let context = ChannelContext::new_for_splice(
-			pre_splice_context,
-			true,
-			counterparty_funding_pubkey,
-			our_funding_contribution,
-			their_funding_contribution,
-			holder_signer,
-			logger,
-		)?;
-
-		let (our_funding_satoshis, their_funding_satoshis) = calculate_funding_values(
-			pre_channel_value,
-			our_funding_contribution,
-			their_funding_contribution,
-			true,
-		)?;
-
-		let post_chan = Self {
-			context,
-			unfunded_context: UnfundedChannelContext::default(),
-			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis,
-				their_funding_satoshis,
-				funding_tx_locktime,
-				funding_feerate_sat_per_1000_weight,
-				our_funding_inputs: funding_inputs,
-			}
-		};
-
-		Ok(post_chan)
 	}
 
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
@@ -9431,72 +9393,6 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		Ok(chan)
 	}
 
-	/// Create new channel for splice
-	#[cfg(splicing)]
-	pub fn new_spliced<L: Deref>(
-		pre_splice_context: ChannelContext<SP>,
-		signer_provider: &SP,
-		counterparty_funding_pubkey: &PublicKey,
-		our_funding_contribution: i64,
-		their_funding_contribution: i64,
-		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
-		funding_tx_locktime: LockTime,
-		funding_feerate_sat_per_1000_weight: u32,
-		logger: &L,
-	) -> Result<Self, ChannelError> where L::Target: Logger
-	{
-		let pre_channel_value = pre_splice_context.get_value_satoshis();
-		let post_channel_value = SplicingChannelValues::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
-		// Create new signer, using the new channel value.
-		// Note: channel_keys_id is not changed
-		let holder_signer = signer_provider.derive_channel_signer(post_channel_value, pre_splice_context.channel_keys_id);
-
-		/*
-		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
-
-		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
-
-		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
-		let funding_tx_locktime = LockTime::from_height(current_chain_height)
-			.map_err(|_| APIError::APIMisuseError {
-				err: format!(
-					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
-					current_chain_height) })?;
-		*/
-
-		let context = ChannelContext::new_for_splice(
-			pre_splice_context,
-			false,
-			counterparty_funding_pubkey,
-			our_funding_contribution,
-			their_funding_contribution,
-			holder_signer,
-			logger,
-		)?;
-
-		let (our_funding_satoshis, their_funding_satoshis) = calculate_funding_values(
-			pre_channel_value,
-			our_funding_contribution,
-			their_funding_contribution,
-			false,
-		)?;
-
-		let post_chan = Self {
-			context,
-			unfunded_context: UnfundedChannelContext::default(),
-			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis,
-				their_funding_satoshis,
-				funding_tx_locktime,
-				funding_feerate_sat_per_1000_weight,
-				our_funding_inputs: funding_inputs,
-			}
-		};
-
-		Ok(post_chan)
-	}
-
 	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannelV2`] message which
 	/// should be sent back to the counterparty node.
 	///
@@ -9595,13 +9491,91 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 
 		Ok((channel, commitment_signed, funding_ready_for_sig_event))
 	}
+}
+
+// An already funded channel with the funding being renegotiated, during splicing.
+#[cfg(splicing)]
+pub(super) struct RenegotiatingChannel<SP: Deref> where SP::Target: SignerProvider {
+	pub is_outbound: bool,
+	pub context: ChannelContext<SP>,
+	// unfunded_context no neeted, but maybe the pre-splice context TODO
+	pub dual_funding_context: DualFundingChannelContext,
+}
+
+#[cfg(splicing)]
+impl<SP: Deref> RenegotiatingChannel<SP> where SP::Target: SignerProvider {
+	/// Create new channel for splice
+	pub fn new_spliced<L: Deref>(
+		is_outbound: bool,
+		pre_splice_context: ChannelContext<SP>,
+		signer_provider: &SP,
+		counterparty_funding_pubkey: &PublicKey,
+		our_funding_contribution: i64,
+		their_funding_contribution: i64,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+		funding_tx_locktime: LockTime,
+		funding_feerate_sat_per_1000_weight: u32,
+		logger: &L,
+	) -> Result<Self, ChannelError> where L::Target: Logger
+	{
+		let pre_channel_value = pre_splice_context.get_value_satoshis();
+		let post_channel_value = SplicingChannelValues::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
+		// Create new signer, using the new channel value.
+		// Note: channel_keys_id is not changed
+		let holder_signer = signer_provider.derive_channel_signer(post_channel_value, pre_splice_context.channel_keys_id);
+
+		/*
+		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
+
+		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
+			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+
+		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
+		let funding_tx_locktime = LockTime::from_height(current_chain_height)
+			.map_err(|_| APIError::APIMisuseError {
+				err: format!(
+					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
+					current_chain_height) })?;
+		*/
+
+		let context = ChannelContext::new_for_splice(
+			pre_splice_context,
+			is_outbound,
+			counterparty_funding_pubkey,
+			our_funding_contribution,
+			their_funding_contribution,
+			holder_signer,
+			logger,
+		)?;
+
+		let (our_funding_satoshis, their_funding_satoshis) = calculate_funding_values(
+			pre_channel_value,
+			our_funding_contribution,
+			their_funding_contribution,
+			is_outbound,
+		)?;
+
+		let post_chan = Self {
+			is_outbound,
+			context,
+			dual_funding_context: DualFundingChannelContext {
+				our_funding_satoshis,
+				their_funding_satoshis,
+				funding_tx_locktime,
+				funding_feerate_sat_per_1000_weight,
+				our_funding_inputs: funding_inputs,
+			}
+		};
+
+		Ok(post_chan)
+	}
 
 	/// #SPLICING STEP4 A
 	/// Get the splice_ack message that can be sent in response to splice initiation
 	/// TODO move to ChannelContext
 	#[cfg(splicing)]
 	pub fn get_splice_ack(&mut self, our_funding_contribution_satoshis: i64) -> Result<msgs::SpliceAck, ChannelError> {
-		if self.context.is_outbound() {
+		if self.is_outbound {
 			panic!("Tried to accept a splice on an outound channel?");
 		}
 
@@ -9619,6 +9593,36 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			funding_pubkey,
 			require_confirmed_inputs: None,
 		})
+	}
+
+	pub fn begin_interactive_funding_tx_construction<ES: Deref>(&mut self, signer_provider: &SP,
+		entropy_source: &ES, holder_node_id: PublicKey,
+	) -> Result<Option<InteractiveTxMessageSend>, APIError>
+	where ES::Target: EntropySource
+	{
+		self.context.begin_interactive_funding_tx_construction(&self.dual_funding_context,
+			signer_provider, entropy_source, holder_node_id, self.is_outbound)
+	}
+
+	pub fn funding_tx_constructed<L: Deref>(
+		mut self, counterparty_node_id: &PublicKey, mut signing_session: InteractiveTxSigningSession, logger: &L
+	) -> Result<(Channel<SP>, msgs::CommitmentSigned, Option<Event>), (Self, ChannelError)>
+	where
+		L::Target: Logger
+	{
+		let (commitment_signed, funding_ready_for_sig_event) = match self.internal_funding_tx_constructed(
+			counterparty_node_id, &mut signing_session, logger) {
+			Ok(res) => res,
+			Err(err) => return Err((self, err)),
+		};
+
+		let channel = Channel {
+			context: self.context,
+			dual_funding_channel_context: Some(self.dual_funding_context),
+			interactive_tx_signing_session: Some(signing_session),
+		};
+
+		Ok((channel, commitment_signed, funding_ready_for_sig_event))
 	}
 }
 
