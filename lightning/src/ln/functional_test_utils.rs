@@ -1554,7 +1554,7 @@ macro_rules! get_closing_signed_broadcast {
 			assert!(events.len() == 1 || events.len() == 2);
 			(match events[events.len() - 1] {
 				MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-					assert_eq!(msg.contents.flags & 2, 2);
+					assert_eq!(msg.contents.channel_flags & 2, 2);
 					msg.clone()
 				},
 				_ => panic!("Unexpected event"),
@@ -1613,7 +1613,7 @@ pub fn check_closed_broadcast(node: &Node, num_channels: usize, with_error_msg: 
 	msg_events.into_iter().filter_map(|msg_event| {
 		match msg_event {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.flags & 2, 2);
+				assert_eq!(msg.contents.channel_flags & 2, 2);
 				None
 			},
 			MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { msg }, node_id: _ } => {
