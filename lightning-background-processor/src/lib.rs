@@ -914,9 +914,9 @@ impl Drop for BackgroundProcessor {
 #[cfg(all(feature = "std", test))]
 mod tests {
 	use bitcoin::{Amount, ScriptBuf, Txid};
-	use bitcoin::blockdata::constants::{genesis_block, ChainHash};
-	use bitcoin::blockdata::locktime::absolute::LockTime;
-	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::constants::{genesis_block, ChainHash};
+	use bitcoin::locktime::absolute::LockTime;
+	use bitcoin::transaction::{Transaction, TxOut};
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1};

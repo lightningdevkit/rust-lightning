@@ -24,11 +24,11 @@
 //! raw socket events into your non-internet-facing system and then send routing events back to
 //! track the network on the less-secure system.
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::{secp256k1, Witness};
-use bitcoin::blockdata::script::ScriptBuf;
+use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
@@ -3207,9 +3207,9 @@ mod tests {
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::address::Address;
 	use bitcoin::network::Network;
-	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::Builder;
-	use bitcoin::blockdata::opcodes;
+	use bitcoin::constants::ChainHash;
+	use bitcoin::script::Builder;
+	use bitcoin::opcodes;
 	use bitcoin::hash_types::Txid;
 	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::transaction::Version;

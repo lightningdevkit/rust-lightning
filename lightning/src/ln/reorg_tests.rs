@@ -21,8 +21,8 @@ use crate::util::test_utils;
 use crate::util::ser::Writeable;
 use crate::util::string::UntrustedString;
 
-use bitcoin::blockdata::script::Builder;
-use bitcoin::blockdata::opcodes;
+use bitcoin::script::Builder;
+use bitcoin::opcodes;
 use bitcoin::secp256k1::Secp256k1;
 
 use crate::prelude::*;

@@ -8,9 +8,9 @@
 // licenses.
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::script::Builder;
-use bitcoin::blockdata::transaction::TxOut;
+use bitcoin::constants::ChainHash;
+use bitcoin::script::Builder;
+use bitcoin::transaction::TxOut;
 
 use lightning::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 use lightning::chain::transaction::OutPoint;

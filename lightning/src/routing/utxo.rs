@@ -15,7 +15,7 @@
 
 use bitcoin::TxOut;
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 
 use hex::DisplayHex;
 

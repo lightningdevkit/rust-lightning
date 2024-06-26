@@ -103,7 +103,7 @@
 //! ```
 
 use bitcoin::{WitnessProgram, Network, WitnessVersion};
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::address::{Address, Payload};
@@ -1399,8 +1399,8 @@ mod tests {
 	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, FallbackAddress, FullInvoiceTlvStreamRef, InvoiceTlvStreamRef, SIGNATURE_TAG, UnsignedBolt12Invoice};
 
 	use bitcoin::{WitnessProgram, WitnessVersion};
-	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::ScriptBuf;
+	use bitcoin::constants::ChainHash;
+	use bitcoin::script::ScriptBuf;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey, self};

@@ -3372,10 +3372,10 @@ mod tests {
 	use bitcoin::amount::Amount;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::Network;
-	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::Builder;
-	use bitcoin::blockdata::opcodes;
-	use bitcoin::blockdata::transaction::TxOut;
+	use bitcoin::constants::ChainHash;
+	use bitcoin::script::Builder;
+	use bitcoin::opcodes;
+	use bitcoin::transaction::TxOut;
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;

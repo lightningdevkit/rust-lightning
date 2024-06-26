@@ -12,7 +12,7 @@ use crate::prelude::*;
 use core::ops::Deref;
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::consensus::Encodable;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::transaction::Version;
@@ -1037,8 +1037,8 @@ mod tests {
 	use crate::util::atomic_counter::AtomicCounter;
 	use crate::util::ser::TransactionU16LenLimited;
 	use bitcoin::amount::Amount;
-	use bitcoin::blockdata::opcodes;
-	use bitcoin::blockdata::script::Builder;
+	use bitcoin::opcodes;
+	use bitcoin::script::Builder;
 	use bitcoin::hashes::Hash;
 	use bitcoin::key::UntweakedPublicKey;
 	use bitcoin::secp256k1::{Keypair, Secp256k1};

@@ -17,9 +17,9 @@
 //! on-chain transactions (it only monitors the chain to watch for any force-closes that might
 //! imply it needs to fail HTLCs/payments/channels it manages).
 
-use bitcoin::blockdata::block::Header;
-use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::block::Header;
+use bitcoin::transaction::Transaction;
+use bitcoin::constants::ChainHash;
 use bitcoin::key::constants::SECRET_KEY_SIZE;
 use bitcoin::network::Network;
 
@@ -13582,7 +13582,7 @@ pub mod bench {
 	use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 
 	use bitcoin::amount::Amount;
-	use bitcoin::blockdata::locktime::absolute::LockTime;
+	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::{Transaction, TxOut};
@@ -13620,7 +13620,7 @@ pub mod bench {
 		// Note that this is unrealistic as each payment send will require at least two fsync
 		// calls per node.
 		let network = bitcoin::Network::Testnet;
-		let genesis_block = bitcoin::blockdata::constants::genesis_block(network);
+		let genesis_block = bitcoin::constants::genesis_block(network);
 
 		let tx_broadcaster = test_utils::TestBroadcaster::new(network);
 		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };

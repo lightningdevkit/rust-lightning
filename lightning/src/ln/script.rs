@@ -1,8 +1,8 @@
 //! Abstractions for scripts used in the Lightning Network.
 
 use bitcoin::{WitnessProgram, WPubkeyHash, WScriptHash};
-use bitcoin::blockdata::opcodes::all::OP_PUSHBYTES_0 as SEGWIT_V0;
-use bitcoin::blockdata::script::{Script, ScriptBuf};
+use bitcoin::opcodes::all::OP_PUSHBYTES_0 as SEGWIT_V0;
+use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 
@@ -170,8 +170,8 @@ mod shutdown_script_tests {
 	use super::ShutdownScript;
 
 	use bitcoin::{WitnessProgram, WitnessVersion};
-	use bitcoin::blockdata::opcodes;
-	use bitcoin::blockdata::script::{Builder, ScriptBuf};
+	use bitcoin::opcodes;
+	use bitcoin::script::{Builder, ScriptBuf};
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 

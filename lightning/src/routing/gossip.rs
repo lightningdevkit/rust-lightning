@@ -10,7 +10,7 @@
 //! The [`NetworkGraph`] stores the network gossip and [`P2PGossipSync`] fetches it from peers
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
@@ -2273,9 +2273,9 @@ pub(crate) mod tests {
 	use bitcoin::hashes::hex::FromHex;
 	use bitcoin::network::Network;
 	use bitcoin::amount::Amount;
-	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::ScriptBuf;
-	use bitcoin::blockdata::transaction::TxOut;
+	use bitcoin::constants::ChainHash;
+	use bitcoin::script::ScriptBuf;
+	use bitcoin::transaction::TxOut;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use bitcoin::secp256k1::{All, Secp256k1};
 

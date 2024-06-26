@@ -29,7 +29,7 @@ use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage}
 use crate::util::ser::{Iterable, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 use bitcoin::address::Address;
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{self, Keypair, PublicKey, Secp256k1};
 use core::time::Duration;
@@ -573,7 +573,7 @@ mod tests {
 	use crate::offers::test_utils::*;
 	use crate::sign::KeyMaterial;
 	use crate::util::ser::{BigSize, Iterable, Writeable};
-	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{self, Secp256k1};
 	use bitcoin::Network;
 	use core::time::Duration;

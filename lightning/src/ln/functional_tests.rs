@@ -38,10 +38,10 @@ use crate::util::string::UntrustedString;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 
 use bitcoin::hash_types::BlockHash;
-use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::script::{Builder, ScriptBuf};
-use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::script::{Builder, ScriptBuf};
+use bitcoin::opcodes;
+use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::{Amount, Sequence, Transaction, TxIn, TxOut, Witness};
 use bitcoin::OutPoint as BitcoinOutPoint;

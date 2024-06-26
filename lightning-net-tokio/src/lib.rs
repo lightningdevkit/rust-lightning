@@ -565,7 +565,7 @@ mod tests {
 	use lightning::events::*;
 	use lightning::util::test_utils::TestNodeSigner;
 	use bitcoin::Network;
-	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{Secp256k1, SecretKey, PublicKey};
 
 	use tokio::sync::mpsc;
