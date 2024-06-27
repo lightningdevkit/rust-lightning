@@ -6304,35 +6304,32 @@ where
 			return;
 		}
 		if valid_mpp {
-			let (source_claim_pairs, pending_claim_ptr_opt) = if sources.len() > 1 {
-				let mut pending_claims = PendingMPPClaim {
-					channels_without_preimage: Vec::new(),
-					channels_with_preimage: Vec::new(),
-				};
-				let (source_claim_pairs, channels_without_preimage) = sources.into_iter().filter_map(|htlc| {
+			let pending_mpp_claim_ptr_opt = if sources.len() > 1 {
+				let channels_without_preimage = sources.iter().filter_map(|htlc| {
 					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
-						let htlc_id = htlc.prev_hop.htlc_id;
-						let chan_id = htlc.prev_hop.channel_id;
-						let chan_outpoint = htlc.prev_hop.outpoint;
-						Some((
-							(htlc, Some((cp_id, chan_id, htlc_id))),
-							(cp_id, chan_outpoint, chan_id, htlc_id),
-						))
+						let prev_hop = &htlc.prev_hop;
+						Some((cp_id, prev_hop.outpoint, prev_hop.channel_id, prev_hop.htlc_id))
 					} else {
 						None
 					}
-				}).unzip::<_, _, Vec<_>, _>();
-				pending_claims.channels_without_preimage = channels_without_preimage;
-				(source_claim_pairs, Some(Arc::new(Mutex::new(pending_claims))))
+				}).collect();
+				Some(Arc::new(Mutex::new(PendingMPPClaim {
+					channels_without_preimage,
+					channels_with_preimage: Vec::new(),
+				})))
 			} else {
-				(sources.into_iter().map(|htlc| (htlc, None)).collect(), None)
+				None
 			};
-			for (htlc, mpp_claim) in source_claim_pairs {
-				let mut pending_mpp_claim = None;
-				let pending_claim_ptr = pending_claim_ptr_opt.as_ref().map(|pending_claim| {
-					pending_mpp_claim = mpp_claim.map(|(cp_id, chan_id, htlc_id)|
-						(cp_id, chan_id, htlc_id, PendingMPPClaimPointer(Arc::clone(pending_claim)))
-					);
+			for htlc in sources {
+				let this_mpp_claim = pending_mpp_claim_ptr_opt.as_ref().map(|pending_mpp_claim|
+					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
+						let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
+						Some((cp_id, htlc.prev_hop.channel_id, htlc.prev_hop.htlc_id, claim_ptr))
+					} else {
+						None
+					}
+				).flatten();
+				let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
 					RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
 						pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
 					}
@@ -6341,7 +6338,7 @@ where
 					htlc.prev_hop, payment_preimage,
 					|_, definitely_duplicate| {
 						debug_assert!(!definitely_duplicate, "We shouldn't claim duplicatively from a payment");
-						(Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim }), pending_claim_ptr)
+						(Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim: this_mpp_claim }), raa_blocker)
 					}
 				);
 			}
