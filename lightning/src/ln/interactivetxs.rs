@@ -1206,6 +1206,7 @@ impl InteractiveTxConstructor {
 				prevtx,
 				prevtx_out: input.previous_output.vout,
 				sequence: input.sequence.to_consensus_u32(),
+				shared_input_txid: None,
 			};
 			do_state_transition!(self, sent_tx_add_input, &msg)?;
 			Ok(InteractiveTxMessageSend::TxAddInput(msg))

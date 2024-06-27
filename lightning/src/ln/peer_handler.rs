@@ -274,7 +274,7 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
 	#[cfg(splicing)]
-	fn handle_splice(&self, their_node_id: &PublicKey, msg: &msgs::Splice) {
+	fn handle_splice_init(&self, their_node_id: &PublicKey, msg: &msgs::SpliceInit) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
 	#[cfg(splicing)]
@@ -1815,8 +1815,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 			#[cfg(splicing)]
 			// Splicing messages:
-			wire::Message::Splice(msg) => {
-				self.message_handler.chan_handler.handle_splice(&their_node_id, &msg);
+			wire::Message::SpliceInit(msg) => {
+				self.message_handler.chan_handler.handle_splice_init(&their_node_id, &msg);
 			}
 			#[cfg(splicing)]
 			wire::Message::SpliceAck(msg) => {
@@ -2154,9 +2154,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 									&msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
 						}
-						MessageSendEvent::SendSplice { ref node_id, ref msg} => {
+						MessageSendEvent::SendSpliceInit { ref node_id, ref msg} => {
 							let logger = WithContext::from(&self.logger, Some(*node_id), Some(msg.channel_id), None);
-							log_debug!(logger, "Handling SendSplice event in peer_handler for node {} for channel {}",
+							log_debug!(logger, "Handling SendSpliceInit event in peer_handler for node {} for channel {}",
 									log_pubkey!(node_id),
 									&msg.channel_id);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id), msg);
