@@ -2768,7 +2768,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			feerate_per_kw = cmp::max(feerate_per_kw, feerate);
 		}
 		let feerate_plus_quarter = feerate_per_kw.checked_mul(1250).map(|v| v / 1000);
-		cmp::max(feerate_per_kw + 2530, feerate_plus_quarter.unwrap_or(u32::max_value()))
+		cmp::max(feerate_per_kw.saturating_add(2530), feerate_plus_quarter.unwrap_or(u32::MAX))
 	}
 
 	/// Get forwarding information for the counterparty.
