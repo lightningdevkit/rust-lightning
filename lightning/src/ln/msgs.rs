@@ -3333,7 +3333,7 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket};
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, OutboundTrampolinePayload, TrampolineOnionPacket};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
@@ -3359,6 +3359,8 @@ mod tests {
 
 	#[cfg(feature = "std")]
 	use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
+	use types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
+	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 	#[cfg(feature = "std")]
 	use crate::ln::msgs::SocketAddressParseError;
 
@@ -4704,6 +4706,36 @@ mod tests {
 		let encoded_trampoline_packet = trampoline_packet.encode();
 		let expected_eclair_trampoline_packet = <Vec<u8>>::from_hex("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619cff34152f3a36e52ca94e74927203a560392b9cc7ce3c45809c6be52166c24a595716880f95f178bf5b30ca63141f74db6e92795c6130877cfdac3d4bd3087ee73c65d627ddd709112a848cc99e303f3706509aa43ba7c8a88cba175fccf9a8f5016ef06d3b935dbb15196d7ce16dc1a7157845566901d7b2197e52cab4ce487014b14816e5805f9fcacb4f8f88b8ff176f1b94f6ce6b00bc43221130c17d20ef629db7c5f7eafaa166578c720619561dd14b3277db557ec7dcdb793771aef0f2f667cfdbeae3ac8d331c5994779dffb31e5fc0dbdedc0c592ca6d21c18e47fe3528d6975c19517d7e2ea8c5391cf17d0fe30c80913ed887234ccb48808f7ef9425bcd815c3b586210979e3bb286ef2851bf9ce04e28c40a203df98fd648d2f1936fd2f1def0e77eecb277229b4b682322371c0a1dbfcd723a991993df8cc1f2696b84b055b40a1792a29f710295a18fbd351b0f3ff34cd13941131b8278ba79303c89117120eea691738a9954908195143b039dbeed98f26a92585f3d15cf742c953799d3272e0545e9b744be9d3b4cbb079bfc4b35190eee9f59a1d7b41ba2f773179f322dafb4b1af900c289ebd6c").unwrap();
 		assert_eq!(encoded_trampoline_packet, expected_eclair_trampoline_packet);
+	}
+
+	#[test]
+	fn encoding_outbound_trampoline_payload() {
+		let mut trampoline_features = Bolt12InvoiceFeatures::empty();
+		trampoline_features.set_basic_mpp_optional();
+		let introduction_node = PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()).unwrap();
+		let blinding_point = PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()).unwrap();
+		let trampoline_payload = OutboundTrampolinePayload::LegacyBlindedPathEntry {
+			amt_to_forward: 150_000_000,
+			outgoing_cltv_value: 800_000,
+			payment_paths: vec![
+				BlindedPaymentPath::from_raw(
+					introduction_node,
+					blinding_point,
+					vec![],
+					BlindedPayInfo{
+						fee_base_msat: 500,
+						fee_proportional_millionths: 1_000,
+						cltv_expiry_delta: 36,
+						htlc_minimum_msat: 1,
+						htlc_maximum_msat: 500_000_000,
+						features: BlindedHopFeatures::empty(),
+					}
+				)
+			],
+			invoice_features: Some(trampoline_features),
+		};
+		let serialized_payload = trampoline_payload.encode().to_lower_hex_string();
+		assert_eq!(serialized_payload, "71020408f0d18004030c35001503020000165f032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e66868099102eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f28368661900000001f4000003e800240000000000000001000000001dcd65000000");
 	}
 
 	#[test]
