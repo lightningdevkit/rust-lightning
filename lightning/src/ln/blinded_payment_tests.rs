@@ -317,7 +317,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 					let onion_keys = onion_utils::construct_onion_keys(&Secp256k1::new(), &route.paths[0], &session_priv).unwrap();
 					let cur_height = nodes[0].best_block_info().1;
 					let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
-						&route.paths[0], amt_msat, &recipient_onion_fields, cur_height, &None).unwrap();
+						&route.paths[0], amt_msat, &recipient_onion_fields, cur_height, &None, None).unwrap();
 					// Remove the receive payload so the blinded forward payload is encoded as a final payload
 					// (i.e. next_hop_hmac == [0; 32])
 					onion_payloads.pop();
@@ -896,7 +896,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 			let cur_height = nodes[0].best_block_info().1;
 			let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 			let (mut onion_payloads, ..) = onion_utils::build_onion_payloads(
-				&route.paths[0], amt_msat, &recipient_onion_fields, cur_height, &None).unwrap();
+				&route.paths[0], amt_msat, &recipient_onion_fields, cur_height, &None, None).unwrap();
 
 			let update_add = &mut payment_event_1_2.msgs[0];
 			onion_payloads.last_mut().map(|p| {
