@@ -4195,7 +4195,7 @@ where
 
 		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
 			&self.secp_ctx, &path, &session_priv, total_value, recipient_onion, cur_height,
-			payment_hash, keysend_preimage, prng_seed
+			payment_hash, keysend_preimage, None, prng_seed
 		).map_err(|e| {
 			let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None, Some(*payment_hash));
 			log_error!(logger, "Failed to build an onion for path for payment hash {}", payment_hash);

@@ -1163,7 +1163,8 @@ where
 pub fn create_payment_onion<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, total_msat: u64,
 	recipient_onion: &RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
-	keysend_preimage: &Option<PaymentPreimage>, prng_seed: [u8; 32],
+	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
+	prng_seed: [u8; 32],
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
 	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv).map_err(|_| {
 		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
@@ -1174,7 +1175,7 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 		recipient_onion,
 		cur_block_height,
 		keysend_preimage,
-		None,
+		invoice_request,
 	)?;
 	let onion_packet = construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)
 		.map_err(|_| APIError::InvalidRoute {
