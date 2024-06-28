@@ -1446,7 +1446,7 @@ fn route_blinding_spec_test_vector() {
 		}),
 	};
 	let cur_height = 747_000;
-	let (bob_onion, _, _) = onion_utils::create_payment_onion(&secp_ctx, &path, &session_priv, amt_msat, &RecipientOnionFields::spontaneous_empty(), cur_height, &PaymentHash([0; 32]), &None, [0; 32]).unwrap();
+	let (bob_onion, _, _) = onion_utils::create_payment_onion(&secp_ctx, &path, &session_priv, amt_msat, &RecipientOnionFields::spontaneous_empty(), cur_height, &PaymentHash([0; 32]), &None, None, [0; 32]).unwrap();
 
 	struct TestEcdhSigner {
 		node_secret: SecretKey,
