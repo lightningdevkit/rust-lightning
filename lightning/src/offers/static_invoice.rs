@@ -75,7 +75,7 @@ struct InvoiceContents {
 	fallbacks: Option<Vec<FallbackAddress>>,
 	features: Bolt12InvoiceFeatures,
 	signing_pubkey: PublicKey,
-	message_paths: Vec<BlindedPath>,
+	async_receive_paths: Vec<BlindedPath>,
 }
 
 /// Builds a [`StaticInvoice`] from an [`Offer`].
@@ -96,14 +96,14 @@ impl<'a> StaticInvoiceBuilder<'a> {
 	/// after `created_at`.
 	pub fn for_offer_using_derived_keys<T: secp256k1::Signing>(
 		offer: &'a Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
-		message_paths: Vec<BlindedPath>, created_at: Duration, expanded_key: &ExpandedKey,
+		async_receive_paths: Vec<BlindedPath>, created_at: Duration, expanded_key: &ExpandedKey,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, Bolt12SemanticError> {
 		if offer.chains().len() > 1 {
 			return Err(Bolt12SemanticError::UnexpectedChain);
 		}
 
-		if payment_paths.is_empty() || message_paths.is_empty() || offer.paths().is_empty() {
+		if payment_paths.is_empty() || async_receive_paths.is_empty() || offer.paths().is_empty() {
 			return Err(Bolt12SemanticError::MissingPaths);
 		}
 
@@ -121,8 +121,13 @@ impl<'a> StaticInvoiceBuilder<'a> {
 			return Err(Bolt12SemanticError::InvalidSigningPubkey);
 		}
 
-		let invoice =
-			InvoiceContents::new(offer, payment_paths, message_paths, created_at, signing_pubkey);
+		let invoice = InvoiceContents::new(
+			offer,
+			payment_paths,
+			async_receive_paths,
+			created_at,
+			signing_pubkey,
+		);
 
 		Ok(Self { offer_bytes: &offer.bytes, invoice, keys })
 	}
@@ -222,14 +227,14 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// publicly reachable nodes. Taken from [`Offer::paths`].
 	///
 	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
-	pub fn offer_message_paths(&$self) -> &[BlindedPath] {
-		$contents.offer_message_paths()
+	pub fn request_paths(&$self) -> &[BlindedPath] {
+		$contents.request_paths()
 	}
 
 	/// Paths to the recipient for indicating that a held HTLC is available to claim when they next
 	/// come online.
-	pub fn message_paths(&$self) -> &[BlindedPath] {
-		$contents.message_paths()
+	pub fn async_receive_paths(&$self) -> &[BlindedPath] {
+		$contents.async_receive_paths()
 	}
 
 	/// The quantity of items supported, from [`Offer::supported_quantity`].
@@ -325,12 +330,12 @@ impl InvoiceContents {
 
 	fn new(
 		offer: &Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
-		message_paths: Vec<BlindedPath>, created_at: Duration, signing_pubkey: PublicKey,
+		async_receive_paths: Vec<BlindedPath>, created_at: Duration, signing_pubkey: PublicKey,
 	) -> Self {
 		Self {
 			offer: offer.contents.clone(),
 			payment_paths,
-			message_paths,
+			async_receive_paths,
 			created_at,
 			relative_expiry: None,
 			fallbacks: None,
@@ -350,7 +355,7 @@ impl InvoiceContents {
 
 		let invoice = InvoiceTlvStreamRef {
 			paths: Some(Iterable(self.payment_paths.iter().map(|(_, path)| path))),
-			message_paths: Some(self.message_paths.as_ref()),
+			invoice_message_paths: Some(self.async_receive_paths.as_ref()),
 			blindedpay: Some(Iterable(self.payment_paths.iter().map(|(payinfo, _)| payinfo))),
 			created_at: Some(self.created_at.as_secs()),
 			relative_expiry: self.relative_expiry.map(|duration| duration.as_secs() as u32),
@@ -393,12 +398,12 @@ impl InvoiceContents {
 		self.offer.issuer()
 	}
 
-	fn offer_message_paths(&self) -> &[BlindedPath] {
+	fn request_paths(&self) -> &[BlindedPath] {
 		self.offer.paths()
 	}
 
-	fn message_paths(&self) -> &[BlindedPath] {
-		&self.message_paths[..]
+	fn async_receive_paths(&self) -> &[BlindedPath] {
+		&self.async_receive_paths[..]
 	}
 
 	fn supported_quantity(&self) -> Quantity {
@@ -508,7 +513,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				fallbacks,
 				features,
 				node_id,
-				message_paths,
+				invoice_message_paths,
 				payment_hash,
 				amount,
 			},
@@ -522,7 +527,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		}
 
 		let payment_paths = construct_payment_paths(blindedpay, paths)?;
-		let message_paths = message_paths.ok_or(Bolt12SemanticError::MissingPaths)?;
+		let async_receive_paths = invoice_message_paths.ok_or(Bolt12SemanticError::MissingPaths)?;
 
 		let created_at = match created_at {
 			None => return Err(Bolt12SemanticError::MissingCreationTime),
@@ -546,7 +551,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		Ok(InvoiceContents {
 			offer: OfferContents::try_from(offer_tlv_stream)?,
 			payment_paths,
-			message_paths,
+			async_receive_paths,
 			created_at,
 			relative_expiry,
 			fallbacks,
@@ -676,8 +681,8 @@ mod tests {
 		assert_eq!(invoice.description(), None);
 		assert_eq!(invoice.offer_features(), &OfferFeatures::empty());
 		assert_eq!(invoice.absolute_expiry(), None);
-		assert_eq!(invoice.offer_message_paths(), &[blinded_path()]);
-		assert_eq!(invoice.message_paths(), &[blinded_path()]);
+		assert_eq!(invoice.request_paths(), &[blinded_path()]);
+		assert_eq!(invoice.async_receive_paths(), &[blinded_path()]);
 		assert_eq!(invoice.issuer(), None);
 		assert_eq!(invoice.supported_quantity(), Quantity::One);
 		assert_ne!(invoice.signing_pubkey(), recipient_pubkey());
@@ -724,7 +729,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&offer_signing_pubkey),
-					message_paths: Some(&paths),
+					invoice_message_paths: Some(&paths),
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 			)
@@ -1053,9 +1058,9 @@ mod tests {
 		}
 
 		// Error if message paths are missing.
-		let missing_message_paths_invoice = invoice();
-		let mut tlv_stream = missing_message_paths_invoice.as_tlv_stream();
-		tlv_stream.1.message_paths = None;
+		let missing_async_receive_paths_invoice = invoice();
+		let mut tlv_stream = missing_async_receive_paths_invoice.as_tlv_stream();
+		tlv_stream.1.invoice_message_paths = None;
 		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
@@ -1135,8 +1140,8 @@ mod tests {
 	#[test]
 	fn fails_parsing_invoice_with_invalid_offer_fields() {
 		// Error if the offer is missing paths.
-		let missing_offer_paths_invoice = invoice();
-		let mut tlv_stream = missing_offer_paths_invoice.as_tlv_stream();
+		let missing_request_paths_invoice = invoice();
+		let mut tlv_stream = missing_request_paths_invoice.as_tlv_stream();
 		tlv_stream.0.paths = None;
 		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
 			Ok(_) => panic!("expected error"),
