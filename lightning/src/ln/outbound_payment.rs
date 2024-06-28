@@ -641,6 +641,7 @@ impl RecipientOnionFields {
 		for (typ, _) in custom_tlvs.iter() {
 			if *typ < 1 << 16 { return Err(()); }
 			if *typ == 5482373484 { return Err(()); } // keysend
+			if *typ == 77_777 { return Err(()); } // invoice requests for async payments
 			match prev_type {
 				Some(prev) if prev >= *typ => return Err(()),
 				_ => {},
