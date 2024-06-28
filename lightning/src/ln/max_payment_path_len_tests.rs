@@ -184,6 +184,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		encrypted_tlvs: &blinded_path.blinded_hops()[0].encrypted_payload,
 		intro_node_blinding_point: Some(blinded_path.blinding_point()),
 		keysend_preimage: None,
+		invoice_request: None,
 		custom_tlvs: &Vec::new()
 	}.serialized_length();
 	let max_custom_tlv_len = 1300

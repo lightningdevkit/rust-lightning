@@ -262,6 +262,7 @@ where
 								encrypted_tlvs: &blinded_hop.encrypted_payload,
 								intro_node_blinding_point: blinding_point.take(),
 								keysend_preimage: *keysend_preimage,
+								invoice_request: None,
 								custom_tlvs: &recipient_onion.custom_tlvs,
 							},
 						);
