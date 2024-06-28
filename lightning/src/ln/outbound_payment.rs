@@ -72,6 +72,7 @@ pub(crate) enum PendingOutboundPayment {
 		retry_strategy: Retry,
 		payment_release_secret: [u8; 32],
 		route_params: RouteParameters,
+		invoice_request: InvoiceRequest,
 	},
 	Retryable {
 		retry_strategy: Option<Retry>,
@@ -936,7 +937,7 @@ impl OutboundPayments {
 		&self, invoice: &StaticInvoice, payment_id: PaymentId, entropy_source: ES
 	) -> Result<[u8; 32], Bolt12PaymentError> where ES::Target: EntropySource {
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
-			hash_map::Entry::Occupied(entry) => match entry.get() {
+			hash_map::Entry::Occupied(mut entry) => match entry.get_mut() {
 				PendingOutboundPayment::AwaitingInvoice { retry_strategy, invoice_request, .. } => {
 					let invreq = invoice_request.as_ref().ok_or(Bolt12PaymentError::UnexpectedInvoice)?;
 					if !invoice.from_same_offer(invreq) {
@@ -954,6 +955,7 @@ impl OutboundPayments {
 						retry_strategy: *retry_strategy,
 						payment_release_secret,
 						route_params,
+						invoice_request: invoice_request.take().ok_or(Bolt12PaymentError::UnexpectedInvoice)?,
 					};
 					return Ok(payment_release_secret)
 				},
@@ -2088,6 +2090,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(4, retry_strategy, required),
 		(6, payment_release_secret, required),
 		(8, route_params, required),
+		(10, invoice_request, required),
 	},
 );
 
@@ -2100,6 +2103,8 @@ mod tests {
 
 	use crate::blinded_path::EmptyNodeIdLookUp;
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
+	use crate::hex::FromHex;
+	use crate::io::Cursor;
 	use crate::ln::types::{PaymentHash, PaymentPreimage};
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{ChannelFeatures, NodeFeatures};
@@ -2107,12 +2112,14 @@ mod tests {
 	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, Retry, RetryableSendFailure, StaleExpiration};
 	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
+	use crate::offers::invoice_request::InvoiceRequest;
 	use crate::offers::offer::OfferBuilder;
 	use crate::offers::test_utils::*;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{InFlightHtlcs, Path, PaymentParameters, Route, RouteHop, RouteParameters};
 	use crate::sync::{Arc, Mutex, RwLock};
 	use crate::util::errors::APIError;
+	use crate::util::ser::Readable;
 	use crate::util::test_utils;
 
 	use alloc::collections::VecDeque;
@@ -2644,6 +2651,11 @@ mod tests {
 		assert!(pending_events.lock().unwrap().is_empty());
 	}
 
+	fn invoice_request() -> InvoiceRequest {
+		let invreq_bytes = <Vec<u8>>::from_hex("00200101010101010101010101010101010101010101010101010101010101010101080203e80a00162102bb58b5feca505c74edc000d8282fc556e51a1024fc8e7d7e56c6f887c5c8d5f25821035be5e9478209674a96e60f1f037f6176540fd001fa1d64694770c56a7709c42cf040a31d68198578a5aa1fe57de5f6d33f89c1556752cb333dbb56ac727f751893804d3a26b42909f1952fb1db8080238f9476b829160387692df35ff85dfe72e2ed").unwrap();
+		Readable::read(&mut Cursor::new(&invreq_bytes[..])).unwrap()
+	}
+
 	#[test]
 	fn time_out_unreleased_async_payments() {
 		let pending_events = Mutex::new(VecDeque::new());
@@ -2666,6 +2678,7 @@ mod tests {
 			retry_strategy: Retry::Attempts(0),
 			payment_release_secret: [0; 32],
 			route_params,
+			invoice_request: invoice_request(),
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
@@ -2713,6 +2726,7 @@ mod tests {
 			retry_strategy: Retry::Attempts(0),
 			payment_release_secret: [0; 32],
 			route_params,
+			invoice_request: invoice_request(),
 		};
 		outbounds.insert(payment_id, outbound);
 		core::mem::drop(outbounds);
