@@ -4179,14 +4179,14 @@ where
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(SendAlongPathArgs {
 			path, payment_hash, recipient_onion: &recipient_onion, total_value,
-			cur_height, payment_id, keysend_preimage, session_priv_bytes
+			cur_height, payment_id, keysend_preimage, invoice_request: None, session_priv_bytes
 		})
 	}
 
 	fn send_payment_along_path(&self, args: SendAlongPathArgs) -> Result<(), APIError> {
 		let SendAlongPathArgs {
 			path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage,
-			session_priv_bytes
+			invoice_request, session_priv_bytes
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
@@ -4195,7 +4195,7 @@ where
 
 		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
 			&self.secp_ctx, &path, &session_priv, total_value, recipient_onion, cur_height,
-			payment_hash, keysend_preimage, None, prng_seed
+			payment_hash, keysend_preimage, invoice_request, prng_seed
 		).map_err(|e| {
 			let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None, Some(*payment_hash));
 			log_error!(logger, "Failed to build an onion for path for payment hash {}", payment_hash);
