@@ -1694,9 +1694,10 @@ pub struct FinalOnionHopData {
 
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
+	use crate::blinded_path::BlindedPath;
 	use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::ln::types::{PaymentPreimage, PaymentSecret};
-	use crate::ln::features::BlindedHopFeatures;
+	use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
 
 	#[allow(unused_imports)]
@@ -1783,9 +1784,19 @@ mod fuzzy_internal_msgs {
 			/// The value, in msat, of the payment after this hop's fee is deducted.
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
-			/// The node id to which the trampoline node must find a route
+			/// The node id to which the trampoline node must find a route.
 			outgoing_node_id: PublicKey,
-		}
+		},
+		#[allow(unused)]
+		BlindedForward {
+			/// The value, in msat, of the payment after this hop's fee is deducted.
+			amt_to_forward: u64,
+			outgoing_cltv_value: u32,
+			/// List of blinded path options the last trampoline hop may choose to route through.
+			payment_paths: Vec<BlindedPath>,
+			/// If applicable, features of the BOLT12 invoice being paid.
+			invoice_features: Option<Bolt12InvoiceFeatures>
+		},
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -2695,7 +2706,15 @@ impl Writeable for OutboundTrampolinePayload {
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(14, outgoing_node_id, required)
 				});
-			}
+			},
+			Self::BlindedForward { amt_to_forward, outgoing_cltv_value, payment_paths, invoice_features } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
+					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
+					(66097, invoice_features, option),
+					(66102, *payment_paths, required_vec)
+				});
+			},
 		}
 		Ok(())
 	}
@@ -3228,7 +3247,7 @@ mod tests {
 	use hex::DisplayHex;
 	use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
-	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket};
+	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket, OutboundTrampolinePayload};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};
 	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
@@ -3254,6 +3273,7 @@ mod tests {
 
 	#[cfg(feature = "std")]
 	use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
+	use crate::blinded_path::{BlindedPath, Direction, IntroductionNode};
 	#[cfg(feature = "std")]
 	use crate::ln::msgs::SocketAddressParseError;
 
@@ -4598,6 +4618,25 @@ mod tests {
 		let encoded_trampoline_packet = trampoline_packet.encode();
 		let expected_eclair_trampoline_packet = <Vec<u8>>::from_hex("0002eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619cff34152f3a36e52ca94e74927203a560392b9cc7ce3c45809c6be52166c24a595716880f95f178bf5b30ca63141f74db6e92795c6130877cfdac3d4bd3087ee73c65d627ddd709112a848cc99e303f3706509aa43ba7c8a88cba175fccf9a8f5016ef06d3b935dbb15196d7ce16dc1a7157845566901d7b2197e52cab4ce487014b14816e5805f9fcacb4f8f88b8ff176f1b94f6ce6b00bc43221130c17d20ef629db7c5f7eafaa166578c720619561dd14b3277db557ec7dcdb793771aef0f2f667cfdbeae3ac8d331c5994779dffb31e5fc0dbdedc0c592ca6d21c18e47fe3528d6975c19517d7e2ea8c5391cf17d0fe30c80913ed887234ccb48808f7ef9425bcd815c3b586210979e3bb286ef2851bf9ce04e28c40a203df98fd648d2f1936fd2f1def0e77eecb277229b4b682322371c0a1dbfcd723a991993df8cc1f2696b84b055b40a1792a29f710295a18fbd351b0f3ff34cd13941131b8278ba79303c89117120eea691738a9954908195143b039dbeed98f26a92585f3d15cf742c953799d3272e0545e9b744be9d3b4cbb079bfc4b35190eee9f59a1d7b41ba2f773179f322dafb4b1af900c289ebd6c").unwrap();
 		assert_eq!(encoded_trampoline_packet, expected_eclair_trampoline_packet);
+	}
+
+	#[test]
+	fn encoding_outbound_trampoline_payload() {
+		let public_key = PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()).unwrap();
+		let trampoline_payload = OutboundTrampolinePayload::BlindedForward {
+			amt_to_forward: 100000000,
+			outgoing_cltv_value: 800000,
+			payment_paths: vec![
+				BlindedPath {
+					introduction_node: IntroductionNode::DirectedShortChannelId(Direction::NodeOne, 12),
+					blinding_point: public_key,
+					blinded_hops: vec![],
+				}
+			],
+			invoice_features: None,
+		};
+		let serialized_payload = trampoline_payload.encode().to_lower_hex_string();
+		assert_eq!(serialized_payload, "3c020405f5e10004030c3500fe000102362b00000000000000000c02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f28368661900");
 	}
 
 	#[test]
