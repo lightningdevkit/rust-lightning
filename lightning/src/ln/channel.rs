@@ -5363,15 +5363,20 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let mut raa = if self.context.monitor_pending_revoke_and_ack {
-			Some(self.get_last_revoke_and_ack())
+			self.get_last_revoke_and_ack(logger)
 		} else { None };
-		let commitment_update = if self.context.monitor_pending_commitment_signed {
+		let mut commitment_update = if self.context.monitor_pending_commitment_signed {
 			self.get_last_commitment_update_for_send(logger).ok()
 		} else { None };
 		if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
 			&& self.context.signer_pending_commitment_update && raa.is_some() {
 			self.context.signer_pending_revoke_and_ack = true;
 			raa = None;
+		}
+		if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
+			&& self.context.signer_pending_revoke_and_ack && commitment_update.is_some() {
+			self.context.signer_pending_commitment_update = true;
+			commitment_update = None;
 		}
 
 		if commitment_update.is_some() {
@@ -5443,6 +5448,10 @@ impl<SP: Deref> Channel<SP> where
 	/// blocked.
 	#[cfg(async_signing)]
 	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> SignerResumeUpdates where L::Target: Logger {
+		if !self.context.holder_commitment_point.is_available() {
+			log_trace!(logger, "Attempting to update holder per-commitment point...");
+			self.context.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
+		}
 		let funding_signed = if self.context.signer_pending_funding && !self.context.is_outbound() {
 			self.context.get_funding_signed_msg(logger).1
 		} else { None };
@@ -5456,7 +5465,7 @@ impl<SP: Deref> Channel<SP> where
 		} else { None };
 		let mut revoke_and_ack = if self.context.signer_pending_revoke_and_ack {
 			log_trace!(logger, "Attempting to generate pending revoke and ack...");
-			Some(self.get_last_revoke_and_ack())
+			self.get_last_revoke_and_ack(logger)
 		} else { None };
 
 		if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
@@ -5488,19 +5497,35 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	fn get_last_revoke_and_ack(&mut self) -> msgs::RevokeAndACK {
-		debug_assert!(self.context.holder_commitment_point.transaction_number() <= INITIAL_COMMITMENT_NUMBER + 2);
-		// TODO: handle non-available case when get_per_commitment_point becomes async
-		debug_assert!(self.context.holder_commitment_point.is_available());
-		let next_per_commitment_point = self.context.holder_commitment_point.current_point();
+	fn get_last_revoke_and_ack<L: Deref>(&mut self, logger: &L) -> Option<msgs::RevokeAndACK> where L::Target: Logger {
+		debug_assert!(self.context.holder_commitment_point.transaction_number() <= INITIAL_COMMITMENT_NUMBER - 2);
+		self.context.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
 		let per_commitment_secret = self.context.holder_signer.as_ref().release_commitment_secret(self.context.holder_commitment_point.transaction_number() + 2);
-		self.context.signer_pending_revoke_and_ack = false;
-		msgs::RevokeAndACK {
-			channel_id: self.context.channel_id,
-			per_commitment_secret,
-			next_per_commitment_point,
-			#[cfg(taproot)]
-			next_local_nonce: None,
+		if let HolderCommitmentPoint::Available { transaction_number: _, current, next: _ } = self.context.holder_commitment_point {
+			self.context.signer_pending_revoke_and_ack = false;
+			Some(msgs::RevokeAndACK {
+				channel_id: self.context.channel_id,
+				per_commitment_secret,
+				next_per_commitment_point: current,
+				#[cfg(taproot)]
+				next_local_nonce: None,
+			})
+		} else {
+			#[cfg(not(async_signing))] {
+				panic!("Holder commitment point must be Available when generating revoke_and_ack");
+			}
+			#[cfg(async_signing)] {
+				// Technically if we're at HolderCommitmentPoint::PendingNext,
+				// we have a commitment point ready to send in an RAA, however we
+				// choose to wait since if we send RAA now, we could get another
+				// CS before we have any commitment point available. Blocking our
+				// RAA here is a convenient way to make sure that post-funding
+				// we're only ever waiting on one commitment point at a time.
+				log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment point is not available",
+					&self.context.channel_id(), self.context.holder_commitment_point.transaction_number());
+				self.context.signer_pending_revoke_and_ack = true;
+				None
+			}
 		}
 	}
 
@@ -5708,7 +5733,7 @@ impl<SP: Deref> Channel<SP> where
 				self.context.monitor_pending_revoke_and_ack = true;
 				None
 			} else {
-				Some(self.get_last_revoke_and_ack())
+				self.get_last_revoke_and_ack(logger)
 			}
 		} else {
 			debug_assert!(false, "All values should have been handled in the four cases above");
@@ -5735,7 +5760,7 @@ impl<SP: Deref> Channel<SP> where
 		} else { None };
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
-			if required_revoke.is_some() {
+			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with only lost outbound RAA", &self.context.channel_id());
 			} else {
 				log_debug!(logger, "Reconnected channel {} with no loss", &self.context.channel_id());
@@ -5748,7 +5773,7 @@ impl<SP: Deref> Channel<SP> where
 				order: self.context.resend_order.clone(),
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
-			if required_revoke.is_some() {
+			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", &self.context.channel_id());
 			} else {
 				log_debug!(logger, "Reconnected channel {} with only lost remote commitment tx", &self.context.channel_id());
@@ -5762,7 +5787,14 @@ impl<SP: Deref> Channel<SP> where
 					order: self.context.resend_order.clone(),
 				})
 			} else {
-				let commitment_update = self.get_last_commitment_update_for_send(logger).ok();
+				let commitment_update = if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
+					&& self.context.signer_pending_revoke_and_ack {
+					log_trace!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx, but unable to send due to resend order, waiting on signer for revoke and ack", &self.context.channel_id());
+					self.context.signer_pending_commitment_update = true;
+					None
+				} else {
+					self.get_last_commitment_update_for_send(logger).ok()
+				};
 				let raa = if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
 					&& self.context.signer_pending_commitment_update && required_revoke.is_some() {
 					log_trace!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx, but unable to send due to resend order, waiting on signer for commitment update", &self.context.channel_id());
