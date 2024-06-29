@@ -1940,6 +1940,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		Ok(should_forward)
 	}
 
+	/// Forwards a gossip `msg` to `peers` excluding node(s) that generated the gossip message and
+	/// excluding `except_node`.
+	///
+	/// If the message queue for a peer is somewhat full, the message will not be forwarded to them
+	/// unless `allow_large_buffer` is set, in which case the message will be treated as critical
+	/// and delivered no matter the available buffer space.
 	fn forward_broadcast_msg(&self, peers: &HashMap<Descriptor, Mutex<Peer>>, msg: &wire::Message<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>, except_node: Option<&PublicKey>, allow_large_buffer: bool) {
 		match msg {
 			wire::Message::ChannelAnnouncement(ref msg) => {
@@ -2093,6 +2099,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						}
 					}
 				}
+
+				// Handles a `MessageSendEvent`, using `from_chan_handler` to decide if we should
+				// robustly gossip broadcast events even if a peer's message buffer is full.
 				let mut handle_event = |event, from_chan_handler| {
 					match event {
 						MessageSendEvent::SendAcceptChannel { ref node_id, ref msg } => {
