@@ -5313,12 +5313,18 @@ impl<SP: Deref> Channel<SP> where
 			};
 		}
 
-		let raa = if self.context.monitor_pending_revoke_and_ack {
+		let mut raa = if self.context.monitor_pending_revoke_and_ack {
 			Some(self.get_last_revoke_and_ack())
 		} else { None };
 		let commitment_update = if self.context.monitor_pending_commitment_signed {
 			self.get_last_commitment_update_for_send(logger).ok()
 		} else { None };
+		if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
+			&& self.context.signer_pending_commitment_update && raa.is_some() {
+			self.context.signer_pending_revoke_and_ack = true;
+			raa = None;
+		}
+
 		if commitment_update.is_some() {
 			self.mark_awaiting_response();
 		}
@@ -5417,11 +5423,12 @@ impl<SP: Deref> Channel<SP> where
 			commitment_update = None;
 		}
 
-		log_trace!(logger, "Signer unblocked with {} commitment_update, {} revoke_and_ack, {} funding_signed and {} channel_ready",
+		log_trace!(logger, "Signer unblocked with {} commitment_update, {} revoke_and_ack, {} funding_signed and {} channel_ready, with resend order {:?}",
 			if commitment_update.is_some() { "a" } else { "no" },
 			if revoke_and_ack.is_some() { "a" } else { "no" },
 			if funding_signed.is_some() { "a" } else { "no" },
-			if channel_ready.is_some() { "a" } else { "no" });
+			if channel_ready.is_some() { "a" } else { "no" },
+			self.context.resend_order);
 
 		SignerResumeUpdates {
 			commitment_update,
@@ -5704,10 +5711,18 @@ impl<SP: Deref> Channel<SP> where
 					order: self.context.resend_order.clone(),
 				})
 			} else {
+				let commitment_update = self.get_last_commitment_update_for_send(logger).ok();
+				let raa = if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
+					&& self.context.signer_pending_commitment_update && required_revoke.is_some() {
+					log_trace!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx, but unable to send due to resend order, waiting on signer for commitment update", &self.context.channel_id());
+					self.context.signer_pending_revoke_and_ack = true;
+					None
+				} else {
+					required_revoke
+				};
 				Ok(ReestablishResponses {
 					channel_ready, shutdown_msg, announcement_sigs,
-					raa: required_revoke,
-					commitment_update: self.get_last_commitment_update_for_send(logger).ok(),
+					raa, commitment_update,
 					order: self.context.resend_order.clone(),
 				})
 			}
