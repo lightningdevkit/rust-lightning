@@ -127,6 +127,11 @@ fn test_async_commitment_signature_for_funding_signed() {
 
 #[test]
 fn test_async_commitment_signature_for_commitment_signed() {
+	do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(true);
+	do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(false);
+}
+
+fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(enable_sign_counterparty_commit_first: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -154,23 +159,33 @@ fn test_async_commitment_signature_for_commitment_signed() {
 
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
+	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
-	get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
+	if enable_sign_counterparty_commit_first {
+		// Unblock CS -> no messages should be sent, since we must send RAA first.
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
+		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		let events = dst.node.get_and_clear_pending_msg_events();
+		assert!(events.is_empty(), "expected no message, got {}", events.len());
 
-	// Mark dst's signer as available and retry: we now expect to see dst's `commitment_signed`.
-	dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
-
-	let events = dst.node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1, "expected one message, got {}", events.len());
-	if let MessageSendEvent::UpdateHTLCs { ref node_id, .. } = events[0] {
-		assert_eq!(node_id, &src.node.get_our_node_id());
+		// Unblock revoke_and_ack -> we should send both RAA + CS.
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
+		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		get_revoke_commit_msgs(&dst, &src.node.get_our_node_id());
 	} else {
-		panic!("expected UpdateHTLCs message, not {:?}", events[0]);
-	};
+		// Unblock revoke_and_ack -> we should send just RAA.
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
+		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
+
+		// Unblock commitment signed -> we should send CS.
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
+		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		get_htlc_update_msgs(dst, &src.node.get_our_node_id());
+	}
 }
 
 #[test]
@@ -272,29 +287,21 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 	assert_eq!(nodes[1].node.list_usable_channels().len(), 1);
 }
 
-#[test]
-fn test_async_commitment_signature_peer_disconnect() {
-	do_test_async_commitment_signature_peer_disconnect(0);
+#[derive(PartialEq)]
+enum UnblockSignerAcrossDisconnectCase {
+	AtEnd,
+	BeforeMonitorRestored,
+	BeforeReestablish,
 }
 
 #[test]
-fn test_async_commitment_signature_peer_disconnect_signer_restored_before_monitor_completion() {
-	// This tests that if we were pending a monitor update completion across a disconnect,
-	// and needed to send a CS, that if our signer becomes available before the monitor
-	// update completes, then we don't send duplicate messages upon calling `signer_unblocked`
-	// after the monitor update completes.
-	do_test_async_commitment_signature_peer_disconnect(1);
+fn test_async_raa_peer_disconnect() {
+	do_test_async_raa_peer_disconnect(UnblockSignerAcrossDisconnectCase::AtEnd);
+	do_test_async_raa_peer_disconnect(UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored);
+	do_test_async_raa_peer_disconnect(UnblockSignerAcrossDisconnectCase::BeforeReestablish);
 }
 
-#[test]
-fn test_async_commitment_signature_peer_disconnect_signer_restored_before_reestablish() {
-	// This tests that if we tried to send a commitment_signed, but our signer was blocked,
-	// if we disconnect, reconnect, the signer becomes available, then handle channel_reestablish,
-	// that we don't send duplicate messages upon calling `signer_unblocked`.
-	do_test_async_commitment_signature_peer_disconnect(2);
-}
-
-fn do_test_async_commitment_signature_peer_disconnect(test_case: u8) {
+fn do_test_async_raa_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCase) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -320,7 +327,131 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: u8) {
 
 	dst.node.handle_update_add_htlc(&src.node.get_our_node_id(), &payment_event.msgs[0]);
 
-	if test_case == 1 {
+	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
+		// Fail to persist the monitor update when handling the commitment_signed.
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	}
+
+	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
+	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
+	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
+	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
+	check_added_monitors(dst, 1);
+
+	let events = dst.node.get_and_clear_pending_msg_events();
+	assert!(events.is_empty(), "expected no message, got {}", events.len());
+
+	// Now disconnect and reconnect the peers.
+	src.node.peer_disconnected(&dst.node.get_our_node_id());
+	dst.node.peer_disconnected(&src.node.get_our_node_id());
+
+	// do reestablish stuff
+	src.node.peer_connected(&dst.node.get_our_node_id(), &msgs::Init {
+		features: dst.node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let reestablish_1 = get_chan_reestablish_msgs!(src, dst);
+	assert_eq!(reestablish_1.len(), 1);
+	dst.node.peer_connected(&src.node.get_our_node_id(), &msgs::Init {
+		features: src.node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+	let reestablish_2 = get_chan_reestablish_msgs!(dst, src);
+	assert_eq!(reestablish_2.len(), 1);
+
+	if test_case == UnblockSignerAcrossDisconnectCase::BeforeReestablish {
+		// Reenable the signer before the reestablish.
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
+	}
+
+	dst.node.handle_channel_reestablish(&src.node.get_our_node_id(), &reestablish_1[0]);
+
+	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+		let (outpoint, latest_update, _) = dst.chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
+		dst.chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, latest_update);
+		check_added_monitors!(dst, 0);
+	}
+
+	// Expect the RAA
+	let (_, revoke_and_ack, commitment_signed, resend_order) = handle_chan_reestablish_msgs!(dst, src);
+	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
+		assert!(revoke_and_ack.is_none());
+		assert!(commitment_signed.is_none());
+	} else {
+		assert!(revoke_and_ack.is_some());
+		assert!(commitment_signed.is_some());
+		assert!(resend_order == RAACommitmentOrder::RevokeAndACKFirst);
+	}
+
+	// Mark dst's signer as available and retry: we now expect to see dst's RAA + CS.
+	dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
+	dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+
+	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
+		let (_, revoke_and_ack, commitment_signed, resend_order) = handle_chan_reestablish_msgs!(dst, src);
+		assert!(revoke_and_ack.is_some());
+		assert!(commitment_signed.is_some());
+		assert!(resend_order == RAACommitmentOrder::RevokeAndACKFirst);
+	} else {
+		// Make sure we don't double send the RAA.
+		let (_, revoke_and_ack, commitment_signed, _) = handle_chan_reestablish_msgs!(dst, src);
+		assert!(revoke_and_ack.is_none());
+		assert!(commitment_signed.is_none());
+	}
+}
+
+
+#[test]
+fn test_async_commitment_signature_peer_disconnect() {
+	// This tests that if our signer is blocked and gets unblocked
+	// after a peer disconnect + channel reestablish, we'll send the right messages.
+	do_test_async_commitment_signature_peer_disconnect(UnblockSignerAcrossDisconnectCase::AtEnd);
+}
+
+#[test]
+fn test_async_commitment_signature_peer_disconnect_signer_restored_before_monitor_completion() {
+	// This tests that if we were pending a monitor update completion across a disconnect,
+	// and needed to send a CS, that if our signer becomes available before the monitor
+	// update completes, then we don't send duplicate messages upon calling `signer_unblocked`
+	// after the monitor update completes.
+	do_test_async_commitment_signature_peer_disconnect(UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored);
+}
+
+#[test]
+fn test_async_commitment_signature_peer_disconnect_signer_restored_before_reestablish() {
+	// This tests that if we tried to send a commitment_signed, but our signer was blocked,
+	// if we disconnect, reconnect, the signer becomes available, then handle channel_reestablish,
+	// that we don't send duplicate messages upon calling `signer_unblocked`.
+	do_test_async_commitment_signature_peer_disconnect(UnblockSignerAcrossDisconnectCase::BeforeReestablish);
+}
+
+fn do_test_async_commitment_signature_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCase) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Send a payment.
+	let src = &nodes[0];
+	let dst = &nodes[1];
+	let (route, our_payment_hash, _our_payment_preimage, our_payment_secret) = get_route_and_payment_hash!(src, dst, 8000000);
+	src.node.send_payment_with_route(&route, our_payment_hash,
+		RecipientOnionFields::secret_only(our_payment_secret), PaymentId(our_payment_hash.0)).unwrap();
+	check_added_monitors!(src, 1);
+
+	// Pass the payment along the route.
+	let payment_event = {
+		let mut events = src.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	assert_eq!(payment_event.node_id, dst.node.get_our_node_id());
+	assert_eq!(payment_event.msgs.len(), 1);
+
+	dst.node.handle_update_add_htlc(&src.node.get_our_node_id(), &payment_event.msgs[0]);
+
+	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		// Fail to persist the monitor update when handling the commitment_signed.
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	}
@@ -331,7 +462,7 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: u8) {
 	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
-	if test_case != 1 {
+	if test_case != UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
 	}
 
@@ -351,14 +482,14 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: u8) {
 	let reestablish_2 = get_chan_reestablish_msgs!(dst, src);
 	assert_eq!(reestablish_2.len(), 1);
 
-	if test_case == 2 {
+	if test_case == UnblockSignerAcrossDisconnectCase::BeforeReestablish {
 		// Reenable the signer before the reestablish.
 		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	}
 
 	dst.node.handle_channel_reestablish(&src.node.get_our_node_id(), &reestablish_1[0]);
 
-	if test_case == 1 {
+	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 		let (outpoint, latest_update, _) = dst.chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
@@ -369,7 +500,7 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: u8) {
 	// Expect the RAA
 	let (_, revoke_and_ack, commitment_signed, _) = handle_chan_reestablish_msgs!(dst, src);
 	assert!(revoke_and_ack.is_some());
-	if test_case == 0 {
+	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
 		assert!(commitment_signed.is_none());
 	} else {
 		assert!(commitment_signed.is_some());
@@ -379,7 +510,7 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: u8) {
 	dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
 
-	if test_case == 0 {
+	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
 		let (_, _, commitment_signed, _) = handle_chan_reestablish_msgs!(dst, src);
 		assert!(commitment_signed.is_some());
 	} else {
