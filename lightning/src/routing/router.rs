@@ -3506,7 +3506,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3518,7 +3519,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3530,7 +3532,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3542,7 +3545,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3554,7 +3558,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3569,7 +3574,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 3,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 200_000_000,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3584,7 +3590,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 3,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 199_999_999,
@@ -3607,7 +3614,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 4,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3640,7 +3648,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 35_000,
 			htlc_maximum_msat: 40_000,
@@ -3652,7 +3661,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 3,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 35_000,
 			htlc_maximum_msat: 40_000,
@@ -3666,7 +3676,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3678,7 +3689,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3692,7 +3704,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 3,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3717,7 +3730,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 4,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 65_000,
 			htlc_maximum_msat: 80_000,
@@ -3729,7 +3743,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 3,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3741,7 +3756,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 4,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3785,7 +3801,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 3,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 3,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 0,
@@ -3799,7 +3816,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 15_000,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3842,7 +3860,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -3854,7 +3873,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -4285,7 +4305,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -4297,7 +4318,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -4363,7 +4385,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -4375,7 +4398,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
-			flags: 2, // to disable
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2, // to disable
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -4723,7 +4747,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -4735,7 +4760,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -4750,7 +4776,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 1_000_000_000,
@@ -4765,7 +4792,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 250_000_000,
@@ -4804,7 +4832,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 3,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 1_000_000_000,
@@ -4847,7 +4876,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 4,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 1_000_000_000,
@@ -4862,7 +4892,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 3,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 15_000,
@@ -4903,7 +4934,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 4,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -4927,7 +4959,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
 			timestamp: 1,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: (3 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 15_000,
@@ -4939,7 +4972,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
 			timestamp: 1,
-			flags: 1,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 1,
 			cltv_expiry_delta: (3 << 4) | 2,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 15_000,
@@ -4977,7 +5011,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 333,
 			timestamp: 6,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 10_000,
@@ -5033,7 +5068,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5045,7 +5081,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5060,7 +5097,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5072,7 +5110,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5085,7 +5124,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 50_000,
@@ -5097,7 +5137,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5162,7 +5203,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5174,7 +5216,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 50_000,
@@ -5275,7 +5318,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5287,7 +5331,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 50_000,
@@ -5302,7 +5347,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 60_000,
@@ -5314,7 +5360,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 60_000,
@@ -5329,7 +5376,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 200_000,
@@ -5341,7 +5389,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 180_000,
@@ -5467,7 +5516,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5479,7 +5529,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5493,7 +5544,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5505,7 +5557,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5520,7 +5573,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 200_000,
@@ -5532,7 +5586,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
-			flags: 3, // disable direction 1
+			message_flags: 1, // Only must_be_one
+			channel_flags: 3, // disable direction 1
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 200_000,
@@ -5548,7 +5603,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 200_000,
@@ -5560,7 +5616,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 200_000,
@@ -5573,7 +5630,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5585,7 +5643,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5655,7 +5714,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5667,7 +5727,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5681,7 +5742,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5693,7 +5755,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5708,7 +5771,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 200_000,
@@ -5720,7 +5784,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
-			flags: 3, // disable direction 1
+			message_flags: 1, // Only must_be_one
+			channel_flags: 3, // disable direction 1
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 200_000,
@@ -5736,7 +5801,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 200_000,
@@ -5748,7 +5814,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 200_000,
@@ -5761,7 +5828,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5773,7 +5841,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5839,7 +5908,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5852,7 +5922,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 7,
 			timestamp: 2,
-			flags: 2,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 2,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5866,7 +5937,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5878,7 +5950,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5892,7 +5965,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5904,7 +5978,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 5,
 			timestamp: 2,
-			flags: 3, // Disable direction 1
+			message_flags: 1, // Only must_be_one
+			channel_flags: 3, // Disable direction 1
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -5927,7 +6002,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 250_000,
@@ -5939,7 +6015,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -5952,7 +6029,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -5964,7 +6042,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 11,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -6053,7 +6132,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: (5 << 4) | 5,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 99_000,
@@ -6065,7 +6145,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: (5 << 4) | 3,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 99_000,
@@ -6077,7 +6158,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: (4 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -6089,7 +6171,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 0|2, // Channel disabled
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0|2, // Channel disabled
 			cltv_expiry_delta: (13 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -6147,7 +6230,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 100_000,
@@ -6159,7 +6243,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 3,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 50_000,
@@ -6173,7 +6258,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 60_000,
@@ -6185,7 +6271,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 60_000,
@@ -6199,7 +6286,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 20_000,
@@ -6211,7 +6299,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 20_000,
@@ -6301,12 +6390,13 @@ mod tests {
 		let payment_params = PaymentParameters::from_node_id(nodes[6], 42);
 
 		add_channel(&gossip_sync, &secp_ctx, &our_privkey, &privkeys[1], ChannelFeatures::from_le_bytes(id_to_feature_flags(6)), 6);
-		for (key, flags) in [(&our_privkey, 0), (&privkeys[1], 3)] {
+		for (key, channel_flags) in [(&our_privkey, 0), (&privkeys[1], 3)] {
 			update_channel(&gossip_sync, &secp_ctx, key, UnsignedChannelUpdate {
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: 6,
 				timestamp: 1,
-				flags,
+				message_flags: 1, // Only must_be_one
+				channel_flags,
 				cltv_expiry_delta: (6 << 4) | 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -6318,12 +6408,13 @@ mod tests {
 		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[1], NodeFeatures::from_le_bytes(id_to_feature_flags(1)), 0);
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[1], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(5)), 5);
-		for (key, flags) in [(&privkeys[1], 0), (&privkeys[4], 3)] {
+		for (key, channel_flags) in [(&privkeys[1], 0), (&privkeys[4], 3)] {
 			update_channel(&gossip_sync, &secp_ctx, key, UnsignedChannelUpdate {
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: 5,
 				timestamp: 1,
-				flags,
+				message_flags: 1, // Only must_be_one
+				channel_flags,
 				cltv_expiry_delta: (5 << 4) | 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -6335,12 +6426,13 @@ mod tests {
 		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[4], NodeFeatures::from_le_bytes(id_to_feature_flags(4)), 0);
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[4], &privkeys[3], ChannelFeatures::from_le_bytes(id_to_feature_flags(4)), 4);
-		for (key, flags) in [(&privkeys[4], 0), (&privkeys[3], 3)] {
+		for (key, channel_flags) in [(&privkeys[4], 0), (&privkeys[3], 3)] {
 			update_channel(&gossip_sync, &secp_ctx, key, UnsignedChannelUpdate {
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: 4,
 				timestamp: 1,
-				flags,
+				message_flags: 1, // Only must_be_one
+				channel_flags,
 				cltv_expiry_delta: (4 << 4) | 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -6352,12 +6444,13 @@ mod tests {
 		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[3], NodeFeatures::from_le_bytes(id_to_feature_flags(3)), 0);
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[3], &privkeys[2], ChannelFeatures::from_le_bytes(id_to_feature_flags(3)), 3);
-		for (key, flags) in [(&privkeys[3], 0), (&privkeys[2], 3)] {
+		for (key, channel_flags) in [(&privkeys[3], 0), (&privkeys[2], 3)] {
 			update_channel(&gossip_sync, &secp_ctx, key, UnsignedChannelUpdate {
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: 3,
 				timestamp: 1,
-				flags,
+				message_flags: 1, // Only must_be_one
+				channel_flags,
 				cltv_expiry_delta: (3 << 4) | 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -6369,12 +6462,13 @@ mod tests {
 		add_or_update_node(&gossip_sync, &secp_ctx, &privkeys[2], NodeFeatures::from_le_bytes(id_to_feature_flags(2)), 0);
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[2], &privkeys[4], ChannelFeatures::from_le_bytes(id_to_feature_flags(2)), 2);
-		for (key, flags) in [(&privkeys[2], 0), (&privkeys[4], 3)] {
+		for (key, channel_flags) in [(&privkeys[2], 0), (&privkeys[4], 3)] {
 			update_channel(&gossip_sync, &secp_ctx, key, UnsignedChannelUpdate {
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: 2,
 				timestamp: 1,
-				flags,
+				message_flags: 1, // Only must_be_one
+				channel_flags,
 				cltv_expiry_delta: (2 << 4) | 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -6385,12 +6479,13 @@ mod tests {
 		}
 
 		add_channel(&gossip_sync, &secp_ctx, &privkeys[4], &privkeys[6], ChannelFeatures::from_le_bytes(id_to_feature_flags(1)), 1);
-		for (key, flags) in [(&privkeys[4], 0), (&privkeys[6], 3)] {
+		for (key, channel_flags) in [(&privkeys[4], 0), (&privkeys[6], 3)] {
 			update_channel(&gossip_sync, &secp_ctx, key, UnsignedChannelUpdate {
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: 1,
 				timestamp: 1,
-				flags,
+				message_flags: 1, // Only must_be_one
+				channel_flags,
 				cltv_expiry_delta: (1 << 4) | 0,
 				htlc_minimum_msat: 100,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -6451,7 +6546,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 85_000,
@@ -6464,7 +6560,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 12,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: (4 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 270_000,
@@ -6522,7 +6619,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 80_000,
@@ -6534,7 +6632,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: (4 << 4) | 1,
 			htlc_minimum_msat: 90_000,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -7066,7 +7165,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 4,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: (4 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 250_000_000,
@@ -7078,7 +7178,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 13,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: (13 << 4) | 1,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: 250_000_000,
@@ -7747,7 +7848,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 42,
 			htlc_minimum_msat: 1_000,
 			htlc_maximum_msat: 10_000_000,
@@ -7759,7 +7861,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
-			flags: 1,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 1,
 			cltv_expiry_delta: 42,
 			htlc_minimum_msat: 1_000,
 			htlc_maximum_msat: 10_000_000,
@@ -8174,7 +8277,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 6,
 			timestamp: 1,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: (6 << 4) | 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -8299,7 +8403,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 42,
 			htlc_minimum_msat: 1_000,
 			htlc_maximum_msat: 10_000_000,
@@ -8311,7 +8416,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 1,
 			timestamp: 1,
-			flags: 1,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 1,
 			cltv_expiry_delta: 42,
 			htlc_minimum_msat: 1_000,
 			htlc_maximum_msat: 10_000_000,
@@ -8326,7 +8432,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 42,
 			htlc_minimum_msat: 1_000,
 			htlc_maximum_msat: 10_000_000,
@@ -8338,7 +8445,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 2,
 			timestamp: 2,
-			flags: 1,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 1,
 			cltv_expiry_delta: 42,
 			htlc_minimum_msat: 1_000,
 			htlc_maximum_msat: 10_000_000,

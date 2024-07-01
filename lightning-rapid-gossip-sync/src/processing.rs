@@ -370,7 +370,8 @@ where
 				chain_hash,
 				short_channel_id,
 				timestamp: backdated_timestamp,
-				flags: standard_channel_flags,
+				message_flags: 1, // Only must_be_one
+				channel_flags: standard_channel_flags,
 				cltv_expiry_delta: default_cltv_expiry_delta,
 				htlc_minimum_msat: default_htlc_minimum_msat,
 				htlc_maximum_msat: default_htlc_maximum_msat,

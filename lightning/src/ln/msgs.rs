@@ -1244,8 +1244,11 @@ pub struct UnsignedChannelUpdate {
 	pub short_channel_id: u64,
 	/// A strictly monotonic announcement counter, with gaps allowed, specific to this channel
 	pub timestamp: u32,
-	/// Channel flags
-	pub flags: u8,
+	/// Flags pertaining to this message.
+	pub message_flags: u8,
+	/// Flags pertaining to the channel, including to which direction in the channel this update
+	/// applies and whether the direction is currently able to forward HTLCs.
+	pub channel_flags: u8,
 	/// The number of blocks such that if:
 	/// `incoming_htlc.cltv_expiry < outgoing_htlc.cltv_expiry + cltv_expiry_delta`
 	/// then we need to fail the HTLC backwards. When forwarding an HTLC, `cltv_expiry_delta` determines
@@ -2896,13 +2899,13 @@ impl_writeable!(ChannelAnnouncement, {
 
 impl Writeable for UnsignedChannelUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		// `message_flags` used to indicate presence of `htlc_maximum_msat`, but was deprecated in the spec.
-		const MESSAGE_FLAGS: u8 = 1;
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
 		self.timestamp.write(w)?;
-		let all_flags = self.flags as u16 | ((MESSAGE_FLAGS as u16) << 8);
-		all_flags.write(w)?;
+		// Thw low bit of message_flags used to indicate the presence of `htlc_maximum_msat`, and
+		// now must be set
+		(self.message_flags | 1).write(w)?;
+		self.channel_flags.write(w)?;
 		self.cltv_expiry_delta.write(w)?;
 		self.htlc_minimum_msat.write(w)?;
 		self.fee_base_msat.write(w)?;
@@ -2915,22 +2918,26 @@ impl Writeable for UnsignedChannelUpdate {
 
 impl Readable for UnsignedChannelUpdate {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		Ok(Self {
+		let res = Self {
 			chain_hash: Readable::read(r)?,
 			short_channel_id: Readable::read(r)?,
 			timestamp: Readable::read(r)?,
-			flags: {
-				let flags: u16 = Readable::read(r)?;
-				// Note: we ignore the `message_flags` for now, since it was deprecated by the spec.
-				flags as u8
-			},
+			message_flags: Readable::read(r)?,
+			channel_flags: Readable::read(r)?,
 			cltv_expiry_delta: Readable::read(r)?,
 			htlc_minimum_msat: Readable::read(r)?,
 			fee_base_msat: Readable::read(r)?,
 			fee_proportional_millionths: Readable::read(r)?,
 			htlc_maximum_msat: Readable::read(r)?,
 			excess_data: read_to_end(r)?,
-		})
+		};
+		if res.message_flags & 1 != 1 {
+			// The `must_be_one` flag should be set (historically it indicated the presence of the
+			// `htlc_maximum_msat` field, which is now required).
+			Err(DecodeError::InvalidValue)
+		} else {
+			Ok(res)
+		}
 	}
 }
 
@@ -3526,7 +3533,8 @@ mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Bitcoin),
 			short_channel_id: 2316138423780173,
 			timestamp: 20190119,
-			flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 },
+			message_flags: 1, // Only must_be_one
+			channel_flags: if direction { 1 } else { 0 } | if disable { 1 << 1 } else { 0 },
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1000000,
 			htlc_maximum_msat: 131355275467161,

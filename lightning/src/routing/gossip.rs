@@ -2061,7 +2061,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		full_msg: Option<&msgs::ChannelUpdate>, sig: Option<&secp256k1::ecdsa::Signature>,
 		only_verify: bool) -> Result<(), LightningError>
 	{
-		let chan_enabled = msg.flags & (1 << 1) != (1 << 1);
+		let chan_enabled = msg.channel_flags & (1 << 1) != (1 << 1);
 
 		if msg.chain_hash != self.chain_hash {
 			return Err(LightningError {
@@ -2083,7 +2083,13 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			}
 		}
 
-		log_gossip!(self.logger, "Updating channel {} in direction {} with timestamp {}", msg.short_channel_id, msg.flags & 1, msg.timestamp);
+		log_gossip!(
+			self.logger,
+			"Updating channel {} in direction {} with timestamp {}",
+			msg.short_channel_id,
+			msg.channel_flags & 1,
+			msg.timestamp
+		);
 
 		let mut channels = self.channels.write().unwrap();
 		match channels.get_mut(&msg.short_channel_id) {
@@ -2151,7 +2157,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				}
 
 				let msg_hash = hash_to_message!(&message_sha256d_hash(&msg)[..]);
-				if msg.flags & 1 == 1 {
+				if msg.channel_flags & 1 == 1 {
 					check_update_latest!(channel.two_to_one);
 					if let Some(sig) = sig {
 						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
@@ -2373,7 +2379,8 @@ pub(crate) mod tests {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 0,
 			timestamp: 100,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 144,
 			htlc_minimum_msat: 1_000_000,
 			htlc_maximum_msat: 1_000_000,
@@ -2817,7 +2824,7 @@ pub(crate) mod tests {
 		assert!(gossip_sync.handle_channel_update(&valid_channel_update).is_ok());
 		assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 
-		let valid_channel_update_2 = get_signed_channel_update(|update| {update.flags |=1;}, node_2_privkey, &secp_ctx);
+		let valid_channel_update_2 = get_signed_channel_update(|update| {update.channel_flags |=1;}, node_2_privkey, &secp_ctx);
 		gossip_sync.handle_channel_update(&valid_channel_update_2).unwrap();
 		assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().two_to_one.is_some());
 

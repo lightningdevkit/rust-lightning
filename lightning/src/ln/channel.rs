@@ -9895,7 +9895,8 @@ mod tests {
 				chain_hash,
 				short_channel_id: 0,
 				timestamp: 0,
-				flags: 0,
+				message_flags: 1, // Only must_be_one
+				channel_flags: 0,
 				cltv_expiry_delta: 100,
 				htlc_minimum_msat: 5,
 				htlc_maximum_msat: MAX_VALUE_MSAT,

@@ -155,7 +155,8 @@ pub(super) fn build_line_graph() -> (
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: cur_short_channel_id,
 				timestamp: idx as u32,
-				flags: 0,
+				message_flags: 1, // Only must_be_one
+				channel_flags: 0,
 				cltv_expiry_delta: 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -167,7 +168,8 @@ pub(super) fn build_line_graph() -> (
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				short_channel_id: cur_short_channel_id,
 				timestamp: (idx as u32)+1,
-				flags: 1,
+				message_flags: 1, // Only must_be_one
+				channel_flags: 1,
 				cltv_expiry_delta: 0,
 				htlc_minimum_msat: 0,
 				htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -260,7 +262,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 1,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: 0,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -276,7 +279,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 2,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (5 << 4) | 3,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -288,7 +292,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 2,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: 0,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -304,7 +309,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 12,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (5 << 4) | 3,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -316,7 +322,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 12,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: 0,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -332,7 +339,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 3,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (3 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -344,7 +352,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 3,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (3 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -358,7 +367,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 4,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (4 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -370,7 +380,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 4,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (4 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -384,7 +395,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 13,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (13 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -396,7 +408,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 13,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (13 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -412,7 +425,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 6,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (6 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -424,7 +438,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 6,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (6 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -438,7 +453,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 11,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (11 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -450,7 +466,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 11,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (11 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -468,7 +485,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 7,
 		timestamp: 1,
-		flags: 0,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 0,
 		cltv_expiry_delta: (7 << 4) | 1,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
@@ -480,7 +498,8 @@ pub(super) fn build_graph() -> (
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: 7,
 		timestamp: 1,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: (7 << 4) | 2,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,

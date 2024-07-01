@@ -1069,7 +1069,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						events::MessageSendEvent::SendChannelReady { .. } => continue,
 						events::MessageSendEvent::SendAnnouncementSignatures { .. } => continue,
 						events::MessageSendEvent::SendChannelUpdate { ref node_id, ref msg } => {
-							assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
+							assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
 							if Some(*node_id) == expect_drop_id { panic!("peer_disconnected should drop msgs bound for the disconnected peer"); }
 							*node_id == a_id
 						},
@@ -1207,7 +1207,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							// the "disabled" bit, as we should never ever have a channel which is
 							// disabled when we send such an update (or it may indicate channel
 							// force-close which we should detect as an error).
-							assert_eq!(msg.contents.flags & 2, 0);
+							assert_eq!(msg.contents.channel_flags & 2, 0);
 						},
 						_ => if out.may_fail.load(atomic::Ordering::Acquire) {
 							return;
@@ -1249,7 +1249,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							events::MessageSendEvent::SendChannelReady { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
-								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
+								assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {
@@ -1275,7 +1275,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							events::MessageSendEvent::SendChannelReady { .. } => {},
 							events::MessageSendEvent::SendAnnouncementSignatures { .. } => {},
 							events::MessageSendEvent::SendChannelUpdate { ref msg, .. } => {
-								assert_eq!(msg.contents.flags & 2, 0); // The disable bit must never be set!
+								assert_eq!(msg.contents.channel_flags & 2, 0); // The disable bit must never be set!
 							},
 							_ => {
 								if out.may_fail.load(atomic::Ordering::Acquire) {

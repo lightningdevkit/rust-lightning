@@ -577,7 +577,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		node_0_2nd_shutdown
 	} else {
 		let node_0_chan_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
-		assert_eq!(node_0_chan_update.contents.flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
+		assert_eq!(node_0_chan_update.contents.channel_flags & 2, 0); // "disabled" flag must not be set as we just reconnected.
 		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown);
 		get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id())
 	};
@@ -1188,7 +1188,7 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		assert_eq!(events.len(), 1);
 		match events[0] {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.flags & 2, 2);
+				assert_eq!(msg.contents.channel_flags & 2, 2);
 			},
 			_ => panic!("Unexpected event"),
 		}

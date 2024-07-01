@@ -967,7 +967,8 @@ fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 			chain_hash: ChainHash::using_genesis_block(network),
 			short_channel_id: short_chan_id,
 			timestamp: 0,
-			flags: 0,
+			message_flags: 1, // Only must_be_one
+			channel_flags: 0,
 			cltv_expiry_delta: 0,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat: msgs::MAX_VALUE_MSAT,

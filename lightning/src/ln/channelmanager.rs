@@ -3506,7 +3506,7 @@ where
 			// peer has been disabled for some time), return `channel_disabled`,
 			// otherwise return `temporary_channel_failure`.
 			let chan_update_opt = self.get_channel_update_for_onion(next_packet.outgoing_scid, chan).ok();
-			if chan_update_opt.as_ref().map(|u| u.contents.flags & 2 == 2).unwrap_or(false) {
+			if chan_update_opt.as_ref().map(|u| u.contents.channel_flags & 2 == 2).unwrap_or(false) {
 				return Err(("Forwarding channel has been disconnected for some time.", 0x1000 | 20, chan_update_opt));
 			} else {
 				return Err(("Forwarding channel is not in a ready state.", 0x1000 | 7, chan_update_opt));
@@ -3785,7 +3785,8 @@ where
 			chain_hash: self.chain_hash,
 			short_channel_id,
 			timestamp: chan.context.get_update_time_counter(),
-			flags: (!were_node_one) as u8 | ((!enabled as u8) << 1),
+			message_flags: 1, // Only must_be_one
+			channel_flags: (!were_node_one) as u8 | ((!enabled as u8) << 1),
 			cltv_expiry_delta: chan.context.get_cltv_expiry_delta(),
 			htlc_minimum_msat: chan.context.get_counterparty_htlc_minimum_msat(),
 			htlc_maximum_msat: chan.context.get_announced_htlc_max_msat(),
@@ -7921,7 +7922,7 @@ where
 						return Err(MsgHandleErrInternal::send_err_msg_no_close("Got a channel_update for a channel from the wrong node - it shouldn't know about our private channels!".to_owned(), chan_id));
 					}
 					let were_node_one = self.get_our_node_id().serialize()[..] < chan.context.get_counterparty_node_id().serialize()[..];
-					let msg_from_node_one = msg.contents.flags & 1 == 0;
+					let msg_from_node_one = msg.contents.channel_flags & 1 == 0;
 					if were_node_one == msg_from_node_one {
 						return Ok(NotifyOption::SkipPersistNoEvents);
 					} else {
@@ -12262,8 +12263,8 @@ mod tests {
 		// update message and would always update the local fee info, even if our peer was
 		// (spuriously) forwarding us our own channel_update.
 		let as_node_one = nodes[0].node.get_our_node_id().serialize()[..] < nodes[1].node.get_our_node_id().serialize()[..];
-		let as_update = if as_node_one == (chan.0.contents.flags & 1 == 0 /* chan.0 is from node one */) { &chan.0 } else { &chan.1 };
-		let bs_update = if as_node_one == (chan.0.contents.flags & 1 == 0 /* chan.0 is from node one */) { &chan.1 } else { &chan.0 };
+		let as_update = if as_node_one == (chan.0.contents.channel_flags & 1 == 0 /* chan.0 is from node one */) { &chan.0 } else { &chan.1 };
+		let bs_update = if as_node_one == (chan.0.contents.channel_flags & 1 == 0 /* chan.0 is from node one */) { &chan.1 } else { &chan.0 };
 
 		// First deliver each peers' own message, checking that the node doesn't need to be
 		// persisted and that its channel info remains the same.

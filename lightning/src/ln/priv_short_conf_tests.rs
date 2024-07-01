@@ -508,7 +508,8 @@ fn test_scid_alias_returned() {
 		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 		short_channel_id: last_hop[0].inbound_scid_alias.unwrap(),
 		timestamp: 21,
-		flags: 1,
+		message_flags: 1, // Only must_be_one
+		channel_flags: 1,
 		cltv_expiry_delta: accept_forward_cfg.channel_config.cltv_expiry_delta,
 		htlc_minimum_msat: 1_000,
 		htlc_maximum_msat: 1_000_000, // Defaults to 10% of the channel value
