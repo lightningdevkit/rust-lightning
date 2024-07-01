@@ -15,11 +15,12 @@ use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::transaction::Version;
 
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
+use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::bump_transaction::WalletSource;
-use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
-use crate::ln::functional_test_utils::*;
+use crate::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider, PaymentPurpose};
+use crate::ln::{functional_test_utils::*, msgs};
 use crate::ln::msgs::ChannelMessageHandler;
-use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
 use crate::util::test_channel_signer::SignerOp;
 
 #[test]
@@ -126,6 +127,11 @@ fn test_async_commitment_signature_for_funding_signed() {
 
 #[test]
 fn test_async_commitment_signature_for_commitment_signed() {
+	do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(0);
+	do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(1);
+}
+
+fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(test_case: u8) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -153,23 +159,33 @@ fn test_async_commitment_signature_for_commitment_signed() {
 
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
+	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
-	get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
+	if test_case == 0 {
+		// Unblock CS -> no messages should be sent, since we must send RAA first.
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
+		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		let events = dst.node.get_and_clear_pending_msg_events();
+		assert!(events.is_empty(), "expected no message, got {}", events.len());
 
-	// Mark dst's signer as available and retry: we now expect to see dst's `commitment_signed`.
-	dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		// Unblock revoke_and_ack -> we should send both RAA + CS.
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
+		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		get_revoke_commit_msgs(&dst, &src.node.get_our_node_id());
+	} else if test_case == 1 {
+		// Unblock revoke_and_ack -> we should send just RAA.
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
+		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
 
-	let events = dst.node.get_and_clear_pending_msg_events();
-	assert_eq!(events.len(), 1, "expected one message, got {}", events.len());
-	if let MessageSendEvent::UpdateHTLCs { ref node_id, .. } = events[0] {
-		assert_eq!(node_id, &src.node.get_our_node_id());
-	} else {
-		panic!("expected UpdateHTLCs message, not {:?}", events[0]);
-	};
+		// Unblock commitment signed -> we should send CS.
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
+		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
+		get_htlc_update_msgs(dst, &src.node.get_our_node_id());
+	}
 }
 
 #[test]
@@ -327,6 +343,222 @@ fn test_async_commitment_signature_for_peer_disconnect() {
 			panic!("expected UpdateHTLCs message, not {:?}", events[0]);
 		};
 	}
+}
+
+#[test]
+fn test_async_commitment_signature_ordering_reestablish() {
+	do_test_async_commitment_signature_ordering(false);
+}
+
+#[test]
+fn test_async_commitment_signature_ordering_monitor_restored() {
+	do_test_async_commitment_signature_ordering(true);
+}
+
+fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
+	// Across disconnects we may end up in a situation where we need to send a
+	// commitment_signed and then revoke_and_ack. We need to make sure that if
+	// the signer is pending for commitment_signed but not revoke_and_ack, we don't
+	// screw up the order by sending the revoke_and_ack first.
+	//
+	// We test this for both the case where we send messages after a channel
+	// reestablish, as well as restoring a channel after persisting
+	// a monitor update.
+	//
+	// The set up for this test is based on
+	// `test_drop_messages_peer_disconnect_dual_htlc`.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	// Start to send the second update_add_htlc + commitment_signed, but don't actually make it
+	// to the peer.
+	let (route, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
+	nodes[0].node.send_payment_with_route(&route, payment_hash_2,
+		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
+	check_added_monitors!(nodes[0], 1);
+
+	let events_1 = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_1.len(), 1);
+	match events_1[0] {
+		MessageSendEvent::UpdateHTLCs { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Send back update_fulfill_htlc + commitment_signed for the first payment.
+	nodes[1].node.claim_funds(payment_preimage_1);
+	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
+	check_added_monitors!(nodes[1], 1);
+
+	// Handle the update_fulfill_htlc, but fail to persist the monitor update when handling the
+	// commitment_signed.
+	let events_2 = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events_2.len(), 1);
+	match events_2[0] {
+		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, ref update_fee, ref commitment_signed } } => {
+			assert_eq!(*node_id, nodes[0].node.get_our_node_id());
+			assert!(update_add_htlcs.is_empty());
+			assert_eq!(update_fulfill_htlcs.len(), 1);
+			assert!(update_fail_htlcs.is_empty());
+			assert!(update_fail_malformed_htlcs.is_empty());
+			assert!(update_fee.is_none());
+
+			nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_htlcs[0]);
+			let events_3 = nodes[0].node.get_and_clear_pending_events();
+			assert_eq!(events_3.len(), 1);
+			match events_3[0] {
+				Event::PaymentSent { ref payment_preimage, ref payment_hash, .. } => {
+					assert_eq!(*payment_preimage, payment_preimage_1);
+					assert_eq!(*payment_hash, payment_hash_1);
+				},
+				_ => panic!("Unexpected event"),
+			}
+
+			if monitor_update_failure {
+				chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+			}
+			nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
+			if monitor_update_failure {
+				assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+			} else {
+				let _ = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+			}
+			// No commitment_signed so get_event_msg's assert(len == 1) passes
+			check_added_monitors!(nodes[0], 1);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Disconnect and reconnect the peers so that nodes[0] will
+	// need to re-send the commitment update *and then* revoke_and_ack.
+	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert_eq!(reestablish_1.len(), 1);
+	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert_eq!(reestablish_2.len(), 1);
+
+	// With a fully working signer, here we would send a commitment_signed,
+	// and then revoke_and_ack. With commitment_signed disabled, since
+	// our ordering is CS then RAA, we should make sure we don't send the RAA.
+	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
+	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
+	let as_resp = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert!(as_resp.0.is_none());
+	assert!(as_resp.1.is_none());
+	assert!(as_resp.2.is_none());
+
+	if monitor_update_failure {
+		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+		let (outpoint, latest_update, _) = nodes[0].chain_monitor.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
+		nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(outpoint, latest_update);
+		check_added_monitors!(nodes[0], 0);
+	}
+
+	// Make sure that on signer_unblocked we have the same behavior (even though RAA is ready,
+	// we don't send CS yet).
+	nodes[0].node.signer_unblocked(Some((nodes[1].node.get_our_node_id(), chan_id)));
+	let as_resp = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	assert!(as_resp.0.is_none());
+	assert!(as_resp.1.is_none());
+	assert!(as_resp.2.is_none());
+
+	nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
+	nodes[0].node.signer_unblocked(Some((nodes[1].node.get_our_node_id(), chan_id)));
+
+	let as_resp = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
+	let bs_resp = handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
+
+	assert!(as_resp.0.is_none());
+	assert!(bs_resp.0.is_none());
+
+	assert!(bs_resp.1.is_none());
+	assert!(bs_resp.2.is_none());
+
+	assert!(as_resp.3 == RAACommitmentOrder::CommitmentFirst);
+
+	// Now that everything is restored, get the CS + RAA and handle them.
+	assert_eq!(as_resp.2.as_ref().unwrap().update_add_htlcs.len(), 1);
+	assert!(as_resp.2.as_ref().unwrap().update_fulfill_htlcs.is_empty());
+	assert!(as_resp.2.as_ref().unwrap().update_fail_htlcs.is_empty());
+	assert!(as_resp.2.as_ref().unwrap().update_fail_malformed_htlcs.is_empty());
+	assert!(as_resp.2.as_ref().unwrap().update_fee.is_none());
+	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_resp.2.as_ref().unwrap().update_add_htlcs[0]);
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_resp.2.as_ref().unwrap().commitment_signed);
+	let bs_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	// No commitment_signed so get_event_msg's assert(len == 1) passes
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), as_resp.1.as_ref().unwrap());
+	let bs_second_commitment_signed = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert!(bs_second_commitment_signed.update_add_htlcs.is_empty());
+	assert!(bs_second_commitment_signed.update_fulfill_htlcs.is_empty());
+	assert!(bs_second_commitment_signed.update_fail_htlcs.is_empty());
+	assert!(bs_second_commitment_signed.update_fail_malformed_htlcs.is_empty());
+	assert!(bs_second_commitment_signed.update_fee.is_none());
+	check_added_monitors!(nodes[1], 1);
+
+	// The rest of this is boilerplate for resolving the previous state.
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack);
+	let as_commitment_signed = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
+	assert!(as_commitment_signed.update_add_htlcs.is_empty());
+	assert!(as_commitment_signed.update_fulfill_htlcs.is_empty());
+	assert!(as_commitment_signed.update_fail_htlcs.is_empty());
+	assert!(as_commitment_signed.update_fail_malformed_htlcs.is_empty());
+	assert!(as_commitment_signed.update_fee.is_none());
+	check_added_monitors!(nodes[0], 1);
+
+	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_commitment_signed.commitment_signed);
+	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
+	// No commitment_signed so get_event_msg's assert(len == 1) passes
+	check_added_monitors!(nodes[0], 1);
+
+	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_commitment_signed.commitment_signed);
+	let bs_second_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+	// No commitment_signed so get_event_msg's assert(len == 1) passes
+	check_added_monitors!(nodes[1], 1);
+
+	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors!(nodes[1], 1);
+
+	expect_pending_htlcs_forwardable!(nodes[1]);
+
+	let events_5 = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events_5.len(), 1);
+	match events_5[0] {
+		Event::PaymentClaimable { ref payment_hash, ref purpose, .. } => {
+			assert_eq!(payment_hash_2, *payment_hash);
+			match &purpose {
+				PaymentPurpose::Bolt11InvoicePayment { payment_preimage, payment_secret, .. } => {
+					assert!(payment_preimage.is_none());
+					assert_eq!(payment_secret_2, *payment_secret);
+				},
+				_ => panic!("expected PaymentPurpose::Bolt11InvoicePayment")
+			}
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_revoke_and_ack);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors!(nodes[0], 1);
+
+	expect_payment_path_successful!(nodes[0]);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage_2);
 }
 
 fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
