@@ -906,8 +906,10 @@ pub(super) struct MonitorRestoreUpdates {
 #[allow(unused)]
 pub(super) struct SignerResumeUpdates {
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
+	pub revoke_and_ack: Option<msgs::RevokeAndACK>,
 	pub funding_signed: Option<msgs::FundingSigned>,
 	pub channel_ready: Option<msgs::ChannelReady>,
+	pub order: RAACommitmentOrder,
 }
 
 /// The return value of `channel_reestablish`
@@ -1215,6 +1217,14 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	monitor_pending_finalized_fulfills: Vec<HTLCSource>,
 	monitor_pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 
+	/// If we went to send a revoke_and_ack but our signer was unable to give us a signature,
+	/// we should retry at some point in the future when the signer indicates it may have a
+	/// signature for us.
+	///
+	/// This may also be used to make sure we send a `revoke_and_ack` after a `commitment_signed`
+	/// if we need to maintain ordering of messages, but are pending the signer on a previous
+	/// message.
+	signer_pending_revoke_and_ack: bool,
 	/// If we went to send a commitment update (ie some messages then [`msgs::CommitmentSigned`])
 	/// but our signer (initially) refused to give us a signature, we should retry at some point in
 	/// the future when the signer indicates it may have a signature for us.
@@ -1683,6 +1693,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
 
+			signer_pending_revoke_and_ack: false,
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
 
@@ -1908,6 +1919,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			monitor_pending_finalized_fulfills: Vec::new(),
 			monitor_pending_update_adds: Vec::new(),
 
+			signer_pending_revoke_and_ack: false,
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
 
@@ -3473,9 +3485,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 						log_trace!(logger, "Counterparty commitment signature not available for funding_signed message; setting signer_pending_funding");
 						self.signer_pending_funding = true;
 					}
-				} else if self.signer_pending_funding {
-					log_trace!(logger, "Counterparty commitment signature available for funding_signed message; clearing signer_pending_funding");
-					self.signer_pending_funding = false;
 				}
 
 				// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
@@ -5301,12 +5310,18 @@ impl<SP: Deref> Channel<SP> where
 			};
 		}
 
-		let raa = if self.context.monitor_pending_revoke_and_ack {
+		let mut raa = if self.context.monitor_pending_revoke_and_ack {
 			Some(self.get_last_revoke_and_ack())
 		} else { None };
 		let commitment_update = if self.context.monitor_pending_commitment_signed {
 			self.get_last_commitment_update_for_send(logger).ok()
 		} else { None };
+		if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
+			&& self.context.signer_pending_commitment_update && raa.is_some() {
+			self.context.signer_pending_revoke_and_ack = true;
+			raa = None;
+		}
+
 		if commitment_update.is_some() {
 			self.mark_awaiting_response();
 		}
@@ -5376,25 +5391,51 @@ impl<SP: Deref> Channel<SP> where
 	/// blocked.
 	#[cfg(async_signing)]
 	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> SignerResumeUpdates where L::Target: Logger {
-		let commitment_update = if self.context.signer_pending_commitment_update {
-			self.get_last_commitment_update_for_send(logger).ok()
-		} else { None };
 		let funding_signed = if self.context.signer_pending_funding && !self.context.is_outbound() {
+			log_trace!(logger, "Attempting to generate pending funding signed...");
+			self.context.signer_pending_funding = false;
 			self.context.get_funding_signed_msg(logger).1
 		} else { None };
 		let channel_ready = if funding_signed.is_some() {
 			self.check_get_channel_ready(0, logger)
 		} else { None };
 
-		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed and {} channel_ready",
+		let mut commitment_update = if self.context.signer_pending_commitment_update {
+			log_trace!(logger, "Attempting to generate pending commitment update...");
+			self.context.signer_pending_commitment_update = false;
+			self.get_last_commitment_update_for_send(logger).ok()
+		} else { None };
+		let mut revoke_and_ack = if self.context.signer_pending_revoke_and_ack {
+			log_trace!(logger, "Attempting to generate pending revoke and ack...");
+			self.context.signer_pending_revoke_and_ack = false;
+			Some(self.get_last_revoke_and_ack())
+		} else { None };
+
+		if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
+			&& self.context.signer_pending_commitment_update && revoke_and_ack.is_some() {
+			log_trace!(logger, "Signer unblocked for revoke and ack, but unable to send due to resend order, waiting on signer for commitment update");
+			self.context.signer_pending_revoke_and_ack = true;
+			revoke_and_ack = None;
+		}
+		if self.context.resend_order == RAACommitmentOrder::RevokeAndACKFirst
+			&& self.context.signer_pending_revoke_and_ack && commitment_update.is_some() {
+			log_trace!(logger, "Signer unblocked for commitment update, but unable to send due to resend order, waiting on signer for revoke and ack");
+			self.context.signer_pending_commitment_update = true;
+			commitment_update = None;
+		}
+
+		log_trace!(logger, "Signer unblocked with {} commitment_update, {} revoke_and_ack, {} funding_signed and {} channel_ready",
 			if commitment_update.is_some() { "a" } else { "no" },
+			if revoke_and_ack.is_some() { "a" } else { "no" },
 			if funding_signed.is_some() { "a" } else { "no" },
 			if channel_ready.is_some() { "a" } else { "no" });
 
 		SignerResumeUpdates {
 			commitment_update,
+			revoke_and_ack,
 			funding_signed,
 			channel_ready,
+			order: self.context.resend_order.clone(),
 		}
 	}
 
@@ -5475,10 +5516,6 @@ impl<SP: Deref> Channel<SP> where
 				&self.context.channel_id(), if update_fee.is_some() { " update_fee," } else { "" },
 				update_add_htlcs.len(), update_fulfill_htlcs.len(), update_fail_htlcs.len(), update_fail_malformed_htlcs.len());
 		let commitment_signed = if let Ok(update) = self.send_commitment_no_state_update(logger).map(|(cu, _)| cu) {
-			if self.context.signer_pending_commitment_update {
-				log_trace!(logger, "Commitment update generated: clearing signer_pending_commitment_update");
-				self.context.signer_pending_commitment_update = false;
-			}
 			update
 		} else {
 			#[cfg(not(async_signing))] {
@@ -5669,10 +5706,18 @@ impl<SP: Deref> Channel<SP> where
 					order: self.context.resend_order.clone(),
 				})
 			} else {
+				let commitment_update = self.get_last_commitment_update_for_send(logger).ok();
+				let raa = if self.context.resend_order == RAACommitmentOrder::CommitmentFirst
+					&& self.context.signer_pending_commitment_update && required_revoke.is_some() {
+					log_trace!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx, but unable to send due to resend order, waiting on signer for commitment update", &self.context.channel_id());
+					self.context.signer_pending_revoke_and_ack = true;
+					None
+				} else {
+					required_revoke
+				};
 				Ok(ReestablishResponses {
 					channel_ready, shutdown_msg, announcement_sigs,
-					raa: required_revoke,
-					commitment_update: self.get_last_commitment_update_for_send(logger).ok(),
+					raa, commitment_update,
 					order: self.context.resend_order.clone(),
 				})
 			}
@@ -7494,11 +7539,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			_ => todo!()
 		};
 
-		if self.context.signer_pending_funding {
-			log_trace!(logger, "Counterparty commitment signature ready for funding_created message: clearing signer_pending_funding");
-			self.context.signer_pending_funding = false;
-		}
-
 		Some(msgs::FundingCreated {
 			temporary_channel_id: self.context.temporary_channel_id.unwrap(),
 			funding_txid: self.context.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
@@ -7747,7 +7787,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	#[cfg(async_signing)]
 	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
 		if self.context.signer_pending_funding && self.context.is_outbound() {
-			log_trace!(logger, "Signer unblocked a funding_created");
+			log_trace!(logger, "Attempting to generate pending funding created...");
+			self.context.signer_pending_funding = false;
 			self.get_funding_created_msg(logger)
 		} else { None }
 	}
@@ -9279,6 +9320,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
 				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or(Vec::new()),
 
+				signer_pending_revoke_and_ack: false,
 				signer_pending_commitment_update: false,
 				signer_pending_funding: false,
 
