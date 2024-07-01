@@ -76,10 +76,22 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 		],
 	];
 	let paths = vec![
-		BlindedPath::new_for_message(&intermediate_nodes[0], pubkey(42), &entropy_source, secp_ctx)
-			.unwrap(),
-		BlindedPath::new_for_message(&intermediate_nodes[1], pubkey(42), &entropy_source, secp_ctx)
-			.unwrap(),
+		BlindedPath::new_for_message(
+			&intermediate_nodes[0],
+			pubkey(42),
+			None,
+			&entropy_source,
+			secp_ctx,
+		)
+		.unwrap(),
+		BlindedPath::new_for_message(
+			&intermediate_nodes[1],
+			pubkey(42),
+			None,
+			&entropy_source,
+			secp_ctx,
+		)
+		.unwrap(),
 	];
 
 	let payinfo = vec![

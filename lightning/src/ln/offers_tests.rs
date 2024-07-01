@@ -1412,6 +1412,14 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 
 	let invoice_error = extract_invoice_error(david, &onion_message);
 	assert_eq!(invoice_error, InvoiceError::from(Bolt12SemanticError::MissingPaths));
+
+	// Confirm that david drops this failed payment from his pending outbound payments.
+	match get_event!(david, Event::InvoiceRequestFailed) {
+		Event::InvoiceRequestFailed { payment_id: pay_id } => {
+			assert_eq!(pay_id, payment_id)
+		},
+		_ => panic!("No Event::InvoiceRequestFailed"),
+	}
 }
 
 #[test]
