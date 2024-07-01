@@ -90,9 +90,10 @@ use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
-use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
+use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::merkle::{TaggedHash, TlvStream};
+use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
@@ -252,11 +253,10 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 	///
 	/// [`InvoiceRequest::verify`]: crate::offers::invoice_request::InvoiceRequest::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-	pub fn deriving_signing_pubkey<ES: Deref>(
-		node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+	pub fn deriving_signing_pubkey(
+		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'a Secp256k1<$secp_context>
-	) -> Self where ES::Target: EntropySource {
-		let nonce = Nonce::from_entropy_source(entropy_source);
+	) -> Self {
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, None);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Self {
@@ -399,13 +399,13 @@ macro_rules! offer_builder_methods { (
 				}
 
 				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
-				metadata = derived_metadata;
-				if let Some(keys) = keys {
-					$self.offer.signing_pubkey = Some(keys.public_key());
+				match keys {
+					Some(keys) => $self.offer.signing_pubkey = Some(keys.public_key()),
+					None => $self.offer.metadata = Some(derived_metadata),
 				}
+			} else {
+				$self.offer.metadata = Some(metadata);
 			}
-
-			$self.offer.metadata = Some(metadata);
 		}
 
 		let mut bytes = Vec::new();
@@ -667,9 +667,9 @@ impl Offer {
 
 	#[cfg(async_payments)]
 	pub(super) fn verify<T: secp256k1::Signing>(
-		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+		&self, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
-		self.contents.verify(&self.bytes, key, secp_ctx)
+		self.contents.verify_using_nonce(&self.bytes, nonce, key, secp_ctx)
 	}
 }
 
@@ -913,18 +913,28 @@ impl OfferContents {
 		self.signing_pubkey
 	}
 
-	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
 	pub(super) fn verify<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
-		match self.metadata() {
+		self.verify_using_metadata(bytes, self.metadata.as_ref(), key, secp_ctx)
+	}
+
+	pub(super) fn verify_using_nonce<T: secp256k1::Signing>(
+		&self, bytes: &[u8], nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<(OfferId, Option<Keypair>), ()> {
+		self.verify_using_metadata(bytes, Some(&Metadata::Nonce(nonce)), key, secp_ctx)
+	}
+
+	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
+	fn verify_using_metadata<T: secp256k1::Signing>(
+		&self, bytes: &[u8], metadata: Option<&Metadata>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> Result<(OfferId, Option<Keypair>), ()> {
+		match metadata {
 			Some(metadata) => {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
 					match record.r#type {
 						OFFER_METADATA_TYPE => false,
-						OFFER_NODE_ID_TYPE => {
-							!self.metadata.as_ref().unwrap().derives_recipient_keys()
-						},
+						OFFER_NODE_ID_TYPE => !metadata.derives_recipient_keys(),
 						_ => true,
 					}
 				});
@@ -933,7 +943,7 @@ impl OfferContents {
 					None => return Err(()),
 				};
 				let keys = signer::verify_recipient_metadata(
-					metadata, key, IV_BYTES, signing_pubkey, tlv_stream, secp_ctx
+					metadata.as_ref(), key, IV_BYTES, signing_pubkey, tlv_stream, secp_ctx
 				)?;
 
 				let offer_id = OfferId::from_valid_invreq_tlv_stream(bytes);
@@ -1163,6 +1173,7 @@ mod tests {
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+	use crate::offers::nonce::Nonce;
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::test_utils::*;
 	use crate::util::ser::{BigSize, Writeable};
@@ -1277,14 +1288,15 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
-			::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.build().unwrap();
+		assert!(offer.metadata().is_some());
 		assert_eq!(offer.signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
@@ -1294,6 +1306,11 @@ mod tests {
 			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
 			Err(_) => panic!("unexpected error"),
 		}
+
+		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert!(invoice_request.verify_using_nonce(nonce, &expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1328,6 +1345,7 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		let blinded_path = BlindedPath {
@@ -1341,17 +1359,17 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
-			::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.path(blinded_path)
 			.build().unwrap();
+		assert!(offer.metadata().is_none());
 		assert_ne!(offer.signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		match invoice_request.verify(&expanded_key, &secp_ctx) {
+		match invoice_request.verify_using_nonce(nonce, &expanded_key, &secp_ctx) {
 			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
 			Err(_) => panic!("unexpected error"),
 		}

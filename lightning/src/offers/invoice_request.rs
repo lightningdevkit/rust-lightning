@@ -68,10 +68,11 @@ use crate::blinded_path::BlindedPath;
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
-use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
+use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
+use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -773,9 +774,11 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 } }
 
 macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
-	/// Verifies that the request was for an offer created using the given key. Returns the verified
-	/// request which contains the derived keys needed to sign a [`Bolt12Invoice`] for the request
-	/// if they could be extracted from the metadata.
+	/// Verifies that the request was for an offer created using the given key by checking the
+	/// metadata from the offer.
+	///
+	/// Returns the verified request which contains the derived keys needed to sign a
+	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn verify<
@@ -799,6 +802,35 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 		})
 	}
 
+	/// Verifies that the request was for an offer created using the given key by checking a nonce
+	/// included with the [`BlindedPath`] for which the request was sent through.
+	///
+	/// Returns the verified request which contains the derived keys needed to sign a
+	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub fn verify_using_nonce<
+		#[cfg(not(c_bindings))]
+		T: secp256k1::Signing
+	>(
+		$self: $self_type, nonce: Nonce, key: &ExpandedKey,
+		#[cfg(not(c_bindings))]
+		secp_ctx: &Secp256k1<T>,
+		#[cfg(c_bindings)]
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<VerifiedInvoiceRequest, ()> {
+		let (offer_id, keys) = $self.contents.inner.offer.verify_using_nonce(
+			&$self.bytes, nonce, key, secp_ctx
+		)?;
+		Ok(VerifiedInvoiceRequest {
+			offer_id,
+			#[cfg(not(c_bindings))]
+			inner: $self,
+			#[cfg(c_bindings)]
+			inner: $self.clone(),
+			keys,
+		})
+	}
 } }
 
 #[cfg(not(c_bindings))]
@@ -1216,6 +1248,7 @@ mod tests {
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, TaggedHash, self};
+	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{Amount, OfferTlvStreamRef, Quantity};
 	#[cfg(not(c_bindings))]
 	use {
@@ -2273,12 +2306,12 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		#[cfg(c_bindings)]
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
-			::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.chain(Network::Testnet)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
