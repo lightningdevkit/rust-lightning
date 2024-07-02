@@ -581,6 +581,95 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
+/// This test checks that when multiple potential introduction nodes are available for the payer,
+/// multiple `invoice_request` messages are sent for the offer, each with a different `reply_path`.
+#[test]
+fn send_invoice_requests_with_distinct_reply_path() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.set_route_blinding_optional();
+
+	let chanmon_cfgs = create_chanmon_cfgs(7);
+	let node_cfgs = create_node_cfgs(7, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		7, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None, None]
+	);
+	let nodes = create_network(7, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	// Introduce another potential introduction node, node[6], as a candidate
+	create_unannounced_chan_between_nodes_with_value(&nodes, 3, 6, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 6, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 4, 6, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 5, 6, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let alice_id = alice.node.get_our_node_id();
+	let bob_id = bob.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+	let david_id = david.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5], &nodes[6]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let offer = alice.node
+		.create_offer_builder(None)
+		.unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert!(!offer.paths().is_empty());
+	for path in offer.paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+	}
+
+	let payment_id = PaymentId([1; 32]);
+	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+		.unwrap();
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+	connect_peers(david, bob);
+
+	// Send, extract and verify the first Invoice Request message
+	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&david_id, &onion_message);
+
+	connect_peers(alice, charlie);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
+
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	assert_eq!(invoice_request.amount_msats(), None);
+	assert_ne!(invoice_request.payer_id(), david_id);
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(charlie_id));
+
+	// Send, extract and verify the second Invoice Request message
+	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&david_id, &onion_message);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
+
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+
+	assert_eq!(invoice_request.amount_msats(), None);
+	assert_ne!(invoice_request.payer_id(), david_id);
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(nodes[6].node.get_our_node_id()));
+}
+
 /// Checks that a refund can be paid through blinded paths and that ephemeral pubkeys are used
 /// rather than exposing a node's pubkey.
 #[test]
