@@ -7375,7 +7375,8 @@ where
 			match peer_state.channel_by_id.entry(msg.channel_id.clone()) {
 				hash_map::Entry::Occupied(mut chan_phase_entry) => {
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
-						let (closing_signed, tx, shutdown_result) = try_chan_phase_entry!(self, chan.closing_signed(&self.fee_estimator, &msg), chan_phase_entry);
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						let (closing_signed, tx, shutdown_result) = try_chan_phase_entry!(self, chan.closing_signed(&self.fee_estimator, &msg, &&logger), chan_phase_entry);
 						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown());
 						if let Some(msg) = closing_signed {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
@@ -8191,7 +8192,8 @@ where
 	pub fn signer_unblocked(&self, channel_opt: Option<(PublicKey, ChannelId)>) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let unblock_chan = |phase: &mut ChannelPhase<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| {
+		// Returns whether we should remove this channel as it's just been closed.
+		let unblock_chan = |phase: &mut ChannelPhase<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> bool {
 			let node_id = phase.context().get_counterparty_node_id();
 			match phase {
 				ChannelPhase::Funded(chan) => {
@@ -8211,6 +8213,29 @@ where
 					if let Some(msg) = msgs.channel_ready {
 						send_channel_ready!(self, pending_msg_events, chan, msg);
 					}
+					if let Some(msg) = msgs.closing_signed {
+						pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
+							node_id,
+							msg,
+						});
+					}
+					if let Some(broadcast_tx) = msgs.signed_closing_tx {
+						let channel_id = chan.context.channel_id();
+						let counterparty_node_id = chan.context.get_counterparty_node_id();
+						let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(channel_id), None);
+						log_info!(logger, "Broadcasting closing tx {}", log_tx!(broadcast_tx));
+						self.tx_broadcaster.broadcast_transactions(&[&broadcast_tx]);
+
+						if let Ok(update) = self.get_channel_update_for_broadcast(&chan) {
+							pending_msg_events.push(events::MessageSendEvent::BroadcastChannelUpdate {
+								msg: update
+							});
+						}
+
+						// We should return true to remove the channel if we just
+						// broadcasted the closing transaction.
+						true
+					} else { false }
 				}
 				ChannelPhase::UnfundedOutboundV1(chan) => {
 					if let Some(msg) = chan.signer_maybe_unblocked(&self.logger) {
@@ -8219,8 +8244,9 @@ where
 							msg,
 						});
 					}
+					false
 				}
-				ChannelPhase::UnfundedInboundV1(_) => {},
+				ChannelPhase::UnfundedInboundV1(_) => false,
 			}
 		};
 
@@ -8229,17 +8255,25 @@ where
 			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
-				if let Some(chan) = peer_state.channel_by_id.get_mut(&channel_id) {
-					unblock_chan(chan, &mut peer_state.pending_msg_events);
+				let should_remove = if let Some(chan) = peer_state.channel_by_id.get_mut(&channel_id) {
+					unblock_chan(chan, &mut peer_state.pending_msg_events)
+				} else { false };
+				if should_remove {
+					log_trace!(self.logger, "Removing channel after unblocking signer");
+					peer_state.channel_by_id.remove(&channel_id);
 				}
 			}
 		} else {
 			for (_cp_id, peer_state_mutex) in per_peer_state.iter() {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
-				for (_, chan) in peer_state.channel_by_id.iter_mut() {
-					unblock_chan(chan, &mut peer_state.pending_msg_events);
-				}
+				peer_state.channel_by_id.retain(|_, chan| {
+					let should_remove = unblock_chan(chan, &mut peer_state.pending_msg_events);
+					if should_remove {
+						log_trace!(self.logger, "Removing channel after unblocking signer");
+					}
+					!should_remove
+				});
 			}
 		}
 	}
