@@ -10703,18 +10703,34 @@ where
 					Some(responder) => responder,
 					None => return ResponseInstruction::NoResponse,
 				};
+
+				let nonce = match context {
+					OffersContext::Unknown {} if invoice_request.metadata().is_some() => None,
+					OffersContext::InvoiceRequest { nonce } => Some(nonce),
+					_ => return ResponseInstruction::NoResponse,
+				};
+
+				let invoice_request = match nonce {
+					Some(nonce) => match invoice_request.verify_using_recipient_data(
+						nonce, expanded_key, secp_ctx,
+					) {
+						Ok(invoice_request) => invoice_request,
+						Err(()) => return ResponseInstruction::NoResponse,
+					},
+					None => match invoice_request.verify(expanded_key, secp_ctx) {
+						Ok(invoice_request) => invoice_request,
+						Err(()) => {
+							let error = Bolt12SemanticError::InvalidMetadata;
+							return responder.respond(OffersMessage::InvoiceError(error.into()));
+						},
+					},
+				};
+
 				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
-					&invoice_request
+					&invoice_request.inner
 				) {
 					Ok(amount_msats) => amount_msats,
 					Err(error) => return responder.respond(OffersMessage::InvoiceError(error.into())),
-				};
-				let invoice_request = match invoice_request.verify(expanded_key, secp_ctx) {
-					Ok(invoice_request) => invoice_request,
-					Err(()) => {
-						let error = Bolt12SemanticError::InvalidMetadata;
-						return responder.respond(OffersMessage::InvoiceError(error.into()));
-					},
 				};
 
 				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;

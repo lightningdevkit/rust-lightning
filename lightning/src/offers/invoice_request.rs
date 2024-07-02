@@ -613,7 +613,7 @@ pub struct VerifiedInvoiceRequest {
 	pub offer_id: OfferId,
 
 	/// The verified request.
-	inner: InvoiceRequest,
+	pub(crate) inner: InvoiceRequest,
 
 	/// Keys used for signing a [`Bolt12Invoice`] if they can be derived.
 	///
