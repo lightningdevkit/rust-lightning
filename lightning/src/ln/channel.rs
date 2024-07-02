@@ -909,6 +909,8 @@ pub(super) struct SignerResumeUpdates {
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub funding_signed: Option<msgs::FundingSigned>,
 	pub channel_ready: Option<msgs::ChannelReady>,
+	pub closing_signed: Option<msgs::ClosingSigned>,
+	pub signed_closing_tx: Option<Transaction>,
 }
 
 /// The return value of `channel_reestablish`
@@ -1227,6 +1229,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// [`msgs::FundingCreated`] or [`msgs::FundingSigned`] depending on if this channel is
 	/// outbound or inbound.
 	signer_pending_funding: bool,
+	/// If we attempted to sign a cooperative close transaction but the signer wasn't ready, then this
+	/// will be set to `true`.
+	signer_pending_closing: bool,
 
 	// pending_update_fee is filled when sending and receiving update_fee.
 	//
@@ -1258,7 +1263,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// Max to_local and to_remote outputs in a remote-generated commitment transaction
 	counterparty_max_commitment_tx_output: Mutex<(u64, u64)>,
 
-	last_sent_closing_fee: Option<(u64, Signature)>, // (fee, holder_sig)
+	// (fee, skip_remote_output, fee_range, holder_sig)
+	last_sent_closing_fee: Option<(u64, bool, ClosingSignedFeeRange, Option<Signature>)>,
+	last_received_closing_sig: Option<Signature>,
 	target_closing_feerate_sats_per_kw: Option<u32>,
 
 	/// If our counterparty sent us a closing_signed while we were waiting for a `ChannelMonitor`
@@ -1686,6 +1693,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
+			signer_pending_closing: false,
 
 
 			#[cfg(debug_assertions)]
@@ -1694,6 +1702,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			counterparty_max_commitment_tx_output: Mutex::new((value_to_self_msat, (channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat))),
 
 			last_sent_closing_fee: None,
+			last_received_closing_sig: None,
 			pending_counterparty_closing_signed: None,
 			expecting_peer_commitment_signed: false,
 			closing_fee_limits: None,
@@ -1911,6 +1920,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 			signer_pending_commitment_update: false,
 			signer_pending_funding: false,
+			signer_pending_closing: false,
 
 			// We'll add our counterparty's `funding_satoshis` to these max commitment output assertions
 			// when we receive `accept_channel2`.
@@ -1920,6 +1930,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			counterparty_max_commitment_tx_output: Mutex::new((channel_value_satoshis * 1000 - push_msat, push_msat)),
 
 			last_sent_closing_fee: None,
+			last_received_closing_sig: None,
 			pending_counterparty_closing_signed: None,
 			expecting_peer_commitment_signed: false,
 			closing_fee_limits: None,
@@ -5387,15 +5398,37 @@ impl<SP: Deref> Channel<SP> where
 			self.check_get_channel_ready(0, logger)
 		} else { None };
 
-		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed and {} channel_ready",
+		let (closing_signed, signed_closing_tx) = if self.context.signer_pending_closing {
+			debug_assert!(self.context.last_sent_closing_fee.is_some());
+			if let Some((fee, skip_remote_output, fee_range, holder_sig)) = self.context.last_sent_closing_fee.clone() {
+				debug_assert!(holder_sig.is_none());
+				log_trace!(logger, "Attempting to generate pending closing_signed...");
+				self.context.signer_pending_closing = false;
+
+				let (closing_tx, fee) = self.build_closing_transaction(fee, skip_remote_output);
+				let closing_signed = self.get_closing_signed_msg(&closing_tx, skip_remote_output,
+					fee, fee_range.min_fee_satoshis, fee_range.max_fee_satoshis, logger);
+				let signed_tx = if let (Some(ClosingSigned { signature, .. }), Some(counterparty_sig)) =
+					(closing_signed.as_ref(), self.context.last_received_closing_sig) {
+					Some(self.build_signed_closing_transaction(&closing_tx, &counterparty_sig, signature))
+				} else { None };
+				(closing_signed, signed_tx)
+			} else { (None, None) }
+		} else { (None, None) };
+
+		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed, {} channel_ready, {} closing_signed, and {} signed_closing_tx",
 			if commitment_update.is_some() { "a" } else { "no" },
 			if funding_signed.is_some() { "a" } else { "no" },
-			if channel_ready.is_some() { "a" } else { "no" });
+			if channel_ready.is_some() { "a" } else { "no" },
+			if closing_signed.is_some() { "a" } else { "no" },
+			if signed_closing_tx.is_some() { "a" } else { "no" });
 
 		SignerResumeUpdates {
 			commitment_update,
 			funding_signed,
 			channel_ready,
+			closing_signed,
+			signed_closing_tx,
 		}
 	}
 
@@ -5801,9 +5834,6 @@ impl<SP: Deref> Channel<SP> where
 			our_min_fee, our_max_fee, total_fee_satoshis);
 
 		let closing_signed = self.get_closing_signed_msg(&closing_tx, false, total_fee_satoshis, our_min_fee, our_max_fee, logger);
-		if closing_signed.is_none() {
-			return Err(ChannelError::close("Failed to get signature for closing transaction.".to_owned()));
-		}
 		Ok((closing_signed, None, None))
 	}
 
@@ -5963,13 +5993,17 @@ impl<SP: Deref> Channel<SP> where
 					min_fee_satoshis,
 					max_fee_satoshis,
 				};
-				let sig = ecdsa.sign_closing_transaction(closing_tx, &self.context.secp_ctx).ok()?;
+				let sig = ecdsa.sign_closing_transaction(closing_tx, &self.context.secp_ctx).ok();
+				if sig.is_none() {
+					log_trace!(logger, "Closing transaction signature unavailable, waiting on signer");
+					self.context.signer_pending_closing = true;
+				}
 
-				self.context.last_sent_closing_fee = Some((fee_satoshis, sig.clone()));
-				Some(msgs::ClosingSigned {
+				self.context.last_sent_closing_fee = Some((fee_satoshis, skip_remote_output, fee_range.clone(), sig.clone()));
+				sig.map(|signature| msgs::ClosingSigned {
 					channel_id: self.context.channel_id,
 					fee_satoshis,
-					signature: sig,
+					signature,
 					fee_range: Some(fee_range),
 				})
 			},
@@ -6039,7 +6073,7 @@ impl<SP: Deref> Channel<SP> where
 		};
 
 		assert!(self.context.shutdown_scriptpubkey.is_some());
-		if let Some((last_fee, sig)) = self.context.last_sent_closing_fee {
+		if let Some((last_fee, _, _, Some(sig))) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
 				let shutdown_result = ShutdownResult {
 					closure_reason,
@@ -6072,9 +6106,6 @@ impl<SP: Deref> Channel<SP> where
 				};
 
 				let closing_signed = self.get_closing_signed_msg(&closing_tx, skip_remote_output, used_fee, our_min_fee, our_max_fee, logger);
-				if closing_signed.is_none() {
-					return Err(ChannelError::close("Failed to get signature for closing transaction.".to_owned()));
-				}
 				let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
 					let shutdown_result = ShutdownResult {
 						closure_reason,
@@ -6090,6 +6121,7 @@ impl<SP: Deref> Channel<SP> where
 					};
 					self.context.channel_state = ChannelState::ShutdownComplete;
 					self.context.update_time_counter += 1;
+					self.context.last_received_closing_sig = Some(msg.signature.clone());
 					let tx = closing_signed.as_ref().map(|ClosingSigned { signature, .. }|
 						self.build_signed_closing_transaction(&closing_tx, &msg.signature, signature));
 					(tx, Some(shutdown_result))
@@ -6127,7 +6159,7 @@ impl<SP: Deref> Channel<SP> where
 		} else {
 			// Old fee style negotiation. We don't bother to enforce whether they are complying
 			// with the "making progress" requirements, we just comply and hope for the best.
-			if let Some((last_fee, _)) = self.context.last_sent_closing_fee {
+			if let Some((last_fee, _, _, _)) = self.context.last_sent_closing_fee {
 				if msg.fee_satoshis > last_fee {
 					if msg.fee_satoshis < our_max_fee {
 						propose_fee!(msg.fee_satoshis);
@@ -9282,6 +9314,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				signer_pending_commitment_update: false,
 				signer_pending_funding: false,
+				signer_pending_closing: false,
 
 				pending_update_fee,
 				holding_cell_update_fee,
@@ -9296,6 +9329,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				counterparty_max_commitment_tx_output: Mutex::new((0, 0)),
 
 				last_sent_closing_fee: None,
+				last_received_closing_sig: None,
 				pending_counterparty_closing_signed: None,
 				expecting_peer_commitment_signed: false,
 				closing_fee_limits: None,
