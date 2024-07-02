@@ -20,6 +20,7 @@ use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NextMessage
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::onion_utils;
 use crate::onion_message::packet::ControlTlvs;
 use crate::sign::{NodeSigner, Recipient};
@@ -56,6 +57,7 @@ pub(crate) struct ReceiveTlvs {
 	/// sending to. This is useful for receivers to check that said blinded path is being used in
 	/// the right context.
 	pub(crate) path_id: Option<[u8; 32]>,
+	pub(crate) payment_id: Option<PaymentId>,
 }
 
 impl Writeable for ForwardTlvs {
@@ -79,6 +81,7 @@ impl Writeable for ReceiveTlvs {
 		// TODO: write padding
 		encode_tlv_stream!(writer, {
 			(6, self.path_id, option),
+			(65537, self.payment_id, option),
 		});
 		Ok(())
 	}
@@ -87,7 +90,7 @@ impl Writeable for ReceiveTlvs {
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[ForwardNode], recipient_node_id: PublicKey,
-	session_priv: &SecretKey
+	session_priv: &SecretKey, payment_id: Option<PaymentId>,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let pks = intermediate_nodes.iter().map(|node| &node.node_id)
 		.chain(core::iter::once(&recipient_node_id));
@@ -99,7 +102,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 			None => NextMessageHop::NodeId(*pubkey),
 		})
 		.map(|next_hop| ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None }))
-		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { path_id: None })));
+		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { path_id: None, payment_id })));
 
 	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
 }

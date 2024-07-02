@@ -7,6 +7,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
+use lightning::ln::channelmanager::PaymentId;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
@@ -123,7 +124,7 @@ impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 		responder
 			.respond(ReleaseHeldHtlc { payment_release_secret: message.payment_release_secret })
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _payment_id: Option<PaymentId>) {}
 }
 
 #[derive(Debug)]

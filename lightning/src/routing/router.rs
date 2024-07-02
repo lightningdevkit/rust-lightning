@@ -20,6 +20,8 @@ use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, Recipien
 use crate::ln::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::ln::onion_utils;
+#[cfg(async_payments)]
+use crate::offers::static_invoice::StaticInvoice;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
@@ -193,17 +195,17 @@ impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref,
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>, payment_id: Option<PaymentId>
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.message_router.create_blinded_paths(recipient, peers, secp_ctx)
+		self.message_router.create_blinded_paths(recipient, peers, secp_ctx, payment_id)
 	}
 
 	fn create_compact_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
-		&self, recipient: PublicKey, peers: Vec<message::ForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, peers: Vec<message::ForwardNode>, secp_ctx: &Secp256k1<T>, payment_id: Option<PaymentId>
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.message_router.create_compact_blinded_paths(recipient, peers, secp_ctx)
+		self.message_router.create_compact_blinded_paths(recipient, peers, secp_ctx, payment_id)
 	}
 }
 
@@ -868,6 +870,16 @@ impl PaymentParameters {
 	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
 	/// [`PaymentParameters::expiry_time`].
 	pub fn from_bolt12_invoice(invoice: &Bolt12Invoice) -> Self {
+		Self::blinded(invoice.payment_paths().to_vec())
+			.with_bolt12_features(invoice.invoice_features().clone()).unwrap()
+			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs()))
+	}
+
+	#[cfg(async_payments)]
+	/// Creates parameters for paying to a blinded payee from the provided invoice. Sets
+	/// [`Payee::Blinded::route_hints`], [`Payee::Blinded::features`], and
+	/// [`PaymentParameters::expiry_time`].
+	pub fn from_static_invoice(invoice: &StaticInvoice) -> Self {
 		Self::blinded(invoice.payment_paths().to_vec())
 			.with_bolt12_features(invoice.invoice_features().clone()).unwrap()
 			.with_expiry_time(invoice.created_at().as_secs().saturating_add(invoice.relative_expiry().as_secs()))

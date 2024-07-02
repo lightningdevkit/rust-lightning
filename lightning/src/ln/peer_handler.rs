@@ -20,6 +20,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::sign::{NodeSigner, Recipient};
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::types::ChannelId;
 use crate::ln::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
@@ -145,17 +146,17 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 }
 
 impl OffersMessageHandler for IgnoringMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
+	fn handle_message(&self, _message: OffersMessage, _responder: Option<Responder>, _payment_id: Option<PaymentId>) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
 }
 impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
 	fn held_htlc_available(
-		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
+		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
 	) -> ResponseInstruction<ReleaseHeldHtlc> {
 		ResponseInstruction::NoResponse
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _payment_id: Option<PaymentId>) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;

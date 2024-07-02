@@ -188,7 +188,7 @@ fn extract_invoice_request<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, message: &OnionMessage
 ) -> (InvoiceRequest, BlindedPath) {
 	match node.onion_messenger.peel_onion_message(message) {
-		Ok(PeeledOnion::Receive(message, _, reply_path)) => match message {
+		Ok(PeeledOnion::Receive(message, _, reply_path, _)) => match message {
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
 				OffersMessage::InvoiceRequest(invoice_request) => (invoice_request, reply_path.unwrap()),
 				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
@@ -207,7 +207,7 @@ fn extract_invoice_request<'a, 'b, 'c>(
 
 fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Bolt12Invoice {
 	match node.onion_messenger.peel_onion_message(message) {
-		Ok(PeeledOnion::Receive(message, _, _)) => match message {
+		Ok(PeeledOnion::Receive(message, _, _, _)) => match message {
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
 				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
 				OffersMessage::Invoice(invoice) => invoice,
@@ -228,7 +228,7 @@ fn extract_invoice_error<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, message: &OnionMessage
 ) -> InvoiceError {
 	match node.onion_messenger.peel_onion_message(message) {
-		Ok(PeeledOnion::Receive(message, _, _)) => match message {
+		Ok(PeeledOnion::Receive(message, _, _, _)) => match message {
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
 				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
 				OffersMessage::Invoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
