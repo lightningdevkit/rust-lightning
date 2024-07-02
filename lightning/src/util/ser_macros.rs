@@ -1001,7 +1001,7 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
 				match self {
-					$($st::$variant_name { $(ref $field),* } => {
+					$($st::$variant_name { $(ref $field, )* .. } => {
 						let id: u8 = $variant_id;
 						id.write(writer)?;
 						$crate::write_tlv_fields!(writer, {
@@ -1099,10 +1099,12 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	),* $(,)*
 	$(;
-	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*)*) => {
+	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*)?
+	$(unread_variants: $($unread_variant: ident),*)?) => {
 		$crate::_impl_writeable_tlv_based_enum_common!($st,
-			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*;
-			$($(($tuple_variant_id, $tuple_variant_name)),*)*);
+			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*
+			$(, $((255, $unread_variant) => {}),*)?
+			; $($(($tuple_variant_id, $tuple_variant_name)),*)?);
 
 		impl $crate::util::ser::MaybeReadable for $st {
 			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Option<Self>, $crate::ln::msgs::DecodeError> {
@@ -1126,7 +1128,9 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 					$($($tuple_variant_id => {
 						Ok(Some($st::$tuple_variant_name(Readable::read(reader)?)))
 					}),*)*
-					_ if id % 2 == 1 => {
+					// Note that we explicitly match 255 here to reserve it for use in
+					// `unread_variants`.
+					255|_ if id % 2 == 1 => {
 						// Assume that a $variant_id was written, not a $tuple_variant_id, and read
 						// the length prefix and discard the correct number of bytes.
 						let tlv_len: $crate::util::ser::BigSize = $crate::util::ser::Readable::read(reader)?;
