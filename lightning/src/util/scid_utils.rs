@@ -71,7 +71,7 @@ pub fn scid_from_parts(block: u64, tx_index: u64, vout_index: u64) -> Result<u64
 /// 3) payments intended to be intercepted will route using a fake scid (this is typically used so
 ///    the forwarding node can open a JIT channel to the next hop)
 pub(crate) mod fake_scid {
-	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::constants::ChainHash;
 	use bitcoin::Network;
 	use crate::sign::EntropySource;
 	use crate::crypto::chacha20::ChaCha20;
@@ -182,7 +182,7 @@ pub(crate) mod fake_scid {
 
 	#[cfg(test)]
 	mod tests {
-		use bitcoin::blockdata::constants::ChainHash;
+		use bitcoin::constants::ChainHash;
 		use bitcoin::network::Network;
 		use crate::util::scid_utils::fake_scid::{is_valid_intercept, is_valid_phantom, MAINNET_SEGWIT_ACTIVATION_HEIGHT, MAX_TX_INDEX, MAX_NAMESPACES, Namespace, NAMESPACE_ID_BITMASK, segwit_activation_height, TEST_SEGWIT_ACTIVATION_HEIGHT};
 		use crate::util::scid_utils;

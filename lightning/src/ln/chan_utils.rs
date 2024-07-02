@@ -12,9 +12,9 @@
 
 use bitcoin::{PubkeyHash, WPubkeyHash};
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::script::{Script, ScriptBuf, Builder};
-use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::transaction::{TxIn,TxOut,OutPoint,Transaction};
+use bitcoin::script::{Script, ScriptBuf, Builder};
+use bitcoin::opcodes;
+use bitcoin::transaction::{TxIn,TxOut,OutPoint,Transaction};
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
@@ -33,7 +33,7 @@ use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, RequiredWrapper, Writeable, Writer};
 use crate::util::transaction_utils;
 
-use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::secp256k1::{SecretKey, PublicKey, Scalar};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature, Message};

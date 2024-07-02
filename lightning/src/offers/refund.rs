@@ -82,7 +82,7 @@
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 //! [`ChannelManager::create_refund_builder`]: crate::ln::channelmanager::ChannelManager::create_refund_builder
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 use core::hash::{Hash, Hasher};
@@ -926,7 +926,7 @@ mod tests {
 		super::RefundMaybeWithDerivedMetadataBuilder as RefundBuilder,
 	};
 
-	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey};
 

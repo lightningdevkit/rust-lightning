@@ -21,9 +21,9 @@
 //! ChannelMonitors to get out of the HSM and onto monitoring devices.
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::block::Header;
-use bitcoin::blockdata::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
-use bitcoin::blockdata::script::{Script, ScriptBuf};
+use bitcoin::block::Header;
+use bitcoin::transaction::{OutPoint as BitcoinOutPoint, TxOut, Transaction};
+use bitcoin::script::{Script, ScriptBuf};
 
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -2512,7 +2512,7 @@ macro_rules! fail_unbroadcast_htlcs {
 
 #[cfg(test)]
 pub fn deliberately_bogus_accepted_htlc_witness_program() -> Vec<u8> {
-	use bitcoin::blockdata::opcodes;
+	use bitcoin::opcodes;
 	let mut ret = [opcodes::all::OP_NOP.to_u8(); 136];
 	ret[131] = opcodes::all::OP_DROP.to_u8();
 	ret[132] = opcodes::all::OP_DROP.to_u8();
@@ -4789,11 +4789,11 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 #[cfg(test)]
 mod tests {
 	use bitcoin::amount::Amount;
-	use bitcoin::blockdata::locktime::absolute::LockTime;
-	use bitcoin::blockdata::script::{ScriptBuf, Builder};
-	use bitcoin::blockdata::opcodes;
-	use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut, Version};
-	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
+	use bitcoin::locktime::absolute::LockTime;
+	use bitcoin::script::{ScriptBuf, Builder};
+	use bitcoin::opcodes;
+	use bitcoin::transaction::{Transaction, TxIn, TxOut, Version};
+	use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 	use bitcoin::sighash;
 	use bitcoin::sighash::EcdsaSighashType;
 	use bitcoin::hashes::Hash;

@@ -34,8 +34,8 @@ use crate::util::logger::Logger;
 
 use bitcoin::{OutPoint, Psbt, PubkeyHash, Sequence, ScriptBuf, Transaction, TxIn, TxOut, Witness, WPubkeyHash};
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::consensus::Encodable;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::{PublicKey, Secp256k1};

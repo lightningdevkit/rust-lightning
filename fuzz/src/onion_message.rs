@@ -1,6 +1,6 @@
 // Imports that need to be added manually
 use bech32::u5;
-use bitcoin::blockdata::script::ScriptBuf;
+use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::schnorr;

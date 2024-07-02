@@ -30,7 +30,7 @@ use crate::prelude::*;
 
 use crate::ln::functional_test_utils::*;
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 
 #[test]

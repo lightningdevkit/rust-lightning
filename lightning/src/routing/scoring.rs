@@ -2163,7 +2163,7 @@ mod tests {
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{self, TestLogger};
 
-	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::constants::ChainHash;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::network::Network;

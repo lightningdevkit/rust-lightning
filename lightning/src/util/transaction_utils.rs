@@ -8,8 +8,8 @@
 // licenses.
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::ScriptBuf;
+use bitcoin::transaction::{Transaction, TxOut};
+use bitcoin::script::ScriptBuf;
 use bitcoin::consensus::Encodable;
 use bitcoin::consensus::encode::VarInt;
 
@@ -73,9 +73,9 @@ mod tests {
 	use super::*;
 
 	use bitcoin::amount::Amount;
-	use bitcoin::blockdata::locktime::absolute::LockTime;
-	use bitcoin::blockdata::transaction::{TxIn, OutPoint, Version};
-	use bitcoin::blockdata::script::Builder;
+	use bitcoin::locktime::absolute::LockTime;
+	use bitcoin::transaction::{TxIn, OutPoint, Version};
+	use bitcoin::script::Builder;
 	use bitcoin::hash_types::Txid;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::hex::FromHex;

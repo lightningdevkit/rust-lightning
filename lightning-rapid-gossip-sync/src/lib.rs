@@ -39,7 +39,7 @@
 //! from disk, which we do by calling [`RapidGossipSync::update_network_graph`]:
 //!
 //! ```
-//! use bitcoin::blockdata::constants::genesis_block;
+//! use bitcoin::constants::genesis_block;
 //! use bitcoin::Network;
 //! use lightning::routing::gossip::NetworkGraph;
 //! use lightning_rapid_gossip_sync::RapidGossipSync;

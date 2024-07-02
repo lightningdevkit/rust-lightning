@@ -10,7 +10,7 @@
 use crate::ln::types::ChannelId;
 use crate::sign::SpendableOutputDescriptor;
 
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::transaction::Transaction;
 
 use crate::routing::router::Route;
 use crate::ln::chan_utils::HTLCClaim;

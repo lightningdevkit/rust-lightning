@@ -22,7 +22,7 @@ use core::{cmp, fmt};
 use crate::sync::{Mutex, Arc};
 #[cfg(test)] use crate::sync::MutexGuard;
 
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::transaction::Transaction;
 use bitcoin::hashes::Hash;
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;

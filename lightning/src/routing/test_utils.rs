@@ -13,7 +13,7 @@ use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAn
 use crate::util::test_utils;
 use crate::util::ser::Writeable;
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::hex::FromHex;

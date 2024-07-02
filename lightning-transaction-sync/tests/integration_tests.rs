@@ -12,8 +12,8 @@ use lightning_transaction_sync::ElectrumSyncClient;
 use lightning_transaction_sync::EsploraSyncClient;
 
 use bdk_macros::maybe_await;
-use bitcoin::blockdata::block::Header;
-use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::block::Header;
+use bitcoin::constants::genesis_block;
 use bitcoin::network::Network;
 use bitcoin::{Amount, BlockHash, Txid};
 use bitcoind::bitcoincore_rpc::RpcApi;

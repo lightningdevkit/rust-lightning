@@ -13,10 +13,10 @@
 //! building, tracking, bumping and notifications functions.
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::transaction::Transaction;
-use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::script::{Script, ScriptBuf};
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::transaction::Transaction;
+use bitcoin::transaction::OutPoint as BitcoinOutPoint;
+use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash};
