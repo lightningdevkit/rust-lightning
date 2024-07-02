@@ -7405,7 +7405,7 @@ fn test_announce_disable_channels() {
 	for e in msg_events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.flags & (1<<1), 1<<1); // The "channel disabled" bit should be set
+				assert_eq!(msg.contents.channel_flags & (1<<1), 1<<1); // The "channel disabled" bit should be set
 				// Check that each channel gets updated exactly once
 				if chans_disabled.insert(msg.contents.short_channel_id, msg.contents.timestamp).is_some() {
 					panic!("Generated ChannelUpdate for wrong chan!");
@@ -7452,7 +7452,7 @@ fn test_announce_disable_channels() {
 	for e in msg_events {
 		match e {
 			MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-				assert_eq!(msg.contents.flags & (1<<1), 0); // The "channel disabled" bit should be off
+				assert_eq!(msg.contents.channel_flags & (1<<1), 0); // The "channel disabled" bit should be off
 				match chans_disabled.remove(&msg.contents.short_channel_id) {
 					// Each update should have a higher timestamp than the previous one, replacing
 					// the old one.
@@ -9398,13 +9398,13 @@ fn test_error_chans_closed() {
 	assert_eq!(events.len(), 2);
 	match events[0] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-			assert_eq!(msg.contents.flags & 2, 2);
+			assert_eq!(msg.contents.channel_flags & 2, 2);
 		},
 		_ => panic!("Unexpected event"),
 	}
 	match events[1] {
 		MessageSendEvent::BroadcastChannelUpdate { ref msg } => {
-			assert_eq!(msg.contents.flags & 2, 2);
+			assert_eq!(msg.contents.channel_flags & 2, 2);
 		},
 		_ => panic!("Unexpected event"),
 	}

@@ -2264,7 +2264,7 @@ mod tests {
 
 	fn update_channel(
 		network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_key: SecretKey,
-		flags: u8, htlc_maximum_msat: u64, timestamp: u32,
+		channel_flags: u8, htlc_maximum_msat: u64, timestamp: u32,
 	) {
 		let genesis_hash = ChainHash::using_genesis_block(Network::Testnet);
 		let secp_ctx = Secp256k1::new();
@@ -2272,7 +2272,8 @@ mod tests {
 			chain_hash: genesis_hash,
 			short_channel_id,
 			timestamp,
-			flags,
+			message_flags: 1, // Only must_be_one
+			channel_flags,
 			cltv_expiry_delta: 18,
 			htlc_minimum_msat: 0,
 			htlc_maximum_msat,

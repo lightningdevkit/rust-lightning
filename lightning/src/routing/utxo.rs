@@ -319,7 +319,7 @@ impl PendingChecks {
 	) -> Result<(), LightningError> {
 		let mut pending_checks = self.internal.lock().unwrap();
 		if let hash_map::Entry::Occupied(e) = pending_checks.channels.entry(msg.short_channel_id) {
-			let is_from_a = (msg.flags & 1) == 1;
+			let is_from_a = (msg.channel_flags & 1) == 1;
 			match Weak::upgrade(e.get()) {
 				Some(msgs_ref) => {
 					let mut messages = msgs_ref.lock().unwrap();
@@ -595,10 +595,10 @@ mod tests {
 		let node_b_announce = get_signed_node_announcement(|_| {}, node_2_privkey, &secp_ctx);
 
 		// Note that we have to set the "direction" flag correctly on both messages
-		let chan_update_a = get_signed_channel_update(|msg| msg.flags = 0, node_1_privkey, &secp_ctx);
-		let chan_update_b = get_signed_channel_update(|msg| msg.flags = 1, node_2_privkey, &secp_ctx);
+		let chan_update_a = get_signed_channel_update(|msg| msg.channel_flags = 0, node_1_privkey, &secp_ctx);
+		let chan_update_b = get_signed_channel_update(|msg| msg.channel_flags = 1, node_2_privkey, &secp_ctx);
 		let chan_update_c = get_signed_channel_update(|msg| {
-			msg.flags = 1; msg.timestamp += 1; }, node_2_privkey, &secp_ctx);
+			msg.channel_flags = 1; msg.timestamp += 1; }, node_2_privkey, &secp_ctx);
 
 		(valid_announcement, chain_source, network_graph, good_script, node_a_announce,
 			node_b_announce, chan_update_a, chan_update_b, chan_update_c)
