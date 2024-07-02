@@ -37,6 +37,8 @@ pub mod channel;
 #[cfg(not(fuzzing))]
 pub(crate) mod channel;
 
+#[allow(dead_code)] // TODO(dual_funding): Remove allow when dual-funding fully implemented.
+mod interactivetxs;
 pub(crate) mod onion_utils;
 mod outbound_payment;
 pub mod wire;
@@ -85,7 +87,5 @@ mod async_signer_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod offers_tests;
-#[allow(dead_code)] // TODO(dual_funding): Exchange for dual_funding cfg
-pub(crate) mod interactivetxs;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;

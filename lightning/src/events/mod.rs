@@ -538,6 +538,17 @@ impl_writeable_tlv_based_enum!(PaymentFailureReason,
 	(10, UnexpectedError) => {}, ;
 );
 
+/// Used to indicate the kind of funding for this channel by the channel acceptor (us).
+///
+/// Allows the differentiation between a request for a dual-funded and non-dual-funded channel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InboundChannelFunds {
+	/// For a non-dual-funded channel, the `push_msat` value from the channel initiator to us.
+	PushMsat(u64),
+	/// Indicates the open request is for a dual funded channel.
+	DualFunded,
+}
+
 /// An Event which you should probably take some action in response to.
 ///
 /// Note that while Writeable and Readable are implemented for Event, you probably shouldn't use
@@ -1143,9 +1154,14 @@ pub enum Event {
 	},
 	/// Indicates a request to open a new channel by a peer.
 	///
-	/// To accept the request, call [`ChannelManager::accept_inbound_channel`]. To reject the request,
-	/// call [`ChannelManager::force_close_without_broadcasting_txn`]. Note that a ['ChannelClosed`]
-	/// event will _not_ be triggered if the channel is rejected.
+	/// If `acceptor_funds` is `InboundChannelFunds::DualFunded`, this indicates that the peer wishes to
+	/// open a dual-funded channel. Otherwise, `acceptor_funds` will be `InboundChannelFunds::PushMsats`,
+	/// indicating the `push_msats` value for a non-dual-funded channel.
+	///
+	/// To accept the request (and in the case of a dual-funded channel, not contribute funds),
+	/// call [`ChannelManager::accept_inbound_channel`].
+	/// To reject the request, call [`ChannelManager::force_close_without_broadcasting_txn`].
+	/// Note that a ['ChannelClosed`] event will _not_ be triggered if the channel is rejected.
 	///
 	/// The event is only triggered when a new open channel request is received and the
 	/// [`UserConfig::manually_accept_inbound_channels`] config flag is set to true.
@@ -1176,7 +1192,7 @@ pub enum Event {
 		/// The channel value of the requested channel.
 		funding_satoshis: u64,
 		/// Our starting balance in the channel if the request is accepted, in milli-satoshi.
-		push_msat: u64,
+		acceptor_funds: InboundChannelFunds,
 		/// The features that this channel will operate with. If you reject the channel, a
 		/// well-behaved counterparty may automatically re-attempt the channel with a new set of
 		/// feature flags.
