@@ -172,7 +172,7 @@ impl ChannelSigner for TestChannelSigner {
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
 
-	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
+	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], ()> {
 		{
 			let mut state = self.state.lock().unwrap();
 			assert!(idx == state.last_holder_revoked_commitment || idx == state.last_holder_revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, last revoked {}", idx, state.last_holder_revoked_commitment);

@@ -5500,32 +5500,42 @@ impl<SP: Deref> Channel<SP> where
 	fn get_last_revoke_and_ack<L: Deref>(&mut self, logger: &L) -> Option<msgs::RevokeAndACK> where L::Target: Logger {
 		debug_assert!(self.context.holder_commitment_point.transaction_number() <= INITIAL_COMMITMENT_NUMBER - 2);
 		self.context.holder_commitment_point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
-		let per_commitment_secret = self.context.holder_signer.as_ref().release_commitment_secret(self.context.holder_commitment_point.transaction_number() + 2);
-		if let HolderCommitmentPoint::Available { transaction_number: _, current, next: _ } = self.context.holder_commitment_point {
+		let per_commitment_secret = self.context.holder_signer.as_ref()
+			.release_commitment_secret(self.context.holder_commitment_point.transaction_number() + 2).ok();
+		if let (HolderCommitmentPoint::Available { current, .. }, Some(per_commitment_secret)) =
+			(self.context.holder_commitment_point, per_commitment_secret) {
 			self.context.signer_pending_revoke_and_ack = false;
-			Some(msgs::RevokeAndACK {
+			return Some(msgs::RevokeAndACK {
 				channel_id: self.context.channel_id,
 				per_commitment_secret,
 				next_per_commitment_point: current,
 				#[cfg(taproot)]
 				next_local_nonce: None,
 			})
-		} else {
-			#[cfg(not(async_signing))] {
-				panic!("Holder commitment point must be Available when generating revoke_and_ack");
-			}
-			#[cfg(async_signing)] {
-				// Technically if we're at HolderCommitmentPoint::PendingNext,
-				// we have a commitment point ready to send in an RAA, however we
-				// choose to wait since if we send RAA now, we could get another
-				// CS before we have any commitment point available. Blocking our
-				// RAA here is a convenient way to make sure that post-funding
-				// we're only ever waiting on one commitment point at a time.
-				log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment point is not available",
-					&self.context.channel_id(), self.context.holder_commitment_point.transaction_number());
-				self.context.signer_pending_revoke_and_ack = true;
-				None
-			}
+		}
+		if !self.context.holder_commitment_point.is_available() {
+			log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment point is not available",
+				&self.context.channel_id(), self.context.holder_commitment_point.transaction_number());
+		}
+		if per_commitment_secret.is_none() {
+			log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment secret for {} is not available",
+				&self.context.channel_id(), self.context.holder_commitment_point.transaction_number(),
+				self.context.holder_commitment_point.transaction_number() + 2);
+		}
+		#[cfg(not(async_signing))] {
+			panic!("Holder commitment point and per commitment secret must be available when generating revoke_and_ack");
+		}
+		#[cfg(async_signing)] {
+			// Technically if we're at HolderCommitmentPoint::PendingNext,
+			// we have a commitment point ready to send in an RAA, however we
+			// choose to wait since if we send RAA now, we could get another
+			// CS before we have any commitment point available. Blocking our
+			// RAA here is a convenient way to make sure that post-funding
+			// we're only ever waiting on one commitment point at a time.
+			log_trace!(logger, "Last revoke-and-ack pending in channel {} for sequence {} because the next per-commitment point is not available",
+				&self.context.channel_id(), self.context.holder_commitment_point.transaction_number());
+			self.context.signer_pending_revoke_and_ack = true;
+			None
 		}
 	}
 
