@@ -166,11 +166,17 @@ impl TestChannelSigner {
 }
 
 impl ChannelSigner for TestChannelSigner {
-	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
+	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, ()> {
+		if !self.is_signer_available(SignerOp::GetPerCommitmentPoint) {
+			return Err(());
+		}
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
 
-	fn release_commitment_secret(&self, idx: u64) -> [u8; 32] {
+	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], ()> {
+		if !self.is_signer_available(SignerOp::ReleaseCommitmentSecret) {
+			return Err(());
+		}
 		{
 			let mut state = self.state.lock().unwrap();
 			assert!(idx == state.last_holder_revoked_commitment || idx == state.last_holder_revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, last revoked {}", idx, state.last_holder_revoked_commitment);

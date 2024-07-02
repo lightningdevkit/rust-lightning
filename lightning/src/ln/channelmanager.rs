@@ -2990,7 +2990,7 @@ where
 			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
 			match OutboundV1Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider, their_network_key,
 				their_features, channel_value_satoshis, push_msat, user_channel_id, config,
-				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id)
+				self.best_block.read().unwrap().height, outbound_scid_alias, temporary_channel_id, &self.logger)
 			{
 				Ok(res) => res,
 				Err(e) => {
@@ -8196,11 +8196,26 @@ where
 			match phase {
 				ChannelPhase::Funded(chan) => {
 					let msgs = chan.signer_maybe_unblocked(&self.logger);
-					if let Some(updates) = msgs.commitment_update {
-						pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id,
-							updates,
-						});
+					let cu_msg = msgs.commitment_update.map(|updates| events::MessageSendEvent::UpdateHTLCs {
+						node_id,
+						updates,
+					});
+					let raa_msg = msgs.revoke_and_ack.map(|msg| events::MessageSendEvent::SendRevokeAndACK {
+						node_id,
+						msg,
+					});
+					match (cu_msg, raa_msg) {
+						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
+							pending_msg_events.push(cu);
+							pending_msg_events.push(raa);
+						},
+						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
+							pending_msg_events.push(raa);
+							pending_msg_events.push(cu);
+						},
+						(Some(cu), _) => pending_msg_events.push(cu),
+						(_, Some(raa)) => pending_msg_events.push(raa),
+						(_, _) => {},
 					}
 					if let Some(msg) = msgs.funding_signed {
 						pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
