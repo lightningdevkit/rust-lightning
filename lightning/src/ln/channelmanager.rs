@@ -10804,8 +10804,20 @@ where
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
+				let expected_payment_id = match context {
+					OffersContext::Unknown {} if invoice.is_for_refund_without_paths() => None,
+					OffersContext::OutboundPayment { payment_id } => Some(payment_id),
+					_ => return ResponseInstruction::NoResponse,
+				};
+
 				let result = match invoice.verify(expanded_key, secp_ctx) {
 					Ok(payment_id) => {
+						if let Some(expected_payment_id) = expected_payment_id {
+							if payment_id != expected_payment_id {
+								return ResponseInstruction::NoResponse;
+							}
+						}
+
 						let features = self.bolt12_invoice_features();
 						if invoice.invoice_features().requires_unknown_bits_from(&features) {
 							Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))

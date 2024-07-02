@@ -787,6 +787,13 @@ impl Bolt12Invoice {
 		(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream,
 		 signature_tlv_stream)
 	}
+
+	pub(crate) fn is_for_refund_without_paths(&self) -> bool {
+		match self.contents {
+			InvoiceContents::ForOffer { .. } => false,
+			InvoiceContents::ForRefund { .. } => self.message_paths().is_empty(),
+		}
+	}
 }
 
 impl PartialEq for Bolt12Invoice {
