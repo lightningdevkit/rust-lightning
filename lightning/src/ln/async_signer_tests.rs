@@ -10,6 +10,8 @@
 //! Tests for asynchronous signing. These tests verify that the channel state machine behaves
 //! properly with a signer implementation that asynchronously derives signatures.
 
+use std::collections::HashSet;
+
 use bitcoin::{Transaction, TxOut, TxIn, Amount};
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::transaction::Version;
@@ -22,6 +24,7 @@ use crate::ln::{functional_test_utils::*, msgs};
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
 use crate::util::test_channel_signer::SignerOp;
+use crate::util::logger::Logger;
 
 #[test]
 fn test_async_commitment_signature_for_funding_created() {
@@ -127,11 +130,17 @@ fn test_async_commitment_signature_for_funding_signed() {
 
 #[test]
 fn test_async_commitment_signature_for_commitment_signed() {
-	do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(0);
-	do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(1);
+	for i in 0..=8 {
+		let enable_signer_op_order = vec![
+			SignerOp::GetPerCommitmentPoint,
+			SignerOp::ReleaseCommitmentSecret,
+			SignerOp::SignCounterpartyCommitment,
+		].into_iter().filter(|&op| i & (1 << op as u8) != 0).collect();
+		do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(enable_signer_op_order);
+	}
 }
 
-fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(test_case: u8) {
+fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(enable_signer_op_order: Vec<SignerOp>) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -160,31 +169,33 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(test_
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
+	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::ReleaseCommitmentSecret);
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
-	if test_case == 0 {
-		// Unblock CS -> no messages should be sent, since we must send RAA first.
-		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
+	let mut enabled_signer_ops = HashSet::new();
+	log_trace!(dst.logger, "enable_signer_op_order={:?}", enable_signer_op_order);
+	for op in enable_signer_op_order {
+		enabled_signer_ops.insert(op);
+		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, op);
 		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
-		let events = dst.node.get_and_clear_pending_msg_events();
-		assert!(events.is_empty(), "expected no message, got {}", events.len());
 
-		// Unblock revoke_and_ack -> we should send both RAA + CS.
-		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
-		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
-		get_revoke_commit_msgs(&dst, &src.node.get_our_node_id());
-	} else if test_case == 1 {
-		// Unblock revoke_and_ack -> we should send just RAA.
-		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
-		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
-		get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
-
-		// Unblock commitment signed -> we should send CS.
-		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-		dst.node.signer_unblocked(Some((src.node.get_our_node_id(), chan_id)));
-		get_htlc_update_msgs(dst, &src.node.get_our_node_id());
+		if enabled_signer_ops.contains(&SignerOp::GetPerCommitmentPoint) && enabled_signer_ops.contains(&SignerOp::ReleaseCommitmentSecret) {
+			// We are just able to send revoke_and_ack
+			if op == SignerOp::GetPerCommitmentPoint || op == SignerOp::ReleaseCommitmentSecret {
+				get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
+			}
+			// We either just sent or previously sent revoke_and_ack
+			// and now we are able to send commitment_signed
+			if op == SignerOp::SignCounterpartyCommitment {
+				get_htlc_update_msgs(dst, &src.node.get_our_node_id());
+			}
+		} else {
+			// We can't send either message until RAA is unblocked
+			let events = dst.node.get_and_clear_pending_msg_events();
+			assert!(events.is_empty(), "expected no message, got {}", events.len());
+		}
 	}
 }
 
