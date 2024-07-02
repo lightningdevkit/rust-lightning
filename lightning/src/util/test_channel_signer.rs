@@ -173,6 +173,10 @@ impl ChannelSigner for TestChannelSigner {
 	}
 
 	fn release_commitment_secret(&self, idx: u64) -> Result<[u8; 32], ()> {
+		#[cfg(test)]
+		if !self.is_signer_available(SignerOp::ReleaseCommitmentSecret) {
+			return Err(());
+		}
 		{
 			let mut state = self.state.lock().unwrap();
 			assert!(idx == state.last_holder_revoked_commitment || idx == state.last_holder_revoked_commitment - 1, "can only revoke the current or next unrevoked commitment - trying {}, last revoked {}", idx, state.last_holder_revoked_commitment);
