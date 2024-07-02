@@ -28,7 +28,7 @@ use bitcoin::secp256k1;
 use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs;
-use crate::ln::msgs::DecodeError;
+use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
 use crate::ln::channelmanager::{self, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
@@ -5933,7 +5933,7 @@ impl<SP: Deref> Channel<SP> where
 
 		if !self.context.is_outbound() {
 			if let Some(msg) = &self.context.pending_counterparty_closing_signed.take() {
-				return self.closing_signed(fee_estimator, &msg);
+				return self.closing_signed(fee_estimator, &msg, logger);
 			}
 			return Ok((None, None, None));
 		}
@@ -5951,27 +5951,11 @@ impl<SP: Deref> Channel<SP> where
 		log_trace!(logger, "Proposing initial closing_signed for our counterparty with a fee range of {}-{} sat (with initial proposal {} sats)",
 			our_min_fee, our_max_fee, total_fee_satoshis);
 
-		match &self.context.holder_signer {
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				let sig = ecdsa
-					.sign_closing_transaction(&closing_tx, &self.context.secp_ctx)
-					.map_err(|()| ChannelError::close("Failed to get signature for closing transaction.".to_owned()))?;
-
-				self.context.last_sent_closing_fee = Some((total_fee_satoshis, sig.clone()));
-				Ok((Some(msgs::ClosingSigned {
-					channel_id: self.context.channel_id,
-					fee_satoshis: total_fee_satoshis,
-					signature: sig,
-					fee_range: Some(msgs::ClosingSignedFeeRange {
-						min_fee_satoshis: our_min_fee,
-						max_fee_satoshis: our_max_fee,
-					}),
-				}), None, None))
-			},
-			// TODO (taproot|arik)
-			#[cfg(taproot)]
-			_ => todo!()
+		let closing_signed = self.get_closing_signed_msg(&closing_tx, false, total_fee_satoshis, our_min_fee, our_max_fee, logger);
+		if closing_signed.is_none() {
+			return Err(ChannelError::close("Failed to get signature for closing transaction.".to_owned()));
 		}
+		Ok((closing_signed, None, None))
 	}
 
 	// Marks a channel as waiting for a response from the counterparty. If it's not received
@@ -6118,10 +6102,38 @@ impl<SP: Deref> Channel<SP> where
 		tx
 	}
 
-	pub fn closing_signed<F: Deref>(
-		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned)
+	fn get_closing_signed_msg<L: Deref>(
+		&mut self, closing_tx: &ClosingTransaction, skip_remote_output: bool,
+		fee_satoshis: u64, min_fee_satoshis: u64, max_fee_satoshis: u64, logger: &L
+	) -> Option<msgs::ClosingSigned>
+		where L::Target: Logger
+	{
+		match &self.context.holder_signer {
+			ChannelSignerType::Ecdsa(ecdsa) => {
+				let fee_range = msgs::ClosingSignedFeeRange {
+					min_fee_satoshis,
+					max_fee_satoshis,
+				};
+				let sig = ecdsa.sign_closing_transaction(closing_tx, &self.context.secp_ctx).ok()?;
+
+				self.context.last_sent_closing_fee = Some((fee_satoshis, sig.clone()));
+				Some(msgs::ClosingSigned {
+					channel_id: self.context.channel_id,
+					fee_satoshis,
+					signature: sig,
+					fee_range: Some(fee_range),
+				})
+			},
+			// TODO (taproot|arik)
+			#[cfg(taproot)]
+			_ => todo!()
+		}
+	}
+
+	pub fn closing_signed<F: Deref, L: Deref>(
+		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned, logger: &L)
 		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>), ChannelError>
-		where F::Target: FeeEstimator
+		where F::Target: FeeEstimator, L::Target: Logger
 	{
 		if !self.context.channel_state.is_both_sides_shutdown() {
 			return Err(ChannelError::close("Remote end sent us a closing_signed before both sides provided a shutdown".to_owned()));
@@ -6146,7 +6158,8 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let funding_redeemscript = self.context.get_funding_redeemscript();
-		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, false);
+		let mut skip_remote_output = false;
+		let (mut closing_tx, used_total_fee) = self.build_closing_transaction(msg.fee_satoshis, skip_remote_output);
 		if used_total_fee != msg.fee_satoshis {
 			return Err(ChannelError::close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
 		}
@@ -6157,7 +6170,8 @@ impl<SP: Deref> Channel<SP> where
 			Err(_e) => {
 				// The remote end may have decided to revoke their output due to inconsistent dust
 				// limits, so check for that case by re-checking the signature here.
-				closing_tx = self.build_closing_transaction(msg.fee_satoshis, true).0;
+				skip_remote_output = true;
+				closing_tx = self.build_closing_transaction(msg.fee_satoshis, skip_remote_output).0;
 				let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.context.channel_value_satoshis);
 				secp_check!(self.context.secp_ctx.verify_ecdsa(&sighash, &msg.signature, self.context.counterparty_funding_pubkey()), "Invalid closing tx signature from peer".to_owned());
 			},
@@ -6204,50 +6218,36 @@ impl<SP: Deref> Channel<SP> where
 				let (closing_tx, used_fee) = if $new_fee == msg.fee_satoshis {
 					(closing_tx, $new_fee)
 				} else {
-					self.build_closing_transaction($new_fee, false)
+					skip_remote_output = false;
+					self.build_closing_transaction($new_fee, skip_remote_output)
 				};
 
-				return match &self.context.holder_signer {
-					ChannelSignerType::Ecdsa(ecdsa) => {
-						let sig = ecdsa
-							.sign_closing_transaction(&closing_tx, &self.context.secp_ctx)
-							.map_err(|_| ChannelError::close("External signer refused to sign closing transaction".to_owned()))?;
-						let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
-							let shutdown_result = ShutdownResult {
-								closure_reason,
-								monitor_update: None,
-								dropped_outbound_htlcs: Vec::new(),
-								unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
-								channel_id: self.context.channel_id,
-								user_channel_id: self.context.user_id,
-								channel_capacity_satoshis: self.context.channel_value_satoshis,
-								counterparty_node_id: self.context.counterparty_node_id,
-								unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
-								channel_funding_txo: self.context.get_funding_txo(),
-							};
-							self.context.channel_state = ChannelState::ShutdownComplete;
-							self.context.update_time_counter += 1;
-							let tx = self.build_signed_closing_transaction(&closing_tx, &msg.signature, &sig);
-							(Some(tx), Some(shutdown_result))
-						} else {
-							(None, None)
-						};
-
-						self.context.last_sent_closing_fee = Some((used_fee, sig.clone()));
-						Ok((Some(msgs::ClosingSigned {
-							channel_id: self.context.channel_id,
-							fee_satoshis: used_fee,
-							signature: sig,
-							fee_range: Some(msgs::ClosingSignedFeeRange {
-								min_fee_satoshis: our_min_fee,
-								max_fee_satoshis: our_max_fee,
-							}),
-						}), signed_tx, shutdown_result))
-					},
-					// TODO (taproot|arik)
-					#[cfg(taproot)]
-					_ => todo!()
+				let closing_signed = self.get_closing_signed_msg(&closing_tx, skip_remote_output, used_fee, our_min_fee, our_max_fee, logger);
+				if closing_signed.is_none() {
+					return Err(ChannelError::close("Failed to get signature for closing transaction.".to_owned()));
 				}
+				let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
+					let shutdown_result = ShutdownResult {
+						closure_reason,
+						monitor_update: None,
+						dropped_outbound_htlcs: Vec::new(),
+						unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
+						channel_id: self.context.channel_id,
+						user_channel_id: self.context.user_id,
+						channel_capacity_satoshis: self.context.channel_value_satoshis,
+						counterparty_node_id: self.context.counterparty_node_id,
+						unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
+						channel_funding_txo: self.context.get_funding_txo(),
+					};
+					self.context.channel_state = ChannelState::ShutdownComplete;
+					self.context.update_time_counter += 1;
+					let tx = closing_signed.as_ref().map(|ClosingSigned { signature, .. }|
+						self.build_signed_closing_transaction(&closing_tx, &msg.signature, signature));
+					(tx, Some(shutdown_result))
+				} else {
+					(None, None)
+				};
+				return Ok((closing_signed, signed_tx, shutdown_result))
 			}
 		}
 
