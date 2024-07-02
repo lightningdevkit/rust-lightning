@@ -1170,19 +1170,36 @@ macro_rules! _process_events_body {
 				pending_events = inner.pending_events.clone();
 				repeated_events = inner.get_repeated_events();
 			} else { break; }
-			let num_events = pending_events.len();
 
-			for event in pending_events.into_iter().chain(repeated_events.into_iter()) {
+			let mut num_handled_events = 0;
+			let mut handling_failed = false;
+			for event in pending_events.into_iter() {
 				$event_to_handle = event;
-				$handle_event;
+				match $handle_event {
+					Ok(()) => num_handled_events += 1,
+					Err(_) => {
+						// If we encounter an error we stop handling events and make sure to replay
+						// any unhandled events on the next invocation.
+						handling_failed = true;
+						break;
+					}
+				}
+			}
+
+			for event in repeated_events.into_iter() {
+				// For repeated events we ignore any errors as they will be replayed eventually
+				// anyways.
+				$event_to_handle = event;
+				$handle_event.ok();
 			}
 
 			if let Some(us) = $self_opt {
 				let mut inner = us.inner.lock().unwrap();
-				inner.pending_events.drain(..num_events);
+				inner.pending_events.drain(..num_handled_events);
 				inner.is_processing_pending_events = false;
-				if !inner.pending_events.is_empty() {
-					// If there's more events to process, go ahead and do so.
+				if !handling_failed && !inner.pending_events.is_empty() {
+					// If there's more events to process and we didn't fail so far, go ahead and do
+					// so.
 					continue;
 				}
 			}
@@ -1508,7 +1525,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Processes any events asynchronously.
 	///
 	/// See [`Self::process_pending_events`] for more information.
-	pub async fn process_pending_events_async<Future: core::future::Future, H: Fn(Event) -> Future>(
+	pub async fn process_pending_events_async<Future: core::future::Future<Output = Result<(), ()>>, H: Fn(Event) -> Future>(
 		&self, handler: &H
 	) {
 		let mut ev;

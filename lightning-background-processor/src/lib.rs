@@ -29,6 +29,8 @@ use lightning::events::{Event, PathFailure};
 use lightning::events::EventHandler;
 #[cfg(feature = "std")]
 use lightning::events::EventsProvider;
+#[cfg(feature = "futures")]
+use lightning::events::ReplayEvent;
 
 use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::OnionMessageHandler;
@@ -539,6 +541,7 @@ use core::task;
 /// could setup `process_events_async` like this:
 /// ```
 /// # use lightning::io;
+/// # use lightning::events::ReplayEvent;
 /// # use std::sync::{Arc, RwLock};
 /// # use std::sync::atomic::{AtomicBool, Ordering};
 /// # use std::time::SystemTime;
@@ -556,7 +559,7 @@ use core::task;
 /// # }
 /// # struct EventHandler {}
 /// # impl EventHandler {
-/// #     async fn handle_event(&self, _: lightning::events::Event) {}
+/// #     async fn handle_event(&self, _: lightning::events::Event) -> Result<(), ReplayEvent> { Ok(()) }
 /// # }
 /// # #[derive(Eq, PartialEq, Clone, Hash)]
 /// # struct SocketDescriptor {}
@@ -654,7 +657,7 @@ pub async fn process_events_async<
 	G: 'static + Deref<Target = NetworkGraph<L>> + Send + Sync,
 	L: 'static + Deref + Send + Sync,
 	P: 'static + Deref + Send + Sync,
-	EventHandlerFuture: core::future::Future<Output = ()>,
+	EventHandlerFuture: core::future::Future<Output = Result<(), ReplayEvent>>,
 	EventHandler: Fn(Event) -> EventHandlerFuture,
 	PS: 'static + Deref + Send,
 	M: 'static + Deref<Target = ChainMonitor<<CM::Target as AChannelManager>::Signer, CF, T, F, L, P>> + Send + Sync,
@@ -703,12 +706,16 @@ where
 					if update_scorer(scorer, &event, duration_since_epoch) {
 						log_trace!(logger, "Persisting scorer after update");
 						if let Err(e) = persister.persist_scorer(&scorer) {
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e)
+							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
+							// We opt not to abort early on persistence failure here as persisting
+							// the scorer is non-critical and we still hope that it will have
+							// resolved itself when it is potentially critical in event handling
+							// below.
 						}
 					}
 				}
 			}
-			event_handler(event).await;
+			event_handler(event).await
 		})
 	};
 	define_run_body!(
@@ -841,7 +848,7 @@ impl BackgroundProcessor {
 						}
 					}
 				}
-				event_handler.handle_event(event);
+				event_handler.handle_event(event)
 			};
 			define_run_body!(
 				persister, chain_monitor, chain_monitor.process_pending_events(&event_handler),
@@ -1425,7 +1432,7 @@ mod tests {
 		// Initiate the background processors to watch each node.
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
-		let event_handler = |_: _| {};
+		let event_handler = |_: _| { Ok(()) };
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()), nodes[0].p2p_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		macro_rules! check_persisted_data {
@@ -1493,7 +1500,7 @@ mod tests {
 		let (_, nodes) = create_nodes(1, "test_timer_tick_called");
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
-		let event_handler = |_: _| {};
+		let event_handler = |_: _| { Ok(()) };
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 		loop {
 			let log_entries = nodes[0].logger.lines.lock().unwrap();
@@ -1522,7 +1529,7 @@ mod tests {
 
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"));
-		let event_handler = |_: _| {};
+		let event_handler = |_: _| { Ok(()) };
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 		match bg_processor.join() {
 			Ok(_) => panic!("Expected error persisting manager"),
@@ -1544,7 +1551,7 @@ mod tests {
 		let persister = Arc::new(Persister::new(data_dir).with_manager_error(std::io::ErrorKind::Other, "test"));
 
 		let bp_future = super::process_events_async(
-			persister, |_: _| {async {}}, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()),
+			persister, |_: _| {async { Ok(()) }}, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()), move |dur: Duration| {
 				Box::pin(async move {
@@ -1568,7 +1575,7 @@ mod tests {
 		let (_, nodes) = create_nodes(2, "test_persist_network_graph_error");
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_error(std::io::ErrorKind::Other, "test"));
-		let event_handler = |_: _| {};
+		let event_handler = |_: _| { Ok(()) };
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()), nodes[0].p2p_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		match bg_processor.stop() {
@@ -1586,7 +1593,7 @@ mod tests {
 		let (_, nodes) = create_nodes(2, "test_persist_scorer_error");
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_scorer_error(std::io::ErrorKind::Other, "test"));
-		let event_handler = |_: _| {};
+		let event_handler = |_: _| { Ok(()) };
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(),  nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		match bg_processor.stop() {
@@ -1608,11 +1615,14 @@ mod tests {
 		// Set up a background event handler for FundingGenerationReady events.
 		let (funding_generation_send, funding_generation_recv) = std::sync::mpsc::sync_channel(1);
 		let (channel_pending_send, channel_pending_recv) = std::sync::mpsc::sync_channel(1);
-		let event_handler = move |event: Event| match event {
-			Event::FundingGenerationReady { .. } => funding_generation_send.send(handle_funding_generation_ready!(event, channel_value)).unwrap(),
-			Event::ChannelPending { .. } => channel_pending_send.send(()).unwrap(),
-			Event::ChannelReady { .. } => {},
-			_ => panic!("Unexpected event: {:?}", event),
+		let event_handler = move |event: Event| {
+			match event {
+				Event::FundingGenerationReady { .. } => funding_generation_send.send(handle_funding_generation_ready!(event, channel_value)).unwrap(),
+				Event::ChannelPending { .. } => channel_pending_send.send(()).unwrap(),
+				Event::ChannelReady { .. } => {},
+				_ => panic!("Unexpected event: {:?}", event),
+			}
+			Ok(())
 		};
 
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
@@ -1648,11 +1658,14 @@ mod tests {
 
 		// Set up a background event handler for SpendableOutputs events.
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-		let event_handler = move |event: Event| match event {
-			Event::SpendableOutputs { .. } => sender.send(event).unwrap(),
-			Event::ChannelReady { .. } => {},
-			Event::ChannelClosed { .. } => {},
-			_ => panic!("Unexpected event: {:?}", event),
+		let event_handler = move |event: Event| {
+			match event {
+				Event::SpendableOutputs { .. } => sender.send(event).unwrap(),
+				Event::ChannelReady { .. } => {},
+				Event::ChannelClosed { .. } => {},
+				_ => panic!("Unexpected event: {:?}", event),
+			}
+			Ok(())
 		};
 		let persister = Arc::new(Persister::new(data_dir));
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
@@ -1766,7 +1779,7 @@ mod tests {
 		let (_, nodes) = create_nodes(2, "test_scorer_persistence");
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir));
-		let event_handler = |_: _| {};
+		let event_handler = |_: _| { Ok(()) };
 		let bg_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()), nodes[0].no_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		loop {
@@ -1839,7 +1852,7 @@ mod tests {
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir).with_graph_persistence_notifier(sender));
 
-		let event_handler = |_: _| {};
+		let event_handler = |_: _| { Ok(()) };
 		let background_processor = BackgroundProcessor::start(persister, event_handler, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()), nodes[0].rapid_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(), Some(nodes[0].scorer.clone()));
 
 		do_test_not_pruning_network_graph_until_graph_sync_completion!(nodes,
@@ -1860,7 +1873,7 @@ mod tests {
 
 		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
 		let bp_future = super::process_events_async(
-			persister, |_: _| {async {}}, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()),
+			persister, |_: _| {async { Ok(()) }}, nodes[0].chain_monitor.clone(), nodes[0].node.clone(), Some(nodes[0].messenger.clone()),
 			nodes[0].rapid_gossip_sync(), nodes[0].peer_manager.clone(), nodes[0].logger.clone(),
 			Some(nodes[0].scorer.clone()), move |dur: Duration| {
 				let mut exit_receiver = exit_receiver.clone();
@@ -1987,12 +2000,15 @@ mod tests {
 	#[test]
 	fn test_payment_path_scoring() {
 		let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-		let event_handler = move |event: Event| match event {
-			Event::PaymentPathFailed { .. } => sender.send(event).unwrap(),
-			Event::PaymentPathSuccessful { .. } => sender.send(event).unwrap(),
-			Event::ProbeSuccessful { .. } => sender.send(event).unwrap(),
-			Event::ProbeFailed { .. } => sender.send(event).unwrap(),
-			_ => panic!("Unexpected event: {:?}", event),
+		let event_handler = move |event: Event| {
+			match event {
+				Event::PaymentPathFailed { .. } => sender.send(event).unwrap(),
+				Event::PaymentPathSuccessful { .. } => sender.send(event).unwrap(),
+				Event::ProbeSuccessful { .. } => sender.send(event).unwrap(),
+				Event::ProbeFailed { .. } => sender.send(event).unwrap(),
+				_ => panic!("Unexpected event: {:?}", event),
+			}
+			Ok(())
 		};
 
 		let (_, nodes) = create_nodes(1, "test_payment_path_scoring");
@@ -2025,6 +2041,7 @@ mod tests {
 					Event::ProbeFailed { .. } => { sender_ref.send(event).await.unwrap() },
 					_ => panic!("Unexpected event: {:?}", event),
 				}
+				Ok(())
 			}
 		};
 
