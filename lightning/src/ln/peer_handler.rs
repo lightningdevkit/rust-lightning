@@ -388,6 +388,8 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_tx_abort(&self, their_node_id: &PublicKey, msg: &msgs::TxAbort) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+
+	fn handle_message_received(&self) {}
 }
 
 impl Deref for ErroringMessageHandler {
@@ -1750,6 +1752,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		} else {
 			log_trace!(logger, "Received message {:?} from {}", message, log_pubkey!(their_node_id));
 		}
+
+		self.message_handler.chan_handler.handle_message_received();
 
 		let mut should_forward = None;
 

@@ -62,7 +62,7 @@ use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutb
 use crate::ln::wire::Encode;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
+use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
@@ -8461,7 +8461,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
 		$self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat, None
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
@@ -8489,6 +8489,43 @@ where
 	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);
 	#[cfg(c_bindings)]
 	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
+
+	fn create_invoice_request_messages(&self, invoice_request: InvoiceRequest, reply_path: BlindedPath)
+	-> Result<Vec<PendingOnionMessage<OffersMessage>>, Bolt12SemanticError> {
+		let paths = invoice_request.paths();
+		let signing_pubkey = invoice_request.signing_pubkey();
+
+		if paths.is_empty() && signing_pubkey.is_none() {
+			debug_assert!(false);
+			return Err(Bolt12SemanticError::MissingSigningPubkey);
+		}
+
+		// Send as many invoice requests as there are paths in the offer (with an upper bound).
+		// Using only one path could result in a failure if the path no longer exists. But only
+		// one invoice for a given payment id will be paid, even if more than one is received.
+		const REQUEST_LIMIT: usize = 10;
+
+		let messages = if !paths.is_empty() {
+			paths.into_iter()
+				.take(REQUEST_LIMIT)
+				.map(|path| {
+					new_pending_onion_message(
+						OffersMessage::InvoiceRequest(invoice_request.clone()),
+						Destination::BlindedPath(path.clone()),
+						Some(reply_path.clone()),
+					)
+				})
+				.collect()
+		} else {
+			vec![new_pending_onion_message(
+				OffersMessage::InvoiceRequest(invoice_request.clone()),
+				Destination::Node(signing_pubkey.unwrap()),
+				Some(reply_path.clone()),
+			)]
+		};
+
+		Ok(messages)
+	}
 
 	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
 	/// enqueuing it to be sent via an onion message. [`ChannelManager`] will pay the actual
@@ -8577,35 +8614,13 @@ where
 		let expiration = StaleExpiration::TimerTicks(1);
 		self.pending_outbound_payments
 			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, max_total_routing_fee_msat
+				payment_id, expiration, retry_strategy, max_total_routing_fee_msat, Some(invoice_request.clone())
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
-		if !offer.paths().is_empty() {
-			// Send as many invoice requests as there are paths in the offer (with an upper bound).
-			// Using only one path could result in a failure if the path no longer exists. But only
-			// one invoice for a given payment id will be paid, even if more than one is received.
-			const REQUEST_LIMIT: usize = 10;
-			for path in offer.paths().into_iter().take(REQUEST_LIMIT) {
-				let message = new_pending_onion_message(
-					OffersMessage::InvoiceRequest(invoice_request.clone()),
-					Destination::BlindedPath(path.clone()),
-					Some(reply_path.clone()),
-				);
-				pending_offers_messages.push(message);
-			}
-		} else if let Some(signing_pubkey) = offer.signing_pubkey() {
-			let message = new_pending_onion_message(
-				OffersMessage::InvoiceRequest(invoice_request),
-				Destination::Node(signing_pubkey),
-				Some(reply_path),
-			);
-			pending_offers_messages.push(message);
-		} else {
-			debug_assert!(false);
-			return Err(Bolt12SemanticError::MissingSigningPubkey);
-		}
+		pending_offers_messages.extend(self.create_invoice_request_messages(invoice_request, reply_path)?);
+		self.pending_outbound_payments.awaiting_invoice_flag.store(true, Ordering::SeqCst);
 
 		Ok(())
 	}
@@ -10238,6 +10253,25 @@ where
 			"Dual-funded channels not supported".to_owned(),
 			 msg.channel_id.clone())), *counterparty_node_id);
 	}
+
+	fn handle_message_received(&self) {
+		let invoice_requests = self.pending_outbound_payments.get_invoice_request_awaiting_invoice();
+		if invoice_requests.is_empty() {
+			return;
+		}
+		let reply_path = match self.create_blinded_path() {
+			Ok(path) => path,
+			Err(_) => return,
+		};
+		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
+		for invoice_request in invoice_requests {
+			if let Ok(messages) = self.create_invoice_request_messages(
+				invoice_request, reply_path.clone()
+			) {
+				pending_offers_messages.extend(messages);
+			}
+		}
+	}
 }
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>
@@ -11597,8 +11631,11 @@ where
 		}
 		let pending_outbounds = OutboundPayments {
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
+			awaiting_invoice_flag: AtomicBool::new(false),
 			retry_lock: Mutex::new(())
 		};
+
+		pending_outbounds.set_awaiting_invoice_flag();
 
 		// We have to replay (or skip, if they were completed after we wrote the `ChannelManager`)
 		// each `ChannelMonitorUpdate` in `in_flight_monitor_updates`. After doing so, we have to

@@ -662,11 +662,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
-/// Checks that an offer can be paid through a one-hop blinded path and that ephemeral pubkeys are
-/// used rather than exposing a node's pubkey. However, the node's pubkey is still used as the
-/// introduction node of the blinded path.
-#[test]
-fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
+fn do_creates_and_pays_for_offer_using_one_hop_blinded_path(with_message_retry: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -688,12 +684,20 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
 	}
-
 	let payment_id = PaymentId([1; 32]);
 	bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None).unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	let mut onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+
+	// Simulate a scenario where the original onion_message is lost before reaching Alice.
+	// Use handle_message_received to regenerate the message.
+	// If with_message_retry is true, ensure handle_message_received executes successfully.
+	if with_message_retry {
+		bob.node.handle_message_received();
+		onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	}
+
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
@@ -708,9 +712,20 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), bob_id);
 	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(bob_id));
-
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	if with_message_retry {
+		// Expect no more OffersMessage to be enqueued by this point, even after calling
+		// handle_message_received.
+		bob.node.handle_message_received();
+
+		let result = bob.onion_messenger.next_onion_message_for_peer(alice_id);
+		match result {
+			Some(_) => panic!("Unexpected message enqueued after retry tick."),
+			None => assert!(true),
+		}
+	}
 
 	let invoice = extract_invoice(bob, &onion_message);
 	assert_eq!(invoice.amount_msats(), 10_000_000);
@@ -719,12 +734,19 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	for (_, path) in invoice.payment_paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
 	}
-
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
-
 	claim_bolt12_payment(bob, &[alice], payment_context);
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks that an offer can be paid through a one-hop blinded path and that ephemeral pubkeys are
+/// used rather than exposing a node's pubkey. However, the node's pubkey is still used as the
+/// introduction node of the blinded path.
+#[test]
+fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
+	do_creates_and_pays_for_offer_using_one_hop_blinded_path(false);
+	do_creates_and_pays_for_offer_using_one_hop_blinded_path(true);
 }
 
 /// Checks that a refund can be paid through a one-hop blinded path and that ephemeral pubkeys are
