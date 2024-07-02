@@ -1231,7 +1231,7 @@ impl OutboundPayments {
 				}
 			}
 		}
-		let (total_msat, recipient_onion, keysend_preimage, onion_session_privs) = {
+		let (total_msat, recipient_onion, keysend_preimage, invoice_request, onion_session_privs) = {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			match outbounds.entry(payment_id) {
 				hash_map::Entry::Occupied(mut payment) => {
@@ -1273,7 +1273,7 @@ impl OutboundPayments {
 
 							payment.get_mut().increment_attempts();
 
-							(total_msat, recipient_onion, keysend_preimage, onion_session_privs)
+							(total_msat, recipient_onion, keysend_preimage, None, onion_session_privs)
 						},
 						PendingOutboundPayment::Legacy { .. } => {
 							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
@@ -1291,7 +1291,7 @@ impl OutboundPayments {
 						},
 						PendingOutboundPayment::StaticInvoiceReceived { .. } => {
 							let PendingOutboundPayment::StaticInvoiceReceived {
-								payment_hash, keysend_preimage, retry_strategy, ..
+								payment_hash, keysend_preimage, retry_strategy, invoice_request, ..
 							} = payment.remove() else { debug_assert!(false); return };
 							let total_amount = route_params.final_value_msat;
 							let recipient_onion = RecipientOnionFields::spontaneous_empty();
@@ -1301,7 +1301,8 @@ impl OutboundPayments {
 								Some(retry_strategy), payment_params, entropy_source, best_block_height
 							);
 							outbounds.insert(payment_id, retryable_payment);
-							(total_amount, recipient_onion, Some(keysend_preimage), onion_session_privs)
+							(total_amount, recipient_onion, Some(keysend_preimage), Some(invoice_request),
+							 onion_session_privs)
 						},
 						PendingOutboundPayment::Fulfilled { .. } => {
 							log_error!(logger, "Payment already completed");
@@ -1320,8 +1321,8 @@ impl OutboundPayments {
 			}
 		};
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion, keysend_preimage,
-			None, payment_id, Some(total_msat), onion_session_privs, node_signer, best_block_height,
-			&send_payment_along_path);
+			invoice_request.as_ref(), payment_id, Some(total_msat), onion_session_privs, node_signer,
+			best_block_height, &send_payment_along_path);
 		log_info!(logger, "Result retrying payment id {}: {:?}", &payment_id, res);
 		if let Err(e) = res {
 			self.handle_pay_route_err(e, payment_id, payment_hash, route, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
