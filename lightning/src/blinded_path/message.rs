@@ -22,6 +22,7 @@ use crate::io;
 use crate::io::Cursor;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::onion_utils;
+use crate::offers::nonce::Nonce;
 use crate::onion_message::packet::ControlTlvs;
 use crate::sign::{NodeSigner, Recipient};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
@@ -112,6 +113,20 @@ pub enum OffersContext {
 	/// This variant is used when a message is sent without using a [`BlindedPath`] or over one
 	/// created prior to LDK version 0.0.124.
 	Unknown {},
+	/// Context used by a [`BlindedPath`] within an [`Offer`].
+	///
+	/// This variant is intended to be received when handling an [`InvoiceRequest`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	InvoiceRequest {
+		/// A nonce used for authenticating that an [`InvoiceRequest`] is for a valid [`Offer`] and
+		/// for deriving the offer's signing keys.
+		///
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		/// [`Offer`]: crate::offers::offer::Offer
+		nonce: Nonce,
+	},
 	/// Context used by a [`BlindedPath`] within a [`Refund`] or as a reply path for an
 	/// [`InvoiceRequest`].
 	///
@@ -138,7 +153,10 @@ impl_writeable_tlv_based_enum!(MessageContext,
 
 impl_writeable_tlv_based_enum!(OffersContext,
 	(0, Unknown) => {},
-	(1, OutboundPayment) => {
+	(1, InvoiceRequest) => {
+		(0, nonce, required),
+	},
+	(2, OutboundPayment) => {
 		(0, payment_id, required),
 	},
 );

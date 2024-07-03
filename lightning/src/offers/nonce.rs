@@ -9,7 +9,10 @@
 
 //! A number used only once.
 
+use crate::io::{self, Read};
+use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
+use crate::util::ser::{Readable, Writeable, Writer};
 use core::ops::Deref;
 
 #[allow(unused_imports)]
@@ -60,5 +63,17 @@ impl TryFrom<&[u8]> for Nonce {
 		copied_bytes.copy_from_slice(bytes);
 
 		Ok(Self(copied_bytes))
+	}
+}
+
+impl Writeable for Nonce {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for Nonce {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(Nonce(Readable::read(r)?))
 	}
 }
