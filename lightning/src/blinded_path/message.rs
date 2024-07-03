@@ -21,7 +21,7 @@ use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
 use crate::ln::channelmanager::PaymentId;
-use crate::ln::onion_utils;
+use crate::ln::{PaymentHash, onion_utils};
 use crate::offers::nonce::Nonce;
 use crate::onion_message::packet::ControlTlvs;
 use crate::sign::{NodeSigner, Recipient};
@@ -152,6 +152,18 @@ pub enum OffersContext {
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		nonce: Nonce,
 	},
+	/// Context used by a [`BlindedPath`] as a reply path for a [`Bolt12Invoice`].
+	///
+	/// This variant is intended to be received when handling an [`InvoiceError`].
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
+	InboundPayment {
+		/// The same payment hash as [`Bolt12Invoice::payment_hash`].
+		///
+		/// [`Bolt12Invoice::payment_hash`]: crate::offers::invoice::Bolt12Invoice::payment_hash
+		payment_hash: PaymentHash,
+	},
 }
 
 impl_writeable_tlv_based_enum!(MessageContext,
@@ -167,6 +179,9 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	(2, OutboundPayment) => {
 		(0, payment_id, required),
 		(1, nonce, required),
+	},
+	(3, InboundPayment) => {
+		(0, payment_hash, required),
 	},
 );
 

@@ -10879,8 +10879,14 @@ where
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
+				let payment_hash = match context {
+					OffersContext::InboundPayment { payment_hash } => Some(payment_hash),
+					_ => None,
+				};
+				let logger = WithContext::from(&self.logger, None, None, payment_hash);
+				log_trace!(logger, "Received invoice_error: {}", invoice_error);
+
 				abandon_if_payment(context);
-				log_trace!(self.logger, "Received invoice_error: {}", invoice_error);
 				ResponseInstruction::NoResponse
 			},
 		}
