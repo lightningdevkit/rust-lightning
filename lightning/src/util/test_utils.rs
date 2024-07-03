@@ -116,7 +116,6 @@ pub struct TestRouter<'a> {
 		(),
 		TestScorer,
 	>,
-	//pub entropy_source: &'a RandomBytes,
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Option<Result<Route, LightningError>>)>>,
 	pub scorer: &'a RwLock<TestScorer>,
