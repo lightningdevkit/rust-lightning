@@ -10719,10 +10719,7 @@ where
 					},
 					None => match invoice_request.verify_using_metadata(expanded_key, secp_ctx) {
 						Ok(invoice_request) => invoice_request,
-						Err(()) => {
-							let error = Bolt12SemanticError::InvalidMetadata;
-							return responder.respond(OffersMessage::InvoiceError(error.into()));
-						},
+						Err(()) => return ResponseInstruction::NoResponse,
 					},
 				};
 
@@ -10833,7 +10830,7 @@ where
 								})
 						}
 					},
-					Err(()) => Err(InvoiceError::from_string("Unrecognized invoice".to_owned())),
+					Err(()) => return ResponseInstruction::NoResponse,
 				};
 
 				match result {
