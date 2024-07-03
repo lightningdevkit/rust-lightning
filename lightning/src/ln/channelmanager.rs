@@ -2255,7 +2255,10 @@ where
 	event_persist_notifier: Notifier,
 	needs_persist_flag: AtomicBool,
 
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	pending_offers_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) pending_offers_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,

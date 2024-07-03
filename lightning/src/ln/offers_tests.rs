@@ -54,7 +54,7 @@ use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use crate::offers::parse::Bolt12SemanticError;
-use crate::onion_message::messenger::PeeledOnion;
+use crate::onion_message::messenger::{Destination, PeeledOnion};
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -1232,6 +1232,346 @@ fn creates_refund_with_blinded_path_using_unannounced_introduction_node() {
 	for (_, path) in invoice.payment_paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
 	}
+}
+
+/// Check that authentication fails when an invoice request is handled using the wrong context
+/// (i.e., was sent directly or over an unexpected blinded path).
+#[test]
+fn fails_authentication_when_handling_invoice_request() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.set_route_blinding_optional();
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let alice_id = alice.node.get_our_node_id();
+	let bob_id = bob.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+	let david_id = david.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let offer = alice.node
+		.create_offer_builder(None)
+		.unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_eq!(offer.metadata(), None);
+	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert!(!offer.paths().is_empty());
+	for path in offer.paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+	}
+
+	let invalid_path = alice.node
+		.create_offer_builder(None)
+		.unwrap()
+		.build().unwrap()
+		.paths().first().unwrap()
+		.clone();
+	assert_eq!(invalid_path.introduction_node, IntroductionNode::NodeId(bob_id));
+
+	// Send the invoice request directly to Alice instead of using a blinded path.
+	let payment_id = PaymentId([1; 32]);
+	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+		.unwrap();
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	connect_peers(david, alice);
+	#[cfg(not(c_bindings))] {
+		david.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().destination =
+			Destination::Node(alice_id);
+	}
+	#[cfg(c_bindings)] {
+		david.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 =
+			Destination::Node(alice_id);
+	}
+
+	let onion_message = david.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(&david_id, &onion_message);
+
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	assert_eq!(invoice_request.amount_msats(), None);
+	assert_ne!(invoice_request.payer_id(), david_id);
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(charlie_id));
+
+	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
+
+	david.node.abandon_payment(payment_id);
+	get_event!(david, Event::InvoiceRequestFailed);
+
+	// Send the invoice request to Alice using an invalid blinded path.
+	let payment_id = PaymentId([2; 32]);
+	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+		.unwrap();
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	#[cfg(not(c_bindings))] {
+		david.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().destination =
+			Destination::BlindedPath(invalid_path);
+	}
+	#[cfg(c_bindings)] {
+		david.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 =
+			Destination::BlindedPath(invalid_path);
+	}
+
+	connect_peers(david, bob);
+
+	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&david_id, &onion_message);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
+
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	assert_eq!(invoice_request.amount_msats(), None);
+	assert_ne!(invoice_request.payer_id(), david_id);
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(charlie_id));
+
+	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
+}
+
+/// Check that authentication fails when an invoice is handled using the wrong context (i.e., was
+/// sent over an unexpected blinded path).
+#[test]
+fn fails_authentication_when_handling_invoice_for_offer() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.set_route_blinding_optional();
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let alice_id = alice.node.get_our_node_id();
+	let bob_id = bob.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+	let david_id = david.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let offer = alice.node
+		.create_offer_builder(None)
+		.unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert!(!offer.paths().is_empty());
+	for path in offer.paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
+	}
+
+	// Initiate an invoice request, but abandon tracking it.
+	let payment_id = PaymentId([1; 32]);
+	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+		.unwrap();
+	david.node.abandon_payment(payment_id);
+	get_event!(david, Event::InvoiceRequestFailed);
+
+	// Don't send the invoice request, but grab its reply path to use with a different request.
+	let invalid_reply_path = {
+		let mut pending_offers_messages = david.node.pending_offers_messages.lock().unwrap();
+		let pending_invoice_request = pending_offers_messages.pop().unwrap();
+		pending_offers_messages.clear();
+		#[cfg(not(c_bindings))] {
+			pending_invoice_request.reply_path
+		}
+		#[cfg(c_bindings)] {
+			pending_invoice_request.2
+		}
+	};
+
+	let payment_id = PaymentId([2; 32]);
+	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+		.unwrap();
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	// Swap out the reply path to force authentication to fail when handling the invoice since it
+	// will be sent over the wrong blinded path.
+	{
+		let mut pending_offers_messages = david.node.pending_offers_messages.lock().unwrap();
+		let mut pending_invoice_request = pending_offers_messages.first_mut().unwrap();
+		#[cfg(not(c_bindings))] {
+			pending_invoice_request.reply_path = invalid_reply_path;
+		}
+		#[cfg(c_bindings)] {
+			pending_invoice_request.2 = invalid_reply_path;
+		}
+	}
+
+	connect_peers(david, bob);
+
+	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(&david_id, &onion_message);
+
+	connect_peers(alice, charlie);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
+
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	assert_eq!(invoice_request.amount_msats(), None);
+	assert_ne!(invoice_request.payer_id(), david_id);
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(charlie_id));
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
+	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
+
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+}
+
+/// Check that authentication fails when an invoice is handled using the wrong context (i.e., was
+/// sent directly or over an unexpected blinded path).
+#[test]
+fn fails_authentication_when_handling_invoice_for_refund() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.set_route_blinding_optional();
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let alice_id = alice.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+	let david_id = david.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let absolute_expiry = Duration::from_secs(u64::MAX);
+	let payment_id = PaymentId([1; 32]);
+	let refund = david.node
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
+		.unwrap()
+		.build().unwrap();
+	assert_ne!(refund.payer_id(), david_id);
+	assert!(!refund.paths().is_empty());
+	for path in refund.paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(charlie_id));
+	}
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	// Send the invoice directly to David instead of using a blinded path.
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
+
+	connect_peers(david, alice);
+	#[cfg(not(c_bindings))] {
+		alice.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().destination =
+			Destination::Node(david_id);
+	}
+	#[cfg(c_bindings)] {
+		alice.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 =
+			Destination::Node(david_id);
+	}
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	david.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let (invoice, _) = extract_invoice(david, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
+	david.node.abandon_payment(payment_id);
+	get_event!(david, Event::InvoiceRequestFailed);
+
+	// Send the invoice to David using an invalid blinded path.
+	let invalid_path = refund.paths().first().unwrap().clone();
+	let payment_id = PaymentId([2; 32]);
+	let refund = david.node
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
+		.unwrap()
+		.build().unwrap();
+	assert_ne!(refund.payer_id(), david_id);
+	assert!(!refund.paths().is_empty());
+	for path in refund.paths() {
+		assert_eq!(path.introduction_node, IntroductionNode::NodeId(charlie_id));
+	}
+
+	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
+
+	#[cfg(not(c_bindings))] {
+		alice.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().destination =
+			Destination::BlindedPath(invalid_path);
+	}
+	#[cfg(c_bindings)] {
+		alice.node.pending_offers_messages.lock().unwrap().first_mut().unwrap().1 =
+			Destination::BlindedPath(invalid_path);
+	}
+
+	connect_peers(alice, charlie);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
+	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
+
+	let (invoice, _) = extract_invoice(david, &onion_message);
+	assert_eq!(invoice, expected_invoice);
+
+	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 }
 
 /// Fails creating or paying an offer when a blinded path cannot be created because no peers are
