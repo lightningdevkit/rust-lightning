@@ -10828,6 +10828,10 @@ where
 					Err(()) => return ResponseInstruction::NoResponse,
 				};
 
+				let logger = WithContext::from(
+					&self.logger, None, None, Some(invoice.payment_hash()),
+				);
+
 				let result = {
 					let features = self.bolt12_invoice_features();
 					if invoice.invoice_features().requires_unknown_bits_from(&features) {
@@ -10841,7 +10845,7 @@ where
 					} else {
 						self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id)
 							.map_err(|e| {
-								log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+								log_trace!(logger, "Failed paying invoice: {:?}", e);
 								InvoiceError::from_string(format!("{:?}", e))
 							})
 					}
@@ -10857,7 +10861,7 @@ where
 						None => {
 							abandon_if_payment(context);
 							log_trace!(
-								self.logger,
+								logger,
 								"An error response was generated, but there is no reply_path specified \
 								for sending the response. Error: {}",
 								err
