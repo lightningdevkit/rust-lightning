@@ -2902,7 +2902,7 @@ impl Writeable for UnsignedChannelUpdate {
 		self.chain_hash.write(w)?;
 		self.short_channel_id.write(w)?;
 		self.timestamp.write(w)?;
-		// Thw low bit of message_flags used to indicate the presence of `htlc_maximum_msat`, and
+		// The low bit of message_flags used to indicate the presence of `htlc_maximum_msat`, and
 		// now must be set
 		(self.message_flags | 1).write(w)?;
 		self.channel_flags.write(w)?;
