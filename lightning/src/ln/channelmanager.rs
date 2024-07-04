@@ -30,6 +30,8 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 use crate::blinded_path::{BlindedPath, NodeIdLookUp};
 use crate::blinded_path::message::ForwardNode;
@@ -403,6 +405,7 @@ impl From<&ClaimableHTLC> for events::ClaimedHTLC {
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PaymentId(pub [u8; Self::LENGTH]);
 
 impl PaymentId {

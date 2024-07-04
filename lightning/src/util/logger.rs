@@ -15,6 +15,8 @@
 //! Each module may have its own Logger or share one.
 
 use bitcoin::secp256k1::PublicKey;
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 use core::cmp;
 use core::fmt;
@@ -29,6 +31,7 @@ static LOG_LEVEL_NAMES: [&'static str; 6] = ["GOSSIP", "TRACE", "DEBUG", "INFO",
 
 /// An enum representing the available verbosity levels of the logger.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Level {
 	/// Designates extremely verbose information, including gossip-induced messages
 	Gossip,

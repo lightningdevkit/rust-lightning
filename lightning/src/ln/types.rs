@@ -24,6 +24,8 @@ use bitcoin::hashes::{
 	HashEngine as _,
 	sha256::Hash as Sha256,
 };
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use core::fmt;
 use core::ops::Deref;
 
@@ -36,6 +38,7 @@ use core::ops::Deref;
 /// (Later revocation-point-based _v2_ is a possibility.)
 /// The variety (context) is not stored, it is relevant only at creation.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ChannelId(pub [u8; 32]);
 
 impl ChannelId {
@@ -127,6 +130,7 @@ impl fmt::Display for ChannelId {
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PaymentHash(pub [u8; 32]);
 
 impl core::fmt::Display for PaymentHash {
@@ -140,6 +144,7 @@ impl core::fmt::Display for PaymentHash {
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PaymentPreimage(pub [u8; 32]);
 
 impl core::fmt::Display for PaymentPreimage {
