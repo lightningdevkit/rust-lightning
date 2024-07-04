@@ -11,6 +11,7 @@
 
 use crate::io;
 use crate::ln::msgs::DecodeError;
+#[cfg(not(c_bindings))]
 use crate::onion_message::messenger::PendingOnionMessage;
 use crate::onion_message::messenger::{Responder, ResponseInstruction};
 use crate::onion_message::packet::OnionMessageContents;
