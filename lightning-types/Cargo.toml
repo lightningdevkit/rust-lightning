@@ -14,10 +14,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 _test_utils = []
+# Enable serde support
+serde = ["dep:serde", "bitcoin/serde"]
 
 [dependencies]
 bitcoin = { version = "0.32.2", default-features = false }
 bech32 = { version = "0.9", default-features = false }
+serde = { version = "1.0.203", optional = true, features = ["derive"] }
 
 [lints]
 workspace = true

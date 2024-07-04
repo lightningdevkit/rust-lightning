@@ -11,9 +11,12 @@
 
 use alloc::string::String;
 use core::fmt;
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 /// Struct to `Display` fields in a safe way using `PrintableString`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UntrustedString(pub String);
 
 impl fmt::Display for UntrustedString {

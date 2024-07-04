@@ -33,6 +33,8 @@ use bitcoin::hashes::{
 use bitcoin::hex::display::impl_fmt_traits;
 use core::borrow::Borrow;
 use core::ops::Deref;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// A unique 32-byte identifier for a channel.
 /// Depending on how the ID is generated, several varieties are distinguished
@@ -43,6 +45,7 @@ use core::ops::Deref;
 /// (Later revocation-point-based _v2_ is a possibility.)
 /// The variety (context) is not stored, it is relevant only at creation.
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ChannelId(pub [u8; 32]);
 
 impl ChannelId {

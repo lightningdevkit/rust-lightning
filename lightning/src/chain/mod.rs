@@ -15,6 +15,8 @@ use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::Network;
 use bitcoin::secp256k1::PublicKey;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
 use crate::ln::types::ChannelId;
@@ -34,6 +36,7 @@ pub(crate) mod package;
 
 /// The best known block as identified by its hash and height.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BestBlock {
 	/// The block's hash
 	pub block_hash: BlockHash,

@@ -9,6 +9,8 @@
 
 //! Various user-configurable channel limits and settings which ChannelManager
 //! applies for you.
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
@@ -371,6 +373,7 @@ impl Readable for ChannelHandshakeLimits {
 /// Options for how to set the max dust exposure allowed on a channel. See
 /// [`ChannelConfig::max_dust_htlc_exposure`] for details.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum MaxDustHTLCExposure {
 	/// This sets a fixed limit on the total dust exposure in millisatoshis. Setting this too low
 	/// may prevent the sending or receipt of low-value HTLCs on high-traffic nodes, however this
@@ -419,6 +422,7 @@ impl_writeable_tlv_based_enum_legacy!(MaxDustHTLCExposure, ;
 /// Options which apply on a per-channel basis and may change at runtime or based on negotiation
 /// with our counterparty.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ChannelConfig {
 	/// Amount (in millionths of a satoshi) charged per satoshi for payments forwarded outbound
 	/// over the channel.

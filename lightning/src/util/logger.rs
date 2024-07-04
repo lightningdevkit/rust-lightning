@@ -15,10 +15,13 @@
 //! Each module may have its own Logger or share one.
 
 use bitcoin::secp256k1::PublicKey;
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 use core::cmp;
 use core::fmt;
 use core::ops::Deref;
+use core::str::FromStr;
 
 use crate::ln::types::ChannelId;
 use crate::ln::PaymentHash;
@@ -29,6 +32,7 @@ static LOG_LEVEL_NAMES: [&'static str; 6] = ["GOSSIP", "TRACE", "DEBUG", "INFO",
 
 /// An enum representing the available verbosity levels of the logger.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Level {
 	/// Designates extremely verbose information, including gossip-induced messages
 	Gossip,
@@ -68,6 +72,22 @@ impl PartialOrd for Level {
 	#[inline]
 	fn ge(&self, other: &Level) -> bool {
 		*self as usize >= *other as usize
+	}
+}
+
+impl FromStr for Level {
+	type Err = &'static str;
+
+	fn from_str(level: &str) -> Result<Level, &'static str> {
+		match level.to_lowercase().as_str() {
+			"gossip" => Ok(Level::Gossip),
+			"trace" => Ok(Level::Trace),
+			"debug" => Ok(Level::Debug),
+			"info" => Ok(Level::Info),
+			"warn" => Ok(Level::Warn),
+			"error" => Ok(Level::Error),
+			_ => Err("Unsupported log level"),
+		}
 	}
 }
 
@@ -372,5 +392,14 @@ mod tests {
 		assert!(Level::Gossip < Level::Trace);
 		assert!(Level::Gossip <= Level::Trace);
 		assert!(Level::Gossip <= Level::Gossip);
+	}
+
+	#[cfg_attr(feature = "serde" , test)]
+	fn test_level_ser_de() {
+		let level = Level::Info;
+		let serialized = serde_json::to_string(&level).unwrap();
+		assert_eq!(serialized, r#"INFO"#);
+		let deserialized: Level = serde_json::from_str(&serialized).unwrap();
+		assert_eq!(deserialized, level);
 	}
 }

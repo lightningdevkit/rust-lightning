@@ -31,8 +31,12 @@ unsafe_revoked_tx_signing = []
 
 std = []
 
+
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
 grind_signatures = []
+
+# Enable serde support
+serde = ["dep:serde", "bitcoin/serde", "lightning-types/serde"]
 
 default = ["std", "grind_signatures"]
 
@@ -49,10 +53,12 @@ regex = { version = "1.5.6", optional = true }
 backtrace = { version = "0.3", optional = true }
 
 libm = { version = "0.2", default-features = false }
+serde = { version = "1.0.203", optional = true, features = ["derive"] }
 
 [dev-dependencies]
 regex = "1.5.6"
 lightning-types = { version = "0.1.0", path = "../lightning-types", features = ["_test_utils"] }
+serde_json = "1.0.128"
 
 [dev-dependencies.bitcoin]
 version = "0.32.2"
