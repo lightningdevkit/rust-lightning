@@ -250,6 +250,7 @@ jobs:
 
   incremental-mutants:
     runs-on: ubuntu-latest
+    if: github.ref_name != 'main' # `main` has no diff with itself
     steps:
       - uses: actions/checkout@v3
         with:
