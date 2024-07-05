@@ -3207,6 +3207,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			self.counterparty_cur_commitment_point.unwrap()
 		} else {
 			// During splicing negotiation don't advance the commitment point
+			// TODO: check if this field is set (could get here when splice is initiated on a not-yet-ready channel)
 			self.counterparty_prev_commitment_point.unwrap()
 		};
 
@@ -4863,7 +4864,13 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	/// Set the state to ChannelReady.
+	/// In case of splicing, also mark it complete.
 	fn set_channel_ready<L: Deref>(&mut self, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
+		#[cfg(splicing)]
+		if self.context.is_splice_pending() {
+			// Mark the splicing process complete
+			self.context.splice_complete(logger)?;
+		}
 		self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 		self.context.update_time_counter += 1;
 		Ok(())
