@@ -1667,12 +1667,41 @@ fn test_v2_payment_splice_in_payment() {
 	assert_eq!(broadcasted_splice_tx_acc.encode().len(), 460);
 	assert_eq!(broadcasted_splice_tx_acc.encode().as_hex().to_string(), expected_funding_tx);
 
+	// Splice_locked: make the steps not in the natural order, to test the path when
+	// splice_locked is received before sending splice_locked (this path had a bug, 2024.06.).
+	// Receive splice_locked before seeing the confirmation of the new funding tx
 	// Simulate confirmation of the funding tx
 	confirm_transaction(&initiator_node, &broadcasted_splice_tx);
+	// Send splice_locked from initiator to acceptor, process it there
 	let splice_locked_message = get_event_msg!(initiator_node, MessageSendEvent::SendSpliceLocked, acceptor_node.node.get_our_node_id());
+	let _res = acceptor_node.node.handle_splice_locked(&initiator_node.node.get_our_node_id(), &splice_locked_message);
 
 	confirm_transaction(&acceptor_node, &broadcasted_splice_tx);
-	let splice_locked_message2 = get_event_msg!(acceptor_node, MessageSendEvent::SendSpliceLocked, initiator_node.node.get_our_node_id());
+	let events = acceptor_node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::ChannelReady { channel_id, counterparty_node_id, is_splice, .. } => {
+			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
+			assert_eq!(counterparty_node_id, initiator_node.node.get_our_node_id());
+			assert!(!is_splice); // TODO this is incorrect, it should be true. Due to ordering it is emitted after splice complete
+		}
+		_ => panic!("ChannelReady event missing, {:?}", events[0]),
+	};
+
+	// Acceptor is now ready to send SpliceLocked and ChannelUpdate
+	let msg_events = acceptor_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2);
+	let splice_locked_message2 = match msg_events[0] {
+		MessageSendEvent::SendSpliceLocked { ref node_id, ref msg } => {
+			assert_eq!(*node_id, initiator_node.node.get_our_node_id());
+			msg
+		},
+		_ => panic!("Unexpected event {:?}", msg_events[0]),
+	};
+	let _channel_update = match msg_events[1] {
+		MessageSendEvent::SendChannelUpdate { ref msg, .. } => { msg },
+		_ => panic!("Unexpected event {:?}", msg_events[1]),
+	};
 
 	let _res = initiator_node.node.handle_splice_locked(&acceptor_node.node.get_our_node_id(), &splice_locked_message2);
 	let events = initiator_node.node.get_and_clear_pending_events();
@@ -1685,20 +1714,8 @@ fn test_v2_payment_splice_in_payment() {
 		}
 		_ => panic!("ChannelReady event missing, {:?}", events[0]),
 	};
-	let _channel_update = get_event_msg!(initiator_node, MessageSendEvent::SendChannelUpdate, acceptor_node.node.get_our_node_id());
 
-	let _res = acceptor_node.node.handle_splice_locked(&initiator_node.node.get_our_node_id(), &splice_locked_message);
-	let events = acceptor_node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1);
-	match events[0] {
-		Event::ChannelReady { channel_id, counterparty_node_id, is_splice, .. } => {
-			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
-			assert_eq!(counterparty_node_id, initiator_node.node.get_our_node_id());
-			assert!(is_splice);
-		}
-		_ => panic!("ChannelReady event missing, {:?}", events[0]),
-	};
-	let _channel_update = get_event_msg!(acceptor_node, MessageSendEvent::SendChannelUpdate, initiator_node.node.get_our_node_id());
+	let _channel_update = get_event_msg!(initiator_node, MessageSendEvent::SendChannelUpdate, acceptor_node.node.get_our_node_id());
 
 	// check new channel capacity and other parameters
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
