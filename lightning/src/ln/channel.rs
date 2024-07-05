@@ -4100,7 +4100,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		#[cfg(splicing)]
 		return self.pending_splice_post.is_some();
 		#[cfg(not(splicing))]
-		return false;
+		false
 	}
 
 	#[cfg(splicing)]
@@ -4862,6 +4862,13 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_id = temporary_channel_id;
 	}
 
+	/// Set the state to ChannelReady.
+	fn set_channel_ready<L: Deref>(&mut self, logger: &L) -> Result<(), ChannelError> where L::Target: Logger {
+		self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
+		self.context.update_time_counter += 1;
+		Ok(())
+	}
+
 	/// Handles a channel_ready message from our peer. If we've already sent our channel_ready
 	/// and the channel is now usable (and public), this may generate an announcement_signatures to
 	/// reply with.
@@ -4905,8 +4912,7 @@ impl<SP: Deref> Channel<SP> where
 				} else if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
 					self.context.channel_state.set_their_channel_ready();
 				} else if flags == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
-					self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
-					self.context.update_time_counter += 1;
+					self.set_channel_ready(logger)?;
 				} else {
 					// We're in `WAITING_FOR_BATCH`, so we should wait until we're ready.
 					debug_assert!(flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
@@ -4981,10 +4987,7 @@ impl<SP: Deref> Channel<SP> where
 				} else if flags.clone().clear(AwaitingChannelReadyFlags::WAITING_FOR_BATCH).is_empty() {
 					self.context.channel_state.set_their_channel_ready();
 				} else if flags == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
-					// splice_locked sent and received, mark the splicing process complete
-					self.context.splice_complete(logger)?;
-					self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
-					self.context.update_time_counter += 1;
+					self.set_channel_ready(logger)?;
 				} else {
 					// We're in `WAITING_FOR_BATCH`, so we should wait until we're ready.
 					debug_assert!(flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH));
@@ -5285,7 +5288,7 @@ impl<SP: Deref> Channel<SP> where
 
 		log_info!(logger, "Received initial commitment_signed from peer for channel {}", &self.context.channel_id());
 
-		let need_channel_ready = { let res = self.check_get_channel_ready(0); res.0.is_some() || res.1.is_some() };
+		let need_channel_ready = { let res = self.check_get_channel_ready(0, logger); res.0.is_some() || res.1.is_some() };
 		self.context.channel_state = ChannelState::AwaitingChannelReady(
 			if is_splice_pending { AwaitingChannelReadyFlags::IS_SPLICE } else { AwaitingChannelReadyFlags::new() }
 		);
@@ -6375,7 +6378,7 @@ impl<SP: Deref> Channel<SP> where
 			self.context.get_funding_signed_msg(logger).1
 		} else { None };
 		let (channel_ready, splice_locked) = if funding_signed.is_some() {
-			self.check_get_channel_ready(0)
+			self.check_get_channel_ready(0, logger)
 		} else { (None, None) };
 
 		log_trace!(logger, "Signer unblocked with {} commitment_update, {} funding_signed, {} channel_ready, and {} splice_locked",
@@ -7459,7 +7462,7 @@ impl<SP: Deref> Channel<SP> where
 		self.context.channel_update_status = status;
 	}
 
-	fn check_get_channel_ready(&mut self, height: u32) -> (Option<msgs::ChannelReady>, Option<msgs::SpliceLocked>) {
+	fn check_get_channel_ready<L: Deref>(&mut self, height: u32, logger: &L) -> (Option<msgs::ChannelReady>, Option<msgs::SpliceLocked>) where L::Target: Logger {
 		// Called:
 		//  * always when a new block/transactions are confirmed with the new height
 		//  * when funding is signed with a height of 0
@@ -7496,8 +7499,7 @@ impl<SP: Deref> Channel<SP> where
 			self.context.channel_state.set_our_channel_ready();
 			true
 		} else if await_flags.is_some() && await_flags.unwrap() == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY {
-			self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
-			self.context.update_time_counter += 1;
+			let _res = self.set_channel_ready(logger);
 			true
 		} else if await_flags.is_some() && await_flags.unwrap() == AwaitingChannelReadyFlags::OUR_CHANNEL_READY {
 			// We got a reorg but not enough to trigger a force close, just ignore.
@@ -7615,7 +7617,7 @@ impl<SP: Deref> Channel<SP> where
 					// If we allow 1-conf funding, we may need to check for channel_ready here and
 					// send it immediately instead of waiting for a best_block_updated call (which
 					// may have already happened for this block).
-					let (channel_ready_opt, splice_locked_opt) = self.check_get_channel_ready(height);
+					let (channel_ready_opt, splice_locked_opt) = self.check_get_channel_ready(height, logger);
 					if let Some(channel_ready) = channel_ready_opt {
 						log_info!(logger, "Sending a channel_ready to our peer for channel {}", &self.context.channel_id);
 						let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
@@ -7687,7 +7689,7 @@ impl<SP: Deref> Channel<SP> where
 
 		self.context.update_time_counter = cmp::max(self.context.update_time_counter, highest_header_time);
 
-		let (channel_ready_opt, splice_locked_opt) = self.check_get_channel_ready(height);
+		let (channel_ready_opt, splice_locked_opt) = self.check_get_channel_ready(height, logger);
 		if let Some(channel_ready) = channel_ready_opt {
 			let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
@@ -8809,7 +8811,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			interactive_tx_signing_session: None,
 		};
 
-		let need_channel_ready = channel.check_get_channel_ready(0).0.is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).0.is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 		Ok((channel, channel_monitor))
 	}
@@ -9100,7 +9102,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			#[cfg(any(dual_funding, splicing))]
 			interactive_tx_signing_session: None,
 		};
-		let need_channel_ready = channel.check_get_channel_ready(0).0.is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).0.is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok((channel, funding_signed, channel_monitor))
@@ -12534,6 +12536,6 @@ mod tests {
 		// Clear the ChannelState::WaitingForBatch only when called by ChannelManager.
 		node_a_chan.set_batch_ready();
 		assert_eq!(node_a_chan.context.channel_state, ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY));
-		assert!(node_a_chan.check_get_channel_ready(0).0.is_some());
+		assert!(node_a_chan.check_get_channel_ready(0, &&logger).0.is_some());
 	}
 }
