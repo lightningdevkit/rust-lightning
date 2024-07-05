@@ -25,9 +25,10 @@ Objective, Restrictions:
 - No quiscence is used/checked
 - Happy path only, no complex combinations, not all error scenarios
 - Splice from V2 channel is supported, from V1 channel not, the channel ID is not changed
-- Acceptor does not contribute inputs
+- Acceptor does not contribute inputs to the splice
 - It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
 - RBF of pending splice is not supported, only a single pending splicing is supported at a time
+- The is_splice flag on the ChannelReady event is not reliable (depending on the order)
 
 Up-to-date with main branch as of v0.0.123 (May 8, 475f736; originally branched off v0.0.115).
 
@@ -51,6 +52,7 @@ Client  LDK                                       Counterparty node (acceptor)
                                                   handle_splice_init() - ChannelManager
                                                   internal_splice_init() - ChannelManager
                                                   Do checks. Check if channel ID would change. Cycle back the channel to UnfundedInboundV2
+                                                  Channel phase to RenegotiatingFundingInbound
                                                   splice_start() -- ChannelContext
                                                   Start the splice, update capacity, state to NegotiatingFunding, reset funding transaction
                                                   get_splice_ack() -- Channel
@@ -66,7 +68,7 @@ Client  LDK                                       Counterparty node (acceptor)
         handle_splice_ack() - ChannelManager
         internal_splice_ack() - ChannelManager
         Do checks, check against initial splice()
-        Cycle back the channel to UnfundedOutboundV2
+        Channel phase to RenegotiatingFundingOutbound
         splice_start() -- ChannelContext
         Start the splice, update capacity, state to NegotiatingFunding, reset funding transaction
         //event: SpliceAckedInputsContributionReady
@@ -179,18 +181,16 @@ event: ChannelPending
 New funding tx gets broadcasted (both sides)
 Waiting for confirmation
         transactions_confirmed() - Channel
-        splice_complete() -- ChannelContext
-        Mark splicing process as completed
         message out: splice_locked
         ---
                                                   transactions_confirmed() - Channel
-                                                  splice_complete() -- ChannelContext
-                                                  Mark splicing process as completed
                                                   message out: splice_locked
                                                   ---
         message in: splice_locked
         handle_splice_locked() - ChannelManager
         internal_splice_locked() - ChannelManager
+        splice_complete() -- ChannelContext
+        Mark splicing process as completed
         event: ChannelReady
         message out: channel_update
         ---
@@ -199,6 +199,8 @@ event: ChannelReady
                                                   message in: splice_locked
                                                   handle_splice_locked() - ChannelManager
                                                   internal_splice_locked() - ChannelManager
+                                                  splice_complete() -- ChannelContext
+                                                  Mark splicing process as completed
                                                   event: ChannelReady
                                                   message out: channel_update
 /end of sequence/
