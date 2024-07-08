@@ -10182,7 +10182,7 @@ where
 			Ok((payment_hash, payment_secret)) => {
 				let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
 				let payment_paths = self.create_blinded_payment_paths(
-					Some(amount_msats), payment_secret, payment_context
+					Some(amount_msats), payment_secret, payment_context, relative_expiry,
 				)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -10489,7 +10489,8 @@ where
 	/// Creates multi-hop blinded payment paths for the given `amount_msats` by delegating to
 	/// [`Router::create_blinded_payment_paths`].
 	fn create_blinded_payment_paths(
-		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext
+		&self, amount_msats: Option<u64>, payment_secret: PaymentSecret, payment_context: PaymentContext,
+		relative_expiry_seconds: u32
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
@@ -10497,8 +10498,13 @@ where
 
 		let first_hops = self.list_usable_channels();
 		let payee_node_id = self.get_our_node_id();
-		let max_cltv_expiry = self.best_block.read().unwrap().height + CLTV_FAR_FAR_AWAY
-			+ LATENCY_GRACE_PERIOD_BLOCKS;
+
+		// Assume shorter than usual block times to avoid spuriously failing payments too early.
+		const SECONDS_PER_BLOCK: u32 = 9 * 60;
+		let relative_expiry_blocks = relative_expiry_seconds / SECONDS_PER_BLOCK;
+		let max_cltv_expiry = core::cmp::max(relative_expiry_blocks, CLTV_FAR_FAR_AWAY)
+			.saturating_add(LATENCY_GRACE_PERIOD_BLOCKS)
+			.saturating_add(self.best_block.read().unwrap().height);
 
 		let payee_tlvs = UnauthenticatedReceiveTlvs {
 			payment_secret,
@@ -12048,7 +12054,7 @@ where
 					invoice_request: invoice_request.fields(),
 				});
 				let payment_paths = match self.create_blinded_payment_paths(
-					Some(amount_msats), payment_secret, payment_context
+					Some(amount_msats), payment_secret, payment_context, relative_expiry
 				) {
 					Ok(payment_paths) => payment_paths,
 					Err(()) => {
