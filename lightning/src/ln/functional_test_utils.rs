@@ -486,6 +486,22 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 		self.blocks.lock().unwrap()[height as usize].0.header
 	}
 
+	/// Executes `enable_channel_signer_op` for every single signer operation for this channel.
+	#[cfg(test)]
+	pub fn enable_all_channel_signer_ops(&self, peer_id: &PublicKey, chan_id: &ChannelId) {
+		for signer_op in SignerOp::all() {
+			self.enable_channel_signer_op(peer_id, chan_id, signer_op);
+		}
+	}
+
+	/// Executes `disable_channel_signer_op` for every single signer operation for this channel.
+	#[cfg(test)]
+	pub fn disable_all_channel_signer_ops(&self, peer_id: &PublicKey, chan_id: &ChannelId) {
+		for signer_op in SignerOp::all() {
+			self.disable_channel_signer_op(peer_id, chan_id, signer_op);
+		}
+	}
+
 	/// Toggles this node's signer to be available for the given signer operation.
 	/// This is useful for testing behavior for restoring an async signer that previously
 	/// could not return a signature immediately.
