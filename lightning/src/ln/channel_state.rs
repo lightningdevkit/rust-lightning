@@ -69,7 +69,7 @@ impl_writeable_tlv_based_enum_upgradable!(InboundHTLCStateDetails,
 	(0, AwaitingRemoteRevokeToAdd) => {},
 	(2, Committed) => {},
 	(4, AwaitingRemoteRevokeToRemoveFulfill) => {},
-	(6, AwaitingRemoteRevokeToRemoveFail) => {};
+	(6, AwaitingRemoteRevokeToRemoveFail) => {},
 );
 
 /// Exposes details around pending inbound HTLCs.
@@ -159,7 +159,7 @@ impl_writeable_tlv_based_enum_upgradable!(OutboundHTLCStateDetails,
 	(0, AwaitingRemoteRevokeToAdd) => {},
 	(2, Committed) => {},
 	(4, AwaitingRemoteRevokeToRemoveSuccess) => {},
-	(6, AwaitingRemoteRevokeToRemoveFailure) => {};
+	(6, AwaitingRemoteRevokeToRemoveFailure) => {},
 );
 
 /// Exposes details around pending outbound HTLCs.
@@ -701,5 +701,5 @@ impl_writeable_tlv_based_enum!(ChannelShutdownState,
 	(2, ShutdownInitiated) => {},
 	(4, ResolvingHTLCs) => {},
 	(6, NegotiatingClosingFee) => {},
-	(8, ShutdownComplete) => {}, ;
+	(8, ShutdownComplete) => {},
 );

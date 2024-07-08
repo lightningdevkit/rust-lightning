@@ -189,7 +189,7 @@ pub enum MonitorEvent {
 		monitor_update_id: u64,
 	},
 }
-impl_writeable_tlv_based_enum_upgradable!(MonitorEvent,
+impl_writeable_tlv_based_enum_upgradable_legacy!(MonitorEvent,
 	// Note that Completed is currently never serialized to disk as it is generated only in
 	// ChainMonitor.
 	(0, Completed) => {

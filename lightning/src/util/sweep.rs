@@ -315,7 +315,7 @@ impl_writeable_tlv_based_enum!(OutputSpendStatus,
 		(4, latest_spending_tx, required),
 		(6, confirmation_height, required),
 		(8, confirmation_hash, required),
-	};
+	},
 );
 
 /// A utility that keeps track of [`SpendableOutputDescriptor`]s, persists them in a given
