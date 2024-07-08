@@ -116,9 +116,9 @@ pub struct TestRouter<'a> {
 		(),
 		TestScorer,
 	>,
-	//pub entropy_source: &'a RandomBytes,
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Option<Result<Route, LightningError>>)>>,
+	pub next_blinded_payment_paths: Mutex<Vec<(BlindedPayInfo, BlindedPath)>>,
 	pub scorer: &'a RwLock<TestScorer>,
 }
 
@@ -132,6 +132,7 @@ impl<'a> TestRouter<'a> {
 			router: DefaultRouter::new(network_graph.clone(), logger, entropy_source, scorer, ()),
 			network_graph,
 			next_routes: Mutex::new(VecDeque::new()),
+			next_blinded_payment_paths: Mutex::new(Vec::new()),
 			scorer,
 		}
 	}
@@ -144,6 +145,11 @@ impl<'a> TestRouter<'a> {
 	pub fn expect_find_route_query(&self, query: RouteParameters) {
 		let mut expected_routes = self.next_routes.lock().unwrap();
 		expected_routes.push_back((query, None));
+	}
+
+	pub fn expect_blinded_payment_paths(&self, mut paths: Vec<(BlindedPayInfo, BlindedPath)>) {
+		let mut expected_paths = self.next_blinded_payment_paths.lock().unwrap();
+		core::mem::swap(&mut *expected_paths, &mut paths);
 	}
 }
 
@@ -236,9 +242,14 @@ impl<'a> Router for TestRouter<'a> {
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
 		amount_msats: u64, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
-		self.router.create_blinded_payment_paths(
-			recipient, first_hops, tlvs, amount_msats, secp_ctx
-		)
+		let mut expected_paths = self.next_blinded_payment_paths.lock().unwrap();
+		if expected_paths.is_empty() {
+			self.router.create_blinded_payment_paths(
+				recipient, first_hops, tlvs, amount_msats, secp_ctx
+			)
+		} else {
+			Ok(core::mem::take(&mut *expected_paths))
+		}
 	}
 }
 

@@ -10,18 +10,21 @@
 //! Tests for calculating the maximum length of a path based on the payment metadata, custom TLVs,
 //! and/or blinded paths present.
 
-use bitcoin::secp256k1::Secp256k1;
-use crate::blinded_path::BlindedPath;
+use bitcoin::secp256k1::{Secp256k1, PublicKey};
+use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::events::MessageSendEventsProvider;
 use crate::ln::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
 use crate::ln::channelmanager::PaymentId;
+use crate::ln::features::BlindedHopFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
+use crate::ln::msgs::OnionMessageHandler;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 use crate::ln::outbound_payment::{RecipientOnionFields, Retry, RetryableSendFailure};
+use crate::offers::invoice::BlindedPayInfo;
 use crate::prelude::*;
 use crate::routing::router::{DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, PaymentParameters, RouteParameters};
 use crate::util::errors::APIError;
@@ -339,4 +342,51 @@ fn blinded_path_with_custom_tlv() {
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], payment_preimage)
 			.with_custom_tlvs(recipient_onion_allows_2_hops.custom_tlvs)
 	);
+}
+
+#[test]
+fn bolt12_invoice_too_large_blinded_paths() {
+	// Check that we'll fail paying BOLT 12 invoices with too-large blinded paths prior to
+	// pathfinding.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	nodes[1].router.expect_blinded_payment_paths(vec![(
+		BlindedPayInfo {
+			fee_base_msat: 42,
+			fee_proportional_millionths: 42,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 42,
+			htlc_maximum_msat: 42_000_000,
+			features: BlindedHopFeatures::empty(),
+		},
+		BlindedPath {
+			introduction_node: IntroductionNode::NodeId(PublicKey::from_slice(&[2; 33]).unwrap()),
+			blinding_point: PublicKey::from_slice(&[2; 33]).unwrap(),
+			blinded_hops: vec![
+				BlindedHop {
+					blinded_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+					encrypted_payload: vec![42; 1300],
+				},
+				BlindedHop {
+					blinded_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+					encrypted_payload: vec![42; 1300],
+				},
+			],
+		}
+	)]);
+
+	let offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, None, Some(5000), None, payment_id, Retry::Attempts(0), None).unwrap();
+	let invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(nodes[1].node.get_our_node_id()).unwrap();
+	nodes[1].onion_messenger.handle_onion_message(&nodes[0].node.get_our_node_id(), &invreq_om);
+
+	let invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(&nodes[1].node.get_our_node_id(), &invoice_om);
+	// TODO: assert on the invoice error once we support replying to invoice OMs with failure info
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Failed paying invoice: OnionPacketSizeExceeded", 1);
 }
