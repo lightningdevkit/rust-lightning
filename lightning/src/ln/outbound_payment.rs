@@ -1097,12 +1097,7 @@ impl OutboundPayments {
 
 		onion_utils::set_max_path_length(
 			route_params, recipient_onion, keysend_preimage, best_block_height
-		)
-			.map_err(|()| {
-				log_error!(logger, "Can't construct an onion packet without exceeding 1300-byte onion \
-					hop_data length for payment with id {} and hash {}", payment_id, payment_hash);
-				RetryableSendFailure::OnionPacketSizeExceeded
-			})?;
+		).map_err(|()| RetryableSendFailure::OnionPacketSizeExceeded)?;
 
 		let mut route = router.find_route_with_id(
 			&node_signer.get_node_id(Recipient::Node).unwrap(), route_params,
