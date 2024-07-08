@@ -307,6 +307,7 @@ pub(super) struct PendingAddHTLCInfo {
 	// Note that this may be an outbound SCID alias for the associated channel.
 	prev_short_channel_id: u64,
 	prev_htlc_id: u64,
+	prev_counterparty_node_id: Option<PublicKey>,
 	prev_channel_id: ChannelId,
 	prev_funding_outpoint: OutPoint,
 	prev_user_channel_id: u128,
@@ -350,9 +351,10 @@ pub(crate) struct HTLCPreviousHopData {
 	blinded_failure: Option<BlindedFailure>,
 	channel_id: ChannelId,
 
-	// This field is consumed by `claim_funds_from_hop()` when updating a force-closed backwards
+	// These fields are consumed by `claim_funds_from_hop()` when updating a force-closed backwards
 	// channel with a preimage provided by the forward channel.
 	outpoint: OutPoint,
+	counterparty_node_id: Option<PublicKey>,
 }
 
 enum OnionPayload {
@@ -756,13 +758,55 @@ enum BackgroundEvent {
 	},
 }
 
+/// A pointer to a channel that is unblocked when an event is surfaced
+#[derive(Debug)]
+pub(crate) struct EventUnblockedChannel {
+	counterparty_node_id: PublicKey,
+	funding_txo: OutPoint,
+	channel_id: ChannelId,
+	blocking_action: RAAMonitorUpdateBlockingAction,
+}
+
+impl Writeable for EventUnblockedChannel {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.counterparty_node_id.write(writer)?;
+		self.funding_txo.write(writer)?;
+		self.channel_id.write(writer)?;
+		self.blocking_action.write(writer)
+	}
+}
+
+impl MaybeReadable for EventUnblockedChannel {
+	fn read<R: Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
+		let counterparty_node_id = Readable::read(reader)?;
+		let funding_txo = Readable::read(reader)?;
+		let channel_id = Readable::read(reader)?;
+		let blocking_action = match RAAMonitorUpdateBlockingAction::read(reader)? {
+			Some(blocking_action) => blocking_action,
+			None => return Ok(None),
+		};
+		Ok(Some(EventUnblockedChannel {
+			counterparty_node_id,
+			funding_txo,
+			channel_id,
+			blocking_action,
+		}))
+	}
+}
+
 #[derive(Debug)]
 pub(crate) enum MonitorUpdateCompletionAction {
 	/// Indicates that a payment ultimately destined for us was claimed and we should emit an
 	/// [`events::Event::PaymentClaimed`] to the user if we haven't yet generated such an event for
 	/// this payment. Note that this is only best-effort. On restart it's possible such a duplicate
 	/// event can be generated.
-	PaymentClaimed { payment_hash: PaymentHash },
+	PaymentClaimed {
+		payment_hash: PaymentHash,
+		/// A pending MPP claim which hasn't yet completed.
+		///
+		/// Not written to disk.
+		pending_mpp_claim: Option<(PublicKey, ChannelId, u64, PendingMPPClaimPointer)>,
+	},
 	/// Indicates an [`events::Event`] should be surfaced to the user and possibly resume the
 	/// operation of another channel.
 	///
@@ -773,7 +817,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// outbound edge.
 	EmitEventAndFreeOtherChannel {
 		event: events::Event,
-		downstream_counterparty_and_funding_outpoint: Option<(PublicKey, OutPoint, ChannelId, RAAMonitorUpdateBlockingAction)>,
+		downstream_counterparty_and_funding_outpoint: Option<EventUnblockedChannel>,
 	},
 	/// Indicates we should immediately resume the operation of another channel, unless there is
 	/// some other reason why the channel is blocked. In practice this simply means immediately
@@ -796,13 +840,16 @@ pub(crate) enum MonitorUpdateCompletionAction {
 }
 
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
-	(0, PaymentClaimed) => { (0, payment_hash, required) },
+	(0, PaymentClaimed) => {
+		(0, payment_hash, required),
+		(9999999999, pending_mpp_claim, (static_value, None)),
+	},
 	// Note that FreeOtherChannelImmediately should never be written - we were supposed to free
 	// *immediately*. However, for simplicity we implement read/write here.
 	(1, FreeOtherChannelImmediately) => {
 		(0, downstream_counterparty_node_id, required),
 		(2, downstream_funding_outpoint, required),
-		(4, blocking_action, required),
+		(4, blocking_action, upgradable_required),
 		// Note that by the time we get past the required read above, downstream_funding_outpoint will be
 		// filled in, so we can safely unwrap it here.
 		(5, downstream_channel_id, (default_value, ChannelId::v1_from_funding_outpoint(downstream_funding_outpoint.0.unwrap()))),
@@ -814,7 +861,7 @@ impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 		// monitor updates which aren't properly blocked or resumed, however that's fine - we don't
 		// support async monitor updates even in LDK 0.0.116 and once we do we'll require no
 		// downgrades to prior versions.
-		(1, downstream_counterparty_and_funding_outpoint, option),
+		(1, downstream_counterparty_and_funding_outpoint, upgradable_option),
 	},
 );
 
@@ -836,6 +883,26 @@ impl_writeable_tlv_based_enum!(EventCompletionAction,
 	};
 );
 
+#[derive(Debug)]
+pub(crate) struct PendingMPPClaim {
+	channels_without_preimage: Vec<(PublicKey, OutPoint, ChannelId, u64)>,
+	channels_with_preimage: Vec<(PublicKey, OutPoint, ChannelId)>,
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingMPPClaimPointer(Arc<Mutex<PendingMPPClaim>>);
+
+impl PartialEq for PendingMPPClaimPointer {
+	fn eq(&self, o: &Self) -> bool { Arc::ptr_eq(&self.0, &o.0) }
+}
+impl Eq for PendingMPPClaimPointer {}
+
+impl core::fmt::Debug for PendingMPPClaimPointer {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+		self.0.lock().unwrap().fmt(f)
+	}
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 /// If something is blocked on the completion of an RAA-generated [`ChannelMonitorUpdate`] we track
 /// the blocked action here. See enum variants for more info.
@@ -849,6 +916,16 @@ pub(crate) enum RAAMonitorUpdateBlockingAction {
 		/// The HTLC ID on the inbound edge.
 		htlc_id: u64,
 	},
+	/// We claimed an MPP payment across multiple channels. We have to block removing the payment
+	/// preimage from any monitor until the last monitor is updated to contain the payment
+	/// preimage. Otherwise we may not be able to replay the preimage on the monitor(s) that
+	/// weren't updated on startup.
+	///
+	/// This variant is *not* written to disk, instead being inferred from [`ChannelMonitor`]
+	/// state.
+	ClaimedMPPPayment {
+		pending_claim: PendingMPPClaimPointer,
+	}
 }
 
 impl RAAMonitorUpdateBlockingAction {
@@ -860,10 +937,16 @@ impl RAAMonitorUpdateBlockingAction {
 	}
 }
 
-impl_writeable_tlv_based_enum!(RAAMonitorUpdateBlockingAction,
-	(0, ForwardedPaymentInboundClaim) => { (0, channel_id, required), (2, htlc_id, required) }
-;);
+impl_writeable_tlv_based_enum_upgradable!(RAAMonitorUpdateBlockingAction,
+	(0, ForwardedPaymentInboundClaim) => { (0, channel_id, required), (2, htlc_id, required) },
+	unread_variants: ClaimedMPPPayment
+);
 
+impl Readable for Option<RAAMonitorUpdateBlockingAction> {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(RAAMonitorUpdateBlockingAction::read(reader)?)
+	}
+}
 
 /// State we hold per-peer.
 pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
@@ -4694,6 +4777,7 @@ where
 
 		let mut per_source_pending_forward = [(
 			payment.prev_short_channel_id,
+			payment.prev_counterparty_node_id,
 			payment.prev_funding_outpoint,
 			payment.prev_channel_id,
 			payment.prev_user_channel_id,
@@ -4724,6 +4808,7 @@ where
 				user_channel_id: Some(payment.prev_user_channel_id),
 				outpoint: payment.prev_funding_outpoint,
 				channel_id: payment.prev_channel_id,
+				counterparty_node_id: payment.prev_counterparty_node_id,
 				htlc_id: payment.prev_htlc_id,
 				incoming_packet_shared_secret: payment.forward_info.incoming_shared_secret,
 				phantom_shared_secret: None,
@@ -4853,8 +4938,10 @@ where
 
 			// Process all of the forwards and failures for the channel in which the HTLCs were
 			// proposed to as a batch.
-			let pending_forwards = (incoming_scid, incoming_funding_txo, incoming_channel_id,
-				incoming_user_channel_id, htlc_forwards.drain(..).collect());
+			let pending_forwards = (
+				incoming_scid, Some(incoming_counterparty_node_id), incoming_funding_txo,
+				incoming_channel_id, incoming_user_channel_id, htlc_forwards.drain(..).collect()
+			);
 			self.forward_htlcs_without_forward_event(&mut [pending_forwards]);
 			for (htlc_fail, htlc_destination) in htlc_fails.drain(..) {
 				let failure = match htlc_fail {
@@ -4888,7 +4975,7 @@ where
 
 		let mut new_events = VecDeque::new();
 		let mut failed_forwards = Vec::new();
-		let mut phantom_receives: Vec<(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)> = Vec::new();
+		let mut phantom_receives: Vec<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)> = Vec::new();
 		{
 			let mut forward_htlcs = new_hash_map();
 			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
@@ -4902,7 +4989,7 @@ where
 								match forward_info {
 									HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 										prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
-										prev_user_channel_id, forward_info: PendingHTLCInfo {
+										prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
 											routing, incoming_shared_secret, payment_hash, outgoing_amt_msat,
 											outgoing_cltv_value, ..
 										}
@@ -4917,6 +5004,7 @@ where
 													user_channel_id: Some(prev_user_channel_id),
 													channel_id: prev_channel_id,
 													outpoint: prev_funding_outpoint,
+													counterparty_node_id: prev_counterparty_node_id,
 													htlc_id: prev_htlc_id,
 													incoming_packet_shared_secret: incoming_shared_secret,
 													phantom_shared_secret: $phantom_ss,
@@ -4979,7 +5067,10 @@ where
 															outgoing_cltv_value, Some(phantom_shared_secret), false, None,
 															current_height, self.default_configuration.accept_mpp_keysend)
 														{
-															Ok(info) => phantom_receives.push((prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)])),
+															Ok(info) => phantom_receives.push((
+																prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+																prev_channel_id, prev_user_channel_id, vec![(info, prev_htlc_id)]
+															)),
 															Err(InboundHTLCErr { err_code, err_data, msg }) => failed_payment!(msg, err_code, err_data, Some(phantom_shared_secret))
 														}
 													},
@@ -5024,7 +5115,7 @@ where
 						let queue_fail_htlc_res = match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
-								prev_user_channel_id, forward_info: PendingHTLCInfo {
+								prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
 									incoming_shared_secret, payment_hash, outgoing_amt_msat, outgoing_cltv_value,
 									routing: PendingHTLCRouting::Forward {
 										ref onion_packet, blinded, ..
@@ -5034,6 +5125,7 @@ where
 								let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 									short_channel_id: prev_short_channel_id,
 									user_channel_id: Some(prev_user_channel_id),
+									counterparty_node_id: prev_counterparty_node_id,
 									channel_id: prev_channel_id,
 									outpoint: prev_funding_outpoint,
 									htlc_id: prev_htlc_id,
@@ -5162,7 +5254,7 @@ where
 						match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
-								prev_user_channel_id, forward_info: PendingHTLCInfo {
+								prev_user_channel_id, prev_counterparty_node_id, forward_info: PendingHTLCInfo {
 									routing, incoming_shared_secret, payment_hash, incoming_amt_msat, outgoing_amt_msat,
 									skimmed_fee_msat, ..
 								}
@@ -5200,6 +5292,7 @@ where
 									prev_hop: HTLCPreviousHopData {
 										short_channel_id: prev_short_channel_id,
 										user_channel_id: Some(prev_user_channel_id),
+										counterparty_node_id: prev_counterparty_node_id,
 										channel_id: prev_channel_id,
 										outpoint: prev_funding_outpoint,
 										htlc_id: prev_htlc_id,
@@ -5232,6 +5325,7 @@ where
 										failed_forwards.push((HTLCSource::PreviousHopData(HTLCPreviousHopData {
 												short_channel_id: $htlc.prev_hop.short_channel_id,
 												user_channel_id: $htlc.prev_hop.user_channel_id,
+												counterparty_node_id: $htlc.prev_hop.counterparty_node_id,
 												channel_id: prev_channel_id,
 												outpoint: prev_funding_outpoint,
 												htlc_id: $htlc.prev_hop.htlc_id,
@@ -6117,7 +6211,7 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let mut sources = {
+		let sources = {
 			let mut claimable_payments = self.claimable_payments.lock().unwrap();
 			if let Some(payment) = claimable_payments.claimable_payments.remove(&payment_hash) {
 				let mut receiver_node_id = self.our_network_pubkey;
@@ -6212,18 +6306,46 @@ where
 			return;
 		}
 		if valid_mpp {
-			for htlc in sources.drain(..) {
+			let pending_mpp_claim_ptr_opt = if sources.len() > 1 {
+				let channels_without_preimage = sources.iter().filter_map(|htlc| {
+					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
+						let prev_hop = &htlc.prev_hop;
+						Some((cp_id, prev_hop.outpoint, prev_hop.channel_id, prev_hop.htlc_id))
+					} else {
+						None
+					}
+				}).collect();
+				Some(Arc::new(Mutex::new(PendingMPPClaim {
+					channels_without_preimage,
+					channels_with_preimage: Vec::new(),
+				})))
+			} else {
+				None
+			};
+			for htlc in sources {
+				let this_mpp_claim = pending_mpp_claim_ptr_opt.as_ref().and_then(|pending_mpp_claim|
+					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
+						let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
+						Some((cp_id, htlc.prev_hop.channel_id, htlc.prev_hop.htlc_id, claim_ptr))
+					} else {
+						None
+					}
+				);
+				let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
+					RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+						pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
+					}
+				});
 				self.claim_funds_from_hop(
 					htlc.prev_hop, payment_preimage,
 					|_, definitely_duplicate| {
 						debug_assert!(!definitely_duplicate, "We shouldn't claim duplicatively from a payment");
-						Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash })
+						(Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim: this_mpp_claim }), raa_blocker)
 					}
 				);
 			}
-		}
-		if !valid_mpp {
-			for htlc in sources.drain(..) {
+		} else {
+			for htlc in sources {
 				let mut htlc_msat_height_data = htlc.value.to_be_bytes().to_vec();
 				htlc_msat_height_data.extend_from_slice(&self.best_block.read().unwrap().height.to_be_bytes());
 				let source = HTLCSource::PreviousHopData(htlc.prev_hop);
@@ -6241,7 +6363,9 @@ where
 		}
 	}
 
-	fn claim_funds_from_hop<ComplFunc: FnOnce(Option<u64>, bool) -> Option<MonitorUpdateCompletionAction>>(
+	fn claim_funds_from_hop<
+		ComplFunc: FnOnce(Option<u64>, bool) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>)
+	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		completion_action: ComplFunc,
 	) {
@@ -6281,10 +6405,14 @@ where
 
 						match fulfill_res {
 							UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } => {
-								if let Some(action) = completion_action(Some(htlc_value_msat), false) {
+								let (action_opt, raa_blocker_opt) = completion_action(Some(htlc_value_msat), false);
+								if let Some(action) = action_opt {
 									log_trace!(logger, "Tracking monitor update completion action for channel {}: {:?}",
 										chan_id, action);
 									peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
+								}
+								if let Some(raa_blocker) = raa_blocker_opt {
+									peer_state.actions_blocking_raa_monitor_updates.entry(chan_id).or_insert_with(Vec::new).push(raa_blocker);
 								}
 								if !during_init {
 									handle_new_monitor_update!(self, prev_hop.outpoint, monitor_update, peer_state_lock,
@@ -6303,11 +6431,16 @@ where
 								}
 							}
 							UpdateFulfillCommitFetch::DuplicateClaim {} => {
-								let action = if let Some(action) = completion_action(None, true) {
+								let (action_opt, raa_blocker_opt) = completion_action(None, true);
+								if let Some(raa_blocker) = raa_blocker_opt {
+									debug_assert!(peer_state.actions_blocking_raa_monitor_updates.get(&chan_id).unwrap().contains(&raa_blocker));
+								}
+								let action = if let Some(action) = action_opt {
 									action
 								} else {
 									return;
 								};
+
 								mem::drop(peer_state_lock);
 
 								log_trace!(logger, "Completing monitor update completion action for channel {} as claim was redundant: {:?}",
@@ -6394,7 +6527,46 @@ where
 		// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
 		// generally always allowed to be duplicative (and it's specifically noted in
 		// `PaymentForwarded`).
-		self.handle_monitor_update_completion_actions(completion_action(None, false));
+		let (action_opt, raa_blocker_opt) = completion_action(None, false);
+
+		if let Some(raa_blocker) = raa_blocker_opt {
+			let counterparty_node_id = prev_hop.counterparty_node_id.or_else(||
+				// prev_hop.counterparty_node_id is always available for payments received after
+				// LDK 0.0.123, but for those received on 0.0.123 and claimed later, we need to
+				// look up the counterparty in the `action_opt`, if possible.
+				action_opt.as_ref().and_then(|action|
+					if let MonitorUpdateCompletionAction::PaymentClaimed { pending_mpp_claim, .. } = action {
+						pending_mpp_claim.as_ref().map(|(node_id, _, _, _)| *node_id)
+					} else { None }
+				)
+			);
+			if let Some(counterparty_node_id) = counterparty_node_id {
+				// TODO: Avoid always blocking the world for the write lock here.
+				let mut per_peer_state = self.per_peer_state.write().unwrap();
+				let peer_state_mutex = per_peer_state.entry(counterparty_node_id).or_insert_with(||
+					Mutex::new(PeerState {
+						channel_by_id: new_hash_map(),
+						inbound_channel_request_by_id: new_hash_map(),
+						latest_features: InitFeatures::empty(),
+						pending_msg_events: Vec::new(),
+						in_flight_monitor_updates: BTreeMap::new(),
+						monitor_update_blocked_actions: BTreeMap::new(),
+						actions_blocking_raa_monitor_updates: BTreeMap::new(),
+						is_connected: false,
+					}));
+				let mut peer_state = peer_state_mutex.lock().unwrap();
+
+				peer_state.actions_blocking_raa_monitor_updates
+					.entry(prev_hop.channel_id)
+					.or_insert_with(Vec::new)
+					.push(raa_blocker);
+			} else {
+				debug_assert!(false,
+					"RAA ChannelMonitorUpdate blockers are only set with PaymentClaimed completion actions, so we should always have a counterparty node id");
+			}
+		}
+
+		self.handle_monitor_update_completion_actions(action_opt);
 	}
 
 	fn finalize_claims(&self, sources: Vec<HTLCSource>) {
@@ -6431,7 +6603,12 @@ where
 					|htlc_claim_value_msat, definitely_duplicate| {
 						let chan_to_release =
 							if let Some(node_id) = next_channel_counterparty_node_id {
-								Some((node_id, next_channel_outpoint, next_channel_id, completed_blocker))
+								Some(EventUnblockedChannel {
+									counterparty_node_id: node_id,
+									funding_txo: next_channel_outpoint,
+									channel_id: next_channel_id,
+									blocking_action: completed_blocker
+								})
 							} else {
 								// We can only get `None` here if we are processing a
 								// `ChannelMonitor`-originated event, in which case we
@@ -6488,16 +6665,16 @@ where
 									}
 								}), "{:?}", *background_events);
 							}
-							None
+							(None, None)
 						} else if definitely_duplicate {
 							if let Some(other_chan) = chan_to_release {
-								Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
-									downstream_counterparty_node_id: other_chan.0,
-									downstream_funding_outpoint: other_chan.1,
-									downstream_channel_id: other_chan.2,
-									blocking_action: other_chan.3,
-								})
-							} else { None }
+								(Some(MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+									downstream_counterparty_node_id: other_chan.counterparty_node_id,
+									downstream_funding_outpoint: other_chan.funding_txo,
+									downstream_channel_id: other_chan.channel_id,
+									blocking_action: other_chan.blocking_action,
+								}), None)
+							} else { (None, None) }
 						} else {
 							let total_fee_earned_msat = if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
 								if let Some(claimed_htlc_value) = htlc_claim_value_msat {
@@ -6506,7 +6683,7 @@ where
 							} else { None };
 							debug_assert!(skimmed_fee_msat <= total_fee_earned_msat,
 								"skimmed_fee_msat must always be included in total_fee_earned_msat");
-							Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
+							(Some(MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 								event: events::Event::PaymentForwarded {
 									prev_channel_id: Some(prev_channel_id),
 									next_channel_id: Some(next_channel_id),
@@ -6518,7 +6695,7 @@ where
 									outbound_amount_forwarded_msat: forwarded_htlc_value_msat,
 								},
 								downstream_counterparty_and_funding_outpoint: chan_to_release,
-							})
+							}), None)
 						}
 					});
 			},
@@ -6535,9 +6712,44 @@ where
 		debug_assert_ne!(self.claimable_payments.held_by_thread(), LockHeldState::HeldByThread);
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 
+		let mut freed_channels = Vec::new();
+
 		for action in actions.into_iter() {
 			match action {
-				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash } => {
+				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim } => {
+					if let Some((counterparty_node_id, chan_id, htlc_id, claim_ptr)) = pending_mpp_claim {
+						let per_peer_state = self.per_peer_state.read().unwrap();
+						per_peer_state.get(&counterparty_node_id).map(|peer_state_mutex| {
+							let mut peer_state = peer_state_mutex.lock().unwrap();
+							let blockers_entry = peer_state.actions_blocking_raa_monitor_updates.entry(chan_id);
+							if let btree_map::Entry::Occupied(mut blockers) = blockers_entry {
+								blockers.get_mut().retain(|blocker|
+									if let &RAAMonitorUpdateBlockingAction::ClaimedMPPPayment { pending_claim } = &blocker {
+										if *pending_claim == claim_ptr {
+											let mut pending_claim_state_lock = pending_claim.0.lock().unwrap();
+											let pending_claim_state = &mut *pending_claim_state_lock;
+											pending_claim_state.channels_without_preimage.retain(|(cp, outp, cid, hid)| {
+												if *cp == counterparty_node_id && *cid == chan_id && *hid == htlc_id {
+													pending_claim_state.channels_with_preimage.push((*cp, *outp, *cid));
+													false
+												} else { true }
+											});
+											if pending_claim_state.channels_without_preimage.is_empty() {
+												for (cp, outp, cid) in pending_claim_state.channels_with_preimage.iter() {
+													freed_channels.push((*cp, *outp, *cid, blocker.clone()));
+												}
+											}
+											!pending_claim_state.channels_without_preimage.is_empty()
+										} else { true }
+									} else { true }
+								);
+								if blockers.get().is_empty() {
+									blockers.remove();
+								}
+							}
+						});
+					}
+
 					let payment = self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
 					if let Some(ClaimingPayment {
 						amount_msat,
@@ -6562,8 +6774,11 @@ where
 					event, downstream_counterparty_and_funding_outpoint
 				} => {
 					self.pending_events.lock().unwrap().push_back((event, None));
-					if let Some((node_id, funding_outpoint, channel_id, blocker)) = downstream_counterparty_and_funding_outpoint {
-						self.handle_monitor_update_release(node_id, funding_outpoint, channel_id, Some(blocker));
+					if let Some(unblocked) = downstream_counterparty_and_funding_outpoint {
+						self.handle_monitor_update_release(
+							unblocked.counterparty_node_id, unblocked.funding_txo,
+							unblocked.channel_id, Some(unblocked.blocking_action),
+						);
 					}
 				},
 				MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
@@ -6578,6 +6793,10 @@ where
 				},
 			}
 		}
+
+		for (node_id, funding_outpoint, channel_id, blocker) in freed_channels {
+			self.handle_monitor_update_release(node_id, funding_outpoint, channel_id, Some(blocker));
+		}
 	}
 
 	/// Handles a channel reentering a functional state, either due to reconnect or a monitor
@@ -6588,7 +6807,7 @@ where
 		pending_forwards: Vec<(PendingHTLCInfo, u64)>, pending_update_adds: Vec<msgs::UpdateAddHTLC>,
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>)
-	-> (Option<(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
+	-> (Option<(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 		log_trace!(logger, "Handling channel resumption for channel {} with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement",
 			&channel.context.channel_id(),
@@ -6604,8 +6823,11 @@ where
 
 		let mut htlc_forwards = None;
 		if !pending_forwards.is_empty() {
-			htlc_forwards = Some((short_channel_id, channel.context.get_funding_txo().unwrap(),
-				channel.context.channel_id(), channel.context.get_user_id(), pending_forwards));
+			htlc_forwards = Some((
+				short_channel_id, Some(channel.context.get_counterparty_node_id()),
+				channel.context.get_funding_txo().unwrap(), channel.context.channel_id(),
+				channel.context.get_user_id(), pending_forwards
+			));
 		}
 		let mut decode_update_add_htlcs = None;
 		if !pending_update_adds.is_empty() {
@@ -7648,15 +7870,15 @@ where
 	}
 
 	#[inline]
-	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) {
+	fn forward_htlcs(&self, per_source_pending_forwards: &mut [(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) {
 		let push_forward_event = self.forward_htlcs_without_forward_event(per_source_pending_forwards);
 		if push_forward_event { self.push_pending_forwards_ev() }
 	}
 
 	#[inline]
-	fn forward_htlcs_without_forward_event(&self, per_source_pending_forwards: &mut [(u64, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) -> bool {
+	fn forward_htlcs_without_forward_event(&self, per_source_pending_forwards: &mut [(u64, Option<PublicKey>, OutPoint, ChannelId, u128, Vec<(PendingHTLCInfo, u64)>)]) -> bool {
 		let mut push_forward_event = false;
-		for &mut (prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_user_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
+		for &mut (prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint, prev_channel_id, prev_user_channel_id, ref mut pending_forwards) in per_source_pending_forwards {
 			let mut new_intercept_events = VecDeque::new();
 			let mut failed_intercept_forwards = Vec::new();
 			if !pending_forwards.is_empty() {
@@ -7675,7 +7897,9 @@ where
 					match forward_htlcs.entry(scid) {
 						hash_map::Entry::Occupied(mut entry) => {
 							entry.get_mut().push(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-								prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info }));
+								prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+								prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info
+							}));
 						},
 						hash_map::Entry::Vacant(entry) => {
 							if !is_our_scid && forward_info.incoming_amt_msat.is_some() &&
@@ -7693,7 +7917,9 @@ where
 											intercept_id
 										}, None));
 										entry.insert(PendingAddHTLCInfo {
-											prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info });
+											prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+											prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info
+										});
 									},
 									hash_map::Entry::Occupied(_) => {
 										let logger = WithContext::from(&self.logger, None, Some(prev_channel_id), Some(forward_info.payment_hash));
@@ -7701,6 +7927,7 @@ where
 										let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 											short_channel_id: prev_short_channel_id,
 											user_channel_id: Some(prev_user_channel_id),
+											counterparty_node_id: prev_counterparty_node_id,
 											outpoint: prev_funding_outpoint,
 											channel_id: prev_channel_id,
 											htlc_id: prev_htlc_id,
@@ -7720,7 +7947,9 @@ where
 								// payments are being processed.
 								push_forward_event |= forward_htlcs_empty && decode_update_add_htlcs_empty;
 								entry.insert(vec!(HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
-									prev_short_channel_id, prev_funding_outpoint, prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info })));
+									prev_short_channel_id, prev_counterparty_node_id, prev_funding_outpoint,
+									prev_channel_id, prev_htlc_id, prev_user_channel_id, forward_info
+								})));
 							}
 						}
 					}
@@ -9509,6 +9738,7 @@ where
 						htlc_id: htlc.prev_htlc_id,
 						incoming_packet_shared_secret: htlc.forward_info.incoming_shared_secret,
 						phantom_shared_secret: None,
+						counterparty_node_id: htlc.prev_counterparty_node_id,
 						outpoint: htlc.prev_funding_outpoint,
 						channel_id: htlc.prev_channel_id,
 						blinded_failure: htlc.forward_info.routing.blinded_failure(),
@@ -10643,6 +10873,7 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	// Note that by the time we get past the required read for type 2 above, outpoint will be
 	// filled in, so we can safely unwrap it here.
 	(9, channel_id, (default_value, ChannelId::v1_from_funding_outpoint(outpoint.0.unwrap()))),
+	(11, counterparty_node_id, option),
 });
 
 impl Writeable for ClaimableHTLC {
@@ -10799,6 +11030,7 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	// Note that by the time we get past the required read for type 6 above, prev_funding_outpoint will be
 	// filled in, so we can safely unwrap it here.
 	(7, prev_channel_id, (default_value, ChannelId::v1_from_funding_outpoint(prev_funding_outpoint.0.unwrap()))),
+	(9, prev_counterparty_node_id, option),
 });
 
 impl Writeable for HTLCForwardInfo {
@@ -12076,7 +12308,12 @@ where
 					for action in actions.iter() {
 						if let MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
 							downstream_counterparty_and_funding_outpoint:
-								Some((blocked_node_id, _blocked_channel_outpoint, blocked_channel_id, blocking_action)), ..
+								Some(EventUnblockedChannel {
+									counterparty_node_id: blocked_node_id,
+									funding_txo: _,
+									channel_id: blocked_channel_id,
+									blocking_action,
+								}), ..
 						} = action {
 							if let Some(blocked_peer_state) = per_peer_state.get(blocked_node_id) {
 								log_trace!(logger,
