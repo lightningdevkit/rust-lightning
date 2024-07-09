@@ -694,7 +694,8 @@ where
 		let logger = &logger;
 		let persister = &persister;
 		let fetch_time = &fetch_time;
-		Box::pin(async move { // We should be able to drop the Box once our MSRV is 1.68
+		// We should be able to drop the Box once our MSRV is 1.68
+		Box::pin(async move {
 			if let Some(network_graph) = network_graph {
 				handle_network_graph_update(network_graph, &event)
 			}
@@ -1309,12 +1310,14 @@ mod tests {
 
 		for i in 0..num_nodes {
 			for j in (i+1)..num_nodes {
-				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &Init {
+				let init_i = Init {
 					features: nodes[j].node.init_features(), networks: None, remote_network_address: None
-				}, true).unwrap();
-				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &Init {
+				};
+				nodes[i].node.peer_connected(&nodes[j].node.get_our_node_id(), &init_i, true).unwrap();
+				let init_j = Init {
 					features: nodes[i].node.init_features(), networks: None, remote_network_address: None
-				}, false).unwrap();
+				};
+				nodes[j].node.peer_connected(&nodes[i].node.get_our_node_id(), &init_j, false).unwrap();
 			}
 		}
 
@@ -1328,9 +1331,11 @@ mod tests {
 			assert_eq!(events.len(), 1);
 			let (temporary_channel_id, tx) = handle_funding_generation_ready!(events[0], $channel_value);
 			$node_a.node.funding_transaction_generated(&temporary_channel_id, &$node_b.node.get_our_node_id(), tx.clone()).unwrap();
-			$node_b.node.handle_funding_created(&$node_a.node.get_our_node_id(), &get_event_msg!($node_a, MessageSendEvent::SendFundingCreated, $node_b.node.get_our_node_id()));
+			let msg_a = get_event_msg!($node_a, MessageSendEvent::SendFundingCreated, $node_b.node.get_our_node_id());
+			$node_b.node.handle_funding_created(&$node_a.node.get_our_node_id(), &msg_a);
 			get_event!($node_b, Event::ChannelPending);
-			$node_a.node.handle_funding_signed(&$node_b.node.get_our_node_id(), &get_event_msg!($node_b, MessageSendEvent::SendFundingSigned, $node_a.node.get_our_node_id()));
+			let msg_b = get_event_msg!($node_b, MessageSendEvent::SendFundingSigned, $node_a.node.get_our_node_id());
+			$node_a.node.handle_funding_signed(&$node_b.node.get_our_node_id(), &msg_b);
 			get_event!($node_a, Event::ChannelPending);
 			tx
 		}}
@@ -1339,8 +1344,10 @@ mod tests {
 	macro_rules! begin_open_channel {
 		($node_a: expr, $node_b: expr, $channel_value: expr) => {{
 			$node_a.node.create_channel($node_b.node.get_our_node_id(), $channel_value, 100, 42, None, None).unwrap();
-			$node_b.node.handle_open_channel(&$node_a.node.get_our_node_id(), &get_event_msg!($node_a, MessageSendEvent::SendOpenChannel, $node_b.node.get_our_node_id()));
-			$node_a.node.handle_accept_channel(&$node_b.node.get_our_node_id(), &get_event_msg!($node_b, MessageSendEvent::SendAcceptChannel, $node_a.node.get_our_node_id()));
+			let msg_a = get_event_msg!($node_a, MessageSendEvent::SendOpenChannel, $node_b.node.get_our_node_id());
+			$node_b.node.handle_open_channel(&$node_a.node.get_our_node_id(), &msg_a);
+			let msg_b = get_event_msg!($node_b, MessageSendEvent::SendAcceptChannel, $node_a.node.get_our_node_id());
+			$node_a.node.handle_accept_channel(&$node_b.node.get_our_node_id(), &msg_b);
 		}}
 	}
 
@@ -1378,7 +1385,8 @@ mod tests {
 					// We need the TestBroadcaster to know about the new height so that it doesn't think
 					// we're violating the time lock requirements of transactions broadcasted at that
 					// point.
-					node.tx_broadcaster.blocks.lock().unwrap().push((genesis_block(Network::Bitcoin), height));
+					let block = (genesis_block(Network::Bitcoin), height);
+					node.tx_broadcaster.blocks.lock().unwrap().push(block);
 					node.node.best_block_updated(&header, height);
 					node.chain_monitor.best_block_updated(&header, height);
 					node.sweeper.best_block_updated(&header, height);
@@ -1398,7 +1406,8 @@ mod tests {
 				// We need the TestBroadcaster to know about the new height so that it doesn't think
 				// we're violating the time lock requirements of transactions broadcasted at that
 				// point.
-				node.tx_broadcaster.blocks.lock().unwrap().push((genesis_block(Network::Bitcoin), height));
+				let block = (genesis_block(Network::Bitcoin), height);
+				node.tx_broadcaster.blocks.lock().unwrap().push(block);
 				node.node.best_block_updated(&header, height);
 				node.chain_monitor.best_block_updated(&header, height);
 				node.sweeper.best_block_updated(&header, height);
@@ -1601,6 +1610,9 @@ mod tests {
 	#[test]
 	fn test_background_event_handling() {
 		let (_, mut nodes) = create_nodes(2, "test_background_event_handling");
+		let node_0_id = nodes[0].node.get_our_node_id();
+		let node_1_id = nodes[1].node.get_our_node_id();
+
 		let channel_value = 100000;
 		let data_dir = nodes[0].kv_store.get_data_dir();
 		let persister = Arc::new(Persister::new(data_dir.clone()));
@@ -1622,22 +1634,24 @@ mod tests {
 		let (temporary_channel_id, funding_tx) = funding_generation_recv
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
 			.expect("FundingGenerationReady not handled within deadline");
-		nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_tx.clone()).unwrap();
-		nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
+		nodes[0].node.funding_transaction_generated(&temporary_channel_id, &node_1_id, funding_tx.clone()).unwrap();
+		let msg_0 = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_1_id);
+		nodes[1].node.handle_funding_created(&node_0_id, &msg_0);
 		get_event!(nodes[1], Event::ChannelPending);
-		nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id()));
+		let msg_1 = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, node_0_id);
+		nodes[0].node.handle_funding_signed(&node_1_id, &msg_1);
 		let _ = channel_pending_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
 			.expect("ChannelPending not handled within deadline");
 
 		// Confirm the funding transaction.
 		confirm_transaction(&mut nodes[0], &funding_tx);
-		let as_funding = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
+		let as_funding = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, node_1_id);
 		confirm_transaction(&mut nodes[1], &funding_tx);
-		let bs_funding = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &bs_funding);
-		let _as_channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &as_funding);
-		let _bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
+		let bs_funding = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, node_0_id);
+		nodes[0].node.handle_channel_ready(&node_1_id, &bs_funding);
+		let _as_channel_update = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_1_id);
+		nodes[1].node.handle_channel_ready(&node_0_id, &as_funding);
+		let _bs_channel_update = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_0_id);
 		let broadcast_funding = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		assert_eq!(broadcast_funding.txid(), funding_tx.txid());
 		assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
@@ -1659,7 +1673,7 @@ mod tests {
 
 		// Force close the channel and check that the SpendableOutputs event was handled.
 		let error_message = "Channel force-closed";
-		nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
+		nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &node_1_id, error_message.to_string()).unwrap();
 		let commitment_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().pop().unwrap();
 		confirm_transaction_depth(&mut nodes[0], &commitment_tx, BREAKDOWN_TIMEOUT as u32);
 
