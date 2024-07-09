@@ -669,7 +669,7 @@ pub(super) const MIN_HTLC_RELAY_HOLDING_CELL_MILLIS: u64 = 100;
 /// be sent in the order they appear in the return value, however sometimes the order needs to be
 /// variable at runtime (eg Channel::channel_reestablish needs to re-send messages in the order
 /// they were originally sent). In those cases, this enum is also returned.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub(super) enum RAACommitmentOrder {
 	/// Send the CommitmentUpdate messages first
 	CommitmentFirst,
@@ -8426,11 +8426,26 @@ where
 			match phase {
 				ChannelPhase::Funded(chan) => {
 					let msgs = chan.signer_maybe_unblocked(&self.logger);
-					if let Some(updates) = msgs.commitment_update {
-						pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-							node_id,
-							updates,
-						});
+					let cu_msg = msgs.commitment_update.map(|updates| events::MessageSendEvent::UpdateHTLCs {
+						node_id,
+						updates,
+					});
+					let raa_msg = msgs.revoke_and_ack.map(|msg| events::MessageSendEvent::SendRevokeAndACK {
+						node_id,
+						msg,
+					});
+					match (cu_msg, raa_msg) {
+						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::CommitmentFirst => {
+							pending_msg_events.push(cu);
+							pending_msg_events.push(raa);
+						},
+						(Some(cu), Some(raa)) if msgs.order == RAACommitmentOrder::RevokeAndACKFirst => {
+							pending_msg_events.push(raa);
+							pending_msg_events.push(cu);
+						},
+						(Some(cu), _) => pending_msg_events.push(cu),
+						(_, Some(raa)) => pending_msg_events.push(raa),
+						(_, _) => {},
 					}
 					if let Some(msg) = msgs.funding_signed {
 						pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
