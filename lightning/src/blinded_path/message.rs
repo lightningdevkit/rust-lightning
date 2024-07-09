@@ -112,9 +112,21 @@ pub enum OffersContext {
 	/// This variant is used when a message is sent without using a [`BlindedPath`] or over one
 	/// created prior to LDK version 0.0.124.
 	Unknown {},
-	/// Represents an outbound BOLT12 payment context.
+	/// Context used by a [`BlindedPath`] within a [`Refund`] or as a reply path for an
+	/// [`InvoiceRequest`].
+	///
+	/// This variant is intended to be received when handling a [`Bolt12Invoice`] or an
+	/// [`InvoiceError`].
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
 	OutboundPayment {
-		/// Payment ID of the outbound BOLT12 payment.
+		/// Payment ID used when creating a [`Refund`] or [`InvoiceRequest`].
+		///
+		/// [`Refund`]: crate::offers::refund::Refund
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		payment_id: PaymentId
 	},
 }
