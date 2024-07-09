@@ -108,9 +108,9 @@ pub enum MessageContext {
 #[derive(Clone, Debug)]
 pub enum OffersContext {
 	/// Represents an unknown BOLT12 payment context.
-	/// This variant is used when a message is sent without
-	/// using a [`BlindedPath`] or over one created prior to
-	/// LDK version 0.0.124.
+	///
+	/// This variant is used when a message is sent without using a [`BlindedPath`] or over one
+	/// created prior to LDK version 0.0.124.
 	Unknown {},
 	/// Represents an outbound BOLT12 payment context.
 	OutboundPayment {
