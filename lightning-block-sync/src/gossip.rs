@@ -175,7 +175,7 @@ impl<S: FutureSpawner,
 
 		let (outpoint, output);
 
-		'tx_found: loop { // Used as a simple goto
+		'tx_found: loop {
 			macro_rules! process_block {
 				($block: expr) => { {
 					if transaction_index as usize >= $block.txdata.len() {
