@@ -20,6 +20,7 @@ use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NextMessage
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::onion_utils;
 use crate::onion_message::packet::ControlTlvs;
 use crate::sign::{NodeSigner, Recipient};
@@ -52,10 +53,10 @@ pub(crate) struct ForwardTlvs {
 
 /// Similar to [`ForwardTlvs`], but these TLVs are for the final node.
 pub(crate) struct ReceiveTlvs {
-	/// If `path_id` is `Some`, it is used to identify the blinded path that this onion message is
+	/// If `context` is `Some`, it is used to identify the blinded path that this onion message is
 	/// sending to. This is useful for receivers to check that said blinded path is being used in
 	/// the right context.
-	pub(crate) path_id: Option<[u8; 32]>,
+	pub context: Option<MessageContext>
 }
 
 impl Writeable for ForwardTlvs {
@@ -78,16 +79,62 @@ impl Writeable for ReceiveTlvs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		// TODO: write padding
 		encode_tlv_stream!(writer, {
-			(6, self.path_id, option),
+			(65537, self.context, option),
 		});
 		Ok(())
 	}
 }
 
+/// Represents additional data included by the recipient in a [`BlindedPath`].
+///
+/// This data is encrypted by the recipient and remains invisible to anyone else.
+/// It is included in the [`BlindedPath`], making it accessible again to the recipient
+/// whenever the [`BlindedPath`] is used.
+/// The recipient can authenticate the message and utilize it for further processing
+/// if needed.
+#[derive(Clone, Debug)]
+pub enum MessageContext {
+	/// Represents the data specific to [`OffersMessage`]
+	///
+	/// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
+	Offers(OffersContext),
+	/// Represents custom data received in a Custom Onion Message.
+	Custom(Vec<u8>),
+}
+
+/// Contains the data specific to [`OffersMessage`]
+///
+/// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
+#[derive(Clone, Debug)]
+pub enum OffersContext {
+	/// Represents an unknown BOLT12 payment context.
+	/// This variant is used when a message is sent without
+	/// using a [`BlindedPath`] or over one created prior to
+	/// LDK version 0.0.124.
+	Unknown {},
+	/// Represents an outbound BOLT12 payment context.
+	OutboundPayment {
+		/// Payment ID of the outbound BOLT12 payment.
+		payment_id: PaymentId
+	},
+}
+
+impl_writeable_tlv_based_enum!(MessageContext, ;
+	(0, Offers),
+	(1, Custom),
+);
+
+impl_writeable_tlv_based_enum!(OffersContext,
+	(0, Unknown) => {},
+	(1, OutboundPayment) => {
+		(0, payment_id, required),
+	},
+;);
+
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[ForwardNode], recipient_node_id: PublicKey,
-	session_priv: &SecretKey
+	context: MessageContext, session_priv: &SecretKey
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let pks = intermediate_nodes.iter().map(|node| &node.node_id)
 		.chain(core::iter::once(&recipient_node_id));
@@ -99,7 +146,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 			None => NextMessageHop::NodeId(*pubkey),
 		})
 		.map(|next_hop| ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None }))
-		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs { path_id: None })));
+		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs{ context: Some(context) })));
 
 	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
 }

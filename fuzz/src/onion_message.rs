@@ -6,6 +6,7 @@ use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
+use lightning::blinded_path::message::{MessageContext, OffersContext};
 use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
@@ -94,7 +95,8 @@ impl MessageRouter for TestMessageRouter {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
+		&self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>,
+		_secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		unreachable!()
 	}
@@ -104,7 +106,7 @@ struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
 	fn handle_message(
-		&self, _message: OffersMessage, _responder: Option<Responder>,
+		&self, _message: OffersMessage, _context: OffersContext, _responder: Option<Responder>,
 	) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
@@ -152,7 +154,8 @@ struct TestCustomMessageHandler {}
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
 	fn handle_custom_message(
-		&self, message: Self::CustomMessage, responder: Option<Responder>,
+		&self, message: Self::CustomMessage, _context: Option<Vec<u8>>,
+		responder: Option<Responder>,
 	) -> ResponseInstruction<Self::CustomMessage> {
 		match responder {
 			Some(responder) => responder.respond(message),
@@ -342,13 +345,18 @@ mod tests {
 		super::do_test(&<Vec<u8>>::from_hex(one_hop_om).unwrap(), &logger);
 		{
 			let log_entries = logger.lines.lock().unwrap();
+			assert_eq!(
+				log_entries.get(&(
+					"lightning::onion_message::messenger".to_string(),
+					"Received an onion message with a reply_path: Custom(TestCustomMessage)"
+						.to_string()
+				)),
+				Some(&1)
+			);
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
-						"Received an onion message with path_id None and a reply_path: Custom(TestCustomMessage)"
-						.to_string())), Some(&1));
+						"Constructing onion message when responding with Custom Message to an onion message: TestCustomMessage".to_string())), Some(&1));
 			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
-						"Constructing onion message when responding with Custom Message to an onion message with path_id None: TestCustomMessage".to_string())), Some(&1));
-			assert_eq!(log_entries.get(&("lightning::onion_message::messenger".to_string(),
-						"Buffered onion message when responding with Custom Message to an onion message with path_id None".to_string())), Some(&1));
+						"Buffered onion message when responding with Custom Message to an onion message".to_string())), Some(&1));
 		}
 
 		let two_unblinded_hops_om = "\

@@ -10,7 +10,7 @@
 use crate::utils::test_logger;
 use bitcoin::secp256k1::{self, Keypair, Parity, PublicKey, Secp256k1, SecretKey};
 use core::convert::TryFrom;
-use lightning::blinded_path::message::ForwardNode;
+use lightning::blinded_path::message::{ForwardNode, MessageContext, OffersContext};
 use lightning::blinded_path::BlindedPath;
 use lightning::ln::features::BlindedHopFeatures;
 use lightning::ln::PaymentHash;
@@ -87,10 +87,22 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 		],
 	];
 	let paths = vec![
-		BlindedPath::new_for_message(&intermediate_nodes[0], pubkey(42), &entropy_source, secp_ctx)
-			.unwrap(),
-		BlindedPath::new_for_message(&intermediate_nodes[1], pubkey(42), &entropy_source, secp_ctx)
-			.unwrap(),
+		BlindedPath::new_for_message(
+			&intermediate_nodes[0],
+			pubkey(42),
+			MessageContext::Offers(OffersContext::Unknown {}),
+			&entropy_source,
+			secp_ctx,
+		)
+		.unwrap(),
+		BlindedPath::new_for_message(
+			&intermediate_nodes[1],
+			pubkey(42),
+			MessageContext::Offers(OffersContext::Unknown {}),
+			&entropy_source,
+			secp_ctx,
+		)
+		.unwrap(),
 	];
 
 	let payinfo = vec![

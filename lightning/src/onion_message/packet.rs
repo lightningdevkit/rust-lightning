@@ -319,8 +319,8 @@ impl Readable for ControlTlvs {
 			(1, _padding, option),
 			(2, short_channel_id, option),
 			(4, next_node_id, option),
-			(6, path_id, option),
 			(8, next_blinding_override, option),
+			(65537, context, option),
 		});
 		let _padding: Option<Padding> = _padding;
 
@@ -331,7 +331,7 @@ impl Readable for ControlTlvs {
 			(None, None) => None,
 		};
 
-		let valid_fwd_fmt = next_hop.is_some() && path_id.is_none();
+		let valid_fwd_fmt = next_hop.is_some();
 		let valid_recv_fmt = next_hop.is_none() && next_blinding_override.is_none();
 
 		let payload_fmt = if valid_fwd_fmt {
@@ -341,7 +341,7 @@ impl Readable for ControlTlvs {
 			})
 		} else if valid_recv_fmt {
 			ControlTlvs::Receive(ReceiveTlvs {
-				path_id,
+				context,
 			})
 		} else {
 			return Err(DecodeError::InvalidValue)

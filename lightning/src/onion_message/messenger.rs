@@ -16,7 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::blinded_path::{BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
-use crate::blinded_path::message::{advance_path_by_one, ForwardNode, ForwardTlvs, ReceiveTlvs};
+use crate::blinded_path::message::{advance_path_by_one, ForwardNode, ForwardTlvs, MessageContext, OffersContext, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -145,7 +145,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 /// # use bitcoin::hashes::hex::FromHex;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
 /// # use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
-/// # use lightning::blinded_path::message::ForwardNode;
+/// # use lightning::blinded_path::message::{ForwardNode, MessageContext};
 /// # use lightning::sign::{EntropySource, KeysManager};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
 /// # use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath, OnionMessenger};
@@ -172,7 +172,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 /// #         })
 /// #     }
 /// #     fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-/// #         &self, _recipient: PublicKey, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
+/// #         &self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>
 /// #     ) -> Result<Vec<BlindedPath>, ()> {
 /// #         unreachable!()
 /// #     }
@@ -225,7 +225,8 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 /// 	ForwardNode { node_id: hop_node_id3, short_channel_id: None },
 /// 	ForwardNode { node_id: hop_node_id4, short_channel_id: None },
 /// ];
-/// let blinded_path = BlindedPath::new_for_message(&hops, your_node_id, &keys_manager, &secp_ctx).unwrap();
+/// let context = MessageContext::Custom(Vec::new());
+/// let blinded_path = BlindedPath::new_for_message(&hops, your_node_id, context, &keys_manager, &secp_ctx).unwrap();
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
@@ -344,20 +345,17 @@ impl OnionMessageRecipient {
 pub struct Responder {
 	/// The path along which a response can be sent.
 	reply_path: BlindedPath,
-	path_id: Option<[u8; 32]>
 }
 
 impl_writeable_tlv_based!(Responder, {
 	(0, reply_path, required),
-	(2, path_id, option),
 });
 
 impl Responder {
 	/// Creates a new [`Responder`] instance with the provided reply path.
-	pub(super) fn new(reply_path: BlindedPath, path_id: Option<[u8; 32]>) -> Self {
+	pub(super) fn new(reply_path: BlindedPath) -> Self {
 		Responder {
 			reply_path,
-			path_id,
 		}
 	}
 
@@ -368,19 +366,17 @@ impl Responder {
 		ResponseInstruction::WithoutReplyPath(OnionMessageResponse {
 			message: response,
 			reply_path: self.reply_path,
-			path_id: self.path_id,
 		})
 	}
 
 	/// Creates a [`ResponseInstruction::WithReplyPath`] for a given response.
 	///
 	/// Use when the recipient needs to send back a reply to us.
-	pub fn respond_with_reply_path<T: OnionMessageContents>(self, response: T) -> ResponseInstruction<T> {
+	pub fn respond_with_reply_path<T: OnionMessageContents>(self, response: T, context: MessageContext) -> ResponseInstruction<T> {
 		ResponseInstruction::WithReplyPath(OnionMessageResponse {
 			message: response,
 			reply_path: self.reply_path,
-			path_id: self.path_id,
-		})
+		}, context)
 	}
 }
 
@@ -388,14 +384,13 @@ impl Responder {
 pub struct OnionMessageResponse<T: OnionMessageContents> {
 	message: T,
 	reply_path: BlindedPath,
-	path_id: Option<[u8; 32]>,
 }
 
 /// `ResponseInstruction` represents instructions for responding to received messages.
 pub enum ResponseInstruction<T: OnionMessageContents> {
 	/// Indicates that a response should be sent including a reply path for
 	/// the recipient to respond back.
-	WithReplyPath(OnionMessageResponse<T>),
+	WithReplyPath(OnionMessageResponse<T>, MessageContext),
 	/// Indicates that a response should be sent without including a reply path
 	/// for the recipient to respond back.
 	WithoutReplyPath(OnionMessageResponse<T>),
@@ -447,7 +442,7 @@ pub trait MessageRouter {
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()>;
 
 	/// Creates compact [`BlindedPath`]s to the `recipient` node. The nodes in `peers` are assumed
@@ -466,13 +461,14 @@ pub trait MessageRouter {
 	fn create_compact_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, context: MessageContext,
+		peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		let peers = peers
 			.into_iter()
 			.map(|ForwardNode { node_id, short_channel_id: _ }| node_id)
 			.collect();
-		self.create_blinded_paths(recipient, peers, secp_ctx)
+		self.create_blinded_paths(recipient, context, peers, secp_ctx)
 	}
 }
 
@@ -507,7 +503,8 @@ where
 		I: ExactSizeIterator<Item = ForwardNode>,
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: I, secp_ctx: &Secp256k1<T>, compact_paths: bool
+		&self, recipient: PublicKey, context: MessageContext, peers: I,
+		secp_ctx: &Secp256k1<T>, compact_paths: bool
 	) -> Result<Vec<BlindedPath>, ()> {
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
@@ -546,7 +543,7 @@ where
 
 		let paths = peer_info.into_iter()
 			.map(|(peer, _, _)| {
-				BlindedPath::new_for_message(&[peer], recipient, &*self.entropy_source, secp_ctx)
+				BlindedPath::new_for_message(&[peer], recipient, context.clone(), &*self.entropy_source, secp_ctx)
 			})
 			.take(MAX_PATHS)
 			.collect::<Result<Vec<_>, _>>();
@@ -555,7 +552,7 @@ where
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if is_recipient_announced {
-					BlindedPath::one_hop_for_message(recipient, &*self.entropy_source, secp_ctx)
+					BlindedPath::one_hop_for_message(recipient, context, &*self.entropy_source, secp_ctx)
 						.map(|path| vec![path])
 				} else {
 					Err(())
@@ -614,20 +611,22 @@ where
 	fn create_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, context: MessageContext,
+		peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
 		let peers = peers
 			.into_iter()
 			.map(|node_id| ForwardNode { node_id, short_channel_id: None });
-		self.create_blinded_paths_from_iter(recipient, peers, secp_ctx, false)
+		self.create_blinded_paths_from_iter(recipient, context, peers, secp_ctx, false)
 	}
 
 	fn create_compact_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
-		&self, recipient: PublicKey, peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, context: MessageContext,
+		peers: Vec<ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.create_blinded_paths_from_iter(recipient, peers.into_iter(), secp_ctx, true)
+		self.create_blinded_paths_from_iter(recipient, context, peers.into_iter(), secp_ctx, true)
 	}
 }
 
@@ -774,7 +773,7 @@ pub trait CustomOnionMessageHandler {
 	/// Called with the custom message that was received, returning a response to send, if any.
 	///
 	/// The returned [`Self::CustomMessage`], if any, is enqueued to be sent by [`OnionMessenger`].
-	fn handle_custom_message(&self, message: Self::CustomMessage, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage>;
+	fn handle_custom_message(&self, message: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage>;
 
 	/// Read a custom message of type `message_type` from `buffer`, returning `Ok(None)` if the
 	/// message type is unknown.
@@ -801,8 +800,8 @@ pub trait CustomOnionMessageHandler {
 pub enum PeeledOnion<T: OnionMessageContents> {
 	/// Forwarded onion, with the next node id and a new onion
 	Forward(NextMessageHop, OnionMessage),
-	/// Received onion message, with decrypted contents, path_id, and reply path
-	Receive(ParsedOnionMessageContents<T>, Option<[u8; 32]>, Option<BlindedPath>)
+	/// Received onion message, with decrypted contents, context, and reply path
+	Receive(ParsedOnionMessageContents<T>, Option<MessageContext>, Option<BlindedPath>)
 }
 
 
@@ -952,9 +951,23 @@ where
 		(control_tlvs_ss, custom_handler.deref(), logger.deref())
 	) {
 		Ok((Payload::Receive::<ParsedOnionMessageContents<<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage>> {
-			message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id }), reply_path,
+			message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }), reply_path,
 		}, None)) => {
-			Ok(PeeledOnion::Receive(message, path_id, reply_path))
+			match (&message, &context) {
+				(_, None) => {
+					Ok(PeeledOnion::Receive(message, None, reply_path))
+				}
+				(ParsedOnionMessageContents::Offers(_), Some(MessageContext::Offers(_))) => {
+					Ok(PeeledOnion::Receive(message, context, reply_path))
+				}
+				(ParsedOnionMessageContents::Custom(_), Some(MessageContext::Custom(_))) => {
+					Ok(PeeledOnion::Receive(message, context, reply_path))
+				}
+				_ => {
+					log_trace!(logger, "Received message was sent on a blinded path with the wrong context.");
+					Err(())
+				}
+			}
 		},
 		Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
 			next_hop, next_blinding_override
@@ -1157,7 +1170,7 @@ where
 			.map_err(|_| SendError::PathNotFound)
 	}
 
-	fn create_blinded_path(&self) -> Result<BlindedPath, SendError> {
+	fn create_blinded_path(&self, context: MessageContext) -> Result<BlindedPath, SendError> {
 		let recipient = self.node_signer
 			.get_node_id(Recipient::Node)
 			.map_err(|_| SendError::GetNodeIdFailed)?;
@@ -1170,7 +1183,7 @@ where
 			.collect::<Vec<_>>();
 
 		self.message_router
-			.create_blinded_paths(recipient, peers, secp_ctx)
+			.create_blinded_paths(recipient, context, peers, secp_ctx)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| SendError::PathNotFound)
 	}
@@ -1259,22 +1272,21 @@ where
 	pub fn handle_onion_message_response<T: OnionMessageContents>(
 		&self, response: ResponseInstruction<T>
 	) -> Result<Option<SendSuccess>, SendError> {
-		let (response, create_reply_path) = match response {
-			ResponseInstruction::WithReplyPath(response) => (response, true),
-			ResponseInstruction::WithoutReplyPath(response) => (response, false),
+		let (response, context) = match response {
+			ResponseInstruction::WithReplyPath(response, context) => (response, Some(context)),
+			ResponseInstruction::WithoutReplyPath(response) => (response, None),
 			ResponseInstruction::NoResponse => return Ok(None),
 		};
 
 		let message_type = response.message.msg_type();
-		let reply_path = if create_reply_path {
-			match self.create_blinded_path() {
+		let reply_path = if let Some(context) = context {
+			match self.create_blinded_path(context) {
 				Ok(reply_path) => Some(reply_path),
 				Err(err) => {
 					log_trace!(
 						self.logger,
-						"Failed to create reply path when responding with {} to an onion message \
-						with path_id {:02x?}: {:?}",
-						message_type, response.path_id, err
+						"Failed to create reply path when responding with {} to an onion message: {:?}",
+						message_type, err
 					);
 					return Err(err);
 				}
@@ -1284,9 +1296,8 @@ where
 		self.find_path_and_enqueue_onion_message(
 			response.message, Destination::BlindedPath(response.reply_path), reply_path,
 			format_args!(
-				"when responding with {} to an onion message with path_id {:02x?}",
+				"when responding with {} to an onion message",
 				message_type,
-				response.path_id
 			)
 		).map(|result| Some(result))
 	}
@@ -1440,18 +1451,24 @@ where
 	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage) {
 		let logger = WithContext::from(&self.logger, Some(*peer_node_id), None, None);
 		match self.peel_onion_message(msg) {
-			Ok(PeeledOnion::Receive(message, path_id, reply_path)) => {
+			Ok(PeeledOnion::Receive(message, context, reply_path)) => {
 				log_trace!(
 					logger,
-					"Received an onion message with path_id {:02x?} and {} reply_path: {:?}",
-					path_id, if reply_path.is_some() { "a" } else { "no" }, message);
+					"Received an onion message with {} reply_path: {:?}",
+					if reply_path.is_some() { "a" } else { "no" }, message);
 
-				let responder = reply_path.map(
-					|reply_path| Responder::new(reply_path, path_id)
-				);
+				let responder = reply_path.map(Responder::new);
 				match message {
 					ParsedOnionMessageContents::Offers(msg) => {
-						let response_instructions = self.offers_handler.handle_message(msg, responder);
+						let context = match context {
+							None => OffersContext::Unknown {},
+							Some(MessageContext::Offers(context)) => context,
+							Some(MessageContext::Custom(_)) => {
+								debug_assert!(false, "Shouldn't have triggered this case.");
+								return
+							}
+						};
+						let response_instructions = self.offers_handler.handle_message(msg, context, responder);
 						let _ = self.handle_onion_message_response(response_instructions);
 					},
 					#[cfg(async_payments)]
@@ -1466,7 +1483,15 @@ where
 						self.async_payments_handler.release_held_htlc(msg);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
-						let response_instructions = self.custom_handler.handle_custom_message(msg, responder);
+						let context = match context {
+							None => None,
+							Some(MessageContext::Custom(data)) => Some(data),
+							Some(MessageContext::Offers(_)) => {
+								debug_assert!(false, "Shouldn't have triggered this case.");
+								return
+							}
+						};
+						let response_instructions = self.custom_handler.handle_custom_message(msg, context, responder);
 						let _ = self.handle_onion_message_response(response_instructions);
 					},
 				}
@@ -1737,7 +1762,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 		}, prev_control_tlvs_ss.unwrap()));
 	} else {
 		payloads.push((Payload::Receive {
-			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { path_id: None, }),
+			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None }),
 			reply_path: reply_path.take(),
 			message,
 		}, prev_control_tlvs_ss.unwrap()));
