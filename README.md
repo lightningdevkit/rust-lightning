@@ -54,18 +54,16 @@ LDK/`rust-lightning` is a generic library that allows you to build a Lightning
 node without needing to worry about getting all of the Lightning state machine,
 routing, and on-chain punishment code (and other chain interactions) exactly
 correct. Note that LDK isn't, in itself, a node. For an out-of-the-box Lightning
-node based on LDK, see [Sensei](https://l2.technology/sensei). However, if you
+node based on LDK, see [LDK-sample](https://github.com/lightningdevkit/ldk-sample). However, if you
 want to integrate Lightning with custom features such as your own chain sync,
 key management, data storage/backup logic, etc., LDK is likely your best option.
 Some `rust-lightning` utilities such as those in
 [`chan_utils`](./lightning/src/ln/chan_utils.rs) are also suitable for use in
 non-LN Bitcoin applications such as Discreet Log Contracts (DLCs) and bulletin boards.
 
-A sample node which fetches blockchain data and manages on-chain funds via the
-Bitcoin Core RPC/REST interface is available
-[here](https://github.com/lightningdevkit/ldk-sample/). The individual pieces of
-that demo are composable, so you can pick the off-the-shelf parts you want
-and replace the rest.
+Also check out [LDK-node](https://github.com/lightningdevkit/ldk-node) library
+if you want to easily integrate lightning in your application without taking care of
+all the boiler plate code.
 
 In general, `rust-lightning` does not provide (but LDK has implementations of):
 * on-disk storage - you can store the channel state any way you want - whether
