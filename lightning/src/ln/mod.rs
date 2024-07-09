@@ -25,6 +25,7 @@ pub mod features;
 pub mod script;
 pub mod types;
 
+pub use channel::{ChannelContext, CommitmentStats, DefaultTxBuilder, TxBuilder};
 pub use types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 
 #[cfg(fuzzing)]

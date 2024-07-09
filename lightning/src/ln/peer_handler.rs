@@ -709,12 +709,12 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L> = PeerManager<
 /// This is not exported to bindings users as type aliases aren't supported in most languages.
 #[cfg(not(c_bindings))]
 pub type SimpleRefPeerManager<
-	'a, 'b, 'c, 'd, 'e, 'f, 'logger, 'h, 'i, 'j, 'graph, 'k, SD, M, T, F, C, L
+	'a, 'b, 'c, 'd, 'e, 'f, 'tb, 'logger, 'h, 'i, 'j, 'graph, 'k, SD, M, T, F, C, L
 > = PeerManager<
 	SD,
-	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, M, T, F, L>,
+	&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'graph, 'tb, 'logger, 'i, M, T, F, L>,
 	&'f P2PGossipSync<&'graph NetworkGraph<&'logger L>, C, &'logger L>,
-	&'h SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'j, 'k, M, T, F, L>,
+	&'h SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'j, 'k, 'tb, M, T, F, L>,
 	&'logger L,
 	IgnoringMessageHandler,
 	&'c KeysManager
