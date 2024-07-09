@@ -85,20 +85,20 @@ impl Writeable for ReceiveTlvs {
 	}
 }
 
-/// Represents additional data included by the recipient in a [`BlindedPath`].
+/// Additional data included by the recipient in a [`BlindedPath`].
 ///
-/// This data is encrypted by the recipient and remains invisible to anyone else.
-/// It is included in the [`BlindedPath`], making it accessible again to the recipient
-/// whenever the [`BlindedPath`] is used.
-/// The recipient can authenticate the message and utilize it for further processing
-/// if needed.
+/// This data is encrypted by the recipient and will be given to the corresponding message handler
+/// when handling a message sent over the [`BlindedPath`]. The recipient can use this data to
+/// authenticate the message or for further processing if needed.
 #[derive(Clone, Debug)]
 pub enum MessageContext {
-	/// Represents the data specific to [`OffersMessage`]
+	/// Context specific to an [`OffersMessage`].
 	///
 	/// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
 	Offers(OffersContext),
-	/// Represents custom data received in a Custom Onion Message.
+	/// Context specific to a [`CustomOnionMessageHandler::CustomMessage`].
+	///
+	/// [`CustomOnionMessageHandler::CustomMessage`]: crate::onion_message::messenger::CustomOnionMessageHandler::CustomMessage
 	Custom(Vec<u8>),
 }
 
