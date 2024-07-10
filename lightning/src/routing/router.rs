@@ -1186,12 +1186,7 @@ impl cmp::PartialOrd for RouteGraphNode {
 
 // While RouteGraphNode can be laid out with fewer bytes, performance appears to be improved
 // substantially when it is laid out at exactly 64 bytes.
-//
-// Thus, we use `#[repr(C)]` on the struct to force a suboptimal layout and check that it stays 64
-// bytes here.
-#[cfg(any(ldk_bench, not(any(test, fuzzing))))]
 const _GRAPH_NODE_SMALL: usize = 64 - core::mem::size_of::<RouteGraphNode>();
-#[cfg(any(ldk_bench, not(any(test, fuzzing))))]
 const _GRAPH_NODE_FIXED_SIZE: usize = core::mem::size_of::<RouteGraphNode>() - 64;
 
 /// A [`CandidateRouteHop::FirstHop`] entry.
@@ -1210,6 +1205,20 @@ pub struct FirstHopCandidate<'a> {
 	///
 	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	pub payer_node_id: &'a NodeId,
+	/// A unique ID which describes the payer.
+	///
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but may be equal to one if the
+	/// payer is a public node.
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
+	pub(crate) payer_node_counter: u32,
+	/// A unique ID which describes the first hop counterparty.
+	///
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but may be equal to one if the
+	/// counterparty is a public node.
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
+	pub(crate) target_node_counter: u32,
 }
 
 /// A [`CandidateRouteHop::PublicHop`] entry.
@@ -1235,7 +1244,21 @@ pub struct PrivateHopCandidate<'a> {
 	/// Node id of the next hop in BOLT 11 route hint.
 	///
 	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
-	pub target_node_id: &'a NodeId
+	pub target_node_id: &'a NodeId,
+	/// A unique ID which describes the source node of the hop (further from the payment target).
+	///
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but may be equal to one if the
+	/// node is a public node.
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
+	pub(crate) source_node_counter: u32,
+	/// A unique ID which describes the destination node of the hop (towards the payment target).
+	///
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but may be equal to one if the
+	/// node is a public node.
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
+	pub(crate) target_node_counter: u32,
 }
 
 /// A [`CandidateRouteHop::Blinded`] entry.
@@ -1256,6 +1279,13 @@ pub struct BlindedPathCandidate<'a> {
 	/// This is used to cheaply uniquely identify this blinded path, even though we don't have
 	/// a short channel ID for this hop.
 	hint_idx: usize,
+	/// A unique ID which describes the introduction point of the blinded path.
+	///
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but will generally be equal to
+	/// one from the public network graph (assuming the introduction point is a public node).
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
+	source_node_counter: u32,
 }
 
 /// A [`CandidateRouteHop::OneHopBlinded`] entry.
@@ -1278,6 +1308,13 @@ pub struct OneHopBlindedPathCandidate<'a> {
 	/// This is used to cheaply uniquely identify this blinded path, even though we don't have
 	/// a short channel ID for this hop.
 	hint_idx: usize,
+	/// A unique ID which describes the introduction point of the blinded path.
+	///
+	/// It will not conflict with any [`NodeInfo::node_counter`]s, but will generally be equal to
+	/// one from the public network graph (assuming the introduction point is a public node).
+	///
+	/// [`NodeInfo::node_counter`]: super::gossip::NodeInfo::node_counter
+	source_node_counter: u32,
 }
 
 /// A wrapper around the various hop representations.
@@ -1397,6 +1434,28 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::PrivateHop(hop) => hop.hint.htlc_minimum_msat.unwrap_or(0),
 			CandidateRouteHop::Blinded(hop) => hop.hint.0.htlc_minimum_msat,
 			CandidateRouteHop::OneHopBlinded { .. } => 0,
+		}
+	}
+
+	#[inline]
+	fn src_node_counter(&self) -> u32 {
+		match self {
+			CandidateRouteHop::FirstHop(hop) => hop.payer_node_counter,
+			CandidateRouteHop::PublicHop(hop) => hop.info.source_counter(),
+			CandidateRouteHop::PrivateHop(hop) => hop.source_node_counter,
+			CandidateRouteHop::Blinded(hop) => hop.source_node_counter,
+			CandidateRouteHop::OneHopBlinded(hop) => hop.source_node_counter,
+		}
+	}
+
+	#[inline]
+	fn target_node_counter(&self) -> Option<u32> {
+		match self {
+			CandidateRouteHop::FirstHop(hop) => Some(hop.target_node_counter),
+			CandidateRouteHop::PublicHop(hop) => Some(hop.info.target_counter()),
+			CandidateRouteHop::PrivateHop(hop) => Some(hop.target_node_counter),
+			CandidateRouteHop::Blinded(_) => None,
+			CandidateRouteHop::OneHopBlinded(_) => None,
 		}
 	}
 
@@ -1521,6 +1580,156 @@ enum CandidateHopId {
 	Blinded(usize),
 }
 
+/// To avoid doing [`PublicKey`] -> [`PathBuildingHop`] hashtable lookups, we assign each
+/// [`PublicKey`]/node a `usize` index and simply keep a `Vec` of values.
+///
+/// While this is easy for gossip-originating nodes (the [`DirectedChannelInfo`] exposes "counters"
+/// for us for this purpose) we have to have our own indexes for nodes originating from invoice
+/// hints, local channels, or blinded path fake nodes.
+///
+/// This wrapper handles all this for us, allowing look-up of counters from the various contexts.
+///
+/// It is first built by passing all [`NodeId`]s that we'll ever care about (which are not in our
+/// [`NetworkGraph`], e.g. those from first- and last-hop hints and blinded path introduction
+/// points) either though [`NodeCountersBuilder::select_node_counter_for_pubkey`] or
+/// [`NodeCountersBuilder::select_node_counter_for_id`], then calling [`NodeCountersBuilder::build`]
+/// and using the resulting [`NodeCounters`] to look up any counters.
+///
+/// [`NodeCounters::private_node_counter_from_pubkey`], specifically, will return `Some` iff
+/// [`NodeCountersBuilder::select_node_counter_for_pubkey`] was called on the same key (not
+/// [`NodeCountersBuilder::select_node_counter_for_id`]). It will also return a cached copy of the
+/// [`PublicKey`] -> [`NodeId`] conversion.
+struct NodeCounters<'a> {
+	network_graph: &'a ReadOnlyNetworkGraph<'a>,
+	private_node_id_to_node_counter: HashMap<NodeId, u32>,
+	private_hop_key_cache: HashMap<PublicKey, (NodeId, u32)>,
+}
+
+struct NodeCountersBuilder<'a>(NodeCounters<'a>);
+
+impl<'a> NodeCountersBuilder<'a> {
+	fn new(network_graph: &'a ReadOnlyNetworkGraph) -> Self {
+		Self(NodeCounters {
+			network_graph,
+			private_node_id_to_node_counter: new_hash_map(),
+			private_hop_key_cache: new_hash_map(),
+		})
+	}
+
+	fn select_node_counter_for_pubkey(&mut self, pubkey: PublicKey) -> u32 {
+		let id = NodeId::from_pubkey(&pubkey);
+		let counter = self.select_node_counter_for_id(id);
+		self.0.private_hop_key_cache.insert(pubkey, (id, counter));
+		counter
+	}
+
+	fn select_node_counter_for_id(&mut self, node_id: NodeId) -> u32 {
+		// For any node_id, we first have to check if its in the existing network graph, and then
+		// ensure that we always look up in our internal map first.
+		self.0.network_graph.nodes().get(&node_id)
+			.map(|node| node.node_counter)
+			.unwrap_or_else(|| {
+				let next_node_counter = self.0.network_graph.max_node_counter() + 1 +
+					self.0.private_node_id_to_node_counter.len() as u32;
+				*self.0.private_node_id_to_node_counter.entry(node_id).or_insert(next_node_counter)
+			})
+	}
+
+	fn build(self) -> NodeCounters<'a> { self.0 }
+}
+
+impl<'a> NodeCounters<'a> {
+	fn max_counter(&self) -> u32 {
+		self.network_graph.max_node_counter() +
+			self.private_node_id_to_node_counter.len() as u32
+	}
+
+	fn private_node_counter_from_pubkey(&self, pubkey: &PublicKey) -> Option<&(NodeId, u32)> {
+		self.private_hop_key_cache.get(pubkey)
+	}
+
+	fn node_counter_from_id(&self, node_id: &NodeId) -> Option<(&NodeId, u32)> {
+		self.private_node_id_to_node_counter.get_key_value(node_id).map(|(a, b)| (a, *b))
+			.or_else(|| {
+				self.network_graph.nodes().get_key_value(node_id)
+					.map(|(node_id, node)| (node_id, node.node_counter))
+			})
+	}
+}
+
+/// Calculates the introduction point for each blinded path in the given [`PaymentParameters`], if
+/// they can be found.
+fn calculate_blinded_path_intro_points<'a, L: Deref>(
+	payment_params: &PaymentParameters, node_counters: &'a NodeCounters,
+	network_graph: &ReadOnlyNetworkGraph, logger: &L, our_node_id: NodeId,
+	first_hop_targets: &HashMap<NodeId, (Vec<&ChannelDetails>, u32)>,
+) -> Result<Vec<Option<(&'a NodeId, u32)>>, LightningError>
+where L::Target: Logger {
+	let introduction_node_id_cache = payment_params.payee.blinded_route_hints().iter()
+		.map(|(_, path)| {
+			match &path.introduction_node {
+				IntroductionNode::NodeId(pubkey) => {
+					// Note that this will only return `Some` if the `pubkey` is somehow known to
+					// us (i.e. a channel counterparty or in the network graph).
+					node_counters.node_counter_from_id(&NodeId::from_pubkey(&pubkey))
+				},
+				IntroductionNode::DirectedShortChannelId(direction, scid) => {
+					path.public_introduction_node_id(network_graph)
+						.map(|node_id_ref| *node_id_ref)
+						.or_else(|| {
+							first_hop_targets.iter().find(|(_, (channels, _))|
+								channels
+									.iter()
+									.any(|details| Some(*scid) == details.get_outbound_payment_scid())
+							).map(|(cp, _)| direction.select_node_id(our_node_id, *cp))
+						})
+						.and_then(|node_id| node_counters.node_counter_from_id(&node_id))
+				},
+			}
+		})
+		.collect::<Vec<_>>();
+	match &payment_params.payee {
+		Payee::Clear { route_hints, node_id, .. } => {
+			for route in route_hints.iter() {
+				for hop in &route.0 {
+					if hop.src_node_id == *node_id {
+						return Err(LightningError {
+							err: "Route hint cannot have the payee as the source.".to_owned(),
+							action: ErrorAction::IgnoreError
+						});
+					}
+				}
+			}
+		},
+		Payee::Blinded { route_hints, .. } => {
+			if introduction_node_id_cache.iter().all(|info_opt| info_opt.map(|(a, _)| a) == Some(&our_node_id)) {
+				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
+			}
+			for ((_, blinded_path), info_opt) in route_hints.iter().zip(introduction_node_id_cache.iter()) {
+				if blinded_path.blinded_hops.len() == 0 {
+					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
+				}
+				let introduction_node_id = match info_opt {
+					None => continue,
+					Some(info) => info.0,
+				};
+				if *introduction_node_id == our_node_id {
+					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
+				} else if blinded_path.blinded_hops.len() == 1 &&
+					route_hints
+						.iter().zip(introduction_node_id_cache.iter())
+						.filter(|((_, p), _)| p.blinded_hops.len() == 1)
+						.any(|(_, iter_info_opt)| iter_info_opt.is_some() && iter_info_opt != info_opt)
+				{
+					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
+				}
+			}
+		}
+	}
+
+	Ok(introduction_node_id_cache)
+}
+
 #[inline]
 fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_power_of_half: u8) -> u64 {
 	let saturation_shift: u32 = max_channel_saturation_power_of_half as u32;
@@ -1554,7 +1763,7 @@ fn iter_equal<I1: Iterator, I2: Iterator>(mut iter_a: I1, mut iter_b: I2)
 /// Fee values should be updated only in the context of the whole path, see update_value_and_recompute_fees.
 /// These fee values are useful to choose hops as we traverse the graph "payee-to-payer".
 #[derive(Clone)]
-#[repr(C)] // Force fields to appear in the order we define them.
+#[repr(align(128))]
 struct PathBuildingHop<'a> {
 	candidate: CandidateRouteHop<'a>,
 	/// If we've already processed a node as the best node, we shouldn't process it again. Normally
@@ -1575,11 +1784,6 @@ struct PathBuildingHop<'a> {
 	/// channel scoring.
 	path_penalty_msat: u64,
 
-	// The last 16 bytes are on the next cache line by default in glibc's malloc. Thus, we should
-	// only place fields which are not hot there. Luckily, the next three fields are only read if
-	// we end up on the selected path, and only in the final path layout phase, so we don't care
-	// too much if reading them is slow.
-
 	fee_msat: u64,
 
 	/// All the fees paid *after* this channel on the way to the destination
@@ -1596,28 +1800,20 @@ struct PathBuildingHop<'a> {
 	value_contribution_msat: u64,
 }
 
-// Checks that the entries in the `find_route` `dist` map fit in (exactly) two standard x86-64
-// cache lines. Sadly, they're not guaranteed to actually lie on a cache line (and in fact,
-// generally won't, because at least glibc's malloc will align to a nice, big, round
-// boundary...plus 16), but at least it will reduce the amount of data we'll need to load.
-//
-// Note that these assertions only pass on somewhat recent rustc, and thus are gated on the
-// ldk_bench flag.
-#[cfg(ldk_bench)]
-const _NODE_MAP_SIZE_TWO_CACHE_LINES: usize = 128 - core::mem::size_of::<(NodeId, PathBuildingHop)>();
-#[cfg(ldk_bench)]
-const _NODE_MAP_SIZE_EXACTLY_CACHE_LINES: usize = core::mem::size_of::<(NodeId, PathBuildingHop)>() - 128;
+const _NODE_MAP_SIZE_TWO_CACHE_LINES: usize = 128 - core::mem::size_of::<Option<PathBuildingHop>>();
+const _NODE_MAP_SIZE_EXACTLY_TWO_CACHE_LINES: usize = core::mem::size_of::<Option<PathBuildingHop>>() - 128;
 
 impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 		let mut debug_struct = f.debug_struct("PathBuildingHop");
 		debug_struct
-			.field("node_id", &self.candidate.target())
+			.field("source_node_id", &self.candidate.source())
+			.field("target_node_id", &self.candidate.target())
 			.field("short_channel_id", &self.candidate.short_channel_id())
 			.field("total_fee_msat", &self.total_fee_msat)
 			.field("next_hops_fee_msat", &self.next_hops_fee_msat)
 			.field("hop_use_fee_msat", &self.hop_use_fee_msat)
-			.field("total_fee_msat - (next_hops_fee_msat + hop_use_fee_msat)", &(&self.total_fee_msat - (&self.next_hops_fee_msat + &self.hop_use_fee_msat)))
+			.field("total_fee_msat - (next_hops_fee_msat + hop_use_fee_msat)", &(&self.total_fee_msat.saturating_sub(self.next_hops_fee_msat).saturating_sub(self.hop_use_fee_msat)))
 			.field("path_penalty_msat", &self.path_penalty_msat)
 			.field("path_htlc_minimum_msat", &self.path_htlc_minimum_msat)
 			.field("cltv_expiry_delta", &self.candidate.cltv_expiry_delta());
@@ -1935,39 +2131,6 @@ where L::Target: Logger {
 		return Err(LightningError{err: "Cannot send a payment of 0 msat".to_owned(), action: ErrorAction::IgnoreError});
 	}
 
-	let introduction_node_id_cache = payment_params.payee.blinded_route_hints().iter()
-		.map(|(_, path)| path.public_introduction_node_id(network_graph))
-		.collect::<Vec<_>>();
-	match &payment_params.payee {
-		Payee::Clear { route_hints, node_id, .. } => {
-			for route in route_hints.iter() {
-				for hop in &route.0 {
-					if hop.src_node_id == *node_id {
-						return Err(LightningError{err: "Route hint cannot have the payee as the source.".to_owned(), action: ErrorAction::IgnoreError});
-					}
-				}
-			}
-		},
-		Payee::Blinded { route_hints, .. } => {
-			if introduction_node_id_cache.iter().all(|introduction_node_id| *introduction_node_id == Some(&our_node_id)) {
-				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
-			}
-			for ((_, blinded_path), introduction_node_id) in route_hints.iter().zip(introduction_node_id_cache.iter()) {
-				if blinded_path.blinded_hops.len() == 0 {
-					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
-				} else if *introduction_node_id == Some(&our_node_id) {
-					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
-				} else if blinded_path.blinded_hops.len() == 1 &&
-					route_hints
-						.iter().zip(introduction_node_id_cache.iter())
-						.filter(|((_, p), _)| p.blinded_hops.len() == 1)
-						.any(|(_, p_introduction_node_id)| p_introduction_node_id != introduction_node_id)
-				{
-					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
-				}
-			}
-		}
-	}
 	let final_cltv_expiry_delta = payment_params.payee.final_cltv_expiry_delta().unwrap_or(0);
 	if payment_params.max_total_cltv_expiry_delta <= final_cltv_expiry_delta {
 		return Err(LightningError{err: "Can't find a route where the maximum total CLTV expiry delta is below the final CLTV expiry.".to_owned(), action: ErrorAction::IgnoreError});
@@ -2073,11 +2236,22 @@ where L::Target: Logger {
 		}
 	}
 
-	// Step (1).
-	// Prepare the data we'll use for payee-to-payer search by
-	// inserting first hops suggested by the caller as targets.
-	// Our search will then attempt to reach them while traversing from the payee node.
-	let mut first_hop_targets: HashMap<_, Vec<&ChannelDetails>> =
+	let mut node_counter_builder = NodeCountersBuilder::new(&network_graph);
+
+	let payer_node_counter = node_counter_builder.select_node_counter_for_pubkey(*our_node_pubkey);
+	let payee_node_counter = node_counter_builder.select_node_counter_for_pubkey(maybe_dummy_payee_pk);
+
+	for route in payment_params.payee.unblinded_route_hints().iter() {
+		for hop in route.0.iter() {
+			node_counter_builder.select_node_counter_for_pubkey(hop.src_node_id);
+		}
+	}
+
+	// Step (1). Prepare first and last hop targets.
+	//
+	// First cache all our direct channels so that we can insert them in the heap at startup.
+	// Then process any blinded routes, resolving their introduction node and caching it.
+	let mut first_hop_targets: HashMap<_, (Vec<&ChannelDetails>, u32)> =
 		hash_map_with_capacity(if first_hops.is_some() { first_hops.as_ref().unwrap().len() } else { 0 });
 	if let Some(hops) = first_hops {
 		for chan in hops {
@@ -2087,29 +2261,26 @@ where L::Target: Logger {
 			if chan.counterparty.node_id == *our_node_pubkey {
 				return Err(LightningError{err: "First hop cannot have our_node_pubkey as a destination.".to_owned(), action: ErrorAction::IgnoreError});
 			}
+			let counterparty_id = NodeId::from_pubkey(&chan.counterparty.node_id);
 			first_hop_targets
-				.entry(NodeId::from_pubkey(&chan.counterparty.node_id))
-				.or_insert(Vec::new())
-				.push(chan);
+				.entry(counterparty_id)
+				.or_insert_with(|| {
+					// Make sure there's a counter assigned for the counterparty
+					let node_counter = node_counter_builder.select_node_counter_for_id(counterparty_id);
+					(Vec::new(), node_counter)
+				})
+				.0.push(chan);
 		}
 		if first_hop_targets.is_empty() {
 			return Err(LightningError{err: "Cannot route when there are no outbound routes away from us".to_owned(), action: ErrorAction::IgnoreError});
 		}
 	}
 
-	let mut private_hop_key_cache = hash_map_with_capacity(
-		payment_params.payee.unblinded_route_hints().iter().map(|path| path.0.len()).sum()
-	);
+	let node_counters = node_counter_builder.build();
 
-	// Because we store references to private hop node_ids in `dist`, below, we need them to exist
-	// (as `NodeId`, not `PublicKey`) for the lifetime of `dist`. Thus, we calculate all the keys
-	// we'll need here and simply fetch them when routing.
-	private_hop_key_cache.insert(maybe_dummy_payee_pk, NodeId::from_pubkey(&maybe_dummy_payee_pk));
-	for route in payment_params.payee.unblinded_route_hints().iter() {
-		for hop in route.0.iter() {
-			private_hop_key_cache.insert(hop.src_node_id, NodeId::from_pubkey(&hop.src_node_id));
-		}
-	}
+	let introduction_node_id_cache = calculate_blinded_path_intro_points(
+		&payment_params, &node_counters, network_graph, &logger, our_node_id, &first_hop_targets,
+	)?;
 
 	// The main heap containing all candidate next-hops sorted by their score (max(fee,
 	// htlc_minimum)). Ideally this would be a heap which allowed cheap score reduction instead of
@@ -2118,7 +2289,8 @@ where L::Target: Logger {
 
 	// Map from node_id to information about the best current path to that node, including feerate
 	// information.
-	let mut dist: HashMap<NodeId, PathBuildingHop> = hash_map_with_capacity(network_nodes.len());
+	let dist_len = node_counters.max_counter() + 1;
+	let mut dist: Vec<Option<PathBuildingHop>> = vec![None; dist_len as usize];
 
 	// During routing, if we ignore a path due to an htlc_minimum_msat limit, we set this,
 	// indicating that we may wish to try again with a higher value, potentially paying to meet an
@@ -2165,7 +2337,7 @@ where L::Target: Logger {
 	// when we want to stop looking for new paths.
 	let mut already_collected_value_msat = 0;
 
-	for (_, channels) in first_hop_targets.iter_mut() {
+	for (_, (channels, _)) in first_hop_targets.iter_mut() {
 		sort_first_hop_channels(channels, &used_liquidities, recommended_value_msat,
 			our_node_pubkey);
 	}
@@ -2325,14 +2497,17 @@ where L::Target: Logger {
 						);
 						let path_htlc_minimum_msat = compute_fees_saturating(curr_min, $candidate.fees())
 							.saturating_add(curr_min);
-						let hm_entry = dist.entry(src_node_id);
-						let old_entry = hm_entry.or_insert_with(|| {
+
+						let dist_entry = &mut dist[$candidate.src_node_counter() as usize];
+						let old_entry = if let Some(hop) = dist_entry {
+							hop
+						} else {
 							// If there was previously no known way to access the source node
 							// (recall it goes payee-to-payer) of short_channel_id, first add a
 							// semi-dummy record just to compute the fees to reach the source node.
 							// This will affect our decision on selecting short_channel_id
 							// as a way to reach the $candidate.target() node.
-							PathBuildingHop {
+							*dist_entry = Some(PathBuildingHop {
 								candidate: $candidate.clone(),
 								fee_msat: 0,
 								next_hops_fee_msat: u64::max_value(),
@@ -2343,8 +2518,9 @@ where L::Target: Logger {
 								was_processed: false,
 								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 								value_contribution_msat,
-							}
-						});
+							});
+							dist_entry.as_mut().unwrap()
+						};
 
 						#[allow(unused_mut)] // We only use the mut in cfg(test)
 						let mut should_process = !old_entry.was_processed;
@@ -2503,7 +2679,7 @@ where L::Target: Logger {
 			let fee_to_target_msat;
 			let next_hops_path_htlc_minimum_msat;
 			let next_hops_path_penalty_msat;
-			let skip_node = if let Some(elem) = dist.get_mut(&$node_id) {
+			let skip_node = if let Some(elem) = &mut dist[$node.node_counter as usize] {
 				let was_processed = elem.was_processed;
 				elem.was_processed = true;
 				fee_to_target_msat = elem.total_fee_msat;
@@ -2515,6 +2691,7 @@ where L::Target: Logger {
 				// Because there are no channels from payee, it will not have a dist entry at this point.
 				// If we're processing any other node, it is always be the result of a channel from it.
 				debug_assert_eq!($node_id, maybe_dummy_payee_node_id);
+
 				fee_to_target_msat = 0;
 				next_hops_path_htlc_minimum_msat = 0;
 				next_hops_path_penalty_msat = 0;
@@ -2522,10 +2699,12 @@ where L::Target: Logger {
 			};
 
 			if !skip_node {
-				if let Some(first_channels) = first_hop_targets.get(&$node_id) {
+				if let Some((first_channels, peer_node_counter)) = first_hop_targets.get(&$node_id) {
 					for details in first_channels {
+						debug_assert_eq!(*peer_node_counter, $node.node_counter);
 						let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
-							details, payer_node_id: &our_node_id,
+							details, payer_node_id: &our_node_id, payer_node_counter,
+							target_node_counter: $node.node_counter,
 						});
 						add_entry!(&candidate, fee_to_target_msat,
 							$next_hops_value_contribution,
@@ -2574,15 +2753,19 @@ where L::Target: Logger {
 		// For every new path, start from scratch, except for used_liquidities, which
 		// helps to avoid reusing previously selected paths in future iterations.
 		targets.clear();
-		dist.clear();
+		for e in dist.iter_mut() {
+			*e = None;
+		}
 		hit_minimum_limit = false;
 
 		// If first hop is a private channel and the only way to reach the payee, this is the only
 		// place where it could be added.
-		payee_node_id_opt.map(|payee| first_hop_targets.get(&payee).map(|first_channels| {
+		payee_node_id_opt.map(|payee| first_hop_targets.get(&payee).map(|(first_channels, peer_node_counter)| {
+			debug_assert_eq!(*peer_node_counter, payee_node_counter);
 			for details in first_channels {
 				let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
-					details, payer_node_id: &our_node_id,
+					details, payer_node_id: &our_node_id, payer_node_counter,
+					target_node_counter: payee_node_counter,
 				});
 				let added = add_entry!(&candidate, 0, path_value_msat,
 									0, 0u64, 0, 0).is_some();
@@ -2608,42 +2791,24 @@ where L::Target: Logger {
 		// If a caller provided us with last hops, add them to routing targets. Since this happens
 		// earlier than general path finding, they will be somewhat prioritized, although currently
 		// it matters only if the fees are exactly the same.
+		debug_assert_eq!(
+			payment_params.payee.blinded_route_hints().len(),
+			introduction_node_id_cache.len(),
+			"introduction_node_id_cache was built by iterating the blinded_route_hints, so they should be the same len"
+		);
 		for (hint_idx, hint) in payment_params.payee.blinded_route_hints().iter().enumerate() {
 			// Only add the hops in this route to our candidate set if either
 			// we have a direct channel to the first hop or the first hop is
 			// in the regular network graph.
-			let source_node_id = match introduction_node_id_cache[hint_idx] {
-				Some(node_id) => node_id,
-				None => match &hint.1.introduction_node {
-					IntroductionNode::NodeId(pubkey) => {
-						let node_id = NodeId::from_pubkey(&pubkey);
-						match first_hop_targets.get_key_value(&node_id).map(|(key, _)| key) {
-							Some(node_id) => node_id,
-							None => continue,
-						}
-					},
-					IntroductionNode::DirectedShortChannelId(direction, scid) => {
-						let first_hop = first_hop_targets.iter().find(|(_, channels)|
-							channels
-								.iter()
-								.any(|details| Some(*scid) == details.get_outbound_payment_scid())
-						);
-						match first_hop {
-							Some((counterparty_node_id, _)) => {
-								direction.select_node_id(&our_node_id, counterparty_node_id)
-							},
-							None => continue,
-						}
-					},
-				},
-			};
+			let source_node_opt = introduction_node_id_cache[hint_idx];
+			let (source_node_id, source_node_counter) = if let Some(v) = source_node_opt { v } else { continue };
 			if our_node_id == *source_node_id { continue }
 			let candidate = if hint.1.blinded_hops.len() == 1 {
 				CandidateRouteHop::OneHopBlinded(
-					OneHopBlindedPathCandidate { source_node_id, hint, hint_idx }
+					OneHopBlindedPathCandidate { source_node_counter, source_node_id, hint, hint_idx }
 				)
 			} else {
-				CandidateRouteHop::Blinded(BlindedPathCandidate { source_node_id, hint, hint_idx })
+				CandidateRouteHop::Blinded(BlindedPathCandidate { source_node_counter, source_node_id, hint, hint_idx })
 			};
 			let mut path_contribution_msat = path_value_msat;
 			if let Some(hop_used_msat) = add_entry!(&candidate,
@@ -2651,14 +2816,14 @@ where L::Target: Logger {
 			{
 				path_contribution_msat = hop_used_msat;
 			} else { continue }
-			if let Some(first_channels) = first_hop_targets.get(source_node_id) {
-				let mut first_channels = first_channels.clone();
+			if let Some((first_channels, peer_node_counter)) = first_hop_targets.get_mut(source_node_id) {
 				sort_first_hop_channels(
-					&mut first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+					first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
 				);
 				for details in first_channels {
 					let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
-						details, payer_node_id: &our_node_id,
+						details, payer_node_id: &our_node_id, payer_node_counter,
+						target_node_counter: *peer_node_counter,
 					});
 					let blinded_path_fee = match compute_fees(path_contribution_msat, candidate.fees()) {
 						Some(fee) => fee,
@@ -2697,9 +2862,14 @@ where L::Target: Logger {
 				let mut aggregate_path_contribution_msat = path_value_msat;
 
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
-					let target = private_hop_key_cache.get(prev_hop_id).unwrap();
+					let (target, private_target_node_counter) =
+						node_counters.private_node_counter_from_pubkey(&prev_hop_id)
+    						.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys during setup, so is always Some here");
+					let (_src_id, private_source_node_counter) =
+						node_counters.private_node_counter_from_pubkey(&hop.src_node_id)
+							.expect("node_counter_from_pubkey is called on all unblinded_route_hints keys during setup, so is always Some here");
 
-					if let Some(first_channels) = first_hop_targets.get(target) {
+					if let Some((first_channels, _)) = first_hop_targets.get(target) {
 						if first_channels.iter().any(|d| d.outbound_scid_alias == Some(hop.short_channel_id)) {
 							log_trace!(logger, "Ignoring route hint with SCID {} (and any previous) due to it being a direct channel of ours.",
 								hop.short_channel_id);
@@ -2714,7 +2884,11 @@ where L::Target: Logger {
 							info,
 							short_channel_id: hop.short_channel_id,
 						}))
-						.unwrap_or_else(|| CandidateRouteHop::PrivateHop(PrivateHopCandidate { hint: hop, target_node_id: target }));
+						.unwrap_or_else(|| CandidateRouteHop::PrivateHop(PrivateHopCandidate {
+							hint: hop, target_node_id: target,
+							source_node_counter: *private_source_node_counter,
+							target_node_counter: *private_target_node_counter,
+						}));
 
 					if let Some(hop_used_msat) = add_entry!(&candidate,
 						aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
@@ -2750,14 +2924,14 @@ where L::Target: Logger {
 						.saturating_add(1);
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
-					if let Some(first_channels) = first_hop_targets.get(target) {
-						let mut first_channels = first_channels.clone();
+					if let Some((first_channels, peer_node_counter)) = first_hop_targets.get_mut(target) {
 						sort_first_hop_channels(
-							&mut first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+							first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
 						);
 						for details in first_channels {
 							let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
-								details, payer_node_id: &our_node_id,
+								details, payer_node_id: &our_node_id, payer_node_counter,
+								target_node_counter: *peer_node_counter,
 							});
 							add_entry!(&first_hop_candidate,
 								aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
@@ -2799,14 +2973,14 @@ where L::Target: Logger {
 						// Note that we *must* check if the last hop was added as `add_entry`
 						// always assumes that the third argument is a node to which we have a
 						// path.
-						if let Some(first_channels) = first_hop_targets.get(&NodeId::from_pubkey(&hop.src_node_id)) {
-							let mut first_channels = first_channels.clone();
+						if let Some((first_channels, peer_node_counter)) = first_hop_targets.get_mut(&NodeId::from_pubkey(&hop.src_node_id)) {
 							sort_first_hop_channels(
-								&mut first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
+								first_channels, &used_liquidities, recommended_value_msat, our_node_pubkey
 							);
 							for details in first_channels {
 								let first_hop_candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
-									details, payer_node_id: &our_node_id,
+									details, payer_node_id: &our_node_id, payer_node_counter,
+									target_node_counter: *peer_node_counter,
 								});
 								add_entry!(&first_hop_candidate,
 									aggregate_next_hops_fee_msat,
@@ -2842,16 +3016,18 @@ where L::Target: Logger {
 			// Since we're going payee-to-payer, hitting our node as a target means we should stop
 			// traversing the graph and arrange the path out of what we found.
 			if node_id == our_node_id {
-				let mut new_entry = dist.remove(&our_node_id).unwrap();
+				let mut new_entry = dist[payer_node_counter as usize].take().unwrap();
 				let mut ordered_hops: Vec<(PathBuildingHop, NodeFeatures)> = vec!((new_entry.clone(), default_node_features.clone()));
 
 				'path_walk: loop {
 					let mut features_set = false;
-					let target = ordered_hops.last().unwrap().0.candidate.target().unwrap_or(maybe_dummy_payee_node_id);
-					if let Some(first_channels) = first_hop_targets.get(&target) {
+					let candidate = &ordered_hops.last().unwrap().0.candidate;
+					let target = candidate.target().unwrap_or(maybe_dummy_payee_node_id);
+					let target_node_counter = candidate.target_node_counter();
+					if let Some((first_channels, _)) = first_hop_targets.get(&target) {
 						for details in first_channels {
 							if let CandidateRouteHop::FirstHop(FirstHopCandidate { details: last_hop_details, .. })
-								= ordered_hops.last().unwrap().0.candidate
+								= candidate
 							{
 								if details.get_outbound_payment_scid() == last_hop_details.get_outbound_payment_scid() {
 									ordered_hops.last_mut().unwrap().1 = details.counterparty.features.to_context();
@@ -2879,11 +3055,12 @@ where L::Target: Logger {
 					// save this path for the payment route. Also, update the liquidity
 					// remaining on the used hops, so that we take them into account
 					// while looking for more paths.
-					if target == maybe_dummy_payee_node_id {
+					if target_node_counter.is_none() {
 						break 'path_walk;
 					}
+					if target_node_counter == Some(payee_node_counter) { break 'path_walk; }
 
-					new_entry = match dist.remove(&target) {
+					new_entry = match dist[target_node_counter.unwrap() as usize].take() {
 						Some(payment_hop) => payment_hop,
 						// We can't arrive at None because, if we ever add an entry to targets,
 						// we also fill in the entry in dist (see add_entry!).
@@ -7722,7 +7899,7 @@ mod tests {
 		};
 
 		let mut invalid_blinded_path_2 = invalid_blinded_path.clone();
-		invalid_blinded_path_2.introduction_node = IntroductionNode::NodeId(ln_test_utils::pubkey(45));
+		invalid_blinded_path_2.introduction_node = IntroductionNode::NodeId(nodes[3]);
 		let payment_params = PaymentParameters::blinded(vec![
 			(blinded_payinfo.clone(), invalid_blinded_path.clone()),
 			(blinded_payinfo.clone(), invalid_blinded_path_2)]);

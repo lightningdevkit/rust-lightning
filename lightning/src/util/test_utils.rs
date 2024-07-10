@@ -186,6 +186,8 @@ impl<'a> Router for TestRouter<'a> {
 										let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
 											details: first_hops[idx],
 											payer_node_id: &node_id,
+											payer_node_counter: u32::max_value(),
+											target_node_counter: u32::max_value(),
 										});
 										scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 										continue;
@@ -213,6 +215,8 @@ impl<'a> Router for TestRouter<'a> {
 								let candidate = CandidateRouteHop::PrivateHop(PrivateHopCandidate {
 									hint: &route_hint,
 									target_node_id: &target_node_id,
+									source_node_counter: u32::max_value(),
+									target_node_counter: u32::max_value(),
 								});
 								scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 							}
