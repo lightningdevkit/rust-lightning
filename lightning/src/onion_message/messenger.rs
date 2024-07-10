@@ -979,6 +979,10 @@ where
 				(ParsedOnionMessageContents::Offers(_), Some(MessageContext::Offers(_))) => {
 					Ok(PeeledOnion::Receive(message, context, reply_path))
 				}
+				#[cfg(async_payments)]
+				(ParsedOnionMessageContents::AsyncPayments(_), Some(MessageContext::AsyncPayments(_))) => {
+					Ok(PeeledOnion::Receive(message, context, reply_path))
+				}
 				(ParsedOnionMessageContents::Custom(_), Some(MessageContext::Custom(_))) => {
 					Ok(PeeledOnion::Receive(message, context, reply_path))
 				}
@@ -1587,7 +1591,7 @@ where
 						let context = match context {
 							None => None,
 							Some(MessageContext::Offers(context)) => Some(context),
-							Some(MessageContext::Custom(_)) => {
+							_ => {
 								debug_assert!(false, "Checked in peel_onion_message");
 								return
 							}
@@ -1614,7 +1618,7 @@ where
 						let context = match context {
 							None => None,
 							Some(MessageContext::Custom(data)) => Some(data),
-							Some(MessageContext::Offers(_)) => {
+							_ => {
 								debug_assert!(false, "Checked in peel_onion_message");
 								return
 							}
