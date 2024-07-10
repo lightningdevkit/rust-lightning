@@ -1635,6 +1635,79 @@ impl<'a> NodeCounters<'a> {
 	}
 }
 
+/// Calculates the introduction point for each blinded path in the given [`PaymentParameters`], if
+/// they can be found.
+fn calculate_blinded_path_intro_points<'a, L: Deref>(
+	payment_params: &PaymentParameters, node_counters: &'a NodeCounters,
+	network_graph: &ReadOnlyNetworkGraph, logger: &L, our_node_id: NodeId,
+	first_hop_targets: &HashMap<NodeId, (Vec<&ChannelDetails>, u32)>,
+) -> Result<Vec<Option<(&'a NodeId, u32)>>, LightningError>
+where L::Target: Logger {
+	let introduction_node_id_cache = payment_params.payee.blinded_route_hints().iter()
+		.map(|(_, path)| {
+			match &path.introduction_node {
+				IntroductionNode::NodeId(pubkey) => {
+					// Note that this will only return `Some` if the `pubkey` is somehow known to
+					// us (i.e. a channel counterparty or in the network graph).
+					node_counters.node_counter_from_id(&NodeId::from_pubkey(&pubkey))
+				},
+				IntroductionNode::DirectedShortChannelId(direction, scid) => {
+					path.public_introduction_node_id(network_graph)
+						.map(|node_id_ref| *node_id_ref)
+						.or_else(|| {
+							first_hop_targets.iter().find(|(_, (channels, _))|
+								channels
+									.iter()
+									.any(|details| Some(*scid) == details.get_outbound_payment_scid())
+							).map(|(cp, _)| direction.select_node_id(our_node_id, *cp))
+						})
+						.and_then(|node_id| node_counters.node_counter_from_id(&node_id))
+				},
+			}
+		})
+		.collect::<Vec<_>>();
+	match &payment_params.payee {
+		Payee::Clear { route_hints, node_id, .. } => {
+			for route in route_hints.iter() {
+				for hop in &route.0 {
+					if hop.src_node_id == *node_id {
+						return Err(LightningError {
+							err: "Route hint cannot have the payee as the source.".to_owned(),
+							action: ErrorAction::IgnoreError
+						});
+					}
+				}
+			}
+		},
+		Payee::Blinded { route_hints, .. } => {
+			if introduction_node_id_cache.iter().all(|info_opt| info_opt.map(|(a, _)| a) == Some(&our_node_id)) {
+				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
+			}
+			for ((_, blinded_path), info_opt) in route_hints.iter().zip(introduction_node_id_cache.iter()) {
+				if blinded_path.blinded_hops.len() == 0 {
+					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
+				}
+				let introduction_node_id = match info_opt {
+					None => continue,
+					Some(info) => info.0,
+				};
+				if *introduction_node_id == our_node_id {
+					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
+				} else if blinded_path.blinded_hops.len() == 1 &&
+					route_hints
+						.iter().zip(introduction_node_id_cache.iter())
+						.filter(|((_, p), _)| p.blinded_hops.len() == 1)
+						.any(|(_, iter_info_opt)| iter_info_opt.is_some() && iter_info_opt != info_opt)
+				{
+					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
+				}
+			}
+		}
+	}
+
+	Ok(introduction_node_id_cache)
+}
+
 #[inline]
 fn max_htlc_from_capacity(capacity: EffectiveCapacity, max_channel_saturation_power_of_half: u8) -> u64 {
 	let saturation_shift: u32 = max_channel_saturation_power_of_half as u32;
@@ -2183,67 +2256,9 @@ where L::Target: Logger {
 
 	let node_counters = node_counter_builder.build();
 
-	let introduction_node_id_cache = payment_params.payee.blinded_route_hints().iter()
-		.map(|(_, path)| {
-			match &path.introduction_node {
-				IntroductionNode::NodeId(pubkey) => {
-					// Note that this will only return `Some` if the `pubkey` is somehow known to
-					// us (i.e. a channel counterparty or in the network graph).
-					node_counters.node_counter_from_id(&NodeId::from_pubkey(&pubkey))
-				},
-				IntroductionNode::DirectedShortChannelId(direction, scid) => {
-					path.public_introduction_node_id(network_graph)
-						.map(|node_id_ref| *node_id_ref)
-						.or_else(|| {
-							first_hop_targets.iter().find(|(_, (channels, _))|
-								channels
-									.iter()
-									.any(|details| Some(*scid) == details.get_outbound_payment_scid())
-							).map(|(cp, _)| direction.select_node_id(our_node_id, *cp))
-						})
-						.and_then(|node_id| node_counters.node_counter_from_id(&node_id))
-				},
-			}
-		})
-		.collect::<Vec<_>>();
-	match &payment_params.payee {
-		Payee::Clear { route_hints, node_id, .. } => {
-			for route in route_hints.iter() {
-				for hop in &route.0 {
-					if hop.src_node_id == *node_id {
-						return Err(LightningError {
-							err: "Route hint cannot have the payee as the source.".to_owned(),
-							action: ErrorAction::IgnoreError
-						});
-					}
-				}
-			}
-		},
-		Payee::Blinded { route_hints, .. } => {
-			if introduction_node_id_cache.iter().all(|info_opt| info_opt.map(|(a, _)| a) == Some(&our_node_id)) {
-				return Err(LightningError{err: "Cannot generate a route to blinded paths if we are the introduction node to all of them".to_owned(), action: ErrorAction::IgnoreError});
-			}
-			for ((_, blinded_path), info_opt) in route_hints.iter().zip(introduction_node_id_cache.iter()) {
-				if blinded_path.blinded_hops.len() == 0 {
-					return Err(LightningError{err: "0-hop blinded path provided".to_owned(), action: ErrorAction::IgnoreError});
-				}
-				let introduction_node_id = match info_opt {
-					None => continue,
-					Some(info) => info.0,
-				};
-				if *introduction_node_id == our_node_id {
-					log_info!(logger, "Got blinded path with ourselves as the introduction node, ignoring");
-				} else if blinded_path.blinded_hops.len() == 1 &&
-					route_hints
-						.iter().zip(introduction_node_id_cache.iter())
-						.filter(|((_, p), _)| p.blinded_hops.len() == 1)
-						.any(|(_, iter_info_opt)| iter_info_opt.is_some() && iter_info_opt != info_opt)
-				{
-					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
-				}
-			}
-		}
-	}
+	let introduction_node_id_cache = calculate_blinded_path_intro_points(
+		&payment_params, &node_counters, network_graph, &logger, our_node_id, &first_hop_targets,
+	)?;
 
 	// The main heap containing all candidate next-hops sorted by their score (max(fee,
 	// htlc_minimum)). Ideally this would be a heap which allowed cheap score reduction instead of
