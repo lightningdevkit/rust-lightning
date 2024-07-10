@@ -64,6 +64,13 @@ pub(crate) enum PendingOutboundPayment {
 		// used anywhere.
 		max_total_routing_fee_msat: Option<u64>,
 	},
+	StaticInvoiceReceived {
+		payment_hash: PaymentHash,
+		keysend_preimage: PaymentPreimage,
+		retry_strategy: Retry,
+		payment_release_secret: [u8; 32],
+		route_params: RouteParameters,
+	},
 	Retryable {
 		retry_strategy: Option<Retry>,
 		attempts: PaymentAttempts,
@@ -170,6 +177,7 @@ impl PendingOutboundPayment {
 			PendingOutboundPayment::Legacy { .. } => None,
 			PendingOutboundPayment::AwaitingInvoice { .. } => None,
 			PendingOutboundPayment::InvoiceReceived { payment_hash, .. } => Some(*payment_hash),
+			PendingOutboundPayment::StaticInvoiceReceived { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::Retryable { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::Fulfilled { payment_hash, .. } => *payment_hash,
 			PendingOutboundPayment::Abandoned { payment_hash, .. } => Some(*payment_hash),
@@ -184,7 +192,8 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Fulfilled { session_privs, .. } |
 				PendingOutboundPayment::Abandoned { session_privs, .. } => session_privs,
 			PendingOutboundPayment::AwaitingInvoice { .. } |
-				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); return; },
+				PendingOutboundPayment::InvoiceReceived { .. } |
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); return; },
 		});
 		let payment_hash = self.payment_hash();
 		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0 };
@@ -218,7 +227,8 @@ impl PendingOutboundPayment {
 					session_privs.remove(session_priv)
 				},
 			PendingOutboundPayment::AwaitingInvoice { .. } |
-				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); false },
+				PendingOutboundPayment::InvoiceReceived { .. } |
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); false },
 		};
 		if remove_res {
 			if let PendingOutboundPayment::Retryable {
@@ -247,7 +257,8 @@ impl PendingOutboundPayment {
 					session_privs.insert(session_priv)
 				},
 			PendingOutboundPayment::AwaitingInvoice { .. } |
-				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); false },
+				PendingOutboundPayment::InvoiceReceived { .. } |
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); false },
 			PendingOutboundPayment::Fulfilled { .. } => false,
 			PendingOutboundPayment::Abandoned { .. } => false,
 		};
@@ -280,6 +291,7 @@ impl PendingOutboundPayment {
 				},
 			PendingOutboundPayment::AwaitingInvoice { .. } => 0,
 			PendingOutboundPayment::InvoiceReceived { .. } => 0,
+			PendingOutboundPayment::StaticInvoiceReceived { .. } => 0,
 		}
 	}
 }
@@ -1185,6 +1197,7 @@ impl OutboundPayments {
 							debug_assert!(false);
 							return
 						},
+						PendingOutboundPayment::StaticInvoiceReceived { .. } => todo!(),
 						PendingOutboundPayment::Fulfilled { .. } => {
 							log_error!(logger, "Payment already completed");
 							return
@@ -1941,6 +1954,13 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, payment_hash, required),
 		(2, retry_strategy, required),
 		(4, max_total_routing_fee_msat, option),
+	},
+	(9, StaticInvoiceReceived) => {
+		(0, payment_hash, required),
+		(2, keysend_preimage, required),
+		(4, retry_strategy, required),
+		(6, payment_release_secret, required),
+		(8, route_params, required),
 	},
 );
 
