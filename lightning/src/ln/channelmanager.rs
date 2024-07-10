@@ -3374,6 +3374,9 @@ where
 				PendingOutboundPayment::InvoiceReceived { .. } => {
 					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
 				},
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
+					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
+				},
 				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
 					Some(RecentPaymentDetails::Pending {
 						payment_id: *payment_id,
@@ -11722,6 +11725,7 @@ where
 				}
 				PendingOutboundPayment::AwaitingInvoice { .. } => {},
 				PendingOutboundPayment::InvoiceReceived { .. } => {},
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => {},
 				PendingOutboundPayment::Fulfilled { .. } => {},
 				PendingOutboundPayment::Abandoned { .. } => {},
 			}
