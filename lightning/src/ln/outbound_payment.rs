@@ -510,11 +510,8 @@ pub enum Bolt12PaymentError {
 	UnexpectedInvoice,
 	/// Payment for an invoice with the corresponding [`PaymentId`] was already initiated.
 	DuplicateInvoice,
-	/// The [`BlindedPath`]s provided are too large and caused us to exceed the maximum onion hop data
-	/// size of 1300 bytes.
-	///
-	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
-	OnionPacketSizeExceeded,
+	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
+	SendingFailed(RetryableSendFailure),
 }
 
 /// Indicates that we failed to send a payment probe. Further errors may be surfaced later via
@@ -848,7 +845,7 @@ impl OutboundPayments {
 			.map_err(|()| {
 				log_error!(logger, "Can't construct an onion packet without exceeding 1300-byte onion \
 					hop_data length for payment with id {} and hash {}", payment_id, payment_hash);
-				Bolt12PaymentError::OnionPacketSizeExceeded
+				Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded)
 			})?;
 
 		if let Some(max_fee_msat) = max_total_routing_fee_msat {
