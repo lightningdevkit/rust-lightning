@@ -9028,7 +9028,7 @@ where
 		};
 		let invoice_request = builder.build_and_sign()?;
 
-		let context = OffersContext::OutboundPayment { payment_id, nonce };
+		let context = MessageContext::Offers(OffersContext::OutboundPayment { payment_id, nonce });
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -9133,9 +9133,9 @@ where
 				let builder: InvoiceBuilder<DerivedSigningPubkey> = builder.into();
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
 
-				let context = OffersContext::InboundPayment {
+				let context = MessageContext::Offers(OffersContext::InboundPayment {
 					payment_hash: invoice.payment_hash(),
-				};
+				});
 				let reply_paths = self.create_blinded_paths(context)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -9283,7 +9283,7 @@ where
 		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
 			self.create_compact_blinded_paths(context)
 		} else {
-			self.create_blinded_paths(context)
+			self.create_blinded_paths(MessageContext::Offers(context))
 		}
 	}
 
@@ -9304,7 +9304,7 @@ where
 	/// [`MessageRouter::create_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors.
-	fn create_blinded_paths(&self, context: OffersContext) -> Result<Vec<BlindedPath>, ()> {
+	fn create_blinded_paths(&self, context: MessageContext) -> Result<Vec<BlindedPath>, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
@@ -9317,7 +9317,7 @@ where
 			.collect::<Vec<_>>();
 
 		self.router
-			.create_blinded_paths(recipient, MessageContext::Offers(context), peers, secp_ctx)
+			.create_blinded_paths(recipient, context, peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
