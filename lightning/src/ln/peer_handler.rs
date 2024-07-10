@@ -18,7 +18,7 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
-use crate::blinded_path::message::OffersContext;
+use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
 use crate::sign::{NodeSigner, Recipient};
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::types::ChannelId;
@@ -150,11 +150,11 @@ impl OffersMessageHandler for IgnoringMessageHandler {
 }
 impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
 	fn held_htlc_available(
-		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
+		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
 	) -> ResponseInstruction<ReleaseHeldHtlc> {
 		ResponseInstruction::NoResponse
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;

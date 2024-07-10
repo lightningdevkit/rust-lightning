@@ -6,7 +6,7 @@ use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use lightning::blinded_path::message::{MessageContext, OffersContext};
+use lightning::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
@@ -125,7 +125,7 @@ impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 		responder
 			.respond(ReleaseHeldHtlc { payment_release_secret: message.payment_release_secret })
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 }
 
 #[derive(Debug)]
