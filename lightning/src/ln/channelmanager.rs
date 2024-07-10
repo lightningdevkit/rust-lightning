@@ -33,7 +33,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::events::FundingInfo;
-use crate::blinded_path::message::{MessageContext, OffersContext};
+use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
@@ -11094,7 +11094,7 @@ where
 		None
 	}
 
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 
 	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		Vec::new()

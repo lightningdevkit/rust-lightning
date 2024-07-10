@@ -9,6 +9,7 @@
 
 //! Message handling for async payments.
 
+use crate::blinded_path::message::AsyncPaymentsContext;
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::onion_message::messenger::{MessageSendInstructions, Responder, ResponseInstruction};
@@ -32,7 +33,7 @@ pub trait AsyncPaymentsMessageHandler {
 
 	/// Handle a [`ReleaseHeldHtlc`] message. If authentication of the message succeeds, an HTLC
 	/// should be released to the corresponding payee.
-	fn release_held_htlc(&self, message: ReleaseHeldHtlc);
+	fn release_held_htlc(&self, message: ReleaseHeldHtlc, context: AsyncPaymentsContext);
 
 	/// Release any [`AsyncPaymentsMessage`]s that need to be sent.
 	///

@@ -1612,7 +1612,15 @@ where
 					},
 					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::ReleaseHeldHtlc(msg)) => {
-						self.async_payments_handler.release_held_htlc(msg);
+						let context = match context {
+							Some(MessageContext::AsyncPayments(context)) => context,
+							Some(_) => {
+								debug_assert!(false, "Checked in peel_onion_message");
+								return
+							},
+							None => return,
+						};
+						self.async_payments_handler.release_held_htlc(msg, context);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
 						let context = match context {
