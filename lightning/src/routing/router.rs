@@ -1824,6 +1824,28 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 	}
 }
 
+
+#[derive(Default)]
+struct NextHopsData {
+	fee_msat: u64,
+	value_contribution: u64,
+	path_htlc_minimum_msat: u64,
+	path_penalty_msat: u64,
+	cltv_delta: u32,
+	path_length: u8,
+}
+
+impl NextHopsData {
+	/// Return [`NextHopsData`] with all default values (zeros), except a
+	/// `value_contribution`.
+	fn with_value_contribution(contribution: u64) -> Self {
+		Self {
+			value_contribution: contribution,
+			..Default::default()
+		}
+	}
+}
+
 // Instantiated with a list of hops with correct data in them collected during path finding,
 // an instance of this struct should be further modified only via given methods.
 #[derive(Clone)]
@@ -2396,9 +2418,7 @@ where L::Target: Logger {
 		// $next_hops_fee_msat represents the fees paid for using all the channels *after* this one,
 		// since that value has to be transferred over this channel.
 		// Returns the contribution amount of $candidate if the channel caused an update to `targets`.
-		( $candidate: expr, $next_hops_fee_msat: expr,
-			$next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr,
-			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => { {
+		( $candidate: expr, $next_hops_data: expr ) => { {
 			add_entry_internal(
 				&params,
 				channel_saturation_pow_half,
@@ -2411,12 +2431,7 @@ where L::Target: Logger {
 				scorer,
 				score_params,
 				$candidate,
-				$next_hops_fee_msat,
-				$next_hops_value_contribution,
-				$next_hops_path_htlc_minimum_msat,
-				$next_hops_path_penalty_msat,
-				$next_hops_cltv_delta,
-				$next_hops_path_length,
+				$next_hops_data,
 			)
 		} }
 	}
@@ -2461,10 +2476,13 @@ where L::Target: Logger {
 							details, payer_node_id: &our_node_id, payer_node_counter,
 							target_node_counter: $node.node_counter,
 						});
-						add_entry!(&candidate, fee_to_target_msat,
-							$next_hops_value_contribution,
-							next_hops_path_htlc_minimum_msat, next_hops_path_penalty_msat,
-							$next_hops_cltv_delta, $next_hops_path_length);
+						add_entry!(&candidate, &NextHopsData { 
+							fee_msat: fee_to_target_msat,
+							value_contribution: $next_hops_value_contribution,
+							path_htlc_minimum_msat: next_hops_path_htlc_minimum_msat,
+							path_penalty_msat: next_hops_path_penalty_msat,
+							cltv_delta: $next_hops_cltv_delta,
+							path_length: $next_hops_path_length } );
 					}
 				}
 
@@ -2485,12 +2503,13 @@ where L::Target: Logger {
 											info: directed_channel,
 											short_channel_id: *chan_id,
 										});
-										add_entry!(&candidate,
-											fee_to_target_msat,
-											$next_hops_value_contribution,
-											next_hops_path_htlc_minimum_msat,
-											next_hops_path_penalty_msat,
-											$next_hops_cltv_delta, $next_hops_path_length);
+										add_entry!(&candidate, &NextHopsData { 
+											fee_msat: fee_to_target_msat,
+											value_contribution: $next_hops_value_contribution,
+											path_htlc_minimum_msat: next_hops_path_htlc_minimum_msat,
+											path_penalty_msat: next_hops_path_penalty_msat,
+											cltv_delta: $next_hops_cltv_delta,
+											path_length: $next_hops_path_length });
 									}
 								}
 							}
@@ -2522,8 +2541,8 @@ where L::Target: Logger {
 					details, payer_node_id: &our_node_id, payer_node_counter,
 					target_node_counter: payee_node_counter,
 				});
-				let added = add_entry!(&candidate, 0, path_value_msat,
-									0, 0u64, 0, 0).is_some();
+				let added = add_entry!(&candidate, 
+					&NextHopsData::with_value_contribution(path_value_msat)).is_some();
 				log_trace!(logger, "{} direct route to payee via {}",
 						if added { "Added" } else { "Skipped" }, LoggedCandidateHop(&candidate));
 			}
@@ -2566,8 +2585,7 @@ where L::Target: Logger {
 				CandidateRouteHop::Blinded(BlindedPathCandidate { source_node_counter, source_node_id, hint, hint_idx })
 			};
 			let mut path_contribution_msat = path_value_msat;
-			if let Some(hop_used_msat) = add_entry!(&candidate,
-				0, path_contribution_msat, 0, 0_u64, 0, 0)
+			if let Some(hop_used_msat) = add_entry!(&candidate, &NextHopsData::with_value_contribution(path_contribution_msat))
 			{
 				path_contribution_msat = hop_used_msat;
 			} else { continue }
@@ -2586,8 +2604,13 @@ where L::Target: Logger {
 					};
 					let path_min = candidate.htlc_minimum_msat().saturating_add(
 						compute_fees_saturating(candidate.htlc_minimum_msat(), candidate.fees()));
-					add_entry!(&first_hop_candidate, blinded_path_fee, path_contribution_msat, path_min,
-						0_u64, candidate.cltv_expiry_delta(), 0);
+					add_entry!(&first_hop_candidate, &NextHopsData  {
+						fee_msat: blinded_path_fee,
+						value_contribution: path_contribution_msat,
+						path_htlc_minimum_msat: path_min,
+						path_penalty_msat: 0,
+						cltv_delta: candidate.cltv_expiry_delta(),
+						path_length: 0 });
 				}
 			}
 		}
@@ -2609,12 +2632,7 @@ where L::Target: Logger {
 				let prev_hop_iter = core::iter::once(&maybe_dummy_payee_pk).chain(
 					route.0.iter().skip(1).rev().map(|hop| &hop.src_node_id));
 				let mut hop_used = true;
-				let mut aggregate_next_hops_fee_msat: u64 = 0;
-				let mut aggregate_next_hops_path_htlc_minimum_msat: u64 = 0;
-				let mut aggregate_next_hops_path_penalty_msat: u64 = 0;
-				let mut aggregate_next_hops_cltv_delta: u32 = 0;
-				let mut aggregate_next_hops_path_length: u8 = 0;
-				let mut aggregate_path_contribution_msat = path_value_msat;
+				let mut aggregate_next_hops = NextHopsData::with_value_contribution(path_value_msat);
 
 				for (idx, (hop, prev_hop_id)) in hop_iter.zip(prev_hop_iter).enumerate() {
 					let (target, private_target_node_counter) =
@@ -2645,12 +2663,8 @@ where L::Target: Logger {
 							target_node_counter: *private_target_node_counter,
 						}));
 
-					if let Some(hop_used_msat) = add_entry!(&candidate,
-						aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
-						aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
-						aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length)
-					{
-						aggregate_path_contribution_msat = hop_used_msat;
+					if let Some(hop_used_msat) = add_entry!(&candidate, &aggregate_next_hops) {
+						aggregate_next_hops.value_contribution = hop_used_msat;
 					} else {
 						// If this hop was not used then there is no use checking the preceding
 						// hops in the RouteHint. We can break by just searching for a direct
@@ -2662,20 +2676,20 @@ where L::Target: Logger {
 						.get(&candidate.id()).copied()
 						.unwrap_or(0);
 					let channel_usage = ChannelUsage {
-						amount_msat: final_value_msat + aggregate_next_hops_fee_msat,
+						amount_msat: final_value_msat + aggregate_next_hops.fee_msat,
 						inflight_htlc_msat: used_liquidity_msat,
 						effective_capacity: candidate.effective_capacity(),
 					};
 					let channel_penalty_msat = scorer.channel_penalty_msat(
 						&candidate, channel_usage, score_params
 					);
-					aggregate_next_hops_path_penalty_msat = aggregate_next_hops_path_penalty_msat
+					aggregate_next_hops.path_penalty_msat = aggregate_next_hops.path_penalty_msat
 						.saturating_add(channel_penalty_msat);
 
-					aggregate_next_hops_cltv_delta = aggregate_next_hops_cltv_delta
+					aggregate_next_hops.cltv_delta = aggregate_next_hops.cltv_delta
 						.saturating_add(hop.cltv_expiry_delta as u32);
 
-					aggregate_next_hops_path_length = aggregate_next_hops_path_length
+					aggregate_next_hops.path_length = aggregate_next_hops.path_length
 						.saturating_add(1);
 
 					// Searching for a direct channel between last checked hop and first_hop_targets
@@ -2688,10 +2702,7 @@ where L::Target: Logger {
 								details, payer_node_id: &our_node_id, payer_node_counter,
 								target_node_counter: *peer_node_counter,
 							});
-							add_entry!(&first_hop_candidate,
-								aggregate_next_hops_fee_msat, aggregate_path_contribution_msat,
-								aggregate_next_hops_path_htlc_minimum_msat, aggregate_next_hops_path_penalty_msat,
-								aggregate_next_hops_cltv_delta, aggregate_next_hops_path_length);
+							add_entry!(&first_hop_candidate, &aggregate_next_hops);
 						}
 					}
 
@@ -2704,15 +2715,15 @@ where L::Target: Logger {
 					// for the last node in the RouteHint. We need to just add the fees to
 					// route through the current node so that the preceding node (next iteration)
 					// can use it.
-					let hops_fee = compute_fees(aggregate_next_hops_fee_msat + final_value_msat, hop.fees)
-						.map_or(None, |inc| inc.checked_add(aggregate_next_hops_fee_msat));
-					aggregate_next_hops_fee_msat = if let Some(val) = hops_fee { val } else { break; };
+					let hops_fee = compute_fees(aggregate_next_hops.fee_msat + final_value_msat, hop.fees)
+						.map_or(None, |inc| inc.checked_add(aggregate_next_hops.fee_msat));
+					aggregate_next_hops.fee_msat = if let Some(val) = hops_fee { val } else { break; };
 
 					// The next channel will need to relay this channel's min_htlc *plus* the fees taken by
 					// this route hint's source node to forward said min over this channel.
-					aggregate_next_hops_path_htlc_minimum_msat = {
+					aggregate_next_hops.path_htlc_minimum_msat = {
 						let curr_htlc_min = cmp::max(
-							candidate.htlc_minimum_msat(), aggregate_next_hops_path_htlc_minimum_msat
+							candidate.htlc_minimum_msat(), aggregate_next_hops.path_htlc_minimum_msat
 						);
 						let curr_htlc_min_fee = if let Some(val) = compute_fees(curr_htlc_min, hop.fees) { val } else { break };
 						if let Some(min) = curr_htlc_min.checked_add(curr_htlc_min_fee) { min } else { break }
@@ -2737,13 +2748,7 @@ where L::Target: Logger {
 									details, payer_node_id: &our_node_id, payer_node_counter,
 									target_node_counter: *peer_node_counter,
 								});
-								add_entry!(&first_hop_candidate,
-									aggregate_next_hops_fee_msat,
-									aggregate_path_contribution_msat,
-									aggregate_next_hops_path_htlc_minimum_msat,
-									aggregate_next_hops_path_penalty_msat,
-									aggregate_next_hops_cltv_delta,
-									aggregate_next_hops_path_length);
+								add_entry!(&first_hop_candidate, &aggregate_next_hops);
 							}
 						}
 					}
@@ -3135,12 +3140,7 @@ fn add_entry_internal<'a, L: Deref, S: ScoreLookUp>(
 	score_params: &S::ScoreParams,
 	// original add_entry params:
 	candidate: &CandidateRouteHop<'a>,
-	next_hops_fee_msat: u64,
-	next_hops_value_contribution: u64,
-	next_hops_path_htlc_minimum_msat: u64,
-	next_hops_path_penalty_msat: u64,
-	next_hops_cltv_delta: u32,
-	next_hops_path_length: u8,
+	next_hops: &NextHopsData,
 ) -> Option<u64>
 where
 	L::Target: Logger,
@@ -3165,7 +3165,7 @@ where
 		// fees caused by one expensive channel, but then this channel could have been used
 		// if the amount being transferred over this path is lower.
 		// We do this for now, but this is a subject for removal.
-		if let Some(mut available_value_contribution_msat) = htlc_maximum_msat.checked_sub(next_hops_fee_msat) {
+		if let Some(mut available_value_contribution_msat) = htlc_maximum_msat.checked_sub(next_hops.fee_msat) {
 			let used_liquidity_msat = used_liquidities
 				.get(&candidate.id())
 				.map_or(0, |used_liquidity_msat| {
@@ -3177,7 +3177,7 @@ where
 			// Verify the liquidity offered by this channel complies to the minimal contribution.
 			let contributes_sufficient_value = available_value_contribution_msat >= params.minimal_value_contribution_msat;
 			// Do not consider candidate hops that would exceed the maximum path length.
-			let path_length_to_node = next_hops_path_length
+			let path_length_to_node = next_hops.path_length
 				+ if candidate.blinded_hint_idx().is_some() { 0 } else { 1 };
 			let exceeds_max_path_length = path_length_to_node > params.max_path_length;
 
@@ -3188,27 +3188,27 @@ where
 			let max_total_cltv_expiry_delta = (params.payment.max_total_cltv_expiry_delta - params.final_cltv_expiry_delta)
 				.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
 				.unwrap_or(params.payment.max_total_cltv_expiry_delta - params.final_cltv_expiry_delta);
-			let hop_total_cltv_delta = (next_hops_cltv_delta as u32)
+			let hop_total_cltv_delta = (next_hops.cltv_delta as u32)
 				.saturating_add(candidate.cltv_expiry_delta());
 			let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta;
 
-			let value_contribution_msat = cmp::min(available_value_contribution_msat, next_hops_value_contribution);
+			let value_contribution_msat = cmp::min(available_value_contribution_msat, next_hops.value_contribution);
 			// Includes paying fees for the use of the following channels.
-			let amount_to_transfer_over_msat: u64 = match value_contribution_msat.checked_add(next_hops_fee_msat) {
+			let amount_to_transfer_over_msat: u64 = match value_contribution_msat.checked_add(next_hops.fee_msat) {
 				Some(result) => result,
 				// Can't overflow due to how the values were computed right above.
 				None => unreachable!(),
 			};
 			#[allow(unused_comparisons)] // next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
 			let over_path_minimum_msat = amount_to_transfer_over_msat >= candidate.htlc_minimum_msat() &&
-				amount_to_transfer_over_msat >= next_hops_path_htlc_minimum_msat;
+				amount_to_transfer_over_msat >= next_hops.path_htlc_minimum_msat;
 
 			#[allow(unused_comparisons)] // next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
 			let may_overpay_to_meet_path_minimum_msat =
 				(amount_to_transfer_over_msat < candidate.htlc_minimum_msat() &&
 				  params.recommended_value_msat >= candidate.htlc_minimum_msat()) ||
-				 (amount_to_transfer_over_msat < next_hops_path_htlc_minimum_msat &&
-				  params.recommended_value_msat >= next_hops_path_htlc_minimum_msat);
+				 (amount_to_transfer_over_msat < next_hops.path_htlc_minimum_msat &&
+				  params.recommended_value_msat >= next_hops.path_htlc_minimum_msat);
 
 			let payment_failed_on_this_channel = match scid_opt {
 				Some(scid) => params.payment.previously_failed_channels.contains(&scid),
@@ -3276,7 +3276,7 @@ where
 				// payment path (upstream to the payee). To avoid that, we recompute
 				// path fees knowing the final path contribution after constructing it.
 				let curr_min = cmp::max(
-					next_hops_path_htlc_minimum_msat, candidate.htlc_minimum_msat()
+					next_hops.path_htlc_minimum_msat, candidate.htlc_minimum_msat()
 				);
 				let path_htlc_minimum_msat = compute_fees_saturating(curr_min, candidate.fees())
 					.saturating_add(curr_min);
@@ -3316,7 +3316,7 @@ where
 
 				if should_process {
 					let mut hop_use_fee_msat = 0;
-					let mut total_fee_msat: u64 = next_hops_fee_msat;
+					let mut total_fee_msat: u64 = next_hops.fee_msat;
 
 					// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
 					// will have the same effective-fee
@@ -3351,7 +3351,7 @@ where
 							scorer.channel_penalty_msat(candidate,
 								channel_usage,
 								score_params);
-						let path_penalty_msat = next_hops_path_penalty_msat
+						let path_penalty_msat = next_hops.path_penalty_msat
 							.saturating_add(channel_penalty_msat);
 
 						// Update the way of reaching candidate.source()
@@ -3385,7 +3385,7 @@ where
 								path_length_to_node,
 							};
 							targets.push(new_graph_node);
-							old_entry.next_hops_fee_msat = next_hops_fee_msat;
+							old_entry.next_hops_fee_msat = next_hops.fee_msat;
 							old_entry.hop_use_fee_msat = hop_use_fee_msat;
 							old_entry.total_fee_msat = total_fee_msat;
 							old_entry.candidate = candidate.clone();
