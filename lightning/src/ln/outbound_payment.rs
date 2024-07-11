@@ -925,6 +925,54 @@ impl OutboundPayments {
 			!pmt.is_awaiting_invoice())
 	}
 
+	fn find_initial_route<R: Deref, NS: Deref, IH, L: Deref>(
+		&self, payment_id: PaymentId, payment_hash: PaymentHash,
+		recipient_onion: &RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>,
+		route_params: &mut RouteParameters, router: &R, first_hops: &Vec<ChannelDetails>,
+		inflight_htlcs: &IH, node_signer: &NS, best_block_height: u32, logger: &L,
+	) -> Result<Route, RetryableSendFailure>
+	where
+		R::Target: Router,
+		NS::Target: NodeSigner,
+		L::Target: Logger,
+		IH: Fn() -> InFlightHtlcs,
+	{
+		#[cfg(feature = "std")] {
+			if has_expired(&route_params) {
+				log_error!(logger, "Payment with id {} and hash {} had expired before we started paying",
+					payment_id, payment_hash);
+				return Err(RetryableSendFailure::PaymentExpired)
+			}
+		}
+
+		onion_utils::set_max_path_length(
+			route_params, recipient_onion, keysend_preimage, best_block_height
+		)
+			.map_err(|()| {
+				log_error!(logger, "Can't construct an onion packet without exceeding 1300-byte onion \
+					hop_data length for payment with id {} and hash {}", payment_id, payment_hash);
+				RetryableSendFailure::OnionPacketSizeExceeded
+			})?;
+
+		let mut route = router.find_route_with_id(
+			&node_signer.get_node_id(Recipient::Node).unwrap(), route_params,
+			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
+			payment_hash, payment_id,
+		).map_err(|_| {
+			log_error!(logger, "Failed to find route for payment with id {} and hash {}",
+				payment_id, payment_hash);
+			RetryableSendFailure::RouteNotFound
+		})?;
+
+		if route.route_params.as_ref() != Some(route_params) {
+			debug_assert!(false,
+				"Routers are expected to return a Route which includes the requested RouteParameters");
+			route.route_params = Some(route_params.clone());
+		}
+
+		Ok(route)
+	}
+
 	/// Errors immediately on [`RetryableSendFailure`] error conditions. Otherwise, further errors may
 	/// be surfaced asynchronously via [`Event::PaymentPathFailed`] and [`Event::PaymentFailed`].
 	///
@@ -945,38 +993,10 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		#[cfg(feature = "std")] {
-			if has_expired(&route_params) {
-				log_error!(logger, "Payment with id {} and hash {} had expired before we started paying",
-					payment_id, payment_hash);
-				return Err(RetryableSendFailure::PaymentExpired)
-			}
-		}
-
-		onion_utils::set_max_path_length(
-			&mut route_params, &recipient_onion, keysend_preimage, best_block_height
-		)
-			.map_err(|()| {
-				log_error!(logger, "Can't construct an onion packet without exceeding 1300-byte onion \
-					hop_data length for payment with id {} and hash {}", payment_id, payment_hash);
-				RetryableSendFailure::OnionPacketSizeExceeded
-			})?;
-
-		let mut route = router.find_route_with_id(
-			&node_signer.get_node_id(Recipient::Node).unwrap(), &route_params,
-			Some(&first_hops.iter().collect::<Vec<_>>()), inflight_htlcs(),
-			payment_hash, payment_id,
-		).map_err(|_| {
-			log_error!(logger, "Failed to find route for payment with id {} and hash {}",
-				payment_id, payment_hash);
-			RetryableSendFailure::RouteNotFound
-		})?;
-
-		if route.route_params.as_ref() != Some(&route_params) {
-			debug_assert!(false,
-				"Routers are expected to return a Route which includes the requested RouteParameters");
-			route.route_params = Some(route_params.clone());
-		}
+		let route = self.find_initial_route(
+			payment_id, payment_hash, &recipient_onion, keysend_preimage, &mut route_params, router,
+			&first_hops, &inflight_htlcs, node_signer, best_block_height, logger,
+		)?;
 
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
 			recipient_onion.clone(), payment_id, keysend_preimage, &route, Some(retry_strategy),
