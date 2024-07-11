@@ -2024,6 +2024,32 @@ impl<'a> fmt::Display for LoggedCandidateHop<'a> {
 	}
 }
 
+
+// Remember how many candidates we ignored to allow for some logging afterwards.
+#[derive(Default)]
+struct IgnoredCandidatesStats {
+	value_contribution: u32,
+	cltv_delta_limit: u32,
+	path_length_limit: u32,
+	previously_failed: u32,
+	total_fee_limit: u32,
+	avoid_overpayment: u32,
+	htlc_minimum_msat_limit: u32,
+}
+
+impl IgnoredCandidatesStats {
+	// Return total number of ignored cantotal number of ignored candidates.
+	const fn ignored_total(&self) -> u32 {
+		self.value_contribution +
+			self.cltv_delta_limit +
+			self.path_length_limit +
+			self.previously_failed +
+			self.total_fee_limit +
+			self.avoid_overpayment +
+			self.htlc_minimum_msat_limit
+	}
+}
+
 #[inline]
 fn sort_first_hop_channels(
 	channels: &mut Vec<&ChannelDetails>, used_liquidities: &HashMap<CandidateHopId, u64>,
@@ -2345,14 +2371,9 @@ where L::Target: Logger {
 	log_trace!(logger, "Building path from {} to payer {} for value {} msat.",
 		LoggedPayeePubkey(payment_params.payee.node_id()), our_node_pubkey, final_value_msat);
 
+
 	// Remember how many candidates we ignored to allow for some logging afterwards.
-	let mut num_ignored_value_contribution: u32 = 0;
-	let mut num_ignored_path_length_limit: u32 = 0;
-	let mut num_ignored_cltv_delta_limit: u32 = 0;
-	let mut num_ignored_previously_failed: u32 = 0;
-	let mut num_ignored_total_fee_limit: u32 = 0;
-	let mut num_ignored_avoid_overpayment: u32 = 0;
-	let mut num_ignored_htlc_minimum_msat_limit: u32 = 0;
+	let mut ignored_stats = IgnoredCandidatesStats::default();
 
 	macro_rules! add_entry {
 		// Adds entry which goes from $candidate.source() to $candidate.target() over the $candidate hop.
@@ -2370,13 +2391,7 @@ where L::Target: Logger {
 				final_cltv_expiry_delta,
 				recommended_value_msat,
 				&logger,
-				&mut num_ignored_value_contribution,
-				&mut num_ignored_path_length_limit,
-				&mut num_ignored_cltv_delta_limit,
-				&mut num_ignored_previously_failed,
-				&mut num_ignored_total_fee_limit,
-				&mut num_ignored_avoid_overpayment,
-				&mut num_ignored_htlc_minimum_msat_limit,
+				&mut ignored_stats,
 				&mut hit_minimum_limit,
 				&mut dist,
 				our_node_id,
@@ -2924,17 +2939,14 @@ where L::Target: Logger {
 		}
 	}
 
-	let num_ignored_total = num_ignored_value_contribution + num_ignored_path_length_limit +
-		num_ignored_cltv_delta_limit + num_ignored_previously_failed +
-		num_ignored_avoid_overpayment + num_ignored_htlc_minimum_msat_limit +
-		num_ignored_total_fee_limit;
+	let num_ignored_total = ignored_stats.ignored_total();
 	if num_ignored_total > 0 {
 		log_trace!(logger,
 			"Ignored {} candidate hops due to insufficient value contribution, {} due to path length limit, {} due to CLTV delta limit, {} due to previous payment failure, {} due to htlc_minimum_msat limit, {} to avoid overpaying, {} due to maximum total fee limit. Total: {} ignored candidates.",
-			num_ignored_value_contribution, num_ignored_path_length_limit,
-			num_ignored_cltv_delta_limit, num_ignored_previously_failed,
-			num_ignored_htlc_minimum_msat_limit, num_ignored_avoid_overpayment,
-			num_ignored_total_fee_limit, num_ignored_total);
+			ignored_stats.value_contribution, ignored_stats.path_length_limit,
+			ignored_stats.cltv_delta_limit, ignored_stats.previously_failed,
+			ignored_stats.htlc_minimum_msat_limit, ignored_stats.avoid_overpayment,
+			ignored_stats.total_fee_limit, num_ignored_total);
 	}
 
 	// Step (5).
@@ -3108,13 +3120,7 @@ fn add_entry_internal<'a, L: Deref, S: ScoreLookUp>(
 	final_cltv_expiry_delta: u32,
 	recommended_value_msat: u64,
 	logger: &L,
-	num_ignored_value_contribution: &mut u32,
-	num_ignored_path_length_limit: &mut u32,
-	num_ignored_cltv_delta_limit: &mut u32,
-	num_ignored_previously_failed: &mut u32,
-	num_ignored_total_fee_limit: &mut u32,
-	num_ignored_avoid_overpayment: &mut u32,
-	num_ignored_htlc_minimum_msat_limit: &mut u32,
+	ignored_stats: &mut IgnoredCandidatesStats,
 	hit_minimum_limit: &mut bool,
 	dist: &mut Vec<Option<PathBuildingHop<'a>>>,
 	our_node_id: NodeId,
@@ -3228,12 +3234,12 @@ where
 						LoggedCandidateHop(&candidate),
 						effective_capacity);
 				}
-				*num_ignored_value_contribution += 1;
+				ignored_stats.value_contribution += 1;
 			} else if exceeds_max_path_length {
 				if should_log_candidate {
 					log_trace!(logger, "Ignoring {} due to exceeding maximum path length limit.", LoggedCandidateHop(&candidate));
 				}
-				*num_ignored_path_length_limit += 1;
+				ignored_stats.path_length_limit += 1;
 			} else if exceeds_cltv_delta_limit {
 				if should_log_candidate {
 					log_trace!(logger, "Ignoring {} due to exceeding CLTV delta limit.", LoggedCandidateHop(&candidate));
@@ -3246,19 +3252,19 @@ where
 						);
 					}
 				}
-				*num_ignored_cltv_delta_limit += 1;
+				ignored_stats.cltv_delta_limit += 1;
 			} else if payment_failed_on_this_channel {
 				if should_log_candidate {
 					log_trace!(logger, "Ignoring {} due to a failed previous payment attempt.", LoggedCandidateHop(&candidate));
 				}
-				*num_ignored_previously_failed += 1;
+				ignored_stats.previously_failed += 1;
 			} else if may_overpay_to_meet_path_minimum_msat {
 				if should_log_candidate {
 					log_trace!(logger,
 						"Ignoring {} to avoid overpaying to meet htlc_minimum_msat limit ({}).",
 						LoggedCandidateHop(&candidate), candidate.htlc_minimum_msat());
 				}
-				*num_ignored_avoid_overpayment += 1;
+				ignored_stats.avoid_overpayment += 1;
 				*hit_minimum_limit = true;
 			} else if over_path_minimum_msat {
 				// Note that low contribution here (limited by available_liquidity_msat)
@@ -3330,7 +3336,7 @@ where
 								);
 							}
 						}
-						*num_ignored_total_fee_limit += 1;
+						ignored_stats.total_fee_limit += 1;
 					} else {
 						let channel_usage = ChannelUsage {
 							amount_msat: amount_to_transfer_over_msat,
@@ -3431,7 +3437,7 @@ where
 						);
 					}
 				}
-				*num_ignored_htlc_minimum_msat_limit += 1;
+				ignored_stats.htlc_minimum_msat_limit += 1;
 			}
 		}
 	}
