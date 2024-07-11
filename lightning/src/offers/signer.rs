@@ -41,15 +41,23 @@ const WITH_ENCRYPTED_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[4; 16];
 #[derive(Clone)]
 pub(super) enum Metadata {
 	/// Metadata as parsed, supplied by the user, or derived from the message contents.
+	///
+	/// This is the terminal variant; any `Metadata` in a created message will always use this.
 	Bytes(Vec<u8>),
 
 	/// Metadata for deriving keys included as recipient data in a blinded path.
+	///
+	/// This variant should only be used at verification time, never when building.
 	RecipientData(Nonce),
 
 	/// Metadata to be derived from message contents and given material.
+	///
+	/// This variant should only be used at building time.
 	Derived(MetadataMaterial),
 
 	/// Metadata and signing pubkey to be derived from message contents and given material.
+	///
+	/// This variant should only be used at building time.
 	DerivedSigningPubkey(MetadataMaterial),
 }
 
@@ -57,16 +65,14 @@ impl Metadata {
 	pub fn as_bytes(&self) -> Option<&Vec<u8>> {
 		match self {
 			Metadata::Bytes(bytes) => Some(bytes),
-			Metadata::RecipientData(_) => None,
-			Metadata::Derived(_) => None,
-			Metadata::DerivedSigningPubkey(_) => None,
+			_ => { debug_assert!(false); None },
 		}
 	}
 
 	pub fn has_derivation_material(&self) -> bool {
 		match self {
 			Metadata::Bytes(_) => false,
-			Metadata::RecipientData(_) => false,
+			Metadata::RecipientData(_) => { debug_assert!(false); false },
 			Metadata::Derived(_) => true,
 			Metadata::DerivedSigningPubkey(_) => true,
 		}
@@ -103,7 +109,7 @@ impl Metadata {
 	pub fn without_keys(self) -> Self {
 		match self {
 			Metadata::Bytes(_) => self,
-			Metadata::RecipientData(_) => self,
+			Metadata::RecipientData(_) => { debug_assert!(false); self },
 			Metadata::Derived(_) => self,
 			Metadata::DerivedSigningPubkey(material) => Metadata::Derived(material),
 		}
@@ -114,7 +120,7 @@ impl Metadata {
 	) -> (Self, Option<Keypair>) {
 		match self {
 			Metadata::Bytes(_) => (self, None),
-			Metadata::RecipientData(_) => (self, None),
+			Metadata::RecipientData(_) => { debug_assert!(false); (self, None) },
 			Metadata::Derived(mut metadata_material) => {
 				tlv_stream.write(&mut metadata_material.hmac).unwrap();
 				(Metadata::Bytes(metadata_material.derive_metadata()), None)
@@ -140,8 +146,8 @@ impl AsRef<[u8]> for Metadata {
 		match self {
 			Metadata::Bytes(bytes) => &bytes,
 			Metadata::RecipientData(nonce) => &nonce.0,
-			Metadata::Derived(_) => &[],
-			Metadata::DerivedSigningPubkey(_) => &[],
+			Metadata::Derived(_) => { debug_assert!(false); &[] },
+			Metadata::DerivedSigningPubkey(_) => { debug_assert!(false); &[] },
 		}
 	}
 }
