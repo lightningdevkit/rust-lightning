@@ -2362,307 +2362,37 @@ where L::Target: Logger {
 		( $candidate: expr, $next_hops_fee_msat: expr,
 			$next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr,
 			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => { {
-			// We "return" whether we updated the path at the end, and how much we can route via
-			// this channel, via this:
-			let mut hop_contribution_amt_msat = None;
-			// Channels to self should not be used. This is more of belt-and-suspenders, because in
-			// practice these cases should be caught earlier:
-			// - for regular channels at channel announcement (TODO)
-			// - for first and last hops early in get_route
-			let src_node_id = $candidate.source();
-			if Some(src_node_id) != $candidate.target() {
-				let scid_opt = $candidate.short_channel_id();
-				let effective_capacity = $candidate.effective_capacity();
-				let htlc_maximum_msat = max_htlc_from_capacity(effective_capacity, channel_saturation_pow_half);
-
-				// It is tricky to subtract $next_hops_fee_msat from available liquidity here.
-				// It may be misleading because we might later choose to reduce the value transferred
-				// over these channels, and the channel which was insufficient might become sufficient.
-				// Worst case: we drop a good channel here because it can't cover the high following
-				// fees caused by one expensive channel, but then this channel could have been used
-				// if the amount being transferred over this path is lower.
-				// We do this for now, but this is a subject for removal.
-				if let Some(mut available_value_contribution_msat) = htlc_maximum_msat.checked_sub($next_hops_fee_msat) {
-					let used_liquidity_msat = used_liquidities
-						.get(&$candidate.id())
-						.map_or(0, |used_liquidity_msat| {
-							available_value_contribution_msat = available_value_contribution_msat
-								.saturating_sub(*used_liquidity_msat);
-							*used_liquidity_msat
-						});
-
-					// Verify the liquidity offered by this channel complies to the minimal contribution.
-					let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
-					// Do not consider candidate hops that would exceed the maximum path length.
-					let path_length_to_node = $next_hops_path_length
-						+ if $candidate.blinded_hint_idx().is_some() { 0 } else { 1 };
-					let exceeds_max_path_length = path_length_to_node > max_path_length;
-
-					// Do not consider candidates that exceed the maximum total cltv expiry limit.
-					// In order to already account for some of the privacy enhancing random CLTV
-					// expiry delta offset we add on top later, we subtract a rough estimate
-					// (2*MEDIAN_HOP_CLTV_EXPIRY_DELTA) here.
-					let max_total_cltv_expiry_delta = (payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta)
-						.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
-						.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
-					let hop_total_cltv_delta = ($next_hops_cltv_delta as u32)
-						.saturating_add($candidate.cltv_expiry_delta());
-					let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta;
-
-					let value_contribution_msat = cmp::min(available_value_contribution_msat, $next_hops_value_contribution);
-					// Includes paying fees for the use of the following channels.
-					let amount_to_transfer_over_msat: u64 = match value_contribution_msat.checked_add($next_hops_fee_msat) {
-						Some(result) => result,
-						// Can't overflow due to how the values were computed right above.
-						None => unreachable!(),
-					};
-					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
-					let over_path_minimum_msat = amount_to_transfer_over_msat >= $candidate.htlc_minimum_msat() &&
-						amount_to_transfer_over_msat >= $next_hops_path_htlc_minimum_msat;
-
-					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
-					let may_overpay_to_meet_path_minimum_msat =
-						((amount_to_transfer_over_msat < $candidate.htlc_minimum_msat() &&
-						  recommended_value_msat >= $candidate.htlc_minimum_msat()) ||
-						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
-						  recommended_value_msat >= $next_hops_path_htlc_minimum_msat));
-
-					let payment_failed_on_this_channel = match scid_opt {
-						Some(scid) => payment_params.previously_failed_channels.contains(&scid),
-						None => match $candidate.blinded_hint_idx() {
-							Some(idx) => {
-								payment_params.previously_failed_blinded_path_idxs.contains(&(idx as u64))
-							},
-							None => false,
-						},
-					};
-
-					let (should_log_candidate, first_hop_details) = match $candidate {
-						CandidateRouteHop::FirstHop(hop) => (true, Some(hop.details)),
-						CandidateRouteHop::PrivateHop(_) => (true, None),
-						CandidateRouteHop::Blinded(_) => (true, None),
-						CandidateRouteHop::OneHopBlinded(_) => (true, None),
-						_ => (false, None),
-					};
-
-					// If HTLC minimum is larger than the amount we're going to transfer, we shouldn't
-					// bother considering this channel. If retrying with recommended_value_msat may
-					// allow us to hit the HTLC minimum limit, set htlc_minimum_limit so that we go
-					// around again with a higher amount.
-					if !contributes_sufficient_value {
-						if should_log_candidate {
-							log_trace!(logger, "Ignoring {} due to insufficient value contribution (channel max {:?}).",
-								LoggedCandidateHop(&$candidate),
-								effective_capacity);
-						}
-						num_ignored_value_contribution += 1;
-					} else if exceeds_max_path_length {
-						if should_log_candidate {
-							log_trace!(logger, "Ignoring {} due to exceeding maximum path length limit.", LoggedCandidateHop(&$candidate));
-						}
-						num_ignored_path_length_limit += 1;
-					} else if exceeds_cltv_delta_limit {
-						if should_log_candidate {
-							log_trace!(logger, "Ignoring {} due to exceeding CLTV delta limit.", LoggedCandidateHop(&$candidate));
-
-							if let Some(_) = first_hop_details {
-								log_trace!(logger,
-									"First hop candidate cltv_expiry_delta: {}. Limit: {}",
-									hop_total_cltv_delta,
-									max_total_cltv_expiry_delta,
-								);
-							}
-						}
-						num_ignored_cltv_delta_limit += 1;
-					} else if payment_failed_on_this_channel {
-						if should_log_candidate {
-							log_trace!(logger, "Ignoring {} due to a failed previous payment attempt.", LoggedCandidateHop(&$candidate));
-						}
-						num_ignored_previously_failed += 1;
-					} else if may_overpay_to_meet_path_minimum_msat {
-						if should_log_candidate {
-							log_trace!(logger,
-								"Ignoring {} to avoid overpaying to meet htlc_minimum_msat limit ({}).",
-								LoggedCandidateHop(&$candidate), $candidate.htlc_minimum_msat());
-						}
-						num_ignored_avoid_overpayment += 1;
-						hit_minimum_limit = true;
-					} else if over_path_minimum_msat {
-						// Note that low contribution here (limited by available_liquidity_msat)
-						// might violate htlc_minimum_msat on the hops which are next along the
-						// payment path (upstream to the payee). To avoid that, we recompute
-						// path fees knowing the final path contribution after constructing it.
-						let curr_min = cmp::max(
-							$next_hops_path_htlc_minimum_msat, $candidate.htlc_minimum_msat()
-						);
-						let path_htlc_minimum_msat = compute_fees_saturating(curr_min, $candidate.fees())
-							.saturating_add(curr_min);
-
-						let dist_entry = &mut dist[$candidate.src_node_counter() as usize];
-						let old_entry = if let Some(hop) = dist_entry {
-							hop
-						} else {
-							// If there was previously no known way to access the source node
-							// (recall it goes payee-to-payer) of short_channel_id, first add a
-							// semi-dummy record just to compute the fees to reach the source node.
-							// This will affect our decision on selecting short_channel_id
-							// as a way to reach the $candidate.target() node.
-							*dist_entry = Some(PathBuildingHop {
-								candidate: $candidate.clone(),
-								fee_msat: 0,
-								next_hops_fee_msat: u64::max_value(),
-								hop_use_fee_msat: u64::max_value(),
-								total_fee_msat: u64::max_value(),
-								path_htlc_minimum_msat,
-								path_penalty_msat: u64::max_value(),
-								was_processed: false,
-								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-								value_contribution_msat,
-							});
-							dist_entry.as_mut().unwrap()
-						};
-
-						#[allow(unused_mut)] // We only use the mut in cfg(test)
-						let mut should_process = !old_entry.was_processed;
-						#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-						{
-							// In test/fuzzing builds, we do extra checks to make sure the skipping
-							// of already-seen nodes only happens in cases we expect (see below).
-							if !should_process { should_process = true; }
-						}
-
-						if should_process {
-							let mut hop_use_fee_msat = 0;
-							let mut total_fee_msat: u64 = $next_hops_fee_msat;
-
-							// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
-							// will have the same effective-fee
-							if src_node_id != our_node_id {
-								// Note that `u64::max_value` means we'll always fail the
-								// `old_entry.total_fee_msat > total_fee_msat` check below
-								hop_use_fee_msat = compute_fees_saturating(amount_to_transfer_over_msat, $candidate.fees());
-								total_fee_msat = total_fee_msat.saturating_add(hop_use_fee_msat);
-							}
-
-							// Ignore hops if augmenting the current path to them would put us over `max_total_routing_fee_msat`
-							if total_fee_msat > max_total_routing_fee_msat {
-								if should_log_candidate {
-									log_trace!(logger, "Ignoring {} due to exceeding max total routing fee limit.", LoggedCandidateHop(&$candidate));
-
-									if let Some(_) = first_hop_details {
-										log_trace!(logger,
-											"First hop candidate routing fee: {}. Limit: {}",
-											total_fee_msat,
-											max_total_routing_fee_msat,
-										);
-									}
-								}
-								num_ignored_total_fee_limit += 1;
-							} else {
-								let channel_usage = ChannelUsage {
-									amount_msat: amount_to_transfer_over_msat,
-									inflight_htlc_msat: used_liquidity_msat,
-									effective_capacity,
-								};
-								let channel_penalty_msat =
-									scorer.channel_penalty_msat($candidate,
-										channel_usage,
-										score_params);
-								let path_penalty_msat = $next_hops_path_penalty_msat
-									.saturating_add(channel_penalty_msat);
-
-								// Update the way of reaching $candidate.source()
-								// with the given short_channel_id (from $candidate.target()),
-								// if this way is cheaper than the already known
-								// (considering the cost to "reach" this channel from the route destination,
-								// the cost of using this channel,
-								// and the cost of routing to the source node of this channel).
-								// Also, consider that htlc_minimum_msat_difference, because we might end up
-								// paying it. Consider the following exploit:
-								// we use 2 paths to transfer 1.5 BTC. One of them is 0-fee normal 1 BTC path,
-								// and for the other one we picked a 1sat-fee path with htlc_minimum_msat of
-								// 1 BTC. Now, since the latter is more expensive, we gonna try to cut it
-								// by 0.5 BTC, but then match htlc_minimum_msat by paying a fee of 0.5 BTC
-								// to this channel.
-								// Ideally the scoring could be smarter (e.g. 0.5*htlc_minimum_msat here),
-								// but it may require additional tracking - we don't want to double-count
-								// the fees included in $next_hops_path_htlc_minimum_msat, but also
-								// can't use something that may decrease on future hops.
-								let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
-									.saturating_add(old_entry.path_penalty_msat);
-								let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
-									.saturating_add(path_penalty_msat);
-
-								if !old_entry.was_processed && new_cost < old_cost {
-									let new_graph_node = RouteGraphNode {
-										node_id: src_node_id,
-										score: cmp::max(total_fee_msat, path_htlc_minimum_msat).saturating_add(path_penalty_msat),
-										total_cltv_delta: hop_total_cltv_delta,
-										value_contribution_msat,
-										path_length_to_node,
-									};
-									targets.push(new_graph_node);
-									old_entry.next_hops_fee_msat = $next_hops_fee_msat;
-									old_entry.hop_use_fee_msat = hop_use_fee_msat;
-									old_entry.total_fee_msat = total_fee_msat;
-									old_entry.candidate = $candidate.clone();
-									old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
-									old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
-									old_entry.path_penalty_msat = path_penalty_msat;
-									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-									{
-										old_entry.value_contribution_msat = value_contribution_msat;
-									}
-									hop_contribution_amt_msat = Some(value_contribution_msat);
-								} else if old_entry.was_processed && new_cost < old_cost {
-									#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
-									{
-										// If we're skipping processing a node which was previously
-										// processed even though we found another path to it with a
-										// cheaper fee, check that it was because the second path we
-										// found (which we are processing now) has a lower value
-										// contribution due to an HTLC minimum limit.
-										//
-										// e.g. take a graph with two paths from node 1 to node 2, one
-										// through channel A, and one through channel B. Channel A and
-										// B are both in the to-process heap, with their scores set by
-										// a higher htlc_minimum than fee.
-										// Channel A is processed first, and the channels onwards from
-										// node 1 are added to the to-process heap. Thereafter, we pop
-										// Channel B off of the heap, note that it has a much more
-										// restrictive htlc_maximum_msat, and recalculate the fees for
-										// all of node 1's channels using the new, reduced, amount.
-										//
-										// This would be bogus - we'd be selecting a higher-fee path
-										// with a lower htlc_maximum_msat instead of the one we'd
-										// already decided to use.
-										debug_assert!(path_htlc_minimum_msat < old_entry.path_htlc_minimum_msat);
-										debug_assert!(
-											value_contribution_msat + path_penalty_msat <
-											old_entry.value_contribution_msat + old_entry.path_penalty_msat
-										);
-									}
-								}
-							}
-						}
-					} else {
-						if should_log_candidate {
-							log_trace!(logger,
-								"Ignoring {} due to its htlc_minimum_msat limit.",
-								LoggedCandidateHop(&$candidate));
-
-							if let Some(details) = first_hop_details {
-								log_trace!(logger,
-									"First hop candidate next_outbound_htlc_minimum_msat: {}",
-									details.next_outbound_htlc_minimum_msat,
-								);
-							}
-						}
-						num_ignored_htlc_minimum_msat_limit += 1;
-					}
-				}
-			}
-			hop_contribution_amt_msat
+			add_entry_internal(
+				channel_saturation_pow_half,
+				&used_liquidities,
+				minimal_value_contribution_msat,
+				&payment_params,
+				final_cltv_expiry_delta,
+				recommended_value_msat,
+				&logger,
+				&mut num_ignored_value_contribution,
+				&mut num_ignored_path_length_limit,
+				&mut num_ignored_cltv_delta_limit,
+				&mut num_ignored_previously_failed,
+				&mut num_ignored_total_fee_limit,
+				&mut num_ignored_avoid_overpayment,
+				&mut num_ignored_htlc_minimum_msat_limit,
+				&mut hit_minimum_limit,
+				&mut dist,
+				our_node_id,
+				max_total_routing_fee_msat,
+				&mut targets,
+				scorer,
+				score_params,
+				max_path_length,
+				$candidate,
+				$next_hops_fee_msat,
+				$next_hops_value_contribution,
+				$next_hops_path_htlc_minimum_msat,
+				$next_hops_path_penalty_msat,
+				$next_hops_cltv_delta,
+				$next_hops_path_length,
+			)
 		} }
 	}
 
@@ -3362,6 +3092,350 @@ where L::Target: Logger {
 
 	log_info!(logger, "Got route: {}", log_route!(route));
 	Ok(route)
+}
+
+
+// Adds entry which goes from candidate.source() to candidate.target() over the $candidate hop.
+// next_hops_fee_msat represents the fees paid for using all the channels *after* this one,
+// since that value has to be transferred over this channel.
+// Returns the contribution amount of candidate if the channel caused an update to `targets`.
+fn add_entry_internal<'a, L: Deref, S: ScoreLookUp>(
+	// parameters that were captured from the original macro add_entry:
+	channel_saturation_pow_half: u8,
+	used_liquidities: &HashMap<CandidateHopId, u64>,
+	minimal_value_contribution_msat: u64,
+	payment_params: &PaymentParameters,
+	final_cltv_expiry_delta: u32,
+	recommended_value_msat: u64,
+	logger: &L,
+	num_ignored_value_contribution: &mut u32,
+	num_ignored_path_length_limit: &mut u32,
+	num_ignored_cltv_delta_limit: &mut u32,
+	num_ignored_previously_failed: &mut u32,
+	num_ignored_total_fee_limit: &mut u32,
+	num_ignored_avoid_overpayment: &mut u32,
+	num_ignored_htlc_minimum_msat_limit: &mut u32,
+	hit_minimum_limit: &mut bool,
+	dist: &mut Vec<Option<PathBuildingHop<'a>>>,
+	our_node_id: NodeId,
+	max_total_routing_fee_msat: u64,
+	targets: &mut BinaryHeap<RouteGraphNode>,
+	scorer: &S,
+	score_params: &S::ScoreParams,
+	max_path_length: u8,
+	// original add_entry params:
+	candidate: &CandidateRouteHop<'a>,
+	next_hops_fee_msat: u64,
+	next_hops_value_contribution: u64,
+	next_hops_path_htlc_minimum_msat: u64,
+	next_hops_path_penalty_msat: u64,
+	next_hops_cltv_delta: u32,
+	next_hops_path_length: u8,
+) -> Option<u64>
+where
+	L::Target: Logger,
+{
+	// We "return" whether we updated the path at the end, and how much we can route via
+	// this channel, via this:
+	let mut hop_contribution_amt_msat = None;
+	// Channels to self should not be used. This is more of belt-and-suspenders, because in
+	// practice these cases should be caught earlier:
+	// - for regular channels at channel announcement (TODO)
+	// - for first and last hops early in get_route
+	let src_node_id = candidate.source();
+	if Some(src_node_id) != candidate.target() {
+		let scid_opt = candidate.short_channel_id();
+		let effective_capacity = candidate.effective_capacity();
+		let htlc_maximum_msat = max_htlc_from_capacity(effective_capacity, channel_saturation_pow_half);
+
+		// It is tricky to subtract $next_hops_fee_msat from available liquidity here.
+		// It may be misleading because we might later choose to reduce the value transferred
+		// over these channels, and the channel which was insufficient might become sufficient.
+		// Worst case: we drop a good channel here because it can't cover the high following
+		// fees caused by one expensive channel, but then this channel could have been used
+		// if the amount being transferred over this path is lower.
+		// We do this for now, but this is a subject for removal.
+		if let Some(mut available_value_contribution_msat) = htlc_maximum_msat.checked_sub(next_hops_fee_msat) {
+			let used_liquidity_msat = used_liquidities
+				.get(&candidate.id())
+				.map_or(0, |used_liquidity_msat| {
+					available_value_contribution_msat = available_value_contribution_msat
+						.saturating_sub(*used_liquidity_msat);
+					*used_liquidity_msat
+				});
+
+			// Verify the liquidity offered by this channel complies to the minimal contribution.
+			let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
+			// Do not consider candidate hops that would exceed the maximum path length.
+			let path_length_to_node = next_hops_path_length
+				+ if candidate.blinded_hint_idx().is_some() { 0 } else { 1 };
+			let exceeds_max_path_length = path_length_to_node > max_path_length;
+
+			// Do not consider candidates that exceed the maximum total cltv expiry limit.
+			// In order to already account for some of the privacy enhancing random CLTV
+			// expiry delta offset we add on top later, we subtract a rough estimate
+			// (2*MEDIAN_HOP_CLTV_EXPIRY_DELTA) here.
+			let max_total_cltv_expiry_delta = (payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta)
+				.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
+				.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
+			let hop_total_cltv_delta = (next_hops_cltv_delta as u32)
+				.saturating_add(candidate.cltv_expiry_delta());
+			let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta;
+
+			let value_contribution_msat = cmp::min(available_value_contribution_msat, next_hops_value_contribution);
+			// Includes paying fees for the use of the following channels.
+			let amount_to_transfer_over_msat: u64 = match value_contribution_msat.checked_add(next_hops_fee_msat) {
+				Some(result) => result,
+				// Can't overflow due to how the values were computed right above.
+				None => unreachable!(),
+			};
+			#[allow(unused_comparisons)] // next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
+			let over_path_minimum_msat = amount_to_transfer_over_msat >= candidate.htlc_minimum_msat() &&
+				amount_to_transfer_over_msat >= next_hops_path_htlc_minimum_msat;
+
+			#[allow(unused_comparisons)] // next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
+			let may_overpay_to_meet_path_minimum_msat =
+				(amount_to_transfer_over_msat < candidate.htlc_minimum_msat() &&
+				  recommended_value_msat >= candidate.htlc_minimum_msat()) ||
+				 (amount_to_transfer_over_msat < next_hops_path_htlc_minimum_msat &&
+				  recommended_value_msat >= next_hops_path_htlc_minimum_msat);
+
+			let payment_failed_on_this_channel = match scid_opt {
+				Some(scid) => payment_params.previously_failed_channels.contains(&scid),
+				None => match candidate.blinded_hint_idx() {
+					Some(idx) => {
+						payment_params.previously_failed_blinded_path_idxs.contains(&(idx as u64))
+					},
+					None => false,
+				},
+			};
+
+			let (should_log_candidate, first_hop_details) = match candidate {
+				CandidateRouteHop::FirstHop(hop) => (true, Some(hop.details)),
+				CandidateRouteHop::PrivateHop(_) => (true, None),
+				CandidateRouteHop::Blinded(_) => (true, None),
+				CandidateRouteHop::OneHopBlinded(_) => (true, None),
+				_ => (false, None),
+			};
+
+			// If HTLC minimum is larger than the amount we're going to transfer, we shouldn't
+			// bother considering this channel. If retrying with recommended_value_msat may
+			// allow us to hit the HTLC minimum limit, set htlc_minimum_limit so that we go
+			// around again with a higher amount.
+			if !contributes_sufficient_value {
+				if should_log_candidate {
+					log_trace!(logger, "Ignoring {} due to insufficient value contribution (channel max {:?}).",
+						LoggedCandidateHop(&candidate),
+						effective_capacity);
+				}
+				*num_ignored_value_contribution += 1;
+			} else if exceeds_max_path_length {
+				if should_log_candidate {
+					log_trace!(logger, "Ignoring {} due to exceeding maximum path length limit.", LoggedCandidateHop(&candidate));
+				}
+				*num_ignored_path_length_limit += 1;
+			} else if exceeds_cltv_delta_limit {
+				if should_log_candidate {
+					log_trace!(logger, "Ignoring {} due to exceeding CLTV delta limit.", LoggedCandidateHop(&candidate));
+
+					if let Some(_) = first_hop_details {
+						log_trace!(logger,
+							"First hop candidate cltv_expiry_delta: {}. Limit: {}",
+							hop_total_cltv_delta,
+							max_total_cltv_expiry_delta,
+						);
+					}
+				}
+				*num_ignored_cltv_delta_limit += 1;
+			} else if payment_failed_on_this_channel {
+				if should_log_candidate {
+					log_trace!(logger, "Ignoring {} due to a failed previous payment attempt.", LoggedCandidateHop(&candidate));
+				}
+				*num_ignored_previously_failed += 1;
+			} else if may_overpay_to_meet_path_minimum_msat {
+				if should_log_candidate {
+					log_trace!(logger,
+						"Ignoring {} to avoid overpaying to meet htlc_minimum_msat limit ({}).",
+						LoggedCandidateHop(&candidate), candidate.htlc_minimum_msat());
+				}
+				*num_ignored_avoid_overpayment += 1;
+				*hit_minimum_limit = true;
+			} else if over_path_minimum_msat {
+				// Note that low contribution here (limited by available_liquidity_msat)
+				// might violate htlc_minimum_msat on the hops which are next along the
+				// payment path (upstream to the payee). To avoid that, we recompute
+				// path fees knowing the final path contribution after constructing it.
+				let curr_min = cmp::max(
+					next_hops_path_htlc_minimum_msat, candidate.htlc_minimum_msat()
+				);
+				let path_htlc_minimum_msat = compute_fees_saturating(curr_min, candidate.fees())
+					.saturating_add(curr_min);
+
+				let dist_entry = &mut dist[candidate.src_node_counter() as usize];
+				let old_entry = if let Some(hop) = dist_entry {
+					hop
+				} else {
+					// If there was previously no known way to access the source node
+					// (recall it goes payee-to-payer) of short_channel_id, first add a
+					// semi-dummy record just to compute the fees to reach the source node.
+					// This will affect our decision on selecting short_channel_id
+					// as a way to reach the candidate.target() node.
+					*dist_entry = Some(PathBuildingHop {
+						candidate: candidate.clone(),
+						fee_msat: 0,
+						next_hops_fee_msat: u64::max_value(),
+						hop_use_fee_msat: u64::max_value(),
+						total_fee_msat: u64::max_value(),
+						path_htlc_minimum_msat,
+						path_penalty_msat: u64::max_value(),
+						was_processed: false,
+						#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+						value_contribution_msat,
+					});
+					dist_entry.as_mut().unwrap()
+				};
+
+				#[allow(unused_mut)] // We only use the mut in cfg(test)
+				let mut should_process = !old_entry.was_processed;
+				#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+				{
+					// In test/fuzzing builds, we do extra checks to make sure the skipping
+					// of already-seen nodes only happens in cases we expect (see below).
+					if !should_process { should_process = true; }
+				}
+
+				if should_process {
+					let mut hop_use_fee_msat = 0;
+					let mut total_fee_msat: u64 = next_hops_fee_msat;
+
+					// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
+					// will have the same effective-fee
+					if src_node_id != our_node_id {
+						// Note that `u64::max_value` means we'll always fail the
+						// `old_entry.total_fee_msat > total_fee_msat` check below
+						hop_use_fee_msat = compute_fees_saturating(amount_to_transfer_over_msat, candidate.fees());
+						total_fee_msat = total_fee_msat.saturating_add(hop_use_fee_msat);
+					}
+
+					// Ignore hops if augmenting the current path to them would put us over `max_total_routing_fee_msat`
+					if total_fee_msat > max_total_routing_fee_msat {
+						if should_log_candidate {
+							log_trace!(logger, "Ignoring {} due to exceeding max total routing fee limit.", LoggedCandidateHop(&candidate));
+
+							if let Some(_) = first_hop_details {
+								log_trace!(logger,
+									"First hop candidate routing fee: {}. Limit: {}",
+									total_fee_msat,
+									max_total_routing_fee_msat,
+								);
+							}
+						}
+						*num_ignored_total_fee_limit += 1;
+					} else {
+						let channel_usage = ChannelUsage {
+							amount_msat: amount_to_transfer_over_msat,
+							inflight_htlc_msat: used_liquidity_msat,
+							effective_capacity,
+						};
+						let channel_penalty_msat =
+							scorer.channel_penalty_msat(candidate,
+								channel_usage,
+								score_params);
+						let path_penalty_msat = next_hops_path_penalty_msat
+							.saturating_add(channel_penalty_msat);
+
+						// Update the way of reaching candidate.source()
+						// with the given short_channel_id (from candidate.target()),
+						// if this way is cheaper than the already known
+						// (considering the cost to "reach" this channel from the route destination,
+						// the cost of using this channel,
+						// and the cost of routing to the source node of this channel).
+						// Also, consider that htlc_minimum_msat_difference, because we might end up
+						// paying it. Consider the following exploit:
+						// we use 2 paths to transfer 1.5 BTC. One of them is 0-fee normal 1 BTC path,
+						// and for the other one we picked a 1sat-fee path with htlc_minimum_msat of
+						// 1 BTC. Now, since the latter is more expensive, we gonna try to cut it
+						// by 0.5 BTC, but then match htlc_minimum_msat by paying a fee of 0.5 BTC
+						// to this channel.
+						// Ideally the scoring could be smarter (e.g. 0.5*htlc_minimum_msat here),
+						// but it may require additional tracking - we don't want to double-count
+						// the fees included in next_hops_path_htlc_minimum_msat, but also
+						// can't use something that may decrease on future hops.
+						let old_cost = cmp::max(old_entry.total_fee_msat, old_entry.path_htlc_minimum_msat)
+							.saturating_add(old_entry.path_penalty_msat);
+						let new_cost = cmp::max(total_fee_msat, path_htlc_minimum_msat)
+							.saturating_add(path_penalty_msat);
+
+						if !old_entry.was_processed && new_cost < old_cost {
+							let new_graph_node = RouteGraphNode {
+								node_id: src_node_id,
+								score: cmp::max(total_fee_msat, path_htlc_minimum_msat).saturating_add(path_penalty_msat),
+								total_cltv_delta: hop_total_cltv_delta,
+								value_contribution_msat,
+								path_length_to_node,
+							};
+							targets.push(new_graph_node);
+							old_entry.next_hops_fee_msat = next_hops_fee_msat;
+							old_entry.hop_use_fee_msat = hop_use_fee_msat;
+							old_entry.total_fee_msat = total_fee_msat;
+							old_entry.candidate = candidate.clone();
+							old_entry.fee_msat = 0; // This value will be later filled with hop_use_fee_msat of the following channel
+							old_entry.path_htlc_minimum_msat = path_htlc_minimum_msat;
+							old_entry.path_penalty_msat = path_penalty_msat;
+							#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+							{
+								old_entry.value_contribution_msat = value_contribution_msat;
+							}
+							hop_contribution_amt_msat = Some(value_contribution_msat);
+						} else if old_entry.was_processed && new_cost < old_cost {
+							#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+							{
+								// If we're skipping processing a node which was previously
+								// processed even though we found another path to it with a
+								// cheaper fee, check that it was because the second path we
+								// found (which we are processing now) has a lower value
+								// contribution due to an HTLC minimum limit.
+								//
+								// e.g. take a graph with two paths from node 1 to node 2, one
+								// through channel A, and one through channel B. Channel A and
+								// B are both in the to-process heap, with their scores set by
+								// a higher htlc_minimum than fee.
+								// Channel A is processed first, and the channels onwards from
+								// node 1 are added to the to-process heap. Thereafter, we pop
+								// Channel B off of the heap, note that it has a much more
+								// restrictive htlc_maximum_msat, and recalculate the fees for
+								// all of node 1's channels using the new, reduced, amount.
+								//
+								// This would be bogus - we'd be selecting a higher-fee path
+								// with a lower htlc_maximum_msat instead of the one we'd
+								// already decided to use.
+								debug_assert!(path_htlc_minimum_msat < old_entry.path_htlc_minimum_msat);
+								debug_assert!(
+									value_contribution_msat + path_penalty_msat <
+									old_entry.value_contribution_msat + old_entry.path_penalty_msat
+								);
+							}
+						}
+					}
+				}
+			} else {
+				if should_log_candidate {
+					log_trace!(logger,
+						"Ignoring {} due to its htlc_minimum_msat limit.",
+						LoggedCandidateHop(&candidate));
+
+					if let Some(details) = first_hop_details {
+						log_trace!(logger,
+							"First hop candidate next_outbound_htlc_minimum_msat: {}",
+							details.next_outbound_htlc_minimum_msat,
+						);
+					}
+				}
+				*num_ignored_htlc_minimum_msat_limit += 1;
+			}
+		}
+	}
+	hop_contribution_amt_msat
 }
 
 // When an adversarial intermediary node observes a payment, it may be able to infer its
