@@ -800,20 +800,24 @@ impl OutboundPayments {
 	{
 		let payment_hash = invoice.payment_hash();
 		let max_total_routing_fee_msat;
+		let retry_strategy;
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
-				PendingOutboundPayment::AwaitingInvoice { retry_strategy, max_total_routing_fee_msat: max_total_fee, .. } => {
+				PendingOutboundPayment::AwaitingInvoice {
+					retry_strategy: retry, max_total_routing_fee_msat: max_total_fee, ..
+				} => {
+					retry_strategy = Some(*retry);
 					max_total_routing_fee_msat = *max_total_fee;
 					*entry.into_mut() = PendingOutboundPayment::InvoiceReceived {
 						payment_hash,
-						retry_strategy: *retry_strategy,
+						retry_strategy: *retry,
 						max_total_routing_fee_msat,
 					};
 				},
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
-		};
+		}
 
 		let mut payment_params = PaymentParameters::from_bolt12_invoice(&invoice);
 
@@ -839,25 +843,64 @@ impl OutboundPayments {
 		let mut route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, amount_msat
 		);
-		onion_utils::set_max_path_length(
-			&mut route_params, &RecipientOnionFields::spontaneous_empty(), None, best_block_height
-		)
-			.map_err(|()| {
-				log_error!(logger, "Can't construct an onion packet without exceeding 1300-byte onion \
-					hop_data length for payment with id {} and hash {}", payment_id, payment_hash);
-				Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded)
-			})?;
 
 		if let Some(max_fee_msat) = max_total_routing_fee_msat {
 			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
 		}
 
-		self.find_route_and_send_payment(
-			payment_hash, payment_id, route_params, router, first_hops, &inflight_htlcs,
-			entropy_source, node_signer, best_block_height, logger, pending_events,
-			&send_payment_along_path
-		);
+		let recipient_onion = RecipientOnionFields {
+			payment_secret: None,
+			payment_metadata: None,
+			custom_tlvs: vec![],
+		};
+		let route = match self.find_initial_route(
+			payment_id, payment_hash, &recipient_onion, None, &mut route_params, router,
+			&first_hops, &inflight_htlcs, node_signer, best_block_height, logger,
+		) {
+			Ok(route) => route,
+			Err(e) => {
+				let reason = match e {
+					RetryableSendFailure::PaymentExpired => PaymentFailureReason::PaymentExpired,
+					RetryableSendFailure::RouteNotFound => PaymentFailureReason::RouteNotFound,
+					RetryableSendFailure::DuplicatePayment => PaymentFailureReason::UnexpectedError,
+					RetryableSendFailure::OnionPacketSizeExceeded => PaymentFailureReason::UnexpectedError,
+				};
+				self.abandon_payment(payment_id, reason, pending_events);
+				return Err(Bolt12PaymentError::SendingFailed(e));
+			},
+		};
 
+		let payment_params = Some(route_params.payment_params.clone());
+		let (retryable_payment, onion_session_privs) = self.create_pending_payment(
+			payment_hash, recipient_onion.clone(), None, &route,
+			retry_strategy, payment_params, entropy_source, best_block_height
+		);
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::InvoiceReceived { .. } => {
+					*entry.into_mut() = retryable_payment;
+				},
+				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
+			},
+			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+		}
+
+		let result = self.pay_route_internal(
+			&route, payment_hash, &recipient_onion, None, payment_id,
+			Some(route_params.final_value_msat), onion_session_privs, node_signer,
+			best_block_height, &send_payment_along_path
+		);
+		log_info!(
+			logger, "Sending payment with id {} and hash {} returned {:?}", payment_id,
+			payment_hash, result
+		);
+		if let Err(e) = result {
+			self.handle_pay_route_err(
+				e, payment_id, payment_hash, route, route_params, router, first_hops,
+				&inflight_htlcs, entropy_source, node_signer, best_block_height, logger,
+				pending_events, &send_payment_along_path
+			);
+		}
 		Ok(())
 	}
 
@@ -1134,21 +1177,10 @@ impl OutboundPayments {
 							log_error!(logger, "Payment not yet sent");
 							return
 						},
-						PendingOutboundPayment::InvoiceReceived { payment_hash, retry_strategy, .. } => {
-							let total_amount = route_params.final_value_msat;
-							let recipient_onion = RecipientOnionFields {
-								payment_secret: None,
-								payment_metadata: None,
-								custom_tlvs: vec![],
-							};
-							let retry_strategy = Some(*retry_strategy);
-							let payment_params = Some(route_params.payment_params.clone());
-							let (retryable_payment, onion_session_privs) = self.create_pending_payment(
-								*payment_hash, recipient_onion.clone(), None, &route,
-								retry_strategy, payment_params, entropy_source, best_block_height
-							);
-							*payment.into_mut() = retryable_payment;
-							(total_amount, recipient_onion, None, onion_session_privs)
+						PendingOutboundPayment::InvoiceReceived { .. } => {
+							log_error!(logger, "Payment already initiating");
+							debug_assert!(false);
+							return
 						},
 						PendingOutboundPayment::Fulfilled { .. } => {
 							log_error!(logger, "Payment already completed");
@@ -2290,7 +2322,7 @@ mod tests {
 				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
 				|_| panic!()
 			),
-			Ok(()),
+			Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::PaymentExpired)),
 		);
 		assert!(!outbound_payments.has_pending_payments());
 
@@ -2351,7 +2383,7 @@ mod tests {
 				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
 				|_| panic!()
 			),
-			Ok(()),
+			Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound)),
 		);
 		assert!(!outbound_payments.has_pending_payments());
 
