@@ -2123,6 +2123,17 @@ where L::Target: Logger, GL::Target: Logger {
 	Ok(route)
 }
 
+// Const after initialization params which are used across the [`get_route`].
+struct GetRouteParameters<'a> {
+	our_node_id: NodeId,
+	payment: &'a PaymentParameters,
+	max_total_routing_fee_msat: u64,
+	minimal_value_contribution_msat: u64,
+	final_cltv_expiry_delta: u32,
+	recommended_value_msat: u64,
+	max_path_length: u8,
+}
+
 pub(crate) fn get_route<L: Deref, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters, network_graph: &ReadOnlyNetworkGraph,
 	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S, score_params: &S::ScoreParams,
@@ -2375,6 +2386,11 @@ where L::Target: Logger {
 	// Remember how many candidates we ignored to allow for some logging afterwards.
 	let mut ignored_stats = IgnoredCandidatesStats::default();
 
+	// Common parameters used across this function.
+	let params = GetRouteParameters { max_total_routing_fee_msat, 
+		minimal_value_contribution_msat, final_cltv_expiry_delta, our_node_id,
+		recommended_value_msat, max_path_length, payment: payment_params };
+
 	macro_rules! add_entry {
 		// Adds entry which goes from $candidate.source() to $candidate.target() over the $candidate hop.
 		// $next_hops_fee_msat represents the fees paid for using all the channels *after* this one,
@@ -2384,22 +2400,16 @@ where L::Target: Logger {
 			$next_hops_value_contribution: expr, $next_hops_path_htlc_minimum_msat: expr,
 			$next_hops_path_penalty_msat: expr, $next_hops_cltv_delta: expr, $next_hops_path_length: expr ) => { {
 			add_entry_internal(
+				&params,
 				channel_saturation_pow_half,
 				&used_liquidities,
-				minimal_value_contribution_msat,
-				&payment_params,
-				final_cltv_expiry_delta,
-				recommended_value_msat,
 				&logger,
 				&mut ignored_stats,
 				&mut hit_minimum_limit,
 				&mut dist,
-				our_node_id,
-				max_total_routing_fee_msat,
 				&mut targets,
 				scorer,
 				score_params,
-				max_path_length,
 				$candidate,
 				$next_hops_fee_msat,
 				$next_hops_value_contribution,
@@ -3113,22 +3123,16 @@ where L::Target: Logger {
 // Returns the contribution amount of candidate if the channel caused an update to `targets`.
 fn add_entry_internal<'a, L: Deref, S: ScoreLookUp>(
 	// parameters that were captured from the original macro add_entry:
+	params: &GetRouteParameters,
 	channel_saturation_pow_half: u8,
 	used_liquidities: &HashMap<CandidateHopId, u64>,
-	minimal_value_contribution_msat: u64,
-	payment_params: &PaymentParameters,
-	final_cltv_expiry_delta: u32,
-	recommended_value_msat: u64,
 	logger: &L,
 	ignored_stats: &mut IgnoredCandidatesStats,
 	hit_minimum_limit: &mut bool,
 	dist: &mut Vec<Option<PathBuildingHop<'a>>>,
-	our_node_id: NodeId,
-	max_total_routing_fee_msat: u64,
 	targets: &mut BinaryHeap<RouteGraphNode>,
 	scorer: &S,
 	score_params: &S::ScoreParams,
-	max_path_length: u8,
 	// original add_entry params:
 	candidate: &CandidateRouteHop<'a>,
 	next_hops_fee_msat: u64,
@@ -3171,19 +3175,19 @@ where
 				});
 
 			// Verify the liquidity offered by this channel complies to the minimal contribution.
-			let contributes_sufficient_value = available_value_contribution_msat >= minimal_value_contribution_msat;
+			let contributes_sufficient_value = available_value_contribution_msat >= params.minimal_value_contribution_msat;
 			// Do not consider candidate hops that would exceed the maximum path length.
 			let path_length_to_node = next_hops_path_length
 				+ if candidate.blinded_hint_idx().is_some() { 0 } else { 1 };
-			let exceeds_max_path_length = path_length_to_node > max_path_length;
+			let exceeds_max_path_length = path_length_to_node > params.max_path_length;
 
 			// Do not consider candidates that exceed the maximum total cltv expiry limit.
 			// In order to already account for some of the privacy enhancing random CLTV
 			// expiry delta offset we add on top later, we subtract a rough estimate
 			// (2*MEDIAN_HOP_CLTV_EXPIRY_DELTA) here.
-			let max_total_cltv_expiry_delta = (payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta)
+			let max_total_cltv_expiry_delta = (params.payment.max_total_cltv_expiry_delta - params.final_cltv_expiry_delta)
 				.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
-				.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
+				.unwrap_or(params.payment.max_total_cltv_expiry_delta - params.final_cltv_expiry_delta);
 			let hop_total_cltv_delta = (next_hops_cltv_delta as u32)
 				.saturating_add(candidate.cltv_expiry_delta());
 			let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta;
@@ -3202,15 +3206,15 @@ where
 			#[allow(unused_comparisons)] // next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
 			let may_overpay_to_meet_path_minimum_msat =
 				(amount_to_transfer_over_msat < candidate.htlc_minimum_msat() &&
-				  recommended_value_msat >= candidate.htlc_minimum_msat()) ||
+				  params.recommended_value_msat >= candidate.htlc_minimum_msat()) ||
 				 (amount_to_transfer_over_msat < next_hops_path_htlc_minimum_msat &&
-				  recommended_value_msat >= next_hops_path_htlc_minimum_msat);
+				  params.recommended_value_msat >= next_hops_path_htlc_minimum_msat);
 
 			let payment_failed_on_this_channel = match scid_opt {
-				Some(scid) => payment_params.previously_failed_channels.contains(&scid),
+				Some(scid) => params.payment.previously_failed_channels.contains(&scid),
 				None => match candidate.blinded_hint_idx() {
 					Some(idx) => {
-						payment_params.previously_failed_blinded_path_idxs.contains(&(idx as u64))
+						params.payment.previously_failed_blinded_path_idxs.contains(&(idx as u64))
 					},
 					None => false,
 				},
@@ -3316,7 +3320,7 @@ where
 
 					// Ignore hop_use_fee_msat for channel-from-us as we assume all channels-from-us
 					// will have the same effective-fee
-					if src_node_id != our_node_id {
+					if src_node_id != params.our_node_id {
 						// Note that `u64::max_value` means we'll always fail the
 						// `old_entry.total_fee_msat > total_fee_msat` check below
 						hop_use_fee_msat = compute_fees_saturating(amount_to_transfer_over_msat, candidate.fees());
@@ -3324,7 +3328,7 @@ where
 					}
 
 					// Ignore hops if augmenting the current path to them would put us over `max_total_routing_fee_msat`
-					if total_fee_msat > max_total_routing_fee_msat {
+					if total_fee_msat > params.max_total_routing_fee_msat {
 						if should_log_candidate {
 							log_trace!(logger, "Ignoring {} due to exceeding max total routing fee limit.", LoggedCandidateHop(&candidate));
 
@@ -3332,7 +3336,7 @@ where
 								log_trace!(logger,
 									"First hop candidate routing fee: {}. Limit: {}",
 									total_fee_msat,
-									max_total_routing_fee_msat,
+									params.max_total_routing_fee_msat,
 								);
 							}
 						}
