@@ -61,8 +61,6 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::ops::Deref;
-use crate::sign::EntropySource;
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::types::PaymentHash;
@@ -171,11 +169,10 @@ macro_rules! invoice_request_explicit_payer_id_builder_methods { ($self: ident, 
 	}
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(super) fn deriving_metadata<ES: Deref>(
-		offer: &'a Offer, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+	pub(super) fn deriving_metadata(
+		offer: &'a Offer, payer_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		payment_id: PaymentId,
-	) -> Self where ES::Target: EntropySource {
-		let nonce = Nonce::from_entropy_source(entropy_source);
+	) -> Self {
 		let payment_id = Some(payment_id);
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, payment_id);
 		let metadata = Metadata::Derived(derivation_material);
@@ -201,11 +198,10 @@ macro_rules! invoice_request_derived_payer_id_builder_methods { (
 	$self: ident, $self_type: ty, $secp_context: ty
 ) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(super) fn deriving_payer_id<ES: Deref>(
-		offer: &'a Offer, expanded_key: &ExpandedKey, entropy_source: ES,
+	pub(super) fn deriving_payer_id(
+		offer: &'a Offer, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'b Secp256k1<$secp_context>, payment_id: PaymentId
-	) -> Self where ES::Target: EntropySource {
-		let nonce = Nonce::from_entropy_source(entropy_source);
+	) -> Self {
 		let payment_id = Some(payment_id);
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, payment_id);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
@@ -1403,6 +1399,7 @@ mod tests {
 		let payer_id = payer_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
@@ -1410,7 +1407,7 @@ mod tests {
 			.amount_msats(1000)
 			.build().unwrap();
 		let invoice_request = offer
-			.request_invoice_deriving_metadata(payer_id, &expanded_key, &entropy, payment_id)
+			.request_invoice_deriving_metadata(payer_id, &expanded_key, nonce, payment_id)
 			.unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
@@ -1476,6 +1473,7 @@ mod tests {
 	fn builds_invoice_request_with_derived_payer_id() {
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
@@ -1483,7 +1481,7 @@ mod tests {
 			.amount_msats(1000)
 			.build().unwrap();
 		let invoice_request = offer
-			.request_invoice_deriving_payer_id(&expanded_key, &entropy, &secp_ctx, payment_id)
+			.request_invoice_deriving_payer_id(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();

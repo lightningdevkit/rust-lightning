@@ -82,10 +82,8 @@ use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroU64;
-use core::ops::Deref;
 use core::str::FromStr;
 use core::time::Duration;
-use crate::sign::EntropySource;
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::channelmanager::PaymentId;
@@ -699,25 +697,22 @@ macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => 
 	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn request_invoice_deriving_payer_id<
-		'a, 'b, ES: Deref,
+		'a, 'b,
 		#[cfg(not(c_bindings))]
 		T: secp256k1::Signing
 	>(
-		&'a $self, expanded_key: &ExpandedKey, entropy_source: ES,
+		&'a $self, expanded_key: &ExpandedKey, nonce: Nonce,
 		#[cfg(not(c_bindings))]
 		secp_ctx: &'b Secp256k1<T>,
 		#[cfg(c_bindings)]
 		secp_ctx: &'b Secp256k1<secp256k1::All>,
 		payment_id: PaymentId
-	) -> Result<$builder, Bolt12SemanticError>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<$builder, Bolt12SemanticError> {
 		if $self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(<$builder>::deriving_payer_id($self, expanded_key, entropy_source, secp_ctx, payment_id))
+		Ok(<$builder>::deriving_payer_id($self, expanded_key, nonce, secp_ctx, payment_id))
 	}
 } }
 
@@ -728,18 +723,15 @@ macro_rules! request_invoice_explicit_payer_id { ($self: ident, $builder: ty) =>
 	/// Useful for recurring payments using the same `payer_id` with different invoices.
 	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
-	pub fn request_invoice_deriving_metadata<ES: Deref>(
-		&$self, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+	pub fn request_invoice_deriving_metadata(
+		&$self, payer_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		payment_id: PaymentId
-	) -> Result<$builder, Bolt12SemanticError>
-	where
-		ES::Target: EntropySource,
-	{
+	) -> Result<$builder, Bolt12SemanticError> {
 		if $self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(<$builder>::deriving_metadata($self, payer_id, expanded_key, entropy_source, payment_id))
+		Ok(<$builder>::deriving_metadata($self, payer_id, expanded_key, nonce, payment_id))
 	}
 
 	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and `payer_id`,
