@@ -8862,7 +8862,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let secp_ctx = &$self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::OutboundPayment { payment_id };
+		let context = OffersContext::OutboundPayment { payment_id, nonce };
 		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
@@ -8997,8 +8997,9 @@ where
 		};
 		let invoice_request = builder.build_and_sign()?;
 
-		let context = OffersContext::OutboundPayment { payment_id };
-		let reply_paths = self.create_blinded_paths(context).map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let context = OffersContext::OutboundPayment { payment_id, nonce };
+		let reply_paths = self.create_blinded_paths(context)
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -10697,7 +10698,7 @@ where
 
 		let abandon_if_payment = |context| {
 			match context {
-				OffersContext::OutboundPayment { payment_id } => self.abandon_payment(payment_id),
+				OffersContext::OutboundPayment { payment_id, .. } => self.abandon_payment(payment_id),
 				_ => {},
 			}
 		};
@@ -10808,7 +10809,7 @@ where
 			OffersMessage::Invoice(invoice) => {
 				let expected_payment_id = match context {
 					OffersContext::Unknown {} if invoice.is_for_refund_without_paths() => None,
-					OffersContext::OutboundPayment { payment_id } => Some(payment_id),
+					OffersContext::OutboundPayment { payment_id, .. } => Some(payment_id),
 					_ => return ResponseInstruction::NoResponse,
 				};
 
