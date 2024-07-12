@@ -10807,36 +10807,41 @@ where
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				let expected_payment_id = match context {
+				let payer_data = match context {
 					OffersContext::Unknown {} if invoice.is_for_refund_without_paths() => None,
-					OffersContext::OutboundPayment { payment_id, .. } => Some(payment_id),
+					OffersContext::OutboundPayment { payment_id, nonce } => Some((payment_id, nonce)),
 					_ => return ResponseInstruction::NoResponse,
 				};
 
-				let result = match invoice.verify(expanded_key, secp_ctx) {
-					Ok(payment_id) => {
-						if let Some(expected_payment_id) = expected_payment_id {
-							if payment_id != expected_payment_id {
-								return ResponseInstruction::NoResponse;
-							}
-						}
-
-						let features = self.bolt12_invoice_features();
-						if invoice.invoice_features().requires_unknown_bits_from(&features) {
-							Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
-						} else if self.default_configuration.manually_handle_bolt12_invoices {
-							let event = Event::InvoiceReceived { payment_id, invoice, responder };
-							self.pending_events.lock().unwrap().push_back((event, None));
-							return ResponseInstruction::NoResponse;
+				let payment_id = match payer_data {
+					Some((payment_id, nonce)) => {
+						if invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx) {
+							payment_id
 						} else {
-							self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id)
-								.map_err(|e| {
-									log_trace!(self.logger, "Failed paying invoice: {:?}", e);
-									InvoiceError::from_string(format!("{:?}", e))
-								})
+							return ResponseInstruction::NoResponse;
 						}
 					},
-					Err(()) => return ResponseInstruction::NoResponse,
+					None => match invoice.verify(expanded_key, secp_ctx) {
+						Ok(payment_id) => payment_id,
+						Err(()) => return ResponseInstruction::NoResponse,
+					},
+				};
+
+				let result = {
+					let features = self.bolt12_invoice_features();
+					if invoice.invoice_features().requires_unknown_bits_from(&features) {
+						Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
+					} else if self.default_configuration.manually_handle_bolt12_invoices {
+						let event = Event::InvoiceReceived { payment_id, invoice, responder };
+						self.pending_events.lock().unwrap().push_back((event, None));
+						return ResponseInstruction::NoResponse;
+					} else {
+						self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id)
+							.map_err(|e| {
+								log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+								InvoiceError::from_string(format!("{:?}", e))
+							})
+					}
 				};
 
 				match result {
