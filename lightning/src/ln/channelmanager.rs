@@ -65,7 +65,7 @@ use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice, DEFAULT_RELATIVE_EXP
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferBuilder};
+use crate::offers::offer::{Amount, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
@@ -9042,6 +9042,22 @@ where
 		let context = OffersContext::OutboundPayment { payment_id, nonce };
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12CreationError::BlindedPathCreationFailed)?;
+
+		let total_liquidity: u64 = self.list_usable_channels().iter().map(|channel| channel.next_outbound_htlc_limit_msat).sum();
+		let total_amount_msats = match invoice_request.amount_msats() {
+			Some(amount_msats) => Some(amount_msats),
+			None => match offer.amount() {
+				Some(Amount::Bitcoin { amount_msats }) => Some(amount_msats),
+				_ => None,
+			},
+		};
+
+		if let Some(amount) = total_amount_msats {
+			if amount > total_liquidity {
+				log_error!(self.logger, "Insufficient liquidity for payment with payment id: {}", payment_id);
+				return Err(Bolt12CreationError::InsufficientLiquidity);
+			}
+		}
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
