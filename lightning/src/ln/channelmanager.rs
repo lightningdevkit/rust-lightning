@@ -3605,11 +3605,11 @@ where
 	pub fn list_recent_payments(&self) -> Vec<RecentPaymentDetails> {
 		self.pending_outbound_payments.pending_outbound_payments.lock().unwrap().iter()
 			.filter_map(|(payment_id, pending_outbound_payment)| match pending_outbound_payment {
-				PendingOutboundPayment::AwaitingInvoice { .. } => {
-					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
-				},
-				// InvoiceReceived is an intermediate state and doesn't need to be exposed
-				PendingOutboundPayment::InvoiceReceived { .. } => {
+				PendingOutboundPayment::AwaitingInvoice { .. }
+					| PendingOutboundPayment::AwaitingOffer { .. }
+					// InvoiceReceived is an intermediate state and doesn't need to be exposed
+					| PendingOutboundPayment::InvoiceReceived { .. } =>
+				{
 					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
 				},
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
@@ -12254,6 +12254,7 @@ where
 					}
 				}
 				PendingOutboundPayment::AwaitingInvoice { .. } => {},
+				PendingOutboundPayment::AwaitingOffer { .. } => {},
 				PendingOutboundPayment::InvoiceReceived { .. } => {},
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => {},
 				PendingOutboundPayment::Fulfilled { .. } => {},
