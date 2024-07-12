@@ -9369,6 +9369,37 @@ where
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|()| Bolt12RequestError::BlindedPathCreationFailed)?;
 
+		let total_liquidity: u64 = {
+			let per_peer_state = &self.per_peer_state.read().unwrap();
+			let mut sum: u64 = 0;
+
+			per_peer_state.iter().for_each(|(_, peer_state_mutex)| {
+				let peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &*peer_state_lock;
+
+				sum += peer_state.channel_by_id
+					.iter()
+					.map(|(_, phase)| phase.context().get_available_balances(&self.fee_estimator).outbound_capacity_msat)
+					.sum::<u64>();
+			});
+			sum
+		};
+
+		let requested_amount_msats = match invoice_request.amount_msats() {
+			Some(amount_msats) => Some(amount_msats),
+			None => match offer.amount() {
+				Some(Amount::Bitcoin { amount_msats }) => Some(amount_msats),
+				_ => None,
+			},
+		};
+
+		if let Some(amount) = requested_amount_msats {
+			if amount > total_liquidity {
+				log_error!(self.logger, "Insufficient liquidity for payment with payment id: {}", payment_id);
+				return Err(Bolt12RequestError::InsufficientLiquidity);
+			}
+		}
+
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		let expiration = StaleExpiration::TimerTicks(1);
