@@ -30,3 +30,6 @@ tokio = { version = "1.35", features = [ "macros", "rt", "rt-multi-thread", "syn
 lightning = { version = "0.0.123-beta", path = "../lightning", features = ["_test_utils"] }
 lightning-invoice = { version = "0.31.0-beta", path = "../lightning-invoice" }
 lightning-persister = { version = "0.0.123-beta", path = "../lightning-persister" }
+
+[lints]
+workspace = true

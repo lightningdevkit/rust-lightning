@@ -23,3 +23,6 @@ criterion = { version = "0.4", optional = true, default-features = false }
 
 [dev-dependencies]
 lightning = { version = "0.0.123-beta", path = "../lightning", features = ["_test_utils"] }
+
+[lints]
+workspace = true

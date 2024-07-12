@@ -28,3 +28,6 @@ chunked_transfer = { version = "1.4", optional = true }
 [dev-dependencies]
 lightning = { version = "0.0.123-beta", path = "../lightning", features = ["_test_utils"] }
 tokio = { version = "1.35", features = [ "macros", "rt" ] }
+
+[lints]
+workspace = true

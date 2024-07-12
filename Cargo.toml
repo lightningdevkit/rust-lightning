@@ -42,3 +42,25 @@ panic = "abort"
 
 [patch.crates-io.possiblyrandom]
 path = "possiblyrandom"
+
+[workspace.lints.rust.unexpected_cfgs]
+level = "forbid"
+# When adding a new cfg attribute, ensure that it is added to this list.
+#
+# Note that Cargo automatically declares corresponding cfgs for every feature
+# defined in the member-level [features] tables as "expected".
+check-cfg = [
+    "cfg(fuzzing)",
+    "cfg(secp256k1_fuzz)",
+    "cfg(hashes_fuzz)",
+    "cfg(test)",
+    "cfg(debug_assertions)",
+    "cfg(c_bindings)",
+    "cfg(ldk_bench)",
+    "cfg(taproot)",
+    "cfg(async_signing)",
+    "cfg(require_route_graph_test)",
+    "cfg(dual_funding)",
+    "cfg(splicing)",
+    "cfg(async_payments)",
+]

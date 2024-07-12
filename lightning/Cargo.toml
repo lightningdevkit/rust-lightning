@@ -65,3 +65,6 @@ criterion = { version = "0.4", optional = true, default-features = false }
 
 [target.'cfg(taproot)'.dependencies]
 musig2 = { git = "https://github.com/arik-so/rust-musig2", rev = "739533fc" }
+
+[lints]
+workspace = true
