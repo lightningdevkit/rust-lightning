@@ -50,6 +50,11 @@ pub(super) enum Metadata {
 	/// This variant should only be used at verification time, never when building.
 	RecipientData(Nonce),
 
+	/// Metadata for deriving keys included as payer data in a blinded path.
+	///
+	/// This variant should only be used at verification time, never when building.
+	PayerData([u8; PaymentId::LENGTH + Nonce::LENGTH]),
+
 	/// Metadata to be derived from message contents and given material.
 	///
 	/// This variant should only be used at building time.
@@ -62,6 +67,16 @@ pub(super) enum Metadata {
 }
 
 impl Metadata {
+	pub fn payer_data(payment_id: PaymentId, nonce: Nonce, expanded_key: &ExpandedKey) -> Self {
+		let encrypted_payment_id = expanded_key.crypt_for_offer(payment_id.0, nonce);
+
+		let mut bytes = [0u8; PaymentId::LENGTH + Nonce::LENGTH];
+		bytes[..PaymentId::LENGTH].copy_from_slice(encrypted_payment_id.as_slice());
+		bytes[PaymentId::LENGTH..].copy_from_slice(nonce.as_slice());
+
+		Metadata::PayerData(bytes)
+	}
+
 	pub fn as_bytes(&self) -> Option<&Vec<u8>> {
 		match self {
 			Metadata::Bytes(bytes) => Some(bytes),
@@ -73,6 +88,7 @@ impl Metadata {
 		match self {
 			Metadata::Bytes(_) => false,
 			Metadata::RecipientData(_) => { debug_assert!(false); false },
+			Metadata::PayerData(_) => { debug_assert!(false); false },
 			Metadata::Derived(_) => true,
 			Metadata::DerivedSigningPubkey(_) => true,
 		}
@@ -87,6 +103,7 @@ impl Metadata {
 			// Nonce::LENGTH had been set explicitly.
 			Metadata::Bytes(bytes) => bytes.len() == PaymentId::LENGTH + Nonce::LENGTH,
 			Metadata::RecipientData(_) => false,
+			Metadata::PayerData(_) => true,
 			Metadata::Derived(_) => false,
 			Metadata::DerivedSigningPubkey(_) => true,
 		}
@@ -101,6 +118,7 @@ impl Metadata {
 			// been set explicitly.
 			Metadata::Bytes(bytes) => bytes.len() == Nonce::LENGTH,
 			Metadata::RecipientData(_) => true,
+			Metadata::PayerData(_) => false,
 			Metadata::Derived(_) => false,
 			Metadata::DerivedSigningPubkey(_) => true,
 		}
@@ -115,6 +133,7 @@ impl Metadata {
 		match self {
 			Metadata::Bytes(_) => self,
 			Metadata::RecipientData(_) => { debug_assert!(false); self },
+			Metadata::PayerData(_) => { debug_assert!(false); self },
 			Metadata::Derived(_) => self,
 			Metadata::DerivedSigningPubkey(material) => Metadata::Derived(material),
 		}
@@ -126,6 +145,7 @@ impl Metadata {
 		match self {
 			Metadata::Bytes(_) => (self, None),
 			Metadata::RecipientData(_) => { debug_assert!(false); (self, None) },
+			Metadata::PayerData(_) => { debug_assert!(false); (self, None) },
 			Metadata::Derived(mut metadata_material) => {
 				tlv_stream.write(&mut metadata_material.hmac).unwrap();
 				(Metadata::Bytes(metadata_material.derive_metadata()), None)
@@ -151,6 +171,7 @@ impl AsRef<[u8]> for Metadata {
 		match self {
 			Metadata::Bytes(bytes) => &bytes,
 			Metadata::RecipientData(nonce) => &nonce.0,
+			Metadata::PayerData(bytes) => bytes.as_slice(),
 			Metadata::Derived(_) => { debug_assert!(false); &[] },
 			Metadata::DerivedSigningPubkey(_) => { debug_assert!(false); &[] },
 		}
@@ -162,6 +183,7 @@ impl fmt::Debug for Metadata {
 		match self {
 			Metadata::Bytes(bytes) => bytes.fmt(f),
 			Metadata::RecipientData(Nonce(bytes)) => bytes.fmt(f),
+			Metadata::PayerData(bytes) => bytes.fmt(f),
 			Metadata::Derived(_) => f.write_str("Derived"),
 			Metadata::DerivedSigningPubkey(_) => f.write_str("DerivedSigningPubkey"),
 		}
@@ -178,6 +200,7 @@ impl PartialEq for Metadata {
 				false
 			},
 			Metadata::RecipientData(_) => false,
+			Metadata::PayerData(_) => false,
 			Metadata::Derived(_) => false,
 			Metadata::DerivedSigningPubkey(_) => false,
 		}

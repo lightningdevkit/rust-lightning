@@ -119,11 +119,12 @@ use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
+use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::refund::{IV_BYTES as REFUND_IV_BYTES, Refund, RefundContents};
-use crate::offers::signer;
+use crate::offers::signer::{Metadata, self};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, Readable, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
@@ -770,12 +771,31 @@ impl Bolt12Invoice {
 		self.tagged_hash.as_digest().as_ref().clone()
 	}
 
-	/// Verifies that the invoice was for a request or refund created using the given key. Returns
-	/// the associated [`PaymentId`] to use when sending the payment.
+	/// Verifies that the invoice was for a request or refund created using the given key by
+	/// checking the payer metadata from the invoice request.
+	///
+	/// Returns the associated [`PaymentId`] to use when sending the payment.
 	pub fn verify<T: secp256k1::Signing>(
 		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<PaymentId, ()> {
-		self.contents.verify(TlvStream::new(&self.bytes), key, secp_ctx)
+		let metadata = match &self.contents {
+			InvoiceContents::ForOffer { invoice_request, .. } => &invoice_request.inner.payer.0,
+			InvoiceContents::ForRefund { refund, .. } => &refund.payer.0,
+		};
+		self.contents.verify(TlvStream::new(&self.bytes), metadata, key, secp_ctx)
+	}
+
+	/// Verifies that the invoice was for a request or refund created using the given key by
+	/// checking a payment id and nonce included with the [`BlindedPath`] for which the invoice was
+	/// sent through.
+	pub fn verify_using_payer_data<T: secp256k1::Signing>(
+		&self, payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+	) -> bool {
+		let metadata = Metadata::payer_data(payment_id, nonce, key);
+		match self.contents.verify(TlvStream::new(&self.bytes), &metadata, key, secp_ctx) {
+			Ok(extracted_payment_id) => payment_id == extracted_payment_id,
+			Err(()) => false,
+		}
 	}
 
 	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
@@ -1006,35 +1026,28 @@ impl InvoiceContents {
 	}
 
 	fn verify<T: secp256k1::Signing>(
-		&self, tlv_stream: TlvStream<'_>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+		&self, tlv_stream: TlvStream<'_>, metadata: &Metadata, key: &ExpandedKey,
+		secp_ctx: &Secp256k1<T>
 	) -> Result<PaymentId, ()> {
 		let offer_records = tlv_stream.clone().range(OFFER_TYPES);
 		let invreq_records = tlv_stream.range(INVOICE_REQUEST_TYPES).filter(|record| {
 			match record.r#type {
 				PAYER_METADATA_TYPE => false, // Should be outside range
-				INVOICE_REQUEST_PAYER_ID_TYPE => !self.derives_keys(),
+				INVOICE_REQUEST_PAYER_ID_TYPE => !metadata.derives_payer_keys(),
 				_ => true,
 			}
 		});
 		let tlv_stream = offer_records.chain(invreq_records);
 
-		let (metadata, payer_id, iv_bytes) = match self {
-			InvoiceContents::ForOffer { invoice_request, .. } => {
-				(invoice_request.metadata(), invoice_request.payer_id(), INVOICE_REQUEST_IV_BYTES)
-			},
-			InvoiceContents::ForRefund { refund, .. } => {
-				(refund.metadata(), refund.payer_id(), REFUND_IV_BYTES)
-			},
+		let payer_id = self.payer_id();
+		let iv_bytes = match self {
+			InvoiceContents::ForOffer { .. } => INVOICE_REQUEST_IV_BYTES,
+			InvoiceContents::ForRefund { .. } => REFUND_IV_BYTES,
 		};
 
-		signer::verify_payer_metadata(metadata, key, iv_bytes, payer_id, tlv_stream, secp_ctx)
-	}
-
-	fn derives_keys(&self) -> bool {
-		match self {
-			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.derives_keys(),
-			InvoiceContents::ForRefund { refund, .. } => refund.derives_keys(),
-		}
+		signer::verify_payer_metadata(
+			metadata.as_ref(), key, iv_bytes, payer_id, tlv_stream, secp_ctx,
+		)
 	}
 
 	fn as_tlv_stream(&self) -> PartialInvoiceTlvStreamRef {

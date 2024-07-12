@@ -415,7 +415,7 @@ pub struct Refund {
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct RefundContents {
-	payer: PayerContents,
+	pub(super) payer: PayerContents,
 	// offer fields
 	description: String,
 	absolute_expiry: Option<Duration>,
@@ -725,10 +725,6 @@ impl RefundContents {
 	/// Payer provided note to include in the invoice.
 	pub fn payer_note(&self) -> Option<PrintableString> {
 		self.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
-	}
-
-	pub(super) fn derives_keys(&self) -> bool {
-		self.payer.0.derives_payer_keys()
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> RefundTlvStreamRef {
@@ -1049,6 +1045,7 @@ mod tests {
 			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
 			Err(()) => panic!("verification failed"),
 		}
+		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 
 		let mut tlv_stream = refund.as_tlv_stream();
 		tlv_stream.2.amount = Some(2000);
@@ -1113,6 +1110,7 @@ mod tests {
 			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
 			Err(()) => panic!("verification failed"),
 		}
+		assert!(invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 
 		// Fails verification with altered fields
 		let mut tlv_stream = refund.as_tlv_stream();

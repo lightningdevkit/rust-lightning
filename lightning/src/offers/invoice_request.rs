@@ -636,7 +636,7 @@ pub(super) struct InvoiceRequestContents {
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct InvoiceRequestContentsWithoutPayerId {
-	payer: PayerContents,
+	pub(super) payer: PayerContents,
 	pub(super) offer: OfferContents,
 	chain: Option<ChainHash>,
 	amount_msats: Option<u64>,
@@ -951,10 +951,6 @@ impl VerifiedInvoiceRequest {
 impl InvoiceRequestContents {
 	pub(super) fn metadata(&self) -> &[u8] {
 		self.inner.metadata()
-	}
-
-	pub(super) fn derives_keys(&self) -> bool {
-		self.inner.payer.0.derives_payer_keys()
 	}
 
 	pub(super) fn chain(&self) -> ChainHash {
@@ -1421,6 +1417,7 @@ mod tests {
 			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
 			Err(()) => panic!("verification failed"),
 		}
+		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 
 		// Fails verification with altered fields
 		let (
@@ -1494,6 +1491,7 @@ mod tests {
 			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
 			Err(()) => panic!("verification failed"),
 		}
+		assert!(invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 
 		// Fails verification with altered fields
 		let (
