@@ -8861,13 +8861,14 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let entropy = &*$self.entropy_source;
 		let secp_ctx = &$self.secp_ctx;
 
+		let nonce = Nonce::from_entropy_source(entropy);
 		let context = OffersContext::OutboundPayment { payment_id };
 		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		let builder = RefundBuilder::deriving_payer_id(
-			node_id, expanded_key, entropy, secp_ctx, amount_msats, payment_id
+			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
 		)?
 			.chain_hash($self.chain_hash)
 			.absolute_expiry(absolute_expiry)

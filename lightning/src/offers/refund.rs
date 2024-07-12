@@ -197,15 +197,14 @@ macro_rules! refund_builder_methods { (
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-	pub fn deriving_payer_id<ES: Deref>(
-		node_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+	pub fn deriving_payer_id(
+		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'a Secp256k1<$secp_context>, amount_msats: u64, payment_id: PaymentId
-	) -> Result<Self, Bolt12SemanticError> where ES::Target: EntropySource {
+	) -> Result<Self, Bolt12SemanticError> {
 		if amount_msats > MAX_VALUE_MSAT {
 			return Err(Bolt12SemanticError::InvalidAmount);
 		}
 
-		let nonce = Nonce::from_entropy_source(entropy_source);
 		let payment_id = Some(payment_id);
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, payment_id);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
@@ -940,6 +939,7 @@ mod tests {
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
+	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::OfferTlvStreamRef;
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
@@ -1029,11 +1029,12 @@ mod tests {
 		let node_id = payer_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
 		let refund = RefundBuilder
-			::deriving_payer_id(node_id, &expanded_key, &entropy, &secp_ctx, 1000, payment_id)
+			::deriving_payer_id(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
 			.unwrap()
 			.build().unwrap();
 		assert_eq!(refund.payer_id(), node_id);
@@ -1083,6 +1084,7 @@ mod tests {
 		let node_id = payer_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
@@ -1096,7 +1098,7 @@ mod tests {
 		};
 
 		let refund = RefundBuilder
-			::deriving_payer_id(node_id, &expanded_key, &entropy, &secp_ctx, 1000, payment_id)
+			::deriving_payer_id(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
 			.unwrap()
 			.path(blinded_path)
 			.build().unwrap();
