@@ -1517,7 +1517,7 @@ where
 							None => OffersContext::Unknown {},
 							Some(MessageContext::Offers(context)) => context,
 							Some(MessageContext::Custom(_)) => {
-								debug_assert!(false, "Shouldn't have triggered this case.");
+								debug_assert!(false, "Checked in peel_onion_message");
 								return
 							}
 						};
@@ -1540,7 +1540,7 @@ where
 							None => None,
 							Some(MessageContext::Custom(data)) => Some(data),
 							Some(MessageContext::Offers(_)) => {
-								debug_assert!(false, "Shouldn't have triggered this case.");
+								debug_assert!(false, "Checked in peel_onion_message");
 								return
 							}
 						};
