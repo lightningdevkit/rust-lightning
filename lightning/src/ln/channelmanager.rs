@@ -2125,6 +2125,9 @@ where
 
 	inbound_payment_key: inbound_payment::ExpandedKey,
 
+	/// The key used to encrypt our peer storage that would be sent to our peers.
+	our_peerstorage_encryption_key: [u8;32],
+
 	/// LDK puts the [fake scids] that it generates into namespaces, to identify the type of an
 	/// incoming payment. To make it harder for a third-party to identify the type of a payment,
 	/// we encrypt the namespace identifier using these bytes.
@@ -2974,6 +2977,7 @@ where
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 		let inbound_pmt_key_material = node_signer.get_inbound_payment_key_material();
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+		let our_peerstorage_encryption_key = node_signer.get_peer_storage_key();
 		ChannelManager {
 			default_configuration: config.clone(),
 			chain_hash: ChainHash::using_genesis_block(params.network),
@@ -2998,6 +3002,8 @@ where
 			secp_ctx,
 
 			inbound_payment_key: expanded_inbound_key,
+			our_peerstorage_encryption_key,
+
 			fake_scid_rand_bytes: entropy_source.get_secure_random_bytes(),
 
 			probing_cookie_secret: entropy_source.get_secure_random_bytes(),
@@ -3032,6 +3038,11 @@ where
 	/// Gets the current configuration applied to all new channels.
 	pub fn get_current_default_configuration(&self) -> &UserConfig {
 		&self.default_configuration
+	}
+
+	pub fn get_encrypted_our_peer_storage(&self) -> Vec<u8> {
+		let our_peer_storage = self.our_peer_storage.read().unwrap();
+		our_peer_storage.encrypt_our_peer_storage(self.our_peerstorage_encryption_key)
 	}
 
 	fn create_and_insert_outbound_scid_alias(&self) -> u64 {
@@ -8137,6 +8148,30 @@ where
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
+
+		{
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let mut peer_state_lock = per_peer_state.get(counterparty_node_id)
+				.ok_or_else(|| {
+					debug_assert!(false);
+					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				}).map(|mtx| mtx.lock().unwrap())?;
+			let peer_state = &mut *peer_state_lock;
+			let our_peer_storage = self.get_encrypted_our_peer_storage();
+
+			for context in peer_state.channel_by_id.iter().map(|(_, phase)| phase.context()) {
+				// Update latest PeerStorage for the peer.
+				peer_state.pending_msg_events.push(
+					events::MessageSendEvent::SendPeerStorageMessage {
+						node_id: context.get_counterparty_node_id(),
+						msg: msgs::PeerStorageMessage {
+							data: our_peer_storage.clone()
+						},
+					}
+				);
+			}
+		}
+
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);
 		Ok(())
 	}
@@ -10374,6 +10409,7 @@ where
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
+				let num_channels = peer_state.total_channel_count();
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 				let peer_storage = self.peer_storage.lock().unwrap().get(counterparty_node_id).unwrap_or(&Vec::<u8>::new()).clone();
 
@@ -10386,6 +10422,15 @@ where
 					});
 				}
 
+				if peer_state.latest_features.supports_provide_peer_storage() && num_channels > 0 {
+					let our_peer_storage = self.get_encrypted_our_peer_storage();
+					pending_msg_events.push(events::MessageSendEvent::SendPeerStorageMessage { 
+						node_id: counterparty_node_id.clone(),
+						msg: msgs::PeerStorageMessage {
+							data: our_peer_storage
+						},
+					});
+				}
 
 				for (_, phase) in peer_state.channel_by_id.iter_mut() {
 					match phase {
@@ -12338,6 +12383,7 @@ where
 
 		let inbound_pmt_key_material = args.node_signer.get_inbound_payment_key_material();
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+		let our_peerstorage_encryption_key = args.node_signer.get_peer_storage_key();
 
 		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
 		if let Some(purposes) = claimable_htlc_purposes {
@@ -12560,6 +12606,7 @@ where
 			best_block: RwLock::new(BestBlock::new(best_block_hash, best_block_height)),
 
 			inbound_payment_key: expanded_inbound_key,
+			our_peerstorage_encryption_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: pending_outbounds,
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
