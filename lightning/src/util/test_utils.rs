@@ -917,6 +917,14 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		self.received_msg(wire::Message::TxAbort(msg.clone()));
 	}
 
+	fn handle_peer_storage(&self, _their_node_id: PublicKey, msg: &msgs::PeerStorageMessage) {
+		self.received_msg(wire::Message::PeerStorageMessage(msg.clone()));
+	}
+
+	fn handle_your_peer_storage(&self, _their_node_id: PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		self.received_msg(wire::Message::YourPeerStorageMessage(msg.clone()));
+	}
+
 	fn message_received(&self) {}
 }
 
