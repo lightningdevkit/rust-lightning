@@ -18,7 +18,7 @@
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
-use crate::blinded_path::message::OffersContext;
+use crate::blinded_path::message::{DNSResolverContext, OffersContext};
 use crate::sign::{NodeSigner, Recipient};
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::types::ChannelId;
@@ -163,7 +163,7 @@ impl DNSResolverMessageHandler for IgnoringMessageHandler {
 	) -> ResponseInstruction<DNSResolverMessage> {
 		ResponseInstruction::NoResponse
 	}
-	fn dnssec_proof(&self, _message: DNSSECProof) {}
+	fn dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;

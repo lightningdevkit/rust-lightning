@@ -975,6 +975,9 @@ where
 				(ParsedOnionMessageContents::Custom(_), Some(MessageContext::Custom(_))) => {
 					Ok(PeeledOnion::Receive(message, context, reply_path))
 				}
+				(ParsedOnionMessageContents::DNSResolver(_), Some(MessageContext::DNSResolver(_))) => {
+					Ok(PeeledOnion::Receive(message, context, reply_path))
+				}
 				_ => {
 					log_trace!(logger, "Received message was sent on a blinded path with the wrong context.");
 					Err(())
@@ -1480,7 +1483,7 @@ where
 						let context = match context {
 							None => OffersContext::Unknown {},
 							Some(MessageContext::Offers(context)) => context,
-							Some(MessageContext::Custom(_)) => {
+							Some(_) => {
 								debug_assert!(false, "Shouldn't have triggered this case.");
 								return
 							}
@@ -1504,13 +1507,17 @@ where
 						let _ = self.handle_onion_message_response(response);
 					},
 					ParsedOnionMessageContents::DNSResolver(DNSResolverMessage::DNSSECProof(msg)) => {
-						self.dns_resolver_handler.dnssec_proof(msg);
+						let context = match context {
+							Some(MessageContext::DNSResolver(context)) => context,
+							_ => return,
+						};
+						self.dns_resolver_handler.dnssec_proof(msg, context);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
 						let context = match context {
 							None => None,
 							Some(MessageContext::Custom(data)) => Some(data),
-							Some(MessageContext::Offers(_)) => {
+							Some(_) => {
 								debug_assert!(false, "Shouldn't have triggered this case.");
 								return
 							}

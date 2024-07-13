@@ -92,12 +92,17 @@ impl Writeable for ReceiveTlvs {
 /// whenever the [`BlindedPath`] is used.
 /// The recipient can authenticate the message and utilize it for further processing
 /// if needed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum MessageContext {
 	/// Represents the data specific to [`OffersMessage`]
 	///
 	/// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
 	Offers(OffersContext),
+	/// Represents a context for a blinded path used in a reply path when requesting a DNSSEC proof
+	/// in a [`DNSResolverMessage`].
+	///
+	/// [`DNSResolverMessage`]: crate::onion_message::dns_resolution::DNSResolverMessage
+	DNSResolver(DNSResolverContext),
 	/// Represents custom data received in a Custom Onion Message.
 	Custom(Vec<u8>),
 }
@@ -105,7 +110,7 @@ pub enum MessageContext {
 /// Contains the data specific to [`OffersMessage`]
 ///
 /// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum OffersContext {
 	/// Represents an unknown BOLT12 payment context.
 	/// This variant is used when a message is sent without
@@ -122,6 +127,7 @@ pub enum OffersContext {
 impl_writeable_tlv_based_enum!(MessageContext, ;
 	(0, Offers),
 	(1, Custom),
+	(3, DNSResolver),
 );
 
 impl_writeable_tlv_based_enum!(OffersContext,
@@ -130,6 +136,24 @@ impl_writeable_tlv_based_enum!(OffersContext,
 		(0, payment_id, required),
 	},
 ;);
+
+/// Contains a simple nonce for use in a blinded path's context.
+///
+/// Such a context is required when receiving a [`DNSSECProof`] message.
+///
+/// [`DNSSECProof`]: crate::onion_message::dns_resolution::DNSSECProof
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct DNSResolverContext {
+	/// A nonce which uniquely describes a DNS resolution.
+	///
+	/// When we receive a DNSSEC proof message, we should check that it was sent over the blinded
+	/// path we included in the request by comparing a stored nonce with this one.
+	pub nonce: [u8; 16],
+}
+
+impl_writeable_tlv_based!(DNSResolverContext, {
+	(0, nonce, required),
+});
 
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(

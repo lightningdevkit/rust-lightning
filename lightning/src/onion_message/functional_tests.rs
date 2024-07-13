@@ -10,7 +10,7 @@
 //! Onion message testing and test utilities live here.
 
 use crate::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
-use crate::blinded_path::message::{ForwardNode, MessageContext, OffersContext};
+use crate::blinded_path::message::{DNSResolverContext, ForwardNode, MessageContext, OffersContext};
 use crate::events::{Event, EventsProvider};
 use crate::ln::features::{ChannelFeatures, InitFeatures};
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
@@ -102,7 +102,7 @@ impl DNSResolverMessageHandler for TestDNSResolverMessageHandler {
 	) -> ResponseInstruction<DNSResolverMessage> {
 		ResponseInstruction::NoResponse
 	}
-	fn dnssec_proof(&self, _message: DNSSECProof) {}
+	fn dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext) {}
 }
 
 #[derive(Clone, Debug, PartialEq)]

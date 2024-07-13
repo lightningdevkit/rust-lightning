@@ -17,6 +17,7 @@
 
 use dnssec_prover::rr::Name;
 
+use crate::blinded_path::message::DNSResolverContext;
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::onion_message::messenger::{PendingOnionMessage, Responder, ResponseInstruction};
@@ -39,7 +40,7 @@ pub trait DNSResolverMessageHandler {
 	/// Handle a [`DNSSECProof`] message (in response to a [`DNSSECQuery`] we presumably sent).
 	///
 	/// With this, we should be able to validate the DNS record we requested.
-	fn dnssec_proof(&self, message: DNSSECProof);
+	fn dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext);
 
 	/// Release any [`DNSResolverMessage`]s that need to be sent.
 	#[cfg(not(c_bindings))]
