@@ -144,3 +144,94 @@ impl OnionMessageContents for DNSResolverMessage {
 		}
 	}
 }
+
+/// A struct containing the two parts of a BIP 353 Human Readable Name - the user and domain parts.
+///
+/// The `user` and `domain` parts, together, cannot exceed 232 bytes in length, and both must be
+/// non-empty.
+///
+/// To protect against [Homograph Attacks], both parts of a Human Readable Name must be plain
+/// ASCII.
+///
+/// [Homograph Attacks]: https://en.wikipedia.org/wiki/IDN_homograph_attack
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct HumanReadableName {
+	// TODO Remove the heap allocations given the whole data can't be more than 256 bytes.
+	user: String,
+	domain: String,
+}
+
+impl HumanReadableName {
+	/// Constructs a new [`HumanReadableName`] from the `user` and `domain` parts. See the
+	/// struct-level documentation for more on the requirements on each.
+	pub fn new(user: String, domain: String) -> Result<HumanReadableName, ()> {
+		const REQUIRED_EXTRA_LEN: usize = ".user._bitcoin-payment.".len() + 1;
+		if user.len() + domain.len() + REQUIRED_EXTRA_LEN > 255 {
+			return Err(());
+		}
+		if user.is_empty() || domain.is_empty() {
+			return Err(());
+		}
+		if !Hostname::str_is_valid_hostname(&user) || !Hostname::str_is_valid_hostname(&domain) {
+			return Err(());
+		}
+		Ok(HumanReadableName { user, domain })
+	}
+
+	/// Constructs a new [`HumanReadableName`] from the standard encoding - `user`@`domain`.
+	///
+	/// If `user` includes the standard BIP 353 ₿ prefix it is automatically removed as required by
+	/// BIP 353.
+	pub fn from_encoded(encoded: &str) -> Result<HumanReadableName, ()> {
+		if let Some((user, domain)) = encoded.strip_prefix('₿').unwrap_or(encoded).split_once("@")
+		{
+			Self::new(user.to_string(), domain.to_string())
+		} else {
+			Err(())
+		}
+	}
+
+	/// Gets the `user` part of this Human Readable Name
+	pub fn user(&self) -> &str {
+		&self.user
+	}
+
+	/// Gets the `domain` part of this Human Readable Name
+	pub fn domain(&self) -> &str {
+		&self.domain
+	}
+}
+
+// Serialized per the requirements for inclusion in a BOLT 12 `invoice_request`
+impl Writeable for HumanReadableName {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		(self.user.len() as u8).write(writer)?;
+		writer.write_all(&self.user.as_bytes())?;
+		(self.domain.len() as u8).write(writer)?;
+		writer.write_all(&self.domain.as_bytes())
+	}
+}
+
+impl Readable for HumanReadableName {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let mut read_bytes = [0; 255];
+
+		let user_len: u8 = Readable::read(reader)?;
+		reader.read_exact(&mut read_bytes[..user_len as usize])?;
+		let user_bytes: Vec<u8> = read_bytes[..user_len as usize].into();
+		let user = match String::from_utf8(user_bytes) {
+			Ok(user) => user,
+			Err(_) => return Err(DecodeError::InvalidValue),
+		};
+
+		let domain_len: u8 = Readable::read(reader)?;
+		reader.read_exact(&mut read_bytes[..domain_len as usize])?;
+		let domain_bytes: Vec<u8> = read_bytes[..domain_len as usize].into();
+		let domain = match String::from_utf8(domain_bytes) {
+			Ok(domain) => domain,
+			Err(_) => return Err(DecodeError::InvalidValue),
+		};
+
+		HumanReadableName::new(user, domain).map_err(|()| DecodeError::InvalidValue)
+	}
+}
