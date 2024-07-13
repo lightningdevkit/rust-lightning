@@ -18,7 +18,7 @@ use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor;
 use crate::chain::channelmonitor;
-use crate::chain::channelmonitor::MonitorEvent;
+use crate::chain::channelmonitor::{MonitorEvent, StubChannel};
 use crate::chain::transaction::OutPoint;
 use crate::routing::router::{CandidateRouteHop, FirstHopCandidate, PublicHopCandidate, PrivateHopCandidate};
 use crate::sign;
@@ -422,6 +422,10 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
+	}
+
+	fn get_stub_cids_with_counterparty(&self, counterparty_node_id: PublicKey) -> Vec<ChannelId> {
+		return self.chain_monitor.get_stub_cids_with_counterparty(counterparty_node_id);
 	}
 }
 
@@ -1195,6 +1199,10 @@ impl NodeSigner for TestNodeSigner {
 		unreachable!()
 	}
 
+	fn get_peer_storage_key(&self) -> [u8;32] {
+		unreachable!()
+	}
+
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		let node_secret = match recipient {
 			Recipient::Node => Ok(&self.node_secret),
@@ -1269,6 +1277,10 @@ impl NodeSigner for TestKeysInterface {
 
 	fn sign_invoice(&self, invoice: &RawBolt11Invoice, recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(invoice, recipient)
+	}
+
+	fn get_peer_storage_key(&self) -> [u8;32] {
+		self.backing.get_peer_storage_key()
 	}
 
 	fn sign_bolt12_invoice_request(

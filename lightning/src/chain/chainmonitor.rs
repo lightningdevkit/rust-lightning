@@ -230,6 +230,7 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
         P::Target: Persist<ChannelSigner>,
 {
 	monitors: RwLock<HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
+
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
@@ -266,7 +267,7 @@ where C::Target: chain::Filter,
 	/// Calls which represent a new blockchain tip height should set `best_height`.
 	fn process_chain_data<FN>(&self, header: &Header, best_height: Option<u32>, txdata: &TransactionData, process: FN)
 	where
-		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
+		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>,
 	{
 		let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
 		let funding_outpoints = hash_set_from_iter(self.monitors.read().unwrap().keys().cloned());
@@ -749,6 +750,17 @@ where C::Target: chain::Filter,
 	    L::Target: Logger,
 	    P::Target: Persist<ChannelSigner>,
 {
+	fn get_stub_cids_with_counterparty(&self, counterparty_node_id: PublicKey) -> Vec<ChannelId> {
+		let stub_monitors = self.stub_monitors.read().unwrap();
+		let mut stubs = vec![];
+		for (_, mon) in stub_monitors.iter() {
+			if mon.get_counterparty_node_id() == Some(counterparty_node_id) {
+				stubs.push(mon.channel_id());
+			}
+		}
+		stubs
+	}
+
 	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut monitors = self.monitors.write().unwrap();

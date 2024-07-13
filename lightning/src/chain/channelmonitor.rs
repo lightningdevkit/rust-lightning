@@ -3727,6 +3727,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.current_holder_commitment_number
 	}
 
+	/// Updates the [`StubChannelMonitor`] when we receive a new more recent
+	/// peer storage from our peer. This souldn't be called through [`ChannelMonitor`].
+	fn update_latest_state_from_new_stubchannelmonitor(&mut self, stub: &StubChannelMonitor<Signer>) {
+		let inner = stub.inner.lock().unwrap();
+		self.commitment_secrets = inner.commitment_secrets.clone();
+		self.counterparty_claimable_outpoints = inner.counterparty_claimable_outpoints.clone();
+		self.their_cur_per_commitment_points = inner.their_cur_per_commitment_points.clone();
+	}
+
 	/// Attempts to claim a counterparty commitment transaction's outputs using the revocation key and
 	/// data in counterparty_claimable_outpoints. Will directly claim any HTLC outputs which expire at a
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for

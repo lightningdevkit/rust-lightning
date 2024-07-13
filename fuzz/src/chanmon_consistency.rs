@@ -48,7 +48,7 @@ use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, PaymentSendFailure,
-	RecipientOnionFields,
+	RecipientOnionFields, StubChannel,
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::msgs::{
@@ -286,6 +286,10 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
+	}
+
+	fn get_stub_cids_with_counterparty(&self, counterparty_node_id: PublicKey) -> Vec<ChannelId> {
+		return self.chain_monitor.get_stub_cids_with_counterparty(counterparty_node_id);
 	}
 }
 
