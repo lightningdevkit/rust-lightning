@@ -66,6 +66,11 @@ impl OutPoint {
 			vout: self.index as u32,
 		}
 	}
+
+	/// Returns the [`Txid`] of the [`OutPoint`].
+	pub fn get_txid(self) -> Txid {
+		self.txid
+	}
 }
 
 impl core::fmt::Display for OutPoint {

@@ -7898,7 +7898,7 @@ where
 		};
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None);
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None, None);
 
 		// Check if we have any channels with the peer (Currently we only provide the servie to peers we have a channel with).
 		if !peer_state.channel_by_id.values().any(|phase| matches!(phase, ChannelPhase::Funded(_))) {
