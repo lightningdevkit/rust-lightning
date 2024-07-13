@@ -11,7 +11,7 @@
 //! nodes for functional tests.
 
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
-use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::channelmonitor::{ChannelMonitor, StubChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
@@ -682,6 +682,17 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				}
 			}
 
+			let mut deserialized_stub_monitor = Vec::new();
+			{
+				for (outpoint, _channel_id) in self.chain_monitor.chain_monitor.list_stub_monitors() {
+					let mut w = test_utils::TestVecWriter(Vec::new());
+					self.chain_monitor.chain_monitor.get_stub_monitor(outpoint).unwrap().write(&mut w).unwrap();
+					let (_, deserialized_stub) = <(BlockHash, StubChannelMonitor<TestChannelSigner>)>::read(
+						&mut io::Cursor::new(&w.0), (self.keys_manager, self.keys_manager)).unwrap();
+					deserialized_stub_monitor.push(deserialized_stub);
+				}
+			}
+
 			let broadcaster = test_utils::TestBroadcaster {
 				txn_broadcasted: Mutex::new(self.tx_broadcaster.txn_broadcasted.lock().unwrap().clone()),
 				blocks: Arc::new(Mutex::new(self.tx_broadcaster.blocks.lock().unwrap().clone())),
@@ -721,6 +732,14 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					panic!();
 				}
 			}
+
+			for deserialized_stub in deserialized_stub_monitor.drain(..) {
+				let funding_outpoint = deserialized_stub.get_funding_txo().0;
+				if chain_monitor.watch_dummy(funding_outpoint, deserialized_stub) != Ok(()) {
+					panic!();
+				}
+			}
+
 			assert_eq!(*chain_source.watched_txn.unsafe_well_ordered_double_lock_self(), *self.chain_source.watched_txn.unsafe_well_ordered_double_lock_self());
 			assert_eq!(*chain_source.watched_outputs.unsafe_well_ordered_double_lock_self(), *self.chain_source.watched_outputs.unsafe_well_ordered_double_lock_self());
 		}
@@ -1115,7 +1134,7 @@ pub fn check_claimed_htlc_channel<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, pa
 	assert_eq!(ch.counterparty.node_id, prev.get_our_node_id());
 }
 
-pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: UserConfig, chanman_encoded: &[u8], monitors_encoded: &[&[u8]]) -> TestChannelManager<'b, 'c> {
+pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: UserConfig, chanman_encoded: &[u8], monitors_encoded: &[&[u8]], stub_monitors_encoded: &[&[u8]]) -> TestChannelManager<'b, 'c> {
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
 	for encoded in monitors_encoded {
 		let mut monitor_read = &encoded[..];
@@ -1123,6 +1142,15 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 			::read(&mut monitor_read, (node.keys_manager, node.keys_manager)).unwrap();
 		assert!(monitor_read.is_empty());
 		monitors_read.push(monitor);
+	}
+
+	let mut stub_monitors_read = Vec::with_capacity(stub_monitors_encoded.len());
+	for encoded in stub_monitors_encoded {
+		let mut stub_monitor_read = &encoded[..];
+		let (_, stub_monitor) = <(BlockHash, StubChannelMonitor<TestChannelSigner>)>
+			::read(&mut stub_monitor_read, (node.keys_manager, node.keys_manager)).unwrap();
+		assert!(stub_monitor_read.is_empty());
+		stub_monitors_read.push(stub_monitor);
 	}
 
 	let mut node_read = &chanman_encoded[..];
@@ -1153,6 +1181,12 @@ pub fn _reload_node<'a, 'b, 'c>(node: &'a Node<'a, 'b, 'c>, default_config: User
 		check_added_monitors!(node, 1);
 	}
 
+	for stub_monitor in stub_monitors_read.drain(..) {
+		let funding_outpoint = stub_monitor.get_funding_txo();
+		assert_eq!(node.chain_monitor.watch_dummy(funding_outpoint.0, stub_monitor),
+			Ok(()));
+	}
+
 	node_deserialized
 }
 
@@ -1165,12 +1199,30 @@ macro_rules! reload_node {
 		$new_chain_monitor = test_utils::TestChainMonitor::new(Some($node.chain_source), $node.tx_broadcaster.clone(), $node.logger, $node.fee_estimator, &$persister, &$node.keys_manager);
 		$node.chain_monitor = &$new_chain_monitor;
 
-		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);
+		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded, &[]);
 		$node.node = &$new_channelmanager;
 		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
 	};
 	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		reload_node!($node, $crate::util::config::UserConfig::default(), $chanman_encoded, $monitors_encoded, $persister, $new_chain_monitor, $new_channelmanager);
+	};
+}
+
+#[cfg(test)]
+macro_rules! reload_node_with_stubs {
+	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $stub_monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		let chanman_encoded = $chanman_encoded;
+
+		$persister = test_utils::TestPersister::new();
+		$new_chain_monitor = test_utils::TestChainMonitor::new(Some($node.chain_source), $node.tx_broadcaster.clone(), $node.logger, $node.fee_estimator, &$persister, &$node.keys_manager);
+		$node.chain_monitor = &$new_chain_monitor;
+
+		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded, $stub_monitors_encoded);
+		$node.node = &$new_channelmanager;
+		$node.onion_messenger.set_offers_handler(&$new_channelmanager);
+	};
+	($node: expr, $chanman_encoded: expr, $monitors_encoded: expr, $stub_monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
+		reload_node_with_stubs!($node, $crate::util::config::UserConfig::default(), $chanman_encoded, $monitors_encoded, $stub_monitors_encoded, $persister, $new_chain_monitor, $new_channelmanager);
 	};
 }
 
@@ -2026,6 +2078,16 @@ pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<
 	check_added_monitors!(node_b, 0);
 	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 	node_b.node.handle_revoke_and_ack(&node_a.node.get_our_node_id(), &as_revoke_and_ack);
+	let events = node_b.node.get_and_clear_pending_msg_events();
+	assert!(events.len() == 1);
+
+	match events.get(0).unwrap() {
+		MessageSendEvent::SendPeerStorageMessage { ref node_id, ref msg } => {
+			assert_eq!(*node_id, node_a.node.get_our_node_id());
+			node_a.node.handle_peer_storage(&node_b.node.get_our_node_id(), msg);
+		},
+		_ =>panic!("Unexpected event"),
+	}
 	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(node_b, 1);
 	node_b.node.handle_commitment_signed(&node_a.node.get_our_node_id(), &as_commitment_signed);
@@ -2087,6 +2149,15 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 		// Expecting the failure backwards event to the previous hop (not `node_b`)
 		assert_eq!(number_of_msg_events, 1);
 	} else {
+		let events = node_a.node.get_and_clear_pending_msg_events();
+		assert!(events.len() == 1);
+		match events.get(0).unwrap() {
+			MessageSendEvent::SendPeerStorageMessage { ref node_id, ref msg } => {
+				assert_eq!(*node_id, node_b.node.get_our_node_id());
+				node_b.node.handle_peer_storage(&node_b.node.get_our_node_id(), msg);
+			},
+			_ =>panic!("Unexpected event"),
+		}
 		assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	}
 }
@@ -3563,6 +3634,12 @@ macro_rules! get_chan_reestablish_msgs {
 				} else if let MessageSendEvent::SendChannelAnnouncement { ref node_id, ref msg, .. } = msg {
 					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 					announcements.insert(msg.contents.short_channel_id);
+				} else if let MessageSendEvent::SendPeerStorageMessage { ref node_id, ref msg } = msg {
+					$dst_node.node.handle_peer_storage(&$src_node.node.get_our_node_id(), msg);
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				} else if let MessageSendEvent::SendYourPeerStorageMessage { ref node_id, ref msg } = msg {
+					$dst_node.node.handle_your_peer_storage(&$src_node.node.get_our_node_id(), msg);
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 				} else {
 					panic!("Unexpected event")
 				}

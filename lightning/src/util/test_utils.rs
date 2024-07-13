@@ -19,7 +19,7 @@ use crate::chain::chaininterface::ConfirmationTarget;
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor;
 use crate::chain::channelmonitor;
-use crate::chain::channelmonitor::MonitorEvent;
+use crate::chain::channelmonitor::{MonitorEvent, StubChannelMonitor};
 use crate::chain::transaction::OutPoint;
 use crate::routing::router::{CandidateRouteHop, FirstHopCandidate, PublicHopCandidate, PrivateHopCandidate};
 use crate::sign;
@@ -444,6 +444,10 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
+
+	fn watch_dummy(&self, funding_outpoint: OutPoint, stub_monitor: StubChannelMonitor<TestChannelSigner>) -> Result<(), ()> {
+		return self.chain_monitor.watch_dummy(funding_outpoint, stub_monitor);
+	}
 }
 
 #[cfg(test)]
@@ -521,6 +525,11 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer> for 
 		res
 	}
 
+	// Why would watchtower would want to persist StubChannel?
+	fn persist_new_stub_channel(&self, _funding_txo: OutPoint, _stub_monitor: &StubChannelMonitor<Signer>) -> Result<(), std::io::Error> {
+		unreachable!();
+	}
+
 	fn update_persisted_channel(
 		&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>,
 		data: &channelmonitor::ChannelMonitor<Signer>
@@ -591,6 +600,10 @@ impl<Signer: sign::ecdsa::EcdsaChannelSigner> chainmonitor::Persist<Signer> for 
 			return update_ret
 		}
 		chain::ChannelMonitorUpdateStatus::Completed
+	}
+
+	fn persist_new_stub_channel(&self, _funding_txo: OutPoint, _stub_monitor: &StubChannelMonitor<Signer>) -> Result<(), std::io::Error> {
+		Ok(())
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, update: Option<&channelmonitor::ChannelMonitorUpdate>, _data: &channelmonitor::ChannelMonitor<Signer>) -> chain::ChannelMonitorUpdateStatus {
@@ -1206,6 +1219,10 @@ impl NodeSigner for TestNodeSigner {
 		unreachable!()
 	}
 
+	fn get_peer_storage_key(&self) -> [u8;32] {
+		unreachable!()
+	}
+
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		let node_secret = match recipient {
 			Recipient::Node => Ok(&self.node_secret),
@@ -1276,6 +1293,10 @@ impl NodeSigner for TestKeysInterface {
 
 	fn get_inbound_payment_key_material(&self) -> sign::KeyMaterial {
 		self.backing.get_inbound_payment_key_material()
+	}
+
+	fn get_peer_storage_key(&self) -> [u8;32] {
+		self.backing.get_peer_storage_key()
 	}
 
 	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {

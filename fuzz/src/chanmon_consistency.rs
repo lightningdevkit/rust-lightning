@@ -45,6 +45,8 @@ use lightning::chain::{
 };
 use lightning::events;
 use lightning::events::MessageSendEventsProvider;
+use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::channelmanager::{ChainParameters, ChannelDetails, ChannelManager, PaymentSendFailure, ChannelManagerReadArgs, PaymentId, RecipientOnionFields, StubChannel};
 use lightning::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
@@ -284,6 +286,10 @@ impl chain::Watch<TestChannelSigner> for TestChainMonitor {
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
+	}
+
+	fn watch_dummy(&self, funding_outpoint: OutPoint, stub_monitor: StubChannelMonitor<ChannelSigner>) -> Result<(), ()> {
+		return self.chain_monitor.watch_dummy(funding_outpoint, monitor);
 	}
 }
 

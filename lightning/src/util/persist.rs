@@ -23,7 +23,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::chain::chainmonitor::Persist;
 use crate::sign::{EntropySource, ecdsa::EcdsaChannelSigner, SignerProvider};
 use crate::chain::transaction::OutPoint;
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, CLOSED_CHANNEL_UPDATE_ID};
+use crate::chain::channelmonitor::{ChannelMonitor, StubChannelMonitor, ChannelMonitorUpdate, CLOSED_CHANNEL_UPDATE_ID};
 use crate::ln::channelmanager::AChannelManager;
 use crate::routing::gossip::NetworkGraph;
 use crate::routing::scoring::WriteableScore;
@@ -55,6 +55,11 @@ pub const CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitors";
 pub const CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The primary namespace under which [`ChannelMonitorUpdate`]s will be persisted.
 pub const CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_updates";
+
+/// The primary namespace under which [`StubChannelMonitor`]s will be persisted.
+pub const STUB_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "stubmonitors";
+/// The secondary namespace under which [`StubChannelMonitor`]s will be persisted.
+pub const STUB_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 
 /// The primary namespace under which archived [`ChannelMonitor`]s will be persisted.
 pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "archived_monitors";
@@ -218,6 +223,14 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStore + ?Sized> Persist<ChannelSign
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(_) => chain::ChannelMonitorUpdateStatus::UnrecoverableError
 		}
+	}
+
+	fn persist_new_stub_channel(&self, funding_txo: OutPoint, stub_monitor: &StubChannelMonitor<ChannelSigner>) -> Result<(), std::io::Error> {
+		let key = format!("{}_{}", funding_txo.to_string(), funding_txo.index);
+		return self.write(
+			STUB_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			STUB_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key, &stub_monitor.encode())
 	}
 
 	fn update_persisted_channel(&self, funding_txo: OutPoint, _update: Option<&ChannelMonitorUpdate>, monitor: &ChannelMonitor<ChannelSigner>) -> chain::ChannelMonitorUpdateStatus {
@@ -679,6 +692,14 @@ where
 				chain::ChannelMonitorUpdateStatus::UnrecoverableError
 			}
 		}
+	}
+
+	fn persist_new_stub_channel(&self, funding_txo: OutPoint, stub_monitor: &StubChannelMonitor<ChannelSigner>) -> Result<(), std::io::Error> {
+		let key = format!("{}_{}", funding_txo.to_string(), funding_txo.index);
+		return self.kv_store.write(
+			STUB_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			STUB_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key, &stub_monitor.encode())
 	}
 
 	/// Persists a channel update, writing only the update to the parameterized [`KVStore`] if possible.
