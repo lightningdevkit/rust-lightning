@@ -22,6 +22,7 @@
 //! [`OnionMessenger`]: self::messenger::OnionMessenger
 
 pub mod async_payments;
+pub mod dns_resolution;
 pub mod messenger;
 pub mod offers;
 pub mod packet;
