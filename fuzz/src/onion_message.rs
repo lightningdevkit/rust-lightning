@@ -11,6 +11,7 @@ use lightning::blinded_path::message::{
 use lightning::blinded_path::EmptyNodeIdLookUp;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
+use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
@@ -56,6 +57,7 @@ pub fn do_test<L: Logger>(data: &[u8], logger: &L) {
 			&message_router,
 			&offers_msg_handler,
 			&async_payments_msg_handler,
+			IgnoringMessageHandler {}, // TODO: Move to ChannelManager once it supports DNSSEC.
 			&custom_msg_handler,
 		);
 

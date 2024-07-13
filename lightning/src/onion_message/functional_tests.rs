@@ -10,7 +10,7 @@
 //! Onion message testing and test utilities live here.
 
 use crate::blinded_path::EmptyNodeIdLookUp;
-use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, MessageContext, OffersContext};
+use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageForwardNode, MessageContext, OffersContext};
 use crate::events::{Event, EventsProvider};
 use crate::ln::features::{ChannelFeatures, InitFeatures};
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
@@ -20,6 +20,7 @@ use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
 use super::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
+use super::dns_resolution::{DNSResolverMessageHandler, DNSResolverMessage, DNSSECProof, DNSSECQuery};
 use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, Responder, ResponseInstruction, MessageSendInstructions, SendError, SendSuccess};
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
@@ -52,6 +53,7 @@ struct MessengerNode {
 		>>,
 		Arc<TestOffersMessageHandler>,
 		Arc<TestAsyncPaymentsMessageHandler>,
+		Arc<TestDNSResolverMessageHandler>,
 		Arc<TestCustomMessageHandler>
 	>,
 	custom_message_handler: Arc<TestCustomMessageHandler>,
@@ -88,6 +90,17 @@ impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 		None
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
+}
+
+struct TestDNSResolverMessageHandler {}
+
+impl DNSResolverMessageHandler for TestDNSResolverMessageHandler {
+	fn handle_dnssec_query(
+		&self, _message: DNSSECQuery, _responder: Option<Responder>,
+	) -> Option<(DNSResolverMessage, ResponseInstruction)> {
+		None
+	}
+	fn handle_dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext) {}
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -264,18 +277,21 @@ fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 		);
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
 		let async_payments_message_handler = Arc::new(TestAsyncPaymentsMessageHandler {});
+		let dns_resolver_message_handler = Arc::new(TestDNSResolverMessageHandler {});
 		let custom_message_handler = Arc::new(TestCustomMessageHandler::new());
 		let messenger = if cfg.intercept_offline_peer_oms {
 			OnionMessenger::new_with_offline_peer_interception(
 				entropy_source.clone(), node_signer.clone(), logger.clone(),
 				node_id_lookup, message_router, offers_message_handler,
-				async_payments_message_handler, custom_message_handler.clone()
+				async_payments_message_handler, dns_resolver_message_handler,
+				custom_message_handler.clone(),
 			)
 		} else {
 			OnionMessenger::new(
 				entropy_source.clone(), node_signer.clone(), logger.clone(),
 				node_id_lookup, message_router, offers_message_handler,
-				async_payments_message_handler, custom_message_handler.clone()
+				async_payments_message_handler, dns_resolver_message_handler,
+				custom_message_handler.clone(),
 			)
 		};
 		nodes.push(MessengerNode {
