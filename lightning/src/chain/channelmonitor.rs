@@ -764,6 +764,191 @@ impl Readable for IrrevocablyResolvedHTLC {
 	}
 }
 
+/// [StubChannel] is the smallest unit of [OurPeerStorage], it contains
+/// information about a single channel using which we can recover on-chain funds.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StubChannel {
+	pub channel_id: ChannelId,
+	pub funding_outpoint: OutPoint,
+	pub channel_value_stoshis: u64,
+	pub channel_keys_id: [u8;32],
+	pub commitment_secrets: CounterpartyCommitmentSecrets,
+	pub counterparty_node_id: PublicKey,
+	pub counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
+	pub counterparty_htlc_base_key: HtlcBasepoint,
+	pub on_counterparty_tx_csv: u16,
+	pub obscure_factor: u64,
+	pub(crate) latest_state: HashMap<Txid, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>,
+	pub their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>,
+	pub features: ChannelTypeFeatures,
+}
+
+impl StubChannel {
+    pub(crate) fn new(channel_id: ChannelId, funding_outpoint: OutPoint, channel_value_stoshis: u64, channel_keys_id: [u8; 32],
+		       commitment_secrets: CounterpartyCommitmentSecrets, counterparty_node_id: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, on_counterparty_tx_csv: u16,
+			   obscure_factor: u64, latest_state: HashMap<Txid, Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>>, their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>,
+			   features: ChannelTypeFeatures) -> Self {
+        StubChannel {
+            channel_id,
+			funding_outpoint,
+			channel_value_stoshis,
+            channel_keys_id,
+            commitment_secrets,
+			counterparty_node_id,
+			counterparty_delayed_payment_base_key,
+			counterparty_htlc_base_key,
+			on_counterparty_tx_csv,
+			obscure_factor,
+			latest_state,
+			their_cur_per_commitment_points,
+			features,
+        }
+    }
+}
+
+impl_writeable_tlv_based!(StubChannel, {
+	(0, channel_id, required),
+	(2, channel_keys_id, required),
+	(4, channel_value_stoshis, required),
+	(6, funding_outpoint, required),
+	(8, commitment_secrets, required),
+	(10, counterparty_node_id, required),
+	(12, counterparty_delayed_payment_base_key, required),
+	(14, counterparty_htlc_base_key, required),
+	(16, on_counterparty_tx_csv, required),
+	(18, obscure_factor, required),
+	(20, latest_state, required),
+	(22, their_cur_per_commitment_points, option),
+	(24, features, required),
+});
+
+/// [OurPeerStorage] is used to store our channels using which we
+/// can create our PeerStorage Backup.
+/// This includes timestamp to compare between two given 
+/// [OurPeerStorage] and version defines the structure.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OurPeerStorage {
+    pub version: u32,
+    pub timestamp: u32,
+    pub channels: Vec<StubChannel>,
+}
+
+impl OurPeerStorage {
+    pub fn new() -> Self {
+        let duration_since_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("Time must be > 1970");
+
+        Self {
+            version: 1,
+            timestamp: duration_since_epoch.as_secs() as u32,
+            channels: Vec::new(),
+        }
+    }
+
+    pub fn stub_channel(&mut self, chan: StubChannel) {
+        self.channels.push(chan);
+    }
+
+	pub(crate) fn update_latest_state(&mut self, cid: ChannelId, txid: Txid, htlc_data: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)>, their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>) {
+        for stub_channel in &mut self.channels {
+            if stub_channel.channel_id == cid {
+                let mut latest_state = HashMap::new();
+                latest_state.insert(txid, htlc_data);
+                stub_channel.latest_state = latest_state;
+				stub_channel.their_cur_per_commitment_points = their_cur_per_commitment_points;
+                return;
+            }
+        }
+	}
+
+	pub(crate) fn provide_secret(&mut self, cid: ChannelId, idx:u64, secret: [u8; 32]) -> Result<(), ()> {
+		for stub_channel in &mut self.channels {
+            if stub_channel.channel_id == cid {
+                return stub_channel.commitment_secrets.provide_secret(idx, secret);
+            }
+        }
+		return Err(());
+	}
+
+	pub(crate) fn update_state_from_monitor_update(&mut self, cid: ChannelId, monitor_update: ChannelMonitorUpdate) -> Result<(),()> {
+		for update in monitor_update.updates.iter() {
+			match update {
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, 
+					their_per_commitment_point, .. } => {
+						let stub_channels = &self.channels;
+						let mut cur_per_commitment_points = None;
+						for stub_channel in stub_channels {
+							if stub_channel.channel_id == cid {
+								match stub_channel.their_cur_per_commitment_points {
+									Some(old_points) => {
+										if old_points.0 == commitment_number + 1 {
+											cur_per_commitment_points = Some((old_points.0, old_points.1, Some(*their_per_commitment_point)));
+										} else if old_points.0 == commitment_number + 2 {
+											if let Some(old_second_point) = old_points.2 {
+												cur_per_commitment_points = Some((old_points.0 - 1, old_second_point, Some(*their_per_commitment_point)));
+											} else {
+												cur_per_commitment_points = Some((*commitment_number, *their_per_commitment_point, None));
+											}
+										} else {
+											cur_per_commitment_points = Some((*commitment_number, *their_per_commitment_point, None));
+										}
+									},
+									None => {
+										cur_per_commitment_points = Some((*commitment_number, *their_per_commitment_point, None));
+									}
+								}
+							}
+						}
+						let mut htlc_data = htlc_outputs.clone();
+						for htlc in &mut htlc_data {
+							htlc.1 = None;
+						}
+						self.update_latest_state(cid, *commitment_txid, htlc_data, cur_per_commitment_points);
+						return Ok(());
+					}
+					_ => {}
+			}
+		}
+		Err(())
+	}
+
+    pub fn encrypt_our_peer_storage(&self, key: [u8; 32]) -> Vec<u8> {
+        let n = 0u64;
+        let mut peer_storage = VecWriter(Vec::new());
+        self.write(&mut peer_storage).unwrap();
+        let mut res = vec![0;peer_storage.0.len() + 16];
+
+        let plaintext = &peer_storage.0[..];
+		let mut nonce = [0; 12];
+		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+
+		let mut chacha = ChaCha20Poly1305RFC::new(&key, &nonce, b"");
+		let mut tag = [0; 16];
+		chacha.encrypt(plaintext, &mut res[0..plaintext.len()], &mut tag);
+		res[plaintext.len()..].copy_from_slice(&tag);
+        res
+	}
+
+    pub fn decrypt_our_peer_storage(&self, res: &mut[u8], cyphertext: &[u8], key: [u8; 32]) -> Result<(), ()> {
+		let n = 0u64;
+        let mut nonce = [0; 12];
+		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+
+		let mut chacha = ChaCha20Poly1305RFC::new(&key, &nonce, b"");
+		if chacha.variable_time_decrypt(&cyphertext[0..cyphertext.len() - 16], res, &cyphertext[cyphertext.len() - 16..]).is_err() {
+			return Err(());
+		}
+		Ok(())
+	}
+}
+
+impl_writeable_tlv_based!(OurPeerStorage, {
+	(0, version, (default_value, 1)),
+	(2, timestamp, required),
+	(4, channels, optional_vec),
+});
+
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
 /// on-chain transactions to ensure no loss of funds occurs.
 ///
@@ -1456,6 +1641,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// ChannelMonitor.
 	pub fn get_latest_update_id(&self) -> u64 {
 		self.inner.lock().unwrap().get_latest_update_id()
+	}
+
+	/// Gets the latest claiming info from the ChannelMonitor to update our PeerStorageBackup.
+	pub(crate) fn get_latest_commitment_txn_and_its_claiming_info(&self) -> Option<(Txid, Vec<(HTLCOutputInCommitment, Option<std::boxed::Box<HTLCSource>>)>, Option<(u64, PublicKey, Option<PublicKey>)>)> {
+		let lock = self.inner.lock().unwrap();
+		if let Some(latest_txid) = lock.current_counterparty_commitment_txid {
+			return Some((
+				latest_txid, lock.counterparty_claimable_outpoints.get(&latest_txid).unwrap().clone(),
+				lock.their_cur_per_commitment_points
+			))
+		}
+ 
+		None
 	}
 
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
