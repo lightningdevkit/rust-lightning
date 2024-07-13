@@ -198,6 +198,11 @@ pub enum Bolt12SemanticError {
 	InvalidSigningPubkey,
 	/// A signature was expected but was missing.
 	MissingSignature,
+	/// A Human Readable Name was provided but was not expected (i.e. was included in a
+	/// [`Refund`]).
+	///
+	/// [`Refund`]: super::refund::Refund
+	UnexpectedHumanReadableName,
 }
 
 impl From<CheckedHrpstringError> for Bolt12ParseError {

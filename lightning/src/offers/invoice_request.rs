@@ -75,6 +75,7 @@ use crate::offers::offer::{EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream,
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
+use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::util::ser::{CursorReadable, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::{PrintableString, UntrustedString};
 
@@ -241,6 +242,7 @@ macro_rules! invoice_request_builder_methods { (
 		InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
+			offer_from_hrn: None,
 			#[cfg(test)]
 			experimental_bar: None,
 		}
@@ -298,6 +300,14 @@ macro_rules! invoice_request_builder_methods { (
 	/// Successive calls to this method will override the previous setting.
 	pub fn payer_note($($self_mut)* $self: $self_type, payer_note: String) -> $return_type {
 		$self.invoice_request.payer_note = Some(payer_note);
+		$return_value
+	}
+
+	/// Sets the [`InvoiceRequest::offer_from_hrn`].
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn sourced_from_human_readable_name($($self_mut)* $self: $self_type, hrn: HumanReadableName) -> $return_type {
+		$self.invoice_request.offer_from_hrn = Some(hrn);
 		$return_value
 	}
 
@@ -699,6 +709,7 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	features: InvoiceRequestFeatures,
 	quantity: Option<u64>,
 	payer_note: Option<String>,
+	offer_from_hrn: Option<HumanReadableName>,
 	#[cfg(test)]
 	experimental_bar: Option<u64>,
 }
@@ -744,6 +755,12 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	/// response.
 	pub fn payer_note(&$self) -> Option<PrintableString> {
 		$contents.payer_note()
+	}
+
+	/// If the [`Offer`] was sourced from a BIP 353 Human Readable Name, this should be set by the
+	/// builder to indicate the original [`HumanReadableName`] which was resolved.
+	pub fn offer_from_hrn(&$self) -> &Option<HumanReadableName> {
+		$contents.offer_from_hrn()
 	}
 } }
 
@@ -1004,9 +1021,7 @@ impl VerifiedInvoiceRequest {
 		let InvoiceRequestContents {
 			payer_signing_pubkey,
 			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
-				payer: _, offer: _, chain: _, amount_msats: _, features: _, quantity, payer_note,
-				#[cfg(test)]
-				experimental_bar: _,
+				quantity, payer_note, ..
 			},
 		} = &self.inner.contents;
 
@@ -1049,6 +1064,10 @@ impl InvoiceRequestContents {
 			.map(|payer_note| PrintableString(payer_note.as_str()))
 	}
 
+	pub(super) fn offer_from_hrn(&self) -> &Option<HumanReadableName> {
+		&self.inner.offer_from_hrn
+	}
+
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {
 		let (payer, offer, mut invoice_request, experimental_offer, experimental_invoice_request) =
 			self.inner.as_tlv_stream();
@@ -1085,6 +1104,7 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 			quantity: self.quantity,
 			payer_id: None,
 			payer_note: self.payer_note.as_ref(),
+			offer_from_hrn: self.offer_from_hrn.as_ref(),
 			paths: None,
 		};
 
@@ -1142,6 +1162,7 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef<'a>, INVOICE_REQ
 	(89, payer_note: (String, WithoutLength)),
 	// Only used for Refund since the onion message of an InvoiceRequest has a reply path.
 	(90, paths: (Vec<BlindedMessagePath>, WithoutLength)),
+	(91, offer_from_hrn: HumanReadableName),
 });
 
 /// Valid type range for experimental invoice_request TLV records.
@@ -1266,6 +1287,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 			offer_tlv_stream,
 			InvoiceRequestTlvStream {
 				chain, amount, features, quantity, payer_id, payer_note, paths,
+				offer_from_hrn,
 			},
 			experimental_offer_tlv_stream,
 			ExperimentalInvoiceRequestTlvStream {
@@ -1305,6 +1327,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		Ok(InvoiceRequestContents {
 			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
 				payer, offer, chain, amount_msats: amount, features, quantity, payer_note,
+				offer_from_hrn,
 				#[cfg(test)]
 				experimental_bar,
 			},
@@ -1484,6 +1507,7 @@ mod tests {
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
 					paths: None,
+					offer_from_hrn: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice_request.signature()) },
 				ExperimentalOfferTlvStreamRef {
