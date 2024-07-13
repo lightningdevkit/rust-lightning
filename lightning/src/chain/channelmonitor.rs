@@ -38,18 +38,20 @@ use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::types::{PaymentHash, PaymentPreimage, ChannelId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
-use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
+use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys, CounterpartyChannelTransactionParameters};
 use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
+use crate::ln::features::ChannelTypeFeatures;
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
+use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, ecdsa::EcdsaChannelSigner, SignerProvider, EntropySource};
 use crate::chain::onchaintx::{ClaimEvent, FeerateStrategy, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
-use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
+use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48, VecWriter};
 use crate::util::byte_utils;
 use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
@@ -114,6 +116,7 @@ pub struct ChannelMonitorUpdate {
 ///
 /// No other [`ChannelMonitorUpdate`]s are allowed after force-close.
 pub const CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
+pub const STUB_CHANNEL_UPDATE_IDENTIFIER: u64 = CLOSED_CHANNEL_UPDATE_ID - 1;
 
 impl Writeable for ChannelMonitorUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1415,6 +1418,10 @@ impl<'a, L: Deref> Logger for WithChannelMonitor<'a, L> where L::Target: Logger 
 impl<'a, L: Deref> WithChannelMonitor<'a, L> where L::Target: Logger {
 	pub(crate) fn from<S: EcdsaChannelSigner>(logger: &'a L, monitor: &ChannelMonitor<S>, payment_hash: Option<PaymentHash>) -> Self {
 		Self::from_impl(logger, &*monitor.inner.lock().unwrap(), payment_hash)
+	}
+
+	pub(crate) fn from_stub<S: EcdsaChannelSigner>(logger: &'a L, stub_monitor: &StubChannelMonitor<S>) -> Self {
+		Self::from_impl(logger, &*stub_monitor.inner.lock().unwrap(), None)
 	}
 
 	pub(crate) fn from_impl<S: EcdsaChannelSigner>(logger: &'a L, monitor_impl: &ChannelMonitorImpl<S>, payment_hash: Option<PaymentHash>) -> Self {
@@ -3527,6 +3534,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						block_hash, per_commitment_claimable_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
+				} else if self.latest_update_id == STUB_CHANNEL_UPDATE_IDENTIFIER {
+					// Since we aren't storing per commitment option inside stub channels.
+					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
+						block_hash, [].iter().map(|reference| *reference), logger);
 				} else {
 					// Our fuzzers aren't constrained by pesky things like valid signatures, so can
 					// spend our funding output with a transaction which doesn't match our past
@@ -4283,6 +4294,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					if *idx == input.previous_output.vout {
 						#[cfg(test)]
 						{
+							if self.latest_update_id == STUB_CHANNEL_UPDATE_IDENTIFIER {
+								return true;
+							}
 							// If the expected script is a known type, check that the witness
 							// appears to be spending the correct type (ie that the match would
 							// actually succeed in BIP 158/159-style filters).
@@ -5003,6 +5017,685 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			balances_empty_height,
 		})))
 	}
+}
+
+pub struct StubChannelMonitor<Signer: EcdsaChannelSigner> {
+	#[cfg(test)]
+	pub(crate) inner: Mutex<ChannelMonitorImpl<Signer>>,
+	#[cfg(not(test))]
+	pub(super) inner: Mutex<ChannelMonitorImpl<Signer>>,
+}
+
+impl<Signer: EcdsaChannelSigner> Writeable for StubChannelMonitor<Signer> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
+		self.inner.lock().unwrap().write(writer)
+	}
+}
+
+impl<Signer: EcdsaChannelSigner> StubChannelMonitor<Signer> {
+	fn from_impl(imp: ChannelMonitorImpl<Signer>) -> Self {
+		StubChannelMonitor { inner: Mutex::new(imp) }
+	}
+
+	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
+	pub fn get_funding_txo(&self) -> (OutPoint, ScriptBuf) {
+		self.inner.lock().unwrap().get_funding_txo().clone()
+	}
+
+	/// Gets the channel_id of the channel this ChannelMonitor is monitoring for.
+	pub fn channel_id(&self) -> ChannelId {
+		self.inner.lock().unwrap().channel_id()
+	}
+
+	pub fn best_block_updated<B: Deref, F: Deref, L: Deref>(
+		&self,
+		header: &Header,
+		height: u32,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: &L,
+	) -> Vec<TransactionOutputs>
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+		inner.best_block_updated(
+			header, height, broadcaster, &bounded_fee_estimator, &logger
+		)
+	}
+
+	pub fn block_connected<B: Deref, F: Deref, L: Deref>(
+		&self,
+		header: &Header,
+		txdata: &TransactionData,
+		height: u32,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: &L,
+	) -> Vec<TransactionOutputs>
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+		inner.block_connected(
+			header, txdata, height, broadcaster, fee_estimator, &logger)
+	}
+
+	pub fn transactions_confirmed<B: Deref, F: Deref, L: Deref>(
+		&self,
+		header: &Header,
+		txdata: &TransactionData,
+		height: u32,
+		broadcaster: B,
+		fee_estimator: F,
+		logger: &L,
+	) -> Vec<TransactionOutputs>
+	where
+		B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+		inner.transactions_confirmed(
+			header, txdata, height, broadcaster, &bounded_fee_estimator, &logger)
+	}
+
+	pub fn load_outputs_to_watch<F: Deref, L: Deref>(&self, filter: &F, logger: &L)
+	where
+		F::Target: chain::Filter, L::Target: Logger,
+	{
+		let lock = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*lock, None);
+		log_trace!(&logger, "Registering funding outpoint {}", &lock.get_funding_txo().0);
+		filter.register_tx(&lock.get_funding_txo().0.txid, &lock.get_funding_txo().1);
+		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
+			for (index, script_pubkey) in outputs.iter() {
+				assert!(*index <= u16::max_value() as u32);
+				let outpoint = OutPoint { txid: *txid, index: *index as u16 };
+				log_trace!(logger, "Registering outpoint {} with the filter for monitoring spends", outpoint);
+				filter.register_output(WatchedOutput {
+					block_hash: None,
+					outpoint,
+					script_pubkey: script_pubkey.clone(),
+				});
+			}
+		}
+	}
+
+	pub(crate) fn new_stub(secp_ctx: Secp256k1<secp256k1::All>, stub_channel: &StubChannel, best_block: BestBlock, keys: Signer, channel_parameters: ChannelTransactionParameters ,funding_info_scriptbuf: ScriptBuf) -> StubChannelMonitor<Signer> {
+		let mut outputs_to_watch = new_hash_map();
+		outputs_to_watch.insert(stub_channel.funding_outpoint.get_txid(), vec![(stub_channel.funding_outpoint.index as u32, funding_info_scriptbuf.clone())]);
+		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let dummy_sig = crate::crypto::utils::sign(&secp_ctx, &secp256k1::Message::from_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let counterparty_payment_script = chan_utils::get_counterparty_payment_script(
+			&stub_channel.features, &keys.pubkeys().payment_point
+		);
+		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
+		let holder_commitment_tx = HolderSignedTx {
+			txid: stub_channel.funding_outpoint.get_txid(),
+			revocation_key: RevocationKey(dummy_key),
+			a_htlc_key: HtlcKey(dummy_key),
+			b_htlc_key: HtlcKey(dummy_key),
+			delayed_payment_key: DelayedPaymentKey(dummy_key),
+			per_commitment_point: dummy_key,
+			htlc_outputs: Vec::new(), // There are never any HTLCs in the initial commitment transactions
+			to_self_value_sat: 0,
+			feerate_per_kw: 1,
+		};
+
+		let dummy_tx_creation_keys = TxCreationKeys {
+			per_commitment_point: dummy_key.clone(),
+			revocation_key: RevocationKey::from_basepoint(&secp_ctx, &RevocationBasepoint::from(dummy_key), &dummy_key),
+			broadcaster_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
+			countersignatory_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
+			broadcaster_delayed_payment_key: DelayedPaymentKey::from_basepoint(&secp_ctx, &DelayedPaymentBasepoint::from(dummy_key), &dummy_key),
+		};
+		let counterparty_htlc_sigs = Vec::new();
+		let mut nondust_htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> = Vec::new();
+		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, dummy_key.clone(), dummy_key.clone(), dummy_tx_creation_keys, 0, &mut nondust_htlcs, &channel_parameters.as_counterparty_broadcastable());
+		let holder_commitment = HolderCommitmentTransaction::new(inner, dummy_sig, counterparty_htlc_sigs, &dummy_key, &PublicKey::from_slice(&[2;33]).unwrap());
+		let onchain_tx_handler = OnchainTxHandler::new(
+			stub_channel.channel_value_stoshis, stub_channel.channel_keys_id, ScriptBuf::new(), keys,
+			channel_parameters, holder_commitment, secp_ctx
+		);
+		let counterparty_commitment_params = CounterpartyCommitmentParameters { counterparty_delayed_payment_base_key: stub_channel.counterparty_delayed_payment_base_key, 
+			counterparty_htlc_base_key: stub_channel.counterparty_htlc_base_key, on_counterparty_tx_csv: stub_channel.on_counterparty_tx_csv };
+
+		Self::from_impl(ChannelMonitorImpl {
+			latest_update_id: STUB_CHANNEL_UPDATE_IDENTIFIER,
+			commitment_transaction_number_obscure_factor: stub_channel.obscure_factor,
+			destination_script: ScriptBuf::new(),
+			broadcasted_holder_revokable_script: None,
+			counterparty_payment_script,
+			shutdown_script: None,
+			channel_keys_id: stub_channel.channel_keys_id,
+			holder_revocation_basepoint,
+			channel_id: stub_channel.channel_id,
+			funding_info: (stub_channel.funding_outpoint, ScriptBuf::new()),
+			current_counterparty_commitment_txid: None,
+			prev_counterparty_commitment_txid: None,
+			counterparty_commitment_params,
+			funding_redeemscript: ScriptBuf::new(),
+			channel_value_satoshis: stub_channel.channel_value_stoshis,
+			their_cur_per_commitment_points: stub_channel.their_cur_per_commitment_points,
+			on_holder_tx_csv: 1,
+			commitment_secrets: stub_channel.commitment_secrets.clone(),
+			counterparty_claimable_outpoints: stub_channel.latest_state.clone(),
+
+			counterparty_hash_commitment_number: new_hash_map(),
+			counterparty_commitment_txn_on_chain: new_hash_map(),
+			counterparty_fulfilled_htlcs: new_hash_map(),
+			prev_holder_signed_commitment_tx: None,
+			current_holder_commitment_tx: holder_commitment_tx,
+			current_counterparty_commitment_number: 0,
+			current_holder_commitment_number: 1,
+			payment_preimages: new_hash_map(),
+			pending_monitor_events: Vec::new(),
+			pending_events: Vec::new(),
+			is_processing_pending_events: false,
+			onchain_events_awaiting_threshold_conf: Vec::new(),
+			outputs_to_watch,
+			onchain_tx_handler,
+			lockdown_from_offchain: true,
+			holder_tx_signed: true,
+			funding_spend_seen: false,
+			funding_spend_confirmed: None,
+			confirmed_commitment_tx_counterparty_output: None,
+			htlcs_resolved_on_chain: Vec::new(),
+			spendable_txids_confirmed: Vec::new(),
+			best_block,
+			counterparty_node_id: Some(stub_channel.counterparty_node_id),
+			initial_counterparty_commitment_info: None,
+			balances_empty_height: None
+		})
+	}
+
+	pub fn get_claimable_balances(&self) -> Vec<Balance> {
+		let mut res = Vec::new();
+		let us = self.inner.lock().unwrap();
+
+		let mut confirmed_txid = us.funding_spend_confirmed;
+		let mut confirmed_counterparty_output = us.confirmed_commitment_tx_counterparty_output;
+		let mut pending_commitment_tx_conf_thresh = None;
+		let funding_spend_pending = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+			if let OnchainEvent::FundingSpendConfirmation { commitment_tx_to_counterparty_output, .. } =
+				event.event
+			{
+				confirmed_counterparty_output = commitment_tx_to_counterparty_output;
+				Some((event.txid, event.confirmation_threshold()))
+			} else { None }
+		});
+		if let Some((txid, conf_thresh)) = funding_spend_pending {
+			debug_assert!(us.funding_spend_confirmed.is_none(),
+				"We have a pending funding spend awaiting anti-reorg confirmation, we can't have confirmed it already!");
+			confirmed_txid = Some(txid);
+			pending_commitment_tx_conf_thresh = Some(conf_thresh);
+		}
+
+		macro_rules! walk_htlcs {
+			($holder_commitment: expr, $counterparty_revoked_commitment: expr, $htlc_iter: expr) => {
+				for htlc in $htlc_iter {
+					if htlc.transaction_output_index.is_some() {
+
+						if let Some(bal) = us.get_htlc_balance(htlc, $holder_commitment, $counterparty_revoked_commitment, confirmed_txid) {
+							res.push(bal);
+						}
+					}
+				}
+			}
+		}
+
+		if let Some(txid) = confirmed_txid {
+			let mut found_commitment_tx = false;
+			if let Some(counterparty_tx_htlcs) = us.counterparty_claimable_outpoints.get(&txid) {
+				// First look for the to_remote output back to us.
+				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
+					if let Some(value) = us.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+						if let OnchainEvent::MaturingOutput {
+							descriptor: SpendableOutputDescriptor::StaticPaymentOutput(descriptor)
+						} = &event.event {
+							Some(descriptor.output.value)
+						} else { None }
+					}) {
+						res.push(Balance::ClaimableAwaitingConfirmations {
+							amount_satoshis: value.to_sat(),
+							confirmation_height: conf_thresh,
+						});
+					} else {
+						// If a counterparty commitment transaction is awaiting confirmation, we
+						// should either have a StaticPaymentOutput MaturingOutput event awaiting
+						// confirmation with the same height or have never met our dust amount.
+					}
+				}
+				if Some(txid) == us.current_counterparty_commitment_txid || Some(txid) == us.prev_counterparty_commitment_txid {
+					walk_htlcs!(false, false, counterparty_tx_htlcs.iter().map(|(a, _)| a));
+				} else {
+					walk_htlcs!(false, true, counterparty_tx_htlcs.iter().map(|(a, _)| a));
+					// The counterparty broadcasted a revoked state!
+					// Look for any StaticOutputs first, generating claimable balances for those.
+					// If any match the confirmed counterparty revoked to_self output, skip
+					// generating a CounterpartyRevokedOutputClaimable.
+					let mut spent_counterparty_output = false;
+					for event in us.onchain_events_awaiting_threshold_conf.iter() {
+						if let OnchainEvent::MaturingOutput {
+							descriptor: SpendableOutputDescriptor::StaticOutput { output, .. }
+						} = &event.event {
+							res.push(Balance::ClaimableAwaitingConfirmations {
+								amount_satoshis: output.value.to_sat(),
+								confirmation_height: event.confirmation_threshold(),
+							});
+							if let Some(confirmed_to_self_idx) = confirmed_counterparty_output.map(|(idx, _)| idx) {
+								if event.transaction.as_ref().map(|tx|
+									tx.input.iter().any(|inp| inp.previous_output.vout == confirmed_to_self_idx)
+								).unwrap_or(false) {
+									spent_counterparty_output = true;
+								}
+							}
+						}
+					}
+
+					if spent_counterparty_output {
+					} else if let Some((confirmed_to_self_idx, amt)) = confirmed_counterparty_output {
+						let output_spendable = us.onchain_tx_handler
+							.is_output_spend_pending(&BitcoinOutPoint::new(txid, confirmed_to_self_idx));
+						if output_spendable {
+							res.push(Balance::CounterpartyRevokedOutputClaimable {
+								amount_satoshis: amt.to_sat(),
+							});
+						}
+					} else {
+						// Counterparty output is missing, either it was broadcasted on a
+						// previous version of LDK or the counterparty hadn't met dust.
+					}
+				}
+				found_commitment_tx = true;
+			} else if txid == us.current_holder_commitment_tx.txid {
+				walk_htlcs!(true, false, us.current_holder_commitment_tx.htlc_outputs.iter().map(|(a, _, _)| a));
+				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
+					res.push(Balance::ClaimableAwaitingConfirmations {
+						amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
+						confirmation_height: conf_thresh,
+					});
+				}
+				found_commitment_tx = true;
+			} else if let Some(prev_commitment) = &us.prev_holder_signed_commitment_tx {
+				if txid == prev_commitment.txid {
+					walk_htlcs!(true, false, prev_commitment.htlc_outputs.iter().map(|(a, _, _)| a));
+					if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
+						res.push(Balance::ClaimableAwaitingConfirmations {
+							amount_satoshis: prev_commitment.to_self_value_sat,
+							confirmation_height: conf_thresh,
+						});
+					}
+					found_commitment_tx = true;
+				}
+			}
+			if !found_commitment_tx {
+				if let Some(conf_thresh) = pending_commitment_tx_conf_thresh {
+					// We blindly assume this is a cooperative close transaction here, and that
+					// neither us nor our counterparty misbehaved. At worst we've under-estimated
+					// the amount we can claim as we'll punish a misbehaving counterparty.
+					res.push(Balance::ClaimableAwaitingConfirmations {
+						amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
+						confirmation_height: conf_thresh,
+					});
+				}
+			}
+		} else {
+			let mut claimable_inbound_htlc_value_sat = 0;
+			for (htlc, _, _) in us.current_holder_commitment_tx.htlc_outputs.iter() {
+				if htlc.transaction_output_index.is_none() { continue; }
+				if htlc.offered {
+					res.push(Balance::MaybeTimeoutClaimableHTLC {
+						amount_satoshis: htlc.amount_msat / 1000,
+						claimable_height: htlc.cltv_expiry,
+						payment_hash: htlc.payment_hash,
+					});
+				} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
+					claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
+				} else {
+					// As long as the HTLC is still in our latest commitment state, treat
+					// it as potentially claimable, even if it has long-since expired.
+					res.push(Balance::MaybePreimageClaimableHTLC {
+						amount_satoshis: htlc.amount_msat / 1000,
+						expiry_height: htlc.cltv_expiry,
+						payment_hash: htlc.payment_hash,
+					});
+				}
+			}
+			res.push(Balance::ClaimableOnChannelClose {
+				amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat + claimable_inbound_htlc_value_sat,
+			});
+		}
+
+		res
+	}
+
+}
+
+impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
+		for (BlockHash, StubChannelMonitor<SP::EcdsaSigner>) {
+	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
+		macro_rules! unwrap_obj {
+			($key: expr) => {
+				match $key {
+					Ok(res) => res,
+					Err(_) => return Err(DecodeError::InvalidValue),
+				}
+			}
+		}
+
+		let (entropy_source, signer_provider) = args;
+
+		let _ver = read_ver_prefix!(reader, SERIALIZATION_VERSION);
+
+		let latest_update_id: u64 = Readable::read(reader)?;
+		let commitment_transaction_number_obscure_factor = <U48 as Readable>::read(reader)?.0;
+
+		let destination_script = Readable::read(reader)?;
+		let broadcasted_holder_revokable_script = match <u8 as Readable>::read(reader)? {
+			0 => {
+				let revokable_address = Readable::read(reader)?;
+				let per_commitment_point = Readable::read(reader)?;
+				let revokable_script = Readable::read(reader)?;
+				Some((revokable_address, per_commitment_point, revokable_script))
+			},
+			1 => { None },
+			_ => return Err(DecodeError::InvalidValue),
+		};
+		let mut counterparty_payment_script: ScriptBuf = Readable::read(reader)?;
+		let shutdown_script = {
+			let script = <ScriptBuf as Readable>::read(reader)?;
+			if script.is_empty() { None } else { Some(script) }
+		};
+
+		let channel_keys_id = Readable::read(reader)?;
+		let holder_revocation_basepoint = Readable::read(reader)?;
+		// Technically this can fail and serialize fail a round-trip, but only for serialization of
+		// barely-init'd ChannelMonitors that we can't do anything with.
+		let outpoint = OutPoint {
+			txid: Readable::read(reader)?,
+			index: Readable::read(reader)?,
+		};
+		let funding_info = (outpoint, Readable::read(reader)?);
+		let current_counterparty_commitment_txid = Readable::read(reader)?;
+		let prev_counterparty_commitment_txid = Readable::read(reader)?;
+
+		let counterparty_commitment_params = Readable::read(reader)?;
+		let funding_redeemscript = Readable::read(reader)?;
+		let channel_value_satoshis = Readable::read(reader)?;
+
+		let their_cur_per_commitment_points = {
+			let first_idx = <U48 as Readable>::read(reader)?.0;
+			if first_idx == 0 {
+				None
+			} else {
+				let first_point = Readable::read(reader)?;
+				let second_point_slice: [u8; 33] = Readable::read(reader)?;
+				if second_point_slice[0..32] == [0; 32] && second_point_slice[32] == 0 {
+					Some((first_idx, first_point, None))
+				} else {
+					Some((first_idx, first_point, Some(unwrap_obj!(PublicKey::from_slice(&second_point_slice)))))
+				}
+			}
+		};
+
+		let on_holder_tx_csv: u16 = Readable::read(reader)?;
+
+		let commitment_secrets = Readable::read(reader)?;
+
+		macro_rules! read_htlc_in_commitment {
+			() => {
+				{
+					let offered: bool = Readable::read(reader)?;
+					let amount_msat: u64 = Readable::read(reader)?;
+					let cltv_expiry: u32 = Readable::read(reader)?;
+					let payment_hash: PaymentHash = Readable::read(reader)?;
+					let transaction_output_index: Option<u32> = Readable::read(reader)?;
+
+					HTLCOutputInCommitment {
+						offered, amount_msat, cltv_expiry, payment_hash, transaction_output_index
+					}
+				}
+			}
+		}
+
+		let counterparty_claimable_outpoints_len: u64 = Readable::read(reader)?;
+		let mut counterparty_claimable_outpoints = hash_map_with_capacity(cmp::min(counterparty_claimable_outpoints_len as usize, MAX_ALLOC_SIZE / 64));
+		for _ in 0..counterparty_claimable_outpoints_len {
+			let txid: Txid = Readable::read(reader)?;
+			let htlcs_count: u64 = Readable::read(reader)?;
+			let mut htlcs = Vec::with_capacity(cmp::min(htlcs_count as usize, MAX_ALLOC_SIZE / 32));
+			for _ in 0..htlcs_count {
+				htlcs.push((read_htlc_in_commitment!(), <Option<HTLCSource> as Readable>::read(reader)?.map(|o: HTLCSource| Box::new(o))));
+			}
+			if let Some(_) = counterparty_claimable_outpoints.insert(txid, htlcs) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let counterparty_commitment_txn_on_chain_len: u64 = Readable::read(reader)?;
+		let mut counterparty_commitment_txn_on_chain = hash_map_with_capacity(cmp::min(counterparty_commitment_txn_on_chain_len as usize, MAX_ALLOC_SIZE / 32));
+		for _ in 0..counterparty_commitment_txn_on_chain_len {
+			let txid: Txid = Readable::read(reader)?;
+			let commitment_number = <U48 as Readable>::read(reader)?.0;
+			if let Some(_) = counterparty_commitment_txn_on_chain.insert(txid, commitment_number) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let counterparty_hash_commitment_number_len: u64 = Readable::read(reader)?;
+		let mut counterparty_hash_commitment_number = hash_map_with_capacity(cmp::min(counterparty_hash_commitment_number_len as usize, MAX_ALLOC_SIZE / 32));
+		for _ in 0..counterparty_hash_commitment_number_len {
+			let payment_hash: PaymentHash = Readable::read(reader)?;
+			let commitment_number = <U48 as Readable>::read(reader)?.0;
+			if let Some(_) = counterparty_hash_commitment_number.insert(payment_hash, commitment_number) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let mut prev_holder_signed_commitment_tx: Option<HolderSignedTx> =
+			match <u8 as Readable>::read(reader)? {
+				0 => None,
+				1 => {
+					Some(Readable::read(reader)?)
+				},
+				_ => return Err(DecodeError::InvalidValue),
+			};
+		let mut current_holder_commitment_tx: HolderSignedTx = Readable::read(reader)?;
+
+		let current_counterparty_commitment_number = <U48 as Readable>::read(reader)?.0;
+		let current_holder_commitment_number = <U48 as Readable>::read(reader)?.0;
+
+		let payment_preimages_len: u64 = Readable::read(reader)?;
+		let mut payment_preimages = hash_map_with_capacity(cmp::min(payment_preimages_len as usize, MAX_ALLOC_SIZE / 32));
+		for _ in 0..payment_preimages_len {
+			let preimage: PaymentPreimage = Readable::read(reader)?;
+			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
+			if let Some(_) = payment_preimages.insert(hash, preimage) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let pending_monitor_events_len: u64 = Readable::read(reader)?;
+		let mut pending_monitor_events = Some(
+			Vec::with_capacity(cmp::min(pending_monitor_events_len as usize, MAX_ALLOC_SIZE / (32 + 8*3))));
+		for _ in 0..pending_monitor_events_len {
+			let ev = match <u8 as Readable>::read(reader)? {
+				0 => MonitorEvent::HTLCEvent(Readable::read(reader)?),
+				1 => MonitorEvent::HolderForceClosed(funding_info.0),
+				_ => return Err(DecodeError::InvalidValue)
+			};
+			pending_monitor_events.as_mut().unwrap().push(ev);
+		}
+
+		let pending_events_len: u64 = Readable::read(reader)?;
+		let mut pending_events = Vec::with_capacity(cmp::min(pending_events_len as usize, MAX_ALLOC_SIZE / mem::size_of::<Event>()));
+		for _ in 0..pending_events_len {
+			if let Some(event) = MaybeReadable::read(reader)? {
+				pending_events.push(event);
+			}
+		}
+
+		let best_block = BestBlock::new(Readable::read(reader)?, Readable::read(reader)?);
+
+		let waiting_threshold_conf_len: u64 = Readable::read(reader)?;
+		let mut onchain_events_awaiting_threshold_conf = Vec::with_capacity(cmp::min(waiting_threshold_conf_len as usize, MAX_ALLOC_SIZE / 128));
+		for _ in 0..waiting_threshold_conf_len {
+			if let Some(val) = MaybeReadable::read(reader)? {
+				onchain_events_awaiting_threshold_conf.push(val);
+			}
+		}
+
+		let outputs_to_watch_len: u64 = Readable::read(reader)?;
+		let mut outputs_to_watch = hash_map_with_capacity(cmp::min(outputs_to_watch_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<Txid>() + mem::size_of::<u32>() + mem::size_of::<Vec<ScriptBuf>>())));
+		for _ in 0..outputs_to_watch_len {
+			let txid = Readable::read(reader)?;
+			let outputs_len: u64 = Readable::read(reader)?;
+			let mut outputs = Vec::with_capacity(cmp::min(outputs_len as usize, MAX_ALLOC_SIZE / (mem::size_of::<u32>() + mem::size_of::<ScriptBuf>())));
+			for _ in 0..outputs_len {
+				outputs.push((Readable::read(reader)?, Readable::read(reader)?));
+			}
+			if let Some(_) = outputs_to_watch.insert(txid, outputs) {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		let onchain_tx_handler: OnchainTxHandler<SP::EcdsaSigner> = ReadableArgs::read(
+			reader, (entropy_source, signer_provider, channel_value_satoshis, channel_keys_id)
+		)?;
+
+		let lockdown_from_offchain = Readable::read(reader)?;
+		let holder_tx_signed = Readable::read(reader)?;
+
+		if let Some(prev_commitment_tx) = prev_holder_signed_commitment_tx.as_mut() {
+			let prev_holder_value = onchain_tx_handler.get_prev_holder_commitment_to_self_value();
+			if prev_holder_value.is_none() { return Err(DecodeError::InvalidValue); }
+			if prev_commitment_tx.to_self_value_sat == u64::max_value() {
+				prev_commitment_tx.to_self_value_sat = prev_holder_value.unwrap();
+			} else if prev_commitment_tx.to_self_value_sat != prev_holder_value.unwrap() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let cur_holder_value = onchain_tx_handler.get_cur_holder_commitment_to_self_value();
+		if current_holder_commitment_tx.to_self_value_sat == u64::max_value() {
+			current_holder_commitment_tx.to_self_value_sat = cur_holder_value;
+		} else if current_holder_commitment_tx.to_self_value_sat != cur_holder_value {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		let mut funding_spend_confirmed = None;
+		let mut htlcs_resolved_on_chain = Some(Vec::new());
+		let mut funding_spend_seen = Some(false);
+		let mut counterparty_node_id = None;
+		let mut confirmed_commitment_tx_counterparty_output = None;
+		let mut spendable_txids_confirmed = Some(Vec::new());
+		let mut counterparty_fulfilled_htlcs = Some(new_hash_map());
+		let mut initial_counterparty_commitment_info = None;
+		let mut balances_empty_height = None;
+		let mut channel_id = None;
+		read_tlv_fields!(reader, {
+			(1, funding_spend_confirmed, option),
+			(3, htlcs_resolved_on_chain, optional_vec),
+			(5, pending_monitor_events, optional_vec),
+			(7, funding_spend_seen, option),
+			(9, counterparty_node_id, option),
+			(11, confirmed_commitment_tx_counterparty_output, option),
+			(13, spendable_txids_confirmed, optional_vec),
+			(15, counterparty_fulfilled_htlcs, option),
+			(17, initial_counterparty_commitment_info, option),
+			(19, channel_id, option),
+			(21, balances_empty_height, option),
+		});
+
+		// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. If we have both
+		// events, we can remove the `HolderForceClosed` event and just keep the `HolderForceClosedWithInfo`.
+		if let Some(ref mut pending_monitor_events) = pending_monitor_events {
+			if pending_monitor_events.iter().any(|e| matches!(e, MonitorEvent::HolderForceClosed(_))) &&
+				pending_monitor_events.iter().any(|e| matches!(e, MonitorEvent::HolderForceClosedWithInfo { .. }))
+			{
+				pending_monitor_events.retain(|e| !matches!(e, MonitorEvent::HolderForceClosed(_)));
+			}
+		}
+
+		// Monitors for anchor outputs channels opened in v0.0.116 suffered from a bug in which the
+		// wrong `counterparty_payment_script` was being tracked. Fix it now on deserialization to
+		// give them a chance to recognize the spendable output.
+		if onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() &&
+			counterparty_payment_script.is_v0_p2wpkh()
+		{
+			let payment_point = onchain_tx_handler.channel_transaction_parameters.holder_pubkeys.payment_point;
+			counterparty_payment_script =
+				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point).to_v0_p2wsh();
+		}
+
+		Ok((best_block.block_hash, StubChannelMonitor::from_impl(ChannelMonitorImpl {
+			latest_update_id,
+			commitment_transaction_number_obscure_factor,
+
+			destination_script,
+			broadcasted_holder_revokable_script,
+			counterparty_payment_script,
+			shutdown_script,
+
+			channel_keys_id,
+			holder_revocation_basepoint,
+			channel_id: channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint)),
+			funding_info,
+			current_counterparty_commitment_txid,
+			prev_counterparty_commitment_txid,
+
+			counterparty_commitment_params,
+			funding_redeemscript,
+			channel_value_satoshis,
+			their_cur_per_commitment_points,
+
+			on_holder_tx_csv,
+
+			commitment_secrets,
+			counterparty_claimable_outpoints,
+			counterparty_commitment_txn_on_chain,
+			counterparty_hash_commitment_number,
+			counterparty_fulfilled_htlcs: counterparty_fulfilled_htlcs.unwrap(),
+
+			prev_holder_signed_commitment_tx,
+			current_holder_commitment_tx,
+			current_counterparty_commitment_number,
+			current_holder_commitment_number,
+
+			payment_preimages,
+			pending_monitor_events: pending_monitor_events.unwrap(),
+			pending_events,
+			is_processing_pending_events: false,
+
+			onchain_events_awaiting_threshold_conf,
+			outputs_to_watch,
+
+			onchain_tx_handler,
+
+			lockdown_from_offchain,
+			holder_tx_signed,
+			funding_spend_seen: funding_spend_seen.unwrap(),
+			funding_spend_confirmed,
+			confirmed_commitment_tx_counterparty_output,
+			htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
+			spendable_txids_confirmed: spendable_txids_confirmed.unwrap(),
+			best_block,
+			counterparty_node_id,
+			initial_counterparty_commitment_info,
+			balances_empty_height,
+		})))
+	}
+
 }
 
 #[cfg(test)]
