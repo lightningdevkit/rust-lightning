@@ -56,6 +56,8 @@ use crate::ln::features::Bolt11InvoiceFeatures;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
+use crate::ln::channel_keys::RevocationBasepoint;
+use crate::ln::chan_utils::{make_funding_redeemscript, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, ChannelPublicKeys};
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
@@ -76,8 +78,8 @@ use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
-use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::{EntropySource, ChannelSigner, NodeSigner, Recipient, SignerProvider};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -7910,6 +7912,59 @@ where
 		peer_state.peer_storage = msg.data.clone();
 	}
 
+	fn internal_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None, None);
+		if msg.data.len() < 16 {
+			log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+			return;
+		}
+
+ 		let mut res = vec![0; msg.data.len() - 16];
+		{
+			let our_peer_storage = self.our_peer_storage.read().unwrap();
+			match our_peer_storage.decrypt_our_peer_storage(&mut res, msg.data.as_slice(), self.our_peerstorage_encryption_key) {
+				Ok(()) => {
+					// Decryption successful, the plaintext is now stored in `res`
+					log_debug!(logger, "Received a peer storage from peer {}", log_pubkey!(counterparty_node_id));
+				}
+				Err(_) => {
+					log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+					return;
+				}
+			}
+		}
+
+		let our_peer_storage = <OurPeerStorage as Readable>::read(&mut ::bitcoin::io::Cursor::new(res)).unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
+
+		for ps_channel in our_peer_storage.get_channels() {
+			let peer_state_mutex = match per_peer_state.get(&ps_channel.counterparty_node_id) {
+				Some(mutex) => mutex,
+				None => {
+					log_debug!(logger, "Not able to find peer_state for the counterparty {}, channelId {}", log_pubkey!(ps_channel.counterparty_node_id), ps_channel.channel_id);
+					// TODO: What if the peer storage is too old and we have already closed the channel and the peer has been forgotten?
+					panic!("Missing Channel {}", ps_channel.channel_id);
+				}
+			};
+
+			let peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &*peer_state_lock;
+
+			match peer_state.channel_by_id.get(&ps_channel.channel_id) {
+				Some(ChannelPhase::Funded(chan)) => {
+					if chan.context.get_commitment_secret().get_min_seen_secret() > ps_channel.get_min_seen_secret() {
+						panic!("Lost channel state for channel {}", ps_channel.channel_id);
+					}
+				},
+				Some(_) => {}
+				None => {
+					panic!("Missing channel {}", ps_channel.channel_id);
+				}		
+			}
+		}
+
+	}
+
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -10568,6 +10623,8 @@ where
 	}
 
 	fn handle_your_peer_storage(&self, counterparty_node_id: PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		let _persistence_guard = PersistenceNotifierGuard::optionally_notify(self, || NotifyOption::SkipPersistNoEvents);
+		self.internal_your_peer_storage(&counterparty_node_id, msg);
 	}
 
 	fn handle_channel_ready(&self, counterparty_node_id: PublicKey, msg: &msgs::ChannelReady) {
