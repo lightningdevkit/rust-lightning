@@ -34,6 +34,8 @@ _test_vectors = []
 no-std = ["hashbrown", "possiblyrandom", "bitcoin/no-std", "core2/alloc", "libm"]
 std = ["bitcoin/std", "bech32/std"]
 
+dnssec = ["dnssec-prover/validation"]
+
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
 grind_signatures = []
 
