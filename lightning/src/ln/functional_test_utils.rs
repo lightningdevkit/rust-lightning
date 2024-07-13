@@ -1011,6 +1011,29 @@ macro_rules! get_channel_type_features {
 	}
 }
 
+/// Returns a Stub Channel Monitor given a channel Id, making some naive assumptions
+#[macro_export]
+macro_rules! get_stub {
+	($node: expr, $channel_id: expr) => {
+		{
+			use bitcoin::hashes::Hash;
+			let mut stub = None;
+			// Assume funding vout is either 0 or 1 blindly
+			for index in 0..2 {
+				if let Ok(mon) = $node.chain_monitor.chain_monitor.get_stub_monitor(
+					$crate::chain::transaction::OutPoint{
+						txid: bitcoin::Txid::from_slice(&$channel_id.0[..]).unwrap(), index
+					})
+				{
+					stub = Some(mon);
+					break;
+				}
+			}
+			stub.unwrap()
+		}
+	}
+}
+
 /// Returns a channel monitor given a channel id, making some naive assumptions
 #[macro_export]
 macro_rules! get_monitor {
