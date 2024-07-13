@@ -54,6 +54,8 @@ use crate::ln::features::Bolt11InvoiceFeatures;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
+use crate::ln::channel_keys::RevocationBasepoint;
+use crate::ln::chan_utils::{make_funding_redeemscript, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, ChannelPublicKeys};
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
@@ -70,8 +72,8 @@ use crate::offers::refund::{Refund, RefundBuilder};
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
-use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::{EntropySource, ChannelSigner, NodeSigner, Recipient, SignerProvider};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -7466,6 +7468,58 @@ where
 		self.peer_storage.lock().unwrap().insert(*counterparty_node_id, msg.data.clone());
 	}
 
+	fn internal_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None, None);
+		let our_peer_storage = self.our_peer_storage.read().unwrap();
+		if msg.data.len() < 16 {
+			log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+			return;
+		}
+
+ 		let mut res = vec![0; msg.data.len() - 16];
+
+		match our_peer_storage.decrypt_our_peer_storage(&mut res, msg.data.as_slice(), self.our_peerstorage_encryption_key) {
+			Ok(()) => {
+				// Decryption successful, the plaintext is now stored in `res`
+				log_debug!(logger, "Decryption successful");
+				let our_peer_storage = <OurPeerStorage as Readable>::read(&mut ::std::io::Cursor::new(res)).unwrap();
+
+				for ps_channel in &our_peer_storage.channels {
+					let mut keys = self.signer_provider.derive_channel_signer(ps_channel.channel_value_stoshis, ps_channel.channel_keys_id);
+					let channel_parameters = ChannelTransactionParameters{
+						holder_pubkeys:keys.pubkeys().clone(),
+						is_outbound_from_holder: true,
+						holder_selected_contest_delay: 66,
+						counterparty_parameters: Some(CounterpartyChannelTransactionParameters { 
+							pubkeys: ChannelPublicKeys {
+								funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
+								revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(&self.secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap())),
+								payment_point: PublicKey::from_secret_key(&self.secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
+								delayed_payment_basepoint: ps_channel.counterparty_delayed_payment_base_key,
+								htlc_basepoint: ps_channel.counterparty_htlc_base_key,
+							}, selected_contest_delay: ps_channel.on_counterparty_tx_csv}),
+						funding_outpoint: Some(ps_channel.funding_outpoint),
+						channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+					};
+					keys.provide_channel_parameters(&channel_parameters);
+					let pubkeys  = keys.pubkeys().clone();
+					let funding_redeemscript = make_funding_redeemscript(&pubkeys.funding_pubkey, counterparty_node_id);
+					let funding_txo_script = funding_redeemscript.to_p2wsh();
+					let monitor = StubChannelMonitor::new_stub(self.secp_ctx.clone(), ps_channel, *self.best_block.read().unwrap(), keys, channel_parameters, funding_txo_script);
+					let monitor_res =  self.chain_monitor.watch_dummy(ps_channel.funding_outpoint, monitor);
+					if let Ok(_persist_state) = monitor_res {
+						log_trace!(logger, "Dummy channel persisted!");
+					}
+				}
+			}
+			Err(_) => {
+				log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+				return;
+			}
+		}
+
+	}
+
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -10060,6 +10114,8 @@ where
 	}
 
 	fn handle_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.internal_your_peer_storage(counterparty_node_id, msg);
 	}
 
 	fn handle_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) {
