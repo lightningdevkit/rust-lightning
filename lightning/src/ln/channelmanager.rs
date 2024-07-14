@@ -2575,6 +2575,14 @@ where
 	#[cfg(feature = "dnssec")]
 	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
 
+	#[cfg(feature = "_test_utils")]
+	/// In testing, it is useful be able to forge a name -> offer mapping so that we can pay an
+	/// offer generated in the test.
+	///
+	/// This allows for doing so, validating proofs as normal, but, if they pass, replacing the
+	/// offer they resolve to to the given one.
+	pub testing_dnssec_proof_offer_resolution_override: Mutex<HashMap<HumanReadableName, Offer>>,
+
 	entropy_source: ES,
 	node_signer: NS,
 	signer_provider: SP,
@@ -3402,6 +3410,9 @@ where
 			hrn_resolver: OMNameResolver::new(current_timestamp, params.best_block.height),
 			#[cfg(feature = "dnssec")]
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
+
+			#[cfg(feature = "_test_utils")]
+			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		}
 	}
 
@@ -11760,8 +11771,15 @@ where
 
 	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
 		let offer_opt = self.hrn_resolver.handle_dnssec_proof_for_offer(message, context);
-		if let Some((completed_requests, offer)) = offer_opt {
+		#[cfg_attr(not(feature = "_test_utils"), allow(unused_mut))]
+		if let Some((completed_requests, mut offer)) = offer_opt {
 			for (name, payment_id) in completed_requests {
+				#[cfg(feature = "_test_utils")]
+				if let Some(replacement_offer) = self.testing_dnssec_proof_offer_resolution_override.lock().unwrap().remove(&name) {
+					// If we have multiple pending requests we may end up over-using the override
+					// offer, but tests can deal with that.
+					offer = replacement_offer;
+				}
 				if let Ok(amt_msats) = self.pending_outbound_payments.amt_msats_for_payment_awaiting_offer(payment_id) {
 					let offer_pay_res =
 						self.pay_for_offer_intern(&offer, None, Some(amt_msats), None, payment_id, Some(name),
@@ -13483,6 +13501,9 @@ where
 			hrn_resolver: OMNameResolver::new(highest_seen_timestamp, best_block_height),
 			#[cfg(feature = "dnssec")]
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
+
+			#[cfg(feature = "_test_utils")]
+			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		};
 
 		for (_, monitor) in args.channel_monitors.iter() {

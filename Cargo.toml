@@ -15,6 +15,7 @@ members = [
     "lightning-custom-message",
     "lightning-transaction-sync",
     "lightning-macros",
+    "lightning-dns-resolver",
     "possiblyrandom",
 ]
 

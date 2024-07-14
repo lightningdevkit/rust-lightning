@@ -406,7 +406,9 @@ pub struct ResponseInstruction {
 }
 
 impl ResponseInstruction {
-	fn into_instructions(self) -> MessageSendInstructions {
+	/// Converts this [`ResponseInstruction`] into a [`MessageSendInstructions`] so that it can be
+	/// used to send the response via a normal message sending method.
+	pub fn into_instructions(self) -> MessageSendInstructions {
 		MessageSendInstructions::ForReply { instructions: self }
 	}
 }

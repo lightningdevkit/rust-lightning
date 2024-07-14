@@ -1,0 +1,18 @@
+[package]
+name = "lightning-dns-resolver"
+version = "0.1.0"
+authors = ["Matt Corallo"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lightningdevkit/rust-lightning/"
+description = "A crate which implements DNSSEC resolution for lightning clients over bLIP 32 using `tokio` and the `dnssec-prover` crate."
+edition = "2021"
+
+[dependencies]
+lightning = { version = "0.0.124", path = "../lightning", default-features = false }
+dnssec-prover = { version = "0.6", default-features = false, features = [ "std", "tokio" ] }
+tokio = { version = "1.0", default-features = false, features = ["rt"] }
+
+[dev-dependencies]
+bitcoin = { version = "0.32" }
+tokio = { version = "1.0", default-features = false, features = ["macros", "time"] }
+lightning = { version = "0.0.124", path = "../lightning", features = ["dnssec", "_test_utils"] }
