@@ -408,6 +408,7 @@ type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'chan_mon_cfg test_utils::TestLogger,
 >;
 
+#[cfg(not(feature = "dnssec"))]
 type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
 	DedicatedEntropy,
 	&'node_cfg test_utils::TestKeysInterface,
@@ -416,7 +417,20 @@ type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
 	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
-	IgnoringMessageHandler, // TODO: Swap for ChannelManager (when built with the "dnssec" feature)
+	IgnoringMessageHandler,
+	IgnoringMessageHandler,
+>;
+
+#[cfg(feature = "dnssec")]
+type TestOnionMessenger<'chan_man, 'node_cfg, 'chan_mon_cfg> = OnionMessenger<
+	DedicatedEntropy,
+	&'node_cfg test_utils::TestKeysInterface,
+	&'chan_mon_cfg test_utils::TestLogger,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
 	IgnoringMessageHandler,
 >;
 
@@ -3294,6 +3308,13 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 
 	for i in 0..node_count {
 		let dedicated_entropy = DedicatedEntropy(RandomBytes::new([i as u8; 32]));
+		#[cfg(feature = "dnssec")]
+		let onion_messenger = OnionMessenger::new(
+			dedicated_entropy, cfgs[i].keys_manager, cfgs[i].logger, &chan_mgrs[i],
+			&cfgs[i].message_router, &chan_mgrs[i], &chan_mgrs[i], &chan_mgrs[i],
+			IgnoringMessageHandler {},
+		);
+		#[cfg(not(feature = "dnssec"))]
 		let onion_messenger = OnionMessenger::new(
 			dedicated_entropy, cfgs[i].keys_manager, cfgs[i].logger, &chan_mgrs[i],
 			&cfgs[i].message_router, &chan_mgrs[i], &chan_mgrs[i], IgnoringMessageHandler {},
