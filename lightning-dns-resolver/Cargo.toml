@@ -1,0 +1,14 @@
+[package]
+name = "lightning-resolver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lightning = { version = "0.0.124-rc1", path = "../lightning", default-features = false }
+dnssec-prover = { version = "0.6", default-features = false, features = [ "std", "tokio" ] }
+tokio = { version = "1.0", default-features = false, features = ["rt"] }
+
+[dev-dependencies]
+bitcoin = { version = "0.32" }
+tokio = { version = "1.0", default-features = false, features = ["macros", "time"] }
+lightning = { version = "0.0.124-rc1", path = "../lightning", features = ["dnssec", "_test_utils"] }
