@@ -191,12 +191,15 @@ macro_rules! refund_builder_methods { (
 	///
 	/// Also, sets the metadata when [`RefundBuilder::build`] is called such that it can be used by
 	/// [`Bolt12Invoice::verify`] to determine if the invoice was produced for the refund given an
-	/// [`ExpandedKey`].
+	/// [`ExpandedKey`]. However, if [`RefundBuilder::path`] is called, then the metadata must be
+	/// included in each [`BlindedPath`] instead. In this case, use
+	/// [`Bolt12Invoice::verify_using_payer_data`].
 	///
 	/// The `payment_id` is encrypted in the metadata and should be unique. This ensures that only
 	/// one invoice will be paid for the refund and that payments can be uniquely identified.
 	///
 	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
+	/// [`Bolt12Invoice::verify_using_payer_data`]: crate::offers::invoice::Bolt12Invoice::verify_using_payer_data
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn deriving_payer_id(
 		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
@@ -1107,10 +1110,7 @@ mod tests {
 			.unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
-		match invoice.verify(&expanded_key, &secp_ctx) {
-			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
-			Err(()) => panic!("verification failed"),
-		}
+		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
 		assert!(invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 
 		// Fails verification with altered fields
@@ -1125,7 +1125,7 @@ mod tests {
 			.unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
-		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 
 		// Fails verification with altered payer_id
 		let mut tlv_stream = refund.as_tlv_stream();
@@ -1140,7 +1140,7 @@ mod tests {
 			.unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
-		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 	}
 
 	#[test]

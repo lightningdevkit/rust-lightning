@@ -249,8 +249,7 @@ impl MetadataMaterial {
 		self.hmac.input(DERIVED_METADATA_AND_KEYS_HMAC_INPUT);
 		self.maybe_include_encrypted_payment_id();
 
-		let mut bytes = self.encrypted_payment_id.map(|id| id.to_vec()).unwrap_or(vec![]);
-		bytes.extend_from_slice(self.nonce.as_slice());
+		let bytes = self.encrypted_payment_id.map(|id| id.to_vec()).unwrap_or(vec![]);
 
 		let hmac = Hmac::from_engine(self.hmac);
 		let privkey = SecretKey::from_slice(hmac.as_byte_array()).unwrap();

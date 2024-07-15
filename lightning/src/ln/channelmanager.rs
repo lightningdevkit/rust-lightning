@@ -4203,12 +4203,32 @@ where
 	/// whether or not the payment was successful.
 	///
 	/// [timer tick]: Self::timer_tick_occurred
-	pub fn send_payment_for_bolt12_invoice(&self, invoice: &Bolt12Invoice) -> Result<(), Bolt12PaymentError> {
-		let secp_ctx = &self.secp_ctx;
-		let expanded_key = &self.inbound_payment_key;
-		match invoice.verify(expanded_key, secp_ctx) {
+	pub fn send_payment_for_bolt12_invoice(
+		&self, invoice: &Bolt12Invoice, context: &OffersContext,
+	) -> Result<(), Bolt12PaymentError> {
+		match self.verify_bolt12_invoice(invoice, context) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
 			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
+		}
+	}
+
+	fn verify_bolt12_invoice(
+		&self, invoice: &Bolt12Invoice, context: &OffersContext,
+	) -> Result<PaymentId, ()> {
+		let secp_ctx = &self.secp_ctx;
+		let expanded_key = &self.inbound_payment_key;
+
+		match context {
+			OffersContext::Unknown {} if invoice.is_for_refund_without_paths() => {
+				invoice.verify(expanded_key, secp_ctx)
+			},
+			OffersContext::OutboundPayment { payment_id, nonce } => {
+				invoice
+					.verify_using_payer_data(*payment_id, *nonce, expanded_key, secp_ctx)
+					.then(|| *payment_id)
+					.ok_or(())
+			},
+			_ => Err(()),
 		}
 	}
 
@@ -10807,24 +10827,9 @@ where
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				let payer_data = match context {
-					OffersContext::Unknown {} if invoice.is_for_refund_without_paths() => None,
-					OffersContext::OutboundPayment { payment_id, nonce } => Some((payment_id, nonce)),
-					_ => return ResponseInstruction::NoResponse,
-				};
-
-				let payment_id = match payer_data {
-					Some((payment_id, nonce)) => {
-						if invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx) {
-							payment_id
-						} else {
-							return ResponseInstruction::NoResponse;
-						}
-					},
-					None => match invoice.verify(expanded_key, secp_ctx) {
-						Ok(payment_id) => payment_id,
-						Err(()) => return ResponseInstruction::NoResponse,
-					},
+				let payment_id = match self.verify_bolt12_invoice(&invoice, &context) {
+					Ok(payment_id) => payment_id,
+					Err(()) => return ResponseInstruction::NoResponse,
 				};
 
 				let result = {

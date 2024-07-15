@@ -1085,10 +1085,10 @@ fn pays_bolt12_invoice_asynchronously() {
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
-	let invoice = match get_event!(bob, Event::InvoiceReceived) {
-		Event::InvoiceReceived { payment_id: actual_payment_id, invoice, .. } => {
+	let (invoice, context) = match get_event!(bob, Event::InvoiceReceived) {
+		Event::InvoiceReceived { payment_id: actual_payment_id, invoice, context, .. } => {
 			assert_eq!(actual_payment_id, payment_id);
-			invoice
+			(invoice, context)
 		},
 		_ => panic!("No Event::InvoiceReceived"),
 	};
@@ -1099,9 +1099,9 @@ fn pays_bolt12_invoice_asynchronously() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
 	}
 
-	assert!(bob.node.send_payment_for_bolt12_invoice(&invoice).is_ok());
+	assert!(bob.node.send_payment_for_bolt12_invoice(&invoice, &context).is_ok());
 	assert_eq!(
-		bob.node.send_payment_for_bolt12_invoice(&invoice),
+		bob.node.send_payment_for_bolt12_invoice(&invoice, &context),
 		Err(Bolt12PaymentError::DuplicateInvoice),
 	);
 
@@ -1112,7 +1112,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 
 	assert_eq!(
-		bob.node.send_payment_for_bolt12_invoice(&invoice),
+		bob.node.send_payment_for_bolt12_invoice(&invoice, &context),
 		Err(Bolt12PaymentError::DuplicateInvoice),
 	);
 
@@ -1121,7 +1121,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	}
 
 	assert_eq!(
-		bob.node.send_payment_for_bolt12_invoice(&invoice),
+		bob.node.send_payment_for_bolt12_invoice(&invoice, &context),
 		Err(Bolt12PaymentError::UnexpectedInvoice),
 	);
 }
