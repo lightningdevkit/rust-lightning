@@ -75,6 +75,12 @@ echo -e "\n\nBuilding and testing all workspace crates..."
 cargo test --verbose --color always
 cargo check --verbose --color always
 
+echo -e "\n\nBuilding and testing lightning crate with dnssec feature"
+pushd lightning
+cargo test --verbose --color always --features dnssec
+cargo check --verbose --color always --features dnssec
+popd
+
 echo -e "\n\nBuilding and testing Block Sync Clients with features"
 pushd lightning-block-sync
 cargo test --verbose --color always --features rest-client

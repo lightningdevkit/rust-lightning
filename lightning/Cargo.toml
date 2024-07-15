@@ -34,6 +34,8 @@ _test_vectors = []
 no-std = ["hashbrown", "possiblyrandom", "bitcoin/no-std", "core2/alloc", "libm"]
 std = ["bitcoin/std", "bech32/std"]
 
+dnssec = ["dnssec-prover/validation"]
+
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
 grind_signatures = []
 
@@ -42,6 +44,8 @@ default = ["std", "grind_signatures"]
 [dependencies]
 bech32 = { version = "0.9.1", default-features = false }
 bitcoin = { version = "0.31.2", default-features = false, features = ["secp-recovery"] }
+
+dnssec-prover = { version = "0.6", default-features = false }
 
 hashbrown = { version = "0.13", optional = true, default-features = false }
 possiblyrandom = { version = "0.2", optional = true, default-features = false }

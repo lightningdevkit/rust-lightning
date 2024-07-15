@@ -196,9 +196,7 @@ fn extract_invoice_request<'a, 'b, 'c>(
 				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
 				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 			},
-			#[cfg(async_payments)]
-			ParsedOnionMessageContents::AsyncPayments(message) => panic!("Unexpected async payments message: {:?}", message),
-			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
+			_ => panic!("Unexpected message {:?}", message),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
@@ -215,9 +213,7 @@ fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) 
 				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
 				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
 			},
-			#[cfg(async_payments)]
-			ParsedOnionMessageContents::AsyncPayments(message) => panic!("Unexpected async payments message: {:?}", message),
-			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
+			_ => panic!("Unexpected message {:?}", message),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
@@ -236,9 +232,7 @@ fn extract_invoice_error<'a, 'b, 'c>(
 				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected invoice: {:?}", invoice),
 				OffersMessage::InvoiceError(error) => error,
 			},
-			#[cfg(async_payments)]
-			ParsedOnionMessageContents::AsyncPayments(message) => panic!("Unexpected async payments message: {:?}", message),
-			ParsedOnionMessageContents::Custom(message) => panic!("Unexpected custom message: {:?}", message),
+			_ => panic!("Unexpected message: {:?}", message),
 		},
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
