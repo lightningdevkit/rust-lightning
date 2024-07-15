@@ -18,7 +18,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = ["std"]
 no-std = ["lightning/no-std"]
 std = ["bitcoin/std", "lightning/std", "bech32/std"]
-strict = []
 
 [dependencies]
 bech32 = { version = "0.9.1", default-features = false }
