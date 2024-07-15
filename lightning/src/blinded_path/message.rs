@@ -106,7 +106,7 @@ pub enum MessageContext {
 /// Contains data specific to an [`OffersMessage`].
 ///
 /// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OffersContext {
 	/// Represents an unknown BOLT12 message context.
 	///

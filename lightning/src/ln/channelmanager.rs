@@ -10832,7 +10832,9 @@ where
 					if invoice.invoice_features().requires_unknown_bits_from(&features) {
 						Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
 					} else if self.default_configuration.manually_handle_bolt12_invoices {
-						let event = Event::InvoiceReceived { payment_id, invoice, responder };
+						let event = Event::InvoiceReceived {
+							payment_id, invoice, context, responder,
+						};
 						self.pending_events.lock().unwrap().push_back((event, None));
 						return ResponseInstruction::NoResponse;
 					} else {

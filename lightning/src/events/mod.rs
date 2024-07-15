@@ -18,6 +18,7 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
+use crate::blinded_path::message::OffersContext;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef};
 use crate::chain::transaction;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
@@ -806,6 +807,10 @@ pub enum Event {
 		payment_id: PaymentId,
 		/// The invoice to pay.
 		invoice: Bolt12Invoice,
+		/// The context of the [`BlindedPath`] used to send the invoice.
+		///
+		/// [`BlindedPath`]: crate::blinded_path::BlindedPath
+		context: OffersContext,
 		/// A responder for replying with an [`InvoiceError`] if needed.
 		///
 		/// `None` if the invoice wasn't sent with a reply path.
@@ -1648,12 +1653,13 @@ impl Writeable for Event {
 					(0, peer_node_id, required),
 				});
 			},
-			&Event::InvoiceReceived { ref payment_id, ref invoice, ref responder } => {
+			&Event::InvoiceReceived { ref payment_id, ref invoice, ref context, ref responder } => {
 				41u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(2, invoice, required),
-					(4, responder, option),
+					(4, context, required),
+					(6, responder, option),
 				});
 			},
 			&Event::FundingTxBroadcastSafe { ref channel_id, ref user_channel_id, ref funding_txo, ref counterparty_node_id, ref former_temporary_channel_id} => {
@@ -2107,11 +2113,13 @@ impl MaybeReadable for Event {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(2, invoice, required),
-						(4, responder, option),
+						(4, context, required),
+						(6, responder, option),
 					});
 					Ok(Some(Event::InvoiceReceived {
 						payment_id: payment_id.0.unwrap(),
 						invoice: invoice.0.unwrap(),
+						context: context.0.unwrap(),
 						responder,
 					}))
 				};

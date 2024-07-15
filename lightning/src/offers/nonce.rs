@@ -26,7 +26,7 @@ use crate::prelude::*;
 /// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
 /// [`Offer::signing_pubkey`]: crate::offers::offer::Offer::signing_pubkey
 /// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Nonce(pub(crate) [u8; Self::LENGTH]);
 
 impl Nonce {
