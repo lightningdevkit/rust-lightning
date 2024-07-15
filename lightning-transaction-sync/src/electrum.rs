@@ -1,9 +1,9 @@
 use crate::common::{ConfirmedTx, FilterQueue, SyncState};
 use crate::error::{InternalError, TxSyncError};
 
+use electrum_client::utils::validate_merkle_proof;
 use electrum_client::Client as ElectrumClient;
 use electrum_client::ElectrumApi;
-use electrum_client::GetMerkleRes;
 
 use lightning::chain::WatchedOutput;
 use lightning::chain::{Confirm, Filter};
@@ -11,9 +11,6 @@ use lightning::util::logger::Logger;
 use lightning::{log_debug, log_error, log_trace};
 
 use bitcoin::block::Header;
-use bitcoin::hash_types::TxMerkleNode;
-use bitcoin::hashes::sha256d::Hash as Sha256d;
-use bitcoin::hashes::Hash;
 use bitcoin::{BlockHash, Script, Transaction, Txid};
 
 use std::collections::HashSet;
@@ -430,11 +427,7 @@ where
 				match self.client.block_header(prob_conf_height as usize) {
 					Ok(block_header) => {
 						let pos = merkle_res.pos;
-						if !self.validate_merkle_proof(
-							&txid,
-							&block_header.merkle_root,
-							merkle_res,
-						)? {
+						if !validate_merkle_proof(&txid, &block_header.merkle_root, &merkle_res) {
 							log_trace!(
 								self.logger,
 								"Inconsistency: Block {} was unconfirmed during syncing.",
@@ -479,25 +472,6 @@ where
 	/// This is not exported to bindings users as the underlying client from BDK is not exported.
 	pub fn client(&self) -> &ElectrumClient {
 		&self.client
-	}
-
-	fn validate_merkle_proof(
-		&self, txid: &Txid, merkle_root: &TxMerkleNode, merkle_res: GetMerkleRes,
-	) -> Result<bool, InternalError> {
-		let mut index = merkle_res.pos;
-		let mut cur = txid.to_raw_hash();
-		for mut bytes in merkle_res.merkle {
-			bytes.reverse();
-			// unwrap() safety: `bytes` has len 32 so `from_slice` can never fail.
-			let next_hash = Sha256d::from_slice(&bytes).unwrap();
-			let (left, right) = if index % 2 == 0 { (cur, next_hash) } else { (next_hash, cur) };
-
-			let data = [&left[..], &right[..]].concat();
-			cur = Sha256d::hash(&data);
-			index /= 2;
-		}
-
-		Ok(cur == merkle_root.to_raw_hash())
 	}
 }
 
