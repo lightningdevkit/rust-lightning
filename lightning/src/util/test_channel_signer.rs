@@ -164,7 +164,11 @@ impl TestChannelSigner {
 }
 
 impl ChannelSigner for TestChannelSigner {
-	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> PublicKey {
+	fn get_per_commitment_point(&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<PublicKey, ()> {
+		#[cfg(test)]
+		if !self.is_signer_available(SignerOp::GetPerCommitmentPoint) {
+			return Err(());
+		}
 		self.inner.get_per_commitment_point(idx, secp_ctx)
 	}
 
