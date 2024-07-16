@@ -9,7 +9,6 @@
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-#![cfg_attr(feature = "strict", deny(warnings))]
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 
 //! This crate provides data structures to represent
