@@ -1510,8 +1510,8 @@ impl TaggedField {
 
 impl Description {
 
-	/// Creates a new `Description` if `description` is at most 1023 __bytes__ long,
-	/// returns [`CreationError::DescriptionTooLong`] otherwise
+	/// Creates a new `Description` if `description` is at most 1023 * 5 bits (i.e., 639 bytes)
+	/// long, and returns [`CreationError::DescriptionTooLong`] otherwise.
 	///
 	/// Please note that single characters may use more than one byte due to UTF8 encoding.
 	pub fn new(description: String) -> Result<Description, CreationError> {
