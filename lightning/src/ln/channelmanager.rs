@@ -7545,140 +7545,94 @@ where
 		}
 	}
 
-	fn internal_tx_add_input(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAddInput) -> Result<(), MsgHandleErrInternal> {
+	fn internal_tx_msg<HandleTxMsgFn: Fn(&mut ChannelPhase<SP>) -> Result<MessageSendEvent, &'static str>>(
+		&self, counterparty_node_id: &PublicKey, channel_id: ChannelId, tx_msg_handler: HandleTxMsgFn
+	) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
 			.ok_or_else(|| {
 				debug_assert!(false);
 				MsgHandleErrInternal::send_err_msg_no_close(
 					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
-					msg.channel_id)
+					channel_id)
 			})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		match peer_state.channel_by_id.entry(msg.channel_id) {
+		match peer_state.channel_by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let channel_phase = chan_phase_entry.get_mut();
-				let msg_send_event = match channel_phase {
-					ChannelPhase::UnfundedInboundV2(ref mut channel) => {
-						channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id)
-					},
-					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
-						channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id)
-					},
-					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
-						"Got a tx_add_input message with no interactive transaction construction expected or in-progress"
-						.into())), chan_phase_entry)
+				let msg_send_event = match tx_msg_handler(channel_phase) {
+					Ok(msg_send_event) => msg_send_event,
+					Err(tx_msg_str) => try_chan_phase_entry!(self, Err(ChannelError::Warn(
+						format!("Got a {tx_msg_str} message with no interactive transaction construction expected or in-progress")
+						)), chan_phase_entry)
 				};
 				peer_state.pending_msg_events.push(msg_send_event);
 				Ok(())
 			},
 			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+				Err(MsgHandleErrInternal::send_err_msg_no_close(format!(
+					"Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}",
+					counterparty_node_id), channel_id)
+				)
 			}
 		}
+	}
+
+	fn internal_tx_add_input(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAddInput) -> Result<(), MsgHandleErrInternal> {
+		self.internal_tx_msg(counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
+			match channel_phase {
+				ChannelPhase::UnfundedInboundV2(ref mut channel) => {
+					Ok(channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id))
+				},
+				ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+					Ok(channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id))
+				},
+				_ => Err("tx_add_input"),
+			}
+		})
 	}
 
 	fn internal_tx_add_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxAddOutput) -> Result<(), MsgHandleErrInternal> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
-					msg.channel_id)
-			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let channel_phase = chan_phase_entry.get_mut();
-				let msg_send_event = match channel_phase {
-					ChannelPhase::UnfundedInboundV2(ref mut channel) => {
-						channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
-					},
-					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
-						channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
-					},
-					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
-						"Got a tx_add_output message with no interactive transaction construction expected or in-progress"
-						.into())), chan_phase_entry)
-				};
-				peer_state.pending_msg_events.push(msg_send_event);
-				Ok(())
-			},
-			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+		self.internal_tx_msg(counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
+			match channel_phase {
+				ChannelPhase::UnfundedInboundV2(ref mut channel) => {
+					Ok(channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id))
+				},
+				ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+					Ok(channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id))
+				},
+				_ => Err("tx_add_output"),
 			}
-		}
+		})
 	}
 
 	fn internal_tx_remove_input(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxRemoveInput) -> Result<(), MsgHandleErrInternal> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
-					msg.channel_id)
-			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let channel_phase = chan_phase_entry.get_mut();
-				let msg_send_event = match channel_phase {
-					ChannelPhase::UnfundedInboundV2(ref mut channel) => {
-						channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id)
-					},
-					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
-						channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id)
-					},
-					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
-						"Got a tx_remove_input message with no interactive transaction construction expected or in-progress"
-						.into())), chan_phase_entry)
-				};
-				peer_state.pending_msg_events.push(msg_send_event);
-				Ok(())
-			},
-			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+		self.internal_tx_msg(counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
+			match channel_phase {
+				ChannelPhase::UnfundedInboundV2(ref mut channel) => {
+					Ok(channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id))
+				},
+				ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+					Ok(channel.tx_remove_input(msg).into_msg_send_event(counterparty_node_id))
+				},
+				_ => Err("tx_remove_input"),
 			}
-		}
+		})
 	}
 
 	fn internal_tx_remove_output(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxRemoveOutput) -> Result<(), MsgHandleErrInternal> {
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(
-					format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id),
-					msg.channel_id)
-			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				let channel_phase = chan_phase_entry.get_mut();
-				let msg_send_event = match channel_phase {
-					ChannelPhase::UnfundedInboundV2(ref mut channel) => {
-						channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id)
-					},
-					ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
-						channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id)
-					},
-					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
-						"Got a tx_remove_output message with no interactive transaction construction expected or in-progress"
-						.into())), chan_phase_entry)
-				};
-				peer_state.pending_msg_events.push(msg_send_event);
-				Ok(())
-			},
-			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+		self.internal_tx_msg(counterparty_node_id, msg.channel_id, |channel_phase: &mut ChannelPhase<SP>| {
+			match channel_phase {
+				ChannelPhase::UnfundedInboundV2(ref mut channel) => {
+					Ok(channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id))
+				},
+				ChannelPhase::UnfundedOutboundV2(ref mut channel) => {
+					Ok(channel.tx_remove_output(msg).into_msg_send_event(counterparty_node_id))
+				},
+				_ => Err("tx_remove_output"),
 			}
-		}
+		})
 	}
 
 	fn internal_tx_complete(&self, counterparty_node_id: &PublicKey, msg: &msgs::TxComplete) -> Result<(), MsgHandleErrInternal> {
