@@ -1,0 +1,10 @@
+## Backwards Compatibility
+ * BOLT12 `Offers` created in prior versions are still valid but are at risk of
+   de-anonymization attacks.
+ * BOLT12 outbound payments in state `RecentPaymentDetails::AwaitingInvoice` are
+   considered invalid by `ChannelManager`. Any invoices received through the
+   corresponding `InvoiceRequest` reply path will be ignored.
+ * BOLT12 `Refund`s created in prior versions with non-empty `Refund::paths` are
+   considered invalid by `ChannelManager`. Any invoices sent through those
+   blinded paths will be ignored. `Refund`'s without blinded paths are
+   unaffected.
