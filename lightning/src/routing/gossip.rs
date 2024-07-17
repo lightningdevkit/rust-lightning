@@ -801,9 +801,9 @@ where
 //
 // We do this by using `repr(C)`, which forces the struct to be laid out in memory the way we write
 // it (ensuring `last_update_message` hangs off the end and no fields are reordered after it), and
-// `align(32)`, ensuring the struct starts either at the start, or in the middle, of a 64b x86-64
-// cache line. This ensures the beginning fields (which are 31 bytes) all sit in the same cache
-// line.
+// `align(32)`, ensuring the struct starts either at the start, or in the middle, of an x86-64
+// 64-byte cache line. This ensures the beginning fields (which are 31 bytes) all sit in the same
+// cache line.
 #[repr(C, align(32))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Details about one direction of a channel as received within a [`ChannelUpdate`].
@@ -894,7 +894,7 @@ impl Readable for ChannelUpdateInfo {
 //
 // Sadly, this is not possible, however we can still do okay - all of the fields before
 // `one_to_two` and `two_to_one` are just under 128 bytes long, so we can ensure they sit on
-// adjacent cache lines (which are generally fetched together in x86_64 processors).
+// adjacent cache lines (which are often fetched together in x86-64 processors).
 //
 // This leaves only the two directional channel info structs on separate cache lines.
 //
