@@ -1,15 +1,3 @@
-./lightning-background-processor/src/lib.rs
-./lightning-block-sync/src/convert.rs
-./lightning-block-sync/src/gossip.rs
-./lightning-block-sync/src/http.rs
-./lightning-block-sync/src/init.rs
-./lightning-block-sync/src/lib.rs
-./lightning-block-sync/src/poll.rs
-./lightning-block-sync/src/rest.rs
-./lightning-block-sync/src/rpc.rs
-./lightning-block-sync/src/test_utils.rs
-./lightning-block-sync/src/utils.rs
-./lightning-custom-message/src/lib.rs
 ./lightning-invoice/fuzz/fuzz_targets/serde_data_part.rs
 ./lightning-invoice/src/de.rs
 ./lightning-invoice/src/lib.rs

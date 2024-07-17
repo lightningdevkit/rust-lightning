@@ -32,13 +32,19 @@ mod tests {
 	#[test]
 	fn hex_to_work_odd_length_str() {
 		let hex = String::from_utf8(vec![b'0'; 65]).unwrap();
-		assert_eq!(hex_to_work(&hex), Err(HexToArrayError::Conversion(HexToBytesError::OddLengthString(65))));
+		assert_eq!(
+			hex_to_work(&hex),
+			Err(HexToArrayError::Conversion(HexToBytesError::OddLengthString(65)))
+		);
 	}
 
 	#[test]
 	fn hex_to_work_invalid_char() {
 		let hex = String::from_utf8(vec![b'G'; 64]).unwrap();
-		assert_eq!(hex_to_work(&hex), Err(HexToArrayError::Conversion(HexToBytesError::InvalidChar(b'G'))));
+		assert_eq!(
+			hex_to_work(&hex),
+			Err(HexToArrayError::Conversion(HexToBytesError::InvalidChar(b'G')))
+		);
 	}
 
 	#[test]
