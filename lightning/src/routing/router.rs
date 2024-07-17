@@ -2433,10 +2433,10 @@ where L::Target: Logger {
 
 					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
 					let may_overpay_to_meet_path_minimum_msat =
-						((amount_to_transfer_over_msat < htlc_minimum_msat &&
+						(amount_to_transfer_over_msat < htlc_minimum_msat &&
 						  recommended_value_msat >= htlc_minimum_msat) ||
-						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
-						  recommended_value_msat >= $next_hops_path_htlc_minimum_msat));
+						(amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
+						 recommended_value_msat >= $next_hops_path_htlc_minimum_msat);
 
 					let payment_failed_on_this_channel = match scid_opt {
 						Some(scid) => payment_params.previously_failed_channels.contains(&scid),
