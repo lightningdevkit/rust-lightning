@@ -953,7 +953,7 @@ impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
 		(0, failure_code, required),
 		(2, data, required_vec),
 	},
-;);
+);
 
 impl HTLCFailReason {
 	#[rustfmt::skip]

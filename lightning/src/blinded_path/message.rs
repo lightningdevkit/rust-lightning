@@ -119,9 +119,9 @@ pub enum OffersContext {
 	},
 }
 
-impl_writeable_tlv_based_enum!(MessageContext, ;
-	(0, Offers),
-	(1, Custom),
+impl_writeable_tlv_based_enum!(MessageContext,
+	{0, Offers} => (),
+	{1, Custom} => (),
 );
 
 impl_writeable_tlv_based_enum!(OffersContext,
@@ -129,7 +129,7 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	(1, OutboundPayment) => {
 		(0, payment_id, required),
 	},
-;);
+);
 
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(

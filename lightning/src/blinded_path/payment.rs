@@ -431,7 +431,7 @@ impl Readable for PaymentConstraints {
 	}
 }
 
-impl_writeable_tlv_based_enum!(PaymentContext,
+impl_writeable_tlv_based_enum_legacy!(PaymentContext,
 	;
 	(0, Unknown),
 	(1, Bolt12Offer),

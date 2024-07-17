@@ -996,8 +996,11 @@ macro_rules! tlv_record_ref_type {
 macro_rules! _impl_writeable_tlv_based_enum_common {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
-	),* $(,)*;
-	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*) => {
+	),* $(,)?;
+	// $tuple_variant_* are only passed from `impl_writeable_tlv_based_enum_*_legacy`
+	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),* $(,)?;
+	// $length_prefixed_* are only passed from `impl_writeable_tlv_based_enum_*` non-`legacy`
+	$(($length_prefixed_tuple_variant_id: expr, $length_prefixed_tuple_variant_name: ident)),* $(,)?) => {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
 				match self {
@@ -1013,6 +1016,12 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 						id.write(writer)?;
 						field.write(writer)?;
 					}),*
+					$($st::$length_prefixed_tuple_variant_name (ref field) => {
+						let id: u8 = $length_prefixed_tuple_variant_id;
+						id.write(writer)?;
+						$crate::util::ser::BigSize(field.serialized_length() as u64).write(writer)?;
+						field.write(writer)?;
+					}),*
 				}
 				Ok(())
 			}
@@ -1022,29 +1031,104 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 
 /// Implement [`Readable`] and [`Writeable`] for an enum, with struct variants stored as TLVs and tuple
 /// variants stored directly.
-/// The format is, for example
-/// ```ignore
+///
+/// The format is, for example,
+/// ```
+/// enum EnumName {
+///   StructVariantA {
+///     required_variant_field: u64,
+///     optional_variant_field: Option<u8>,
+///   },
+///   StructVariantB {
+///     variant_field_a: bool,
+///     variant_field_b: u32,
+///     variant_vec_field: Vec<u32>,
+///   },
+///   TupleVariantA(),
+///   TupleVariantB(Vec<u8>),
+/// }
+/// # use lightning::impl_writeable_tlv_based_enum;
 /// impl_writeable_tlv_based_enum!(EnumName,
 ///   (0, StructVariantA) => {(0, required_variant_field, required), (1, optional_variant_field, option)},
-///   (1, StructVariantB) => {(0, variant_field_a, required), (1, variant_field_b, required), (2, variant_vec_field, optional_vec)};
-///   (2, TupleVariantA), (3, TupleVariantB),
+///   (1, StructVariantB) => {(0, variant_field_a, required), (1, variant_field_b, required), (2, variant_vec_field, optional_vec)},
+///   (2, TupleVariantA) => {}, // Note that empty tuple variants have to use the struct syntax due to rust limitations
+///   {3, TupleVariantB} => (),
 /// );
 /// ```
-/// The type is written as a single byte, followed by any variant data.
+///
+/// The type is written as a single byte, followed by length-prefixed variant data.
+///
 /// Attempts to read an unknown type byte result in [`DecodeError::UnknownRequiredFeature`].
+///
+/// Note that the serialization for tuple variants (as well as the call format) was changed in LDK
+/// 0.0.124.
 ///
 /// [`Readable`]: crate::util::ser::Readable
 /// [`Writeable`]: crate::util::ser::Writeable
 /// [`DecodeError::UnknownRequiredFeature`]: crate::ln::msgs::DecodeError::UnknownRequiredFeature
 #[macro_export]
 macro_rules! impl_writeable_tlv_based_enum {
+	($st: ident,
+		$(($variant_id: expr, $variant_name: ident) =>
+			{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+		),*
+		$($(,)? {$tuple_variant_id: expr, $tuple_variant_name: ident} => ()),*
+		$(,)?
+	) => {
+		$crate::_impl_writeable_tlv_based_enum_common!($st,
+			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*
+			;;
+			$(($tuple_variant_id, $tuple_variant_name)),*);
+
+		impl $crate::util::ser::Readable for $st {
+			#[allow(unused_mut)]
+			fn read<R: $crate::io::Read>(mut reader: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
+				let id: u8 = $crate::util::ser::Readable::read(reader)?;
+				match id {
+					$($variant_id => {
+						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
+						// in the same function body. Instead, we define a closure and call it.
+						let mut f = || {
+							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
+								$(($type, $field, $fieldty)),*
+							});
+							Ok($st::$variant_name {
+								$(
+									$field: $crate::_init_tlv_based_struct_field!($field, $fieldty)
+								),*
+							})
+						};
+						f()
+					}),*
+					$($tuple_variant_id => {
+						let length: $crate::util::ser::BigSize = $crate::util::ser::Readable::read(reader)?;
+						let mut s = $crate::util::ser::FixedLengthReader::new(&mut reader, length.0);
+						let res = $crate::util::ser::Readable::read(&mut s)?;
+						if s.bytes_remain() {
+							s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
+							return Err($crate::ln::msgs::DecodeError::InvalidValue);
+						}
+						Ok($st::$tuple_variant_name(res))
+					}),*
+					_ => {
+						Err($crate::ln::msgs::DecodeError::UnknownRequiredFeature)
+					},
+				}
+			}
+		}
+	}
+}
+
+/// See [`impl_writeable_tlv_based_enum`] and use that unless backwards-compatibility with tuple
+/// variants is required.
+macro_rules! impl_writeable_tlv_based_enum_legacy {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	),* $(,)*;
-	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*) => {
+	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),+  $(,)?) => {
 		$crate::_impl_writeable_tlv_based_enum_common!($st,
 			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*;
-			$(($tuple_variant_id, $tuple_variant_name)),*);
+			$(($tuple_variant_id, $tuple_variant_name)),+;);
 
 		impl $crate::util::ser::Readable for $st {
 			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
@@ -1067,7 +1151,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 					}),*
 					$($tuple_variant_id => {
 						Ok($st::$tuple_variant_name($crate::util::ser::Readable::read(reader)?))
-					}),*
+					}),+
 					_ => {
 						Err($crate::ln::msgs::DecodeError::UnknownRequiredFeature)
 					},
@@ -1085,9 +1169,8 @@ macro_rules! impl_writeable_tlv_based_enum {
 /// when [`MaybeReadable`] is practical instead of just [`Readable`] as it provides an upgrade path for
 /// new variants to be added which are simply ignored by existing clients.
 ///
-/// Note that only struct and unit variants (not tuple variants) will support downgrading, thus any
-/// new odd variants MUST be non-tuple (i.e. described using `$variant_id` and `$variant_name` not
-/// `$tuple_variant_id` and `$tuple_variant_name`).
+/// Note that the serialization for tuple variants (as well as the call format) was changed in LDK
+/// 0.0.124.
 ///
 /// [`MaybeReadable`]: crate::util::ser::MaybeReadable
 /// [`Writeable`]: crate::util::ser::Writeable
@@ -1095,16 +1178,76 @@ macro_rules! impl_writeable_tlv_based_enum {
 /// [`Readable`]: crate::util::ser::Readable
 #[macro_export]
 macro_rules! impl_writeable_tlv_based_enum_upgradable {
-	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
-		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
-	),* $(,)*
-	$(;
-	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),*  $(,)*)?
-	$(unread_variants: $($unread_variant: ident),*)?) => {
+	($st: ident,
+		$(($variant_id: expr, $variant_name: ident) =>
+			{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+		),*
+		$(, {$tuple_variant_id: expr, $tuple_variant_name: ident} => ())*
+		$(, unread_variants: $($unread_variant: ident),*)?
+		$(,)?
+	) => {
 		$crate::_impl_writeable_tlv_based_enum_common!($st,
 			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*
 			$(, $((255, $unread_variant) => {}),*)?
-			; $($(($tuple_variant_id, $tuple_variant_name)),*)?);
+			;;
+			$(($tuple_variant_id, $tuple_variant_name)),*);
+
+		impl $crate::util::ser::MaybeReadable for $st {
+			#[allow(unused_mut)]
+			fn read<R: $crate::io::Read>(mut reader: &mut R) -> Result<Option<Self>, $crate::ln::msgs::DecodeError> {
+				let id: u8 = $crate::util::ser::Readable::read(reader)?;
+				match id {
+					$($variant_id => {
+						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
+						// in the same function body. Instead, we define a closure and call it.
+						let mut f = || {
+							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
+								$(($type, $field, $fieldty)),*
+							});
+							Ok(Some($st::$variant_name {
+								$(
+									$field: $crate::_init_tlv_based_struct_field!($field, $fieldty)
+								),*
+							}))
+						};
+						f()
+					}),*
+					$($tuple_variant_id => {
+						let length: $crate::util::ser::BigSize = $crate::util::ser::Readable::read(reader)?;
+						let mut s = $crate::util::ser::FixedLengthReader::new(&mut reader, length.0);
+						let res = $crate::util::ser::Readable::read(&mut s)?;
+						if s.bytes_remain() {
+							s.eat_remaining()?; // Return ShortRead if there's actually not enough bytes
+							return Err($crate::ln::msgs::DecodeError::InvalidValue);
+						}
+						Ok(Some($st::$tuple_variant_name(res)))
+					}),*
+					// Note that we explicitly match 255 here to reserve it for use in
+					// `unread_variants`.
+					255|_ if id % 2 == 1 => {
+						let tlv_len: $crate::util::ser::BigSize = $crate::util::ser::Readable::read(reader)?;
+						let mut rd = $crate::util::ser::FixedLengthReader::new(reader, tlv_len.0);
+						rd.eat_remaining().map_err(|_| $crate::ln::msgs::DecodeError::ShortRead)?;
+						Ok(None)
+					},
+					_ => Err($crate::ln::msgs::DecodeError::UnknownRequiredFeature),
+				}
+			}
+		}
+	}
+}
+
+/// See [`impl_writeable_tlv_based_enum_upgradable`] and use that unless backwards-compatibility
+/// with tuple variants is required.
+macro_rules! impl_writeable_tlv_based_enum_upgradable_legacy {
+	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
+		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
+	),* $(,)?
+	;
+	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),+  $(,)?) => {
+		$crate::_impl_writeable_tlv_based_enum_common!($st,
+			$(($variant_id, $variant_name) => {$(($type, $field, $fieldty)),*}),*;
+			$(($tuple_variant_id, $tuple_variant_name)),+;);
 
 		impl $crate::util::ser::MaybeReadable for $st {
 			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Option<Self>, $crate::ln::msgs::DecodeError> {
@@ -1125,12 +1268,10 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 						};
 						f()
 					}),*
-					$($($tuple_variant_id => {
+					$($tuple_variant_id => {
 						Ok(Some($st::$tuple_variant_name(Readable::read(reader)?)))
-					}),*)*
-					// Note that we explicitly match 255 here to reserve it for use in
-					// `unread_variants`.
-					255|_ if id % 2 == 1 => {
+					}),+
+					_ if id % 2 == 1 => {
 						// Assume that a $variant_id was written, not a $tuple_variant_id, and read
 						// the length prefix and discard the correct number of bytes.
 						let tlv_len: $crate::util::ser::BigSize = $crate::util::ser::Readable::read(reader)?;
@@ -1548,5 +1689,34 @@ mod tests {
 		let mut encoded_msg_stream = Cursor::new(&mut encoded_msg);
 		let decoded_msg: EmptyMsg = Readable::read(&mut encoded_msg_stream).unwrap();
 		assert_eq!(msg, decoded_msg);
+	}
+
+	#[derive(Debug, PartialEq, Eq)]
+	enum TuplesOnly {
+		A(),
+		B(u64),
+	}
+	impl_writeable_tlv_based_enum_upgradable!(TuplesOnly, (2, A) => {}, {3, B} => ());
+
+	#[test]
+	fn test_impl_writeable_enum() {
+		let a = TuplesOnly::A().encode();
+		assert_eq!(TuplesOnly::read(&mut Cursor::new(&a)).unwrap(), Some(TuplesOnly::A()));
+		let b42 = TuplesOnly::B(42).encode();
+		assert_eq!(TuplesOnly::read(&mut Cursor::new(&b42)).unwrap(), Some(TuplesOnly::B(42)));
+
+		// Test unknown variants with 0-length data
+		let unknown_variant = vec![41, 0];
+		let mut none_read = Cursor::new(&unknown_variant);
+		assert_eq!(TuplesOnly::read(&mut none_read).unwrap(), None);
+		assert_eq!(none_read.position(), unknown_variant.len() as u64);
+
+		TuplesOnly::read(&mut Cursor::new(&vec![42, 0])).unwrap_err();
+
+		// Test unknown variants with data
+		let unknown_data_variant = vec![41, 3, 42, 52, 62];
+		let mut none_data_read = Cursor::new(&unknown_data_variant);
+		assert_eq!(TuplesOnly::read(&mut none_data_read).unwrap(), None);
+		assert_eq!(none_data_read.position(), unknown_data_variant.len() as u64);
 	}
 }

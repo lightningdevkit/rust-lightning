@@ -300,13 +300,13 @@ pub enum Retry {
 }
 
 #[cfg(not(feature = "std"))]
-impl_writeable_tlv_based_enum!(Retry,
+impl_writeable_tlv_based_enum_legacy!(Retry,
 	;
 	(0, Attempts)
 );
 
 #[cfg(feature = "std")]
-impl_writeable_tlv_based_enum!(Retry,
+impl_writeable_tlv_based_enum_legacy!(Retry,
 	;
 	(0, Attempts),
 	(2, Timeout)
@@ -397,7 +397,7 @@ pub(crate) enum StaleExpiration {
 	AbsoluteTimeout(core::time::Duration),
 }
 
-impl_writeable_tlv_based_enum!(StaleExpiration,
+impl_writeable_tlv_based_enum_legacy!(StaleExpiration,
 	;
 	(0, TimerTicks),
 	(2, AbsoluteTimeout)

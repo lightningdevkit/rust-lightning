@@ -689,7 +689,7 @@ impl PackageSolvingData {
 	}
 }
 
-impl_writeable_tlv_based_enum!(PackageSolvingData, ;
+impl_writeable_tlv_based_enum_legacy!(PackageSolvingData, ;
 	(0, RevokedOutput),
 	(1, RevokedHTLCOutput),
 	(2, CounterpartyOfferedHTLCOutput),

@@ -301,7 +301,7 @@ pub enum SpendableOutputDescriptor {
 	StaticPaymentOutput(StaticPaymentOutputDescriptor),
 }
 
-impl_writeable_tlv_based_enum!(SpendableOutputDescriptor,
+impl_writeable_tlv_based_enum_legacy!(SpendableOutputDescriptor,
 	(0, StaticOutput) => {
 		(0, outpoint, required),
 		(1, channel_keys_id, option),

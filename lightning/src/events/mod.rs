@@ -171,7 +171,7 @@ impl PaymentPurpose {
 	}
 }
 
-impl_writeable_tlv_based_enum!(PaymentPurpose,
+impl_writeable_tlv_based_enum_legacy!(PaymentPurpose,
 	(0, Bolt11InvoicePayment) => {
 		(0, payment_preimage, option),
 		(2, payment_secret, required),
@@ -494,7 +494,7 @@ enum InterceptNextHop {
 impl_writeable_tlv_based_enum!(InterceptNextHop,
 	(0, FakeScid) => {
 		(0, requested_next_hop_scid, required),
-	};
+	},
 );
 
 /// The reason the payment failed. Used in [`Event::PaymentFailed`].
@@ -535,7 +535,7 @@ impl_writeable_tlv_based_enum!(PaymentFailureReason,
 	(4, RetriesExhausted) => {},
 	(6, PaymentExpired) => {},
 	(8, RouteNotFound) => {},
-	(10, UnexpectedError) => {}, ;
+	(10, UnexpectedError) => {},
 );
 
 /// An Event which you should probably take some action in response to.

@@ -476,7 +476,7 @@ impl_writeable_tlv_based_enum!(SentHTLCId,
 	},
 	(2, OutboundRoute) => {
 		(0, session_priv, required),
-	};
+	},
 );
 
 
@@ -881,7 +881,7 @@ impl_writeable_tlv_based_enum!(EventCompletionAction,
 		// Note that by the time we get past the required read above, channel_funding_outpoint will be
 		// filled in, so we can safely unwrap it here.
 		(3, channel_id, (default_value, ChannelId::v1_from_funding_outpoint(channel_funding_outpoint.0.unwrap()))),
-	};
+	}
 );
 
 #[derive(Debug)]
@@ -10829,7 +10829,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(4, payment_data, option), // Added in 0.0.116
 		(5, custom_tlvs, optional_vec),
 	},
-;);
+);
 
 impl_writeable_tlv_based!(PendingHTLCInfo, {
 	(0, routing, required),
@@ -10909,14 +10909,14 @@ impl Readable for HTLCFailureMsg {
 	}
 }
 
-impl_writeable_tlv_based_enum!(PendingHTLCStatus, ;
+impl_writeable_tlv_based_enum_legacy!(PendingHTLCStatus, ;
 	(0, Forward),
 	(1, Fail),
 );
 
 impl_writeable_tlv_based_enum!(BlindedFailure,
 	(0, FromIntroductionNode) => {},
-	(2, FromBlindedNode) => {}, ;
+	(2, FromBlindedNode) => {},
 );
 
 impl_writeable_tlv_based!(HTLCPreviousHopData, {

@@ -410,7 +410,7 @@ pub enum MaxDustHTLCExposure {
 	FeeRateMultiplier(u64),
 }
 
-impl_writeable_tlv_based_enum!(MaxDustHTLCExposure, ;
+impl_writeable_tlv_based_enum_legacy!(MaxDustHTLCExposure, ;
 	(1, FixedLimitMsat),
 	(3, FeeRateMultiplier),
 );

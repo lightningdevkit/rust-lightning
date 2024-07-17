@@ -130,7 +130,7 @@ impl_writeable_tlv_based_enum!(InboundHTLCResolution,
 	},
 	(2, Pending) => {
 		(0, update_add_htlc, required),
-	};
+	},
 );
 
 enum InboundHTLCState {
@@ -8495,7 +8495,7 @@ fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) 
 const SERIALIZATION_VERSION: u8 = 4;
 const MIN_SERIALIZATION_VERSION: u8 = 3;
 
-impl_writeable_tlv_based_enum!(InboundHTLCRemovalReason,;
+impl_writeable_tlv_based_enum_legacy!(InboundHTLCRemovalReason,;
 	(0, FailRelay),
 	(1, FailMalformed),
 	(2, Fulfill),
