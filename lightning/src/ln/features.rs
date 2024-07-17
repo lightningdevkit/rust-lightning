@@ -801,15 +801,23 @@ impl<T: sealed::Context> Features<T> {
 	pub fn requires_unknown_bits(&self) -> bool {
 		// Bitwise AND-ing with all even bits set except for known features will select required
 		// unknown features.
-		let byte_count = T::KNOWN_FEATURE_MASK.len();
-		self.flags.iter().enumerate().any(|(i, &byte)| {
-			let unknown_features = if i < byte_count {
-				!T::KNOWN_FEATURE_MASK[i]
-			} else {
-				0b11_11_11_11
-			};
-			(byte & (ANY_REQUIRED_FEATURES_MASK & unknown_features)) != 0
-		})
+		let mut known_chunks = T::KNOWN_FEATURE_MASK.chunks(8);
+		for chunk in self.flags.chunks(8) {
+			let mut flag_bytes = [0; 8];
+			flag_bytes[..chunk.len()].copy_from_slice(&chunk);
+			let flag_int = u64::from_le_bytes(flag_bytes);
+
+			let known_chunk = known_chunks.next().unwrap_or(&[0; 0]);
+			let mut known_bytes = [0; 8];
+			known_bytes[..known_chunk.len()].copy_from_slice(&known_chunk);
+			let known_int = u64::from_le_bytes(known_bytes);
+
+			const REQ_MASK: u64 = u64::from_le_bytes([ANY_REQUIRED_FEATURES_MASK; 8]);
+			if flag_int & (REQ_MASK & !known_int) != 0 {
+				return true;
+			}
+		}
+		false
 	}
 
 	pub(crate) fn supports_unknown_bits(&self) -> bool {

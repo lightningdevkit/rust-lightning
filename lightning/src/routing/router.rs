@@ -1437,7 +1437,7 @@ impl<'a> CandidateRouteHop<'a> {
 		}
 	}
 
-	#[inline]
+	#[inline(always)]
 	fn src_node_counter(&self) -> u32 {
 		match self {
 			CandidateRouteHop::FirstHop(hop) => hop.payer_node_counter,
@@ -1772,6 +1772,14 @@ struct PathBuildingHop<'a> {
 	/// decrease as well. Thus, we have to explicitly track which nodes have been processed and
 	/// avoid processing them again.
 	was_processed: bool,
+	/// When processing a node as the next best-score candidate, we want to quickly check if it is
+	/// a direct counterparty of ours, using our local channel information immediately if we can.
+	///
+	/// In order to do so efficiently, we cache whether a node is a direct counterparty here at the
+	/// start of a route-finding pass. Unlike all other fields in this struct, this field is never
+	/// updated after being initialized - it is set at the start of a route-finding pass and only
+	/// read thereafter.
+	is_first_hop_target: bool,
 	/// Used to compare channels when choosing the for routing.
 	/// Includes paying for the use of a hop and the following hops, as well as
 	/// an estimated cost of reaching this hop.
@@ -1810,6 +1818,7 @@ impl<'a> core::fmt::Debug for PathBuildingHop<'a> {
 			.field("source_node_id", &self.candidate.source())
 			.field("target_node_id", &self.candidate.target())
 			.field("short_channel_id", &self.candidate.short_channel_id())
+			.field("is_first_hop_target", &self.is_first_hop_target)
 			.field("total_fee_msat", &self.total_fee_msat)
 			.field("next_hops_fee_msat", &self.next_hops_fee_msat)
 			.field("hop_use_fee_msat", &self.hop_use_fee_msat)
@@ -2383,6 +2392,8 @@ where L::Target: Logger {
 				// if the amount being transferred over this path is lower.
 				// We do this for now, but this is a subject for removal.
 				if let Some(mut available_value_contribution_msat) = htlc_maximum_msat.checked_sub($next_hops_fee_msat) {
+					let cltv_expiry_delta = $candidate.cltv_expiry_delta();
+					let htlc_minimum_msat = $candidate.htlc_minimum_msat();
 					let used_liquidity_msat = used_liquidities
 						.get(&$candidate.id())
 						.map_or(0, |used_liquidity_msat| {
@@ -2406,7 +2417,7 @@ where L::Target: Logger {
 						.checked_sub(2*MEDIAN_HOP_CLTV_EXPIRY_DELTA)
 						.unwrap_or(payment_params.max_total_cltv_expiry_delta - final_cltv_expiry_delta);
 					let hop_total_cltv_delta = ($next_hops_cltv_delta as u32)
-						.saturating_add($candidate.cltv_expiry_delta());
+						.saturating_add(cltv_expiry_delta);
 					let exceeds_cltv_delta_limit = hop_total_cltv_delta > max_total_cltv_expiry_delta;
 
 					let value_contribution_msat = cmp::min(available_value_contribution_msat, $next_hops_value_contribution);
@@ -2417,13 +2428,13 @@ where L::Target: Logger {
 						None => unreachable!(),
 					};
 					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
-					let over_path_minimum_msat = amount_to_transfer_over_msat >= $candidate.htlc_minimum_msat() &&
+					let over_path_minimum_msat = amount_to_transfer_over_msat >= htlc_minimum_msat &&
 						amount_to_transfer_over_msat >= $next_hops_path_htlc_minimum_msat;
 
 					#[allow(unused_comparisons)] // $next_hops_path_htlc_minimum_msat is 0 in some calls so rustc complains
 					let may_overpay_to_meet_path_minimum_msat =
-						((amount_to_transfer_over_msat < $candidate.htlc_minimum_msat() &&
-						  recommended_value_msat >= $candidate.htlc_minimum_msat()) ||
+						((amount_to_transfer_over_msat < htlc_minimum_msat &&
+						  recommended_value_msat >= htlc_minimum_msat) ||
 						 (amount_to_transfer_over_msat < $next_hops_path_htlc_minimum_msat &&
 						  recommended_value_msat >= $next_hops_path_htlc_minimum_msat));
 
@@ -2493,12 +2504,14 @@ where L::Target: Logger {
 						// payment path (upstream to the payee). To avoid that, we recompute
 						// path fees knowing the final path contribution after constructing it.
 						let curr_min = cmp::max(
-							$next_hops_path_htlc_minimum_msat, $candidate.htlc_minimum_msat()
+							$next_hops_path_htlc_minimum_msat, htlc_minimum_msat
 						);
-						let path_htlc_minimum_msat = compute_fees_saturating(curr_min, $candidate.fees())
+						let candidate_fees = $candidate.fees();
+						let src_node_counter = $candidate.src_node_counter();
+						let path_htlc_minimum_msat = compute_fees_saturating(curr_min, candidate_fees)
 							.saturating_add(curr_min);
 
-						let dist_entry = &mut dist[$candidate.src_node_counter() as usize];
+						let dist_entry = &mut dist[src_node_counter as usize];
 						let old_entry = if let Some(hop) = dist_entry {
 							hop
 						} else {
@@ -2516,6 +2529,7 @@ where L::Target: Logger {
 								path_htlc_minimum_msat,
 								path_penalty_msat: u64::max_value(),
 								was_processed: false,
+								is_first_hop_target: false,
 								#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
 								value_contribution_msat,
 							});
@@ -2540,7 +2554,7 @@ where L::Target: Logger {
 							if src_node_id != our_node_id {
 								// Note that `u64::max_value` means we'll always fail the
 								// `old_entry.total_fee_msat > total_fee_msat` check below
-								hop_use_fee_msat = compute_fees_saturating(amount_to_transfer_over_msat, $candidate.fees());
+								hop_use_fee_msat = compute_fees_saturating(amount_to_transfer_over_msat, candidate_fees);
 								total_fee_msat = total_fee_msat.saturating_add(hop_use_fee_msat);
 							}
 
@@ -2679,12 +2693,14 @@ where L::Target: Logger {
 			let fee_to_target_msat;
 			let next_hops_path_htlc_minimum_msat;
 			let next_hops_path_penalty_msat;
+			let is_first_hop_target;
 			let skip_node = if let Some(elem) = &mut dist[$node.node_counter as usize] {
 				let was_processed = elem.was_processed;
 				elem.was_processed = true;
 				fee_to_target_msat = elem.total_fee_msat;
 				next_hops_path_htlc_minimum_msat = elem.path_htlc_minimum_msat;
 				next_hops_path_penalty_msat = elem.path_penalty_msat;
+				is_first_hop_target = elem.is_first_hop_target;
 				was_processed
 			} else {
 				// Entries are added to dist in add_entry!() when there is a channel from a node.
@@ -2695,21 +2711,24 @@ where L::Target: Logger {
 				fee_to_target_msat = 0;
 				next_hops_path_htlc_minimum_msat = 0;
 				next_hops_path_penalty_msat = 0;
+				is_first_hop_target = false;
 				false
 			};
 
 			if !skip_node {
-				if let Some((first_channels, peer_node_counter)) = first_hop_targets.get(&$node_id) {
-					for details in first_channels {
-						debug_assert_eq!(*peer_node_counter, $node.node_counter);
-						let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
-							details, payer_node_id: &our_node_id, payer_node_counter,
-							target_node_counter: $node.node_counter,
-						});
-						add_entry!(&candidate, fee_to_target_msat,
-							$next_hops_value_contribution,
-							next_hops_path_htlc_minimum_msat, next_hops_path_penalty_msat,
-							$next_hops_cltv_delta, $next_hops_path_length);
+				if is_first_hop_target {
+					if let Some((first_channels, peer_node_counter)) = first_hop_targets.get(&$node_id) {
+						for details in first_channels {
+							debug_assert_eq!(*peer_node_counter, $node.node_counter);
+							let candidate = CandidateRouteHop::FirstHop(FirstHopCandidate {
+								details, payer_node_id: &our_node_id, payer_node_counter,
+								target_node_counter: $node.node_counter,
+							});
+							add_entry!(&candidate, fee_to_target_msat,
+								$next_hops_value_contribution,
+								next_hops_path_htlc_minimum_msat, next_hops_path_penalty_msat,
+								$next_hops_cltv_delta, $next_hops_path_length);
+						}
 					}
 				}
 
@@ -2755,6 +2774,32 @@ where L::Target: Logger {
 		targets.clear();
 		for e in dist.iter_mut() {
 			*e = None;
+		}
+		for (_, (chans, peer_node_counter)) in first_hop_targets.iter() {
+			// In order to avoid looking up whether each node is a first-hop target, we store a
+			// dummy entry in dist for each first-hop target, allowing us to do this lookup for
+			// free since we're already looking at the `was_processed` flag.
+			//
+			// Note that all the fields (except `is_first_hop_target`) will be overwritten whenever
+			// we find a path to the target, so are left as dummies here.
+			dist[*peer_node_counter as usize] = Some(PathBuildingHop {
+				candidate: CandidateRouteHop::FirstHop(FirstHopCandidate {
+					details: &chans[0],
+					payer_node_id: &our_node_id,
+					target_node_counter: u32::max_value(),
+					payer_node_counter: u32::max_value(),
+				}),
+				fee_msat: 0,
+				next_hops_fee_msat: u64::max_value(),
+				hop_use_fee_msat: u64::max_value(),
+				total_fee_msat: u64::max_value(),
+				path_htlc_minimum_msat: u64::max_value(),
+				path_penalty_msat: u64::max_value(),
+				was_processed: false,
+				is_first_hop_target: true,
+				#[cfg(all(not(ldk_bench), any(test, fuzzing)))]
+				value_contribution_msat: 0,
+			});
 		}
 		hit_minimum_limit = false;
 

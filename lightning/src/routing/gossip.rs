@@ -795,22 +795,32 @@ where
 	}
 }
 
+// Fetching values from this struct is very performance sensitive during routefinding. Thus, we
+// want to ensure that all of the fields we care about (all of them except `last_update_message`)
+// sit on the same cache line.
+//
+// We do this by using `repr(C)`, which forces the struct to be laid out in memory the way we write
+// it (ensuring `last_update_message` hangs off the end and no fields are reordered after it), and
+// `align(32)`, ensuring the struct starts either at the start, or in the middle, of a 64b x86-64
+// cache line. This ensures the beginning fields (which are 31 bytes) all sit in the same cache
+// line.
+#[repr(C, align(32))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 /// Details about one direction of a channel as received within a [`ChannelUpdate`].
 pub struct ChannelUpdateInfo {
-	/// When the last update to the channel direction was issued.
-	/// Value is opaque, as set in the announcement.
-	pub last_update: u32,
-	/// Whether the channel can be currently used for payments (in this one direction).
-	pub enabled: bool,
-	/// The difference in CLTV values that you must have when routing through this channel.
-	pub cltv_expiry_delta: u16,
 	/// The minimum value, which must be relayed to the next hop via the channel
 	pub htlc_minimum_msat: u64,
 	/// The maximum value which may be relayed to the next hop via the channel.
 	pub htlc_maximum_msat: u64,
 	/// Fees charged when the channel is used for routing
 	pub fees: RoutingFees,
+	/// When the last update to the channel direction was issued.
+	/// Value is opaque, as set in the announcement.
+	pub last_update: u32,
+	/// The difference in CLTV values that you must have when routing through this channel.
+	pub cltv_expiry_delta: u16,
+	/// Whether the channel can be currently used for payments (in this one direction).
+	pub enabled: bool,
 	/// Most recent update for the channel received from the network
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
@@ -878,22 +888,46 @@ impl Readable for ChannelUpdateInfo {
 	}
 }
 
+// Fetching values from this struct is very performance sensitive during routefinding. Thus, we
+// want to ensure that all of the fields we care about (all of them except `last_update_message`
+// and `announcement_received_time`) sit on the same cache line.
+//
+// Sadly, this is not possible, however we can still do okay - all of the fields before
+// `one_to_two` and `two_to_one` are just under 128 bytes long, so we can ensure they sit on
+// adjacent cache lines (which are generally fetched together in x86_64 processors).
+//
+// This leaves only the two directional channel info structs on separate cache lines.
+//
+// We accomplish this using `repr(C)`, which forces the struct to be laid out in memory the way we
+// write it (ensuring the fields we care about are at the start of the struct) and `align(128)`,
+// ensuring the struct starts at the beginning of two adjacent 64b x86-64 cache lines.
+#[repr(align(128), C)]
 #[derive(Clone, Debug, Eq)]
 /// Details about a channel (both directions).
 /// Received within a channel announcement.
 pub struct ChannelInfo {
 	/// Protocol features of a channel communicated during its announcement
 	pub features: ChannelFeatures,
+
 	/// Source node of the first direction of a channel
 	pub node_one: NodeId,
-	/// Details about the first direction of a channel
-	pub one_to_two: Option<ChannelUpdateInfo>,
+
 	/// Source node of the second direction of a channel
 	pub node_two: NodeId,
-	/// Details about the second direction of a channel
-	pub two_to_one: Option<ChannelUpdateInfo>,
+
+	/// The [`NodeInfo::node_counter`] of the node pointed to by [`Self::node_one`].
+	pub(crate) node_one_counter: u32,
+	/// The [`NodeInfo::node_counter`] of the node pointed to by [`Self::node_two`].
+	pub(crate) node_two_counter: u32,
+
 	/// The channel capacity as seen on-chain, if chain lookup is available.
 	pub capacity_sats: Option<u64>,
+
+	/// Details about the first direction of a channel
+	pub one_to_two: Option<ChannelUpdateInfo>,
+	/// Details about the second direction of a channel
+	pub two_to_one: Option<ChannelUpdateInfo>,
+
 	/// An initial announcement of the channel
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
@@ -903,11 +937,6 @@ pub struct ChannelInfo {
 	/// (which we can probably assume we are - no-std environments probably won't have a full
 	/// network graph in memory!).
 	announcement_received_time: u64,
-
-	/// The [`NodeInfo::node_counter`] of the node pointed to by [`Self::node_one`].
-	pub(crate) node_one_counter: u32,
-	/// The [`NodeInfo::node_counter`] of the node pointed to by [`Self::node_two`].
-	pub(crate) node_two_counter: u32,
 }
 
 impl PartialEq for ChannelInfo {
@@ -1053,6 +1082,8 @@ impl Readable for ChannelInfo {
 pub struct DirectedChannelInfo<'a> {
 	channel: &'a ChannelInfo,
 	direction: &'a ChannelUpdateInfo,
+	source_counter: u32,
+	target_counter: u32,
 	/// The direction this channel is in - if set, it indicates that we're traversing the channel
 	/// from [`ChannelInfo::node_one`] to [`ChannelInfo::node_two`].
 	from_node_one: bool,
@@ -1061,7 +1092,12 @@ pub struct DirectedChannelInfo<'a> {
 impl<'a> DirectedChannelInfo<'a> {
 	#[inline]
 	fn new(channel: &'a ChannelInfo, direction: &'a ChannelUpdateInfo, from_node_one: bool) -> Self {
-		Self { channel, direction, from_node_one }
+		let (source_counter, target_counter) = if from_node_one {
+			(channel.node_one_counter, channel.node_two_counter)
+		} else {
+			(channel.node_two_counter, channel.node_one_counter)
+		};
+		Self { channel, direction, from_node_one, source_counter, target_counter }
 	}
 
 	/// Returns information for the channel.
@@ -1104,12 +1140,12 @@ impl<'a> DirectedChannelInfo<'a> {
 	pub fn target(&self) -> &'a NodeId { if self.from_node_one { &self.channel.node_two } else { &self.channel.node_one } }
 
 	/// Returns the source node's counter
-	#[inline]
-	pub(super) fn source_counter(&self) -> u32 { if self.from_node_one { self.channel.node_one_counter } else { self.channel.node_two_counter } }
+	#[inline(always)]
+	pub(super) fn source_counter(&self) -> u32 { self.source_counter }
 
 	/// Returns the target node's counter
-	#[inline]
-	pub(super) fn target_counter(&self) -> u32 { if self.from_node_one { self.channel.node_two_counter } else { self.channel.node_one_counter } }
+	#[inline(always)]
+	pub(super) fn target_counter(&self) -> u32 { self.target_counter }
 }
 
 impl<'a> fmt::Debug for DirectedChannelInfo<'a> {
