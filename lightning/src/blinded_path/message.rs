@@ -107,7 +107,7 @@ pub enum MessageContext {
 /// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
 #[derive(Clone, Debug)]
 pub enum OffersContext {
-	/// Represents an unknown BOLT12 payment context.
+	/// Represents an unknown BOLT12 message context.
 	///
 	/// This variant is used when a message is sent without using a [`BlindedPath`] or over one
 	/// created prior to LDK version 0.0.124.
