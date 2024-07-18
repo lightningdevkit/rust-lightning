@@ -16,6 +16,8 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+use bitcoin::hashes::hmac::Hmac;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
 use crate::blinded_path::utils;
 use crate::io;
@@ -146,6 +148,12 @@ pub enum OffersContext {
 		/// [`Refund`]: crate::offers::refund::Refund
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		nonce: Nonce,
+
+		/// Authentication code for the [`PaymentId`], which should be checked when the context is
+		/// used with an [`InvoiceError`].
+		///
+		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
+		hmac: Hmac<Sha256>,
 	},
 	/// Context used by a [`BlindedPath`] as a reply path for a [`Bolt12Invoice`].
 	///
@@ -173,6 +181,7 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	(1, OutboundPayment) => {
 		(0, payment_id, required),
 		(1, nonce, required),
+		(2, hmac, required),
 	},
 	(2, InboundPayment) => {
 		(0, payment_hash, required),

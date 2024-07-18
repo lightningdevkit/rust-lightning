@@ -68,6 +68,7 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
+use crate::offers::signer;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
@@ -4227,7 +4228,7 @@ where
 			None if invoice.is_for_refund_without_paths() => {
 				invoice.verify_using_metadata(expanded_key, secp_ctx)
 			},
-			Some(&OffersContext::OutboundPayment { payment_id, nonce }) => {
+			Some(&OffersContext::OutboundPayment { payment_id, nonce, .. }) => {
 				invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx)
 			},
 			_ => Err(()),
@@ -8886,7 +8887,8 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let secp_ctx = &$self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::OutboundPayment { payment_id, nonce };
+		let hmac = signer::hmac_for_payment_id(payment_id, nonce, expanded_key);
+		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac };
 		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
@@ -9021,7 +9023,8 @@ where
 		};
 		let invoice_request = builder.build_and_sign()?;
 
-		let context = OffersContext::OutboundPayment { payment_id, nonce };
+		let hmac = signer::hmac_for_payment_id(payment_id, nonce, expanded_key);
+		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac };
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
