@@ -862,9 +862,8 @@ impl OfferContents {
 		&self, amount_msats: Option<u64>, quantity: Option<u64>
 	) -> Result<(), Bolt12SemanticError> {
 		let offer_amount_msats = match self.amount {
-			None => 0,
 			Some(Amount::Bitcoin { amount_msats }) => amount_msats,
-			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
+			_ => 0,
 		};
 
 		if !self.expects_quantity() || quantity.is_some() {

@@ -71,7 +71,7 @@ use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Amount, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
@@ -1159,8 +1159,13 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 			return Err(Bolt12SemanticError::MissingAmount);
 		}
 
-		offer.check_quantity(quantity)?;
-		offer.check_amount_msats_for_quantity(amount, quantity)?;
+		match offer.amount() {
+			Some(Amount::Currency {..}) => return Err(Bolt12SemanticError::UnsupportedCurrency),
+			_ => {
+				offer.check_amount_msats_for_quantity(amount, quantity)?;
+				offer.check_quantity(quantity)?;
+			},
+		};
 
 		let features = features.unwrap_or_else(InvoiceRequestFeatures::empty);
 
