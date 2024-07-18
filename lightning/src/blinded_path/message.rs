@@ -102,7 +102,7 @@ pub enum MessageContext {
 	Custom(Vec<u8>),
 }
 
-/// Contains the data specific to [`OffersMessage`]
+/// Contains data specific to an [`OffersMessage`].
 ///
 /// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
 #[derive(Clone, Debug)]
