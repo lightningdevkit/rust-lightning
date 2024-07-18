@@ -1391,6 +1391,7 @@ mod test {
 			} else {
 				other_events.borrow_mut().push(event);
 			}
+			Ok(())
 		};
 		nodes[fwd_idx].node.process_pending_events(&forward_event_handler);
 		nodes[fwd_idx].node.process_pending_events(&forward_event_handler);
