@@ -1175,6 +1175,7 @@ impl OutboundPayments {
 						},
 						PendingOutboundPayment::AwaitingInvoice { .. } => {
 							log_error!(logger, "Payment not yet sent");
+							debug_assert!(false);
 							return
 						},
 						PendingOutboundPayment::InvoiceReceived { .. } => {
