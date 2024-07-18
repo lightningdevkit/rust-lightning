@@ -106,6 +106,11 @@ impl Metadata {
 		}
 	}
 
+	/// Indicates that signing keys should not be derived when calling [`derive_from`]. Only
+	/// applicable to state [`Metadata::DerivedSigningPubkey`]; calling this in other states will
+	/// result in no change.
+	///
+	/// [`derive_from`]: Self::derive_from
 	pub fn without_keys(self) -> Self {
 		match self {
 			Metadata::Bytes(_) => self,
