@@ -10731,8 +10731,10 @@ where
 
 		let abandon_if_payment = |context| {
 			match context {
-				Some(OffersContext::OutboundPayment { payment_id, .. }) => {
-					self.abandon_payment(payment_id)
+				Some(OffersContext::OutboundPayment { payment_id, nonce, hmac }) => {
+					if signer::verify_payment_id(payment_id, hmac, nonce, expanded_key) {
+						self.abandon_payment(payment_id);
+					}
 				},
 				_ => {},
 			}
