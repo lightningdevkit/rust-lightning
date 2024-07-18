@@ -36,6 +36,9 @@ const DERIVED_METADATA_AND_KEYS_HMAC_INPUT: &[u8; 16] = &[2; 16];
 const WITHOUT_ENCRYPTED_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[3; 16];
 const WITH_ENCRYPTED_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[4; 16];
 
+// HMAC input for a `PaymentId`. The HMAC is used in `OffersContext::OutboundPayment`.
+const PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[5; 16];
+
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
 #[derive(Clone)]
@@ -390,4 +393,23 @@ fn hmac_for_message<'a>(
 	}
 
 	Ok(hmac)
+}
+
+pub(crate) fn hmac_for_payment_id(
+	payment_id: PaymentId, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Payment ID ~";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(PAYMENT_ID_HMAC_INPUT);
+	hmac.input(&payment_id.0);
+
+	Hmac::from_engine(hmac)
+}
+
+pub(crate) fn verify_payment_id(
+	payment_id: PaymentId, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> bool {
+	hmac_for_payment_id(payment_id, nonce, expanded_key) == hmac
 }
