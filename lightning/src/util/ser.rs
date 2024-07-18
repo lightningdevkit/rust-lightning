@@ -33,7 +33,9 @@ use bitcoin::script::{self, ScriptBuf};
 use bitcoin::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::{consensus, Witness};
 use bitcoin::consensus::Encodable;
+use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
+use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash};
 use core::time::Duration;
 use crate::chain::ClaimId;
@@ -1030,6 +1032,21 @@ impl Readable for PartialSignatureWithNonce {
 		let partial_signature = musig2::types::PartialSignature::from_slice(&partial_signature_buf).map_err(|_| DecodeError::InvalidValue)?;
 		let public_nonce: musig2::types::PublicNonce = Readable::read(r)?;
 		Ok(PartialSignatureWithNonce(partial_signature, public_nonce))
+	}
+}
+
+impl Writeable for Hmac<Sha256> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(&self[..])
+	}
+}
+
+impl Readable for Hmac<Sha256> {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		use bitcoin::hashes::Hash;
+
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(Hmac::<Sha256>::from_byte_array(buf))
 	}
 }
 
