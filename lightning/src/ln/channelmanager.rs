@@ -4220,7 +4220,7 @@ where
 
 		match context {
 			OffersContext::Unknown {} if invoice.is_for_refund_without_paths() => {
-				invoice.verify(expanded_key, secp_ctx)
+				invoice.verify_using_metadata(expanded_key, secp_ctx)
 			},
 			OffersContext::OutboundPayment { payment_id, nonce } => {
 				invoice

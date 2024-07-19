@@ -775,7 +775,7 @@ impl Bolt12Invoice {
 	/// checking the payer metadata from the invoice request.
 	///
 	/// Returns the associated [`PaymentId`] to use when sending the payment.
-	pub fn verify<T: secp256k1::Signing>(
+	pub fn verify_using_metadata<T: secp256k1::Signing>(
 		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<PaymentId, ()> {
 		let metadata = match &self.contents {

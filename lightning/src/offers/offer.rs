@@ -685,8 +685,9 @@ macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => 
 	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
 	///   request,
 	/// - sets [`InvoiceRequest::payer_metadata`] when [`InvoiceRequestBuilder::build`] is called
-	///   such that it can be used by [`Bolt12Invoice::verify`] to determine if the invoice was
-	///   requested using a base [`ExpandedKey`] from which the payer id was derived, and
+	///   such that it can be used by [`Bolt12Invoice::verify_using_metadata`] to determine if the
+	///   invoice was requested using a base [`ExpandedKey`] from which the payer id was derived,
+	///   and
 	/// - includes the [`PaymentId`] encrypted in [`InvoiceRequest::payer_metadata`] so that it can
 	///   be used when sending the payment for the requested invoice.
 	///
@@ -694,7 +695,7 @@ macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => 
 	///
 	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
 	/// [`InvoiceRequest::payer_metadata`]: crate::offers::invoice_request::InvoiceRequest::payer_metadata
-	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
+	/// [`Bolt12Invoice::verify_using_metadata`]: crate::offers::invoice::Bolt12Invoice::verify_using_metadata
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn request_invoice_deriving_payer_id<
 		'a, 'b,
