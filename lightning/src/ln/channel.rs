@@ -8282,6 +8282,10 @@ impl<SP: Deref> Channel<SP> where
 pub(super) struct OutboundV1Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub unfunded_context: UnfundedChannelContext,
+	/// We tried to send an `open_channel` message but our commitment point wasn't ready.
+	/// This flag tells us we need to send it when we are retried once the
+	/// commitment point is ready.
+	pub signer_pending_open_channel: bool,
 }
 
 impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
@@ -8330,7 +8334,9 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
 
-		let chan = Self { context, unfunded_context };
+		// We initialize `signer_pending_open_channel` to false, and leave setting the flag
+		// for when we try to generate the open_channel message.
+		let chan = Self { context, unfunded_context, signer_pending_open_channel: false };
 		Ok(chan)
 	}
 
@@ -8425,14 +8431,15 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannel` message, otherwise the channel is failed.
-	pub(crate) fn maybe_handle_error_without_close<F: Deref>(
-		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>
+	pub(crate) fn maybe_handle_error_without_close<F: Deref, L: Deref>(
+		&mut self, chain_hash: ChainHash, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 	) -> Result<msgs::OpenChannel, ()>
 	where
-		F::Target: FeeEstimator
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
 		self.context.maybe_downgrade_channel_features(fee_estimator)?;
-		Ok(self.get_open_channel(chain_hash))
+		self.get_open_channel(chain_hash, logger).ok_or(())
 	}
 
 	/// Returns true if we can resume the channel by sending the [`msgs::OpenChannel`] again.
@@ -8441,7 +8448,9 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.unfunded_context.transaction_number() == INITIAL_COMMITMENT_NUMBER
 	}
 
-	pub fn get_open_channel(&self, chain_hash: ChainHash) -> msgs::OpenChannel {
+	pub fn get_open_channel<L: Deref>(
+		&mut self, chain_hash: ChainHash, _logger: &L
+	) -> Option<msgs::OpenChannel> where L::Target: Logger {
 		if !self.context.is_outbound() {
 			panic!("Tried to open a channel for an inbound channel?");
 		}
@@ -8453,13 +8462,25 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			panic!("Tried to send an open_channel for a channel that has already advanced");
 		}
 
-		debug_assert!(self.unfunded_context.holder_commitment_point
-			.map(|point| point.is_available()).unwrap_or(false));
-		let first_per_commitment_point = self.unfunded_context.holder_commitment_point
-			.expect("TODO: Handle holder_commitment_point not being set").current_point();
+		let first_per_commitment_point = match self.unfunded_context.holder_commitment_point {
+			Some(holder_commitment_point) if holder_commitment_point.is_available() => {
+				self.signer_pending_open_channel = false;
+				holder_commitment_point.current_point()
+			},
+			_ => {
+				#[cfg(not(async_signing))] {
+					panic!("Failed getting commitment point for open_channel message");
+				}
+				#[cfg(async_signing)] {
+					log_trace!(_logger, "Unable to generate open_channel message, waiting for commitment point");
+					self.signer_pending_open_channel = true;
+					return None;
+				}
+			}
+		};
 		let keys = self.context.get_holder_pubkeys();
 
-		msgs::OpenChannel {
+		Some(msgs::OpenChannel {
 			common_fields: msgs::CommonOpenChannelFields {
 				chain_hash,
 				temporary_channel_id: self.context.channel_id,
@@ -8485,7 +8506,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			},
 			push_msat: self.context.channel_value_satoshis * 1000 - self.context.value_to_self_msat,
 			channel_reserve_satoshis: self.context.holder_selected_channel_reserve_satoshis,
-		}
+		})
 	}
 
 	// Message handlers
@@ -8542,11 +8563,29 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// Indicates that the signer may have some signatures for us, so we should retry if we're
 	/// blocked.
 	#[cfg(async_signing)]
-	pub fn signer_maybe_unblocked<L: Deref>(&mut self, logger: &L) -> Option<msgs::FundingCreated> where L::Target: Logger {
-		if self.context.signer_pending_funding && self.context.is_outbound() {
-			log_trace!(logger, "Signer unblocked a funding_created");
+	pub fn signer_maybe_unblocked<L: Deref>(
+		&mut self, chain_hash: ChainHash, logger: &L
+	) -> (Option<msgs::OpenChannel>, Option<msgs::FundingCreated>) where L::Target: Logger {
+		// If we were pending a commitment point, retry the signer and advance to an
+		// available state.
+		if self.unfunded_context.holder_commitment_point.is_none() {
+			self.unfunded_context.holder_commitment_point = HolderCommitmentPoint::new(&self.context.holder_signer, &self.context.secp_ctx);
+		}
+		if let Some(ref mut point) = self.unfunded_context.holder_commitment_point {
+			if !point.is_available() {
+				point.try_resolve_pending(&self.context.holder_signer, &self.context.secp_ctx, logger);
+			}
+		}
+		let open_channel = if self.signer_pending_open_channel {
+			log_trace!(logger, "Attempting to generate open_channel...");
+			self.get_open_channel(chain_hash, logger)
+		} else { None };
+		let funding_created = if self.context.signer_pending_funding && self.context.is_outbound() {
+			log_trace!(logger, "Attempting to generate pending funding created...");
+			self.context.signer_pending_funding = false;
 			self.get_funding_created_msg(logger)
-		} else { None }
+		} else { None };
+		(open_channel, funding_created)
 	}
 }
 
@@ -10359,12 +10398,12 @@ mod tests {
 
 		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&bounded_fee_estimator, &&keys_provider, &&keys_provider, node_a_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger).unwrap();
+		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&bounded_fee_estimator, &&keys_provider, &&keys_provider, node_a_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger).unwrap();
 
 		// Now change the fee so we can check that the fee in the open_channel message is the
 		// same as the old fee.
 		fee_est.fee_est = 500;
-		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		assert_eq!(open_channel_msg.common_fields.commitment_feerate_sat_per_1000_weight, original_fee);
 	}
 
@@ -10390,7 +10429,7 @@ mod tests {
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
-		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
@@ -10522,7 +10561,7 @@ mod tests {
 		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger).unwrap();
 
 		// Create Node B's channel by receiving Node A's open_channel message
-		let open_channel_msg = node_a_chan.get_open_channel(chain_hash);
+		let open_channel_msg = node_a_chan.get_open_channel(chain_hash, &&logger).unwrap();
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
@@ -10583,7 +10622,7 @@ mod tests {
 		// Test that `OutboundV1Channel::new` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
 		// which is set to the lower bound + 1 (2%) of the `channel_value`.
-		let chan_1 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_2_percent), 10000000, 100000, 42, &config_2_percent, 0, 42, None, &logger).unwrap();
+		let mut chan_1 = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&config_2_percent), 10000000, 100000, 42, &config_2_percent, 0, 42, None, &logger).unwrap();
 		let chan_1_value_msat = chan_1.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_1.context.holder_max_htlc_value_in_flight_msat, (chan_1_value_msat as f64 * 0.02) as u64);
 
@@ -10592,7 +10631,7 @@ mod tests {
 		let chan_2_value_msat = chan_2.context.channel_value_satoshis * 1000;
 		assert_eq!(chan_2.context.holder_max_htlc_value_in_flight_msat, (chan_2_value_msat as f64 * 0.99) as u64);
 
-		let chan_1_open_channel_msg = chan_1.get_open_channel(ChainHash::using_genesis_block(network));
+		let chan_1_open_channel_msg = chan_1.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 
 		// Test that `InboundV1Channel::new` creates a channel with the correct value for
 		// `holder_max_htlc_value_in_flight_msat`, when configured with a valid percentage value,
@@ -10668,12 +10707,12 @@ mod tests {
 
 		let mut outbound_node_config = UserConfig::default();
 		outbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (outbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
-		let chan = OutboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&outbound_node_config), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42, None, &logger).unwrap();
+		let mut chan = OutboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&outbound_node_config), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42, None, &logger).unwrap();
 
 		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.context.channel_value_satoshis as f64 * outbound_selected_channel_reserve_perc) as u64);
 		assert_eq!(chan.context.holder_selected_channel_reserve_satoshis, expected_outbound_selected_chan_reserve);
 
-		let chan_open_channel_msg = chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let chan_open_channel_msg = chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		let mut inbound_node_config = UserConfig::default();
 		inbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (inbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
 
@@ -10709,7 +10748,7 @@ mod tests {
 
 		// Create Node B's channel by receiving Node A's open_channel message
 		// Make sure A's dust limit is as we expect.
-		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config), &open_channel_msg, 7, &config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
@@ -10786,7 +10825,7 @@ mod tests {
 		).unwrap();
 		let inbound_chan = InboundV1Channel::<&TestKeysInterface>::new(
 			&feeest, &&keys_provider, &&keys_provider, node_b_node_id, &channelmanager::provided_channel_type_features(&config),
-			&features, &outbound_chan.get_open_channel(ChainHash::using_genesis_block(network)), 7, &config, 0, &&logger, false
+			&features, &outbound_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap(), 7, &config, 0, &&logger, false
 		).unwrap();
 		outbound_chan.accept_channel(&inbound_chan.get_accept_channel_message(), &config.channel_handshake_limits, &features).unwrap();
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
@@ -11684,13 +11723,13 @@ mod tests {
 
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let config = UserConfig::default();
-		let node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider,
+		let mut node_a_chan = OutboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider,
 			node_b_node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger).unwrap();
 
 		let mut channel_type_features = ChannelTypeFeatures::only_static_remote_key();
 		channel_type_features.set_zero_conf_required();
 
-		let mut open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let mut open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		open_channel_msg.common_fields.channel_type = Some(channel_type_features);
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let res = InboundV1Channel::<&TestKeysInterface>::new(&feeest, &&keys_provider, &&keys_provider,
@@ -11728,13 +11767,13 @@ mod tests {
 		expected_channel_type.set_static_remote_key_required();
 		expected_channel_type.set_anchors_zero_fee_htlc_tx_required();
 
-		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
+		let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42,
 			None, &logger
 		).unwrap();
 
-		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
 			&channelmanager::provided_channel_type_features(&config), &channelmanager::provided_init_features(&config),
@@ -11766,14 +11805,14 @@ mod tests {
 		let raw_init_features = static_remote_key_required | simple_anchors_required;
 		let init_features_with_simple_anchors = InitFeatures::from_le_bytes(raw_init_features.to_le_bytes().to_vec());
 
-		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
+		let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42,
 			None, &logger
 		).unwrap();
 
 		// Set `channel_type` to `None` to force the implicit feature negotiation.
-		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
+		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		open_channel_msg.common_fields.channel_type = None;
 
 		// Since A supports both `static_remote_key` and `option_anchors`, but B only accepts
@@ -11813,13 +11852,13 @@ mod tests {
 		// First, we'll try to open a channel between A and B where A requests a channel type for
 		// the original `option_anchors` feature (non zero fee htlc tx). This should be rejected by
 		// B as it's not supported by LDK.
-		let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
+		let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_b,
 			&channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42,
 			None, &logger
 		).unwrap();
 
-		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
+		let mut open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		open_channel_msg.common_fields.channel_type = Some(simple_anchors_channel_type.clone());
 
 		let res = InboundV1Channel::<&TestKeysInterface>::new(
@@ -11838,7 +11877,7 @@ mod tests {
 			10000000, 100000, 42, &config, 0, 42, None, &logger
 		).unwrap();
 
-		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = channel_a.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 
 		let channel_b = InboundV1Channel::<&TestKeysInterface>::new(
 			&fee_estimator, &&keys_provider, &&keys_provider, node_id_a,
@@ -11889,7 +11928,7 @@ mod tests {
 			&logger
 		).unwrap();
 
-		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network));
+		let open_channel_msg = node_a_chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
 		let node_b_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[7; 32]).unwrap());
 		let node_b_chan = InboundV1Channel::<&TestKeysInterface>::new(
 			&feeest,

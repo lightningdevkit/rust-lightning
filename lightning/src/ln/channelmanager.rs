@@ -3642,7 +3642,7 @@ where
 			}
 		}
 
-		let channel = {
+		let mut channel = {
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
 			let config = if override_config.is_some() { override_config.as_ref().unwrap() } else { &self.default_configuration };
@@ -3657,7 +3657,8 @@ where
 				},
 			}
 		};
-		let res = channel.get_open_channel(self.chain_hash);
+		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
+		let res = channel.get_open_channel(self.chain_hash, &&logger);
 
 		let temporary_channel_id = channel.context.channel_id();
 		match peer_state.channel_by_id.entry(temporary_channel_id) {
@@ -3671,10 +3672,12 @@ where
 			hash_map::Entry::Vacant(entry) => { entry.insert(ChannelPhase::UnfundedOutboundV1(channel)); }
 		}
 
-		peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-			node_id: their_network_key,
-			msg: res,
-		});
+		if let Some(msg) = res {
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+				node_id: their_network_key,
+				msg,
+			});
+		}
 		Ok(temporary_channel_id)
 	}
 
@@ -9561,7 +9564,14 @@ where
 					msgs.shutdown_result
 				}
 				ChannelPhase::UnfundedOutboundV1(chan) => {
-					if let Some(msg) = chan.signer_maybe_unblocked(&self.logger) {
+					let (open_channel, funding_created) = chan.signer_maybe_unblocked(self.chain_hash.clone(), &self.logger);
+					if let Some(msg) = open_channel {
+						pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+							node_id,
+							msg,
+						});
+					}
+					if let Some(msg) = funding_created {
 						pending_msg_events.push(events::MessageSendEvent::SendFundingCreated {
 							node_id,
 							msg,
@@ -11688,10 +11698,13 @@ where
 						}
 
 						ChannelPhase::UnfundedOutboundV1(chan) => {
-							pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
-								node_id: chan.context.get_counterparty_node_id(),
-								msg: chan.get_open_channel(self.chain_hash),
-							});
+							let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+							if let Some(msg) = chan.get_open_channel(self.chain_hash, &&logger) {
+								pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
+									node_id: chan.context.get_counterparty_node_id(),
+									msg,
+								});
+							}
 						}
 
 						ChannelPhase::UnfundedOutboundV2(chan) => {
@@ -11795,7 +11808,8 @@ where
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.get_mut(&msg.channel_id) {
 					Some(ChannelPhase::UnfundedOutboundV1(ref mut chan)) => {
-						if let Ok(msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator) {
+						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+						if let Ok(msg) = chan.maybe_handle_error_without_close(self.chain_hash, &self.fee_estimator, &&logger) {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 								node_id: counterparty_node_id,
 								msg,
