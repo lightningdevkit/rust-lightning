@@ -189,13 +189,14 @@ macro_rules! refund_builder_methods { (
 	/// different payer id for each refund, assuming a different nonce is used.  Otherwise, the
 	/// provided `node_id` is used for the payer id.
 	///
-	/// Also, sets the metadata when [`RefundBuilder::build`] is called such that it can be used to
-	/// verify that an [`InvoiceRequest`] was produced for the refund given an [`ExpandedKey`].
+	/// Also, sets the metadata when [`RefundBuilder::build`] is called such that it can be used by
+	/// [`Bolt12Invoice::verify`] to determine if the invoice was produced for the refund given an
+	/// [`ExpandedKey`].
 	///
 	/// The `payment_id` is encrypted in the metadata and should be unique. This ensures that only
 	/// one invoice will be paid for the refund and that payments can be uniquely identified.
 	///
-	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice::verify`]: crate::offers::invoice::Bolt12Invoice::verify
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn deriving_payer_id(
 		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
