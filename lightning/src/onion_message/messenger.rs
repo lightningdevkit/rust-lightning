@@ -1479,11 +1479,21 @@ where
 			pending_peer_connected_events.shrink_to(10); // Limit total heap usage
 		}
 
-		let res = intercepted_msgs.into_iter().map(|ev| handler.handle_event(ev)).collect::<Vec<_>>();
-		drop_handled_events_and_abort!(self, res, 0, self.pending_intercepted_msgs_events);
+		if intercepted_msgs.len() == 1 {
+			let res = intercepted_msgs.into_iter().next().map(|ev| handler.handle_event(ev));
+			drop_handled_events_and_abort!(self, res, 0, self.pending_intercepted_msgs_events);
+		} else {
+			let res = intercepted_msgs.into_iter().map(|ev| handler.handle_event(ev)).collect::<Vec<_>>();
+			drop_handled_events_and_abort!(self, res, 0, self.pending_intercepted_msgs_events);
+		};
 
-		let res = peer_connecteds.into_iter().map(|ev| handler.handle_event(ev)).collect::<Vec<_>>();
-		drop_handled_events_and_abort!(self, res, 0, self.pending_peer_connected_events);
+		if peer_connecteds.len() == 1 {
+			let res = peer_connecteds.into_iter().next().map(|ev| handler.handle_event(ev));
+			drop_handled_events_and_abort!(self, res, 0, self.pending_peer_connected_events);
+		} else {
+			let res = peer_connecteds.into_iter().map(|ev| handler.handle_event(ev)).collect::<Vec<_>>();
+			drop_handled_events_and_abort!(self, res, 0, self.pending_peer_connected_events);
+		}
 
 		self.pending_events_processor.store(false, Ordering::Release);
 	}
