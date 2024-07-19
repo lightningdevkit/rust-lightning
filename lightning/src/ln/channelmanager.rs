@@ -10717,7 +10717,7 @@ where
 						Ok(invoice_request) => invoice_request,
 						Err(()) => return ResponseInstruction::NoResponse,
 					},
-					None => match invoice_request.verify(expanded_key, secp_ctx) {
+					None => match invoice_request.verify_using_metadata(expanded_key, secp_ctx) {
 						Ok(invoice_request) => invoice_request,
 						Err(()) => {
 							let error = Bolt12SemanticError::InvalidMetadata;

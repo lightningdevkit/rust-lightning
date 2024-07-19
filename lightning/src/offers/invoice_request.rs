@@ -605,7 +605,7 @@ pub struct InvoiceRequest {
 	signature: Signature,
 }
 
-/// An [`InvoiceRequest`] that has been verified by [`InvoiceRequest::verify`] or
+/// An [`InvoiceRequest`] that has been verified by [`InvoiceRequest::verify_using_metadata`] or
 /// [`InvoiceRequest::verify_using_recipient_data`] and exposes different ways to respond depending
 /// on whether the signing keys were derived.
 #[derive(Clone, Debug)]
@@ -738,8 +738,9 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// # Note
 	///
 	/// If the originating [`Offer`] was created using [`OfferBuilder::deriving_signing_pubkey`],
-	/// then first use [`InvoiceRequest::verify`] or [`InvoiceRequest::verify_using_recipient_data`]
-	/// and then [`VerifiedInvoiceRequest`] methods instead.
+	/// then first use [`InvoiceRequest::verify_using_metadata`] or
+	/// [`InvoiceRequest::verify_using_recipient_data`] and then [`VerifiedInvoiceRequest`] methods
+	/// instead.
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
@@ -783,7 +784,7 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn verify<
+	pub fn verify_using_metadata<
 		#[cfg(not(c_bindings))]
 		T: secp256k1::Signing
 	>(
@@ -793,7 +794,8 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 		#[cfg(c_bindings)]
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<VerifiedInvoiceRequest, ()> {
-		let (offer_id, keys) = $self.contents.inner.offer.verify(&$self.bytes, key, secp_ctx)?;
+		let (offer_id, keys) =
+			$self.contents.inner.offer.verify_using_metadata(&$self.bytes, key, secp_ctx)?;
 		Ok(VerifiedInvoiceRequest {
 			offer_id,
 			#[cfg(not(c_bindings))]
@@ -2326,7 +2328,7 @@ mod tests {
 			.payer_note("0".repeat(PAYER_NOTE_LIMIT * 2))
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		match invoice_request.verify(&expanded_key, &secp_ctx) {
+		match invoice_request.verify_using_metadata(&expanded_key, &secp_ctx) {
 			Ok(invoice_request) => {
 				let fields = invoice_request.fields();
 				assert_eq!(invoice_request.offer_id, offer.id());

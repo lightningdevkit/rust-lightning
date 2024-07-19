@@ -248,12 +248,12 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 	/// `node_id` is used for the signing pubkey.
 	///
 	/// Also, sets the metadata when [`OfferBuilder::build`] is called such that it can be used by
-	/// [`InvoiceRequest::verify`] to determine if the request was produced for the offer given an
-	/// [`ExpandedKey`]. However, if [`OfferBuilder::path`] is called, then the metadata will not be
-	/// set and must be included in each [`BlindedPath`] instead. In this case, use
-	/// [`InvoiceRequest::verify_using_recipient_data`].
+	/// [`InvoiceRequest::verify_using_metadata`] to determine if the request was produced for the
+	/// offer given an [`ExpandedKey`]. However, if [`OfferBuilder::path`] is called, then the
+	/// metadata will not be set and must be included in each [`BlindedPath`] instead. In this case,
+	/// use [`InvoiceRequest::verify_using_recipient_data`].
 	///
-	/// [`InvoiceRequest::verify`]: crate::offers::invoice_request::InvoiceRequest::verify
+	/// [`InvoiceRequest::verify_using_metadata`]: crate::offers::invoice_request::InvoiceRequest::verify_using_metadata
 	/// [`InvoiceRequest::verify_using_recipient_data`]: crate::offers::invoice_request::InvoiceRequest::verify_using_recipient_data
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 	pub fn deriving_signing_pubkey(
@@ -922,20 +922,20 @@ impl OfferContents {
 		self.signing_pubkey
 	}
 
-	pub(super) fn verify<T: secp256k1::Signing>(
+	pub(super) fn verify_using_metadata<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
-		self.verify_using_metadata(bytes, self.metadata.as_ref(), key, secp_ctx)
+		self.verify(bytes, self.metadata.as_ref(), key, secp_ctx)
 	}
 
 	pub(super) fn verify_using_recipient_data<T: secp256k1::Signing>(
 		&self, bytes: &[u8], nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
-		self.verify_using_metadata(bytes, Some(&Metadata::RecipientData(nonce)), key, secp_ctx)
+		self.verify(bytes, Some(&Metadata::RecipientData(nonce)), key, secp_ctx)
 	}
 
 	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
-	fn verify_using_metadata<T: secp256k1::Signing>(
+	fn verify<T: secp256k1::Signing>(
 		&self, bytes: &[u8], metadata: Option<&Metadata>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
 		match metadata {
@@ -1311,7 +1311,7 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		match invoice_request.verify(&expanded_key, &secp_ctx) {
+		match invoice_request.verify_using_metadata(&expanded_key, &secp_ctx) {
 			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
 			Err(_) => panic!("unexpected error"),
 		}
@@ -1335,7 +1335,7 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(invoice_request.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered metadata
 		let mut tlv_stream = offer.as_tlv_stream();
@@ -1349,7 +1349,7 @@ mod tests {
 			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(invoice_request.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 	}
 
 	#[test]
@@ -1390,7 +1390,7 @@ mod tests {
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert!(invoice_request.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(invoice_request.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();

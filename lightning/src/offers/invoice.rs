@@ -1797,7 +1797,7 @@ mod tests {
 			.sign(payer_sign).unwrap();
 
 		match invoice_request
-			.verify(&expanded_key, &secp_ctx).unwrap()
+			.verify_using_metadata(&expanded_key, &secp_ctx).unwrap()
 			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now())
 		{
 			Ok(_) => panic!("expected error"),
