@@ -1,5 +1,4 @@
 // Imports that need to be added manually
-use bech32::u5;
 use bitcoin::blockdata::script::ScriptBuf;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
@@ -11,6 +10,7 @@ use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
+use lightning::ln::types::InvoiceData;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::async_payments::{
@@ -224,7 +224,7 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn sign_invoice(
-		&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient,
+		&self, _hrp_bytes: &[u8], _invoice_data: &InvoiceData, _recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}

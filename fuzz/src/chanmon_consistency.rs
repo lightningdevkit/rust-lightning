@@ -56,6 +56,7 @@ use lightning::ln::msgs::{
 	self, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
 };
 use lightning::ln::script::ShutdownScript;
+use lightning::ln::types::InvoiceData;
 use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
@@ -79,7 +80,6 @@ use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use bech32::u5;
 use std::cmp::{self, Ordering};
 use std::io::Cursor;
 use std::mem;
@@ -332,7 +332,7 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn sign_invoice(
-		&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient,
+		&self, _hrp_bytes: &[u8], _invoice_data: &InvoiceData, _recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}

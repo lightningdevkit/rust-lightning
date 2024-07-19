@@ -34,6 +34,7 @@ use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
+use crate::ln::types::InvoiceData;
 use crate::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
@@ -72,7 +73,6 @@ use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
-use bech32::u5;
 use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
@@ -1217,7 +1217,7 @@ impl NodeSigner for TestNodeSigner {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn sign_invoice(&self, _: &[u8], _: &[bech32::u5], _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
+	fn sign_invoice(&self, _: &[u8], _: &InvoiceData, _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
 		unreachable!()
 	}
 
@@ -1270,7 +1270,7 @@ impl NodeSigner for TestKeysInterface {
 		self.backing.get_inbound_payment_key_material()
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
+	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &InvoiceData, recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
 	}
 

@@ -41,11 +41,13 @@ extern crate serde;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-use bech32::u5;
+use bech32::Fe32;
+use bech32::primitives::decode::CheckedHrpstringError;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash, WitnessProgram, WitnessVersion};
 use bitcoin::address::Payload;
 use bitcoin::hashes::{Hash, sha256};
 use lightning::ln::features::Bolt11InvoiceFeatures;
+use lightning::ln::types::InvoiceData;
 use lightning::util::invoice::construct_invoice_preimage;
 
 use secp256k1::PublicKey;
@@ -85,12 +87,60 @@ mod prelude {
 
 use crate::prelude::*;
 
+/// Interface to write `Fe32`s into a sink
+pub trait WriteBase32 {
+	/// Write error
+	type Err: fmt::Debug;
+
+	/// Write a `Fe32` slice
+	fn write(&mut self, data: &Vec<Fe32>) -> Result<(), Self::Err> {
+		for b in data {
+			self.write_fe32(*b)?;
+		}
+		Ok(())
+	}
+
+	/// Write a single `Fe32`
+	fn write_fe32(&mut self, data: Fe32) -> Result<(), Self::Err>;
+}
+
+/// A trait for converting a value to a type `T` that represents a `Fe32` slice.
+pub trait ToBase32 {
+	/// Convert `Self` to base32 vector
+	fn to_base32(&self) -> Vec<Fe32> {
+		let mut vec = Vec::new();
+		self.write_base32(&mut vec).unwrap();
+		vec
+	}
+
+	/// Encode as base32 and write it to the supplied writer
+	/// Implementations shouldn't allocate.
+	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err>;
+}
+
+/// Interface to calculate the length of the base32 representation before actually serializing
+pub trait Base32Len: ToBase32 {
+	/// Calculate the base32 serialized length
+	fn base32_len(&self) -> usize;
+}
+
+/// Trait for paring/converting base32 slice. It is the reciprocal of `ToBase32`.
+pub trait FromBase32: Sized {
+	/// The associated error which can be returned from parsing (e.g. because of bad padding).
+	type Err;
+
+	/// Convert a base32 slice to `Self`.
+	fn from_base32(b32: &[Fe32]) -> Result<Self, Self::Err>;
+}
+
+
 /// Errors that indicate what is wrong with the invoice. They have some granularity for debug
 /// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
 #[allow(missing_docs)]
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Bolt11ParseError {
-	Bech32Error(bech32::Error),
+	Bech32Error(CheckedHrpstringError),
+	GenericBech32Error,
 	ParseAmountError(ParseIntError),
 	MalformedSignature(secp256k1::Error),
 	BadPrefix,
@@ -414,6 +464,18 @@ impl From<Currency> for Network {
 	}
 }
 
+/// Wrapped Fe32 with Ord trait
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub struct Fe32Ord(pub Fe32);
+
+impl Ord for Fe32Ord {
+	fn cmp(&self, other: &Self) -> Ordering { self.0.to_u8().cmp(&other.0.to_u8()) }
+}
+
+impl PartialOrd for Fe32Ord {
+	fn partial_cmp(&self, other: &Self) -> Option<Ordering> { self.0.to_u8().partial_cmp(&other.0.to_u8()) }
+}
+
 /// Tagged field which may have an unknown tag
 ///
 /// This is not exported to bindings users as we don't currently support TaggedField
@@ -422,7 +484,7 @@ pub enum RawTaggedField {
 	/// Parsed tagged field with known tag
 	KnownSemantics(TaggedField),
 	/// tagged field which was not parsed due to an unknown tag or undefined field semantics
-	UnknownSemantics(Vec<u5>),
+	UnknownSemantics(Vec<Fe32Ord>),
 }
 
 /// Tagged field with known tag
@@ -970,8 +1032,8 @@ macro_rules! find_all_extract {
 #[allow(missing_docs)]
 impl RawBolt11Invoice {
 	/// Hash the HRP as bytes and signatureless data part.
-	fn hash_from_parts(hrp_bytes: &[u8], data_without_signature: &[u5]) -> [u8; 32] {
-		let preimage = construct_invoice_preimage(hrp_bytes, data_without_signature);
+	fn hash_from_parts(hrp_bytes: &[u8], data_without_signature: &[Fe32]) -> [u8; 32] {
+		let preimage = construct_invoice_preimage(hrp_bytes, &InvoiceData(data_without_signature.to_vec()));
 		let mut hash: [u8; 32] = Default::default();
 		hash.copy_from_slice(&sha256::Hash::hash(&preimage)[..]);
 		hash
@@ -979,8 +1041,6 @@ impl RawBolt11Invoice {
 
 	/// Calculate the hash of the encoded `RawBolt11Invoice` which should be signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
-		use bech32::ToBase32;
-
 		RawBolt11Invoice::hash_from_parts(
 			self.hrp.to_string().as_bytes(),
 			&self.data.to_base32()
@@ -1490,7 +1550,7 @@ impl From<TaggedField> for RawTaggedField {
 
 impl TaggedField {
 	/// Numeric representation of the field's tag
-	pub fn tag(&self) -> u5 {
+	pub fn tag(&self) -> Fe32 {
 		let tag = match *self {
 			TaggedField::PaymentHash(_) => constants::TAG_PAYMENT_HASH,
 			TaggedField::Description(_) => constants::TAG_DESCRIPTION,
@@ -1505,7 +1565,7 @@ impl TaggedField {
 			TaggedField::Features(_) => constants::TAG_FEATURES,
 		};
 
-		u5::try_from_u8(tag).expect("all tags defined are <32")
+		Fe32::try_from(tag).expect("all tags defined are <32")
 	}
 }
 

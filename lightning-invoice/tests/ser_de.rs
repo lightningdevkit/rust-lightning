@@ -413,19 +413,21 @@ fn invoice_deserialize() {
 
 #[test]
 fn test_bolt_invalid_invoices() {
+	use bech32::primitives::decode::{CharError, ChecksumError, CheckedHrpstringError, UncheckedHrpstringError};
+
 	// Tests the BOLT 11 invalid invoice test vectors
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q4psqqqqqqqqqqqqqqqqsgqtqyx5vggfcsll4wu246hz02kp85x4katwsk9639we5n5yngc3yhqkm35jnjw4len8vrnqnf5ejh0mzj9n3vz2px97evektfm2l6wqccp3y7372"
 		), Err(ParseOrSemanticError::SemanticError(Bolt11SemanticError::InvalidFeatures)));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt"
-		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::InvalidChecksum))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(CheckedHrpstringError::Checksum(ChecksumError::InvalidResidue)))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
-		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::MissingSeparator))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::MissingSeparator))))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
-		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::MixedCase))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::MixedCase))))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2"
 		), Err(ParseOrSemanticError::SemanticError(Bolt11SemanticError::InvalidSignature)));
@@ -438,4 +440,40 @@ fn test_bolt_invalid_invoices() {
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500000001p1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgq0lzc236j96a95uv0m3umg28gclm5lqxtqqwk32uuk4k6673k6n5kfvx3d2h8s295fad45fdhmusm8sjudfhlf6dcsxmfvkeywmjdkxcp99202x"
 		), Err(ParseOrSemanticError::SemanticError(Bolt11SemanticError::ImpreciseAmount)));
+}
+
+#[test]
+fn invoice_features_encoding() {
+	use crate::lightning_invoice::ToBase32;
+	use crate::lightning_invoice::FromBase32;
+	use lightning::ln::features::Bolt11InvoiceFeatures;
+	use bech32::{ByteIterExt, Fe32};
+
+	let features_as_fes = vec![
+		Fe32::try_from(6).unwrap(),
+		Fe32::try_from(10).unwrap(),
+		Fe32::try_from(25).unwrap(),
+		Fe32::try_from(1).unwrap(),
+		Fe32::try_from(10).unwrap(),
+		Fe32::try_from(0).unwrap(),
+		Fe32::try_from(20).unwrap(),
+		Fe32::try_from(2).unwrap(),
+		Fe32::try_from(0).unwrap(),
+		Fe32::try_from(6).unwrap(),
+		Fe32::try_from(0).unwrap(),
+		Fe32::try_from(16).unwrap(),
+		Fe32::try_from(1).unwrap(),
+	];
+	let features = Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4, 5, 42, 100, 101]);
+
+	// Test length calculation.
+	assert_eq!(features.flags().iter().copied().bytes_to_fes().len(), 13);
+
+	// Test serialization.
+	let features_serialized = features.to_base32();
+	assert_eq!(features_as_fes, features_serialized);
+
+	// Test deserialization.
+	let features_deserialized = Bolt11InvoiceFeatures::from_base32(&features_as_fes).unwrap();
+	assert_eq!(features, features_deserialized);
 }

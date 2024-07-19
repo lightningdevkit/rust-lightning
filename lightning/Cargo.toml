@@ -40,7 +40,7 @@ grind_signatures = []
 default = ["std", "grind_signatures"]
 
 [dependencies]
-bech32 = { version = "0.9.1", default-features = false }
+bech32 = { version = "0.11.0", default-features = false }
 bitcoin = { version = "0.31.2", default-features = false, features = ["secp-recovery"] }
 
 hashbrown = { version = "0.13", optional = true, default-features = false }

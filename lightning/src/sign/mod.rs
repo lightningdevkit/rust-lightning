@@ -24,7 +24,6 @@ use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
 
-use bech32::u5;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::{Hash, HashEngine};
@@ -54,7 +53,7 @@ use crate::ln::channel_keys::{
 use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
-use crate::ln::types::PaymentPreimage;
+use crate::ln::types::{InvoiceData, PaymentPreimage};
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -856,7 +855,7 @@ pub trait NodeSigner {
 	///
 	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn sign_invoice(
-		&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient,
+		&self, hrp_bytes: &[u8], invoice_data: &InvoiceData, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()>;
 
 	/// Signs the [`TaggedHash`] of a BOLT 12 invoice request.
@@ -2163,7 +2162,7 @@ impl NodeSigner for KeysManager {
 	}
 
 	fn sign_invoice(
-		&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient,
+		&self, hrp_bytes: &[u8], invoice_data: &InvoiceData, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
 		let secret = match recipient {
@@ -2341,7 +2340,7 @@ impl NodeSigner for PhantomKeysManager {
 	}
 
 	fn sign_invoice(
-		&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient,
+		&self, hrp_bytes: &[u8], invoice_data: &InvoiceData, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
 		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
 		let secret = match recipient {
