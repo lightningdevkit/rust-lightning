@@ -3939,38 +3939,36 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
 			&self.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
 
-		match &self.holder_signer {
+		// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
+		let signature = match &self.holder_signer {
 			// TODO (arik): move match into calling method for Taproot
-			ChannelSignerType::Ecdsa(ecdsa) => {
-				let funding_signed = ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
-					.map(|(signature, _)| msgs::FundingSigned {
-						channel_id: self.channel_id(),
-						signature,
-						#[cfg(taproot)]
-						partial_signature_with_nonce: None,
-					})
-					.ok();
-
-				if funding_signed.is_none() {
-					#[cfg(not(async_signing))] {
-						panic!("Failed to get signature for funding_signed");
-					}
-					#[cfg(async_signing)] {
-						log_trace!(logger, "Counterparty commitment signature not available for funding_signed message; setting signer_pending_funding");
-						self.signer_pending_funding = true;
-					}
-				} else if self.signer_pending_funding {
-					log_trace!(logger, "Counterparty commitment signature available for funding_signed message; clearing signer_pending_funding");
-					self.signer_pending_funding = false;
-				}
-
-				// We sign "counterparty" commitment transaction, allowing them to broadcast the tx if they wish.
-				funding_signed
-			},
+			ChannelSignerType::Ecdsa(ecdsa) => ecdsa.sign_counterparty_commitment(
+				&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx
+			).ok(),
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
 			_ => todo!()
+		};
+
+		if signature.is_some() && self.signer_pending_funding {
+			log_trace!(logger, "Counterparty commitment signature available for funding_signed message; clearing signer_pending_funding");
+			self.signer_pending_funding = false;
+		} else if signature.is_none() {
+			#[cfg(not(async_signing))] {
+				panic!("Failed to get signature for funding_signed");
+			}
+			#[cfg(async_signing)] {
+				log_trace!(logger, "Counterparty commitment signature not available for funding_signed message; setting signer_pending_funding");
+				self.signer_pending_funding = true;
+			}
 		}
+
+		signature.map(|(signature, _)| msgs::FundingSigned {
+			channel_id: self.channel_id(),
+			signature,
+			#[cfg(taproot)]
+			partial_signature_with_nonce: None,
+		})
 	}
 
 	/// If we receive an error message when attempting to open a channel, it may only be a rejection
@@ -8348,19 +8346,27 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			// TODO (taproot|arik): move match into calling method for Taproot
 			ChannelSignerType::Ecdsa(ecdsa) => {
 				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.context.secp_ctx)
-					.map(|(sig, _)| sig).ok()?
+					.map(|(sig, _)| sig).ok()
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
 			_ => todo!()
 		};
 
-		if self.context.signer_pending_funding {
+		if signature.is_some() && self.context.signer_pending_funding {
 			log_trace!(logger, "Counterparty commitment signature ready for funding_created message: clearing signer_pending_funding");
 			self.context.signer_pending_funding = false;
-		}
+		} else if signature.is_none() {
+			#[cfg(not(async_signing))] {
+				panic!("Failed to get signature for new funding creation");
+			}
+			#[cfg(async_signing)] {
+				log_trace!(logger, "funding_created awaiting signer; setting signer_pending_funding");
+				self.context.signer_pending_funding = true;
+			}
+		};
 
-		Some(msgs::FundingCreated {
+		signature.map(|signature| msgs::FundingCreated {
 			temporary_channel_id: self.context.temporary_channel_id.unwrap(),
 			funding_txid: self.context.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().txid,
 			funding_output_index: self.context.channel_transaction_parameters.funding_outpoint.as_ref().unwrap().index,
@@ -8413,18 +8419,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
 
 		let funding_created = self.get_funding_created_msg(logger);
-		if funding_created.is_none() {
-			#[cfg(not(async_signing))] {
-				panic!("Failed to get signature for new funding creation");
-			}
-			#[cfg(async_signing)] {
-				if !self.context.signer_pending_funding {
-					log_trace!(logger, "funding_created awaiting signer; setting signer_pending_funding");
-					self.context.signer_pending_funding = true;
-				}
-			}
-		}
-
 		Ok(funding_created)
 	}
 
@@ -8582,7 +8576,6 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		} else { None };
 		let funding_created = if self.context.signer_pending_funding && self.context.is_outbound() {
 			log_trace!(logger, "Attempting to generate pending funding created...");
-			self.context.signer_pending_funding = false;
 			self.get_funding_created_msg(logger)
 		} else { None };
 		(open_channel, funding_created)
