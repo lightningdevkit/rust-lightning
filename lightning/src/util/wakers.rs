@@ -244,9 +244,20 @@ impl Sleeper {
 		Self { notifiers: vec![Arc::clone(&future.state)] }
 	}
 	/// Constructs a new sleeper from two futures, allowing blocking on both at once.
-	// Note that this is the common case - a ChannelManager and ChainMonitor.
 	pub fn from_two_futures(fut_a: &Future, fut_b: &Future) -> Self {
 		Self { notifiers: vec![Arc::clone(&fut_a.state), Arc::clone(&fut_b.state)] }
+	}
+	/// Constructs a new sleeper from three futures, allowing blocking on all three at once.
+	///
+	// Note that this is the common case - a ChannelManager, a ChainMonitor, and an
+	// OnionMessenger.
+	pub fn from_three_futures(fut_a: &Future, fut_b: &Future, fut_c: &Future) -> Self {
+		let notifiers = vec![
+			Arc::clone(&fut_a.state),
+			Arc::clone(&fut_b.state),
+			Arc::clone(&fut_c.state)
+		];
+		Self { notifiers }
 	}
 	/// Constructs a new sleeper on many futures, allowing blocking on all at once.
 	pub fn new(futures: Vec<Future>) -> Self {

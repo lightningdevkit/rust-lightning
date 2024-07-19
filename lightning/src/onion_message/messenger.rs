@@ -34,6 +34,7 @@ use super::packet::{BIG_PACKET_HOP_DATA_LEN, ForwardControlTlvs, Packet, Payload
 use crate::util::async_poll::{MultiResultFuturePoller, ResultFuture};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::ser::Writeable;
+use crate::util::wakers::{Future, Notifier};
 
 use core::fmt;
 use core::ops::Deref;
@@ -266,6 +267,9 @@ pub struct OnionMessenger<
 	pending_intercepted_msgs_events: Mutex<Vec<Event>>,
 	pending_peer_connected_events: Mutex<Vec<Event>>,
 	pending_events_processor: AtomicBool,
+	/// A [`Notifier`] used to wake up the background processor in case we have any [`Event`]s for
+	/// it to give to users.
+	event_notifier: Notifier,
 }
 
 /// [`OnionMessage`]s buffered to be sent.
@@ -1037,6 +1041,7 @@ macro_rules! drop_handled_events_and_abort { ($self: expr, $res: expr, $offset: 
 		if $res.iter().any(|r| r.is_err()) {
 			// We failed handling some events. Return to have them eventually replayed.
 			$self.pending_events_processor.store(false, Ordering::Release);
+			$self.event_notifier.notify();
 			return;
 		}
 	}
@@ -1119,6 +1124,7 @@ where
 			pending_intercepted_msgs_events: Mutex::new(Vec::new()),
 			pending_peer_connected_events: Mutex::new(Vec::new()),
 			pending_events_processor: AtomicBool::new(false),
+			event_notifier: Notifier::new(),
 		}
 	}
 
@@ -1230,6 +1236,7 @@ where
 				Some(addresses) => {
 					e.insert(OnionMessageRecipient::pending_connection(addresses))
 						.enqueue_message(onion_message);
+					self.event_notifier.notify();
 					Ok(SendSuccess::BufferedAwaitingConnection(first_node_id))
 				},
 			},
@@ -1345,6 +1352,18 @@ where
 			return
 		}
 		pending_intercepted_msgs_events.push(event);
+		self.event_notifier.notify();
+	}
+
+	/// Gets a [`Future`] that completes when an event is available via
+	/// [`EventsProvider::process_pending_events`] or [`Self::process_pending_events_async`].
+	///
+	/// Note that callbacks registered on the [`Future`] MUST NOT call back into this
+	/// [`OnionMessenger`] and should instead register actions to be taken later.
+	///
+	/// [`EventsProvider::process_pending_events`]: crate::events::EventsProvider::process_pending_events
+	pub fn get_update_future(&self) -> Future {
+		self.event_notifier.get_future()
 	}
 
 	/// Processes any events asynchronously using the given handler.
@@ -1616,6 +1635,7 @@ where
 				pending_peer_connected_events.push(
 					Event::OnionMessagePeerConnected { peer_node_id: *their_node_id }
 				);
+				self.event_notifier.notify();
 			}
 		} else {
 			self.message_recipients.lock().unwrap().remove(their_node_id);
