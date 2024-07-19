@@ -1700,10 +1700,9 @@ where
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
-/// # use lightning::ln::channelmanager::AChannelManager;
-/// # use lightning::offers::parse::Bolt12SemanticError;
+/// # use lightning::ln::channelmanager::{AChannelManager, Bolt12CreationError};
 /// #
-/// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
+/// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12CreationError> {
 /// # let channel_manager = channel_manager.get_cm();
 /// # let absolute_expiry = None;
 /// let offer = channel_manager
@@ -1805,13 +1804,12 @@ where
 /// ```
 /// # use core::time::Duration;
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
-/// # use lightning::offers::parse::Bolt12SemanticError;
+/// # use lightning::ln::channelmanager::{AChannelManager, Bolt12CreationError, PaymentId, RecentPaymentDetails, Retry};
 /// #
 /// # fn example<T: AChannelManager>(
 /// #     channel_manager: T, amount_msats: u64, absolute_expiry: Duration, retry: Retry,
 /// #     max_total_routing_fee_msat: Option<u64>
-/// # ) -> Result<(), Bolt12SemanticError> {
+/// # ) -> Result<(), Bolt12CreationError> {
 /// # let channel_manager = channel_manager.get_cm();
 /// let payment_id = PaymentId([42; 32]);
 /// let refund = channel_manager
@@ -2525,6 +2523,26 @@ pub enum RecentPaymentDetails {
 		payment_hash: PaymentHash,
 	},
 }
+
+/// Error during creation and handling of BOLT 12 related payments.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Bolt12CreationError {
+    /// Error from  BOLT 12 semantic checks.
+    InvalidSemantics(Bolt12SemanticError),
+    /// The payment id for a refund or request is already in use.
+    DuplicatePaymentId,
+    /// There is insufficient liquidity to complete the payment.
+    InsufficientLiquidity,
+    /// Failed to create a blinded path.
+    BlindedPathCreationFailed,
+}
+
+impl From<Bolt12SemanticError> for Bolt12CreationError {
+	fn from(err: Bolt12SemanticError) -> Self {
+		Bolt12CreationError::InvalidSemantics(err)
+	}
+}
+
 
 /// Route hints used in constructing invoices for [phantom node payents].
 ///
@@ -8806,7 +8824,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(
 		&$self, absolute_expiry: Option<Duration>
-	) -> Result<$builder, Bolt12SemanticError> {
+	) -> Result<$builder, Bolt12CreationError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
 		let entropy = &*$self.entropy_source;
@@ -8816,7 +8834,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		let context = OffersContext::InvoiceRequest { nonce };
 		let path = $self.create_blinded_paths_using_absolute_expiry(context, absolute_expiry)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+			.map_err(|_| Bolt12CreationError::BlindedPathCreationFailed)?;
 		let builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
 			.chain_hash($self.chain_hash)
 			.path(path);
@@ -8879,7 +8897,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	pub fn create_refund_builder(
 		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
 		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
-	) -> Result<$builder, Bolt12SemanticError> {
+	) -> Result<$builder, Bolt12CreationError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
 		let entropy = &*$self.entropy_source;
@@ -8889,7 +8907,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let context = OffersContext::OutboundPayment { payment_id, nonce };
 		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+			.map_err(|_| Bolt12CreationError::BlindedPathCreationFailed)?;
 
 		let builder = RefundBuilder::deriving_payer_id(
 			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
@@ -8905,7 +8923,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 			.add_new_awaiting_invoice(
 				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
 			)
-			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
+			.map_err(|_| Bolt12CreationError::DuplicatePaymentId)?;
 
 		Ok(builder.into())
 	}
@@ -8996,7 +9014,7 @@ where
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>
-	) -> Result<(), Bolt12SemanticError> {
+	) -> Result<(), Bolt12CreationError> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
@@ -9023,7 +9041,7 @@ where
 
 		let context = OffersContext::OutboundPayment { payment_id, nonce };
 		let reply_paths = self.create_blinded_paths(context)
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+			.map_err(|_| Bolt12CreationError::BlindedPathCreationFailed)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -9032,7 +9050,7 @@ where
 			.add_new_awaiting_invoice(
 				payment_id, expiration, retry_strategy, max_total_routing_fee_msat
 			)
-			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
+			.map_err(|_| Bolt12CreationError::DuplicatePaymentId)?;
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 		if !offer.paths().is_empty() {
@@ -9059,7 +9077,7 @@ where
 			}
 		} else {
 			debug_assert!(false);
-			return Err(Bolt12SemanticError::MissingSigningPubkey);
+			return Err(Bolt12CreationError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey));
 		}
 
 		Ok(())
@@ -9089,7 +9107,7 @@ where
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn request_refund_payment(
 		&self, refund: &Refund
-	) -> Result<Bolt12Invoice, Bolt12SemanticError> {
+	) -> Result<Bolt12Invoice, Bolt12CreationError> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
@@ -9098,7 +9116,7 @@ where
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
 		if refund.chain() != self.chain_hash {
-			return Err(Bolt12SemanticError::UnsupportedChain);
+			return Err(Bolt12CreationError::InvalidSemantics(Bolt12SemanticError::UnsupportedChain));
 		}
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -9109,7 +9127,7 @@ where
 				let payment_paths = self.create_blinded_payment_paths(
 					amount_msats, payment_secret, payment_context
 				)
-					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+					.map_err(|_| Bolt12CreationError::BlindedPathCreationFailed)?;
 
 				#[cfg(feature = "std")]
 				let builder = refund.respond_using_derived_keys(
@@ -9130,7 +9148,7 @@ where
 					payment_hash: invoice.payment_hash(),
 				};
 				let reply_paths = self.create_blinded_paths(context)
-					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+					.map_err(|_| Bolt12CreationError::BlindedPathCreationFailed)?;
 
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 				if refund.paths().is_empty() {
@@ -9159,7 +9177,7 @@ where
 
 				Ok(invoice)
 			},
-			Err(()) => Err(Bolt12SemanticError::InvalidAmount),
+			Err(()) => Err(Bolt12CreationError::InvalidSemantics(Bolt12SemanticError::InvalidAmount)),
 		}
 	}
 

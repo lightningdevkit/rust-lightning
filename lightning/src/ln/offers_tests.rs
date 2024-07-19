@@ -46,7 +46,7 @@ use core::time::Duration;
 use crate::blinded_path::{BlindedPath, IntroductionNode};
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
-use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
+use crate::ln::channelmanager::{Bolt12CreationError, Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
@@ -1600,7 +1600,7 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	match alice.node.create_offer_builder(Some(absolute_expiry)) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
 	}
 
 	let mut args = ReconnectArgs::new(alice, bob);
@@ -1616,7 +1616,7 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
 	}
 
 	assert!(nodes[0].node.list_recent_payments().is_empty());
@@ -1674,7 +1674,7 @@ fn fails_creating_refund_or_sending_invoice_without_connected_peers() {
 		10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
 	}
 
 	let mut args = ReconnectArgs::new(charlie, david);
@@ -1688,7 +1688,7 @@ fn fails_creating_refund_or_sending_invoice_without_connected_peers() {
 
 	match alice.node.request_refund_payment(&refund) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
 	}
 
 	let mut args = ReconnectArgs::new(alice, bob);
@@ -1720,7 +1720,7 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 	let payment_id = PaymentId([1; 32]);
 	match bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedChain),
+		Err(e) => assert_eq!(e, Bolt12CreationError::InvalidSemantics(Bolt12SemanticError::UnsupportedChain)),
 	}
 }
 
@@ -1747,7 +1747,7 @@ fn fails_sending_invoice_with_unsupported_chain_for_refund() {
 
 	match alice.node.request_refund_payment(&refund) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedChain),
+		Err(e) => assert_eq!(e, Bolt12CreationError::InvalidSemantics(Bolt12SemanticError::UnsupportedChain)),
 	}
 }
 
@@ -1780,7 +1780,7 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
 	}
 
 	assert!(nodes[0].node.list_recent_payments().is_empty());
@@ -1820,7 +1820,7 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
+		Err(e) => assert_eq!(e, Bolt12CreationError::DuplicatePaymentId),
 	}
 
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
@@ -1848,7 +1848,7 @@ fn fails_creating_refund_with_duplicate_payment_id() {
 		10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
+		Err(e) => assert_eq!(e, Bolt12CreationError::DuplicatePaymentId),
 	}
 
 	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
@@ -1970,7 +1970,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
 
 	match alice.node.request_refund_payment(&refund) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
 	}
 }
 

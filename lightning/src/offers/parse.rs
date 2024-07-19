@@ -177,8 +177,6 @@ pub enum Bolt12SemanticError {
 	MissingPayerMetadata,
 	/// A payer id was expected but was missing.
 	MissingPayerId,
-	/// The payment id for a refund or request is already in use.
-	DuplicatePaymentId,
 	/// Blinded paths were expected but were missing.
 	MissingPaths,
 	/// Blinded paths were provided but were not expected.
