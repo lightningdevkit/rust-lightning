@@ -167,10 +167,17 @@ struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
 	monitor: ChannelMonitor<ChannelSigner>,
 	/// The full set of pending monitor updates for this Channel.
 	///
-	/// Note that this lock must be held during updates to prevent a race where we call
-	/// update_persisted_channel, the user returns a
+	/// Note that this lock must be held from [`ChannelMonitor::update_monitor`] through to
+	/// [`Persist::update_persisted_channel`] to prevent a race where we call
+	/// [`Persist::update_persisted_channel`], the user returns a
 	/// [`ChannelMonitorUpdateStatus::InProgress`], and then calls channel_monitor_updated
 	/// immediately, racing our insertion of the pending update into the contained Vec.
+	///
+	/// This also avoids a race where we update a [`ChannelMonitor`], then while connecting a block
+	/// persist a full [`ChannelMonitor`] prior to persisting the [`ChannelMonitorUpdate`]. This
+	/// could cause users to have a full [`ChannelMonitor`] on disk as well as a
+	/// [`ChannelMonitorUpdate`] which was already applied. While this isn't an issue for the
+	/// LDK-provided update-based [`Persist`], its somewhat surprising for users so we avoid it.
 	pending_monitor_updates: Mutex<Vec<u64>>,
 }
 
@@ -322,6 +329,11 @@ where C::Target: chain::Filter,
 		let has_pending_claims = monitor_state.monitor.has_pending_claims();
 		if has_pending_claims || get_partition_key(funding_outpoint) % partition_factor == 0 {
 			log_trace!(logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
+			// Even though we don't track monitor updates from chain-sync as pending, we still want
+			// updates per-channel to be well-ordered so that users don't see a
+			// `ChannelMonitorUpdate` after a channel persist for a channel with the same
+			// `latest_update_id`.
+			let _pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 			match self.persister.update_persisted_channel(*funding_outpoint, None, monitor) {
 				ChannelMonitorUpdateStatus::Completed =>
 					log_trace!(logger, "Finished syncing Channel Monitor for channel {} for block-data",
@@ -796,10 +808,14 @@ where C::Target: chain::Filter,
 				let monitor = &monitor_state.monitor;
 				let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 				log_trace!(logger, "Updating ChannelMonitor to id {} for channel {}", update.update_id, log_funding_info!(monitor));
+
+				// We hold a `pending_monitor_updates` lock through `update_monitor` to ensure we
+				// have well-ordered updates from the users' point of view. See the
+				// `pending_monitor_updates` docs for more.
+				let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 				let update_res = monitor.update_monitor(update, &self.broadcaster, &self.fee_estimator, &self.logger);
 
 				let update_id = update.update_id;
-				let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 				let persist_res = if update_res.is_err() {
 					// Even if updating the monitor returns an error, the monitor's state will
 					// still be changed. Therefore, we should persist the updated monitor despite the error.
