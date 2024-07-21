@@ -77,7 +77,8 @@ impl RpcClient {
 			"id": &self.id.fetch_add(1, Ordering::AcqRel).to_string()
 		});
 
-		let mut client = if let Some(client) = self.client.lock().unwrap().take() {
+		let reserved_client = self.client.lock().unwrap().take();
+		let mut client = if let Some(client) = reserved_client {
 			client
 		} else {
 			HttpClient::connect(&self.endpoint)?
