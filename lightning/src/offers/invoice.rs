@@ -1556,6 +1556,7 @@ mod tests {
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
+		assert!(!invoice.is_for_refund_without_paths());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
@@ -1653,6 +1654,7 @@ mod tests {
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
+		assert!(invoice.is_for_refund_without_paths());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
@@ -1843,6 +1845,37 @@ mod tests {
 		{
 			panic!("error building invoice: {:?}", e);
 		}
+	}
+
+	#[test]
+	fn builds_invoice_from_refund_with_path() {
+		let node_id = payer_pubkey();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let blinded_path = BlindedPath {
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
+			blinding_point: pubkey(41),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
+			],
+		};
+
+		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.path(blinded_path)
+			.build().unwrap();
+
+		let invoice = refund
+			.respond_using_derived_keys_no_std(
+				payment_paths(), payment_hash(), now(), &expanded_key, &entropy
+			)
+			.unwrap()
+			.build_and_sign(&secp_ctx)
+			.unwrap();
+		assert!(!invoice.message_paths().is_empty());
+		assert!(!invoice.is_for_refund_without_paths());
 	}
 
 	#[test]
