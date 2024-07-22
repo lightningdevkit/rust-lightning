@@ -29,12 +29,12 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::secp256k1::PublicKey;
 
 use crate::chain;
-use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 #[cfg(peer_storage)]
 use crate::chain::channelmonitor::write_chanmon_internal;
 use crate::chain::channelmonitor::{
-	Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent, TransactionOutputs,
-	WithChannelMonitor,
+	Balance, ChannelMonitor, ChannelMonitorUpdate, ClaimInfo, ClaimKey, ClaimMetadata,
+	MonitorEvent, TransactionOutputs, WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, WatchedOutput};
@@ -767,6 +767,59 @@ where
 		));
 
 		self.event_notifier.notify();
+		Ok(())
+	}
+
+	/// Provides the stored [`ClaimInfo`] and associated [`ClaimMetadata`] for a specified transaction.
+	///
+	/// This function is called in response to an [`Event::ClaimInfoRequest`] to provide the
+	/// necessary claim data that was previously persisted using the [`Event::PersistClaimInfo`]
+	/// event.
+	///
+	/// If no matching [`ChannelMonitor`] is found for the provided `channel_id`, it simply returns
+	/// an `Err(())`, which should never happen if [`Event::ClaimInfoRequest`] was generated. It
+	/// should be handled by the caller as a failure/panic, most probably a wrong `channel_id` was
+	/// provided.
+	///
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	pub fn provide_claim_info(
+		&self, channel_id: ChannelId, claim_key: ClaimKey, claim_metadata: ClaimMetadata,
+		claim_info: ClaimInfo,
+	) -> Result<(), ()> {
+		let monitors = self.monitors.read().unwrap();
+		let monitor_data = monitors.get(&channel_id).ok_or(())?;
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&self.fee_estimator);
+		monitor_data.monitor.provide_claim_info(
+			claim_key,
+			claim_metadata,
+			claim_info,
+			&self.broadcaster,
+			&bounded_fee_estimator,
+			&self.logger,
+		);
+
+		Ok(())
+	}
+
+	/// Notifies the system that [`ClaimInfo`] associated with a given `claim_key` has been durably
+	/// persisted.
+	///
+	/// This method should be called after a [`ClaimInfo`] is persisted in response to an
+	/// [`Event::PersistClaimInfo`]. The [`ClaimInfo`] will thus be removed from both in-memory and
+	/// on-disk storage within the [`ChannelMonitor`].
+	///
+	/// If no matching [`ChannelMonitor`] is found for the provided `channel_id`, it simply returns
+	/// an `Err(())`, which should never happen if [`Event::PersistClaimInfo`] was generated. It
+	/// should be handled by the caller as a failure/panic, most probably a wrong `channel_id` was
+	/// provided.
+	///
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	pub fn claim_info_persisted(
+		&self, channel_id: ChannelId, claim_key: ClaimKey,
+	) -> Result<(), ()> {
+		let monitors = self.monitors.read().unwrap();
+		let monitor_data = monitors.get(&channel_id).ok_or(())?;
+		monitor_data.monitor.claim_info_persisted(&claim_key);
 		Ok(())
 	}
 
