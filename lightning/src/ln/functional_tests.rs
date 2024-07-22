@@ -4528,6 +4528,9 @@ macro_rules! check_spendable_outputs {
 					},
 					Event::PersistClaimInfo{..}  => {
 						// Do Nothing
+					},
+					Event::ClaimInfoRequest{..}  => {
+						// Do Nothing
 					}
 					_ => panic!("Unexpected event"),
 				};

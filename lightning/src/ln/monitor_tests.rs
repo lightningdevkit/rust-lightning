@@ -2529,7 +2529,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 	// Since Bob was able to confirm his revoked commitment, he'll now try to claim the HTLCs
 	// through the success path.
-	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().iter().filter(|e| !matches!(e, Event::ClaimInfoRequest {..})).collect::<Vec<_>>().is_empty());
 	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	// Certain block `ConnectStyle`s cause an extra `ChannelClose` event to be emitted since the
 	// best block is updated before the confirmed transactions are notified.
