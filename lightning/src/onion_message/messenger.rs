@@ -1020,21 +1020,25 @@ where
 	}
 }
 
-macro_rules! drop_handled_events_and_abort { ($self: expr, $res: expr, $offset: expr, $event_queue: expr) => {
+macro_rules! drop_handled_events_and_abort { ($self: expr, $res_iter: expr, $event_queue: expr) => {
 	// We want to make sure to cleanly abort upon event handling failure. To this end, we drop all
 	// successfully handled events from the given queue, reset the events processing flag, and
 	// return, to have the events eventually replayed upon next invocation.
 	{
 		let mut queue_lock = $event_queue.lock().unwrap();
 
-		// We skip `$offset` result entries to reach the ones relevant for the given `$event_queue`.
-		let mut res_iter = $res.iter().skip($offset);
-
 		// Keep all events which previously error'd *or* any that have been added since we dropped
 		// the Mutex before.
-		queue_lock.retain(|_| res_iter.next().map_or(true, |r| r.is_err()));
+		let mut any_error = false;
+		queue_lock.retain(|_| {
+			$res_iter.next().map_or(true, |r| {
+				let is_err = r.is_err();
+				any_error |= is_err;
+				is_err
+			})
+		});
 
-		if $res.iter().any(|r| r.is_err()) {
+		if any_error {
 			// We failed handling some events. Return to have them eventually replayed.
 			$self.pending_events_processor.store(false, Ordering::Release);
 			return;
@@ -1384,7 +1388,8 @@ where
 			}
 			// Let the `OnionMessageIntercepted` events finish before moving on to peer_connecteds
 			let res = MultiResultFuturePoller::new(futures).await;
-			drop_handled_events_and_abort!(self, res, intercepted_msgs_offset, self.pending_intercepted_msgs_events);
+			let mut res_iter = res.iter().skip(intercepted_msgs_offset);
+			drop_handled_events_and_abort!(self, res_iter, self.pending_intercepted_msgs_events);
 		}
 
 		{
@@ -1407,7 +1412,8 @@ where
 					futures.push(future);
 				}
 				let res = MultiResultFuturePoller::new(futures).await;
-				drop_handled_events_and_abort!(self, res, 0, self.pending_peer_connected_events);
+				let mut res_iter = res.iter();
+				drop_handled_events_and_abort!(self, res_iter, self.pending_peer_connected_events);
 			}
 		}
 		self.pending_events_processor.store(false, Ordering::Release);
@@ -1479,21 +1485,11 @@ where
 			pending_peer_connected_events.shrink_to(10); // Limit total heap usage
 		}
 
-		if intercepted_msgs.len() == 1 {
-			let res = intercepted_msgs.into_iter().next().map(|ev| handler.handle_event(ev));
-			drop_handled_events_and_abort!(self, res, 0, self.pending_intercepted_msgs_events);
-		} else {
-			let res = intercepted_msgs.into_iter().map(|ev| handler.handle_event(ev)).collect::<Vec<_>>();
-			drop_handled_events_and_abort!(self, res, 0, self.pending_intercepted_msgs_events);
-		};
+		let mut res_iter = intercepted_msgs.into_iter().map(|ev| handler.handle_event(ev));
+		drop_handled_events_and_abort!(self, res_iter, self.pending_intercepted_msgs_events);
 
-		if peer_connecteds.len() == 1 {
-			let res = peer_connecteds.into_iter().next().map(|ev| handler.handle_event(ev));
-			drop_handled_events_and_abort!(self, res, 0, self.pending_peer_connected_events);
-		} else {
-			let res = peer_connecteds.into_iter().map(|ev| handler.handle_event(ev)).collect::<Vec<_>>();
-			drop_handled_events_and_abort!(self, res, 0, self.pending_peer_connected_events);
-		}
+		let mut res_iter = peer_connecteds.into_iter().map(|ev| handler.handle_event(ev));
+		drop_handled_events_and_abort!(self, res_iter, self.pending_peer_connected_events);
 
 		self.pending_events_processor.store(false, Ordering::Release);
 	}
