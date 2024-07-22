@@ -1,4 +1,4 @@
-    // This file is Copyright its original authors, visible in version control
+// This file is Copyright its original authors, visible in version control
 // history.
 //
 // This file is licensed under the Apache License, Version 2.0 <LICENSE-APACHE
@@ -690,8 +690,8 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// From [`Offer::paths`] or [`Refund::paths`].
 	///
 	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
-	pub fn message_paths(&$self) -> &[BlindedPath] {
-		$contents.message_paths()
+	pub fn offer_request_paths(&$self) -> &[BlindedPath] {
+		$contents.offer_request_paths()
 	}
 
 	/// The quantity of items supported.
@@ -726,9 +726,9 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// A possibly transient pubkey used to sign the invoice request or to send an invoice for a
-	/// refund in case there are no [`message_paths`].
+	/// refund in case there are no [`offer_request_paths`].
 	///
-	/// [`message_paths`]: Self::message_paths
+	/// [`offer_request_paths`]: Self::offer_request_paths
 	pub fn payer_id(&$self) -> PublicKey {
 		$contents.payer_id()
 	}
@@ -891,7 +891,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn message_paths(&self) -> &[BlindedPath] {
+	fn offer_request_paths(&self) -> &[BlindedPath] {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				invoice_request.inner.offer.paths()
@@ -1102,7 +1102,7 @@ impl InvoiceFields {
 			fallbacks: self.fallbacks.as_ref(),
 			features,
 			node_id: Some(&self.signing_pubkey),
-			message_paths: None,
+			invoice_message_paths: None,
 		}
 	}
 }
@@ -1171,7 +1171,7 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
 	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
 	(176, node_id: PublicKey),
 	// Only present in `StaticInvoice`s.
-	(238, message_paths: (Vec<BlindedPath>, WithoutLength)),
+	(238, invoice_message_paths: (Vec<BlindedPath>, WithoutLength)),
 });
 
 pub(super) type BlindedPathIter<'a> = core::iter::Map<
@@ -1309,11 +1309,11 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			invoice_request_tlv_stream,
 			InvoiceTlvStream {
 				paths, blindedpay, created_at, relative_expiry, payment_hash, amount, fallbacks,
-				features, node_id, message_paths,
+				features, node_id, invoice_message_paths,
 			},
 		) = tlv_stream;
 
-		if message_paths.is_some() { return Err(Bolt12SemanticError::UnexpectedPaths) }
+		if invoice_message_paths.is_some() { return Err(Bolt12SemanticError::UnexpectedPaths) }
 
 		let payment_paths = construct_payment_paths(blindedpay, paths)?;
 
@@ -1475,7 +1475,7 @@ mod tests {
 		assert_eq!(unsigned_invoice.description(), Some(PrintableString("")));
 		assert_eq!(unsigned_invoice.offer_features(), Some(&OfferFeatures::empty()));
 		assert_eq!(unsigned_invoice.absolute_expiry(), None);
-		assert_eq!(unsigned_invoice.message_paths(), &[]);
+		assert_eq!(unsigned_invoice.offer_request_paths(), &[]);
 		assert_eq!(unsigned_invoice.issuer(), None);
 		assert_eq!(unsigned_invoice.supported_quantity(), Some(Quantity::One));
 		assert_eq!(unsigned_invoice.signing_pubkey(), recipient_pubkey());
@@ -1517,7 +1517,7 @@ mod tests {
 		assert_eq!(invoice.description(), Some(PrintableString("")));
 		assert_eq!(invoice.offer_features(), Some(&OfferFeatures::empty()));
 		assert_eq!(invoice.absolute_expiry(), None);
-		assert_eq!(invoice.message_paths(), &[]);
+		assert_eq!(invoice.offer_request_paths(), &[]);
 		assert_eq!(invoice.issuer(), None);
 		assert_eq!(invoice.supported_quantity(), Some(Quantity::One));
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
@@ -1580,7 +1580,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
-					message_paths: None,
+					invoice_message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 			),
@@ -1614,7 +1614,7 @@ mod tests {
 		assert_eq!(invoice.description(), Some(PrintableString("")));
 		assert_eq!(invoice.offer_features(), None);
 		assert_eq!(invoice.absolute_expiry(), None);
-		assert_eq!(invoice.message_paths(), &[]);
+		assert_eq!(invoice.offer_request_paths(), &[]);
 		assert_eq!(invoice.issuer(), None);
 		assert_eq!(invoice.supported_quantity(), None);
 		assert_eq!(invoice.signing_pubkey(), recipient_pubkey());
@@ -1672,7 +1672,7 @@ mod tests {
 					fallbacks: None,
 					features: None,
 					node_id: Some(&recipient_pubkey()),
-					message_paths: None,
+					invoice_message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 			),
@@ -2445,7 +2445,7 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_parsing_invoice_with_message_paths() {
+	fn fails_parsing_invoice_with_invoice_message_paths() {
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
@@ -2466,8 +2466,8 @@ mod tests {
 		};
 
 		let mut tlv_stream = invoice.as_tlv_stream();
-		let message_paths = vec![blinded_path];
-		tlv_stream.3.message_paths = Some(&message_paths);
+		let invoice_message_paths = vec![blinded_path];
+		tlv_stream.3.invoice_message_paths = Some(&invoice_message_paths);
 
 		match Bolt12Invoice::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
