@@ -34,7 +34,8 @@ impl RestClient {
 	{
 		let host = format!("{}:{}", self.endpoint.host(), self.endpoint.port());
 		let uri = format!("{}/{}", self.endpoint.path().trim_end_matches("/"), resource_path);
-		let mut client = if let Some(client) = self.client.lock().unwrap().take() {
+		let reserved_client = self.client.lock().unwrap().take();
+		let mut client = if let Some(client) = reserved_client {
 			client
 		} else {
 			HttpClient::connect(&self.endpoint)?
