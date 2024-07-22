@@ -3502,15 +3502,26 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					Err(_) => return (claimable_outpoints, to_counterparty_output_info)
 				}
 			};
-		}
+			}
 
-		let commitment_number = 0xffffffffffff - ((((tx.input[0].sequence.0 as u64 & 0xffffff) << 3*8) | (tx.lock_time.to_consensus_u32() as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
+		let commitment_number = 0xffffffffffff - ((((tx.input[0].sequence.0 as u64 & 0xffffff) << 3 * 8) | (tx.lock_time.to_consensus_u32() as u64 & 0xffffff)) ^ self.commitment_transaction_number_obscure_factor);
 		if commitment_number >= self.get_min_seen_secret() {
-			let secret = self.get_secret(commitment_number).unwrap();
-			let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
-			let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
-			let revocation_pubkey = RevocationKey::from_basepoint(&self.onchain_tx_handler.secp_ctx,  &self.holder_revocation_basepoint, &per_commitment_point,);
-			let delayed_key = DelayedPaymentKey::from_basepoint(&self.onchain_tx_handler.secp_ctx, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key, &PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key));
+			if per_commitment_option.is_none() {
+				self.pending_events.push(Event::ClaimInfoRequest {
+					monitor_id: self.get_funding_txo().0,
+					claim_key: commitment_txid,
+					claim_metadata: ClaimMetadata {
+						block_hash: block_hash.clone(),
+						tx: tx.clone(),
+						height,
+					},
+				});
+			} else {
+				let secret = self.get_secret(commitment_number).unwrap();
+				let per_commitment_key = ignore_error!(SecretKey::from_slice(&secret));
+				let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
+				let revocation_pubkey = RevocationKey::from_basepoint(&self.onchain_tx_handler.secp_ctx, &self.holder_revocation_basepoint, &per_commitment_point);
+				let delayed_key = DelayedPaymentKey::from_basepoint(&self.onchain_tx_handler.secp_ctx, &self.counterparty_commitment_params.counterparty_delayed_payment_base_key, &PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key));
 
 			let revokeable_redeemscript = chan_utils::get_revokeable_redeemscript(&revocation_pubkey, self.counterparty_commitment_params.on_counterparty_tx_csv, &delayed_key);
 			let revokeable_p2wsh = revokeable_redeemscript.to_p2wsh();
@@ -3553,14 +3564,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						block_hash, per_commitment_claimable_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
-				} else {
-					// Our fuzzers aren't constrained by pesky things like valid signatures, so can
-					// spend our funding output with a transaction which doesn't match our past
-					// commitment transactions. Thus, we can only debug-assert here when not
-					// fuzzing.
-					debug_assert!(cfg!(fuzzing), "We should have per-commitment option for any recognized old commitment txn");
-					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
-						block_hash, [].iter().map(|reference| *reference), logger);
+					} else {
+						// Our fuzzers aren't constrained by pesky things like valid signatures, so can
+						// spend our funding output with a transaction which doesn't match our past
+						// commitment transactions. Thus, we can only debug-assert here when not
+						// fuzzing.
+						debug_assert!(cfg!(fuzzing), "We should have per-commitment option for any recognized old commitment txn");
+						fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
+							block_hash, [].iter().map(|reference| *reference), logger);
+					}
 				}
 			}
 		} else if let Some(per_commitment_claimable_data) = per_commitment_option {
