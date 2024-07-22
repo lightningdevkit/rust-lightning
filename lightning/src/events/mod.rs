@@ -583,6 +583,32 @@ pub enum Event {
 		/// [`UserConfig::manually_accept_inbound_channels`]: crate::util::config::UserConfig::manually_accept_inbound_channels
 		user_channel_id: u128,
 	},
+	/// Used to indicate that the counterparty node has provided the signature(s) required to
+	/// recover our funds in case they go offline.
+	///
+	/// It is safe (and your responsibility) to broadcast the funding transaction upon receiving this
+	/// event.
+	///
+	/// This event is only emitted if you called
+	/// [`ChannelManager::unsafe_manual_funding_transaction_generated`] instead of
+	/// [`ChannelManager::funding_transaction_generated`].
+	///
+	/// [`ChannelManager::unsafe_manual_funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::unsafe_manual_funding_transaction_generated
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	FundingTxBroadcastSafe {
+		/// The `channel_id` indicating which channel has reached this stage.
+		channel_id: ChannelId,
+		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`].
+		///
+		/// [`ChannelManager::create_channel`]: crate::ln::channelmanager::ChannelManager::create_channel
+		user_channel_id: u128,
+		/// The outpoint of the channel's funding transaction.
+		funding_txo: OutPoint,
+		/// The `node_id` of the channel counterparty.
+		counterparty_node_id: PublicKey,
+		/// The `temporary_channel_id` this channel used to be known by during channel establishment.
+		former_temporary_channel_id: ChannelId,
+	},
 	/// Indicates that we've been offered a payment and it needs to be claimed via calling
 	/// [`ChannelManager::claim_funds`] with the preimage given in [`PaymentPurpose`].
 	///
@@ -1628,7 +1654,17 @@ impl Writeable for Event {
 					(0, payment_id, required),
 					(2, invoice, required),
 					(4, responder, option),
-				})
+				});
+			},
+			&Event::FundingTxBroadcastSafe { ref channel_id, ref user_channel_id, ref funding_txo, ref counterparty_node_id, ref former_temporary_channel_id} => {
+				43u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, channel_id, required),
+					(2, user_channel_id, required),
+					(4, funding_txo, required),
+					(6, counterparty_node_id, required),
+					(8, former_temporary_channel_id, required),
+				});
 			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
@@ -2080,6 +2116,27 @@ impl MaybeReadable for Event {
 					}))
 				};
 				f()
+			},
+			43u8 => {
+				let mut channel_id = RequiredWrapper(None);
+				let mut user_channel_id = RequiredWrapper(None);
+				let mut funding_txo = RequiredWrapper(None);
+				let mut counterparty_node_id = RequiredWrapper(None);
+				let mut former_temporary_channel_id = RequiredWrapper(None);
+				read_tlv_fields!(reader, {
+					(0, channel_id, required),
+					(2, user_channel_id, required),
+					(4, funding_txo, required),
+					(6, counterparty_node_id, required),
+					(8, former_temporary_channel_id, required)
+				});
+				Ok(Some(Event::FundingTxBroadcastSafe {
+					channel_id: channel_id.0.unwrap(),
+					user_channel_id: user_channel_id.0.unwrap(),
+					funding_txo: funding_txo.0.unwrap(),
+					counterparty_node_id: counterparty_node_id.0.unwrap(),
+					former_temporary_channel_id: former_temporary_channel_id.0.unwrap(),
+				}))
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt

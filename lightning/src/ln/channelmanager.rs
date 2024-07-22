@@ -702,6 +702,51 @@ struct ClaimablePayment {
 	htlcs: Vec<ClaimableHTLC>,
 }
 
+/// Represent the channel funding transaction type.
+enum FundingType {
+	/// This variant is useful when we want LDK to validate the funding transaction and
+	/// broadcast it automatically.
+	///
+	/// This is the normal flow.
+	Checked(Transaction),
+	/// This variant is useful when we want to loosen the validation checks and allow to
+	/// manually broadcast the funding transaction, leaving the responsibility to the caller.
+	///
+	/// This is useful in cases of constructing the funding transaction as part of another
+	/// flow and the caller wants to perform the validation and broadcasting. An example of such
+	/// scenario could be when constructing the funding transaction as part of a Payjoin
+	/// transaction.
+	Unchecked(OutPoint),
+}
+
+impl FundingType {
+	fn txid(&self) -> Txid {
+		match self {
+			FundingType::Checked(tx) => tx.txid(),
+			FundingType::Unchecked(outp) => outp.txid,
+		}
+	}
+
+	fn transaction_or_dummy(&self) -> Transaction {
+		match self {
+			FundingType::Checked(tx) => tx.clone(),
+			FundingType::Unchecked(_) => Transaction {
+				version: bitcoin::transaction::Version::TWO,
+				lock_time: bitcoin::absolute::LockTime::ZERO,
+				input: Vec::new(),
+				output: Vec::new(),
+			},
+		}
+	}
+
+	fn is_manual_broadcast(&self) -> bool {
+		match self {
+			FundingType::Checked(_) => false,
+			FundingType::Unchecked(_) => true,
+		}
+	}
+}
+
 /// Information about claimable or being-claimed payments
 struct ClaimablePayments {
 	/// Map from payment hash to the payment data and any HTLCs which are to us and can be
@@ -2678,6 +2723,21 @@ macro_rules! send_channel_ready {
 		}
 	}}
 }
+macro_rules! emit_funding_tx_broadcast_safe_event {
+	($locked_events: expr, $channel: expr, $funding_txo: expr) => {
+		if !$channel.context.funding_tx_broadcast_safe_event_emitted() {
+			$locked_events.push_back((events::Event::FundingTxBroadcastSafe {
+				channel_id: $channel.context.channel_id(),
+				user_channel_id: $channel.context.get_user_id(),
+				funding_txo: $funding_txo,
+				counterparty_node_id: $channel.context.get_counterparty_node_id(),
+				former_temporary_channel_id: $channel.context.temporary_channel_id()
+					.expect("Unreachable: FundingTxBroadcastSafe event feature added to channel establishment process in LDK v0.0.124 where this should never be None."),
+			}, None));
+			$channel.context.set_funding_tx_broadcast_safe_event_emitted();
+		}
+	}
+}
 
 macro_rules! emit_channel_pending_event {
 	($locked_events: expr, $channel: expr) => {
@@ -4359,9 +4419,9 @@ where
 
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
-	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>, &Transaction) -> Result<OutPoint, &'static str>>(
+	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>) -> Result<OutPoint, &'static str>>(
 		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, is_batch_funding: bool,
-		mut find_funding_output: FundingOutput,
+		mut find_funding_output: FundingOutput, is_manual_broadcast: bool,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
@@ -4386,7 +4446,7 @@ where
 					let _: Result<(), _> = handle_error!(self, Err(err), counterparty);
 					Err($api_err)
 				} } }
-				match find_funding_output(&chan, &funding_transaction) {
+				match find_funding_output(&chan) {
 					Ok(found_funding_txo) => funding_txo = found_funding_txo,
 					Err(err) => {
 						let chan_err = ChannelError::close(err.to_owned());
@@ -4425,6 +4485,9 @@ where
 				msg,
 			});
 		}
+		if is_manual_broadcast {
+			chan.context.set_manual_broadcast();
+		}
 		match peer_state.channel_by_id.entry(chan.context.channel_id()) {
 			hash_map::Entry::Occupied(_) => {
 				panic!("Generated duplicate funding txid?");
@@ -4454,9 +4517,10 @@ where
 
 	#[cfg(test)]
 	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
-		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, false, |_, tx| {
-			Ok(OutPoint { txid: tx.txid(), index: output_index })
-		})
+		let txid = funding_transaction.txid();
+		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, false, |_| {
+			Ok(OutPoint { txid, index: output_index })
+		}, false)
 	}
 
 	/// Call this upon creation of a funding transaction for the given channel.
@@ -4493,6 +4557,42 @@ where
 		self.batch_funding_transaction_generated(&[(temporary_channel_id, counterparty_node_id)], funding_transaction)
 	}
 
+
+	/// **Unsafe**: This method does not validate the spent output. It is the caller's
+	/// responsibility to ensure the spent outputs are SegWit, as well as making sure the funding
+	/// transaction has a final absolute locktime, i.e., its locktime is lower than the next block height.
+	///
+	/// For a safer method, please refer to [`ChannelManager::funding_transaction_generated`].
+	///
+	/// Call this in response to a [`Event::FundingGenerationReady`] event.
+	///
+	/// Note that if this method is called successfully, the funding transaction won't be
+	/// broadcasted and you are expected to broadcast it manually when receiving the
+	/// [`Event::FundingTxBroadcastSafe`] event.
+	///
+	/// Returns [`APIError::ChannelUnavailable`] if a funding transaction has already been provided
+	/// for the channel or if the channel has been closed as indicated by [`Event::ChannelClosed`].
+	///
+	/// May panic if the funding output is duplicative with some other channel (note that this
+	/// should be trivially prevented by using unique funding transaction keys per-channel).
+	///
+	/// Note to keep the miner incentives aligned in moving the blockchain forward, we recommend
+	/// the wallet software generating the funding transaction to apply anti-fee sniping as
+	/// implemented by Bitcoin Core wallet. See <https://bitcoinops.org/en/topics/fee-sniping/> for
+	/// more details.
+	///
+	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
+	/// [`Event::FundingTxBroadcastSafe`]: crate::events::Event::FundingTxBroadcastSafe
+	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
+	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
+	pub fn unsafe_manual_funding_transaction_generated(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding: OutPoint) -> Result<(), APIError> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
+		let temporary_channels = &[(temporary_channel_id, counterparty_node_id)];
+		return self.batch_funding_transaction_generated_intern(temporary_channels, FundingType::Unchecked(funding));
+
+	}
+
 	/// Call this upon creation of a batch funding transaction for the given channels.
 	///
 	/// Return values are identical to [`Self::funding_transaction_generated`], respective to
@@ -4516,12 +4616,17 @@ where
 				}
 			}
 		}
-		if funding_transaction.output.len() > u16::max_value() as usize {
-			result = result.and(Err(APIError::APIMisuseError {
-				err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
-			}));
-		}
-		{
+		result.and(self.batch_funding_transaction_generated_intern(temporary_channels, FundingType::Checked(funding_transaction)))
+	}
+
+	fn batch_funding_transaction_generated_intern(&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding: FundingType) -> Result<(), APIError> {
+		let mut result = Ok(());
+		if let FundingType::Checked(funding_transaction) = &funding {
+			if funding_transaction.output.len() > u16::max_value() as usize {
+				result = result.and(Err(APIError::APIMisuseError {
+					err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
+				}));
+			}
 			let height = self.best_block.read().unwrap().height;
 			// Transactions are evaluated as final by network mempools if their locktime is strictly
 			// lower than the next block height. However, the modules constituting our Lightning
@@ -4529,7 +4634,7 @@ where
 			// module is ahead of LDK, only allow one more block of headroom.
 			if !funding_transaction.input.iter().all(|input| input.sequence == Sequence::MAX) &&
 				funding_transaction.lock_time.is_block_height() &&
-				funding_transaction.lock_time.to_consensus_u32() > height + 1
+					funding_transaction.lock_time.to_consensus_u32() > height + 1
 			{
 				result = result.and(Err(APIError::APIMisuseError {
 					err: "Funding transaction absolute timelock is non-final".to_owned()
@@ -4537,7 +4642,7 @@ where
 			}
 		}
 
-		let txid = funding_transaction.txid();
+		let txid = funding.txid();
 		let is_batch_funding = temporary_channels.len() > 1;
 		let mut funding_batch_states = if is_batch_funding {
 			Some(self.funding_batch_states.lock().unwrap())
@@ -4555,27 +4660,33 @@ where
 				btree_map::Entry::Vacant(vacant) => Some(vacant.insert(Vec::new())),
 			}
 		});
+		let is_manual_broadcast = funding.is_manual_broadcast();
 		for &(temporary_channel_id, counterparty_node_id) in temporary_channels {
 			result = result.and_then(|_| self.funding_transaction_generated_intern(
 				temporary_channel_id,
 				counterparty_node_id,
-				funding_transaction.clone(),
+				funding.transaction_or_dummy(),
 				is_batch_funding,
-				|chan, tx| {
+				|chan| {
 					let mut output_index = None;
 					let expected_spk = chan.context.get_funding_redeemscript().to_p2wsh();
-					for (idx, outp) in tx.output.iter().enumerate() {
-						if outp.script_pubkey == expected_spk && outp.value.to_sat() == chan.context.get_value_satoshis() {
-							if output_index.is_some() {
-								return Err("Multiple outputs matched the expected script and value");
+					let outpoint = match &funding {
+						FundingType::Checked(tx) => {
+							for (idx, outp) in tx.output.iter().enumerate() {
+								if outp.script_pubkey == expected_spk && outp.value.to_sat() == chan.context.get_value_satoshis() {
+									if output_index.is_some() {
+										return Err("Multiple outputs matched the expected script and value");
+									}
+									output_index = Some(idx as u16);
+								}
 							}
-							output_index = Some(idx as u16);
-						}
-					}
-					if output_index.is_none() {
-						return Err("No output matched the script_pubkey and value in the FundingGenerationReady event");
-					}
-					let outpoint = OutPoint { txid: tx.txid(), index: output_index.unwrap() };
+							if output_index.is_none() {
+								return Err("No output matched the script_pubkey and value in the FundingGenerationReady event");
+							}
+							OutPoint { txid, index: output_index.unwrap() }
+						},
+						FundingType::Unchecked(outpoint) => outpoint.clone(),
+					};
 					if let Some(funding_batch_state) = funding_batch_state.as_mut() {
 						// TODO(dual_funding): We only do batch funding for V1 channels at the moment, but we'll probably
 						// need to fix this somehow to not rely on using the outpoint for the channel ID if we
@@ -4583,7 +4694,8 @@ where
 						funding_batch_state.push((ChannelId::v1_from_funding_outpoint(outpoint), *counterparty_node_id, false));
 					}
 					Ok(outpoint)
-				})
+				},
+				is_manual_broadcast)
 			);
 		}
 		if let Err(ref e) = result {
@@ -6910,8 +7022,22 @@ where
 		}
 
 		if let Some(tx) = funding_broadcastable {
-			log_info!(logger, "Broadcasting funding transaction with txid {}", tx.txid());
-			self.tx_broadcaster.broadcast_transactions(&[&tx]);
+			if channel.context.is_manual_broadcast() {
+				log_info!(logger, "Not broadcasting funding transaction with txid {} as it is manually managed", tx.txid());
+				let mut pending_events = self.pending_events.lock().unwrap();
+				match channel.context.get_funding_txo() {
+					Some(funding_txo) => {
+						emit_funding_tx_broadcast_safe_event!(pending_events, channel, funding_txo.into_bitcoin_outpoint())
+					},
+					None => {
+						debug_assert!(false, "Channel resumed without a funding txo, this should never happen!");
+						return (htlc_forwards, decode_update_add_htlcs);
+					}
+				};
+			} else {
+				log_info!(logger, "Broadcasting funding transaction with txid {}", tx.txid());
+				self.tx_broadcaster.broadcast_transactions(&[&tx]);
+			}
 		}
 
 		{
