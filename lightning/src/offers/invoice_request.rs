@@ -61,17 +61,16 @@ use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use core::ops::Deref;
-use crate::sign::EntropySource;
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
-use crate::ln::inbound_payment::{ExpandedKey, IV_LEN, Nonce};
+use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
+use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -170,11 +169,10 @@ macro_rules! invoice_request_explicit_payer_id_builder_methods { ($self: ident, 
 	}
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(super) fn deriving_metadata<ES: Deref>(
-		offer: &'a Offer, payer_id: PublicKey, expanded_key: &ExpandedKey, entropy_source: ES,
+	pub(super) fn deriving_metadata(
+		offer: &'a Offer, payer_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		payment_id: PaymentId,
-	) -> Self where ES::Target: EntropySource {
-		let nonce = Nonce::from_entropy_source(entropy_source);
+	) -> Self {
 		let payment_id = Some(payment_id);
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, payment_id);
 		let metadata = Metadata::Derived(derivation_material);
@@ -200,11 +198,10 @@ macro_rules! invoice_request_derived_payer_id_builder_methods { (
 	$self: ident, $self_type: ty, $secp_context: ty
 ) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(super) fn deriving_payer_id<ES: Deref>(
-		offer: &'a Offer, expanded_key: &ExpandedKey, entropy_source: ES,
+	pub(super) fn deriving_payer_id(
+		offer: &'a Offer, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'b Secp256k1<$secp_context>, payment_id: PaymentId
-	) -> Self where ES::Target: EntropySource {
-		let nonce = Nonce::from_entropy_source(entropy_source);
+	) -> Self {
 		let payment_id = Some(payment_id);
 		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, payment_id);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
@@ -604,15 +601,16 @@ pub struct InvoiceRequest {
 	signature: Signature,
 }
 
-/// An [`InvoiceRequest`] that has been verified by [`InvoiceRequest::verify`] and exposes different
-/// ways to respond depending on whether the signing keys were derived.
+/// An [`InvoiceRequest`] that has been verified by [`InvoiceRequest::verify_using_metadata`] or
+/// [`InvoiceRequest::verify_using_recipient_data`] and exposes different ways to respond depending
+/// on whether the signing keys were derived.
 #[derive(Clone, Debug)]
 pub struct VerifiedInvoiceRequest {
 	/// The identifier of the [`Offer`] for which the [`InvoiceRequest`] was made.
 	pub offer_id: OfferId,
 
 	/// The verified request.
-	inner: InvoiceRequest,
+	pub(crate) inner: InvoiceRequest,
 
 	/// Keys used for signing a [`Bolt12Invoice`] if they can be derived.
 	///
@@ -638,7 +636,7 @@ pub(super) struct InvoiceRequestContents {
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct InvoiceRequestContentsWithoutPayerId {
-	payer: PayerContents,
+	pub(super) payer: PayerContents,
 	pub(super) offer: OfferContents,
 	chain: Option<ChainHash>,
 	amount_msats: Option<u64>,
@@ -736,7 +734,9 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// # Note
 	///
 	/// If the originating [`Offer`] was created using [`OfferBuilder::deriving_signing_pubkey`],
-	/// then use [`InvoiceRequest::verify`] and [`VerifiedInvoiceRequest`] methods instead.
+	/// then first use [`InvoiceRequest::verify_using_metadata`] or
+	/// [`InvoiceRequest::verify_using_recipient_data`] and then [`VerifiedInvoiceRequest`] methods
+	/// instead.
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
@@ -773,12 +773,14 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 } }
 
 macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
-	/// Verifies that the request was for an offer created using the given key. Returns the verified
-	/// request which contains the derived keys needed to sign a [`Bolt12Invoice`] for the request
-	/// if they could be extracted from the metadata.
+	/// Verifies that the request was for an offer created using the given key by checking the
+	/// metadata from the offer.
+	///
+	/// Returns the verified request which contains the derived keys needed to sign a
+	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub fn verify<
+	pub fn verify_using_metadata<
 		#[cfg(not(c_bindings))]
 		T: secp256k1::Signing
 	>(
@@ -788,7 +790,8 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 		#[cfg(c_bindings)]
 		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<VerifiedInvoiceRequest, ()> {
-		let (offer_id, keys) = $self.contents.inner.offer.verify(&$self.bytes, key, secp_ctx)?;
+		let (offer_id, keys) =
+			$self.contents.inner.offer.verify_using_metadata(&$self.bytes, key, secp_ctx)?;
 		Ok(VerifiedInvoiceRequest {
 			offer_id,
 			#[cfg(not(c_bindings))]
@@ -799,6 +802,35 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 		})
 	}
 
+	/// Verifies that the request was for an offer created using the given key by checking a nonce
+	/// included with the [`BlindedPath`] for which the request was sent through.
+	///
+	/// Returns the verified request which contains the derived keys needed to sign a
+	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
+	///
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	pub fn verify_using_recipient_data<
+		#[cfg(not(c_bindings))]
+		T: secp256k1::Signing
+	>(
+		$self: $self_type, nonce: Nonce, key: &ExpandedKey,
+		#[cfg(not(c_bindings))]
+		secp_ctx: &Secp256k1<T>,
+		#[cfg(c_bindings)]
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<VerifiedInvoiceRequest, ()> {
+		let (offer_id, keys) = $self.contents.inner.offer.verify_using_recipient_data(
+			&$self.bytes, nonce, key, secp_ctx
+		)?;
+		Ok(VerifiedInvoiceRequest {
+			offer_id,
+			#[cfg(not(c_bindings))]
+			inner: $self,
+			#[cfg(c_bindings)]
+			inner: $self.clone(),
+			keys,
+		})
+	}
 } }
 
 #[cfg(not(c_bindings))]
@@ -919,10 +951,6 @@ impl VerifiedInvoiceRequest {
 impl InvoiceRequestContents {
 	pub(super) fn metadata(&self) -> &[u8] {
 		self.inner.metadata()
-	}
-
-	pub(super) fn derives_keys(&self) -> bool {
-		self.inner.payer.0.derives_payer_keys()
 	}
 
 	pub(super) fn chain(&self) -> ChainHash {
@@ -1216,6 +1244,7 @@ mod tests {
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};
 	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, TaggedHash, self};
+	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{Amount, OfferTlvStreamRef, Quantity};
 	#[cfg(not(c_bindings))]
 	use {
@@ -1366,6 +1395,7 @@ mod tests {
 		let payer_id = payer_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
@@ -1373,7 +1403,7 @@ mod tests {
 			.amount_msats(1000)
 			.build().unwrap();
 		let invoice_request = offer
-			.request_invoice_deriving_metadata(payer_id, &expanded_key, &entropy, payment_id)
+			.request_invoice_deriving_metadata(payer_id, &expanded_key, nonce, payment_id)
 			.unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
@@ -1383,10 +1413,11 @@ mod tests {
 			.unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
-		match invoice.verify(&expanded_key, &secp_ctx) {
+		match invoice.verify_using_metadata(&expanded_key, &secp_ctx) {
 			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
 			Err(()) => panic!("verification failed"),
 		}
+		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 
 		// Fails verification with altered fields
 		let (
@@ -1409,7 +1440,7 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered metadata
 		let (
@@ -1432,13 +1463,14 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 	}
 
 	#[test]
 	fn builds_invoice_request_with_derived_payer_id() {
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
@@ -1446,7 +1478,7 @@ mod tests {
 			.amount_msats(1000)
 			.build().unwrap();
 		let invoice_request = offer
-			.request_invoice_deriving_payer_id(&expanded_key, &entropy, &secp_ctx, payment_id)
+			.request_invoice_deriving_payer_id(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -1455,10 +1487,8 @@ mod tests {
 			.unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
-		match invoice.verify(&expanded_key, &secp_ctx) {
-			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
-			Err(()) => panic!("verification failed"),
-		}
+		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
+		assert!(invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 
 		// Fails verification with altered fields
 		let (
@@ -1481,7 +1511,7 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 
 		// Fails verification with altered payer id
 		let (
@@ -1504,7 +1534,7 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(invoice.verify(&expanded_key, &secp_ctx).is_err());
+		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
 	}
 
 	#[test]
@@ -2273,12 +2303,12 @@ mod tests {
 		let node_id = recipient_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
 		#[cfg(c_bindings)]
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder
-			::deriving_signing_pubkey(node_id, &expanded_key, &entropy, &secp_ctx)
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.chain(Network::Testnet)
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
@@ -2291,7 +2321,7 @@ mod tests {
 			.payer_note("0".repeat(PAYER_NOTE_LIMIT * 2))
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		match invoice_request.verify(&expanded_key, &secp_ctx) {
+		match invoice_request.verify_using_metadata(&expanded_key, &secp_ctx) {
 			Ok(invoice_request) => {
 				let fields = invoice_request.fields();
 				assert_eq!(invoice_request.offer_id, offer.id());

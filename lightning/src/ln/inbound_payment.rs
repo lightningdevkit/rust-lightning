@@ -13,12 +13,14 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use crate::sign::{KeyMaterial, EntropySource};
-use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::ln::msgs;
-use crate::ln::msgs::MAX_VALUE_MSAT;
+
 use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::utils::hkdf_extract_expand_5x;
+use crate::ln::msgs;
+use crate::ln::msgs::MAX_VALUE_MSAT;
+use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::offers::nonce::Nonce;
+use crate::sign::{KeyMaterial, EntropySource};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 
@@ -93,53 +95,6 @@ impl ExpandedKey {
 	pub(crate) fn crypt_for_offer(&self, mut bytes: [u8; 32], nonce: Nonce) -> [u8; 32] {
 		ChaCha20::encrypt_single_block_in_place(&self.offers_encryption_key, &nonce.0, &mut bytes);
 		bytes
-	}
-}
-
-/// A 128-bit number used only once.
-///
-/// Needed when constructing [`Offer::metadata`] and deriving [`Offer::signing_pubkey`] from
-/// [`ExpandedKey`]. Must not be reused for any other derivation without first hashing.
-///
-/// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
-/// [`Offer::signing_pubkey`]: crate::offers::offer::Offer::signing_pubkey
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Nonce(pub(crate) [u8; Self::LENGTH]);
-
-impl Nonce {
-	/// Number of bytes in the nonce.
-	pub const LENGTH: usize = 16;
-
-	/// Creates a `Nonce` from the given [`EntropySource`].
-	pub fn from_entropy_source<ES: Deref>(entropy_source: ES) -> Self
-	where
-		ES::Target: EntropySource,
-	{
-		let mut bytes = [0u8; Self::LENGTH];
-		let rand_bytes = entropy_source.get_secure_random_bytes();
-		bytes.copy_from_slice(&rand_bytes[..Self::LENGTH]);
-
-		Nonce(bytes)
-	}
-
-	/// Returns a slice of the underlying bytes of size [`Nonce::LENGTH`].
-	pub fn as_slice(&self) -> &[u8] {
-		&self.0
-	}
-}
-
-impl TryFrom<&[u8]> for Nonce {
-	type Error = ();
-
-	fn try_from(bytes: &[u8]) -> Result<Self, ()> {
-		if bytes.len() != Self::LENGTH {
-			return Err(());
-		}
-
-		let mut copied_bytes = [0u8; Self::LENGTH];
-		copied_bytes.copy_from_slice(bytes);
-
-		Ok(Self(copied_bytes))
 	}
 }
 

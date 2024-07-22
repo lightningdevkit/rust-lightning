@@ -22,6 +22,7 @@ use crate::io;
 use crate::io::Cursor;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::onion_utils;
+use crate::offers::nonce::Nonce;
 use crate::onion_message::packet::ControlTlvs;
 use crate::sign::{NodeSigner, Recipient};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
@@ -85,37 +86,71 @@ impl Writeable for ReceiveTlvs {
 	}
 }
 
-/// Represents additional data included by the recipient in a [`BlindedPath`].
+/// Additional data included by the recipient in a [`BlindedPath`].
 ///
-/// This data is encrypted by the recipient and remains invisible to anyone else.
-/// It is included in the [`BlindedPath`], making it accessible again to the recipient
-/// whenever the [`BlindedPath`] is used.
-/// The recipient can authenticate the message and utilize it for further processing
-/// if needed.
+/// This data is encrypted by the recipient and will be given to the corresponding message handler
+/// when handling a message sent over the [`BlindedPath`]. The recipient can use this data to
+/// authenticate the message or for further processing if needed.
 #[derive(Clone, Debug)]
 pub enum MessageContext {
-	/// Represents the data specific to [`OffersMessage`]
+	/// Context specific to an [`OffersMessage`].
 	///
 	/// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
 	Offers(OffersContext),
-	/// Represents custom data received in a Custom Onion Message.
+	/// Context specific to a [`CustomOnionMessageHandler::CustomMessage`].
+	///
+	/// [`CustomOnionMessageHandler::CustomMessage`]: crate::onion_message::messenger::CustomOnionMessageHandler::CustomMessage
 	Custom(Vec<u8>),
 }
 
-/// Contains the data specific to [`OffersMessage`]
+/// Contains data specific to an [`OffersMessage`].
 ///
 /// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OffersContext {
-	/// Represents an unknown BOLT12 payment context.
-	/// This variant is used when a message is sent without
-	/// using a [`BlindedPath`] or over one created prior to
-	/// LDK version 0.0.124.
+	/// Represents an unknown BOLT12 message context.
+	///
+	/// This variant is used when a message is sent without using a [`BlindedPath`] or over one
+	/// created prior to LDK version 0.0.124.
 	Unknown {},
-	/// Represents an outbound BOLT12 payment context.
+	/// Context used by a [`BlindedPath`] within an [`Offer`].
+	///
+	/// This variant is intended to be received when handling an [`InvoiceRequest`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	InvoiceRequest {
+		/// A nonce used for authenticating that an [`InvoiceRequest`] is for a valid [`Offer`] and
+		/// for deriving the offer's signing keys.
+		///
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		/// [`Offer`]: crate::offers::offer::Offer
+		nonce: Nonce,
+	},
+	/// Context used by a [`BlindedPath`] within a [`Refund`] or as a reply path for an
+	/// [`InvoiceRequest`].
+	///
+	/// This variant is intended to be received when handling a [`Bolt12Invoice`] or an
+	/// [`InvoiceError`].
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
 	OutboundPayment {
-		/// Payment ID of the outbound BOLT12 payment.
-		payment_id: PaymentId
+		/// Payment ID used when creating a [`Refund`] or [`InvoiceRequest`].
+		///
+		/// [`Refund`]: crate::offers::refund::Refund
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		payment_id: PaymentId,
+
+		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid [`Refund`] or
+		/// [`InvoiceRequest`] and for deriving their signing keys.
+		///
+		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+		/// [`Refund`]: crate::offers::refund::Refund
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		nonce: Nonce,
 	},
 }
 
@@ -126,8 +161,12 @@ impl_writeable_tlv_based_enum!(MessageContext,
 
 impl_writeable_tlv_based_enum!(OffersContext,
 	(0, Unknown) => {},
-	(1, OutboundPayment) => {
+	(1, InvoiceRequest) => {
+		(0, nonce, required),
+	},
+	(2, OutboundPayment) => {
 		(0, payment_id, required),
+		(1, nonce, required),
 	},
 );
 
