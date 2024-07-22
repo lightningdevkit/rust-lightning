@@ -1764,6 +1764,7 @@ mod fuzzy_internal_msgs {
 			payment_constraints: PaymentConstraints,
 			features: BlindedHopFeatures,
 			intro_node_blinding_point: Option<PublicKey>,
+			next_blinding_override: Option<PublicKey>,
 		},
 		BlindedReceive {
 			sender_intended_htlc_amt_msat: u64,
@@ -2808,7 +2809,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
 			match ChaChaPolyReadAdapter::read(&mut reader, rho)? {
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
-					short_channel_id, payment_relay, payment_constraints, features
+					short_channel_id, payment_relay, payment_constraints, features, next_blinding_override
 				})} => {
 					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
 						keysend_preimage.is_some()
@@ -2821,6 +2822,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						payment_constraints,
 						features,
 						intro_node_blinding_point,
+						next_blinding_override,
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {

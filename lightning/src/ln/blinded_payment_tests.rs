@@ -49,6 +49,7 @@ fn blinded_payment_path(
 					htlc_minimum_msat: intro_node_min_htlc_opt.take()
 						.unwrap_or_else(|| channel_upds[idx - 1].htlc_minimum_msat),
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: intro_node_max_htlc_opt.take()

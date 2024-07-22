@@ -151,6 +151,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 						short_channel_id,
 						payment_relay,
 						payment_constraints,
+						next_blinding_override: None,
 						features: BlindedHopFeatures::empty(),
 					},
 					node_id: details.counterparty.node_id,

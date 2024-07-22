@@ -75,12 +75,14 @@ pub(super) fn create_fwd_pending_htlc_info(
 	};
 
 	let (
-		short_channel_id, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point
+		short_channel_id, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point,
+		next_blinding_override
 	) = match hop_data {
 		msgs::InboundOnionPayload::Forward { short_channel_id, amt_to_forward, outgoing_cltv_value } =>
-			(short_channel_id, amt_to_forward, outgoing_cltv_value, None),
+			(short_channel_id, amt_to_forward, outgoing_cltv_value, None, None),
 		msgs::InboundOnionPayload::BlindedForward {
 			short_channel_id, payment_relay, payment_constraints, intro_node_blinding_point, features,
+			next_blinding_override,
 		} => {
 			let (amt_to_forward, outgoing_cltv_value) = check_blinded_forward(
 				msg.amount_msat, msg.cltv_expiry, &payment_relay, &payment_constraints, &features
@@ -93,7 +95,8 @@ pub(super) fn create_fwd_pending_htlc_info(
 					err_data: vec![0; 32],
 				}
 			})?;
-			(short_channel_id, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point)
+			(short_channel_id, amt_to_forward, outgoing_cltv_value, intro_node_blinding_point,
+			 next_blinding_override)
 		},
 		msgs::InboundOnionPayload::Receive { .. } | msgs::InboundOnionPayload::BlindedReceive { .. } =>
 			return Err(InboundHTLCErr {
@@ -110,6 +113,7 @@ pub(super) fn create_fwd_pending_htlc_info(
 			blinded: intro_node_blinding_point.or(msg.blinding_point)
 				.map(|bp| BlindedForward {
 					inbound_blinding_point: bp,
+					next_blinding_override,
 					failure: intro_node_blinding_point
 						.map(|_| BlindedFailure::FromIntroductionNode)
 						.unwrap_or(BlindedFailure::FromBlindedNode),

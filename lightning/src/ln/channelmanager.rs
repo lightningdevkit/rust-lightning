@@ -226,6 +226,10 @@ pub struct BlindedForward {
 	/// If needed, this determines how this HTLC should be failed backwards, based on whether we are
 	/// the introduction node.
 	pub failure: BlindedFailure,
+	/// Overrides the next hop's [`msgs::UpdateAddHTLC::blinding_point`]. Set if this HTLC is being
+	/// forwarded within a [`BlindedPaymentPath`] that was concatenated to another blinded path that
+	/// starts at the next hop.
+	pub next_blinding_override: Option<PublicKey>,
 }
 
 impl PendingHTLCRouting {
@@ -5313,12 +5317,14 @@ where
 									blinded_failure: blinded.map(|b| b.failure),
 								});
 								let next_blinding_point = blinded.and_then(|b| {
-									let encrypted_tlvs_ss = self.node_signer.ecdh(
-										Recipient::Node, &b.inbound_blinding_point, None
-									).unwrap().secret_bytes();
-									onion_utils::next_hop_pubkey(
-										&self.secp_ctx, b.inbound_blinding_point, &encrypted_tlvs_ss
-									).ok()
+									b.next_blinding_override.or_else(|| {
+										let encrypted_tlvs_ss = self.node_signer.ecdh(
+											Recipient::Node, &b.inbound_blinding_point, None
+										).unwrap().secret_bytes();
+										onion_utils::next_hop_pubkey(
+											&self.secp_ctx, b.inbound_blinding_point, &encrypted_tlvs_ss
+										).ok()
+									})
 								});
 
 								// Forward the HTLC over the most appropriate channel with the corresponding peer,
@@ -11034,6 +11040,7 @@ impl_writeable_tlv_based!(PhantomRouteHints, {
 impl_writeable_tlv_based!(BlindedForward, {
 	(0, inbound_blinding_point, required),
 	(1, failure, (default_value, BlindedFailure::FromIntroductionNode)),
+	(3, next_blinding_override, option),
 });
 
 impl_writeable_tlv_based_enum!(PendingHTLCRouting,

@@ -91,6 +91,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 				htlc_minimum_msat: 100,
 			},
 			features: BlindedHopFeatures::empty(),
+			next_blinding_override: None,
 		},
 		node_id: pubkey(43),
 		htlc_maximum_msat: 1_000_000_000_000,
