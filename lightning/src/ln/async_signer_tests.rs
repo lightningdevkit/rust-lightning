@@ -50,7 +50,7 @@ fn test_async_commitment_signature_for_funding_created() {
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
-	check_added_monitors(&nodes[0], 0);
+	check_added_monitors(&nodes[0], 0, 1);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -67,13 +67,13 @@ fn test_async_commitment_signature_for_funding_created() {
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	// nodes[0] <-- funding_signed --- nodes[1]
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
@@ -97,7 +97,7 @@ fn test_async_commitment_signature_for_funding_signed() {
 	// nodes[0] --- funding_created --> nodes[1]
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
-	check_added_monitors(&nodes[0], 0);
+	check_added_monitors(&nodes[0], 0, 1);
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
@@ -105,7 +105,7 @@ fn test_async_commitment_signature_for_funding_signed() {
 	// *not* broadcast a `funding_signed`...
 	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -124,7 +124,7 @@ fn test_async_commitment_signature_for_funding_signed() {
 	// nodes[0] <-- funding_signed --- nodes[1]
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
@@ -172,7 +172,7 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(enabl
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::ReleaseCommitmentSecret);
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
-	check_added_monitors(dst, 1);
+	check_added_monitors(dst, 1, 1);
 
 	let mut enabled_signer_ops = HashSet::new();
 	log_trace!(dst.logger, "enable_signer_op_order={:?}", enable_signer_op_order);
@@ -237,7 +237,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 	// nodes[0] --- funding_created --> nodes[1]
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
-	check_added_monitors(&nodes[0], 0);
+	check_added_monitors(&nodes[0], 0, 1);
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
@@ -245,7 +245,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 	// *not* broadcast a `funding_signed`...
 	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
@@ -278,7 +278,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
 	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let channel_ready_0 = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
 
@@ -357,7 +357,7 @@ fn do_test_async_raa_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCas
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
 	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
-	check_added_monitors(dst, 1);
+	check_added_monitors(dst, 1, 1);
 
 	let events = dst.node.get_and_clear_pending_msg_events();
 	assert!(events.is_empty(), "expected no message, got {}", events.len());
@@ -481,7 +481,7 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: UnblockSignerAc
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
-	check_added_monitors(dst, 1);
+	check_added_monitors(dst, 1, 1);
 
 	if test_case != UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		get_event_msg!(dst, MessageSendEvent::SendRevokeAndACK, src.node.get_our_node_id());
@@ -746,7 +746,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	if remote_commitment {
 		// Make the counterparty broadcast its latest commitment.
 		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
-		check_added_monitors(&nodes[1], 1);
+		check_added_monitors(&nodes[1], 1, 1);
 		check_closed_broadcast(&nodes[1], 1, true);
 		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[0].node.get_our_node_id()], 100_000);
 	} else {
@@ -796,7 +796,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, sign_htlc_op);
 	mine_transaction(&nodes[0], &commitment_tx);
 
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false, &[nodes[1].node.get_our_node_id()], 100_000);
 

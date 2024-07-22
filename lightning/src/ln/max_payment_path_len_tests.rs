@@ -199,7 +199,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		.with_custom_tlvs(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])])
 		.unwrap();
 	nodes[1].node.send_payment(payment_hash, recipient_onion_max_custom_tlv_size.clone(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 
 	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -229,7 +229,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	let mut recipient_onion_allows_2_hops = recipient_onion_max_custom_tlv_size.clone();
 	recipient_onion_allows_2_hops.custom_tlvs[0].1.resize(max_custom_tlv_len - INTERMED_PAYLOAD_LEN_ESTIMATE, 0);
 	nodes[0].node.send_payment(payment_hash, recipient_onion_allows_2_hops.clone(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -287,7 +287,7 @@ fn blinded_path_with_custom_tlv() {
 		.with_custom_tlvs(vec![(CUSTOM_TLV_TYPE, vec![42; max_custom_tlv_len])])
 		.unwrap();
 	nodes[1].node.send_payment(payment_hash, recipient_onion_max_custom_tlv_size.clone(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 
 	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -329,7 +329,7 @@ fn blinded_path_with_custom_tlv() {
 	let mut recipient_onion_allows_2_hops = recipient_onion_max_custom_tlv_size.clone();
 	recipient_onion_allows_2_hops.custom_tlvs[0].1.resize(max_custom_tlv_len - INTERMED_PAYLOAD_LEN_ESTIMATE, 0);
 	nodes[0].node.send_payment(payment_hash, recipient_onion_allows_2_hops.clone(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);

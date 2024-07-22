@@ -202,7 +202,7 @@ mod tests {
 
 		let (hash, onion, params) = payment_parameters_from_invoice(&invoice).unwrap();
 		nodes[0].node.send_payment(hash, onion, PaymentId(hash.0), params, Retry::Attempts(0)).unwrap();
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], 1, 1);
 		let send_event = SendEvent::from_node(&nodes[0]);
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
 		commitment_signed_dance!(nodes[1], nodes[0], &send_event.commitment_msg, false);

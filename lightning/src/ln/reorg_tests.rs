@@ -643,12 +643,12 @@ fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reor
 	// holder commitment.
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[1].node.get_our_node_id()], 100000);
 
 	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast(&nodes[1], 1, true);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[0].node.get_our_node_id()], 100000);
 
 	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -707,7 +707,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 
 	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 4;
 	nodes[0].node.timer_tick_occurred();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	let (update_fee, commit_sig) = if let MessageSendEvent::UpdateHTLCs { node_id, mut updates } = msg_events.pop().unwrap() {
@@ -726,7 +726,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 	// Force close with the latest commitment, confirm it, and reorg it with the previous commitment.
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[1].node.get_our_node_id()], 100000);
 
 	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -739,7 +739,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 	mine_transaction(&nodes[1], &current_commitment_a);
 
 	check_closed_broadcast(&nodes[1], 1, true);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false, &[nodes[0].node.get_our_node_id()], 100000);
 
 	disconnect_blocks(&nodes[0], 1);
@@ -811,7 +811,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	// Connect blocks until the HTLC expiry is met, prompting a commitment broadcast by A.
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	check_closed_event(&nodes[0], 1, ClosureReason::HTLCsTimedOut, false, &[nodes[1].node.get_our_node_id()], 100_000);
 
 	{
@@ -832,7 +832,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	// B will also broadcast its own commitment.
 	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
 	check_closed_broadcast(&nodes[1], 1, true);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[0].node.get_our_node_id()], 100_000);
 
 	let commitment_b = {

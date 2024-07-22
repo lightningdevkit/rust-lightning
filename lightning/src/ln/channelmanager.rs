@@ -13988,7 +13988,7 @@ mod tests {
 		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_closed_broadcast(&nodes[0], 1, true);
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], 1, 1);
 		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
 		{
 			let txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -14023,7 +14023,7 @@ mod tests {
 			nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &msg);
 		} else { panic!() };
 		check_closed_broadcast(&nodes[1], 1, true);
-		check_added_monitors(&nodes[1], 1);
+		check_added_monitors(&nodes[1], 1, 1);
 		let expected_close_reason = ClosureReason::ProcessingError {
 			err: "Peer sent an invalid channel_reestablish to force close in a non-standard way".to_string()
 		};

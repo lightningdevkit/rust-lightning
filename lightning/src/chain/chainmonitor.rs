@@ -1114,7 +1114,7 @@ mod tests {
 		assert_eq!(close_tx.len(), 1);
 
 		mine_transaction(&nodes[2], &close_tx[0]);
-		check_added_monitors(&nodes[2], 1);
+		check_added_monitors(&nodes[2], 1, 1);
 		check_closed_broadcast(&nodes[2], 1, true);
 		check_closed_event!(&nodes[2], 1, ClosureReason::CommitmentTxConfirmed, false,
 			[nodes[0].node.get_our_node_id()], 1000000);
@@ -1138,7 +1138,7 @@ mod tests {
 		// Confirm claim for node[0] with ANTI_REORG_DELAY and reset monitor write counter.
 		mine_transaction(&nodes[0], &close_tx[0]);
 		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], 1, 1);
 		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 
 		// Again connect 1 full cycle of DEFAULT_CHAINSYNC_MONITOR_PARTITION_FACTOR blocks, it should only
