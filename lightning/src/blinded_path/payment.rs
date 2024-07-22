@@ -61,6 +61,9 @@ pub struct ForwardTlvs {
 	///
 	/// [`BlindedHop::encrypted_payload`]: crate::blinded_path::BlindedHop::encrypted_payload
 	pub features: BlindedHopFeatures,
+	/// Set if this [`BlindedPath`] is concatenated to another, to indicate the
+	/// [`BlindedPath::blinding_point`] of the appended blinded path.
+	pub next_blinding_override: Option<PublicKey>,
 }
 
 /// Data to construct a [`BlindedHop`] for receiving a payment. This payload is custom to LDK and
@@ -240,6 +243,7 @@ impl Readable for BlindedPaymentTlvs {
 		_init_and_read_tlv_stream!(r, {
 			(1, _padding, option),
 			(2, scid, option),
+			(8, next_blinding_override, option),
 			(10, payment_relay, option),
 			(12, payment_constraints, required),
 			(14, features, option),
@@ -256,6 +260,7 @@ impl Readable for BlindedPaymentTlvs {
 				short_channel_id,
 				payment_relay: payment_relay.ok_or(DecodeError::InvalidValue)?,
 				payment_constraints: payment_constraints.0.unwrap(),
+				next_blinding_override,
 				features: features.unwrap_or_else(BlindedHopFeatures::empty),
 			}))
 		} else {
@@ -500,6 +505,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 100,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value(),
@@ -516,6 +522,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 1_000,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value(),
@@ -573,6 +580,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 1,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
@@ -589,6 +597,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 2_000,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
@@ -624,6 +633,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 5_000,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
@@ -640,6 +650,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 2_000,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
@@ -679,6 +690,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 1,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: 5_000,
@@ -695,6 +707,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 1,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: 10_000
