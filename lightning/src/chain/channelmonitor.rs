@@ -49,7 +49,7 @@ use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
 use crate::util::byte_utils;
-use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
+use crate::events::{ClaimInfo, ClaimMetadata, ClosureReason, Event, EventHandler, ReplayEvent};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
 
 #[allow(unused_imports)]
@@ -1578,6 +1578,28 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
 	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
 		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
+	}
+
+	/// Upon this call, the [`ClaimInfo`] for the given `counterparty_commitment_tx` is removed from
+	/// both in-memory and on-disk storage for this [`ChannelMonitor`], thereby optimizing memory and
+	/// disk usage.
+	///
+	/// See [`ChainMonitor::claim_info_persisted`] for more details.
+	pub fn remove_claim_info(&self, txid: &Txid) {
+		self.inner.lock().unwrap().remove_claim_info(txid);
+	}
+
+	/// This function should be called in response to a [`ClaimInfoRequest`] to provide the necessary claim data
+	/// that was previously persisted and removed during processing of [`PersistClaimInfo`] event.
+	pub(crate) fn provide_claim_info<B: Deref, F: Deref, L: Deref>(
+		&self, claim_key: Txid, claim_info: ClaimInfo, claim_metadata: ClaimMetadata, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L)
+	where B::Target: BroadcasterInterface,
+				F::Target: FeeEstimator,
+				L::Target: Logger,
+	{
+		let mut inner = self.inner.lock().unwrap();
+		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
+		inner.provide_claim_info(claim_key, claim_info, claim_metadata, broadcaster, fee_estimator, &logger);
 	}
 
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
@@ -3234,6 +3256,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut self.pending_monitor_events);
 		ret
+	}
+
+	fn remove_claim_info(&mut self, txid: &Txid) {
+		self.counterparty_claimable_outpoints.remove(txid);
+	}
+
+	fn provide_claim_info<B: Deref, F: Deref, L: Deref>(
+		&mut self, claim_key: Txid, claim_info: ClaimInfo, claim_metadata: ClaimMetadata, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>)
+	where B::Target: BroadcasterInterface,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
+	{
+		let claimable_outpoints: Vec<_> = claim_info.htlcs.into_iter().zip(core::iter::repeat(None)).collect();
+		self.counterparty_claimable_outpoints.insert(claim_key, claimable_outpoints);
+
+		let (claimable_outpoints, _) = self.check_spend_counterparty_transaction(&claim_metadata.tx, claim_metadata.height, &claim_metadata.block_hash, &logger);
+		let conf_target = self.closure_conf_target();
+		self.onchain_tx_handler.update_claims_view_from_requests(claimable_outpoints, claim_metadata.height, self.best_block.height, broadcaster, conf_target, &fee_estimator, logger);
 	}
 
 	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump

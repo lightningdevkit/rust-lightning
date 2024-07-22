@@ -28,12 +28,12 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
-use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::events::{self, Event, EventHandler, ReplayEvent};
+use crate::events::{self, ClaimInfo, ClaimMetadata, Event, EventHandler, ReplayEvent};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
@@ -520,6 +520,50 @@ where C::Target: chain::Filter,
 		}], monitor_data.monitor.get_counterparty_node_id()));
 
 		self.event_notifier.notify();
+		Ok(())
+	}
+
+	/// Provides the stored [`ClaimInfo`] and associated [`ClaimMetadata`] for a specified transaction.
+	///
+	/// This function is called in response to a [`ClaimInfoRequest`] to provide the necessary claim data
+	/// that was previously persisted using the [`PersistClaimInfo`] event.
+	///
+	/// If no matching `ChannelMonitor` is found for the provided `monitor_id`, it simply returns
+	/// an `Err(())`, which should never happen if [`ClaimInfoRequest`] was generated. It should be handled
+	/// by the caller as a failure/panic, most probably a wrong `monitor_id` was provided.
+	///
+	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
+	/// [`ClaimInfoRequest`]: Event::ClaimInfoRequest
+	pub fn provide_claim_info(&self, monitor_id: OutPoint, claim_key: Txid, claim_info: ClaimInfo, claim_metadata: ClaimMetadata) -> Result<(), ()> {
+		let monitors = self.monitors.read().unwrap();
+		let monitor_data = if let Some(mon) = monitors.get(&monitor_id) { mon } else {
+			return Err(());
+		};
+		let bounded_fee_estimator = LowerBoundedFeeEstimator(&*self.fee_estimator);
+		monitor_data.monitor.provide_claim_info(claim_key, claim_info, claim_metadata, &self.broadcaster, &bounded_fee_estimator, &self.logger);
+
+		Ok(())
+	}
+
+	/// Notifies the system that [`ClaimInfo`] associated with a given transaction has been successfully
+	/// persisted.
+	///
+	/// This method should be called after [`ClaimInfo`] is persisted via the [`PersistClaimInfo`] event
+	/// to confirm that the data is durably stored. Upon this call, the [`ClaimInfo`] is removed from
+	/// both in-memory and on-disk storage within the [`ChannelMonitor`], thereby optimizing memory and
+	/// disk usage.
+	/// 
+	/// If no matching `ChannelMonitor` is found for the provided `monitor_id`, it simply returns
+	/// an `Err(())`, which should never happen if [`PersistClaimInfo`] was generated. It should be handled
+	/// by the caller as a failure/panic, most probably a wrong `monitor_id` was provided.
+	///
+	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
+	pub fn claim_info_persisted(&self, monitor_id: OutPoint, claim_key: Txid) -> Result<(), ()> {
+		let monitors = self.monitors.read().unwrap();
+		let monitor_data = if let Some(mon) = monitors.get(&monitor_id) { mon } else {
+			return Err(());
+		};
+		monitor_data.monitor.remove_claim_info(&claim_key);
 		Ok(())
 	}
 
