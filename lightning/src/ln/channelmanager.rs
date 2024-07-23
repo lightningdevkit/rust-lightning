@@ -9117,7 +9117,11 @@ where
 				)?;
 				let builder: InvoiceBuilder<DerivedSigningPubkey> = builder.into();
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
-				let reply_paths = self.create_blinded_paths(OffersContext::Unknown {})
+
+				let context = OffersContext::InboundPayment {
+					payment_hash: invoice.payment_hash(),
+				};
+				let reply_paths = self.create_blinded_paths(context)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
