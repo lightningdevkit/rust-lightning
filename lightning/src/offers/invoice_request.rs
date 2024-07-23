@@ -1417,7 +1417,9 @@ mod tests {
 			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
 			Err(()) => panic!("verification failed"),
 		}
-		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 
 		// Fails verification with altered fields
 		let (
@@ -1488,7 +1490,9 @@ mod tests {
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
-		assert!(invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_ok()
+		);
 
 		// Fails verification with altered fields
 		let (
@@ -1511,7 +1515,9 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 
 		// Fails verification with altered payer id
 		let (
@@ -1534,7 +1540,9 @@ mod tests {
 		signature_tlv_stream.write(&mut encoded_invoice).unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 	}
 
 	#[test]

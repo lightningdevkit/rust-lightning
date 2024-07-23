@@ -4223,10 +4223,7 @@ where
 				invoice.verify_using_metadata(expanded_key, secp_ctx)
 			},
 			OffersContext::OutboundPayment { payment_id, nonce } => {
-				invoice
-					.verify_using_payer_data(*payment_id, *nonce, expanded_key, secp_ctx)
-					.then(|| *payment_id)
-					.ok_or(())
+				invoice.verify_using_payer_data(*payment_id, *nonce, expanded_key, secp_ctx)
 			},
 			_ => Err(()),
 		}

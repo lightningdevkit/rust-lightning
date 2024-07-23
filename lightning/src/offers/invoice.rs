@@ -790,12 +790,13 @@ impl Bolt12Invoice {
 	/// sent through.
 	pub fn verify_using_payer_data<T: secp256k1::Signing>(
 		&self, payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> bool {
+	) -> Result<PaymentId, ()> {
 		let metadata = Metadata::payer_data(payment_id, nonce, key);
-		match self.contents.verify(TlvStream::new(&self.bytes), &metadata, key, secp_ctx) {
-			Ok(extracted_payment_id) => payment_id == extracted_payment_id,
-			Err(()) => false,
-		}
+		self.contents.verify(TlvStream::new(&self.bytes), &metadata, key, secp_ctx)
+			.and_then(|extracted_payment_id| (payment_id == extracted_payment_id)
+				.then(|| payment_id)
+				.ok_or(())
+			)
 	}
 
 	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
