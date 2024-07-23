@@ -210,7 +210,7 @@ macro_rules! refund_builder_methods { (
 		}
 
 		let payment_id = Some(payment_id);
-		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, payment_id);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, payment_id);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Ok(Self {
 			refund: RefundContents {
@@ -316,7 +316,8 @@ macro_rules! refund_builder_methods { (
 				tlv_stream.2.payer_id = None;
 			}
 
-			let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
+			let (derived_metadata, keys) =
+				metadata.derive_from(IV_BYTES, tlv_stream, $self.secp_ctx);
 			metadata = derived_metadata;
 			if let Some(keys) = keys {
 				$self.refund.payer_id = keys.public_key();

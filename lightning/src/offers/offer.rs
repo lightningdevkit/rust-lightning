@@ -258,7 +258,7 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'a Secp256k1<$secp_context>
 	) -> Self {
-		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, None);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, None);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Self {
 			offer: OfferContents {
@@ -405,7 +405,8 @@ macro_rules! offer_builder_methods { (
 				// Either replace the signing pubkey with the derived pubkey or include the metadata
 				// for verification. In the former case, the blinded paths must include
 				// `OffersContext::InvoiceRequest` instead.
-				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
+				let (derived_metadata, keys) =
+					metadata.derive_from(IV_BYTES, tlv_stream, $self.secp_ctx);
 				match keys {
 					Some(keys) => $self.offer.signing_pubkey = Some(keys.public_key()),
 					None => $self.offer.metadata = Some(derived_metadata),
