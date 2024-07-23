@@ -4629,23 +4629,22 @@ where
 	/// If there is an error, all channels in the batch are to be considered closed.
 	pub fn batch_funding_transaction_generated(&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding_transaction: Transaction) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let mut result = Ok(());
-
-		if !funding_transaction.is_coinbase() {
-			for inp in funding_transaction.input.iter() {
-				if inp.witness.is_empty() {
-					result = result.and(Err(APIError::APIMisuseError {
-						err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
-					}));
-				}
-			}
-		}
-		result.and(self.batch_funding_transaction_generated_intern(temporary_channels, FundingType::Checked(funding_transaction)))
+		self.batch_funding_transaction_generated_intern(temporary_channels, FundingType::Checked(funding_transaction))
 	}
 
 	fn batch_funding_transaction_generated_intern(&self, temporary_channels: &[(&ChannelId, &PublicKey)], funding: FundingType) -> Result<(), APIError> {
 		let mut result = Ok(());
 		if let FundingType::Checked(funding_transaction) = &funding {
+			if !funding_transaction.is_coinbase() {
+				for inp in funding_transaction.input.iter() {
+					if inp.witness.is_empty() {
+						result = result.and(Err(APIError::APIMisuseError {
+							err: "Funding transaction must be fully signed and spend Segwit outputs".to_owned()
+						}));
+					}
+				}
+			}
+
 			if funding_transaction.output.len() > u16::max_value() as usize {
 				result = result.and(Err(APIError::APIMisuseError {
 					err: "Transaction had more than 2^16 outputs, which is not supported".to_owned()
