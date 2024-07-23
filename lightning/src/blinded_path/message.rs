@@ -108,11 +108,6 @@ pub enum MessageContext {
 /// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OffersContext {
-	/// Represents an unknown BOLT12 message context.
-	///
-	/// This variant is used when a message is sent without using a [`BlindedPath`] or over one
-	/// created prior to LDK version 0.0.124.
-	Unknown {},
 	/// Context used by a [`BlindedPath`] within an [`Offer`].
 	///
 	/// This variant is intended to be received when handling an [`InvoiceRequest`].
@@ -172,15 +167,14 @@ impl_writeable_tlv_based_enum!(MessageContext,
 );
 
 impl_writeable_tlv_based_enum!(OffersContext,
-	(0, Unknown) => {},
-	(1, InvoiceRequest) => {
+	(0, InvoiceRequest) => {
 		(0, nonce, required),
 	},
-	(2, OutboundPayment) => {
+	(1, OutboundPayment) => {
 		(0, payment_id, required),
 		(1, nonce, required),
 	},
-	(3, InboundPayment) => {
+	(2, InboundPayment) => {
 		(0, payment_hash, required),
 	},
 );

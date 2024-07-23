@@ -4204,7 +4204,7 @@ where
 	///
 	/// [timer tick]: Self::timer_tick_occurred
 	pub fn send_payment_for_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: &OffersContext,
+		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
 		match self.verify_bolt12_invoice(invoice, context) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
@@ -4213,17 +4213,17 @@ where
 	}
 
 	fn verify_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: &OffersContext,
+		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<PaymentId, ()> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
 		match context {
-			OffersContext::Unknown {} if invoice.is_for_refund_without_paths() => {
+			None if invoice.is_for_refund_without_paths() => {
 				invoice.verify_using_metadata(expanded_key, secp_ctx)
 			},
-			OffersContext::OutboundPayment { payment_id, nonce } => {
-				invoice.verify_using_payer_data(*payment_id, *nonce, expanded_key, secp_ctx)
+			Some(&OffersContext::OutboundPayment { payment_id, nonce }) => {
+				invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx)
 			},
 			_ => Err(()),
 		}
@@ -10712,13 +10712,17 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	fn handle_message(&self, message: OffersMessage, context: OffersContext, responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
+	fn handle_message(
+		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
+	) -> ResponseInstruction<OffersMessage> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
 		let abandon_if_payment = |context| {
 			match context {
-				OffersContext::OutboundPayment { payment_id, .. } => self.abandon_payment(payment_id),
+				Some(OffersContext::OutboundPayment { payment_id, .. }) => {
+					self.abandon_payment(payment_id)
+				},
 				_ => {},
 			}
 		};
@@ -10731,8 +10735,8 @@ where
 				};
 
 				let nonce = match context {
-					OffersContext::Unknown {} if invoice_request.metadata().is_some() => None,
-					OffersContext::InvoiceRequest { nonce } => Some(nonce),
+					None if invoice_request.metadata().is_some() => None,
+					Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
 					_ => return ResponseInstruction::NoResponse,
 				};
 
@@ -10827,7 +10831,7 @@ where
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				let payment_id = match self.verify_bolt12_invoice(&invoice, &context) {
+				let payment_id = match self.verify_bolt12_invoice(&invoice, context.as_ref()) {
 					Ok(payment_id) => payment_id,
 					Err(()) => return ResponseInstruction::NoResponse,
 				};
@@ -10888,7 +10892,7 @@ where
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
 				let payment_hash = match context {
-					OffersContext::InboundPayment { payment_hash } => Some(payment_hash),
+					Some(OffersContext::InboundPayment { payment_hash }) => Some(payment_hash),
 					_ => None,
 				};
 				let logger = WithContext::from(&self.logger, None, None, payment_hash);

@@ -16,7 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::blinded_path::{BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
-use crate::blinded_path::message::{advance_path_by_one, ForwardNode, ForwardTlvs, MessageContext, OffersContext, ReceiveTlvs};
+use crate::blinded_path::message::{advance_path_by_one, ForwardNode, ForwardTlvs, MessageContext, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -1514,8 +1514,8 @@ where
 				match message {
 					ParsedOnionMessageContents::Offers(msg) => {
 						let context = match context {
-							None => OffersContext::Unknown {},
-							Some(MessageContext::Offers(context)) => context,
+							None => None,
+							Some(MessageContext::Offers(context)) => Some(context),
 							Some(MessageContext::Custom(_)) => {
 								debug_assert!(false, "Shouldn't have triggered this case.");
 								return
