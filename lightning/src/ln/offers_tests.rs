@@ -2066,3 +2066,34 @@ fn fails_paying_invoice_more_than_once() {
 	let invoice_error = extract_invoice_error(alice, &onion_message);
 	assert_eq!(invoice_error, InvoiceError::from_string("DuplicateInvoice".to_string()));
 }
+
+#[test]
+fn fails_paying_offer_with_insufficient_liquidity() {
+	let channel_mon_config = create_chanmon_cfgs(2);
+	let node_config = create_node_cfgs(2, &channel_mon_config);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_config, &[None, None]);
+	let nodes = create_network(2, &node_config, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let (alice, bob) = (&nodes[0], &nodes[1]);
+	let alice_id = alice.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder(None).unwrap()
+		.clear_paths()
+		.amount_msats(1_000_000_001)
+		.build().unwrap();
+	assert_eq!(offer.signing_pubkey(), Some(alice_id));
+	assert!(offer.paths().is_empty());
+
+	let payment_id = PaymentId([1; 32]);
+
+	let result = bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None);
+	match result {
+		Ok(_) => panic!("Expected error with insufficient liquidity."),
+		Err(e) => {
+			assert_eq!(e, Bolt12CreationError::InsufficientLiquidity);
+		}
+	}
+}
