@@ -122,7 +122,8 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
+pub(super) const IV_BYTES_WITH_METADATA: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
+pub(super) const IV_BYTES_WITHOUT_METADATA: &[u8; IV_LEN] = b"LDK Refund v2~~~";
 
 /// Builds a [`Refund`] for the "offer for money" flow.
 ///
@@ -306,9 +307,12 @@ macro_rules! refund_builder_methods { (
 		if $self.refund.payer.0.has_derivation_material() {
 			let mut metadata = core::mem::take(&mut $self.refund.payer.0);
 
-			if $self.refund.paths.is_none() {
+			let iv_bytes = if $self.refund.paths.is_none() {
 				metadata = metadata.without_keys();
-			}
+				IV_BYTES_WITH_METADATA
+			} else {
+				IV_BYTES_WITHOUT_METADATA
+			};
 
 			let mut tlv_stream = $self.refund.as_tlv_stream();
 			tlv_stream.0.metadata = None;
@@ -317,7 +321,7 @@ macro_rules! refund_builder_methods { (
 			}
 
 			let (derived_metadata, keys) =
-				metadata.derive_from(IV_BYTES, tlv_stream, $self.secp_ctx);
+				metadata.derive_from(iv_bytes, tlv_stream, $self.secp_ctx);
 			metadata = derived_metadata;
 			if let Some(keys) = keys {
 				$self.refund.payer_id = keys.public_key();
