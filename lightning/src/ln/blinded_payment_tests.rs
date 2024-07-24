@@ -1485,7 +1485,7 @@ fn route_blinding_spec_test_vector() {
 	// < MIN_CLTV_EXPIRY_DELTA).
 	let (bob_peeled_onion, _, next_packet_details_opt) =
 		match onion_payment::decode_incoming_update_add_htlc_onion(
-			&bob_update_add, &&bob_node_signer, &&logger, &secp_ctx
+			&bob_update_add, &bob_node_signer, &logger, &secp_ctx
 		) {
 			Ok(res) => res,
 			_ => panic!("Unexpected error")
@@ -1519,7 +1519,7 @@ fn route_blinding_spec_test_vector() {
 	let carol_node_signer = TestEcdhSigner { node_secret: carol_secret };
 	let (carol_peeled_onion, _, next_packet_details_opt) =
 		match onion_payment::decode_incoming_update_add_htlc_onion(
-			&carol_update_add, &&carol_node_signer, &&logger, &secp_ctx
+			&carol_update_add, &carol_node_signer, &logger, &secp_ctx
 		) {
 			Ok(res) => res,
 			_ => panic!("Unexpected error")
@@ -1553,7 +1553,7 @@ fn route_blinding_spec_test_vector() {
 	let dave_node_signer = TestEcdhSigner { node_secret: dave_secret };
 	let (dave_peeled_onion, _, next_packet_details_opt) =
 		match onion_payment::decode_incoming_update_add_htlc_onion(
-			&dave_update_add, &&dave_node_signer, &&logger, &secp_ctx
+			&dave_update_add, &dave_node_signer, &logger, &secp_ctx
 		) {
 			Ok(res) => res,
 			_ => panic!("Unexpected error")
@@ -1588,7 +1588,7 @@ fn route_blinding_spec_test_vector() {
 	// We can't decode the final payload because it contains a path_id and is missing some LDK
 	// specific fields.
 	match onion_payment::decode_incoming_update_add_htlc_onion(
-		&eve_update_add, &&eve_node_signer, &&logger, &secp_ctx
+		&eve_update_add, &eve_node_signer, &logger, &secp_ctx
 	) {
 		Err(HTLCFailureMsg::Malformed(msg)) => assert_eq!(msg.failure_code, INVALID_ONION_BLINDING),
 		_ => panic!("Unexpected error")

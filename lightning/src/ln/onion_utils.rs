@@ -1133,7 +1133,7 @@ pub(crate) enum OnionDecodeErr {
 
 pub(crate) fn decode_next_payment_hop<NS: Deref>(
 	shared_secret: [u8; 32], hop_data: &[u8], hmac_bytes: [u8; 32], payment_hash: PaymentHash,
-	blinding_point: Option<PublicKey>, node_signer: &NS,
+	blinding_point: Option<PublicKey>, node_signer: NS,
 ) -> Result<Hop, OnionDecodeErr>
 where
 	NS::Target: NodeSigner,
