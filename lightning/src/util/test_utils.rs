@@ -77,6 +77,7 @@ use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSig
 
 use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
+use crate::events::ClaimInfo;
 
 use super::test_channel_signer::SignerOp;
 
@@ -366,6 +367,8 @@ pub struct TestChainMonitor<'a> {
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<channelmonitor::ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (OutPoint, u64, u64)>>,
 	pub chain_monitor: chainmonitor::ChainMonitor<TestChannelSigner, &'a TestChainSource, &'a dyn chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a dyn chainmonitor::Persist<TestChannelSigner>>,
+
+	pub persisted_claim_info: Mutex<HashMap<(OutPoint, Txid), ClaimInfo>>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
 	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
@@ -382,6 +385,7 @@ impl<'a> TestChainMonitor<'a> {
 			monitor_updates: Mutex::new(new_hash_map()),
 			latest_monitor_update_id: Mutex::new(new_hash_map()),
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
+			persisted_claim_info: Mutex::new(new_hash_map()),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
 			expect_monitor_round_trip_fail: Mutex::new(None),

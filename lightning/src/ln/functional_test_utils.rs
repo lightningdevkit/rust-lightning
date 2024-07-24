@@ -1076,9 +1076,18 @@ pub fn check_added_monitors_with_expected_claim_info_events<CM: AChannelManager,
 			if let Some(updates) = updates_opt {
 				for update in updates.updates.iter() {
 					if let ChannelMonitorUpdateStep::CommitmentSecret { .. } = update {
+						let persist_claim_info_events = chain_monitor.chain_monitor.free_claim_info_events();
 						added_claim_info_events = Some(
-							added_claim_info_events.unwrap_or_default() + chain_monitor.chain_monitor.free_claim_info_events().len()
+							added_claim_info_events.unwrap_or_default() + persist_claim_info_events.len()
 						);
+						for event in persist_claim_info_events {
+							match event {
+								Event::PersistClaimInfo { monitor_id, claim_key, claim_info} => {
+									chain_monitor.persisted_claim_info.lock().unwrap().insert((monitor_id, claim_key), claim_info);
+								}
+								_ => panic!(),
+							}
+						}
 					}
 				}
 			}
