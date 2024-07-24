@@ -2027,15 +2027,12 @@ fn fails_paying_invoice_more_than_once() {
 	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
 	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
 
-	// David pays the first invoice
+	// David initiates paying the first invoice
 	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
 	let (invoice1, _) = extract_invoice(david, &onion_message);
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice1);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
-
-	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context);
-	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 
 	disconnect_peers(alice, &[charlie]);
 
@@ -2054,13 +2051,11 @@ fn fails_paying_invoice_more_than_once() {
 	let (invoice2, _) = extract_invoice(david, &onion_message);
 	assert_eq!(invoice1.payer_metadata(), invoice2.payer_metadata());
 
-	// David sends an error instead of paying the second invoice
-	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
-	bob.onion_messenger.handle_onion_message(&david_id, &onion_message);
+	// David doesn't initiate paying the second invoice
+	assert!(david.onion_messenger.next_onion_message_for_peer(bob_id).is_none());
+	assert!(david.node.get_and_clear_pending_msg_events().is_empty());
 
-	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
-	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
-
-	let invoice_error = extract_invoice_error(alice, &onion_message);
-	assert_eq!(invoice_error, InvoiceError::from_string("DuplicateInvoice".to_string()));
+	// Complete paying the first invoice
+	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context);
+	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 }
