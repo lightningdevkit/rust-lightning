@@ -27,7 +27,7 @@ use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::invoice_request::InvoiceRequestFields;
 use crate::offers::offer::OfferId;
 use crate::sign::{NodeSigner, Recipient};
-use crate::util::ser::{FixedLengthReader, LengthReadableArgs, HighZeroBytesDroppedBigSize, Readable, Writeable, Writer};
+use crate::util::ser::{FixedLengthReader, LengthReadableArgs, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 
 use core::mem;
 use core::ops::Deref;
@@ -205,7 +205,7 @@ impl Writeable for ForwardTlvs {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		let features_opt =
 			if self.features == BlindedHopFeatures::empty() { None }
-			else { Some(&self.features) };
+			else { Some(WithoutLength(&self.features)) };
 		encode_tlv_stream!(w, {
 			(2, self.short_channel_id, required),
 			(10, self.payment_relay, required),
@@ -246,7 +246,7 @@ impl Readable for BlindedPaymentTlvs {
 			(8, next_blinding_override, option),
 			(10, payment_relay, option),
 			(12, payment_constraints, required),
-			(14, features, option),
+			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, (default_value, PaymentContext::unknown())),
 		});
