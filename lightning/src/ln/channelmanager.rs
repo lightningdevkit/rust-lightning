@@ -3832,7 +3832,7 @@ where
 		(onion_utils::Hop, [u8; 32], Option<Result<PublicKey, secp256k1::Error>>), HTLCFailureMsg
 	> {
 		let (next_hop, shared_secret, next_packet_details_opt) = decode_incoming_update_add_htlc_onion(
-			msg, &self.node_signer, &self.logger, &self.secp_ctx
+			msg, &*self.node_signer, &*self.logger, &self.secp_ctx
 		)?;
 
 		let next_packet_details = match next_packet_details_opt {
@@ -5049,7 +5049,7 @@ where
 			let mut htlc_fails = Vec::new();
 			for update_add_htlc in &update_add_htlcs {
 				let (next_hop, shared_secret, next_packet_details_opt) = match decode_incoming_update_add_htlc_onion(
-					&update_add_htlc, &self.node_signer, &self.logger, &self.secp_ctx
+					&update_add_htlc, &*self.node_signer, &*self.logger, &self.secp_ctx
 				) {
 					Ok(decoded_onion) => decoded_onion,
 					Err(htlc_fail) => {
@@ -5226,7 +5226,7 @@ where
 												let phantom_shared_secret = self.node_signer.ecdh(Recipient::PhantomNode, &onion_packet.public_key.unwrap(), None).unwrap().secret_bytes();
 												let next_hop = match onion_utils::decode_next_payment_hop(
 													phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac,
-													payment_hash, None, &self.node_signer
+													payment_hash, None, &*self.node_signer
 												) {
 													Ok(res) => res,
 													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {

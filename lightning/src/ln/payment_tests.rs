@@ -4284,7 +4284,7 @@ fn peel_payment_onion_custom_tlvs() {
 		blinding_point: None,
 	};
 	let peeled_onion = crate::ln::onion_payment::peel_payment_onion(
-		&update_add, &&chanmon_cfgs[1].keys_manager, &&chanmon_cfgs[1].logger, &secp_ctx,
+		&update_add, &chanmon_cfgs[1].keys_manager, &chanmon_cfgs[1].logger, &secp_ctx,
 		nodes[1].best_block_info().1, true, false
 	).unwrap();
 	assert_eq!(peeled_onion.incoming_amt_msat, Some(amt_msat));

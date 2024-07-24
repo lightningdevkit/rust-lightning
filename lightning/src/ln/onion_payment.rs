@@ -280,7 +280,7 @@ pub(super) fn create_recv_pending_htlc_info(
 ///
 /// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 pub fn peel_payment_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
-	msg: &msgs::UpdateAddHTLC, node_signer: &NS, logger: &L, secp_ctx: &Secp256k1<T>,
+	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
 	cur_height: u32, accept_mpp_keysend: bool, allow_skimmed_fees: bool,
 ) -> Result<PendingHTLCInfo, InboundHTLCErr>
 where
@@ -346,7 +346,7 @@ pub(super) struct NextPacketDetails {
 }
 
 pub(super) fn decode_incoming_update_add_htlc_onion<NS: Deref, L: Deref, T: secp256k1::Verification>(
-	msg: &msgs::UpdateAddHTLC, node_signer: &NS, logger: &L, secp_ctx: &Secp256k1<T>,
+	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
 ) -> Result<(onion_utils::Hop, [u8; 32], Option<NextPacketDetails>), HTLCFailureMsg>
 where
 	NS::Target: NodeSigner,
@@ -574,7 +574,7 @@ mod tests {
 		let msg = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, onion);
 		let logger = test_utils::TestLogger::with_id("bob".to_string());
 
-		let peeled = peel_payment_onion(&msg, &&bob, &&logger, &secp_ctx, cur_height, true, false)
+		let peeled = peel_payment_onion(&msg, &bob, &logger, &secp_ctx, cur_height, true, false)
 			.map_err(|e| e.msg).unwrap();
 
 		let next_onion = match peeled.routing {
@@ -585,7 +585,7 @@ mod tests {
 		};
 
 		let msg2 = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, next_onion);
-		let peeled2 = peel_payment_onion(&msg2, &&charlie, &&logger, &secp_ctx, cur_height, true, false)
+		let peeled2 = peel_payment_onion(&msg2, &charlie, &logger, &secp_ctx, cur_height, true, false)
 			.map_err(|e| e.msg).unwrap();
 
 		match peeled2.routing {
