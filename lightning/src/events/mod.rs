@@ -501,7 +501,7 @@ impl_writeable_tlv_based_enum!(InterceptNextHop,
 /// The reason the payment failed. Used in [`Event::PaymentFailed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaymentFailureReason {
-	/// The intended recipient rejected our payment.
+	/// The intended recipient rejected our payment or invoice request.
 	RecipientRejected,
 	/// The user chose to abandon this payment by calling [`ChannelManager::abandon_payment`].
 	///
@@ -528,10 +528,13 @@ pub enum PaymentFailureReason {
 	/// This error should generally never happen. This likely means that there is a problem with
 	/// your router.
 	UnexpectedError,
+	/// An invoice was received that required unknown features.
+	UnknownRequiredFeatures,
 }
 
 impl_writeable_tlv_based_enum!(PaymentFailureReason,
 	(0, RecipientRejected) => {},
+	(1, UnknownRequiredFeatures) => {},
 	(2, UserAbandoned) => {},
 	(4, RetriesExhausted) => {},
 	(6, PaymentExpired) => {},
