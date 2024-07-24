@@ -10853,43 +10853,51 @@ where
 					&self.logger, None, None, Some(invoice.payment_hash()),
 				);
 
-				let result = {
-					let features = self.bolt12_invoice_features();
-					if invoice.invoice_features().requires_unknown_bits_from(&features) {
-						Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
-					} else if self.default_configuration.manually_handle_bolt12_invoices {
-						let event = Event::InvoiceReceived {
-							payment_id, invoice, context, responder,
-						};
-						self.pending_events.lock().unwrap().push_back((event, None));
-						return ResponseInstruction::NoResponse;
-					} else {
-						self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id)
-							.map_err(|e| {
-								log_trace!(logger, "Failed paying invoice: {:?}", e);
-								InvoiceError::from_string(format!("{:?}", e))
-							})
-					}
-				};
+				let features = self.bolt12_invoice_features();
+				if invoice.invoice_features().requires_unknown_bits_from(&features) {
+					log_trace!(
+						logger, "Invoice requires unknown features: {:?}",
+						invoice.invoice_features(),
+					);
+					abandon_if_payment(context);
 
-				match result {
-					Ok(_) => ResponseInstruction::NoResponse,
-					Err(err) => match responder {
-						Some(responder) => {
-							abandon_if_payment(context);
-							responder.respond(OffersMessage::InvoiceError(err))
-						},
+					let error = InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures);
+					let response = match responder {
+						Some(responder) => responder.respond(OffersMessage::InvoiceError(error)),
 						None => {
-							abandon_if_payment(context);
-							log_trace!(
-								logger,
-								"An error response was generated, but there is no reply_path specified \
-								for sending the response. Error: {}",
-								err
-							);
-							return ResponseInstruction::NoResponse;
+							log_trace!(logger, "No reply path to send error: {:?}", error);
+							ResponseInstruction::NoResponse
 						},
+					};
+					return response;
+				}
+
+				if self.default_configuration.manually_handle_bolt12_invoices {
+					let event = Event::InvoiceReceived {
+						payment_id, invoice, context, responder,
+					};
+					self.pending_events.lock().unwrap().push_back((event, None));
+					return ResponseInstruction::NoResponse;
+				}
+
+				match self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id) {
+					// Payments with SendingFailed error will already have been abandoned.
+					Err(Bolt12PaymentError::SendingFailed(e)) => {
+						log_trace!(logger, "Failed paying invoice: {:?}", e);
+
+						let err = InvoiceError::from_string(format!("{:?}", e));
+						match responder {
+							Some(responder) => responder.respond(OffersMessage::InvoiceError(err)),
+							None => {
+								log_trace!(logger, "No reply path to send error: {:?}", err);
+								ResponseInstruction::NoResponse
+							},
+						}
 					},
+					// Otherwise, don't abandon unknown, pending, or successful payments.
+					Err(Bolt12PaymentError::UnexpectedInvoice)
+						| Err(Bolt12PaymentError::DuplicateInvoice)
+						| Ok(()) => ResponseInstruction::NoResponse,
 				}
 			},
 			#[cfg(async_payments)]
