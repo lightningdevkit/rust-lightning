@@ -4275,8 +4275,12 @@ where
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
+		self.abandon_payment_with_reason(payment_id, PaymentFailureReason::UserAbandoned)
+	}
+
+	fn abandon_payment_with_reason(&self, payment_id: PaymentId, reason: PaymentFailureReason) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.pending_outbound_payments.abandon_payment(payment_id, PaymentFailureReason::UserAbandoned, &self.pending_events);
+		self.pending_outbound_payments.abandon_payment(payment_id, reason, &self.pending_events);
 	}
 
 	/// Send a spontaneous payment, which is a payment that does not require the recipient to have
@@ -10729,17 +10733,6 @@ where
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
-		let abandon_if_payment = |context| {
-			match context {
-				Some(OffersContext::OutboundPayment { payment_id, nonce, hmac }) => {
-					if signer::verify_payment_id(payment_id, hmac, nonce, expanded_key) {
-						self.abandon_payment(payment_id);
-					}
-				},
-				_ => {},
-			}
-		};
-
 		match message {
 			OffersMessage::InvoiceRequest(invoice_request) => {
 				let responder = match responder {
@@ -10859,7 +10852,9 @@ where
 						logger, "Invoice requires unknown features: {:?}",
 						invoice.invoice_features(),
 					);
-					abandon_if_payment(context);
+					self.abandon_payment_with_reason(
+						payment_id, PaymentFailureReason::UnknownRequiredFeatures,
+					);
 
 					let error = InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures);
 					let response = match responder {
@@ -10916,10 +10911,21 @@ where
 					Some(OffersContext::InboundPayment { payment_hash }) => Some(payment_hash),
 					_ => None,
 				};
+
 				let logger = WithContext::from(&self.logger, None, None, payment_hash);
 				log_trace!(logger, "Received invoice_error: {}", invoice_error);
 
-				abandon_if_payment(context);
+				match context {
+					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac }) => {
+						if signer::verify_payment_id(payment_id, hmac, nonce, expanded_key) {
+							self.abandon_payment_with_reason(
+								payment_id, PaymentFailureReason::RecipientRejected,
+							);
+						}
+					},
+					_ => {},
+				}
+
 				ResponseInstruction::NoResponse
 			},
 		}
