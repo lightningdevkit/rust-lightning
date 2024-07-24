@@ -1095,7 +1095,9 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 						for event in persist_claim_info_events {
 							match event {
 								Event::PersistClaimInfo { monitor_id, claim_key, claim_info} => {
-									chain_monitor.persisted_claim_info.lock().unwrap().insert((monitor_id, claim_key), claim_info);
+									let mut map_lock = chain_monitor.persisted_claim_info.lock().unwrap();
+									map_lock.insert((monitor_id, claim_key), claim_info);
+									drop(map_lock);
 								}
 								_ => panic!(),
 							}
