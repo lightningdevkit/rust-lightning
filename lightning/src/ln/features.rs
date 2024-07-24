@@ -98,6 +98,7 @@ impl_feature_write_without_length!(Bolt12InvoiceFeatures);
 impl_feature_write_without_length!(ChannelTypeFeatures);
 impl_feature_write_without_length!(InvoiceRequestFeatures);
 impl_feature_write_without_length!(OfferFeatures);
+impl_feature_write_without_length!(BlindedHopFeatures);
 
 #[cfg(test)]
 mod tests {
