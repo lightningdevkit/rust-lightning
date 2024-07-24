@@ -1526,6 +1526,11 @@ impl Description {
 	pub fn into_inner(self) -> UntrustedString {
 		self.0
 	}
+
+	/// Get a reference to the underlying description [`UntrustedString`]
+	pub fn as_inner(&self) -> &UntrustedString {
+		&self.0
+	}
 }
 
 impl Display for Description {
