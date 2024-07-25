@@ -41,10 +41,11 @@ extern crate serde;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-use bech32::u5;
+use bech32::primitives::decode::CheckedHrpstringError;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash, WitnessProgram, WitnessVersion};
 use bitcoin::address::Payload;
 use bitcoin::hashes::{Hash, sha256};
+use lightning::util::bech32::{Bech32Error, u5, ToBase32};
 use lightning::ln::features::Bolt11InvoiceFeatures;
 use lightning::util::invoice::construct_invoice_preimage;
 
@@ -90,7 +91,8 @@ use crate::prelude::*;
 #[allow(missing_docs)]
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Bolt11ParseError {
-	Bech32Error(bech32::Error),
+	Bech32Error(Bech32Error),
+	Bech32ExternalError(CheckedHrpstringError),
 	ParseAmountError(ParseIntError),
 	MalformedSignature(secp256k1::Error),
 	BadPrefix,
@@ -979,8 +981,6 @@ impl RawBolt11Invoice {
 
 	/// Calculate the hash of the encoded `RawBolt11Invoice` which should be signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
-		use bech32::ToBase32;
-
 		RawBolt11Invoice::hash_from_parts(
 			self.hrp.to_string().as_bytes(),
 			&self.data.to_base32()

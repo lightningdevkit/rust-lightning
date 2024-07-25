@@ -1,6 +1,7 @@
+use lightning::util::bech32::{Base32Len, ToBase32, u5, WriteBase32};
+use bech32::{Bech32, Fe32, Fe32IterExt, Hrp};
 use core::fmt;
 use core::fmt::{Display, Formatter};
-use bech32::{ToBase32, u5, WriteBase32, Base32Len};
 use crate::prelude::*;
 
 use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, Bolt11InvoiceSignature, PositiveTimestamp,
@@ -118,7 +119,10 @@ impl Display for SignedRawBolt11Invoice {
 		let mut data  = self.raw_invoice.data.to_base32();
 		data.extend_from_slice(&self.signature.to_base32());
 
-		bech32::encode_to_fmt(f, &hrp, data, bech32::Variant::Bech32).expect("HRP is valid")?;
+		// TODO(bech32): support with_checksum() in own u5 implementation
+		let bech32 = data.iter().map(|u| Fe32::try_from(u.as_u8()).expect("<31"))
+			.with_checksum::<Bech32>(&Hrp::parse(&hrp).expect("not a valid hrp string")).chars().collect::<String>();
+		f.write_str(&bech32)?;
 
 		Ok(())
 	}
@@ -468,8 +472,6 @@ impl ToBase32 for Bolt11InvoiceSignature {
 
 #[cfg(test)]
 mod test {
-	use bech32::CheckBase32;
-
 	#[test]
 	fn test_currency_code() {
 		use crate::Currency;
@@ -497,9 +499,10 @@ mod test {
 	#[test]
 	fn test_encode_int_be_base32() {
 		use crate::ser::encode_int_be_base32;
+		use lightning::util::bech32::u5;
 
 		let input: u64 = 33764;
-		let expected_out = CheckBase32::check_base32(&[1, 0, 31, 4]).unwrap();
+		let expected_out = [1u8, 0, 31, 4].iter().map(|v| u5::try_from_u8(*v).unwrap()).collect::<Vec<u5>>();
 
 		assert_eq!(expected_out, encode_int_be_base32(input));
 	}

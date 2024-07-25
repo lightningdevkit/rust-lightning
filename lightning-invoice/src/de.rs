@@ -8,12 +8,14 @@ use core::num::ParseIntError;
 use core::str;
 use core::str::FromStr;
 
-use bech32::{u5, FromBase32};
+use bech32::Bech32;
+use bech32::primitives::decode::{CheckedHrpstring, CheckedHrpstringError};
 
 use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256;
 use crate::prelude::*;
+use lightning::util::bech32::{Bech32Error, FromBase32, u5};
 use lightning::ln::types::PaymentSecret;
 use lightning::routing::gossip::RoutingFees;
 use lightning::routing::router::{RouteHint, RouteHintHop};
@@ -270,20 +272,21 @@ impl FromStr for SignedRawBolt11Invoice {
 	type Err = Bolt11ParseError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let (hrp, data, var) = bech32::decode(s)?;
 
-		if var == bech32::Variant::Bech32m {
-			// Consider Bech32m addresses to be "Invalid Checksum", since that is what we'd get if
-			// we didn't support Bech32m (which lightning does not use).
-			return Err(Bolt11ParseError::Bech32Error(bech32::Error::InvalidChecksum));
-		}
+		let parsed = CheckedHrpstring::new::<Bech32>(s)?;
+		let hrp = parsed.hrp();
+		// access the parse data part as chars, covert to u5
+		let data: Vec<_> = parsed.data_part_ascii_no_checksum().iter()
+			.map(|ch| u5::try_from_char(char::from(*ch)).expect("value should be < 32"))
+			.collect();
 
-		if data.len() < 104 {
+		const MIN_LEN: usize = 104;
+		if data.len() < MIN_LEN {
 			return Err(Bolt11ParseError::TooShortDataPart);
 		}
 
-		let raw_hrp: RawHrp = hrp.parse()?;
-		let data_part = RawDataPart::from_base32(&data[..data.len()-104])?;
+		let raw_hrp: RawHrp = hrp.to_string().to_lowercase().parse()?;
+		let data_part = RawDataPart::from_base32(&data[..data.len()-MIN_LEN])?;
 
 		Ok(SignedRawBolt11Invoice {
 			raw_invoice: RawBolt11Invoice {
@@ -291,10 +294,10 @@ impl FromStr for SignedRawBolt11Invoice {
 				data: data_part,
 			},
 			hash: RawBolt11Invoice::hash_from_parts(
-				hrp.as_bytes(),
-				&data[..data.len()-104]
+				hrp.to_string().as_bytes(),
+				&data[..data.len()-MIN_LEN]
 			),
-			signature: Bolt11InvoiceSignature::from_base32(&data[data.len()-104..])?,
+			signature: Bolt11InvoiceSignature::from_base32(&data[data.len()-MIN_LEN..])?,
 		})
 	}
 }
@@ -389,7 +392,7 @@ macro_rules! define_parse_int_be { ($name: ident, $ty: ty) => {
 		digits.iter().fold(Some(Default::default()), |acc, b|
 			acc
 				.and_then(|x| x.checked_mul(32))
-				.and_then(|x| x.checked_add((Into::<u8>::into(*b)).into()))
+				.and_then(|x| x.checked_add((*b).as_u8().into()))
 		)
 	}
 } }
@@ -424,7 +427,7 @@ fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, Bolt11ParseErr
 			Ok(field) => {
 				parts.push(RawTaggedField::KnownSemantics(field))
 			},
-			Err(Bolt11ParseError::Skip)|Err(Bolt11ParseError::Bech32Error(bech32::Error::InvalidLength)) => {
+			Err(Bolt11ParseError::Skip)|Err(Bolt11ParseError::Bech32Error(_)) => {
 				parts.push(RawTaggedField::UnknownSemantics(field.into()))
 			},
 			Err(e) => {return Err(e)}
@@ -444,7 +447,7 @@ impl FromBase32 for TaggedField {
 		let tag = field[0];
 		let field_data =  &field[3..];
 
-		match tag.to_u8() {
+		match tag.as_u8() {
 			constants::TAG_PAYMENT_HASH =>
 				Ok(TaggedField::PaymentHash(Sha256::from_base32(field_data)?)),
 			constants::TAG_DESCRIPTION =>
@@ -550,7 +553,7 @@ impl FromBase32 for Fallback {
 			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
 
-		let version = field_data[0].to_u8();
+		let version = field_data[0].as_u8();
 		let bytes = Vec::<u8>::from_base32(&field_data[1..])?;
 
 		match version {
@@ -629,6 +632,9 @@ impl Display for Bolt11ParseError {
 			Bolt11ParseError::Bech32Error(ref e) => {
 				write!(f, "Invalid bech32: {}", e)
 			}
+			Bolt11ParseError::Bech32ExternalError(ref e) => {
+				write!(f, "Invalid bech32: {}", e)
+			}
 			Bolt11ParseError::ParseAmountError(ref e) => {
 				write!(f, "Invalid amount in hrp ({})", e)
 			}
@@ -703,10 +709,17 @@ from_error!(Bolt11ParseError::MalformedSignature, secp256k1::Error);
 from_error!(Bolt11ParseError::ParseAmountError, ParseIntError);
 from_error!(Bolt11ParseError::DescriptionDecodeError, str::Utf8Error);
 
-impl From<bech32::Error> for Bolt11ParseError {
-	fn from(e: bech32::Error) -> Self {
+impl From<CheckedHrpstringError> for Bolt11ParseError {
+	fn from(e: CheckedHrpstringError) -> Self {
 		match e {
-			bech32::Error::InvalidPadding => Bolt11ParseError::PaddingError,
+			_ => Bolt11ParseError::Bech32ExternalError(e)
+		}
+	}
+}
+
+impl From<Bech32Error> for Bolt11ParseError {
+	fn from(e: Bech32Error) -> Self {
+		match e {
 			_ => Bolt11ParseError::Bech32Error(e)
 		}
 	}
@@ -726,9 +739,9 @@ impl From<crate::Bolt11SemanticError> for ParseOrSemanticError {
 
 #[cfg(test)]
 mod test {
+	use super::{u5, FromBase32};
 	use crate::de::Bolt11ParseError;
 	use secp256k1::PublicKey;
-	use bech32::u5;
 	use bitcoin::hashes::sha256;
 	use std::str::FromStr;
 
@@ -779,7 +792,6 @@ mod test {
 	#[test]
 	fn test_parse_sha256_hash() {
 		use crate::Sha256;
-		use bech32::FromBase32;
 
 		let input = from_bech32(
 			"qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypq".as_bytes()
@@ -802,7 +814,6 @@ mod test {
 	#[test]
 	fn test_parse_description() {
 		use crate::Description;
-		use bech32::FromBase32;
 
 		let input = from_bech32("xysxxatsyp3k7enxv4js".as_bytes());
 		let expected = Ok(Description::new("1 cup coffee".to_owned()).unwrap());
@@ -812,7 +823,6 @@ mod test {
 	#[test]
 	fn test_parse_payee_pub_key() {
 		use crate::PayeePubKey;
-		use bech32::FromBase32;
 
 		let input = from_bech32("q0n326hr8v9zprg8gsvezcch06gfaqqhde2aj730yg0durunfhv66".as_bytes());
 		let pk_bytes = [
@@ -836,7 +846,6 @@ mod test {
 	#[test]
 	fn test_parse_expiry_time() {
 		use crate::ExpiryTime;
-		use bech32::FromBase32;
 
 		let input = from_bech32("pu".as_bytes());
 		let expected = Ok(ExpiryTime::from_seconds(60));
@@ -849,7 +858,6 @@ mod test {
 	#[test]
 	fn test_parse_min_final_cltv_expiry_delta() {
 		use crate::MinFinalCltvExpiryDelta;
-		use bech32::FromBase32;
 
 		let input = from_bech32("pr".as_bytes());
 		let expected = Ok(MinFinalCltvExpiryDelta(35));
@@ -860,7 +868,6 @@ mod test {
 	#[test]
 	fn test_parse_fallback() {
 		use crate::Fallback;
-		use bech32::FromBase32;
 		use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 		use bitcoin::hashes::Hash;
 
@@ -921,7 +928,6 @@ mod test {
 		use lightning::routing::gossip::RoutingFees;
 		use lightning::routing::router::{RouteHint, RouteHintHop};
 		use crate::PrivateRoute;
-		use bech32::FromBase32;
 
 		let input = from_bech32(
 			"q20q82gphp2nflc7jtzrcazrra7wwgzxqc8u7754cdlpfrmccae92qgzqvzq2ps8pqqqqqqpqqqqq9qqqvpeuqa\
@@ -967,7 +973,7 @@ mod test {
 		assert_eq!(PrivateRoute::from_base32(&input), Ok(PrivateRoute(RouteHint(expected))));
 
 		assert_eq!(
-			PrivateRoute::from_base32(&[u5::try_from_u8(0).unwrap(); 40][..]),
+			PrivateRoute::from_base32(&[u5::ZERO; 40][..]),
 			Err(Bolt11ParseError::UnexpectedEndOfTaggedFields)
 		);
 	}

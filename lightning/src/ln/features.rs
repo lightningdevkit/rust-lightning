@@ -87,7 +87,7 @@ use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 
-use bech32::{Base32Len, FromBase32, ToBase32, u5, WriteBase32};
+use crate::util::bech32::{Base32Len, Bech32Error, FromBase32, ToBase32, u5, WriteBase32};
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, WithoutLength, Writeable, Writer};
 
@@ -651,14 +651,14 @@ impl ToBase32 for Bolt11InvoiceFeatures {
 			let new_u5_idx = length_u5s - (bit_pos_from_left_0_indexed / 5) as usize - 1;
 			let new_bit_pos = bit_pos_from_left_0_indexed % 5;
 			let shifted_chunk_u16 = (*byte as u16) << new_bit_pos;
-			let curr_u5_as_u8 = res_u5s[new_u5_idx].to_u8();
+			let curr_u5_as_u8 = res_u5s[new_u5_idx].as_u8();
 			res_u5s[new_u5_idx] = u5::try_from_u8(curr_u5_as_u8 | ((shifted_chunk_u16 & 0x001f) as u8)).unwrap();
 			if new_u5_idx > 0 {
-				let curr_u5_as_u8 = res_u5s[new_u5_idx - 1].to_u8();
+				let curr_u5_as_u8 = res_u5s[new_u5_idx - 1].as_u8();
 				res_u5s[new_u5_idx - 1] = u5::try_from_u8(curr_u5_as_u8 | (((shifted_chunk_u16 >> 5) & 0x001f) as u8)).unwrap();
 			}
 			if new_u5_idx > 1 {
-				let curr_u5_as_u8 = res_u5s[new_u5_idx - 2].to_u8();
+				let curr_u5_as_u8 = res_u5s[new_u5_idx - 2].as_u8();
 				res_u5s[new_u5_idx - 2] = u5::try_from_u8(curr_u5_as_u8 | (((shifted_chunk_u16 >> 10) & 0x001f) as u8)).unwrap();
 			}
 		}
@@ -677,9 +677,9 @@ impl Base32Len for Bolt11InvoiceFeatures {
 }
 
 impl FromBase32 for Bolt11InvoiceFeatures {
-	type Err = bech32::Error;
+	type Err = Bech32Error;
 
-	fn from_base32(field_data: &[u5]) -> Result<Bolt11InvoiceFeatures, bech32::Error> {
+	fn from_base32(field_data: &[u5]) -> Result<Bolt11InvoiceFeatures, Bech32Error> {
 		// Explanation for the "7": the normal way to round up when dividing is to add the divisor
 		// minus one before dividing
 		let length_bytes = (field_data.len() * 5 + 7) / 8 as usize;
@@ -688,7 +688,7 @@ impl FromBase32 for Bolt11InvoiceFeatures {
 			let bit_pos_from_right_0_indexed = (field_data.len() - u5_idx - 1) * 5;
 			let new_byte_idx = (bit_pos_from_right_0_indexed / 8) as usize;
 			let new_bit_pos = bit_pos_from_right_0_indexed % 8;
-			let chunk_u16 = chunk.to_u8() as u16;
+			let chunk_u16 = chunk.as_u8() as u16;
 			res_bytes[new_byte_idx] |= ((chunk_u16 << new_bit_pos) & 0xff) as u8;
 			if new_byte_idx != length_bytes - 1 {
 				res_bytes[new_byte_idx + 1] |= ((chunk_u16 >> (8-new_bit_pos)) & 0xff) as u8;
@@ -1043,7 +1043,7 @@ pub(crate) fn unset_features_mask_at_position<T: sealed::Context>(other: &Featur
 #[cfg(test)]
 mod tests {
 	use super::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, Bolt11InvoiceFeatures, NodeFeatures, OfferFeatures, sealed};
-	use bech32::{Base32Len, FromBase32, ToBase32, u5};
+	use super::{Base32Len, FromBase32, ToBase32, u5};
 	use crate::util::ser::{Readable, WithoutLength, Writeable};
 
 	#[test]
@@ -1243,21 +1243,8 @@ mod tests {
 
 	#[test]
 	fn invoice_features_encoding() {
-		let features_as_u5s = vec![
-			u5::try_from_u8(6).unwrap(),
-			u5::try_from_u8(10).unwrap(),
-			u5::try_from_u8(25).unwrap(),
-			u5::try_from_u8(1).unwrap(),
-			u5::try_from_u8(10).unwrap(),
-			u5::try_from_u8(0).unwrap(),
-			u5::try_from_u8(20).unwrap(),
-			u5::try_from_u8(2).unwrap(),
-			u5::try_from_u8(0).unwrap(),
-			u5::try_from_u8(6).unwrap(),
-			u5::try_from_u8(0).unwrap(),
-			u5::try_from_u8(16).unwrap(),
-			u5::try_from_u8(1).unwrap(),
-		];
+		let features_as_u5s: Vec<_> = vec![6, 10, 25, 1, 10, 0, 20, 2, 0, 6, 0, 16, 1]
+		.iter().map(|b| u5::try_from_u8(*b).unwrap()).collect();
 		let features = Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4, 5, 42, 100, 101]);
 
 		// Test length calculation.
