@@ -65,7 +65,7 @@ use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutb
 use crate::ln::wire::Encode;
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequestBuilder};
+use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
@@ -9142,11 +9142,19 @@ where
 			)
 			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
 
+		self.enqueue_invoice_request(invoice_request, reply_paths)
+	}
+
+	fn enqueue_invoice_request(
+		&self,
+		invoice_request: InvoiceRequest,
+		reply_paths: Vec<BlindedMessagePath>,
+	) -> Result<(), Bolt12SemanticError> {
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
-		if !offer.paths().is_empty() {
+		if !invoice_request.paths().is_empty() {
 			reply_paths
 				.iter()
-				.flat_map(|reply_path| offer.paths().iter().map(move |path| (path, reply_path)))
+				.flat_map(|reply_path| invoice_request.paths().iter().map(move |path| (path, reply_path)))
 				.take(OFFERS_MESSAGE_REQUEST_LIMIT)
 				.for_each(|(path, reply_path)| {
 					let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
@@ -9156,7 +9164,7 @@ where
 					let message = OffersMessage::InvoiceRequest(invoice_request.clone());
 					pending_offers_messages.push((message, instructions));
 				});
-		} else if let Some(signing_pubkey) = offer.signing_pubkey() {
+		} else if let Some(signing_pubkey) = invoice_request.signing_pubkey() {
 			for reply_path in reply_paths {
 				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
 					destination: Destination::Node(signing_pubkey),
