@@ -1737,6 +1737,29 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 1000 })
+			.build_unchecked()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount(), Some(Amount::Currency { iso4217_code: *b"USD", amount: 1000 }));
+		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(tlv_stream.amount, None);
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 100 })
+			.build_unchecked()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(150_000_000)
+			.unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(150_000_000));
+		assert_eq!(tlv_stream.amount, Some(150_000_000));
 	}
 
 	#[test]
