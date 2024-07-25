@@ -608,6 +608,21 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 );
 
+/// Indicates whether the balance is derived from a cooperative close, a force-close
+/// (for holder or counterparty), or whether it is for an HTLC.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(PartialOrd, Ord))]
+pub enum BalanceSource {
+	/// The channel was force closed by the holder.
+	HolderForceClosed,
+	/// The channel was force closed by the counterparty.
+	CounterpartyForceClosed,
+	/// The channel was cooperatively closed.
+	CoopClose,
+	/// This balance is the result of an HTLC.
+	Htlc,
+}
+
 /// Details about the balance(s) available for spending once the channel appears on chain.
 ///
 /// See [`ChannelMonitor::get_claimable_balances`] for more details on when these will or will not
@@ -675,6 +690,8 @@ pub enum Balance {
 		/// The height at which an [`Event::SpendableOutputs`] event will be generated for this
 		/// amount.
 		confirmation_height: u32,
+		/// Whether this balance is a result of cooperative close, a force-close, or an HTLC.
+		source: BalanceSource,
 	},
 	/// The channel has been closed, and the given balance should be ours but awaiting spending
 	/// transaction confirmation. If the spending transaction does not confirm in time, it is
@@ -2110,6 +2127,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			return Some(Balance::ClaimableAwaitingConfirmations {
 				amount_satoshis: htlc.amount_msat / 1000,
 				confirmation_height: conf_thresh,
+				source: BalanceSource::Htlc,
 			});
 		} else if htlc_resolved.is_some() && !htlc_output_spend_pending {
 			// Funding transaction spends should be fully confirmed by the time any
@@ -2157,6 +2175,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				return Some(Balance::ClaimableAwaitingConfirmations {
 					amount_satoshis: htlc.amount_msat / 1000,
 					confirmation_height: conf_thresh,
+					source: BalanceSource::Htlc,
 				});
 			} else {
 				let outbound_payment = match source {
@@ -2185,6 +2204,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				return Some(Balance::ClaimableAwaitingConfirmations {
 					amount_satoshis: htlc.amount_msat / 1000,
 					confirmation_height: conf_thresh,
+					source: BalanceSource::Htlc,
 				});
 			} else {
 				return Some(Balance::ContentiousClaimable {
@@ -2272,6 +2292,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						res.push(Balance::ClaimableAwaitingConfirmations {
 							amount_satoshis: value.to_sat(),
 							confirmation_height: conf_thresh,
+							source: BalanceSource::CounterpartyForceClosed,
 						});
 					} else {
 						// If a counterparty commitment transaction is awaiting confirmation, we
@@ -2295,6 +2316,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 							res.push(Balance::ClaimableAwaitingConfirmations {
 								amount_satoshis: output.value.to_sat(),
 								confirmation_height: event.confirmation_threshold(),
+								source: BalanceSource::CounterpartyForceClosed,
 							});
 							if let Some(confirmed_to_self_idx) = confirmed_counterparty_output.map(|(idx, _)| idx) {
 								if event.transaction.as_ref().map(|tx|
@@ -2327,6 +2349,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					res.push(Balance::ClaimableAwaitingConfirmations {
 						amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
 						confirmation_height: conf_thresh,
+						source: BalanceSource::HolderForceClosed,
 					});
 				}
 				found_commitment_tx = true;
@@ -2337,6 +2360,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 						res.push(Balance::ClaimableAwaitingConfirmations {
 							amount_satoshis: prev_commitment.to_self_value_sat,
 							confirmation_height: conf_thresh,
+							source: BalanceSource::HolderForceClosed,
 						});
 					}
 					found_commitment_tx = true;
@@ -2350,6 +2374,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 					res.push(Balance::ClaimableAwaitingConfirmations {
 						amount_satoshis: us.current_holder_commitment_tx.to_self_value_sat,
 						confirmation_height: conf_thresh,
+						source: BalanceSource::CoopClose,
 					});
 				}
 			}

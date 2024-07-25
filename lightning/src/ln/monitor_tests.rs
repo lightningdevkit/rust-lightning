@@ -10,7 +10,7 @@
 //! Further functional tests which test blockchain reorganizations.
 
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SpendableOutputDescriptor};
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance, BalanceSource};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
@@ -288,11 +288,13 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 1_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
+			source: BalanceSource::CoopClose,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1000,
 			confirmation_height: nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1,
+			source: BalanceSource::CoopClose,
 		}],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 
@@ -605,6 +607,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 				anchor_outputs_value - // The anchor outputs value in satoshis
 				1, // The rounded up msat parts of HTLCs
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, sent_htlc_balance.clone(), sent_htlc_timeout_balance.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	// The main non-HTLC balance is just awaiting confirmations, but the claimable height is the
@@ -612,6 +615,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000,
 			confirmation_height: node_b_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		},
 		// Both HTLC balances are "contentious" as our counterparty could claim them if we wait too
 		// long.
@@ -629,6 +633,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000,
 			confirmation_height: node_b_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, received_htlc_claiming_balance.clone(), received_htlc_timeout_claiming_balance.clone()]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -670,6 +675,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 4_000,
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
+			source: BalanceSource::Htlc,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	// After ANTI_REORG_DELAY, A will generate a SpendableOutputs event and drop the claimable
@@ -690,9 +696,11 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000,
 			confirmation_height: node_b_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 3_000,
 			confirmation_height: node_b_htlc_claimable,
+			source: BalanceSource::Htlc,
 		}, received_htlc_timeout_claiming_balance.clone()]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -704,6 +712,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 3_000,
 			confirmation_height: node_b_htlc_claimable,
+			source: BalanceSource::Htlc,
 		}, received_htlc_timeout_claiming_balance.clone()]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -862,6 +871,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: node_a_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, htlc_balance_known_preimage.clone(), htlc_balance_unknown_preimage.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -880,6 +890,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: node_a_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, htlc_balance_known_preimage.clone(), htlc_balance_unknown_preimage.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	if anchors {
@@ -900,9 +911,11 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: node_a_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
 			confirmation_height: node_a_htlc_claimable,
+			source: BalanceSource::Htlc,
 		}, htlc_balance_unknown_preimage.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -913,9 +926,11 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: node_a_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
 			confirmation_height: node_a_htlc_claimable,
+			source: BalanceSource::Htlc,
 		}, htlc_balance_unknown_preimage.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -928,9 +943,11 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: node_a_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
 			confirmation_height: node_a_htlc_claimable,
+			source: BalanceSource::Htlc,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -943,6 +960,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
 			confirmation_height: node_a_htlc_claimable,
+			source: BalanceSource::Htlc,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	let to_self_spendable_output = test_spendable_output(&nodes[0], &commitment_tx, false);
@@ -1053,6 +1071,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 			amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
 				(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, a_received_htlc_balance.clone(), a_sent_htlc_balance.clone()]);
 
 	mine_transaction(&nodes[0], &as_txn[0]);
@@ -1073,6 +1092,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let mut bs_pre_spend_claims = sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 500_000 - 20_000,
 			confirmation_height: node_b_commitment_claimable,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, b_received_htlc_balance.clone(), b_sent_htlc_balance.clone()]);
 	assert_eq!(bs_pre_spend_claims,
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
@@ -1125,9 +1145,11 @@ fn test_no_preimage_inbound_htlc_balances() {
 			amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
 				(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, a_received_htlc_balance.clone(), Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
 			confirmation_height: as_timeout_claimable_height,
+			source: BalanceSource::Htlc,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1136,9 +1158,11 @@ fn test_no_preimage_inbound_htlc_balances() {
 			amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
 				(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, a_received_htlc_balance.clone(), Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
 			confirmation_height: as_timeout_claimable_height,
+			source: BalanceSource::Htlc,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1152,9 +1176,11 @@ fn test_no_preimage_inbound_htlc_balances() {
 			amount_satoshis: 1_000_000 - 500_000 - 10_000 - chan_feerate *
 				(chan_utils::commitment_tx_base_weight(&channel_type_features) + 2 * chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000,
 			confirmation_height: node_a_commitment_claimable,
+			source: BalanceSource::HolderForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
 			confirmation_height: core::cmp::max(as_timeout_claimable_height, htlc_cltv_timeout),
+			source: BalanceSource::Htlc,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1162,6 +1188,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 10_000,
 			confirmation_height: core::cmp::max(as_timeout_claimable_height, htlc_cltv_timeout),
+			source: BalanceSource::Htlc,
 		}],
 		nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	test_spendable_output(&nodes[0], &as_txn[0], false);
@@ -1177,6 +1204,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	assert_eq!(sorted_vec(vec![b_received_htlc_balance.clone(), Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 20_000,
 			confirmation_height: bs_timeout_claimable_height,
+			source: BalanceSource::Htlc,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1184,6 +1212,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	assert_eq!(sorted_vec(vec![b_received_htlc_balance.clone(), Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 20_000,
 			confirmation_height: bs_timeout_claimable_height,
+			source: BalanceSource::Htlc,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1366,10 +1395,11 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 
 	// The expected balance for the next three checks, with the largest-HTLC and to_self output
 	// claim balances separated out.
-	let expected_balance = vec![Balance::ClaimableAwaitingConfirmations {
+	let expected_balance_b = vec![Balance::ClaimableAwaitingConfirmations {
 			// to_remote output in A's revoked commitment
 			amount_satoshis: 100_000 - 5_000 - 4_000 - 3 - 1 /* rounded up msat parts of HTLCs */,
 			confirmation_height: nodes[1].best_block_info().1 + 5,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::CounterpartyRevokedOutputClaimable {
 			amount_satoshis: 3_000,
 		}, Balance::CounterpartyRevokedOutputClaimable {
@@ -1387,7 +1417,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 
 	// Once the channel has been closed by A, B now considers all of the commitment transactions'
 	// outputs as `CounterpartyRevokedOutputClaimable`.
-	assert_eq!(sorted_vec_with_additions(&expected_balance, &[&to_self_unclaimed_balance, &largest_htlc_unclaimed_balance]),
+	assert_eq!(sorted_vec_with_additions(&expected_balance_b, &[&to_self_unclaimed_balance, &largest_htlc_unclaimed_balance]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	if confirm_htlc_spend_first {
@@ -1404,17 +1434,19 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	let largest_htlc_claimed_balance = Balance::ClaimableAwaitingConfirmations {
 		amount_satoshis: 5_000 - inbound_htlc_claim_fee,
 		confirmation_height: largest_htlc_claimed_avail_height,
+		source: BalanceSource::CounterpartyForceClosed,
 	};
 	let to_self_claimed_balance = Balance::ClaimableAwaitingConfirmations {
 		amount_satoshis: 1_000_000 - 100_000 - 3_000 - commitment_tx_fee - anchor_outputs_value - to_self_claim_fee - 1 /* rounded up msat parts of HTLCs */,
 		confirmation_height: to_self_claimed_avail_height,
+		source: BalanceSource::CounterpartyForceClosed,
 	};
 
 	if confirm_htlc_spend_first {
-		assert_eq!(sorted_vec_with_additions(&expected_balance, &[&to_self_unclaimed_balance, &largest_htlc_claimed_balance]),
+		assert_eq!(sorted_vec_with_additions(&expected_balance_b, &[&to_self_unclaimed_balance, &largest_htlc_claimed_balance]),
 			sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	} else {
-		assert_eq!(sorted_vec_with_additions(&expected_balance, &[&to_self_claimed_balance, &largest_htlc_unclaimed_balance]),
+		assert_eq!(sorted_vec_with_additions(&expected_balance_b, &[&to_self_claimed_balance, &largest_htlc_unclaimed_balance]),
 			sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 	}
 
@@ -1423,7 +1455,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	} else {
 		mine_transaction(&nodes[1], &claim_txn[2]);
 	}
-	assert_eq!(sorted_vec_with_additions(&expected_balance, &[&to_self_claimed_balance, &largest_htlc_claimed_balance]),
+	assert_eq!(sorted_vec_with_additions(&expected_balance_b, &[&to_self_claimed_balance, &largest_htlc_claimed_balance]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	// Finally, connect the last two remaining HTLC spends and check that they move to
@@ -1435,18 +1467,23 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 			// to_remote output in A's revoked commitment
 			amount_satoshis: 100_000 - 5_000 - 4_000 - 3 - 1 /* rounded up msat parts of HTLCs */,
 			confirmation_height: nodes[1].best_block_info().1 + 1,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 100_000 - 3_000 - commitment_tx_fee - anchor_outputs_value - to_self_claim_fee - 1 /* rounded up msat parts of HTLCs */,
 			confirmation_height: to_self_claimed_avail_height,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 3_000 - outbound_htlc_claim_fee,
 			confirmation_height: nodes[1].best_block_info().1 + 4,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 4_000 - inbound_htlc_claim_fee,
 			confirmation_height: nodes[1].best_block_info().1 + 5,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 5_000 - inbound_htlc_claim_fee,
 			confirmation_height: largest_htlc_claimed_avail_height,
+			source: BalanceSource::CounterpartyForceClosed,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1624,6 +1661,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 			// to_remote output in B's revoked commitment
 			amount_satoshis: 1_000_000 - 12_000 - 3_000 - commitment_tx_fee - anchor_outputs_value - 1 /* The rounded up msat part of the one HTLC */,
 			confirmation_height: to_remote_conf_height,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
 			amount_satoshis: 11_000,
@@ -1669,6 +1707,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 			// to_remote output in B's revoked commitment
 			amount_satoshis: 1_000_000 - 12_000 - 3_000 - commitment_tx_fee - anchor_outputs_value - 1 /* rounded up msat parts of HTLCs */,
 			confirmation_height: to_remote_conf_height,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in B's revoked commitment
 			amount_satoshis: 11_000,
@@ -1677,6 +1716,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: as_htlc_claim_tx[0].output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
+			source: BalanceSource::CounterpartyForceClosed,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1690,6 +1730,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: as_htlc_claim_tx[0].output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + 2,
+			source: BalanceSource::CounterpartyForceClosed,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1759,6 +1800,7 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: revoked_htlc_timeout_claim.output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
+			source: BalanceSource::CounterpartyForceClosed,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1767,9 +1809,11 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 			// to_self output in B's revoked commitment
 			amount_satoshis: revoked_to_self_claim.output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 1,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: revoked_htlc_timeout_claim.output[0].value.to_sat(),
 			confirmation_height: nodes[0].best_block_info().1 + ANTI_REORG_DELAY - 2,
+			source: BalanceSource::CounterpartyForceClosed,
 		}]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -1925,6 +1969,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 			// to_remote output in A's revoked commitment
 			amount_satoshis: 100_000 - 4_000 - 3_000 - 1 /* rounded up msat parts of HTLCs */,
 			confirmation_height: to_remote_maturity,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in A's revoked commitment
 			amount_satoshis: 1_000_000 - 100_000 - commitment_tx_fee - anchor_outputs_value,
@@ -1980,6 +2025,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 			// to_remote output in A's revoked commitment
 			amount_satoshis: 100_000 - 4_000 - 3_000 - 1 /* rounded up msat parts of HTLCs */,
 			confirmation_height: to_remote_maturity,
+			source: BalanceSource::CounterpartyForceClosed,
 		}, Balance::CounterpartyRevokedOutputClaimable {
 			// to_self output in A's revoked commitment
 			amount_satoshis: 1_000_000 - 100_000 - commitment_tx_fee - anchor_outputs_value,
@@ -2020,6 +2066,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 		}, Balance::ClaimableAwaitingConfirmations { // HTLC 2
 			amount_satoshis: claim_txn_2[0].output[0].value.to_sat(),
 			confirmation_height: htlc_2_claim_maturity,
+			source: BalanceSource::CounterpartyForceClosed,
 		}]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
@@ -2045,15 +2092,18 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 		assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 				amount_satoshis: claim_txn_2[1].output[0].value.to_sat(),
 				confirmation_height: rest_claim_maturity,
+				source: BalanceSource::CounterpartyForceClosed,
 			}, Balance::ClaimableAwaitingConfirmations {
 				amount_satoshis: revoked_to_self_claim.as_ref().unwrap().output[0].value.to_sat(),
 				confirmation_height: rest_claim_maturity,
+				source: BalanceSource::CounterpartyForceClosed,
 			}],
 			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	} else {
 		assert_eq!(vec![Balance::ClaimableAwaitingConfirmations {
 				amount_satoshis: claim_txn_2[1].output[0].value.to_sat(),
 				confirmation_height: rest_claim_maturity,
+				source: BalanceSource::CounterpartyForceClosed,
 			}],
 			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances());
 	}
