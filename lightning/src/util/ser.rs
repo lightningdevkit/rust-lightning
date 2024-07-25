@@ -17,6 +17,7 @@ use crate::prelude::*;
 use crate::io::{self, Read, Seek, Write};
 use crate::io_extras::{copy, sink};
 use core::hash::Hash;
+use core::str::FromStr;
 use crate::sync::{Mutex, RwLock};
 use core::cmp;
 use core::ops::Deref;
@@ -27,6 +28,7 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SIGNATURE_SIZE, SCHNORR_SIGNATURE_SIZE};
 use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
+use bitcoin::Address;
 use bitcoin::amount::Amount;
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::blockdata::script::{self, ScriptBuf};
@@ -689,6 +691,24 @@ impl Readable for WithoutLength<ScriptBuf> {
 	}
 }
 
+impl Writeable for WithoutLength<&Address> {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		writer.write_all(self.0.to_string().as_bytes())
+	}
+}
+
+impl Readable for WithoutLength<Address> {
+	#[inline]
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let v: WithoutLength<String> = Readable::read(r)?;
+		match Address::from_str(&v.0) {
+			Ok(addr) => Ok(WithoutLength(addr.assume_checked())),
+			Err(_) => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
 #[derive(Debug)]
 pub(crate) struct Iterable<'a, I: Iterator<Item = &'a T> + Clone, T: 'a>(pub I);
 
@@ -943,6 +963,26 @@ impl Readable for ScriptBuf {
 		let mut buf = vec![0; len];
 		r.read_exact(&mut buf)?;
 		Ok(ScriptBuf::from(buf))
+	}
+}
+
+impl Writeable for Address {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		let addr_str = self.to_string();
+		(addr_str.len() as u16).write(w)?;
+		w.write_all(self.to_string().as_bytes())
+	}
+}
+
+impl Readable for Address {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let len = <u16 as Readable>::read(r)? as usize;
+		let mut buf = vec![0; len];
+		r.read_exact(&mut buf)?;
+		match Address::from_str(&String::from_utf8(buf).map_err(|_| DecodeError::InvalidValue)?) {
+			Ok(addr) => Ok(addr.assume_checked()),
+			Err(_) => Err(DecodeError::InvalidValue),
+		}
 	}
 }
 
@@ -1583,5 +1623,14 @@ mod tests {
 				assert_eq!(super::BigSize::read(&mut stream).err(), Some(crate::ln::msgs::DecodeError::ShortRead));
 			}
 		}
+	}
+
+	#[test]
+	fn address_serliazation() {
+		use std::str::FromStr;
+		let addr = bitcoin::Address::from_str("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq").unwrap().assume_checked();
+		let mut buf = Vec::new();
+		addr.write(&mut buf).unwrap();
+		assert_eq!(bitcoin::Address::read(&mut buf.as_slice()).unwrap(), addr);
 	}
 }
