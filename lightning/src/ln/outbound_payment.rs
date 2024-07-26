@@ -972,21 +972,25 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		let (payment_hash, route_params) =
+		let (payment_hash, keysend_preimage, mut route_params) =
 			match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 				hash_map::Entry::Occupied(entry) => match entry.get() {
 					PendingOutboundPayment::StaticInvoiceReceived {
-						payment_hash, payment_release_secret: release_secret, route_params, ..
+						payment_hash, payment_release_secret: release_secret, keysend_preimage, route_params, ..
 					} => {
 						if payment_release_secret != *release_secret {
 							return Err(Bolt12PaymentError::UnexpectedInvoice)
 						}
-						(*payment_hash, route_params.clone())
+						(*payment_hash, *keysend_preimage, route_params.clone())
 					},
 					_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 				},
 				hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
 			};
+
+		onion_utils::set_max_path_length(
+			&mut route_params, &RecipientOnionFields::spontaneous_empty(), Some(keysend_preimage), best_block_height
+		).map_err(|()| Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))?;
 
 		self.find_route_and_send_payment(
 			payment_hash, payment_id, route_params, router, first_hops, &inflight_htlcs,
