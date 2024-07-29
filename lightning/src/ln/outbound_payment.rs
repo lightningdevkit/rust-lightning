@@ -19,6 +19,7 @@ use crate::events::{self, PaymentFailureReason};
 use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{EventCompletionAction, HTLCSource, PaymentId};
+use crate::ln::features::Bolt12InvoiceFeatures;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
@@ -510,6 +511,8 @@ pub enum Bolt12PaymentError {
 	UnexpectedInvoice,
 	/// Payment for an invoice with the corresponding [`PaymentId`] was already initiated.
 	DuplicateInvoice,
+	/// The invoice was valid for the corresponding [`PaymentId`], but required unknown features.
+	UnknownRequiredFeatures,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
 }
@@ -783,9 +786,9 @@ impl OutboundPayments {
 		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
 	>(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: &R,
-		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
-		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
-		logger: &L,
+		first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
+		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		send_payment_along_path: SP,
 	) -> Result<(), Bolt12PaymentError>
@@ -817,6 +820,13 @@ impl OutboundPayments {
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+		}
+
+		if invoice.invoice_features().requires_unknown_bits_from(&features) {
+			self.abandon_payment(
+				payment_id, PaymentFailureReason::UnknownRequiredFeatures, pending_events,
+			);
+			return Err(Bolt12PaymentError::UnknownRequiredFeatures);
 		}
 
 		let mut payment_params = PaymentParameters::from_bolt12_invoice(&invoice);
@@ -1951,7 +1961,7 @@ mod tests {
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
 	use crate::ln::types::PaymentHash;
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
-	use crate::ln::features::{ChannelFeatures, NodeFeatures};
+	use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, Retry, RetryableSendFailure, StaleExpiration};
 	#[cfg(feature = "std")]
@@ -2319,9 +2329,9 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| panic!()
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
 			Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::PaymentExpired)),
 		);
@@ -2380,9 +2390,9 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| panic!()
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
 			Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound)),
 		);
@@ -2454,9 +2464,9 @@ mod tests {
 		assert!(!outbound_payments.has_pending_payments());
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| panic!()
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
 			Err(Bolt12PaymentError::UnexpectedInvoice),
 		);
@@ -2472,9 +2482,9 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| Ok(())
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| Ok(())
 			),
 			Ok(()),
 		);
@@ -2483,9 +2493,9 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| panic!()
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
 			Err(Bolt12PaymentError::DuplicateInvoice),
 		);
