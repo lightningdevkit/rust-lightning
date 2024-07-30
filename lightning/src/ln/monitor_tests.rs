@@ -2145,6 +2145,100 @@ fn test_revoked_counterparty_aggregated_claims() {
 	do_test_revoked_counterparty_aggregated_claims(true);
 }
 
+fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: bool, anchors: bool) {
+	// Previously when a user fetched their balances via `get_claimable_balances` after forwarding a
+	// payment, but before it cleared, and summed up their balance using `Balance::claimable_amount_satoshis`
+	// neither the value of preimage claimable HTLC nor the timeout claimable HTLC would be included.
+	// This was incorrect as exactly one of these outcomes is true. This has been fixed by including the
+	// timeout claimable HTLC value in the balance as this excludes the routing fees and is the more
+	// prudent approach.
+	//
+	// In the case of the holder sending a payment, the above value will not be included while the payment
+	// is pending.
+	//
+	// This tests that we get the correct balance in either of the cases above.
+	let mut chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut user_config = test_default_channel_config();
+	if anchors {
+		user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		user_config.manually_accept_inbound_channels = true;
+	}
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(user_config), Some(user_config), Some(user_config)]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let coinbase_tx = Transaction {
+		version: Version::TWO,
+		lock_time: LockTime::ZERO,
+		input: vec![TxIn { ..Default::default() }],
+		output: vec![
+			TxOut {
+				value: Amount::ONE_BTC,
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			},
+			TxOut {
+				value: Amount::ONE_BTC,
+				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+			},
+		],
+	};
+	if anchors {
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 1 }, coinbase_tx.output[1].value);
+	}
+
+	// Create a channel from A -> B
+	let (_, _, chan_ab_id, funding_tx_ab) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000 /* channel_value (sat) */, 0 /* push_msat */);
+	let funding_outpoint_ab = OutPoint { txid: funding_tx_ab.txid(), index: 0 };
+	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint_ab), chan_ab_id);
+	// Create a channel from B -> C
+	let (_, _, chan_bc_id, funding_tx_bc) =
+		create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000 /* channel_value (sat) */, 0 /* push_msat */);
+	let funding_outpoint_bc = OutPoint { txid: funding_tx_bc.txid(), index: 0 };
+	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint_bc), chan_bc_id);
+
+	let (chan_feerate, channel_type_features) = if outbound_payment {
+		let chan_ab_feerate = get_feerate!(nodes[0], nodes[1], chan_ab_id);
+		let channel_type_features_ab = get_channel_type_features!(nodes[0], nodes[1], chan_ab_id);
+		(chan_ab_feerate, channel_type_features_ab)
+	} else {
+		let chan_bc_feerate = get_feerate!(nodes[1], nodes[2], chan_bc_id);
+		let channel_type_features_bc = get_channel_type_features!(nodes[1], nodes[2], chan_bc_id);
+		(chan_bc_feerate, channel_type_features_bc)
+	};
+	let commitment_tx_fee = chan_feerate as u64 *
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+
+	// This HTLC will be forwarded by B from A -> C
+	let _ = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 4_000_000);
+	let anchor_outputs_value = if anchors { 2 * channel::ANCHOR_OUTPUT_VALUE_SATOSHI } else { 0 };
+
+	if outbound_payment {
+		assert_eq!(
+			1_000_000 - commitment_tx_fee - anchor_outputs_value - 4_001 /* Note HTLC timeout amount of 4001 sats is excluded for outbound payment */,
+			nodes[0].chain_monitor.chain_monitor.get_monitor(funding_outpoint_ab).unwrap().get_claimable_balances().iter().map(
+				|x| x.claimable_amount_satoshis()).sum());
+	} else {
+		assert_eq!(
+			0u64,
+			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint_ab).unwrap().get_claimable_balances().iter().map(
+				|x| x.claimable_amount_satoshis()).sum());
+		assert_eq!(
+			1_000_000 - commitment_tx_fee - anchor_outputs_value /* Note HTLC timeout amount of 4000 sats is included */,
+			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint_bc).unwrap().get_claimable_balances().iter().map(
+				|x| x.claimable_amount_satoshis()).sum());
+	}
+}
+
+#[test]
+fn test_claimable_balance_correct_while_payment_pending() {
+	do_test_claimable_balance_correct_while_payment_pending(false, false);
+	do_test_claimable_balance_correct_while_payment_pending(false, true);
+	do_test_claimable_balance_correct_while_payment_pending(true, false);
+	do_test_claimable_balance_correct_while_payment_pending(true, true);
+}
+
 fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool) {
 	// Tests that we'll retry packages that were previously timelocked after we've restored them.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
