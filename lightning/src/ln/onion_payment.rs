@@ -146,7 +146,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		msgs::InboundOnionPayload::BlindedReceive {
 			sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
 			intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
-			custom_tlvs
+			custom_tlvs, invoice_request: _
 		} => {
 			check_blinded_payment_constraints(
 				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints
