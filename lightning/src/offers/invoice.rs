@@ -386,7 +386,7 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 
 impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	invoice_builder_methods!(self, Self, Self, self, S, mut);
-	invoice_builder_methods_common!(self, Self, self.invoice.fields_mut(), Self, self, S, Bolt12Invoice, mut);
+	invoice_builder_methods_common!(self, Self, self.invoice.fields_mut(), Self, self, Bolt12Invoice, mut);
 
 	#[cfg(test)]
 	invoice_builder_methods_test!(self, Self, self.invoice.fields_mut(), Self, self, mut);
@@ -396,14 +396,14 @@ impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, (), (), ExplicitSigningPubkey);
-	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), (), (), ExplicitSigningPubkey, Bolt12Invoice);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), (), (), Bolt12Invoice);
 }
 
 #[cfg(all(c_bindings, test))]
 impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, ExplicitSigningPubkey);
-	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, ExplicitSigningPubkey, Bolt12Invoice);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, Bolt12Invoice);
 	invoice_builder_methods_test!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self);
 }
 
@@ -411,14 +411,14 @@ impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
 	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, (), (), DerivedSigningPubkey);
-	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), (), (), DerivedSigningPubkey, Bolt12Invoice);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), (), (), Bolt12Invoice);
 }
 
 #[cfg(all(c_bindings, test))]
 impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
 	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, DerivedSigningPubkey);
-	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, DerivedSigningPubkey, Bolt12Invoice);
+	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, Bolt12Invoice);
 	invoice_builder_methods_test!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self);
 }
 
