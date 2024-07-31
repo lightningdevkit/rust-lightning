@@ -35,6 +35,7 @@ use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs}
 use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use crate::ln::onion_utils;
+use crate::offers::invoice_request::InvoiceRequest;
 use crate::onion_message;
 use crate::sign::{NodeSigner, Recipient};
 
@@ -1700,6 +1701,7 @@ mod fuzzy_internal_msgs {
 	use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::ln::types::{PaymentPreimage, PaymentSecret};
 	use crate::ln::features::BlindedHopFeatures;
+	use crate::offers::invoice_request::InvoiceRequest;
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
 
 	#[allow(unused_imports)]
@@ -1739,6 +1741,7 @@ mod fuzzy_internal_msgs {
 			payment_context: PaymentContext,
 			intro_node_blinding_point: Option<PublicKey>,
 			keysend_preimage: Option<PaymentPreimage>,
+			invoice_request: Option<InvoiceRequest>,
 			custom_tlvs: Vec<(u64, Vec<u8>)>,
 		}
 	}
@@ -1777,6 +1780,7 @@ mod fuzzy_internal_msgs {
 			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: &'a Vec<(u64, Vec<u8>)>,
+			invoice_request: Option<&'a InvoiceRequest>,
 		}
 	}
 
@@ -2668,13 +2672,17 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 			},
 			Self::BlindedReceive {
 				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
-				intro_node_blinding_point, keysend_preimage, ref custom_tlvs,
+				intro_node_blinding_point, keysend_preimage, ref invoice_request, ref custom_tlvs,
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
 				// standardized.
+				let invoice_request_tlv = invoice_request.map(|invreq| (77_777, invreq.encode()));
 				let keysend_tlv = keysend_preimage.map(|preimage| (5482373484, preimage.encode()));
-				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
+				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter()
+					.chain(invoice_request_tlv.iter())
+					.chain(keysend_tlv.iter())
+					.collect();
 				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
@@ -2718,6 +2726,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
+		let mut invoice_request: Option<InvoiceRequest> = None;
 		let mut custom_tlvs = Vec::new();
 
 		let tlv_len = BigSize::read(r)?;
@@ -2731,6 +2740,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 			(12, intro_node_blinding_point, option),
 			(16, payment_metadata, option),
 			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
+			(77_777, invoice_request, option),
 			// See https://github.com/lightning/blips/blob/master/blip-0003.md
 			(5482373484, keysend_preimage, option)
 		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
@@ -2761,7 +2771,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 					short_channel_id, payment_relay, payment_constraints, features
 				})} => {
 					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
-						keysend_preimage.is_some()
+						keysend_preimage.is_some() || invoice_request.is_some()
 					{
 						return Err(DecodeError::InvalidValue)
 					}
@@ -2786,13 +2796,14 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						payment_context,
 						intro_node_blinding_point,
 						keysend_preimage,
+						invoice_request,
 						custom_tlvs,
 					})
 				},
 			}
 		} else if let Some(short_channel_id) = short_id {
 			if payment_data.is_some() || payment_metadata.is_some() || encrypted_tlvs_opt.is_some() ||
-				total_msat.is_some()
+				total_msat.is_some() || invoice_request.is_some()
 			{ return Err(DecodeError::InvalidValue) }
 			Ok(Self::Forward {
 				short_channel_id,
@@ -2800,7 +2811,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
 			})
 		} else {
-			if encrypted_tlvs_opt.is_some() || total_msat.is_some() {
+			if encrypted_tlvs_opt.is_some() || total_msat.is_some() || invoice_request.is_some() {
 				return Err(DecodeError::InvalidValue)
 			}
 			if let Some(data) = &payment_data {

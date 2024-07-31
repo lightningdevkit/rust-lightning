@@ -839,6 +839,11 @@ impl InvoiceRequest {
 	invoice_request_accessors!(self, self.contents);
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(self, self, InvoiceBuilder<ExplicitSigningPubkey>);
 	invoice_request_verify_method!(self, Self);
+
+	#[cfg(async_payments)]
+	pub(super) fn bytes(&self) -> &Vec<u8> {
+		&self.bytes
+	}
 }
 
 #[cfg(c_bindings)]
@@ -1035,6 +1040,13 @@ impl Writeable for InvoiceRequest {
 impl Writeable for InvoiceRequestContents {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		self.as_tlv_stream().write(writer)
+	}
+}
+
+impl Readable for InvoiceRequest {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let bytes: WithoutLength<Vec<u8>> = Readable::read(reader)?;
+		Self::try_from(bytes.0).map_err(|_| DecodeError::InvalidValue)
 	}
 }
 

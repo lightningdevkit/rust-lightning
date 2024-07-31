@@ -142,7 +142,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		msgs::InboundOnionPayload::BlindedReceive {
 			sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, payment_secret,
 			intro_node_blinding_point, payment_constraints, payment_context, keysend_preimage,
-			custom_tlvs
+			custom_tlvs, invoice_request: _
 		} => {
 			check_blinded_payment_constraints(
 				sender_intended_htlc_amt_msat, cltv_expiry, &payment_constraints
@@ -536,7 +536,7 @@ mod tests {
 		let path = Path { hops, blinded_tail: None, };
 		let onion_keys = super::onion_utils::construct_onion_keys(&secp_ctx, &path, &session_priv).unwrap();
 		let (onion_payloads, ..) = super::onion_utils::build_onion_payloads(
-			&path, total_amt_msat, &recipient_onion, cur_height + 1, &Some(keysend_preimage)
+			&path, total_amt_msat, &recipient_onion, cur_height + 1, &Some(keysend_preimage), None
 		).unwrap();
 
 		assert!(super::onion_utils::construct_onion_packet(
@@ -564,7 +564,7 @@ mod tests {
 
 		let (onion, amount_msat, cltv_expiry) = create_payment_onion(
 			&secp_ctx, &path, &session_priv, total_amt_msat, &recipient_onion,
-			cur_height, &payment_hash, &Some(preimage), prng_seed
+			cur_height, &payment_hash, &Some(preimage), None, prng_seed
 		).unwrap();
 
 		let msg = make_update_add_msg(amount_msat, cltv_expiry, payment_hash, onion);
