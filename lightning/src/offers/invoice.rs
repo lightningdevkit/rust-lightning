@@ -117,6 +117,8 @@ use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequ
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
+#[cfg(test)]
+use crate::offers::invoice_macros::invoice_builder_methods_test;
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
 use crate::offers::nonce::Nonce;
@@ -385,6 +387,9 @@ impl<'a> InvoiceBuilder<'a, DerivedSigningPubkey> {
 impl<'a, S: SigningPubkeyStrategy> InvoiceBuilder<'a, S> {
 	invoice_builder_methods!(self, Self, Self, self, S, mut);
 	invoice_builder_methods_common!(self, Self, self.invoice.fields_mut(), Self, self, S, Bolt12Invoice, mut);
+
+	#[cfg(test)]
+	invoice_builder_methods_test!(self, Self, self.invoice.fields_mut(), Self, self, mut);
 }
 
 #[cfg(all(c_bindings, not(test)))]
@@ -399,6 +404,7 @@ impl<'a> InvoiceWithExplicitSigningPubkeyBuilder<'a> {
 	invoice_explicit_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, ExplicitSigningPubkey);
 	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, ExplicitSigningPubkey, Bolt12Invoice);
+	invoice_builder_methods_test!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self);
 }
 
 #[cfg(all(c_bindings, not(test)))]
@@ -413,6 +419,7 @@ impl<'a> InvoiceWithDerivedSigningPubkeyBuilder<'a> {
 	invoice_derived_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_builder_methods!(self, &mut Self, &mut Self, self, DerivedSigningPubkey);
 	invoice_builder_methods_common!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self, DerivedSigningPubkey, Bolt12Invoice);
+	invoice_builder_methods_test!(self, &mut Self, self.invoice.fields_mut(), &mut Self, self);
 }
 
 #[cfg(c_bindings)]
