@@ -10274,6 +10274,7 @@ mod tests {
 		use bitcoin::sighash::EcdsaSighashType;
 		use bitcoin::hashes::hex::FromHex;
 		use bitcoin::hash_types::Txid;
+		use bitcoin::hex::DisplayHex;
 		use bitcoin::secp256k1::Message;
 		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
 		use crate::ln::PaymentPreimage;
@@ -10283,7 +10284,6 @@ mod tests {
 		use crate::util::logger::Logger;
 		use crate::sync::Arc;
 		use core::str::FromStr;
-		use hex::DisplayHex;
 
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
 		let feeest = TestFeeEstimator{fee_est: 15000};

@@ -2,7 +2,6 @@ extern crate bech32;
 extern crate lightning;
 extern crate lightning_invoice;
 extern crate secp256k1;
-extern crate hex;
 
 use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use bitcoin::hashes::hex::FromHex;

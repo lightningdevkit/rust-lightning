@@ -158,10 +158,10 @@ impl TryFrom<NodeId> for PublicKey {
 }
 
 impl FromStr for NodeId {
-	type Err = hex::parse::HexToArrayError;
+	type Err = bitcoin::hex::parse::HexToArrayError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let data: [u8; PUBLIC_KEY_SIZE] = hex::FromHex::from_hex(s)?;
+		let data: [u8; PUBLIC_KEY_SIZE] = bitcoin::hex::FromHex::from_hex(s)?;
 		Ok(NodeId(data))
 	}
 }

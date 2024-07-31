@@ -8,7 +8,6 @@
 // licenses.
 
 extern crate bitcoin;
-extern crate hex;
 extern crate lightning;
 extern crate lightning_rapid_gossip_sync;
 
