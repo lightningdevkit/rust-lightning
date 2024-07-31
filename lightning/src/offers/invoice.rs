@@ -102,11 +102,11 @@
 //!
 //! ```
 
-use bitcoin::{WitnessProgram, Network, WitnessVersion};
+use bitcoin::{KnownHrp, WitnessProgram, Network, WitnessVersion};
 use bitcoin::blockdata::constants::ChainHash;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::address::{Address, Payload};
+use bitcoin::address::Address;
 use core::time::Duration;
 use core::hash::{Hash, Hasher};
 use crate::io;
@@ -1076,14 +1076,14 @@ pub(super) fn is_expired(created_at: Duration, relative_expiry: Duration) -> boo
 pub(super) fn filter_fallbacks(
 	chain: ChainHash, fallbacks: &Vec<FallbackAddress>
 ) -> Vec<Address> {
-	let network = if chain == ChainHash::using_genesis_block(Network::Bitcoin) {
-		Network::Bitcoin
+	let hrp = if chain == ChainHash::using_genesis_block(Network::Bitcoin) {
+		KnownHrp::Mainnet
 	} else if chain == ChainHash::using_genesis_block(Network::Testnet) {
-		Network::Testnet
+		KnownHrp::Testnets
 	} else if chain == ChainHash::using_genesis_block(Network::Signet) {
-		Network::Signet
+		KnownHrp::Testnets
 	} else if chain == ChainHash::using_genesis_block(Network::Regtest) {
-		Network::Regtest
+		KnownHrp::Regtest
 	} else {
 		return Vec::new()
 	};
@@ -1099,7 +1099,7 @@ pub(super) fn filter_fallbacks(
 			Ok(witness_program) => witness_program,
 			Err(_) => return None,
 		};
-		Some(Address::new(network, Payload::WitnessProgram(witness_program)))
+		Some(Address::from_witness_program(witness_program, hrp))
 	};
 
 	fallbacks.iter().filter_map(to_valid_address).collect()
@@ -1424,7 +1424,7 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey, self};
-	use bitcoin::address::{Address, Payload};
+	use bitcoin::address::{Address, KnownHrp};
 	use bitcoin::key::TweakedPublicKey;
 
 	use core::time::Duration;
@@ -2272,8 +2272,8 @@ mod tests {
 						Address::p2wsh(&script, Network::Bitcoin),
 						Address::p2wpkh(&pubkey, Network::Bitcoin).unwrap(),
 						Address::p2tr_tweaked(tweaked_pubkey, Network::Bitcoin),
-						Address::new(Network::Bitcoin, Payload::WitnessProgram(v1_witness_program)),
-						Address::new(Network::Bitcoin, Payload::WitnessProgram(v2_witness_program)),
+						Address::from_witness_program(v1_witness_program, KnownHrp::Mainnet),
+						Address::from_witness_program(v2_witness_program, KnownHrp::Mainnet),
 					],
 				);
 			},

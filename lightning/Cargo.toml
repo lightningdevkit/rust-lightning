@@ -31,7 +31,7 @@ unsafe_revoked_tx_signing = []
 # Override signing to not include randomness when generating signatures for test vectors.
 _test_vectors = []
 
-no-std = ["hashbrown", "possiblyrandom", "bitcoin/no-std", "core2/alloc", "libm"]
+no-std = ["hashbrown", "possiblyrandom", "core2/alloc", "libm"]
 std = ["bitcoin/std", "bech32/std"]
 
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
@@ -41,7 +41,7 @@ default = ["std", "grind_signatures"]
 
 [dependencies]
 bech32 = { version = "0.9.1", default-features = false }
-bitcoin = { version = "0.31.2", default-features = false, features = ["secp-recovery"] }
+bitcoin = { version = "0.32.2", default-features = false, features = ["secp-recovery"] }
 
 hashbrown = { version = "0.13", optional = true, default-features = false }
 possiblyrandom = { version = "0.2", optional = true, default-features = false }
@@ -55,7 +55,7 @@ libm = { version = "0.2", optional = true, default-features = false }
 regex = "1.5.6"
 
 [dev-dependencies.bitcoin]
-version = "0.31.2"
+version = "0.32.2"
 default-features = false
 features = ["bitcoinconsensus", "secp-recovery"]
 

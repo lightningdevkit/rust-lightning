@@ -19,6 +19,7 @@ use bitcoin::secp256k1::{PublicKey, Verification};
 
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash;
+use bitcoin::hex;
 use bitcoin::network::Network;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};

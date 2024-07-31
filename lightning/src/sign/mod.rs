@@ -1327,8 +1327,8 @@ impl InMemorySigner {
 				.unwrap()[..]
 		);
 		let local_delayedsig = EcdsaSignature {
-			sig: sign_with_aux_rand(secp_ctx, &sighash, &delayed_payment_key, &self),
-			hash_ty: EcdsaSighashType::All,
+			signature: sign_with_aux_rand(secp_ctx, &sighash, &delayed_payment_key, &self),
+			sighash_type: EcdsaSighashType::All,
 		};
 		let payment_script =
 			bitcoin::Address::p2wsh(&witness_script, Network::Bitcoin).script_pubkey();

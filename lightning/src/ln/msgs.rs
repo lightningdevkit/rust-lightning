@@ -51,7 +51,6 @@ use std::net::SocketAddr;
 use core::fmt::Display;
 use crate::io::{self, Cursor, Read};
 use crate::io_extras::read_to_end;
-
 use crate::events::MessageSendEventsProvider;
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::util::logger;
@@ -2884,7 +2883,7 @@ impl Readable for UnsignedChannelAnnouncement {
 			node_id_2: Readable::read(r)?,
 			bitcoin_key_1: Readable::read(r)?,
 			bitcoin_key_2: Readable::read(r)?,
-			excess_data: read_to_end(r)?,
+			excess_data: r.read_to_end()?,
 		})
 	}
 }

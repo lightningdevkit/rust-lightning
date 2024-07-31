@@ -85,12 +85,8 @@ pub mod events;
 
 pub(crate) mod crypto;
 
-#[cfg(feature = "std")]
-/// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.
-pub use std::io;
-#[cfg(not(feature = "std"))]
-/// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.
-pub use core2::io;
+/// Re-export the `bitcoin_io` crate.
+pub use bitcoin::io;
 
 #[cfg(not(feature = "std"))]
 #[doc(hidden)]
@@ -98,30 +94,6 @@ pub use core2::io;
 ///
 /// This is not exported to bindings users as it is not intended for public consumption.
 pub mod io_extras {
-	use core2::io::{self, Read, Write};
-
-	/// A writer which will move data into the void.
-	pub struct Sink {
-		_priv: (),
-	}
-
-	/// Creates an instance of a writer which will successfully consume all data.
-	pub const fn sink() -> Sink {
-		Sink { _priv: () }
-	}
-
-	impl core2::io::Write for Sink {
-		#[inline]
-		fn write(&mut self, buf: &[u8]) -> core2::io::Result<usize> {
-			Ok(buf.len())
-		}
-
-		#[inline]
-		fn flush(&mut self) -> core2::io::Result<()> {
-			Ok(())
-		}
-	}
-
 	pub fn copy<R: ?Sized, W: ?Sized>(reader: &mut R, writer: &mut W) -> Result<u64, io::Error>
 		where
 		R: Read,
@@ -141,19 +113,11 @@ pub mod io_extras {
 		Ok(count)
 	}
 
-	pub fn read_to_end<D: io::Read>(mut d: D) -> Result<alloc::vec::Vec<u8>, io::Error> {
-		let mut result = vec![];
-		let mut buf = [0u8; 64];
-		loop {
-			match d.read(&mut buf) {
-				Ok(0) => break,
-				Ok(n) => result.extend_from_slice(&buf[0..n]),
-				Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {},
-				Err(e) => return Err(e.into()),
-			};
-		}
-		Ok(result)
-	}
+        pub fn read_to_end<D: io::Read>(mut d: D) -> Result<alloc::vec::Vec<u8>, io::Error> {
+                let mut buf = Vec::new();
+                d.take(u64::MAX).read_to_end(&mut buf)?;
+                Ok(buf)
+        }
 }
 
 #[cfg(feature = "std")]
@@ -162,13 +126,13 @@ pub mod io_extras {
 ///
 /// This is not exported to bindings users as it is not intended for public consumption.
 mod io_extras {
-	pub fn read_to_end<D: ::std::io::Read>(mut d: D) -> Result<Vec<u8>, ::std::io::Error> {
-		let mut buf = Vec::new();
-		d.read_to_end(&mut buf)?;
-		Ok(buf)
-	}
+       pub fn read_to_end<D: ::std::io::Read>(mut d: D) -> Result<Vec<u8>, ::std::io::Error> {
+               let mut buf = Vec::new();
+               d.read_to_end(&mut buf)?;
+               Ok(buf)
+       }
 
-	pub use std::io::{copy, sink};
+       pub use std::io::{copy, sink};
 }
 
 mod prelude {

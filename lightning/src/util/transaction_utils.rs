@@ -16,7 +16,7 @@ use bitcoin::consensus::encode::VarInt;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use crate::io_extras::sink;
+use crate::io::sink;
 use core::cmp::Ordering;
 
 pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {

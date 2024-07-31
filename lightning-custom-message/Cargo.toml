@@ -14,7 +14,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-bitcoin = "0.31.2"
+bitcoin = "0.32.2"
 lightning = { version = "0.0.123-beta", path = "../lightning" }
 
 [lints]

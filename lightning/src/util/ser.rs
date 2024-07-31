@@ -14,8 +14,8 @@
 //! [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 
 use crate::prelude::*;
-use crate::io::{self, Read, Seek, Write};
-use crate::io_extras::{copy, sink};
+use crate::io_extras::copy;
+use crate::io::{self, sink, Read, Write};
 use core::hash::Hash;
 use crate::sync::{Mutex, RwLock};
 use core::cmp;
