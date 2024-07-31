@@ -1691,6 +1691,18 @@ where
 			);
 		}
 
+		#[cfg(async_payments)] {
+			for message in self.async_payments_handler.release_pending_messages() {
+				#[cfg(not(c_bindings))]
+				let PendingOnionMessage { contents, destination, reply_path } = message;
+				#[cfg(c_bindings)]
+				let (contents, destination, reply_path) = message;
+				let _ = self.find_path_and_enqueue_onion_message(
+					contents, destination, reply_path, format_args!("when sending OffersMessage")
+				);
+			}
+		}
+
 		// Enqueue any initiating `CustomMessage`s to send.
 		for message in self.custom_handler.release_pending_custom_messages() {
 			#[cfg(not(c_bindings))]
