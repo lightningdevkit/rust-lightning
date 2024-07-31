@@ -11,7 +11,7 @@
 
 macro_rules! invoice_builder_methods_common { (
 	$self: ident, $self_type: ty, $invoice_fields: expr, $return_type: ty, $return_value: expr,
-	$type_param: ty, $invoice_type: ty $(, $self_mut: tt)?
+	$invoice_type: ty $(, $self_mut: tt)?
 ) => {
 	#[doc = concat!("Sets the [`", stringify!($invoice_type), "::relative_expiry`]")]
 	#[doc = concat!("as seconds since [`", stringify!($invoice_type), "::created_at`].")]
