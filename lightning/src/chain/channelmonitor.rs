@@ -2183,9 +2183,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			if let OnchainEvent::FundingSpendConfirmation { commitment_tx_to_counterparty_output, .. } =
 				event.event
 			{
-				// if commitment_tx_to_counterparty_output.is_some() {
-				// 	assert_eq!(confirmed_counterparty_output, commitment_tx_to_counterparty_output);
-				// }
 				confirmed_counterparty_output = commitment_tx_to_counterparty_output;
 				Some((event.txid, event.confirmation_threshold()))
 			} else { None }
