@@ -81,7 +81,7 @@ fn test_channel_resumption_fail_post_funding() {
 	let (temp_chan_id, tx, funding_output) =
 		create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
 	let new_chan_id = ChannelId::v1_from_funding_outpoint(funding_output);
-	nodes[0].node.funding_transaction_generated(&temp_chan_id, &nodes[1].node.get_our_node_id(), tx).unwrap();
+	nodes[0].node.funding_transaction_generated(temp_chan_id, nodes[1].node.get_our_node_id(), tx).unwrap();
 
 	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
 	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(new_chan_id, true, ClosureReason::DisconnectedPeer)]);
@@ -567,7 +567,7 @@ fn do_test_sanity_on_in_flight_opens(steps: u8) {
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
 	if steps & 0x0f == 3 { return; }
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
@@ -3755,7 +3755,7 @@ fn test_peer_disconnected_before_funding_broadcasted() {
 	let (temporary_channel_id, tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
 	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
 
-	assert!(nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
+	assert!(nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
 
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 	assert_eq!(funding_created_msg.temporary_channel_id, expected_temporary_channel_id);
@@ -8755,7 +8755,7 @@ fn test_pre_lockin_no_chan_closed_update() {
 	// Move the first channel through the funding flow...
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
@@ -9085,14 +9085,14 @@ fn test_peer_funding_sidechannel() {
 		_ => panic!("Unexpected event {:?}", cs_funding_events),
 	}
 
-	nodes[2].node.funding_transaction_generated_unchecked(&temp_chan_id_ca, &nodes[0].node.get_our_node_id(), tx.clone(), funding_output.index).unwrap();
+	nodes[2].node.funding_transaction_generated_unchecked(temp_chan_id_ca, nodes[0].node.get_our_node_id(), tx.clone(), funding_output.index).unwrap();
 	let funding_created_msg = get_event_msg!(nodes[2], MessageSendEvent::SendFundingCreated, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_funding_created(&nodes[2].node.get_our_node_id(), &funding_created_msg);
 	get_event_msg!(nodes[0], MessageSendEvent::SendFundingSigned, nodes[2].node.get_our_node_id());
 	expect_channel_pending_event(&nodes[0], &nodes[2].node.get_our_node_id());
 	check_added_monitors!(nodes[0], 1);
 
-	let res = nodes[0].node.funding_transaction_generated(&temp_chan_id_ab, &nodes[1].node.get_our_node_id(), tx.clone());
+	let res = nodes[0].node.funding_transaction_generated(temp_chan_id_ab, nodes[1].node.get_our_node_id(), tx.clone());
 	let err_msg = format!("{:?}", res.unwrap_err());
 	assert!(err_msg.contains("An existing channel using outpoint "));
 	assert!(err_msg.contains(" is open with peer"));
@@ -9134,7 +9134,7 @@ fn test_duplicate_conflicting_funding_from_second_peer() {
 	let dummy_monitor = get_monitor!(nodes[2], dummy_chan_id).clone();
 	nodes[0].chain_monitor.chain_monitor.watch_channel(funding_output, dummy_monitor).unwrap();
 
-	nodes[0].node.funding_transaction_generated(&temp_chan_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(temp_chan_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
@@ -9180,7 +9180,7 @@ fn test_duplicate_funding_err_in_funding() {
 	// and let nodes[1] remove the inbound channel.
 	let (_, funding_tx, _) = create_funding_transaction(&nodes[2], &nodes[1].node.get_our_node_id(), 100_000, 42);
 
-	nodes[2].node.funding_transaction_generated(&node_c_temp_chan_id, &nodes[1].node.get_our_node_id(), funding_tx).unwrap();
+	nodes[2].node.funding_transaction_generated(node_c_temp_chan_id, nodes[1].node.get_our_node_id(), funding_tx).unwrap();
 
 	let mut funding_created_msg = get_event_msg!(nodes[2], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 	funding_created_msg.temporary_channel_id = real_channel_id;
@@ -9241,7 +9241,7 @@ fn test_duplicate_chan_id() {
 	// Move the first channel through the funding flow...
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
@@ -9453,7 +9453,7 @@ fn test_invalid_funding_tx() {
 		output.script_pubkey = ScriptBuf::new_p2wsh(&wit_program_script.wscript_hash());
 	}
 
-	nodes[0].node.funding_transaction_generated_unchecked(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone(), 0).unwrap();
+	nodes[0].node.funding_transaction_generated_unchecked(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone(), 0).unwrap();
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
 	check_added_monitors!(nodes[1], 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -9532,7 +9532,7 @@ fn test_coinbase_funding_tx() {
 	// Create the coinbase funding transaction.
 	let (temporary_channel_id, tx, _) = create_coinbase_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(nodes[0], 0);
 	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
@@ -10009,7 +10009,7 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 		}
 	}
 
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id()));
 	check_added_monitors!(nodes[1], 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -10297,7 +10297,7 @@ fn test_non_final_funding_tx() {
 		_ => panic!("Unexpected event"),
 	};
 	// Transaction should fail as it's evaluated as non-final for propagation.
-	match nodes[0].node.funding_transaction_generated(&temp_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()) {
+	match nodes[0].node.funding_transaction_generated(temp_channel_id, nodes[1].node.get_our_node_id(), tx.clone()) {
 		Err(APIError::APIMisuseError { err }) => {
 			assert_eq!(format!("Funding transaction absolute timelock is non-final"), err);
 		},
@@ -10338,7 +10338,7 @@ fn test_non_final_funding_tx_within_headroom() {
 	};
 
 	// Transaction should be accepted if it's in a +1 headroom from best block.
-	assert!(nodes[0].node.funding_transaction_generated(&temp_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
+	assert!(nodes[0].node.funding_transaction_generated(temp_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).is_ok());
 	get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 }
 
@@ -11226,7 +11226,7 @@ fn test_funding_signed_event() {
 
 	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 	let (temporary_channel_id, tx, funding_outpoint) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100_000, 42);
-	nodes[0].node.unsafe_manual_funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), funding_outpoint).unwrap();
+	nodes[0].node.unsafe_manual_funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), funding_outpoint).unwrap();
 	check_added_monitors!(nodes[0], 0);
 
 	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());

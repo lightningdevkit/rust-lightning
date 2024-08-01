@@ -1218,7 +1218,7 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(node_a, &node_b.node.get_our_node_id(), channel_value, 42);
 	assert_eq!(temporary_channel_id, expected_temporary_channel_id);
 
-	assert!(node_a.node.funding_transaction_generated(&temporary_channel_id, &node_b.node.get_our_node_id(), tx.clone()).is_ok());
+	assert!(node_a.node.funding_transaction_generated(temporary_channel_id, node_b.node.get_our_node_id(), tx.clone()).is_ok());
 	check_added_monitors!(node_a, 0);
 
 	let funding_created_msg = get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id());
@@ -1249,7 +1249,7 @@ pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &
 	node_a.tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
 
 	// Ensure that funding_transaction_generated is idempotent.
-	assert!(node_a.node.funding_transaction_generated(&temporary_channel_id, &node_b.node.get_our_node_id(), tx.clone()).is_err());
+	assert!(node_a.node.funding_transaction_generated(temporary_channel_id, node_b.node.get_our_node_id(), tx.clone()).is_err());
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(node_a, 0);
 
@@ -1279,7 +1279,7 @@ pub fn open_zero_conf_channel<'a, 'b, 'c, 'd>(initiator: &'a Node<'b, 'c, 'd>, r
 	initiator.node.handle_accept_channel(&receiver.node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&initiator, &receiver.node.get_our_node_id(), 100_000, 42);
-	initiator.node.funding_transaction_generated(&temporary_channel_id, &receiver.node.get_our_node_id(), tx.clone()).unwrap();
+	initiator.node.funding_transaction_generated(temporary_channel_id, receiver.node.get_our_node_id(), tx.clone()).unwrap();
 	let funding_created = get_event_msg!(initiator, MessageSendEvent::SendFundingCreated, receiver.node.get_our_node_id());
 
 	receiver.node.handle_funding_created(&initiator.node.get_our_node_id(), &funding_created);
@@ -1456,7 +1456,7 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 	nodes[a].node.handle_accept_channel(&nodes[b].node.get_our_node_id(), &accept_channel);
 
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[a], &nodes[b].node.get_our_node_id(), channel_value, 42);
-	nodes[a].node.funding_transaction_generated(&temporary_channel_id, &nodes[b].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[a].node.funding_transaction_generated(temporary_channel_id, nodes[b].node.get_our_node_id(), tx.clone()).unwrap();
 	nodes[b].node.handle_funding_created(&nodes[a].node.get_our_node_id(), &get_event_msg!(nodes[a], MessageSendEvent::SendFundingCreated, nodes[b].node.get_our_node_id()));
 	check_added_monitors!(nodes[b], 1);
 
