@@ -714,6 +714,16 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 		$contents.supported_quantity()
 	}
 
+	/// The public key used by the recipient to sign invoices.
+	///
+	/// From [`Offer::issuer_signing_pubkey`] and may be `None`; also `None` if the invoice was
+	/// created in response to a [`Refund`].
+	///
+	/// [`Offer::issuer_signing_pubkey`]: crate::offers::offer::Offer::issuer_signing_pubkey
+	pub fn issuer_signing_pubkey(&$self) -> Option<PublicKey> {
+		$contents.issuer_signing_pubkey()
+	}
+
 	/// An unpredictable series of bytes from the payer.
 	///
 	/// From [`InvoiceRequest::payer_metadata`] or [`Refund::payer_metadata`].
@@ -761,13 +771,37 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	}
 } }
 
+
+macro_rules! invoice_accessors_signing_pubkey {
+	($self: ident, $contents: expr, $invoice_type: ty) =>
+{
+	/// A typically transient public key corresponding to the key used to sign the invoice.
+	///
+	/// If the invoices was created in response to an [`Offer`], then this will be:
+	/// - [`Offer::issuer_signing_pubkey`] if it's `Some`, otherwise
+	/// - the final blinded node id from a [`BlindedMessagePath`] in [`Offer::paths`] if `None`.
+	///
+	/// If the invoice was created in response to a [`Refund`], then it is a valid pubkey chosen by
+	/// the recipient.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Offer::issuer_signing_pubkey`]: crate::offers::offer::Offer::issuer_signing_pubkey
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	/// [`Refund`]: crate::offers::refund::Refund
+	pub fn signing_pubkey(&$self) -> PublicKey {
+		$contents.signing_pubkey()
+	}
+} }
+
 impl UnsignedBolt12Invoice {
 	invoice_accessors_common!(self, self.contents, Bolt12Invoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, Bolt12Invoice);
 	invoice_accessors!(self, self.contents);
 }
 
 impl Bolt12Invoice {
 	invoice_accessors_common!(self, self.contents, Bolt12Invoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, Bolt12Invoice);
 	invoice_accessors!(self, self.contents);
 
 	/// Signature of the invoice verified using [`Bolt12Invoice::signing_pubkey`].
@@ -949,6 +983,15 @@ impl InvoiceContents {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				Some(invoice_request.inner.offer.supported_quantity())
+			},
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn issuer_signing_pubkey(&self) -> Option<PublicKey> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.inner.offer.issuer_signing_pubkey()
 			},
 			InvoiceContents::ForRefund { .. } => None,
 		}

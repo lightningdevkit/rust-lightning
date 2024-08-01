@@ -241,6 +241,30 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	pub fn supported_quantity(&$self) -> Quantity {
 		$contents.supported_quantity()
 	}
+
+	/// The public key used by the recipient to sign invoices, from
+	/// [`Offer::issuer_signing_pubkey`].
+	///
+	/// [`Offer::issuer_signing_pubkey`]: crate::offers::offer::Offer::issuer_signing_pubkey
+	pub fn issuer_signing_pubkey(&$self) -> Option<PublicKey> {
+		$contents.issuer_signing_pubkey()
+	}
+} }
+
+macro_rules! invoice_accessors_signing_pubkey {
+	($self: ident, $contents: expr, $invoice_type: ty) =>
+{
+	/// The public key corresponding to the key used to sign the invoice.
+	///
+	/// This will be:
+	/// - [`Offer::issuer_signing_pubkey`] if it's `Some`, otherwise
+	/// - the final blinded node id from a [`BlindedMessagePath`] in [`Offer::paths`] if `None`.
+	///
+	/// [`Offer::issuer_signing_pubkey`]: crate::offers::offer::Offer::issuer_signing_pubkey
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	pub fn signing_pubkey(&$self) -> PublicKey {
+		$contents.signing_pubkey()
+	}
 } }
 
 impl UnsignedStaticInvoice {
@@ -272,6 +296,7 @@ impl UnsignedStaticInvoice {
 	}
 
 	invoice_accessors_common!(self, self.contents, StaticInvoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, StaticInvoice);
 	invoice_accessors!(self, self.contents);
 }
 
@@ -307,6 +332,7 @@ where
 
 impl StaticInvoice {
 	invoice_accessors_common!(self, self.contents, StaticInvoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, StaticInvoice);
 	invoice_accessors!(self, self.contents);
 
 	/// Signature of the invoice verified using [`StaticInvoice::signing_pubkey`].
@@ -416,6 +442,10 @@ impl InvoiceContents {
 
 	fn supported_quantity(&self) -> Quantity {
 		self.offer.supported_quantity()
+	}
+
+	fn issuer_signing_pubkey(&self) -> Option<PublicKey> {
+		self.offer.issuer_signing_pubkey()
 	}
 
 	fn payment_paths(&self) -> &[BlindedPaymentPath] {
