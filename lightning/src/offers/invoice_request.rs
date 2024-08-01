@@ -728,7 +728,7 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// The `payment_paths` parameter is useful for maintaining the payment recipient's privacy. It
 	/// must contain one or more elements ordered from most-preferred to least-preferred, if there's
 	/// a preference. Note, however, that any privacy is lost if a public node id was used for
-	/// [`Offer::signing_pubkey`].
+	/// [`Offer::issuer_signing_pubkey`].
 	///
 	/// Errors if the request contains unknown required features.
 	///
@@ -749,9 +749,9 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		let signing_pubkey = match $contents.contents.inner.offer.signing_pubkey() {
+		let signing_pubkey = match $contents.contents.inner.offer.issuer_signing_pubkey() {
 			Some(signing_pubkey) => signing_pubkey,
-			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
+			None => return Err(Bolt12SemanticError::MissingIssuerSigningPubkey),
 		};
 
 		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
@@ -763,7 +763,7 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, signing_pubkey: PublicKey
 	) -> Result<$builder, Bolt12SemanticError> {
-		debug_assert!($contents.contents.inner.offer.signing_pubkey().is_none());
+		debug_assert!($contents.contents.inner.offer.issuer_signing_pubkey().is_none());
 
 		if $contents.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
@@ -914,9 +914,9 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 			Some(keys) => keys,
 		};
 
-		match $contents.contents.inner.offer.signing_pubkey() {
+		match $contents.contents.inner.offer.issuer_signing_pubkey() {
 			Some(signing_pubkey) => debug_assert_eq!(signing_pubkey, keys.public_key()),
-			None => return Err(Bolt12SemanticError::MissingSigningPubkey),
+			None => return Err(Bolt12SemanticError::MissingIssuerSigningPubkey),
 		}
 
 		<$builder>::for_offer_using_keys(
@@ -1297,7 +1297,7 @@ mod tests {
 		assert_eq!(unsigned_invoice_request.paths(), &[]);
 		assert_eq!(unsigned_invoice_request.issuer(), None);
 		assert_eq!(unsigned_invoice_request.supported_quantity(), Quantity::One);
-		assert_eq!(unsigned_invoice_request.signing_pubkey(), Some(recipient_pubkey()));
+		assert_eq!(unsigned_invoice_request.issuer_signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(unsigned_invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(unsigned_invoice_request.amount_msats(), None);
 		assert_eq!(unsigned_invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
@@ -1329,7 +1329,7 @@ mod tests {
 		assert_eq!(invoice_request.paths(), &[]);
 		assert_eq!(invoice_request.issuer(), None);
 		assert_eq!(invoice_request.supported_quantity(), Quantity::One);
-		assert_eq!(invoice_request.signing_pubkey(), Some(recipient_pubkey()));
+		assert_eq!(invoice_request.issuer_signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(invoice_request.amount_msats(), None);
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
@@ -1355,7 +1355,7 @@ mod tests {
 					paths: None,
 					issuer: None,
 					quantity_max: None,
-					node_id: Some(&recipient_pubkey()),
+					issuer_id: Some(&recipient_pubkey()),
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -2234,14 +2234,14 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_parsing_invoice_request_without_node_id() {
+	fn fails_parsing_invoice_request_without_issuer_id() {
 		let offer = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap();
 		let unsigned_invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap();
 		let mut tlv_stream = unsigned_invoice_request.contents.as_tlv_stream();
-		tlv_stream.1.node_id = None;
+		tlv_stream.1.issuer_id = None;
 
 		let mut buffer = Vec::new();
 		tlv_stream.write(&mut buffer).unwrap();
@@ -2249,7 +2249,7 @@ mod tests {
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingIssuerSigningPubkey));
 			},
 		}
 	}
@@ -2334,7 +2334,7 @@ mod tests {
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build().unwrap();
-		assert_eq!(offer.signing_pubkey(), Some(node_id));
+		assert_eq!(offer.issuer_signing_pubkey(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.chain(Network::Testnet).unwrap()

@@ -752,7 +752,7 @@ impl RefundContents {
 			paths: None,
 			issuer: self.issuer.as_ref(),
 			quantity_max: None,
-			node_id: None,
+			issuer_id: None,
 		};
 
 		let features = {
@@ -844,7 +844,7 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			OfferTlvStream {
 				chains, metadata, currency, amount: offer_amount, description,
 				features: offer_features, absolute_expiry, paths: offer_paths, issuer, quantity_max,
-				node_id,
+				issuer_id,
 			},
 			InvoiceRequestTlvStream {
 				chain, amount, features, quantity, payer_id, payer_note, paths
@@ -887,8 +887,8 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			return Err(Bolt12SemanticError::UnexpectedQuantity);
 		}
 
-		if node_id.is_some() {
-			return Err(Bolt12SemanticError::UnexpectedSigningPubkey);
+		if issuer_id.is_some() {
+			return Err(Bolt12SemanticError::UnexpectedIssuerSigningPubkey);
 		}
 
 		let amount_msats = match amount {
@@ -1003,7 +1003,7 @@ mod tests {
 					paths: None,
 					issuer: None,
 					quantity_max: None,
-					node_id: None,
+					issuer_id: None,
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -1509,14 +1509,14 @@ mod tests {
 			},
 		}
 
-		let node_id = payer_pubkey();
+		let issuer_id = payer_pubkey();
 		let mut tlv_stream = refund.as_tlv_stream();
-		tlv_stream.1.node_id = Some(&node_id);
+		tlv_stream.1.issuer_id = Some(&issuer_id);
 
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedIssuerSigningPubkey));
 			},
 		}
 	}

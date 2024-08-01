@@ -9197,7 +9197,7 @@ where
 	/// # Limitations
 	///
 	/// Requires a direct connection to an introduction node in [`Offer::paths`] or to
-	/// [`Offer::signing_pubkey`], if empty. A similar restriction applies to the responding
+	/// [`Offer::issuer_signing_pubkey`], if empty. A similar restriction applies to the responding
 	/// [`Bolt12Invoice::payment_paths`].
 	///
 	/// # Errors
@@ -9288,10 +9288,10 @@ where
 					let message = OffersMessage::InvoiceRequest(invoice_request.clone());
 					pending_offers_messages.push((message, instructions));
 				});
-		} else if let Some(signing_pubkey) = invoice_request.signing_pubkey() {
+		} else if let Some(node_id) = invoice_request.issuer_signing_pubkey() {
 			for reply_path in reply_paths {
 				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-					destination: Destination::Node(signing_pubkey),
+					destination: Destination::Node(node_id),
 					reply_path,
 				};
 				let message = OffersMessage::InvoiceRequest(invoice_request.clone());
@@ -9299,7 +9299,7 @@ where
 			}
 		} else {
 			debug_assert!(false);
-			return Err(Bolt12SemanticError::MissingSigningPubkey);
+			return Err(Bolt12SemanticError::MissingIssuerSigningPubkey);
 		}
 
 		Ok(())

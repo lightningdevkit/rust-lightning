@@ -157,12 +157,10 @@ pub enum Bolt12SemanticError {
 	UnexpectedFeatures,
 	/// A required description was not provided.
 	MissingDescription,
-	/// A signing pubkey was not provided.
-	MissingSigningPubkey,
-	/// A signing pubkey was provided but a different one was expected.
-	InvalidSigningPubkey,
-	/// A signing pubkey was provided but was not expected.
-	UnexpectedSigningPubkey,
+	/// An issuer's signing pubkey was not provided.
+	MissingIssuerSigningPubkey,
+	/// An issuer's signing pubkey was provided but was not expected.
+	UnexpectedIssuerSigningPubkey,
 	/// A quantity was expected but was missing.
 	MissingQuantity,
 	/// An unsupported quantity was provided.
@@ -191,6 +189,10 @@ pub enum Bolt12SemanticError {
 	MissingPaymentHash,
 	/// An invoice payment hash was provided but was not expected.
 	UnexpectedPaymentHash,
+	/// A signing pubkey was not provided.
+	MissingSigningPubkey,
+	/// A signing pubkey was provided but a different one was expected.
+	InvalidSigningPubkey,
 	/// A signature was expected but was missing.
 	MissingSignature,
 }

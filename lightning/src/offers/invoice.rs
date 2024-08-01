@@ -1335,7 +1335,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 
 		check_invoice_signing_pubkey(&fields.signing_pubkey, &offer_tlv_stream)?;
 
-		if offer_tlv_stream.node_id.is_none() && offer_tlv_stream.paths.is_none() {
+		if offer_tlv_stream.issuer_id.is_none() && offer_tlv_stream.paths.is_none() {
 			let refund = RefundContents::try_from(
 				(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
 			)?;
@@ -1373,9 +1373,9 @@ pub(super) fn construct_payment_paths(
 pub(super) fn check_invoice_signing_pubkey(
 	invoice_signing_pubkey: &PublicKey, offer_tlv_stream: &OfferTlvStream
 ) -> Result<(), Bolt12SemanticError> {
-	match (&offer_tlv_stream.node_id, &offer_tlv_stream.paths) {
-		(Some(expected_signing_pubkey), _) => {
-			if invoice_signing_pubkey != expected_signing_pubkey {
+	match (&offer_tlv_stream.issuer_id, &offer_tlv_stream.paths) {
+		(Some(issuer_signing_pubkey), _) => {
+			if invoice_signing_pubkey != issuer_signing_pubkey {
 				return Err(Bolt12SemanticError::InvalidSigningPubkey);
 			}
 		},
@@ -1561,7 +1561,7 @@ mod tests {
 					paths: None,
 					issuer: None,
 					quantity_max: None,
-					node_id: Some(&recipient_pubkey()),
+					issuer_id: Some(&recipient_pubkey()),
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -1654,7 +1654,7 @@ mod tests {
 					paths: None,
 					issuer: None,
 					quantity_max: None,
-					node_id: None,
+					issuer_id: None,
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -1791,7 +1791,7 @@ mod tests {
 
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
-			// Omit the path so that node_id is used for the signing pubkey instead of deriving
+			// Omit the path so that node_id is used for the signing pubkey instead of deriving it
 			.build().unwrap();
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -2359,7 +2359,7 @@ mod tests {
 		};
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.clear_signing_pubkey()
+			.clear_issuer_signing_pubkey()
 			.amount_msats(1000)
 			.path(paths[0].clone())
 			.path(paths[1].clone())
@@ -2381,7 +2381,7 @@ mod tests {
 		}
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.clear_signing_pubkey()
+			.clear_issuer_signing_pubkey()
 			.amount_msats(1000)
 			.path(paths[0].clone())
 			.path(paths[1].clone())
