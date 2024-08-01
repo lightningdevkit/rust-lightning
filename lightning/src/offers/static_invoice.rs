@@ -108,8 +108,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 			return Err(Bolt12SemanticError::MissingPaths);
 		}
 
-		let offer_signing_pubkey =
-			offer.signing_pubkey().ok_or(Bolt12SemanticError::MissingSigningPubkey)?;
+		let issuer_id = offer.issuer_id().ok_or(Bolt12SemanticError::MissingIssuerId)?;
 
 		let keys = offer
 			.verify(nonce, &expanded_key, &secp_ctx)
@@ -118,7 +117,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 			.ok_or(Bolt12SemanticError::MissingSigningPubkey)?;
 
 		let signing_pubkey = keys.public_key();
-		if signing_pubkey != offer_signing_pubkey {
+		if signing_pubkey != issuer_id {
 			return Err(Bolt12SemanticError::InvalidSigningPubkey);
 		}
 
@@ -613,7 +612,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let offer = OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
 			.build()
 			.unwrap();
@@ -653,7 +652,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let offer = OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
 			.build()
 			.unwrap();
@@ -694,11 +693,9 @@ mod tests {
 		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
 
-		let offer_signing_pubkey = offer.signing_pubkey().unwrap();
+		let signing_pubkey = offer.issuer_id().unwrap();
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
-		assert!(
-			merkle::verify_signature(&invoice.signature, &message, offer_signing_pubkey).is_ok()
-		);
+		assert!(merkle::verify_signature(&invoice.signature, &message, signing_pubkey).is_ok());
 
 		let paths = vec![blinded_path()];
 		assert_eq!(
@@ -715,7 +712,7 @@ mod tests {
 					paths: Some(&paths),
 					issuer: None,
 					quantity_max: None,
-					node_id: Some(&offer_signing_pubkey),
+					issuer_id: Some(&signing_pubkey),
 				},
 				InvoiceTlvStreamRef {
 					paths: Some(Iterable(payment_paths.iter().map(|(_, path)| path))),
@@ -726,7 +723,7 @@ mod tests {
 					amount: None,
 					fallbacks: None,
 					features: None,
-					node_id: Some(&offer_signing_pubkey),
+					node_id: Some(&signing_pubkey),
 					message_paths: Some(&paths),
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
@@ -752,7 +749,7 @@ mod tests {
 		let past_expiry = Duration::from_secs(0);
 
 		let valid_offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.absolute_expiry(future_expiry)
 				.build()
@@ -774,7 +771,7 @@ mod tests {
 		assert_eq!(invoice.absolute_expiry(), Some(future_expiry));
 
 		let expired_offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.absolute_expiry(past_expiry)
 				.build()
@@ -807,7 +804,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let valid_offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.build()
 				.unwrap();
@@ -865,7 +862,7 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_build_offer_signing_pubkey() {
+	fn fails_build_offer_issuer_id() {
 		let node_id = recipient_pubkey();
 		let now = now();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
@@ -874,21 +871,21 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let valid_offer =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.build()
 				.unwrap();
 
 		// Error if offer signing pubkey is missing.
-		let mut offer_missing_signing_pubkey = valid_offer.clone();
-		let mut offer_tlv_stream = offer_missing_signing_pubkey.as_tlv_stream();
-		offer_tlv_stream.node_id.take();
+		let mut offer_missing_issuer_id = valid_offer.clone();
+		let mut offer_tlv_stream = offer_missing_issuer_id.as_tlv_stream();
+		offer_tlv_stream.issuer_id.take();
 		let mut buffer = Vec::new();
 		offer_tlv_stream.write(&mut buffer).unwrap();
-		offer_missing_signing_pubkey = Offer::try_from(buffer).unwrap();
+		offer_missing_issuer_id = Offer::try_from(buffer).unwrap();
 
 		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
-			&offer_missing_signing_pubkey,
+			&offer_missing_issuer_id,
 			payment_paths(),
 			vec![blinded_path()],
 			now,
@@ -896,7 +893,7 @@ mod tests {
 			nonce,
 			&secp_ctx,
 		) {
-			assert_eq!(e, Bolt12SemanticError::MissingSigningPubkey);
+			assert_eq!(e, Bolt12SemanticError::MissingIssuerId);
 		} else {
 			panic!("expected error")
 		}
@@ -933,7 +930,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let offer_with_extra_chain =
-			OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 				.path(blinded_path())
 				.chain(Network::Bitcoin)
 				.chain(Network::Testnet)
@@ -965,7 +962,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let offer = OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
 			.build()
 			.unwrap();
@@ -1007,7 +1004,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let offer = OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 			.path(blinded_path())
 			.build()
 			.unwrap();

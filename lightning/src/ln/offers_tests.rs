@@ -290,7 +290,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 		.create_offer_builder(None).unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), Some(bob_id));
+	assert_ne!(offer.issuer_id(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		let introduction_node_id = resolve_introduction_node(david, &path);
@@ -306,7 +306,7 @@ fn prefers_non_tor_nodes_in_blinded_paths() {
 		.create_offer_builder(None).unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), Some(bob_id));
+	assert_ne!(offer.issuer_id(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		let introduction_node_id = resolve_introduction_node(david, &path);
@@ -357,7 +357,7 @@ fn prefers_more_connected_nodes_in_blinded_paths() {
 		.create_offer_builder(None).unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), Some(bob_id));
+	assert_ne!(offer.issuer_id(), Some(bob_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		let introduction_node_id = resolve_introduction_node(david, &path);
@@ -526,7 +526,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert_ne!(offer.issuer_id(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
@@ -683,7 +683,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 		.create_offer_builder(None).unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert_ne!(offer.issuer_id(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
@@ -804,7 +804,7 @@ fn pays_for_offer_without_blinded_paths() {
 		.clear_paths()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_eq!(offer.signing_pubkey(), Some(alice_id));
+	assert_eq!(offer.issuer_id(), Some(alice_id));
 	assert!(offer.paths().is_empty());
 
 	let payment_id = PaymentId([1; 32]);
@@ -927,7 +927,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert_ne!(offer.issuer_id(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
@@ -1148,7 +1148,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 		.create_offer_builder(None).unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert_ne!(offer.issuer_id(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
@@ -1278,7 +1278,7 @@ fn fails_authentication_when_handling_invoice_request() {
 		.amount_msats(10_000_000)
 		.build().unwrap();
 	assert_eq!(offer.metadata(), None);
-	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert_ne!(offer.issuer_id(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
@@ -1395,7 +1395,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 		.unwrap()
 		.amount_msats(10_000_000)
 		.build().unwrap();
-	assert_ne!(offer.signing_pubkey(), Some(alice_id));
+	assert_ne!(offer.issuer_id(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
