@@ -8,6 +8,9 @@ HOST_PLATFORM="$(rustc --version --verbose | grep "host:" | awk '{ print $2 }')"
 # which we do here.
 # Further crates which appear only as dev-dependencies are pinned further down.
 function PIN_RELEASE_DEPS {
+	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
+	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
+
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
