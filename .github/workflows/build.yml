@@ -40,6 +40,13 @@ jobs:
       - name: Set RUSTFLAGS to deny warnings
         if: "matrix.toolchain == '1.63.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
+      - name: Set BITCOIND_ELECTRSD_DL_DIR
+        run: echo "BITCOIND_ELECTRSD_DL_DIR=bitcoind_electrsd" >> "$GITHUB_ENV"
+      - name: Enable caching for BITCOIND_ELECTRSD_DL_DIR
+        id: cache-graph
+        uses: actions/cache@v4
+        with:
+          path: lightning-transaction-sync/$BITCOIND_ELECTRSD_DL_DIR/**
       - name: Run CI script
         shell: bash # Default on Winblows is powershell
         run: CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh

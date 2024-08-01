@@ -27,21 +27,27 @@ else
 	exit 1
 fi
 
-DL_TMP_DIR=$(mktemp -d)
-trap 'rm -rf -- "$DL_TMP_DIR"' EXIT
+if [ -z "$var" ]; then
+	echo "Setting up temporary download directory: $BITCOIND_ELECTRSD_DL_DIR"
+	BITCOIND_ELECTRSD_DL_DIR=$(mktemp -d)
+	trap 'rm -rf -- "$BITCOIND_ELECTRSD_DL_DIR"' EXIT
+else
+	echo "Using cached download directory: $BITCOIND_ELECTRSD_DL_DIR"
+	mkdir -p "$BITCOIND_ELECTRSD_DL_DIR"
+fi
 
-pushd "$DL_TMP_DIR"
+pushd "$BITCOIND_ELECTRSD_DL_DIR"
 ELECTRS_DL_URL="$ELECTRS_DL_ENDPOINT"/"$ELECTRS_DL_FILE_NAME"
 curl -L -o "$ELECTRS_DL_FILE_NAME" "$ELECTRS_DL_URL"
 echo "$ELECTRS_DL_HASH  $ELECTRS_DL_FILE_NAME"|shasum -a 256 -c
 unzip "$ELECTRS_DL_FILE_NAME"
-export ELECTRS_EXE="$DL_TMP_DIR"/electrs
+export ELECTRS_EXE="$BITCOIND_ELECTRSD_DL_DIR"/electrs
 chmod +x "$ELECTRS_EXE"
 
 BITCOIND_DL_URL="$BITCOIND_DL_ENDPOINT"/bitcoin-core-"$BITCOIND_VERSION"/"$BITCOIND_DL_FILE_NAME"
 curl -L -o "$BITCOIND_DL_FILE_NAME" "$BITCOIND_DL_URL"
 echo "$BITCOIND_DL_HASH  $BITCOIND_DL_FILE_NAME"|shasum -a 256 -c
 tar xzf "$BITCOIND_DL_FILE_NAME"
-export BITCOIND_EXE="$DL_TMP_DIR"/bitcoin-"$BITCOIND_VERSION"/bin/bitcoind
+export BITCOIND_EXE="$BITCOIND_ELECTRSD_DL_DIR"/bitcoin-"$BITCOIND_VERSION"/bin/bitcoind
 chmod +x "$BITCOIND_EXE"
 popd
