@@ -270,6 +270,18 @@ where
 		for txid in &sync_state.watched_transactions {
 			match self.client.transaction_get(&txid) {
 				Ok(tx) => {
+					// Bitcoin Core's Merkle tree implementation has no way to discern between
+					// internal and leaf node entries. As a consequence it is susceptible to an
+					// attacker injecting additional transactions by crafting 64-byte
+					// transactions matching an inner Merkle node's hash (see
+					// https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
+					// To protect against this (highly unlikely) attack vector, we check that the
+					// transaction is at least 65 bytes in length.
+					if tx.total_size() == 64 {
+						log_error!(self.logger, "Skipping transaction {} due to retrieving potentially invalid tx data.", txid);
+						continue;
+					}
+
 					watched_txs.push((txid, tx.clone()));
 					if let Some(tx_out) = tx.output.first() {
 						// We watch an arbitrary output of the transaction of interest in order to

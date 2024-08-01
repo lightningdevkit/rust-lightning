@@ -372,6 +372,22 @@ where
 					return Err(InternalError::Failed);
 				}
 
+				// Bitcoin Core's Merkle tree implementation has no way to discern between
+				// internal and leaf node entries. As a consequence it is susceptible to an
+				// attacker injecting additional transactions by crafting 64-byte
+				// transactions matching an inner Merkle node's hash (see
+				// https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
+				// To protect against this (highly unlikely) attack vector, we check that the
+				// transaction is at least 65 bytes in length.
+				if tx.total_size() == 64 {
+					log_error!(
+						self.logger,
+						"Skipping transaction {} due to retrieving potentially invalid tx data.",
+						txid
+					);
+					return Ok(None);
+				}
+
 				if let Some(block_height) = known_block_height {
 					// We can take a shortcut here if a previous call already gave us the height.
 					return Ok(Some(ConfirmedTx { tx, txid, block_header, pos, block_height }));
