@@ -3,7 +3,6 @@ set -eox pipefail
 
 RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 HOST_PLATFORM="$(rustc --version --verbose | grep "host:" | awk '{ print $2 }')"
-CONTRIB_DIR=$(cd "$( dirname "${BASH_SOURCE[0]}" )/../contrib" && pwd )
 
 # Some crates require pinning to meet our MSRV even for our downstream users,
 # which we do here.
@@ -45,20 +44,22 @@ cargo check --verbose --color always --features rpc-client,rest-client,tokio
 popd
 
 if [[ "$HOST_PLATFORM" != *windows* ]]; then
-	echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
-	pushd lightning-transaction-sync
+	if [ -z "$BITCOIND_EXE" ] || [ -z "$ELECTRS_EXE" ]; then
+		echo -e "\n\nSkipping testing Transaction Sync Clients due to BITCOIND_EXE or ELECTRS_EXE being unset."
+	else
+		echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
+		pushd lightning-transaction-sync
 
-	source "$CONTRIB_DIR/download_bitcoind_electrs.sh"
-
-	cargo test --verbose --color always --features esplora-blocking
-	cargo check --verbose --color always --features esplora-blocking
-	cargo test --verbose --color always --features esplora-async
-	cargo check --verbose --color always --features esplora-async
-	cargo test --verbose --color always --features esplora-async-https
-	cargo check --verbose --color always --features esplora-async-https
-	cargo test --verbose --color always --features electrum
-	cargo check --verbose --color always --features electrum
-	popd
+		cargo test --verbose --color always --features esplora-blocking
+		cargo check --verbose --color always --features esplora-blocking
+		cargo test --verbose --color always --features esplora-async
+		cargo check --verbose --color always --features esplora-async
+		cargo test --verbose --color always --features esplora-async-https
+		cargo check --verbose --color always --features esplora-async-https
+		cargo test --verbose --color always --features electrum
+		cargo check --verbose --color always --features electrum
+		popd
+	fi
 fi
 
 echo -e "\n\nTest futures builds"

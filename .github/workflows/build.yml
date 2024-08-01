@@ -41,6 +41,29 @@ jobs:
       - name: Set RUSTFLAGS to deny warnings
         if: "matrix.toolchain == '1.63.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
+      - name: Enable caching for bitcoind
+        id: cache-bitcoind
+        uses: actions/cache@v4
+        with:
+          path: bin/bitcoind-${{ runner.os }}-${{ runner.arch }}
+          key: bitcoind-${{ runner.os }}-${{ runner.arch }}
+      - name: Enable caching for electrs
+        id: cache-electrs
+        uses: actions/cache@v4
+        with:
+          path: bin/electrs-${{ runner.os }}-${{ runner.arch }}
+          key: electrs-${{ runner.os }}-${{ runner.arch }}
+      - name: Download bitcoind/electrs
+        if: "matrix.platform != 'windows-latest' && (steps.cache-bitcoind.outputs.cache-hit != 'true' || steps.cache-electrs.outputs.cache-hit != 'true')"
+        run: |
+            source ./contrib/download_bitcoind_electrs.sh
+            mkdir bin
+            mv "$BITCOIND_EXE" bin/bitcoind-${{ runner.os }}-${{ runner.arch }}
+            mv "$ELECTRS_EXE" bin/electrs-${{ runner.os }}-${{ runner.arch }}
+      - name: Set bitcoind/electrs environment variables
+        run: |
+            echo "BITCOIND_EXE=$( pwd )/bin/bitcoind-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
+            echo "ELECTRS_EXE=$( pwd )/bin/electrs-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
       - name: Run CI script
         shell: bash # Default on Winblows is powershell
         run: CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
