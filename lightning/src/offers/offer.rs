@@ -631,7 +631,17 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 		$contents.supported_quantity()
 	}
 
-	/// The public key used by the recipient to sign invoices.
+	/// The public key corresponding to the key used by the recipient to sign invoices.
+	/// - If [`Offer::paths`] is empty, MUST be `Some` and contain the recipient's node id for
+	///   sending an [`InvoiceRequest`].
+	/// - If [`Offer::paths`] is not empty, MAY be `Some` and contain a transient id.
+	/// - If `None`, the signing pubkey will be the final blinded node id from the
+	///   [`BlindedMessagePath`] in [`Offer::paths`] used to send the [`InvoiceRequest`].
+	///
+	/// See also [`Bolt12Invoice::signing_pubkey`].
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice::signing_pubkey`]: crate::offers::invoice::Bolt12Invoice::signing_pubkey
 	pub fn issuer_signing_pubkey(&$self) -> Option<bitcoin::secp256k1::PublicKey> {
 		$contents.issuer_signing_pubkey()
 	}
