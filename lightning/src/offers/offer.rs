@@ -631,7 +631,17 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 		$contents.supported_quantity()
 	}
 
-	/// The public key used by the recipient to sign invoices.
+	/// A possibly transient id of the offer's issuer.
+	/// - If [`Offer::paths`] is empty, MUST be `Some` and contain the recipient's public key for
+	///   sending an [`InvoiceRequest`].
+	/// - If [`Offer::paths`] is not empty, MAY be `Some` and contain a transient id.
+	/// - If `Some`, then the corresponding private key will be used by the recipient to sign
+	///   invoices.
+	///
+	/// See also [`Bolt12Invoice::signing_pubkey`].
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice::signing_pubkey`]: crate::offers::invoice::Bolt12Invoice::signing_pubkey
 	pub fn issuer_id(&$self) -> Option<bitcoin::secp256k1::PublicKey> {
 		$contents.issuer_id()
 	}
