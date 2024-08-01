@@ -3100,8 +3100,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn provide_claim_info<B: Deref, F: Deref, L: Deref>(
 		&mut self, claim_key: Txid, claim_info: ClaimInfo, claim_metadata: ClaimMetadata, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>)
 	where B::Target: BroadcasterInterface,
-				F::Target: FeeEstimator,
-				L::Target: Logger,
+		F::Target: FeeEstimator,
+		L::Target: Logger,
 	{
 		let claimable_outpoints: Vec<_> = claim_info.htlcs.into_iter().map(|h| (h, None)).collect();
 		self.counterparty_claimable_outpoints.insert(claim_key, claimable_outpoints);
