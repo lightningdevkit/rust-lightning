@@ -238,6 +238,13 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	pub fn supported_quantity(&$self) -> Quantity {
 		$contents.supported_quantity()
 	}
+
+	/// A possibly transient id of the recipient, from [`Offer::issuer_id`].
+	///
+	/// [`Offer::issuer_id`]: crate::offers::offer::Offer::issuer_id
+	pub fn issuer_id(&$self) -> Option<PublicKey> {
+		$contents.issuer_id()
+	}
 } }
 
 impl UnsignedStaticInvoice {
@@ -403,6 +410,10 @@ impl InvoiceContents {
 
 	fn supported_quantity(&self) -> Quantity {
 		self.offer.supported_quantity()
+	}
+
+	fn issuer_id(&self) -> Option<PublicKey> {
+		self.offer.issuer_id()
 	}
 
 	fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPath)] {

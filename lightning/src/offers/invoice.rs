@@ -705,6 +705,16 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 		$contents.supported_quantity()
 	}
 
+	/// A possibly transient id of the recipient.
+	///
+	/// From [`Offer::issuer_id`]; `None` if the invoice was created in response to a [`Refund`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Offer::issuer_id`]: crate::offers::offer::Offer::issuer_id
+	pub fn issuer_id(&$self) -> Option<PublicKey> {
+		$contents.issuer_id()
+	}
+
 	/// An unpredictable series of bytes from the payer.
 	///
 	/// From [`InvoiceRequest::payer_metadata`] or [`Refund::payer_metadata`].
@@ -940,6 +950,15 @@ impl InvoiceContents {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				Some(invoice_request.inner.offer.supported_quantity())
+			},
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn issuer_id(&self) -> Option<PublicKey> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.inner.offer.issuer_id()
 			},
 			InvoiceContents::ForRefund { .. } => None,
 		}
