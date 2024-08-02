@@ -67,17 +67,17 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// Note that:
 	/// * If configured to another value than the default value `10`, any new channels created with
-	/// the non default value will cause versions of LDK prior to 0.0.104 to refuse to read the
-	/// `ChannelManager`.
+	///   the non default value will cause versions of LDK prior to 0.0.104 to refuse to read the
+	///   `ChannelManager`.
 	///
 	/// * This caps the total value for inbound HTLCs in-flight only, and there's currently
-	/// no way to configure the cap for the total value of outbound HTLCs in-flight.
+	///   no way to configure the cap for the total value of outbound HTLCs in-flight.
 	///
 	/// * The requirements for your node being online to ensure the safety of HTLC-encumbered funds
-	/// are different from the non-HTLC-encumbered funds. This makes this an important knob to
-	/// restrict exposure to loss due to being offline for too long.
-	/// See [`ChannelHandshakeConfig::our_to_self_delay`] and [`ChannelConfig::cltv_expiry_delta`]
-	/// for more information.
+	///   are different from the non-HTLC-encumbered funds. This makes this an important knob to
+	///   restrict exposure to loss due to being offline for too long.
+	///   See [`ChannelHandshakeConfig::our_to_self_delay`] and [`ChannelConfig::cltv_expiry_delta`]
+	///   for more information.
 	///
 	/// Default value: `10`
 	///
@@ -257,7 +257,8 @@ pub struct ChannelHandshakeLimits {
 	/// Minimum allowed satoshis when a channel is funded. This is supplied by the sender and so
 	/// only applies to inbound channels.
 	///
-	/// Default value: `0`
+	/// Default value: `1000`
+	/// (Minimum of [`ChannelHandshakeConfig::their_channel_reserve_proportional_millionths`])
 	pub min_funding_satoshis: u64,
 	/// Maximum allowed satoshis when a channel is funded. This is supplied by the sender and so
 	/// only applies to inbound channels.
@@ -332,11 +333,11 @@ pub struct ChannelHandshakeLimits {
 impl Default for ChannelHandshakeLimits {
 	fn default() -> Self {
 		ChannelHandshakeLimits {
-			min_funding_satoshis: 0,
+			min_funding_satoshis: 1000,
 			max_funding_satoshis: MAX_FUNDING_SATOSHIS_NO_WUMBO,
-			max_htlc_minimum_msat: <u64>::max_value(),
+			max_htlc_minimum_msat: u64::MAX,
 			min_max_htlc_value_in_flight_msat: 0,
-			max_channel_reserve_satoshis: <u64>::max_value(),
+			max_channel_reserve_satoshis: u64::MAX,
 			min_max_accepted_htlcs: 0,
 			trust_own_funding_0conf: true,
 			max_minimum_depth: 144,
@@ -388,10 +389,10 @@ pub enum MaxDustHTLCExposure {
 	/// `FeeRateMultiplier(10_000)`:
 	///
 	/// - For the minimum fee rate of 1 sat/vByte (250 sat/KW, although the minimum
-	/// defaults to 253 sats/KW for rounding, see [`FeeEstimator`]), the max dust exposure would
-	/// be 253 * 10_000 = 2,530,000 msats.
+	///   defaults to 253 sats/KW for rounding, see [`FeeEstimator`]), the max dust exposure would
+	///   be 253 * 10_000 = 2,530,000 msats.
 	/// - For a fee rate of 30 sat/vByte (7500 sat/KW), the max dust exposure would be
-	/// 7500 * 50_000 = 75,000,000 msats (0.00075 BTC).
+	///   7500 * 50_000 = 75,000,000 msats (0.00075 BTC).
 	///
 	/// Note, if you're using a third-party fee estimator, this may leave you more exposed to a
 	/// fee griefing attack, where your fee estimator may purposely overestimate the fee rate,
@@ -670,24 +671,13 @@ impl crate::util::ser::Readable for ChannelConfig {
 
 /// A parallel struct to [`ChannelConfig`] to define partial updates.
 #[allow(missing_docs)]
+#[derive(Default)]
 pub struct ChannelConfigUpdate {
 	pub forwarding_fee_proportional_millionths: Option<u32>,
 	pub forwarding_fee_base_msat: Option<u32>,
 	pub cltv_expiry_delta: Option<u16>,
 	pub max_dust_htlc_exposure_msat: Option<MaxDustHTLCExposure>,
 	pub force_close_avoidance_max_fee_satoshis: Option<u64>,
-}
-
-impl Default for ChannelConfigUpdate {
-	fn default() -> ChannelConfigUpdate {
-		ChannelConfigUpdate {
-			forwarding_fee_proportional_millionths: None,
-			forwarding_fee_base_msat: None,
-			cltv_expiry_delta: None,
-			max_dust_htlc_exposure_msat: None,
-			force_close_avoidance_max_fee_satoshis: None,
-		}
-	}
 }
 
 impl From<ChannelConfig> for ChannelConfigUpdate {
