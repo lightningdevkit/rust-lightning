@@ -8891,8 +8891,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let secp_ctx = &$self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let hmac = signer::hmac_for_payment_id(payment_id, nonce, expanded_key);
-		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac };
+		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: None };
 		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
@@ -9028,7 +9027,7 @@ where
 		let invoice_request = builder.build_and_sign()?;
 
 		let hmac = signer::hmac_for_payment_id(payment_id, nonce, expanded_key);
-		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac };
+		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) };
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -10916,7 +10915,7 @@ where
 				log_trace!(logger, "Received invoice_error: {}", invoice_error);
 
 				match context {
-					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac }) => {
+					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
 						if signer::verify_payment_id(payment_id, hmac, nonce, expanded_key) {
 							self.abandon_payment_with_reason(
 								payment_id, PaymentFailureReason::RecipientRejected,
