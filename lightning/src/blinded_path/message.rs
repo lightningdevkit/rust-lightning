@@ -153,7 +153,7 @@ pub enum OffersContext {
 		/// used with an [`InvoiceError`].
 		///
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		hmac: Hmac<Sha256>,
+		hmac: Option<Hmac<Sha256>>,
 	},
 	/// Context used by a [`BlindedPath`] as a reply path for a [`Bolt12Invoice`].
 	///
@@ -181,7 +181,7 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	(1, OutboundPayment) => {
 		(0, payment_id, required),
 		(1, nonce, required),
-		(2, hmac, required),
+		(2, hmac, option),
 	},
 	(2, InboundPayment) => {
 		(0, payment_hash, required),
