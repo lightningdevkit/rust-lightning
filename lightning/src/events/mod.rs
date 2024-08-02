@@ -43,11 +43,9 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::Version;
 use crate::io;
-use crate::io::Read;
 use core::time::Duration;
 use core::ops::Deref;
 use crate::ln::chan_utils::HTLCOutputInCommitment;
-use crate::ln::msgs::DecodeError;
 use crate::sync::Arc;
 
 #[allow(unused_imports)]
@@ -1453,56 +1451,15 @@ pub struct ClaimInfo {
 	pub(crate) htlcs: Vec<HTLCOutputInCommitment>,
 }
 
-impl Writeable for ClaimInfo {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		write_tlv_fields!(w, {
-			(1, self.htlcs, required_vec),
-		});
-		Ok(())
-	}
-}
+impl_writeable_tlv_based!(ClaimInfo, {
+	(1, htlcs, required_vec),
+});
 
-impl Readable for ClaimInfo {
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_len_prefixed_tlv_fields!(reader, {
-						(1, htlcs, required_vec),
-					});
-
-		Ok(ClaimInfo {
-			htlcs: htlcs,
-		})
-	}
-}
-
-impl Writeable for ClaimMetadata {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		write_tlv_fields!(w, {
-			(1, self.block_hash, required),
-			(3, self.tx, required),
-			(5, self.height, required),
-		});
-		Ok(())
-	}
-}
-
-impl Readable for ClaimMetadata {
-	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		let mut block_hash = RequiredWrapper(None);
-		let mut tx = RequiredWrapper(None);
-		let mut height = RequiredWrapper(None);
-		read_tlv_fields!(reader, {
-						(1, block_hash, required),
-						(3, tx, required),
-						(5, height, required),
-					});
-
-		Ok(ClaimMetadata {
-			block_hash: block_hash.0.unwrap(),
-			tx: tx.0.unwrap(),
-			height: height.0.unwrap(),
-		})
-	}
-}
+impl_writeable_tlv_based!(ClaimMetadata, {
+	(1, block_hash, required),
+	(3, tx, required),
+	(5, height, required),
+});
 
 impl Writeable for Event {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
