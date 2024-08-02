@@ -1,5 +1,4 @@
 ./lightning-invoice/src/lib.rs
-./lightning-invoice/src/payment.rs
 ./lightning-invoice/src/ser.rs
 ./lightning-invoice/src/tb.rs
 ./lightning-invoice/src/utils.rs
