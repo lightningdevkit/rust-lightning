@@ -1332,7 +1332,8 @@ pub enum Event {
 		/// Destination of the HTLC that failed to be processed.
 		failed_next_destination: HTLCDestination,
 	},
-	/// Used to request [`ClaimInfo`] for a specific counterparty commitment transaction.
+	/// Indicates that a [`ClaimInfo`] for a specific counterparty commitment transaction must be 
+	/// supplied to ldk if available.
 	///
 	/// This event is generated when there is a need for [`ClaimInfo`] that was previously stored
 	/// using [`PersistClaimInfo`] for the specified counterparty commitment transaction.
