@@ -1,5 +1,4 @@
 ./lightning-invoice/src/lib.rs
-./lightning-invoice/src/utils.rs
 ./lightning-persister/src/fs_store.rs
 ./lightning-persister/src/lib.rs
 ./lightning-persister/src/test_utils.rs
