@@ -1342,6 +1342,10 @@ pub enum Event {
 	/// [`ChainMonitor::provide_claim_info`] with the [`ClaimInfo`] that was previously stored and
 	/// [`ClaimMetadata`] from this event.
 	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
+	///
 	/// [`ChainMonitor::provide_claim_info`]: crate::chain::chainmonitor::ChainMonitor::provide_claim_info
 	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
 	ClaimInfoRequest {
@@ -1371,6 +1375,10 @@ pub enum Event {
 	/// This event can be safely ignored if such optimization is not desired;
 	/// however, if ignored, the [`ClaimInfo`] will continue to be stored both in-memory and on-disk
 	/// for [`ChannelMonitor`].
+	/// 
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
 	///
 	/// [`ChainMonitor::claim_info_persisted`]: crate::chain::chainmonitor::ChainMonitor::claim_info_persisted
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
