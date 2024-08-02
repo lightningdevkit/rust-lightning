@@ -157,7 +157,7 @@ impl ConstructedTransaction {
 			weight.checked_add(estimate_input_weight(input.prev_output())).unwrap_or(Weight::MAX)
 		});
 		let outputs_weight = self.outputs.iter().fold(Weight::from_wu(0), |weight, output| {
-			weight.checked_add(get_output_weight(&output.script_pubkey())).unwrap_or(Weight::MAX)
+			weight.checked_add(get_output_weight(output.script_pubkey())).unwrap_or(Weight::MAX)
 		});
 		Weight::from_wu(TX_COMMON_FIELDS_WEIGHT)
 			.checked_add(inputs_weight)
@@ -297,7 +297,7 @@ impl NegotiationContext {
 				.iter()
 				.filter(|(serial_id, _)| self.is_serial_id_valid_for_counterparty(serial_id))
 				.fold(0u64, |weight, (_, output)| {
-					weight.saturating_add(get_output_weight(&output.script_pubkey()).to_wu())
+					weight.saturating_add(get_output_weight(output.script_pubkey()).to_wu())
 				}),
 		)
 	}
@@ -508,7 +508,7 @@ impl NegotiationContext {
 			sequence: Sequence(msg.sequence),
 			..Default::default()
 		};
-		if !self.prevtx_outpoints.insert(txin.previous_output.clone()) {
+		if !self.prevtx_outpoints.insert(txin.previous_output) {
 			// We have added an input that already exists
 			return Err(AbortReason::PrevTxOutInvalid);
 		}
@@ -878,7 +878,7 @@ impl StateMachine {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AddingRole {
+enum AddingRole {
 	Local,
 	Remote,
 }
@@ -892,7 +892,7 @@ pub struct LocalOrRemoteInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum InteractiveTxInput {
+enum InteractiveTxInput {
 	Local(LocalOrRemoteInput),
 	Remote(LocalOrRemoteInput),
 	// TODO(splicing) SharedInput should be added
@@ -925,7 +925,7 @@ impl SharedOwnedOutput {
 /// its ownership -- value fully owned by the adder or jointly
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutputOwned {
-	/// Belongs to local node -- controlled exclusively and fully belonging to local node
+	/// Belongs to a single party -- controlled exclusively and fully belonging to a single party
 	Single(TxOut),
 	/// Output with shared control, but fully belonging to local node
 	SharedControlFullyOwned(TxOut),
@@ -979,7 +979,7 @@ impl OutputOwned {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InteractiveTxOutput {
+struct InteractiveTxOutput {
 	serial_id: SerialId,
 	added_by: AddingRole,
 	output: OutputOwned,
@@ -1055,6 +1055,7 @@ pub(crate) struct InteractiveTxConstructor {
 	outputs_to_contribute: Vec<(SerialId, OutputOwned)>,
 }
 
+#[allow(clippy::enum_variant_names)] // Clippy doesn't like the repeated `Tx` prefix here
 pub(crate) enum InteractiveTxMessageSend {
 	TxAddInput(msgs::TxAddInput),
 	TxAddOutput(msgs::TxAddOutput),
@@ -1126,7 +1127,7 @@ impl InteractiveTxConstructor {
 				},
 				OutputOwned::Shared(output) => {
 					// Sanity check
-					if output.local_owned > output.tx_out.value.to_sat() {
+					if output.local_owned >= output.tx_out.value.to_sat() {
 						return Err(AbortReason::InvalidLowFundingOutputValue);
 					}
 					Some((output.tx_out.script_pubkey.clone(), output.local_owned))
@@ -1328,12 +1329,12 @@ mod tests {
 		fn get_secure_random_bytes(&self) -> [u8; 32] {
 			let mut res = [0u8; 32];
 			let increment = self.0.get_increment();
-			for i in 0..32 {
+			for (i, byte) in res.iter_mut().enumerate() {
 				// Rotate the increment value by 'i' bits to the right, to avoid clashes
 				// when `generate_local_serial_id` does a parity flip on consecutive calls for the
 				// same party.
 				let rotated_increment = increment.rotate_right(i as u32);
-				res[i] = (rotated_increment & 0xff) as u8;
+				*byte = (rotated_increment & 0xff) as u8;
 			}
 			res
 		}
@@ -1402,7 +1403,7 @@ mod tests {
 		if shared_outputs_by_a.len() > 1 {
 			println!("Test warning: Expected at most one shared output. NodeA");
 		}
-		let shared_output_by_a = if shared_outputs_by_a.len() >= 1 {
+		let shared_output_by_a = if !shared_outputs_by_a.is_empty() {
 			Some(shared_outputs_by_a[0].value())
 		} else {
 			None
@@ -1412,7 +1413,7 @@ mod tests {
 		if shared_outputs_by_b.len() > 1 {
 			println!("Test warning: Expected at most one shared output. NodeB");
 		}
-		let shared_output_by_b = if shared_outputs_by_b.len() >= 1 {
+		let shared_output_by_b = if !shared_outputs_by_b.is_empty() {
 			Some(shared_outputs_by_b[0].value())
 		} else {
 			None
@@ -1424,23 +1425,19 @@ mod tests {
 				&session.a_expected_remote_shared_output
 			{
 				a_expected_remote_shared_output.1
+			} else if !shared_outputs_by_a.is_empty() {
+				shared_outputs_by_a[0].local_value(AddingRole::Local)
 			} else {
-				if shared_outputs_by_a.len() >= 1 {
-					shared_outputs_by_a[0].local_value(AddingRole::Local)
-				} else {
-					0
-				}
+				0
 			};
 			let expected_by_b = if let Some(b_expected_remote_shared_output) =
 				&session.b_expected_remote_shared_output
 			{
 				b_expected_remote_shared_output.1
+			} else if !shared_outputs_by_b.is_empty() {
+				shared_outputs_by_b[0].local_value(AddingRole::Local)
 			} else {
-				if shared_outputs_by_b.len() >= 1 {
-					shared_outputs_by_b[0].local_value(AddingRole::Local)
-				} else {
-					0
-				}
+				0
 			};
 
 			let expected_sum = expected_by_a + expected_by_b;
@@ -1458,7 +1455,7 @@ mod tests {
 			true,
 			tx_locktime,
 			session.inputs_a,
-			session.outputs_a.iter().map(|o| o.clone()).collect(),
+			session.outputs_a.to_vec(),
 			session.a_expected_remote_shared_output,
 		) {
 			Ok(r) => r,
@@ -1479,7 +1476,7 @@ mod tests {
 			false,
 			tx_locktime,
 			session.inputs_b,
-			session.outputs_b.iter().map(|o| o.clone()).collect(),
+			session.outputs_b.to_vec(),
 			session.b_expected_remote_shared_output,
 		) {
 			Ok(r) => r,
@@ -1665,7 +1662,7 @@ mod tests {
 	}
 
 	fn generate_outputs(outputs: &[TestOutput]) -> Vec<OutputOwned> {
-		outputs.iter().map(|o| generate_output_nonfunding_one(o)).collect()
+		outputs.iter().map(generate_output_nonfunding_one).collect()
 	}
 
 	/// Generate a single output that is the funding output
