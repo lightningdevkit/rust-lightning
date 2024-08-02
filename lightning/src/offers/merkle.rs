@@ -21,7 +21,7 @@ use crate::prelude::*;
 /// Valid type range for signature TLV records.
 const SIGNATURE_TYPES: core::ops::RangeInclusive<u64> = 240..=1000;
 
-tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef, SIGNATURE_TYPES, {
+tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef<'a>, SIGNATURE_TYPES, {
 	(240, signature: Signature),
 });
 

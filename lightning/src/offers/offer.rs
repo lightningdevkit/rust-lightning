@@ -1077,7 +1077,7 @@ const OFFER_METADATA_TYPE: u64 = 4;
 /// TLV record type for [`Offer::issuer_signing_pubkey`].
 const OFFER_ISSUER_ID_TYPE: u64 = 22;
 
-tlv_stream!(OfferTlvStream, OfferTlvStreamRef, OFFER_TYPES, {
+tlv_stream!(OfferTlvStream, OfferTlvStreamRef<'a>, OFFER_TYPES, {
 	(2, chains: (Vec<ChainHash>, WithoutLength)),
 	(OFFER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
 	(6, currency: CurrencyCode),

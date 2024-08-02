@@ -1237,7 +1237,7 @@ impl TryFrom<Vec<u8>> for Bolt12Invoice {
 /// Valid type range for invoice TLV records.
 pub(super) const INVOICE_TYPES: core::ops::Range<u64> = 160..240;
 
-tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, INVOICE_TYPES, {
+tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef<'a>, INVOICE_TYPES, {
 	(160, paths: (Vec<BlindedPath>, WithoutLength, Iterable<'a, BlindedPathIter<'a>, BlindedPath>)),
 	(162, blindedpay: (Vec<BlindedPayInfo>, WithoutLength, Iterable<'a, BlindedPayInfoIter<'a>, BlindedPayInfo>)),
 	(164, created_at: (u64, HighZeroBytesDroppedBigSize)),

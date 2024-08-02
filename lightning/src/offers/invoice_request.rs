@@ -1061,7 +1061,7 @@ pub(super) const INVOICE_REQUEST_PAYER_ID_TYPE: u64 = 88;
 
 // This TLV stream is used for both InvoiceRequest and Refund, but not all TLV records are valid for
 // InvoiceRequest as noted below.
-tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, INVOICE_REQUEST_TYPES, {
+tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef<'a>, INVOICE_REQUEST_TYPES, {
 	(80, chain: ChainHash),
 	(82, amount: (u64, HighZeroBytesDroppedBigSize)),
 	(84, features: (InvoiceRequestFeatures, WithoutLength)),
