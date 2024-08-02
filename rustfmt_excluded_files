@@ -1,4 +1,3 @@
-./lightning-invoice/src/de.rs
 ./lightning-invoice/src/lib.rs
 ./lightning-invoice/src/payment.rs
 ./lightning-invoice/src/ser.rs
