@@ -150,13 +150,13 @@ where
 {
 
 	if phantom_route_hints.is_empty() {
-		return Err(SignOrCreationError::CreationError(
-			CreationError::MissingRouteHints,
-		));
+		let e = SignOrCreationError::CreationError(CreationError::MissingRouteHints);
+		return Err(e);
 	}
 
 	if min_final_cltv_expiry_delta.is_some() && min_final_cltv_expiry_delta.unwrap().saturating_add(3) < MIN_FINAL_CLTV_EXPIRY_DELTA {
-		return Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort));
+		let e = SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort);
+		return Err(e);
 	}
 
 	let invoice = match description {
@@ -468,7 +468,8 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Der
 			L::Target: Logger,
 {
 	if min_final_cltv_expiry_delta.is_some() && min_final_cltv_expiry_delta.unwrap().saturating_add(3) < MIN_FINAL_CLTV_EXPIRY_DELTA {
-		return Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort));
+		let e = SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort);
+		return Err(e);
 	}
 
 	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
@@ -534,7 +535,8 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 	let channels = channelmanager.list_channels();
 
 	if min_final_cltv_expiry_delta.is_some() && min_final_cltv_expiry_delta.unwrap().saturating_add(3) < MIN_FINAL_CLTV_EXPIRY_DELTA {
-		return Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort));
+		let e = SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort);
+		return Err(e);
 	}
 
 	log_trace!(logger, "Creating invoice with payment hash {}", &payment_hash);
@@ -914,8 +916,9 @@ mod test {
 			SendEvent::from_event(events.remove(0))
 
 		};
-		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		nodes[1].node.handle_update_add_htlc(&node_id_0, &payment_event.msgs[0]);
+		nodes[1].node.handle_commitment_signed(&node_id_0, &payment_event.commitment_msg);
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
 		added_monitors.clear();
@@ -1019,22 +1022,25 @@ mod test {
 		// yet announced.
 		let pub_channel_scid = mine_transaction(&nodes[0], &conf_tx);
 		let node_a_pub_channel_ready = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &node_a_pub_channel_ready);
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		nodes[1].node.handle_channel_ready(&node_id_0, &node_a_pub_channel_ready);
 
 		assert_eq!(mine_transaction(&nodes[1], &conf_tx), pub_channel_scid);
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
+		let node_id_1 = nodes[1].node.get_our_node_id();
 		if let MessageSendEvent::SendChannelReady { msg, .. } = &events[0] {
-			nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), msg);
+			nodes[0].node.handle_channel_ready(&node_id_1, msg);
 		} else { panic!(); }
 		if let MessageSendEvent::SendChannelUpdate { msg, .. } = &events[1] {
-			nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), msg);
+			nodes[0].node.handle_channel_update(&node_id_1, msg);
 		} else { panic!(); }
 
-		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id()));
+		let chan_upd_msg = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_id_1);
+		nodes[1].node.handle_channel_update(&node_id_0, &chan_upd_msg);
 
-		expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
-		expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
+		expect_channel_ready_event(&nodes[0], &node_id_1);
+		expect_channel_ready_event(&nodes[1], &node_id_0);
 
 		scid_aliases.clear();
 		scid_aliases.insert(node_a_pub_channel_ready.short_channel_id_alias.unwrap());
@@ -1048,7 +1054,7 @@ mod test {
 		connect_blocks(&nodes[1], 5);
 		match_invoice_routes(Some(5000), &nodes[1], scid_aliases.clone());
 		connect_blocks(&nodes[1], 1);
-		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, nodes[0].node.get_our_node_id());
+		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, node_id_0);
 		match_invoice_routes(Some(5000), &nodes[1], HashSet::new());
 	}
 
@@ -1169,11 +1175,13 @@ mod test {
 		// is never handled, the `channel.counterparty.forwarding_info` is never assigned.
 		let mut private_chan_cfg = UserConfig::default();
 		private_chan_cfg.channel_handshake_config.announced_channel = false;
-		let temporary_channel_id = nodes[2].node.create_channel(nodes[0].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg)).unwrap();
-		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_open_channel(&nodes[2].node.get_our_node_id(), &open_channel);
-		let accept_channel = get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, nodes[2].node.get_our_node_id());
-		nodes[2].node.handle_accept_channel(&nodes[0].node.get_our_node_id(), &accept_channel);
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		let node_id_2 = nodes[2].node.get_our_node_id();
+		let temporary_channel_id = nodes[2].node.create_channel(node_id_0, 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg)).unwrap();
+		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_id_0);
+		nodes[0].node.handle_open_channel(&node_id_2, &open_channel);
+		let accept_channel = get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, node_id_2);
+		nodes[2].node.handle_accept_channel(&node_id_0, &accept_channel);
 
 		let tx = sign_funding_transaction(&nodes[2], &nodes[0], 1_000_000, temporary_channel_id);
 
@@ -1182,13 +1190,14 @@ mod test {
 		connect_blocks(&nodes[2], CHAN_CONFIRM_DEPTH - 1);
 		confirm_transaction_at(&nodes[0], &tx, conf_height);
 		connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH - 1);
-		let as_channel_ready = get_event_msg!(nodes[2], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
-		nodes[2].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[2].node.get_our_node_id()));
-		get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_channel_ready(&nodes[2].node.get_our_node_id(), &as_channel_ready);
-		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
-		expect_channel_ready_event(&nodes[0], &nodes[2].node.get_our_node_id());
-		expect_channel_ready_event(&nodes[2], &nodes[0].node.get_our_node_id());
+		let as_chan_rdy = get_event_msg!(nodes[2], MessageSendEvent::SendChannelReady, node_id_0);
+		let chan_rdy_msg = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, node_id_2);
+		nodes[2].node.handle_channel_ready(&node_id_0, &chan_rdy_msg);
+		get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, node_id_0);
+		nodes[0].node.handle_channel_ready(&node_id_2, &as_chan_rdy);
+		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_id_2);
+		expect_channel_ready_event(&nodes[0], &node_id_2);
+		expect_channel_ready_event(&nodes[2], &node_id_0);
 
 		// As `msgs::ChannelUpdate` was never handled for the participating node(s) of the second
 		// channel, the channel will never be assigned any `counterparty.forwarding_info`.
