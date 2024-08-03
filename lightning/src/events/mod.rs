@@ -28,6 +28,7 @@ use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::invoice_request::VerifiedInvoiceRequest;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
@@ -180,7 +181,7 @@ impl PaymentPurpose {
 
 	pub(crate) fn from_parts(
 		payment_preimage: Option<PaymentPreimage>, payment_secret: PaymentSecret,
-		payment_context: Option<PaymentContext>,
+		payment_context: Option<PaymentContext>, invreq: Option<VerifiedInvoiceRequest>,
 	) -> Result<Self, ()> {
 		match payment_context {
 			None => {
@@ -203,11 +204,18 @@ impl PaymentPurpose {
 					payment_context: context,
 				})
 			},
-			Some(PaymentContext::AsyncBolt12Offer(_context)) => {
-				// This code will change to return Self::Bolt12OfferPayment when we add support for async
-				// receive.
-				Err(())
-			},
+			Some(PaymentContext::AsyncBolt12Offer(_)) => {
+				let invoice_request = invreq.ok_or(())?;
+				if payment_preimage.is_none() { return Err(()) }
+				Ok(PaymentPurpose::Bolt12OfferPayment {
+					payment_preimage,
+					payment_secret,
+					payment_context: Bolt12OfferContext {
+						offer_id: invoice_request.offer_id,
+						invoice_request: invoice_request.fields(),
+					},
+				})
+			}
 		}
 	}
 }
@@ -1190,12 +1198,12 @@ pub enum Event {
 		/// events generated or serialized by versions prior to 0.0.122.
 		next_user_channel_id: Option<u128>,
 		/// The node id of the previous node.
-		/// 
+		///
 		/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by
 		/// versions prior to 0.1
 		prev_node_id: Option<PublicKey>,
 		/// The node id of the next node.
-		/// 
+		///
 		/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by
 		/// versions prior to 0.1
 		next_node_id: Option<PublicKey>,
@@ -1872,7 +1880,7 @@ impl MaybeReadable for Event {
 						(13, payment_id, option),
 					});
 					let purpose = match payment_secret {
-						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context)
+						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context, None)
 							.map_err(|()| msgs::DecodeError::InvalidValue)?,
 						None if payment_preimage.is_some() => PaymentPurpose::SpontaneousPayment(payment_preimage.unwrap()),
 						None => return Err(msgs::DecodeError::InvalidValue),
