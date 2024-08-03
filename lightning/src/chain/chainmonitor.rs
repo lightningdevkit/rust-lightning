@@ -33,7 +33,7 @@ use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::events::{self, ClaimInfo, Event, EventHandler, ReplayEvent};
+use crate::events::{self, ClaimInfo, ClaimMetadata, Event, EventHandler, ReplayEvent};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
@@ -529,21 +529,15 @@ where C::Target: chain::Filter,
 	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
 	/// [`ClaimInfoRequest`]: Event::ClaimInfoRequest
 	/// [`ClaimMetadata`]: events::ClaimMetadata
-	pub fn provide_claim_info(&self, claim_info: ClaimInfo, claim_info_request: Event) -> Result<(), APIError> {
-		match claim_info_request {
-			Event::ClaimInfoRequest { monitor_id, claim_key, claim_metadata } => {
-				let funding_txo = monitor_id;
-				let monitors = self.monitors.read().unwrap();
-				let monitor_data = if let Some(mon) = monitors.get(&funding_txo) { mon } else {
-					return Err(APIError::APIMisuseError { err: format!("No ChannelMonitor matching funding outpoint {:?} found", funding_txo) });
-				};
-				let bounded_fee_estimator = LowerBoundedFeeEstimator(&*self.fee_estimator);
-				monitor_data.monitor.provide_claim_info(claim_key, claim_info, claim_metadata, &self.broadcaster, &bounded_fee_estimator, &self.logger);
+	pub fn provide_claim_info(&self, monitor_id: OutPoint, claim_key: Txid, claim_info: ClaimInfo, claim_metadata: ClaimMetadata) -> Result<(), APIError> {
+		let monitors = self.monitors.read().unwrap();
+		let monitor_data = if let Some(mon) = monitors.get(&monitor_id) { mon } else {
+			return Err(APIError::APIMisuseError { err: format!("No ChannelMonitor matching funding outpoint {:?} found", monitor_id) });
+		};
+		let bounded_fee_estimator = LowerBoundedFeeEstimator(&*self.fee_estimator);
+		monitor_data.monitor.provide_claim_info(claim_key, claim_info, claim_metadata, &self.broadcaster, &bounded_fee_estimator, &self.logger);
 
-				Ok(())
-			},
-			_ => { return Err(APIError::APIMisuseError { err: format!("Unknown event {:?} provided, expecting ClaimInfoRequest.", claim_info_request) }); }
-		}
+		Ok(())
 	}
 
 	/// Notifies the system that [`ClaimInfo`] associated with a given transaction has been successfully
@@ -555,10 +549,10 @@ where C::Target: chain::Filter,
 	/// disk usage.
 	///
 	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
-	pub fn claim_info_persisted(&self, funding_txo: OutPoint, claim_key: Txid) -> Result<(), APIError> {
+	pub fn claim_info_persisted(&self, monitor_id: OutPoint, claim_key: Txid) -> Result<(), APIError> {
 		let monitors = self.monitors.read().unwrap();
-		let monitor_data = if let Some(mon) = monitors.get(&funding_txo) { mon } else {
-			return Err(APIError::APIMisuseError { err: format!("No ChannelMonitor matching funding outpoint {:?} found", funding_txo) });
+		let monitor_data = if let Some(mon) = monitors.get(&monitor_id) { mon } else {
+			return Err(APIError::APIMisuseError { err: format!("No ChannelMonitor matching funding outpoint {:?} found", monitor_id) });
 		};
 		monitor_data.monitor.remove_claim_info(&claim_key);
 		Ok(())
