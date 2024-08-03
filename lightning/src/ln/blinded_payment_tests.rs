@@ -123,7 +123,7 @@ fn do_one_hop_blinded_path(success: bool) {
 	);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
 	PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], amt_msat, payment_hash, payment_secret);
 	if success {
 		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
@@ -167,7 +167,7 @@ fn mpp_to_one_hop_blinded_path() {
 		amt_msat,
 	);
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 2);
+	check_added_monitors(&nodes[0], 2, 1);
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -233,7 +233,7 @@ fn mpp_to_three_hop_blinded_paths() {
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 2);
+	check_added_monitors(&nodes[0], 2, 1);
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3], &nodes[5]], &[&nodes[2], &nodes[4], &nodes[5]]];
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -294,7 +294,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	macro_rules! cause_error {
 		($src_node_idx: expr, $target_node_idx: expr, $update_add: expr) => {
@@ -393,7 +393,7 @@ fn failed_backwards_to_intro_node() {
 		&chanmon_cfgs[2].keys_manager);
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -474,7 +474,7 @@ fn do_forward_fail_in_process_pending_htlc_fwds(check: ProcessPendingHTLCsCheck,
 		&chanmon_cfgs[2].keys_manager);
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
@@ -592,7 +592,7 @@ fn do_blinded_intercept_payment(intercept_node_fails: bool) {
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(),
 	PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	let payment_event = {
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -670,7 +670,7 @@ fn two_hop_blinded_path_success() {
 		&chanmon_cfgs[2].keys_manager);
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 }
@@ -699,7 +699,7 @@ fn three_hop_blinded_path_success() {
 		&[&chan_upd_2_3, &chan_upd_3_4], &chanmon_cfgs[4].keys_manager);
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], payment_preimage);
 }
@@ -723,7 +723,7 @@ fn three_hop_blinded_path_fail() {
 		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], amt_msat, payment_hash, payment_secret);
 
 	nodes[3].node.fail_htlc_backwards(&payment_hash);
@@ -842,7 +842,7 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	};
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let mut payment_event_0_1 = {
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1013,7 +1013,7 @@ fn blinded_path_retries() {
 	};
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(2)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[3]]], amt_msat, payment_hash, payment_secret);
 
 	macro_rules! fail_payment_back {
@@ -1115,7 +1115,7 @@ fn min_htlc() {
 		route_params.payment_params.payee.blinded_route_hints()[0].0.htlc_minimum_msat);
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3]]], min_htlc_msat, payment_hash, payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3]], payment_preimage);
 
@@ -1128,7 +1128,7 @@ fn min_htlc() {
 	} else { panic!() }
 	route_params.final_value_msat -= 1;
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let mut payment_event_0_1 = {
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1186,7 +1186,7 @@ fn conditionally_round_fwd_amt() {
 	route_params.max_total_routing_fee_msat = None;
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
 	nodes[4].node.claim_funds(payment_preimage);
 	let expected_path = &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]];
@@ -1216,7 +1216,7 @@ fn blinded_keysend() {
 		&[&chan_upd_1_2], &chanmon_cfgs[2].keys_manager);
 
 	let payment_hash = nodes[0].node.send_spontaneous_payment_with_retry(Some(keysend_preimage), RecipientOnionFields::spontaneous_empty(), PaymentId(keysend_preimage.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -1316,7 +1316,7 @@ fn custom_tlvs_to_blinded_path() {
 		.unwrap();
 	nodes[0].node.send_payment(payment_hash, recipient_onion_fields.clone(),
 		PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);

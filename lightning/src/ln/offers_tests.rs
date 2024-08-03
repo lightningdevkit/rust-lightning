@@ -145,7 +145,7 @@ fn route_bolt12_payment<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, path: &[&Node<'a, 'b, 'c>], invoice: &Bolt12Invoice
 ) {
 	// Monitor added when handling the invoice onion message.
-	check_added_monitors(node, 1);
+	check_added_monitors(node, 1, 1);
 
 	let mut events = node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);

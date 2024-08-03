@@ -28,12 +28,12 @@ use bitcoin::hash_types::{Txid, BlockHash};
 
 use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
-use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::events::{self, Event, EventHandler, ReplayEvent};
+use crate::events::{self, ClaimInfo, ClaimMetadata, Event, EventHandler, ReplayEvent};
 use crate::util::logger::{Logger, WithContext};
 use crate::util::errors::APIError;
 use crate::util::wakers::{Future, Notifier};
@@ -521,6 +521,43 @@ where C::Target: chain::Filter,
 		Ok(())
 	}
 
+	/// Provides the stored [`ClaimInfo`] and associated [`ClaimMetadata`] for a specified transaction.
+	///
+	/// This function is called in response to a [`ClaimInfoRequest`] to provide the necessary claim data
+	/// that was previously persisted using the [`PersistClaimInfo`] event.
+	///
+	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
+	/// [`ClaimInfoRequest`]: Event::ClaimInfoRequest
+	/// [`ClaimMetadata`]: events::ClaimMetadata
+	pub fn provide_claim_info(&self, monitor_id: OutPoint, claim_key: Txid, claim_info: ClaimInfo, claim_metadata: ClaimMetadata) -> Result<(), APIError> {
+		let monitors = self.monitors.read().unwrap();
+		let monitor_data = if let Some(mon) = monitors.get(&monitor_id) { mon } else {
+			return Err(APIError::APIMisuseError { err: format!("No ChannelMonitor matching funding outpoint {:?} found", monitor_id) });
+		};
+		let bounded_fee_estimator = LowerBoundedFeeEstimator(&*self.fee_estimator);
+		monitor_data.monitor.provide_claim_info(claim_key, claim_info, claim_metadata, &self.broadcaster, &bounded_fee_estimator, &self.logger);
+
+		Ok(())
+	}
+
+	/// Notifies the system that [`ClaimInfo`] associated with a given transaction has been successfully
+	/// persisted.
+	///
+	/// This method should be called after [`ClaimInfo`] is persisted via the [`PersistClaimInfo`] event
+	/// to confirm that the data is durably stored. Upon this call, the [`ClaimInfo`] is removed from
+	/// both in-memory and on-disk storage within the [`ChannelMonitor`], thereby optimizing memory and
+	/// disk usage.
+	///
+	/// [`PersistClaimInfo`]: Event::PersistClaimInfo
+	pub fn claim_info_persisted(&self, monitor_id: OutPoint, claim_key: Txid) -> Result<(), APIError> {
+		let monitors = self.monitors.read().unwrap();
+		let monitor_data = if let Some(mon) = monitors.get(&monitor_id) { mon } else {
+			return Err(APIError::APIMisuseError { err: format!("No ChannelMonitor matching funding outpoint {:?} found", monitor_id) });
+		};
+		monitor_data.monitor.remove_claim_info(&claim_key);
+		Ok(())
+	}
+
 	/// This wrapper avoids having to update some of our tests for now as they assume the direct
 	/// chain::Watch API wherein we mark a monitor fully-updated by just calling
 	/// channel_monitor_updated once with the highest ID.
@@ -538,6 +575,15 @@ where C::Target: chain::Filter,
 			monitor_update_id,
 		}], counterparty_node_id));
 		self.event_notifier.notify();
+	}
+
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn free_claim_info_events(&self) -> Vec<events::Event> {
+		let mut res = Vec::new();
+		for (_, monitor) in self.monitors.read().unwrap().iter() {
+			res.append(&mut monitor.monitor.free_claim_info_events());
+		}
+		res
 	}
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -1068,7 +1114,7 @@ mod tests {
 		assert_eq!(close_tx.len(), 1);
 
 		mine_transaction(&nodes[2], &close_tx[0]);
-		check_added_monitors(&nodes[2], 1);
+		check_added_monitors(&nodes[2], 1, 1);
 		check_closed_broadcast(&nodes[2], 1, true);
 		check_closed_event!(&nodes[2], 1, ClosureReason::CommitmentTxConfirmed, false,
 			[nodes[0].node.get_our_node_id()], 1000000);
@@ -1092,7 +1138,7 @@ mod tests {
 		// Confirm claim for node[0] with ANTI_REORG_DELAY and reset monitor write counter.
 		mine_transaction(&nodes[0], &close_tx[0]);
 		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], 1, 1);
 		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 
 		// Again connect 1 full cycle of DEFAULT_CHAINSYNC_MONITOR_PARTITION_FACTOR blocks, it should only

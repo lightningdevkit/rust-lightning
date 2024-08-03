@@ -529,24 +529,24 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 		let pay_params = PaymentParameters::for_keysend(nodes[1].node.get_our_node_id(), 100, false);
 		let route_params = RouteParameters::from_payment_params_and_value(pay_params, 40000);
 		nodes[0].node.send_spontaneous_payment_with_retry(None, RecipientOnionFields::spontaneous_empty(), PaymentId([0; 32]), route_params, Retry::Attempts(0)).unwrap();
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], 1, 1);
 		let update_add_commit = SendEvent::from_node(&nodes[0]);
 
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add_commit.msgs[0]);
 		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &update_add_commit.commitment_msg);
-		check_added_monitors(&nodes[1], 1);
+		check_added_monitors(&nodes[1], 1, 1);
 		let (raa, cs) = get_revoke_commit_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
 		nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &raa);
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], 1, 1);
 		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 		if !not_stale {
 			nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &cs);
-			check_added_monitors(&nodes[0], 1);
+			check_added_monitors(&nodes[0], 1, 1);
 			// A now revokes their original state, at which point reconnect should panic
 			let raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 			nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &raa);
-			check_added_monitors(&nodes[1], 1);
+			check_added_monitors(&nodes[1], 1, 1);
 			expect_pending_htlcs_forwardable_ignore!(nodes[1]);
 		}
 	} else {
@@ -618,7 +618,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 			// At this point A gets confused because B expects a commitment state newer than A
 			// has sent, but not a newer revocation secret, so A just (correctly) closes.
 			check_closed_broadcast(&nodes[0], 1, true);
-			check_added_monitors(&nodes[0], 1);
+			check_added_monitors(&nodes[0], 1, 1);
 			check_closed_event!(nodes[0], 1, ClosureReason::ProcessingError {
 				err: "Peer attempted to reestablish channel with a future remote commitment transaction: 2 (received) vs 1 (expected)".to_owned()
 			}, [nodes[1].node.get_our_node_id()], 1000000);
@@ -890,9 +890,9 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[1] { } else { panic!(); }
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }
-		check_added_monitors(&nodes[3], 2);
+		check_added_monitors(&nodes[3], 2, 1);
 	} else {
-		check_added_monitors(&nodes[3], 1);
+		check_added_monitors(&nodes[3], 1, 1);
 	}
 
 	// On restart, we should also get a duplicate PaymentClaimed event as we persisted the
@@ -1173,7 +1173,7 @@ fn removed_payment_no_manager_persistence() {
 	}
 
 	nodes[1].node.test_process_background_events();
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 
 	// Now that the ChannelManager has force-closed the channel which had the HTLC removed, it is
 	// now forgotten everywhere. The ChannelManager should have, as a side-effect of reload,
@@ -1215,13 +1215,13 @@ fn test_reload_partial_funding_batch() {
 
 	// Go through the funding_created and funding_signed flow with node 1.
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[0]);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	// The monitor is persisted when receiving funding_signed.
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	// The transaction should not have been broadcast before all channels are ready.
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
@@ -1236,7 +1236,7 @@ fn test_reload_partial_funding_batch() {
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 
 	// The monitor should become closed.
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	{
 		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
 		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();

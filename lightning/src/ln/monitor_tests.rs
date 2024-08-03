@@ -506,7 +506,7 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 	mine_transaction(&nodes[1], &remote_txn[0]);
 
 	if anchors {
-		let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+		let mut events:Vec<_> = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
 		assert_eq!(events.len(), 1);
 		match events.pop().unwrap() {
 			Event::BumpTransaction(bump_event) => {
@@ -1867,7 +1867,7 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	if anchors {
 		mine_transaction(&nodes[0], &as_revoked_txn[0]);
 		check_closed_broadcast(&nodes[0], 1, true);
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], 1, 1);
 		check_closed_event!(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false, [nodes[1].node.get_our_node_id()], 1_000_000);
 		handle_bump_htlc_event(&nodes[0], 1);
 	}
@@ -2040,7 +2040,7 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 	let error_message = "Channel force-closed";
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false,
 		 [nodes[1].node.get_our_node_id()], 100000);
@@ -2081,7 +2081,7 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	// Connecting more blocks should result in the HTLC transactions being rebroadcast.
 	connect_blocks(&nodes[0], 6);
 	if check_old_monitor_retries_after_upgrade {
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], 1, 1);
 	}
 	{
 		let txn = nodes[0].tx_broadcaster.txn_broadcast();
@@ -2134,7 +2134,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	check_closed_broadcast!(&nodes[0], true);
 	check_closed_event!(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed,
 		 false, [nodes[1].node.get_our_node_id()], 1000000);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let coinbase_tx = Transaction {
 		version: Version::TWO,
@@ -2154,7 +2154,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	let mut check_htlc_retry = |should_retry: bool, should_bump: bool| -> Option<Transaction> {
 		let (htlc_tx, htlc_tx_feerate) = if anchors {
 			assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
-			let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+			let events:Vec<_> = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
 			assert_eq!(events.len(), if should_retry { 1 } else { 0 });
 			if !should_retry {
 				return None;
@@ -2174,7 +2174,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 				_ => panic!("Unexpected event"),
 			}
 		} else {
-			assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+			assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect::<Vec<_>>().is_empty());
 			let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 			assert_eq!(txn.len(), if should_retry { 1 } else { 0 });
 			if !should_retry {
@@ -2288,7 +2288,7 @@ fn test_yield_anchors_events() {
 		&LowerBoundedFeeEstimator::new(node_cfgs[1].fee_estimator), &nodes[1].logger
 	);
 
-	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	let mut holder_events:Vec<_> = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect();
 	assert_eq!(holder_events.len(), 1);
 	let (commitment_tx, anchor_tx) = match holder_events.pop().unwrap() {
 		Event::BumpTransaction(event) => {
@@ -2460,11 +2460,11 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	// the HTLCs still pending.
 	*nodes[1].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 	nodes[1].node.timer_tick_occurred();
-	check_added_monitors(&nodes[1], 2);
+	check_added_monitors(&nodes[1], 2, 1);
 	check_closed_event!(&nodes[1], 2, ClosureReason::OutdatedChannelManager, [nodes[0].node.get_our_node_id(); 2], 1000000);
 
 	// Bob should now receive two events to bump his revoked commitment transaction fees.
-	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().into_iter().filter(|e| !matches!(e, Event::PersistClaimInfo {..})).collect::<Vec<_>>().is_empty());
 	let events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	let mut revoked_commitment_txs = Vec::with_capacity(events.len());
@@ -2529,7 +2529,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 	// Since Bob was able to confirm his revoked commitment, he'll now try to claim the HTLCs
 	// through the success path.
-	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().iter().filter(|e| !matches!(e, Event::ClaimInfoRequest {..})).collect::<Vec<_>>().is_empty());
 	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	// Certain block `ConnectStyle`s cause an extra `ChannelClose` event to be emitted since the
 	// best block is updated before the confirmed transactions are notified.
@@ -2713,7 +2713,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 	// that we arrive at the correct `counterparty_payment_script` after the reload.
 	let error_message = "Channel force-closed";
 	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_closed_event!(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false,
 		 [nodes[1].node.get_our_node_id()], 100000);
@@ -2739,7 +2739,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
 		reload_node!(nodes[1], user_config, &nodes[1].node.encode(), &[&serialized_monitor], persister, chain_monitor, node_deserialized);
 		let commitment_tx_conf_height = block_from_scid(mine_transaction(&nodes[1], &commitment_tx));
-		check_added_monitors(&nodes[1], 1);
+		check_added_monitors(&nodes[1], 1, 1);
 		check_closed_broadcast(&nodes[1], 1, true);
 		commitment_tx_conf_height
 	};
@@ -2754,7 +2754,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 		// If we saw the commitment before our `counterparty_payment_script` was fixed, we'll never
 		// get the spendable output event for the `to_remote` output, so we'll need to get it
 		// manually via `get_spendable_outputs`.
-		check_added_monitors(&nodes[1], 1);
+		check_added_monitors(&nodes[1], 1, 1);
 		let outputs = get_monitor!(nodes[1], chan_id).get_spendable_outputs(&commitment_tx, commitment_tx_conf_height);
 		assert_eq!(outputs.len(), 1);
 		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(

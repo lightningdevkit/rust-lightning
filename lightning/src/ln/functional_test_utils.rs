@@ -11,7 +11,7 @@
 //! nodes for functional tests.
 
 use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch, chainmonitor::Persist};
-use crate::chain::channelmonitor::ChannelMonitor;
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
@@ -630,6 +630,10 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			if !events.is_empty() {
 				panic!("Had excess events on node {}: {:?}", self.logger.id, events);
 			}
+			// let monitor_events = self.chain_monitor.chain_monitor.get_and_clear_pending_events();
+			// if !monitor_events.is_empty() {
+			// 	panic!("Had excess events on ChannelMonitor {}: {:?}", self.logger.id, monitor_events);
+			// }
 			let added_monitors = self.chain_monitor.added_monitors.lock().unwrap().split_off(0);
 			if !added_monitors.is_empty() {
 				panic!("Had {} excess added monitors on node {}", added_monitors.len(), self.logger.id);
@@ -1075,10 +1079,37 @@ macro_rules! unwrap_send_err {
 }
 
 /// Check whether N channel monitor(s) have been added.
-pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, count: usize) {
+pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H, count: usize, expected_claim_info_events: usize) {
 	if let Some(chain_monitor) = node.chain_monitor() {
-		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
+		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap().split_off(0);
 		let n = added_monitors.len();
+		let mut added_claim_info_events:Option<usize> = None;
+		for (_, _, updates_opt) in added_monitors.iter() {
+			if let Some(updates) = updates_opt {
+				for update in updates.updates.iter() {
+					if let ChannelMonitorUpdateStep::CommitmentSecret { .. } = update {
+						let persist_claim_info_events = chain_monitor.chain_monitor.free_claim_info_events();
+						added_claim_info_events = Some(
+							added_claim_info_events.unwrap_or_default() + persist_claim_info_events.len()
+						);
+						for event in persist_claim_info_events {
+							match event {
+								Event::PersistClaimInfo { monitor_id, claim_key, claim_info} => {
+									let mut map_lock = chain_monitor.persisted_claim_info.lock().unwrap();
+									map_lock.insert((monitor_id, claim_key), claim_info);
+									drop(map_lock);
+								}
+								_ => panic!(),
+							}
+						}
+					}
+				}
+			}
+		}
+		
+		if let Some(added_events) = added_claim_info_events {
+			assert_eq!(added_events, expected_claim_info_events, "expected {} claim info events, not {}", expected_claim_info_events, added_events);
+		}
 		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
 		added_monitors.clear();
 	}
@@ -1090,7 +1121,7 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 #[macro_export]
 macro_rules! check_added_monitors {
 	($node: expr, $count: expr) => {
-		$crate::ln::functional_test_utils::check_added_monitors(&$node, $count);
+		$crate::ln::functional_test_utils::check_added_monitors(&$node, $count, 1);
 	}
 }
 
@@ -1756,7 +1787,7 @@ macro_rules! check_closed_event {
 }
 
 pub fn handle_bump_htlc_event(node: &Node, count: usize) {
-	let events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+	let events: Vec<_> = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(events.len(), count);
 	for event in events {
 		match event {
@@ -1977,10 +2008,10 @@ macro_rules! commitment_signed_dance {
 	};
 	($node_a: expr, $node_b: expr, $commitment_signed: expr, $fail_backwards: expr, true /* skip last step */, false /* return extra message */, true /* return last RAA */) => {
 		{
-			$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 0);
+			$crate::ln::functional_test_utils::check_added_monitors(&$node_a, 0, 1);
 			assert!($node_a.node.get_and_clear_pending_msg_events().is_empty());
 			$node_a.node.handle_commitment_signed(&$node_b.node.get_our_node_id(), &$commitment_signed);
-			check_added_monitors(&$node_a, 1);
+			check_added_monitors(&$node_a, 1, 1);
 			let (extra_msg_option, bs_revoke_and_ack) = $crate::ln::functional_test_utils::do_main_commitment_signed_dance(&$node_a, &$node_b, $fail_backwards);
 			assert!(extra_msg_option.is_none());
 			bs_revoke_and_ack
@@ -2007,7 +2038,7 @@ macro_rules! commitment_signed_dance {
 pub fn commitment_signed_dance_through_cp_raa(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '_, '_>, fail_backwards: bool, includes_claim: bool) -> Option<MessageSendEvent> {
 	let (extra_msg_option, bs_revoke_and_ack) = do_main_commitment_signed_dance(node_a, node_b, fail_backwards);
 	node_a.node.handle_revoke_and_ack(&node_b.node.get_our_node_id(), &bs_revoke_and_ack);
-	check_added_monitors(node_a, if includes_claim { 0 } else { 1 });
+	check_added_monitors(node_a, if includes_claim { 0 } else { 1 }, 1);
 	extra_msg_option
 }
 
@@ -2239,7 +2270,7 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM=CM>>(node: &H,
 		assert_eq!(events.len(), 1);
 	}
 	if expect_post_ev_mon_update {
-		check_added_monitors(node, 1);
+		check_added_monitors(node, 1, 1);
 	}
 	let expected_payment_id = match events[0] {
 		Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {

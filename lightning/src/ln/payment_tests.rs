@@ -991,7 +991,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[0].node.test_process_background_events();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
@@ -1021,7 +1021,7 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	nodes[0].node.test_process_background_events();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
@@ -1160,7 +1160,7 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(persist_manager_post_event: bo
 	let height = nodes[0].blocks.lock().unwrap().len() as u32 - 1;
 	nodes[0].chain_monitor.chain_monitor.block_connected(&claim_block, height);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 }
 
 #[test]
@@ -2012,7 +2012,7 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 			},
 			_ => panic!("Unexpected event")
 		}
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], 1, 1);
 	} else if test == InterceptTest::Timeout {
 		let mut block = create_dummy_block(nodes[0].best_block_hash(), 42, Vec::new());
 		connect_block(&nodes[0], &block);
@@ -3478,7 +3478,7 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 		// Ignore the PaymentSent event which is now pending on nodes[0] - if we were to handle it we'd
 		// be expected to ignore the eventual conflicting PaymentFailed, but by not looking at it we
 		// expect to get the PaymentSent again later.
-		check_added_monitors(&nodes[0], 0);
+		check_added_monitors(&nodes[0], 0, 1);
 	}
 
 	// The ChannelMonitor should always be the latest version, as we're required to persist it
@@ -3520,7 +3520,7 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	reload_node!(nodes[0], test_default_channel_config(), &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister_c, chain_monitor_c, nodes_0_deserialized_c);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert!(events.is_empty());
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 }
 
 #[test]
@@ -3580,7 +3580,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
 		PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(1)).unwrap();
-	check_added_monitors(&nodes[0], 2);
+	check_added_monitors(&nodes[0], 2, 1);
 	let mut send_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 	send_msgs.sort_by(|a, _| {
 		let a_node_id =
@@ -3624,13 +3624,13 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		assert_eq!(bs_tx.len(), 1);
 
 		mine_transaction(&nodes[3], &bs_tx[0]);
-		check_added_monitors(&nodes[3], 1);
+		check_added_monitors(&nodes[3], 1, 1);
 		check_closed_broadcast(&nodes[3], 1, true);
 		check_closed_event!(&nodes[3], 1, ClosureReason::CommitmentTxConfirmed, false,
 			[nodes[1].node.get_our_node_id()], 1000000);
 
 		nodes[3].node.claim_funds(payment_preimage);
-		check_added_monitors(&nodes[3], 2);
+		check_added_monitors(&nodes[3], 2, 1);
 		expect_payment_claimed!(nodes[3], payment_hash, 10_000_000);
 
 		let ds_tx = nodes[3].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -3638,11 +3638,11 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		check_spends!(&ds_tx[0], &bs_tx[0]);
 
 		mine_transactions(&nodes[1], &[&bs_tx[0], &ds_tx[0]]);
-		check_added_monitors(&nodes[1], 1);
+		check_added_monitors(&nodes[1], 1, 1);
 		expect_payment_forwarded!(nodes[1], nodes[0], nodes[3], Some(1000), false, true);
 
 		let bs_claims = nodes[1].node.get_and_clear_pending_msg_events();
-		check_added_monitors(&nodes[1], 1);
+		check_added_monitors(&nodes[1], 1, 1);
 		assert_eq!(bs_claims.len(), 1);
 		if let MessageSendEvent::UpdateHTLCs { updates, .. } = &bs_claims[0] {
 			nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
@@ -3656,7 +3656,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		let cs_claim_msgs = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &ds_claim_msgs[0] {
 			nodes[2].node.handle_update_fulfill_htlc(&nodes[3].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
 			let cs_claim_msgs = nodes[2].node.get_and_clear_pending_msg_events();
-			check_added_monitors(&nodes[2], 1);
+			check_added_monitors(&nodes[2], 1, 1);
 			commitment_signed_dance!(nodes[2], nodes[3], updates.commitment_signed, false, true);
 			expect_payment_forwarded!(nodes[2], nodes[0], nodes[3], Some(1000), false, false);
 			cs_claim_msgs
@@ -3717,7 +3717,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 	} else {
 		nodes[0].node.send_payment_with_route(&route, our_payment_hash, onion_fields, payment_id).unwrap();
 	}
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
@@ -4058,7 +4058,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	commitment_signed_dance!(nodes[1], nodes[0], b_recv_ev.commitment_msg, false, true);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	let b_forward_ev = SendEvent::from_node(&nodes[1]);
 	nodes[3].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &b_forward_ev.msgs[0]);
 	commitment_signed_dance!(nodes[3], nodes[1], b_forward_ev.commitment_msg, false, true);
@@ -4108,13 +4108,13 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 
 	// Now retry the failed HTLC.
 	nodes[0].node.process_pending_htlc_forwards();
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	let as_resend = SendEvent::from_node(&nodes[0]);
 	nodes[2].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_resend.msgs[0]);
 	commitment_signed_dance!(nodes[2], nodes[0], as_resend.commitment_msg, false, true);
 
 	expect_pending_htlcs_forwardable!(nodes[2]);
-	check_added_monitors(&nodes[2], 1);
+	check_added_monitors(&nodes[2], 1, 1);
 	let cs_forward = SendEvent::from_node(&nodes[2]);
 	let cd_channel_used = cs_forward.msgs[0].channel_id;
 	nodes[3].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &cs_forward.msgs[0]);
@@ -4130,7 +4130,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 			&[HTLCDestination::FailedPayment {payment_hash}]);
 		nodes[3].node.process_pending_htlc_forwards();
 
-		check_added_monitors(&nodes[3], 1);
+		check_added_monitors(&nodes[3], 1, 1);
 		let ds_fail = get_htlc_update_msgs(&nodes[3], &nodes[2].node.get_our_node_id());
 
 		nodes[2].node.handle_update_fail_htlc(&nodes[3].node.get_our_node_id(), &ds_fail.update_fail_htlcs[0]);
@@ -4208,7 +4208,7 @@ fn  test_htlc_forward_considers_anchor_outputs_value() {
 	assert_eq!(events.len(), 1);
 	let mut update_add_htlc = if let MessageSendEvent::UpdateHTLCs { updates, .. } = events.pop().unwrap() {
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-		check_added_monitors(&nodes[1], 0);
+		check_added_monitors(&nodes[1], 0, 1);
 		commitment_signed_dance!(nodes[1], nodes[0], &updates.commitment_signed, false);
 		updates.update_add_htlcs[0].clone()
 	} else {
@@ -4221,13 +4221,13 @@ fn  test_htlc_forward_considers_anchor_outputs_value() {
 		node_id: Some(nodes[2].node.get_our_node_id()),
 		channel_id: chan_id_2
 	}]);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 
 	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	if let MessageSendEvent::UpdateHTLCs { updates, .. } = events.pop().unwrap() {
 		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fail_htlcs[0]);
-		check_added_monitors(&nodes[0], 0);
+		check_added_monitors(&nodes[0], 0, 1);
 		commitment_signed_dance!(nodes[0], nodes[1], &updates.commitment_signed, false);
 	} else {
 		panic!("Unexpected event");
@@ -4243,7 +4243,7 @@ fn  test_htlc_forward_considers_anchor_outputs_value() {
 		err: "Remote HTLC add would put them under remote reserve value".to_owned()
 	}, false, &[nodes[1].node.get_our_node_id()], 1_000_000);
 	check_closed_broadcast(&nodes[2], 1, true);
-	check_added_monitors(&nodes[2], 1);
+	check_added_monitors(&nodes[2], 1, 1);
 }
 
 #[test]

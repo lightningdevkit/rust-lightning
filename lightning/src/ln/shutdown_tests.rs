@@ -1328,7 +1328,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 		nodes[0].node.timer_tick_occurred();
 	}
 	let updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	nodes[1].node.close_channel(&chan_id, &nodes[0].node.get_our_node_id()).unwrap();
 	let node_0_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
@@ -1344,11 +1344,11 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &updates.update_fee.unwrap());
 	}
 	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &updates.commitment_signed);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_raa);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	// At this point the Channel on nodes[0] has no record of any HTLCs but the latest
 	// broadcastable commitment does contain the HTLC (but only the ChannelMonitor knows this).
@@ -1357,7 +1357,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_cs);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	assert_eq!(nodes[0].node.get_and_clear_pending_msg_events(), Vec::new());
 
 	expect_channel_shutdown_state!(nodes[0], chan_id, ChannelShutdownState::ResolvingHTLCs);
@@ -1370,7 +1370,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 
 	if let MessageSendEvent::SendRevokeAndACK { msg, .. } = &as_raa_closing_signed[0] {
 		nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &msg);
-		check_added_monitors(&nodes[1], 1);
+		check_added_monitors(&nodes[1], 1, 1);
 		if use_htlc {
 			expect_payment_failed!(nodes[1], payment_hash_opt.unwrap(), true);
 		}

@@ -2625,6 +2625,90 @@ fn revoked_output_claim() {
 }
 
 #[test]
+fn test_revoked_output_claim_with_offloaded_claim_info() {
+	revoked_output_claim_with_offloaded_claim_info(true);
+	revoked_output_claim_with_offloaded_claim_info(false);
+}
+
+fn revoked_output_claim_with_offloaded_claim_info(provide_claim_info: bool) {
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Rebalance the network to generate htlc in the two directions
+	send_payment(&nodes[0], &[&nodes[1]], 8_000_000);
+	// node[0] is gonna to revoke an old state thus node[1] should be able to claim both offered/received HTLC outputs on top of commitment tx
+	let payment_preimage_1 = route_payment(&nodes[0], &[&nodes[1]], 3_000_000).0;
+	let (_payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[1], &[&nodes[0]], 3_000_000);
+
+	// Get the will-be-revoked local txn from node[0]
+	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
+
+	//Revoke the old state twice, so that PersistClaimInfo events are generated.
+	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1);
+	send_payment(&nodes[0], &[&nodes[1]], 2_000_000);
+
+	handle_persist_claim_info_events(&nodes[1]);
+
+	{
+		mine_transaction(&nodes[0], &revoked_local_txn[0]);
+		check_added_monitors!(nodes[0], 1);
+		check_closed_event!(nodes[0], 1, ClosureReason::CommitmentTxConfirmed, [nodes[1].node.get_our_node_id()], 100000);
+		mine_transaction(&nodes[1], &revoked_local_txn[0]);
+		check_added_monitors!(nodes[1], 1);
+		// Provide Claim info selectively acc. to flag.
+		handle_claim_info_request(&nodes[1], provide_claim_info);
+
+		check_closed_event!(nodes[1], 1, ClosureReason::CommitmentTxConfirmed, [nodes[0].node.get_our_node_id()], 100000);
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+		let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+
+		if provide_claim_info {
+			assert_eq!(node_txn.len(), 1); // ChannelMonitor: penalty tx
+
+			assert_eq!(node_txn[0].input.len(), 3); // Claim the revoked output + both revoked HTLC outputs
+			check_spends!(node_txn[0], revoked_local_txn[0]);
+
+			// Finally, mine the penalty transaction and check that we get an HTLC failure after
+			// ANTI_REORG_DELAY confirmations.
+			mine_transaction(&nodes[1], &node_txn[0]);
+			connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+			expect_payment_failed!(nodes[1], payment_hash_2, false);
+		} else {
+			assert_eq!(node_txn.len(), 0);
+		}
+	}
+	get_announce_close_broadcast_events(&nodes, 0, 1);
+	assert_eq!(nodes[0].node.list_channels().len(), 0);
+	assert_eq!(nodes[1].node.list_channels().len(), 0);
+}
+
+fn handle_persist_claim_info_events(node: &Node) {
+	let mut persisted_claim_info = &node.chain_monitor.persisted_claim_info.lock().unwrap();
+	for ((outpoint, txid), _) in persisted_claim_info.iter() {
+		let _ = &node.chain_monitor.chain_monitor.claim_info_persisted(*outpoint, *txid).unwrap();
+	}
+}
+
+fn handle_claim_info_request(node: &Node, provide_claim_info: bool) {
+	let mut events = node.chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	if let Event::ClaimInfoRequest { monitor_id, claim_key, claim_metadata } = events.pop().unwrap() {
+		if provide_claim_info {
+			let persisted_claim_info = node.chain_monitor.persisted_claim_info.lock().unwrap();
+			let claim_info = persisted_claim_info.get(&(monitor_id, claim_key)).unwrap();
+			node.chain_monitor.chain_monitor.provide_claim_info(monitor_id, claim_key, claim_info.clone(), claim_metadata).unwrap();
+		}
+	} else { panic!(); }
+}
+
+#[test]
 fn test_forming_justice_tx_from_monitor_updates() {
 	do_test_forming_justice_tx_from_monitor_updates(true);
 	do_test_forming_justice_tx_from_monitor_updates(false);
@@ -3856,7 +3940,7 @@ fn test_simple_peer_disconnect() {
 			_ => panic!("Unexpected event"),
 		}
 	}
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	claim_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), payment_preimage_4);
 	fail_payment(&nodes[0], &vec!(&nodes[1], &nodes[2]), payment_hash_6);
@@ -4526,6 +4610,12 @@ macro_rules! check_spendable_outputs {
 							all_outputs.push(outp);
 						}
 					},
+					Event::PersistClaimInfo{..}  => {
+						// Do Nothing
+					},
+					Event::ClaimInfoRequest{..}  => {
+						// Do Nothing
+					}
 					_ => panic!("Unexpected event"),
 				};
 			}
@@ -8561,6 +8651,10 @@ fn test_update_err_monitor_lockdown() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8634,6 +8728,10 @@ fn test_concurrent_monitor_claim() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8666,6 +8764,10 @@ fn test_concurrent_monitor_claim() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, channelmonitor::ChannelMonitor<TestChannelSigner>)>::read(
 					&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -8719,7 +8821,7 @@ fn test_concurrent_monitor_claim() {
 	check_closed_event!(&nodes[0], 1, ClosureReason::HTLCsTimedOut, false,
 		[nodes[1].node.get_our_node_id()], 100000);
 	watchtower_alice.chain_monitor.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, vec![bob_state_y.clone()]), height);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	{
 		let htlc_txn = alice_broadcaster.txn_broadcast();
 		assert_eq!(htlc_txn.len(), 1);
@@ -10247,14 +10349,14 @@ fn test_nondust_htlc_fees_are_dust() {
 		get_route_and_payment_hash!(nodes[2], nodes[1], dust_limit * 2);
 	let onion = RecipientOnionFields::secret_only(payment_secret);
 	nodes[2].node.send_payment_with_route(&route, payment_hash, onion, PaymentId([0; 32])).unwrap();
-	check_added_monitors(&nodes[2], 1);
+	check_added_monitors(&nodes[2], 1, 1);
 	let send = SendEvent::from_node(&nodes[2]);
 
 	nodes[0].node.handle_update_add_htlc(&nodes[2].node.get_our_node_id(), &send.msgs[0]);
 	commitment_signed_dance!(nodes[0], nodes[2], send.commitment_msg, false, true);
 
 	expect_pending_htlcs_forwardable!(nodes[0]);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	let node_id_1 = nodes[1].node.get_our_node_id();
 	expect_htlc_handling_failed_destinations!(
 		nodes[0].node.get_and_clear_pending_events(),
@@ -10541,7 +10643,7 @@ fn test_disconnects_peer_awaiting_response_ticks() {
 	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bob_revoke_and_ack);
 	check_added_monitors!(&nodes[0], 1);
 	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bob_commitment_signed);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	// Alice then needs to send her final `RevokeAndACK` to complete the commitment dance. We
 	// pretend Bob hasn't received the message and check whether he'll disconnect Alice after
@@ -10596,7 +10698,7 @@ fn test_disconnects_peer_awaiting_response_ticks() {
 
 	// Finally, have Bob process the last message.
 	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &alice_revoke_and_ack);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 
 	// At this point, neither node should attempt to disconnect each other, since they aren't
 	// waiting on any messages.
@@ -10830,7 +10932,7 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 		let htlc_fulfill_updates = get_htlc_update_msgs!(nodes[*dest], nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_update_fulfill_htlc(&nodes[*dest].node.get_our_node_id(), &htlc_fulfill_updates.update_fulfill_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[*dest], htlc_fulfill_updates.commitment_signed, false);
-		check_added_monitors(&nodes[0], 0);
+		check_added_monitors(&nodes[0], 0, 1);
 	}
 
 	let (route, payment_hash_3, _, payment_secret_3) =
@@ -10838,7 +10940,7 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	let payment_id = PaymentId(payment_hash_3.0);
 	nodes[1].node.send_payment_with_route(&route, payment_hash_3,
 		RecipientOnionFields::secret_only(payment_secret_3), payment_id).unwrap();
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 
 	let send_event = SendEvent::from_node(&nodes[1]);
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &send_event.msgs[0]);
@@ -10872,7 +10974,7 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	// After the events are processed, the ChannelMonitorUpdates will be released and, upon their
 	// completion, we'll respond to nodes[1] with an RAA + CS.
 	get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-	check_added_monitors(&nodes[0], 3);
+	check_added_monitors(&nodes[0], 3, 2);
 }
 
 #[test]
@@ -10896,25 +10998,25 @@ fn test_batch_channel_open() {
 
 	// Go through the funding_created and funding_signed flow with node 1.
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[0]);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	// The transaction should not have been broadcast before all channels are ready.
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 0);
 
 	// Go through the funding_created and funding_signed flow with node 2.
 	nodes[2].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[1]);
-	check_added_monitors(&nodes[2], 1);
+	check_added_monitors(&nodes[2], 1, 1);
 	expect_channel_pending_event(&nodes[2], &nodes[0].node.get_our_node_id());
 
 	let funding_signed_msg = get_event_msg!(nodes[2], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.handle_funding_signed(&nodes[2].node.get_our_node_id(), &funding_signed_msg);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	// The transaction should not have been broadcast before persisting all monitors has been
 	// completed.
@@ -10966,12 +11068,12 @@ fn test_close_in_funding_batch() {
 
 	// Go through the funding_created and funding_signed flow with node 1.
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[0]);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	// The transaction should not have been broadcast before all channels are ready.
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
@@ -10985,7 +11087,7 @@ fn test_close_in_funding_batch() {
 	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id_1, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 
 	// The monitor should become closed.
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 	{
 		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
 		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
@@ -11045,22 +11147,22 @@ fn test_batch_funding_close_after_funding_signed() {
 
 	// Go through the funding_created and funding_signed flow with node 1.
 	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[0]);
-	check_added_monitors(&nodes[1], 1);
+	check_added_monitors(&nodes[1], 1, 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	// Go through the funding_created and funding_signed flow with node 2.
 	nodes[2].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msgs[1]);
-	check_added_monitors(&nodes[2], 1);
+	check_added_monitors(&nodes[2], 1, 1);
 	expect_channel_pending_event(&nodes[2], &nodes[0].node.get_our_node_id());
 
 	let funding_signed_msg = get_event_msg!(nodes[2], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	nodes[0].node.handle_funding_signed(&nodes[2].node.get_our_node_id(), &funding_signed_msg);
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], 1, 1);
 
 	// The transaction should not have been broadcast before all channels are ready.
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
@@ -11072,7 +11174,7 @@ fn test_batch_funding_close_after_funding_signed() {
 	let channel_id_2 = ChannelId::v1_from_funding_outpoint(funding_txo_2);
 	let error_message = "Channel force-closed";
 	nodes[0].node.force_close_broadcasting_latest_txn(&channel_id_1, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
-	check_added_monitors(&nodes[0], 2);
+	check_added_monitors(&nodes[0], 2, 1);
 	{
 		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
 		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
@@ -11148,7 +11250,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 		MessageSendEvent::HandleError { action: msgs::ErrorAction::SendErrorMessage { .. }, .. } => {},
 		_ => panic!("Unexpected event"),
 	}
-	check_added_monitors(closing_node, 1);
+	check_added_monitors(closing_node, 1, 1);
 	check_closed_event(closing_node, 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[other_node.node.get_our_node_id()], 1_000_000);
 
 	let commitment_tx = {
@@ -11163,7 +11265,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	mine_transactions(&nodes[1], &[&funding_tx, &commitment_tx]);
 
 	check_closed_broadcast(other_node, 1, true);
-	check_added_monitors(other_node, 1);
+	check_added_monitors(other_node, 1, 1);
 	check_closed_event(other_node, 1, ClosureReason::CommitmentTxConfirmed, false, &[closing_node.node.get_our_node_id()], 1_000_000);
 
 	assert!(nodes[0].node.list_channels().is_empty());
