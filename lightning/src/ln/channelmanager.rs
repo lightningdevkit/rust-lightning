@@ -235,6 +235,13 @@ pub enum PendingHTLCRouting {
 		/// [`PaymentSecret`] and should verify it using our
 		/// [`NodeSigner::get_inbound_payment_key_material`].
 		has_recipient_created_payment_secret: bool,
+		/// The [`InvoiceRequest`] associated with the [`Offer`] corresponding to this payment.
+		invoice_request: Option<InvoiceRequest>,
+		/// The context of the payment included by the recipient in a blinded path, or `None` if a
+		/// blinded path was not used.
+		///
+		/// Used in part to determine the [`events::PaymentPurpose`].
+		payment_context: Option<PaymentContext>,
 	},
 }
 
@@ -5883,8 +5890,8 @@ where
 											true)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
-										payment_data, payment_preimage, payment_metadata,
-										incoming_cltv_expiry, custom_tlvs, requires_blinded_error: _,
+										payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry,
+										custom_tlvs, invoice_request: _, payment_context: _, requires_blinded_error: _,
 										has_recipient_created_payment_secret,
 									} => {
 										let onion_fields = RecipientOnionFields {
@@ -12030,6 +12037,8 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(4, payment_data, option), // Added in 0.0.116
 		(5, custom_tlvs, optional_vec),
 		(7, has_recipient_created_payment_secret, (default_value, false)),
+		(9, invoice_request, option),
+		(11, payment_context, option),
 	},
 );
 
