@@ -36,7 +36,7 @@ use crate::events::FundingInfo;
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
-use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
+use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -87,7 +87,6 @@ use crate::util::ser::TransactionU16LenLimited;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
-	crate::blinded_path::payment::AsyncBolt12OfferContext,
 	crate::offers::offer::Amount,
 	crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder},
 };
@@ -6047,7 +6046,7 @@ where
 								let blinded_failure = routing.blinded_failure();
 								let (
 									cltv_expiry, onion_payload, payment_data, payment_context, phantom_shared_secret,
-									mut onion_fields, has_recipient_created_payment_secret, _invoice_request_opt
+									mut onion_fields, has_recipient_created_payment_secret, invoice_request_opt
 								) = match routing {
 									PendingHTLCRouting::Receive {
 										payment_data, payment_metadata, payment_context,
@@ -6271,14 +6270,54 @@ where
 										};
 										check_total_value!(purpose);
 									},
-									OnionPayload::Spontaneous(preimage) => {
-										if payment_context.is_some() {
-											if !matches!(payment_context, Some(PaymentContext::AsyncBolt12Offer(_))) {
-												log_trace!(self.logger, "Failing new HTLC with payment_hash {}: received a keysend payment to a non-async payments context {:#?}", payment_hash, payment_context);
+									OnionPayload::Spontaneous(keysend_preimage) => {
+										let purpose = if let Some(PaymentContext::AsyncBolt12Offer(
+											AsyncBolt12OfferContext { offer_nonce }
+										)) = payment_context {
+											let payment_data = match payment_data {
+												Some(data) => data,
+												None => {
+													debug_assert!(false, "We checked that payment_data is Some above");
+													fail_htlc!(claimable_htlc, payment_hash);
+												},
+											};
+
+											let verified_invreq = match invoice_request_opt
+												.and_then(|invreq| invreq.verify_using_recipient_data(
+													offer_nonce, &self.inbound_payment_key, &self.secp_ctx
+												).ok())
+											{
+												Some(verified_invreq) => {
+													if let Some(invreq_amt_msat) = verified_invreq.amount_msats() {
+														if payment_data.total_msat < invreq_amt_msat {
+															fail_htlc!(claimable_htlc, payment_hash);
+														}
+													}
+													verified_invreq
+												},
+												None => {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											};
+											let payment_purpose_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+												offer_id: verified_invreq.offer_id,
+												invoice_request: verified_invreq.fields(),
+											});
+											match events::PaymentPurpose::from_parts(
+												Some(keysend_preimage), payment_data.payment_secret,
+												Some(payment_purpose_context),
+											) {
+												Ok(purpose) => purpose,
+												Err(()) => {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
 											}
+										} else if payment_context.is_some() {
+											log_trace!(self.logger, "Failing new HTLC with payment_hash {}: received a keysend payment to a non-async payments context {:#?}", payment_hash, payment_context);
 											fail_htlc!(claimable_htlc, payment_hash);
-										}
-										let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
+										} else {
+											events::PaymentPurpose::SpontaneousPayment(keysend_preimage)
+										};
 										check_total_value!(purpose);
 									}
 								}

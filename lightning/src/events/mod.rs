@@ -178,9 +178,10 @@ impl PaymentPurpose {
 		}
 	}
 
+	/// Errors when provided an `AsyncBolt12OfferContext`, see below.
 	pub(crate) fn from_parts(
 		payment_preimage: Option<PaymentPreimage>, payment_secret: PaymentSecret,
-		payment_context: Option<PaymentContext>,
+		payment_context: Option<PaymentContext>
 	) -> Result<Self, ()> {
 		match payment_context {
 			None => {
@@ -203,11 +204,12 @@ impl PaymentPurpose {
 					payment_context: context,
 				})
 			},
-			Some(PaymentContext::AsyncBolt12Offer(_context)) => {
-				// This code will change to return Self::Bolt12OfferPayment when we add support for async
-				// receive.
+			Some(PaymentContext::AsyncBolt12Offer(_)) => {
+				// Callers are expected to convert from `AsyncBolt12OfferContext` to `Bolt12OfferContext`
+				// using the invoice request provided in the payment onion prior to calling this method.
+				debug_assert!(false);
 				Err(())
-			},
+			}
 		}
 	}
 }
