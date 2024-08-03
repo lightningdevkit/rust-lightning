@@ -6092,6 +6092,7 @@ where
 											payment_preimage,
 											payment_data.payment_secret,
 											payment_context,
+											None,
 										) {
 											Ok(purpose) => purpose,
 											Err(()) => {
