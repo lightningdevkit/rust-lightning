@@ -4147,11 +4147,11 @@ where
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
 	#[cfg_attr(not(any(test, feature = "_test_utils")), deprecated(note = "Use `send_payment` instead"))]
-	pub fn send_payment_with_route(&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
+	pub fn send_payment_with_route(&self, route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments
-			.send_payment_with_route(route, payment_hash, recipient_onion, payment_id,
+			.send_payment_with_route(&route, payment_hash, recipient_onion, payment_id,
 				&self.entropy_source, &self.node_signer, best_block_height,
 				|args| self.send_payment_along_path(args))
 	}
@@ -12990,7 +12990,7 @@ mod tests {
 
 		// Next, attempt a regular payment and make sure it fails.
 		let payment_secret = PaymentSecret([43; 32]);
-		nodes[0].node.send_payment_with_route(&route, payment_hash,
+		nodes[0].node.send_payment_with_route(route.clone(), payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -13177,7 +13177,7 @@ mod tests {
 		route.paths[1].hops[0].short_channel_id = chan_2_id;
 		route.paths[1].hops[1].short_channel_id = chan_4_id;
 
-		match nodes[0].node.send_payment_with_route(&route, payment_hash,
+		match nodes[0].node.send_payment_with_route(route, payment_hash,
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0))
 		.unwrap_err() {
 			PaymentSendFailure::ParameterError(APIError::APIMisuseError { ref err }) => {

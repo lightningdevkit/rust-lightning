@@ -4902,7 +4902,7 @@ mod tests {
 		// If the ChannelManager tries to update the channel, however, the ChainMonitor will pass
 		// the update through to the ChannelMonitor which will refuse it (as the channel is closed).
 		let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
-		unwrap_send_err!(nodes[1].node.send_payment_with_route(&route, payment_hash,
+		unwrap_send_err!(nodes[1].node.send_payment_with_route(route, payment_hash,
 				RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)
 			), false, APIError::MonitorUpdateInProgress, {});
 		check_added_monitors!(nodes[1], 1);
