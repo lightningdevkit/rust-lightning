@@ -4093,6 +4093,10 @@ where
 
 	/// Sends a payment along a given route.
 	///
+	/// This method is *DEPRECATED*, use [`Self::send_payment`] instead. If you wish to fix the
+	/// route for a payment, do so by matching the [`PaymentId`] passed to
+	/// [`Router::find_route_with_id`].
+	///
 	/// Value parameters are provided via the last hop in route, see documentation for [`RouteHop`]
 	/// fields for more info.
 	///
@@ -4142,6 +4146,7 @@ where
 	/// [`UpdateHTLCs`]: events::MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
+	#[cfg_attr(not(any(test, feature = "_test_utils")), deprecated(note = "Use `send_payment` instead"))]
 	pub fn send_payment_with_route(&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
