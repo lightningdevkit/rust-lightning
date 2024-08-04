@@ -14,7 +14,7 @@ pub fn slice_to_be48(v: &[u8]) -> u64 {
 	((v[2] as u64) << 8*3) |
 	((v[3] as u64) << 8*2) |
 	((v[4] as u64) << 8*1) |
-	((v[5] as u64) << 8*0)
+	(v[5] as u64)
 }
 #[inline]
 pub fn be48_to_array(u: u64) -> [u8; 6] {
@@ -25,7 +25,7 @@ pub fn be48_to_array(u: u64) -> [u8; 6] {
 	v[2] = ((u >> 8*3) & 0xff) as u8;
 	v[3] = ((u >> 8*2) & 0xff) as u8;
 	v[4] = ((u >> 8*1) & 0xff) as u8;
-	v[5] = ((u >> 8*0) & 0xff) as u8;
+	v[5] = (u & 0xff) as u8;
 	v
 }
 

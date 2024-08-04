@@ -1829,7 +1829,7 @@ pub fn get_commitment_transaction_number_obscure_factor(
 		| ((res[28] as u64) << 3 * 8)
 		| ((res[29] as u64) << 2 * 8)
 		| ((res[30] as u64) << 1 * 8)
-		| ((res[31] as u64) << 0 * 8)
+		| (res[31] as u64)
 }
 
 #[cfg(test)]
