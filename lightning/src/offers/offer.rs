@@ -112,7 +112,8 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
+pub(super) const IV_BYTES_WITH_METADATA: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
+pub(super) const IV_BYTES_WITHOUT_METADATA: &[u8; IV_LEN] = b"LDK Offer v2~~~~";
 
 /// An identifier for an [`Offer`] built using [`DerivedMetadata`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -258,7 +259,7 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'a Secp256k1<$secp_context>
 	) -> Self {
-		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, None);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, None);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Self {
 			offer: OfferContents {
@@ -391,9 +392,12 @@ macro_rules! offer_builder_methods { (
 
 				// Don't derive keys if no blinded paths were given since this means the signing
 				// pubkey must be the node id of an announced node.
-				if $self.offer.paths.is_none() {
+				let iv_bytes = if $self.offer.paths.is_none() {
 					metadata = metadata.without_keys();
-				}
+					IV_BYTES_WITH_METADATA
+				} else {
+					IV_BYTES_WITHOUT_METADATA
+				};
 
 				let mut tlv_stream = $self.offer.as_tlv_stream();
 				debug_assert_eq!(tlv_stream.metadata, None);
@@ -405,7 +409,8 @@ macro_rules! offer_builder_methods { (
 				// Either replace the signing pubkey with the derived pubkey or include the metadata
 				// for verification. In the former case, the blinded paths must include
 				// `OffersContext::InvoiceRequest` instead.
-				let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
+				let (derived_metadata, keys) =
+					metadata.derive_from(iv_bytes, tlv_stream, $self.secp_ctx);
 				match keys {
 					Some(keys) => $self.offer.signing_pubkey = Some(keys.public_key()),
 					None => $self.offer.metadata = Some(derived_metadata),
@@ -918,18 +923,20 @@ impl OfferContents {
 	pub(super) fn verify_using_metadata<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
-		self.verify(bytes, self.metadata.as_ref(), key, secp_ctx)
+		self.verify(bytes, self.metadata.as_ref(), key, IV_BYTES_WITH_METADATA, secp_ctx)
 	}
 
 	pub(super) fn verify_using_recipient_data<T: secp256k1::Signing>(
 		&self, bytes: &[u8], nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
-		self.verify(bytes, Some(&Metadata::RecipientData(nonce)), key, secp_ctx)
+		let metadata = Metadata::RecipientData(nonce);
+		self.verify(bytes, Some(&metadata), key, IV_BYTES_WITHOUT_METADATA, secp_ctx)
 	}
 
 	/// Verifies that the offer metadata was produced from the offer in the TLV stream.
 	fn verify<T: secp256k1::Signing>(
-		&self, bytes: &[u8], metadata: Option<&Metadata>, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
+		&self, bytes: &[u8], metadata: Option<&Metadata>, key: &ExpandedKey,
+		iv_bytes: &[u8; IV_LEN], secp_ctx: &Secp256k1<T>
 	) -> Result<(OfferId, Option<Keypair>), ()> {
 		match metadata {
 			Some(metadata) => {
@@ -945,7 +952,7 @@ impl OfferContents {
 					None => return Err(()),
 				};
 				let keys = signer::verify_recipient_metadata(
-					metadata.as_ref(), key, IV_BYTES, signing_pubkey, tlv_stream, secp_ctx
+					metadata.as_ref(), key, iv_bytes, signing_pubkey, tlv_stream, secp_ctx
 				)?;
 
 				let offer_id = OfferId::from_valid_invreq_tlv_stream(bytes);

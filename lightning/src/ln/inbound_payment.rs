@@ -81,13 +81,8 @@ impl ExpandedKey {
 	/// Returns an [`HmacEngine`] used to construct [`Offer::metadata`].
 	///
 	/// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
-	pub(crate) fn hmac_for_offer(
-		&self, nonce: Nonce, iv_bytes: &[u8; IV_LEN]
-	) -> HmacEngine<Sha256> {
-		let mut hmac = HmacEngine::<Sha256>::new(&self.offers_base_key);
-		hmac.input(iv_bytes);
-		hmac.input(&nonce.0);
-		hmac
+	pub(crate) fn hmac_for_offer(&self) -> HmacEngine<Sha256> {
+		HmacEngine::<Sha256>::new(&self.offers_base_key)
 	}
 
 	/// Encrypts or decrypts the given `bytes`. Used for data included in an offer message's

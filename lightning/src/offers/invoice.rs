@@ -114,7 +114,7 @@ use crate::blinded_path::BlindedPath;
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
-use crate::ln::inbound_payment::ExpandedKey;
+use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
@@ -123,7 +123,7 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
-use crate::offers::refund::{IV_BYTES as REFUND_IV_BYTES, Refund, RefundContents};
+use crate::offers::refund::{IV_BYTES_WITH_METADATA as REFUND_IV_BYTES_WITH_METADATA, IV_BYTES_WITHOUT_METADATA as REFUND_IV_BYTES_WITHOUT_METADATA, Refund, RefundContents};
 use crate::offers::signer::{Metadata, self};
 use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, Readable, SeekReadable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
@@ -778,11 +778,15 @@ impl Bolt12Invoice {
 	pub fn verify_using_metadata<T: secp256k1::Signing>(
 		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
 	) -> Result<PaymentId, ()> {
-		let metadata = match &self.contents {
-			InvoiceContents::ForOffer { invoice_request, .. } => &invoice_request.inner.payer.0,
-			InvoiceContents::ForRefund { refund, .. } => &refund.payer.0,
+		let (metadata, iv_bytes) = match &self.contents {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				(&invoice_request.inner.payer.0, INVOICE_REQUEST_IV_BYTES)
+			},
+			InvoiceContents::ForRefund { refund, .. } => {
+				(&refund.payer.0, REFUND_IV_BYTES_WITH_METADATA)
+			},
 		};
-		self.contents.verify(TlvStream::new(&self.bytes), metadata, key, secp_ctx)
+		self.contents.verify(TlvStream::new(&self.bytes), metadata, key, iv_bytes, secp_ctx)
 	}
 
 	/// Verifies that the invoice was for a request or refund created using the given key by
@@ -790,12 +794,17 @@ impl Bolt12Invoice {
 	/// sent through.
 	pub fn verify_using_payer_data<T: secp256k1::Signing>(
 		&self, payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
-	) -> bool {
+	) -> Result<PaymentId, ()> {
 		let metadata = Metadata::payer_data(payment_id, nonce, key);
-		match self.contents.verify(TlvStream::new(&self.bytes), &metadata, key, secp_ctx) {
-			Ok(extracted_payment_id) => payment_id == extracted_payment_id,
-			Err(()) => false,
-		}
+		let iv_bytes = match &self.contents {
+			InvoiceContents::ForOffer { .. } => INVOICE_REQUEST_IV_BYTES,
+			InvoiceContents::ForRefund { .. } => REFUND_IV_BYTES_WITHOUT_METADATA,
+		};
+		self.contents.verify(TlvStream::new(&self.bytes), &metadata, key, iv_bytes, secp_ctx)
+			.and_then(|extracted_payment_id| (payment_id == extracted_payment_id)
+				.then(|| payment_id)
+				.ok_or(())
+			)
 	}
 
 	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
@@ -1027,7 +1036,7 @@ impl InvoiceContents {
 
 	fn verify<T: secp256k1::Signing>(
 		&self, tlv_stream: TlvStream<'_>, metadata: &Metadata, key: &ExpandedKey,
-		secp_ctx: &Secp256k1<T>
+		iv_bytes: &[u8; IV_LEN], secp_ctx: &Secp256k1<T>
 	) -> Result<PaymentId, ()> {
 		let offer_records = tlv_stream.clone().range(OFFER_TYPES);
 		let invreq_records = tlv_stream.range(INVOICE_REQUEST_TYPES).filter(|record| {
@@ -1040,11 +1049,6 @@ impl InvoiceContents {
 		let tlv_stream = offer_records.chain(invreq_records);
 
 		let payer_id = self.payer_id();
-		let iv_bytes = match self {
-			InvoiceContents::ForOffer { .. } => INVOICE_REQUEST_IV_BYTES,
-			InvoiceContents::ForRefund { .. } => REFUND_IV_BYTES,
-		};
-
 		signer::verify_payer_metadata(
 			metadata.as_ref(), key, iv_bytes, payer_id, tlv_stream, secp_ctx,
 		)
@@ -1556,6 +1560,7 @@ mod tests {
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
+		assert!(!invoice.is_for_refund_without_paths());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
@@ -1653,6 +1658,7 @@ mod tests {
 		assert_eq!(invoice.payment_hash(), payment_hash);
 		assert!(invoice.fallbacks().is_empty());
 		assert_eq!(invoice.invoice_features(), &Bolt12InvoiceFeatures::empty());
+		assert!(invoice.is_for_refund_without_paths());
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice.bytes);
 		assert!(merkle::verify_signature(&invoice.signature, &message, recipient_pubkey()).is_ok());
@@ -1843,6 +1849,37 @@ mod tests {
 		{
 			panic!("error building invoice: {:?}", e);
 		}
+	}
+
+	#[test]
+	fn builds_invoice_from_refund_with_path() {
+		let node_id = payer_pubkey();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let secp_ctx = Secp256k1::new();
+
+		let blinded_path = BlindedPath {
+			introduction_node: IntroductionNode::NodeId(pubkey(40)),
+			blinding_point: pubkey(41),
+			blinded_hops: vec![
+				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
+				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
+			],
+		};
+
+		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.path(blinded_path)
+			.build().unwrap();
+
+		let invoice = refund
+			.respond_using_derived_keys_no_std(
+				payment_paths(), payment_hash(), now(), &expanded_key, &entropy
+			)
+			.unwrap()
+			.build_and_sign(&secp_ctx)
+			.unwrap();
+		assert!(!invoice.message_paths().is_empty());
+		assert!(!invoice.is_for_refund_without_paths());
 	}
 
 	#[test]

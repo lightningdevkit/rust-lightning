@@ -4204,7 +4204,7 @@ where
 	///
 	/// [timer tick]: Self::timer_tick_occurred
 	pub fn send_payment_for_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: &OffersContext,
+		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
 		match self.verify_bolt12_invoice(invoice, context) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
@@ -4213,20 +4213,17 @@ where
 	}
 
 	fn verify_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: &OffersContext,
+		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<PaymentId, ()> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
 		match context {
-			OffersContext::Unknown {} if invoice.is_for_refund_without_paths() => {
+			None if invoice.is_for_refund_without_paths() => {
 				invoice.verify_using_metadata(expanded_key, secp_ctx)
 			},
-			OffersContext::OutboundPayment { payment_id, nonce } => {
-				invoice
-					.verify_using_payer_data(*payment_id, *nonce, expanded_key, secp_ctx)
-					.then(|| *payment_id)
-					.ok_or(())
+			Some(&OffersContext::OutboundPayment { payment_id, nonce }) => {
+				invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx)
 			},
 			_ => Err(()),
 		}
@@ -9120,7 +9117,11 @@ where
 				)?;
 				let builder: InvoiceBuilder<DerivedSigningPubkey> = builder.into();
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
-				let reply_paths = self.create_blinded_paths(OffersContext::Unknown {})
+
+				let context = OffersContext::InboundPayment {
+					payment_hash: invoice.payment_hash(),
+				};
+				let reply_paths = self.create_blinded_paths(context)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
@@ -10711,13 +10712,17 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
-	fn handle_message(&self, message: OffersMessage, context: OffersContext, responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
+	fn handle_message(
+		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
+	) -> ResponseInstruction<OffersMessage> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
 		let abandon_if_payment = |context| {
 			match context {
-				OffersContext::OutboundPayment { payment_id, .. } => self.abandon_payment(payment_id),
+				Some(OffersContext::OutboundPayment { payment_id, .. }) => {
+					self.abandon_payment(payment_id)
+				},
 				_ => {},
 			}
 		};
@@ -10730,8 +10735,8 @@ where
 				};
 
 				let nonce = match context {
-					OffersContext::Unknown {} if invoice_request.metadata().is_some() => None,
-					OffersContext::InvoiceRequest { nonce } => Some(nonce),
+					None if invoice_request.metadata().is_some() => None,
+					Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
 					_ => return ResponseInstruction::NoResponse,
 				};
 
@@ -10826,10 +10831,14 @@ where
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				let payment_id = match self.verify_bolt12_invoice(&invoice, &context) {
+				let payment_id = match self.verify_bolt12_invoice(&invoice, context.as_ref()) {
 					Ok(payment_id) => payment_id,
 					Err(()) => return ResponseInstruction::NoResponse,
 				};
+
+				let logger = WithContext::from(
+					&self.logger, None, None, Some(invoice.payment_hash()),
+				);
 
 				let result = {
 					let features = self.bolt12_invoice_features();
@@ -10844,7 +10853,7 @@ where
 					} else {
 						self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id)
 							.map_err(|e| {
-								log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+								log_trace!(logger, "Failed paying invoice: {:?}", e);
 								InvoiceError::from_string(format!("{:?}", e))
 							})
 					}
@@ -10860,7 +10869,7 @@ where
 						None => {
 							abandon_if_payment(context);
 							log_trace!(
-								self.logger,
+								logger,
 								"An error response was generated, but there is no reply_path specified \
 								for sending the response. Error: {}",
 								err
@@ -10882,8 +10891,14 @@ where
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
+				let payment_hash = match context {
+					Some(OffersContext::InboundPayment { payment_hash }) => Some(payment_hash),
+					_ => None,
+				};
+				let logger = WithContext::from(&self.logger, None, None, payment_hash);
+				log_trace!(logger, "Received invoice_error: {}", invoice_error);
+
 				abandon_if_payment(context);
-				log_trace!(self.logger, "Received invoice_error: {}", invoice_error);
 				ResponseInstruction::NoResponse
 			},
 		}

@@ -122,7 +122,8 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
+pub(super) const IV_BYTES_WITH_METADATA: &[u8; IV_LEN] = b"LDK Refund ~~~~~";
+pub(super) const IV_BYTES_WITHOUT_METADATA: &[u8; IV_LEN] = b"LDK Refund v2~~~";
 
 /// Builds a [`Refund`] for the "offer for money" flow.
 ///
@@ -210,7 +211,7 @@ macro_rules! refund_builder_methods { (
 		}
 
 		let payment_id = Some(payment_id);
-		let derivation_material = MetadataMaterial::new(nonce, expanded_key, IV_BYTES, payment_id);
+		let derivation_material = MetadataMaterial::new(nonce, expanded_key, payment_id);
 		let metadata = Metadata::DerivedSigningPubkey(derivation_material);
 		Ok(Self {
 			refund: RefundContents {
@@ -306,9 +307,12 @@ macro_rules! refund_builder_methods { (
 		if $self.refund.payer.0.has_derivation_material() {
 			let mut metadata = core::mem::take(&mut $self.refund.payer.0);
 
-			if $self.refund.paths.is_none() {
+			let iv_bytes = if $self.refund.paths.is_none() {
 				metadata = metadata.without_keys();
-			}
+				IV_BYTES_WITH_METADATA
+			} else {
+				IV_BYTES_WITHOUT_METADATA
+			};
 
 			let mut tlv_stream = $self.refund.as_tlv_stream();
 			tlv_stream.0.metadata = None;
@@ -316,7 +320,8 @@ macro_rules! refund_builder_methods { (
 				tlv_stream.2.payer_id = None;
 			}
 
-			let (derived_metadata, keys) = metadata.derive_from(tlv_stream, $self.secp_ctx);
+			let (derived_metadata, keys) =
+				metadata.derive_from(iv_bytes, tlv_stream, $self.secp_ctx);
 			metadata = derived_metadata;
 			if let Some(keys) = keys {
 				$self.refund.payer_id = keys.public_key();
@@ -1049,7 +1054,9 @@ mod tests {
 			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
 			Err(()) => panic!("verification failed"),
 		}
-		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 
 		let mut tlv_stream = refund.as_tlv_stream();
 		tlv_stream.2.amount = Some(2000);
@@ -1111,7 +1118,9 @@ mod tests {
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
-		assert!(invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_ok()
+		);
 
 		// Fails verification with altered fields
 		let mut tlv_stream = refund.as_tlv_stream();
@@ -1125,7 +1134,9 @@ mod tests {
 			.unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
-		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 
 		// Fails verification with altered payer_id
 		let mut tlv_stream = refund.as_tlv_stream();
@@ -1140,7 +1151,9 @@ mod tests {
 			.unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
-		assert!(!invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx));
+		assert!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx).is_err()
+		);
 	}
 
 	#[test]

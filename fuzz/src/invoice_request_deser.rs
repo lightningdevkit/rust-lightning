@@ -10,15 +10,22 @@
 use crate::utils::test_logger;
 use bitcoin::secp256k1::{self, Keypair, Parity, PublicKey, Secp256k1, SecretKey};
 use core::convert::TryFrom;
-use lightning::blinded_path::message::{ForwardNode, MessageContext, OffersContext};
+use lightning::blinded_path::payment::{
+	Bolt12OfferContext, ForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay,
+	ReceiveTlvs,
+};
 use lightning::blinded_path::BlindedPath;
+use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
 use lightning::ln::features::BlindedHopFeatures;
+use lightning::ln::types::PaymentSecret;
 use lightning::ln::PaymentHash;
-use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
-use lightning::offers::invoice_request::InvoiceRequest;
+use lightning::offers::invoice::UnsignedBolt12Invoice;
+use lightning::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
+use lightning::offers::offer::OfferId;
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::sign::EntropySource;
 use lightning::util::ser::Writeable;
+use lightning::util::string::UntrustedString;
 
 #[inline]
 pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
@@ -76,57 +83,54 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	invoice_request: &InvoiceRequest, secp_ctx: &Secp256k1<T>,
 ) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 	let entropy_source = Randomness {};
-	let intermediate_nodes = [
-		[
-			ForwardNode { node_id: pubkey(43), short_channel_id: None },
-			ForwardNode { node_id: pubkey(44), short_channel_id: None },
-		],
-		[
-			ForwardNode { node_id: pubkey(45), short_channel_id: None },
-			ForwardNode { node_id: pubkey(46), short_channel_id: None },
-		],
-	];
-	let paths = vec![
-		BlindedPath::new_for_message(
-			&intermediate_nodes[0],
-			pubkey(42),
-			MessageContext::Offers(OffersContext::Unknown {}),
-			&entropy_source,
-			secp_ctx,
-		)
-		.unwrap(),
-		BlindedPath::new_for_message(
-			&intermediate_nodes[1],
-			pubkey(42),
-			MessageContext::Offers(OffersContext::Unknown {}),
-			&entropy_source,
-			secp_ctx,
-		)
-		.unwrap(),
-	];
-
-	let payinfo = vec![
-		BlindedPayInfo {
-			fee_base_msat: 1,
-			fee_proportional_millionths: 1_000,
-			cltv_expiry_delta: 42,
-			htlc_minimum_msat: 100,
-			htlc_maximum_msat: 1_000_000_000_000,
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: OfferId([42; 32]),
+		invoice_request: InvoiceRequestFields {
+			payer_id: invoice_request.payer_id(),
+			quantity: invoice_request.quantity(),
+			payer_note_truncated: invoice_request
+				.payer_note()
+				.map(|s| UntrustedString(s.to_string())),
+		},
+	});
+	let payee_tlvs = ReceiveTlvs {
+		payment_secret: PaymentSecret([42; 32]),
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: 1_000_000,
+			htlc_minimum_msat: 1,
+		},
+		payment_context,
+	};
+	let intermediate_nodes = [ForwardNode {
+		tlvs: ForwardTlvs {
+			short_channel_id: 43,
+			payment_relay: PaymentRelay {
+				cltv_expiry_delta: 40,
+				fee_proportional_millionths: 1_000,
+				fee_base_msat: 1,
+			},
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: payee_tlvs.payment_constraints.max_cltv_expiry + 40,
+				htlc_minimum_msat: 100,
+			},
 			features: BlindedHopFeatures::empty(),
 		},
-		BlindedPayInfo {
-			fee_base_msat: 1,
-			fee_proportional_millionths: 1_000,
-			cltv_expiry_delta: 42,
-			htlc_minimum_msat: 100,
-			htlc_maximum_msat: 1_000_000_000_000,
-			features: BlindedHopFeatures::empty(),
-		},
-	];
+		node_id: pubkey(43),
+		htlc_maximum_msat: 1_000_000_000_000,
+	}];
+	let payment_path = BlindedPath::new_for_payment(
+		&intermediate_nodes,
+		pubkey(42),
+		payee_tlvs,
+		u64::MAX,
+		MIN_FINAL_CLTV_EXPIRY_DELTA,
+		&entropy_source,
+		secp_ctx,
+	)
+	.unwrap();
 
-	let payment_paths = payinfo.into_iter().zip(paths.into_iter()).collect();
 	let payment_hash = PaymentHash([42; 32]);
-	invoice_request.respond_with(payment_paths, payment_hash)?.build()
+	invoice_request.respond_with(vec![payment_path], payment_hash)?.build()
 }
 
 pub fn invoice_request_deser_test<Out: test_logger::Output>(data: &[u8], out: Out) {

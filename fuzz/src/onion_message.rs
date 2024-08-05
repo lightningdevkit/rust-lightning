@@ -106,7 +106,8 @@ struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
 	fn handle_message(
-		&self, _message: OffersMessage, _context: OffersContext, _responder: Option<Responder>,
+		&self, _message: OffersMessage, _context: Option<OffersContext>,
+		_responder: Option<Responder>,
 	) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
