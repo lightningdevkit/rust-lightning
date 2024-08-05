@@ -94,7 +94,7 @@ use crate::offers::merkle::{TaggedHash, TlvRecord, TlvStream};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
-use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{CursorReadable, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
@@ -400,10 +400,10 @@ macro_rules! offer_builder_methods { (
 				};
 
 				let mut tlv_stream = $self.offer.as_tlv_stream();
-				debug_assert_eq!(tlv_stream.metadata, None);
-				tlv_stream.metadata = None;
+				debug_assert_eq!(tlv_stream.0.metadata, None);
+				tlv_stream.0.metadata = None;
 				if metadata.derives_recipient_keys() {
-					tlv_stream.issuer_id = None;
+					tlv_stream.0.issuer_id = None;
 				}
 
 				// Either replace the signing pubkey with the derived pubkey or include the metadata
@@ -691,6 +691,7 @@ impl Offer {
 		bytes: &'a [u8]
 	) -> impl core::iter::Iterator<Item = TlvRecord<'a>> {
 		TlvStream::new(bytes).range(OFFER_TYPES)
+			.chain(TlvStream::new(bytes).range(EXPERIMENTAL_OFFER_TYPES))
 	}
 
 	#[cfg(async_payments)]
@@ -795,7 +796,7 @@ impl Offer {
 
 #[cfg(test)]
 impl Offer {
-	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> FullOfferTlvStreamRef {
 		self.contents.as_tlv_stream()
 	}
 }
@@ -982,7 +983,7 @@ impl OfferContents {
 		}
 	}
 
-	pub(super) fn as_tlv_stream(&self) -> OfferTlvStreamRef {
+	pub(super) fn as_tlv_stream(&self) -> FullOfferTlvStreamRef {
 		let (currency, amount) = match &self.amount {
 			None => (None, None),
 			Some(Amount::Bitcoin { amount_msats }) => (None, Some(*amount_msats)),
@@ -995,7 +996,7 @@ impl OfferContents {
 			if self.features == OfferFeatures::empty() { None } else { Some(&self.features) }
 		};
 
-		OfferTlvStreamRef {
+		let offer = OfferTlvStreamRef {
 			chains: self.chains.as_ref(),
 			metadata: self.metadata(),
 			currency,
@@ -1007,7 +1008,11 @@ impl OfferContents {
 			issuer: self.issuer.as_ref(),
 			quantity_max: self.supported_quantity.to_tlv_record(),
 			issuer_id: self.issuer_signing_pubkey.as_ref(),
-		}
+		};
+
+		let experimental_offer = ExperimentalOfferTlvStreamRef {};
+
+		(offer, experimental_offer)
 	}
 }
 
@@ -1102,6 +1107,22 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef<'a>, OFFER_TYPES, {
 /// Valid type range for experimental offer TLV records.
 pub(super) const EXPERIMENTAL_OFFER_TYPES: core::ops::Range<u64> = 1_000_000_000..2_000_000_000;
 
+tlv_stream!(ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, {
+});
+
+type FullOfferTlvStream = (OfferTlvStream, ExperimentalOfferTlvStream);
+
+type FullOfferTlvStreamRef<'a> = (OfferTlvStreamRef<'a>, ExperimentalOfferTlvStreamRef);
+
+impl CursorReadable for FullOfferTlvStream {
+	fn read<R: AsRef<[u8]>>(r: &mut io::Cursor<R>) -> Result<Self, DecodeError> {
+		let offer = CursorReadable::read(r)?;
+		let experimental_offer = CursorReadable::read(r)?;
+
+		Ok((offer, experimental_offer))
+	}
+}
+
 impl Bech32Encode for Offer {
 	const BECH32_HRP: &'static str = "lno";
 }
@@ -1118,7 +1139,7 @@ impl TryFrom<Vec<u8>> for Offer {
 	type Error = Bolt12ParseError;
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-		let offer = ParsedMessage::<OfferTlvStream>::try_from(bytes)?;
+		let offer = ParsedMessage::<FullOfferTlvStream>::try_from(bytes)?;
 		let ParsedMessage { bytes, tlv_stream } = offer;
 		let contents = OfferContents::try_from(tlv_stream)?;
 		let id = OfferId::from_valid_offer_tlv_stream(&bytes);
@@ -1127,14 +1148,17 @@ impl TryFrom<Vec<u8>> for Offer {
 	}
 }
 
-impl TryFrom<OfferTlvStream> for OfferContents {
+impl TryFrom<FullOfferTlvStream> for OfferContents {
 	type Error = Bolt12SemanticError;
 
-	fn try_from(tlv_stream: OfferTlvStream) -> Result<Self, Self::Error> {
-		let OfferTlvStream {
-			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
-			issuer, quantity_max, issuer_id,
-		} = tlv_stream;
+	fn try_from(tlv_stream: FullOfferTlvStream) -> Result<Self, Self::Error> {
+		let (
+			OfferTlvStream {
+				chains, metadata, currency, amount, description, features, absolute_expiry, paths,
+				issuer, quantity_max, issuer_id,
+			},
+			ExperimentalOfferTlvStream {},
+		) = tlv_stream;
 
 		let metadata = metadata.map(|metadata| Metadata::Bytes(metadata));
 
@@ -1184,7 +1208,7 @@ impl core::fmt::Display for Offer {
 
 #[cfg(test)]
 mod tests {
-	use super::{Amount, OFFER_TYPES, Offer, OfferTlvStreamRef, Quantity};
+	use super::{Amount, ExperimentalOfferTlvStreamRef, OFFER_TYPES, Offer, OfferTlvStreamRef, Quantity};
 	#[cfg(not(c_bindings))]
 	use {
 		super::OfferBuilder,
@@ -1236,19 +1260,22 @@ mod tests {
 
 		assert_eq!(
 			offer.as_tlv_stream(),
-			OfferTlvStreamRef {
-				chains: None,
-				metadata: None,
-				currency: None,
-				amount: None,
-				description: None,
-				features: None,
-				absolute_expiry: None,
-				paths: None,
-				issuer: None,
-				quantity_max: None,
-				issuer_id: Some(&pubkey(42)),
-			},
+			(
+				OfferTlvStreamRef {
+					chains: None,
+					metadata: None,
+					currency: None,
+					amount: None,
+					description: None,
+					features: None,
+					absolute_expiry: None,
+					paths: None,
+					issuer: None,
+					quantity_max: None,
+					issuer_id: Some(&pubkey(42)),
+				},
+				ExperimentalOfferTlvStreamRef {},
+			),
 		);
 
 		if let Err(e) = Offer::try_from(buffer) {
@@ -1267,7 +1294,7 @@ mod tests {
 			.unwrap();
 		assert!(offer.supports_chain(mainnet));
 		assert_eq!(offer.chains(), vec![mainnet]);
-		assert_eq!(offer.as_tlv_stream().chains, None);
+		assert_eq!(offer.as_tlv_stream().0.chains, None);
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.chain(Network::Testnet)
@@ -1275,7 +1302,7 @@ mod tests {
 			.unwrap();
 		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![testnet]);
-		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![testnet]));
+		assert_eq!(offer.as_tlv_stream().0.chains, Some(&vec![testnet]));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.chain(Network::Testnet)
@@ -1284,7 +1311,7 @@ mod tests {
 			.unwrap();
 		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![testnet]);
-		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![testnet]));
+		assert_eq!(offer.as_tlv_stream().0.chains, Some(&vec![testnet]));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.chain(Network::Bitcoin)
@@ -1294,7 +1321,7 @@ mod tests {
 		assert!(offer.supports_chain(mainnet));
 		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![mainnet, testnet]);
-		assert_eq!(offer.as_tlv_stream().chains, Some(&vec![mainnet, testnet]));
+		assert_eq!(offer.as_tlv_stream().0.chains, Some(&vec![mainnet, testnet]));
 	}
 
 	#[test]
@@ -1304,7 +1331,7 @@ mod tests {
 			.build()
 			.unwrap();
 		assert_eq!(offer.metadata(), Some(&vec![42; 32]));
-		assert_eq!(offer.as_tlv_stream().metadata, Some(&vec![42; 32]));
+		assert_eq!(offer.as_tlv_stream().0.metadata, Some(&vec![42; 32]));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.metadata(vec![42; 32]).unwrap()
@@ -1312,7 +1339,7 @@ mod tests {
 			.build()
 			.unwrap();
 		assert_eq!(offer.metadata(), Some(&vec![43; 32]));
-		assert_eq!(offer.as_tlv_stream().metadata, Some(&vec![43; 32]));
+		assert_eq!(offer.as_tlv_stream().0.metadata, Some(&vec![43; 32]));
 	}
 
 	#[test]
@@ -1349,7 +1376,7 @@ mod tests {
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
-		tlv_stream.amount = Some(100);
+		tlv_stream.0.amount = Some(100);
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1362,8 +1389,8 @@ mod tests {
 
 		// Fails verification with altered metadata
 		let mut tlv_stream = offer.as_tlv_stream();
-		let metadata = tlv_stream.metadata.unwrap().iter().copied().rev().collect();
-		tlv_stream.metadata = Some(&metadata);
+		let metadata = tlv_stream.0.metadata.unwrap().iter().copied().rev().collect();
+		tlv_stream.0.metadata = Some(&metadata);
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1416,7 +1443,7 @@ mod tests {
 
 		// Fails verification with altered offer field
 		let mut tlv_stream = offer.as_tlv_stream();
-		tlv_stream.amount = Some(100);
+		tlv_stream.0.amount = Some(100);
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1432,7 +1459,7 @@ mod tests {
 		// Fails verification with altered signing pubkey
 		let mut tlv_stream = offer.as_tlv_stream();
 		let issuer_id = pubkey(1);
-		tlv_stream.issuer_id = Some(&issuer_id);
+		tlv_stream.0.issuer_id = Some(&issuer_id);
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1457,8 +1484,8 @@ mod tests {
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
 		assert_eq!(offer.amount(), Some(bitcoin_amount));
-		assert_eq!(tlv_stream.amount, Some(1000));
-		assert_eq!(tlv_stream.currency, None);
+		assert_eq!(tlv_stream.0.amount, Some(1000));
+		assert_eq!(tlv_stream.0.currency, None);
 
 		#[cfg(not(c_bindings))]
 		let builder = OfferBuilder::new(pubkey(42))
@@ -1469,8 +1496,8 @@ mod tests {
 		builder.amount(currency_amount.clone());
 		let tlv_stream = builder.offer.as_tlv_stream();
 		assert_eq!(builder.offer.amount, Some(currency_amount.clone()));
-		assert_eq!(tlv_stream.amount, Some(10));
-		assert_eq!(tlv_stream.currency, Some(b"USD"));
+		assert_eq!(tlv_stream.0.amount, Some(10));
+		assert_eq!(tlv_stream.0.currency, Some(b"USD"));
 		match builder.build() {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedCurrency),
@@ -1482,8 +1509,8 @@ mod tests {
 			.build()
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
-		assert_eq!(tlv_stream.amount, Some(1000));
-		assert_eq!(tlv_stream.currency, None);
+		assert_eq!(tlv_stream.0.amount, Some(1000));
+		assert_eq!(tlv_stream.0.currency, None);
 
 		let invalid_amount = Amount::Bitcoin { amount_msats: MAX_VALUE_MSAT + 1 };
 		match OfferBuilder::new(pubkey(42)).amount(invalid_amount).build() {
@@ -1499,7 +1526,7 @@ mod tests {
 			.build()
 			.unwrap();
 		assert_eq!(offer.description(), Some(PrintableString("foo")));
-		assert_eq!(offer.as_tlv_stream().description, Some(&String::from("foo")));
+		assert_eq!(offer.as_tlv_stream().0.description, Some(&String::from("foo")));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.description("foo".into())
@@ -1507,14 +1534,14 @@ mod tests {
 			.build()
 			.unwrap();
 		assert_eq!(offer.description(), Some(PrintableString("bar")));
-		assert_eq!(offer.as_tlv_stream().description, Some(&String::from("bar")));
+		assert_eq!(offer.as_tlv_stream().0.description, Some(&String::from("bar")));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.amount_msats(1000)
 			.build()
 			.unwrap();
 		assert_eq!(offer.description(), Some(PrintableString("")));
-		assert_eq!(offer.as_tlv_stream().description, Some(&String::from("")));
+		assert_eq!(offer.as_tlv_stream().0.description, Some(&String::from("")));
 	}
 
 	#[test]
@@ -1524,7 +1551,7 @@ mod tests {
 			.build()
 			.unwrap();
 		assert_eq!(offer.offer_features(), &OfferFeatures::unknown());
-		assert_eq!(offer.as_tlv_stream().features, Some(&OfferFeatures::unknown()));
+		assert_eq!(offer.as_tlv_stream().0.features, Some(&OfferFeatures::unknown()));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.features_unchecked(OfferFeatures::unknown())
@@ -1532,7 +1559,7 @@ mod tests {
 			.build()
 			.unwrap();
 		assert_eq!(offer.offer_features(), &OfferFeatures::empty());
-		assert_eq!(offer.as_tlv_stream().features, None);
+		assert_eq!(offer.as_tlv_stream().0.features, None);
 	}
 
 	#[test]
@@ -1549,7 +1576,7 @@ mod tests {
 		assert!(!offer.is_expired());
 		assert!(!offer.is_expired_no_std(now));
 		assert_eq!(offer.absolute_expiry(), Some(future_expiry));
-		assert_eq!(offer.as_tlv_stream().absolute_expiry, Some(future_expiry.as_secs()));
+		assert_eq!(offer.as_tlv_stream().0.absolute_expiry, Some(future_expiry.as_secs()));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.absolute_expiry(future_expiry)
@@ -1560,7 +1587,7 @@ mod tests {
 		assert!(offer.is_expired());
 		assert!(offer.is_expired_no_std(now));
 		assert_eq!(offer.absolute_expiry(), Some(past_expiry));
-		assert_eq!(offer.as_tlv_stream().absolute_expiry, Some(past_expiry.as_secs()));
+		assert_eq!(offer.as_tlv_stream().0.absolute_expiry, Some(past_expiry.as_secs()));
 	}
 
 	#[test]
@@ -1591,8 +1618,8 @@ mod tests {
 		assert_eq!(offer.paths(), paths.as_slice());
 		assert_eq!(offer.issuer_signing_pubkey(), Some(pubkey(42)));
 		assert_ne!(pubkey(42), pubkey(44));
-		assert_eq!(tlv_stream.paths, Some(&paths));
-		assert_eq!(tlv_stream.issuer_id, Some(&pubkey(42)));
+		assert_eq!(tlv_stream.0.paths, Some(&paths));
+		assert_eq!(tlv_stream.0.issuer_id, Some(&pubkey(42)));
 	}
 
 	#[test]
@@ -1602,7 +1629,7 @@ mod tests {
 			.build()
 			.unwrap();
 		assert_eq!(offer.issuer(), Some(PrintableString("foo")));
-		assert_eq!(offer.as_tlv_stream().issuer, Some(&String::from("foo")));
+		assert_eq!(offer.as_tlv_stream().0.issuer, Some(&String::from("foo")));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.issuer("foo".into())
@@ -1610,7 +1637,7 @@ mod tests {
 			.build()
 			.unwrap();
 		assert_eq!(offer.issuer(), Some(PrintableString("bar")));
-		assert_eq!(offer.as_tlv_stream().issuer, Some(&String::from("bar")));
+		assert_eq!(offer.as_tlv_stream().0.issuer, Some(&String::from("bar")));
 	}
 
 	#[test]
@@ -1625,7 +1652,7 @@ mod tests {
 		let tlv_stream = offer.as_tlv_stream();
 		assert!(!offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::One);
-		assert_eq!(tlv_stream.quantity_max, None);
+		assert_eq!(tlv_stream.0.quantity_max, None);
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Unbounded)
@@ -1634,7 +1661,7 @@ mod tests {
 		let tlv_stream = offer.as_tlv_stream();
 		assert!(offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::Unbounded);
-		assert_eq!(tlv_stream.quantity_max, Some(0));
+		assert_eq!(tlv_stream.0.quantity_max, Some(0));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Bounded(ten))
@@ -1643,7 +1670,7 @@ mod tests {
 		let tlv_stream = offer.as_tlv_stream();
 		assert!(offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::Bounded(ten));
-		assert_eq!(tlv_stream.quantity_max, Some(10));
+		assert_eq!(tlv_stream.0.quantity_max, Some(10));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Bounded(one))
@@ -1652,7 +1679,7 @@ mod tests {
 		let tlv_stream = offer.as_tlv_stream();
 		assert!(offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::Bounded(one));
-		assert_eq!(tlv_stream.quantity_max, Some(1));
+		assert_eq!(tlv_stream.0.quantity_max, Some(1));
 
 		let offer = OfferBuilder::new(pubkey(42))
 			.supported_quantity(Quantity::Bounded(ten))
@@ -1662,7 +1689,7 @@ mod tests {
 		let tlv_stream = offer.as_tlv_stream();
 		assert!(!offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::One);
-		assert_eq!(tlv_stream.quantity_max, None);
+		assert_eq!(tlv_stream.0.quantity_max, None);
 	}
 
 	#[test]
@@ -1700,8 +1727,8 @@ mod tests {
 		}
 
 		let mut tlv_stream = offer.as_tlv_stream();
-		tlv_stream.amount = Some(1000);
-		tlv_stream.currency = Some(b"USD");
+		tlv_stream.0.amount = Some(1000);
+		tlv_stream.0.currency = Some(b"USD");
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1711,8 +1738,8 @@ mod tests {
 		}
 
 		let mut tlv_stream = offer.as_tlv_stream();
-		tlv_stream.amount = None;
-		tlv_stream.currency = Some(b"USD");
+		tlv_stream.0.amount = None;
+		tlv_stream.0.currency = Some(b"USD");
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1723,8 +1750,8 @@ mod tests {
 		}
 
 		let mut tlv_stream = offer.as_tlv_stream();
-		tlv_stream.amount = Some(MAX_VALUE_MSAT + 1);
-		tlv_stream.currency = None;
+		tlv_stream.0.amount = Some(MAX_VALUE_MSAT + 1);
+		tlv_stream.0.currency = None;
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1751,7 +1778,7 @@ mod tests {
 		}
 
 		let mut tlv_stream = offer.as_tlv_stream();
-		tlv_stream.description = None;
+		tlv_stream.0.description = None;
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1857,7 +1884,7 @@ mod tests {
 		}
 
 		let mut tlv_stream = offer.as_tlv_stream();
-		tlv_stream.issuer_id = None;
+		tlv_stream.0.issuer_id = None;
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
