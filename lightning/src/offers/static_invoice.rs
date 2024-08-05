@@ -9,8 +9,8 @@
 
 //! Data structures and encoding for static BOLT 12 invoices.
 
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::BlindedPaymentPath;
-use crate::blinded_path::BlindedPath;
 use crate::io;
 use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
@@ -77,7 +77,7 @@ struct InvoiceContents {
 	fallbacks: Option<Vec<FallbackAddress>>,
 	features: Bolt12InvoiceFeatures,
 	signing_pubkey: PublicKey,
-	message_paths: Vec<BlindedPath>,
+	message_paths: Vec<BlindedMessagePath>,
 }
 
 /// Builds a [`StaticInvoice`] from an [`Offer`].
@@ -98,7 +98,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 	/// after `created_at`.
 	pub fn for_offer_using_derived_keys<T: secp256k1::Signing>(
 		offer: &'a Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
-		message_paths: Vec<BlindedPath>, created_at: Duration, expanded_key: &ExpandedKey,
+		message_paths: Vec<BlindedMessagePath>, created_at: Duration, expanded_key: &ExpandedKey,
 		nonce: Nonce, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, Bolt12SemanticError> {
 		if offer.chains().len() > 1 {
@@ -224,13 +224,13 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// publicly reachable nodes. Taken from [`Offer::paths`].
 	///
 	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
-	pub fn offer_message_paths(&$self) -> &[BlindedPath] {
+	pub fn offer_message_paths(&$self) -> &[BlindedMessagePath] {
 		$contents.offer_message_paths()
 	}
 
 	/// Paths to the recipient for indicating that a held HTLC is available to claim when they next
 	/// come online.
-	pub fn message_paths(&$self) -> &[BlindedPath] {
+	pub fn message_paths(&$self) -> &[BlindedMessagePath] {
 		$contents.message_paths()
 	}
 
@@ -327,7 +327,7 @@ impl InvoiceContents {
 
 	fn new(
 		offer: &Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
-		message_paths: Vec<BlindedPath>, created_at: Duration, signing_pubkey: PublicKey,
+		message_paths: Vec<BlindedMessagePath>, created_at: Duration, signing_pubkey: PublicKey,
 	) -> Self {
 		Self {
 			offer: offer.contents.clone(),
@@ -395,11 +395,11 @@ impl InvoiceContents {
 		self.offer.issuer()
 	}
 
-	fn offer_message_paths(&self) -> &[BlindedPath] {
+	fn offer_message_paths(&self) -> &[BlindedMessagePath] {
 		self.offer.paths()
 	}
 
-	fn message_paths(&self) -> &[BlindedPath] {
+	fn message_paths(&self) -> &[BlindedMessagePath] {
 		&self.message_paths[..]
 	}
 
@@ -560,6 +560,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 
 #[cfg(test)]
 mod tests {
+	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
 	use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -633,15 +634,15 @@ mod tests {
 		.unwrap()
 	}
 
-	fn blinded_path() -> BlindedPath {
-		BlindedPath {
+	fn blinded_path() -> BlindedMessagePath {
+		BlindedMessagePath(BlindedPath {
 			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
 			],
-		}
+		})
 	}
 
 	#[test]

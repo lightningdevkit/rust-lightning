@@ -110,7 +110,7 @@ use bitcoin::address::{Address, Payload};
 use core::time::Duration;
 use core::hash::{Hash, Hasher};
 use crate::io;
-use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
@@ -699,7 +699,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// From [`Offer::paths`] or [`Refund::paths`].
 	///
 	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
-	pub fn message_paths(&$self) -> &[BlindedPath] {
+	pub fn message_paths(&$self) -> &[BlindedMessagePath] {
 		$contents.message_paths()
 	}
 
@@ -798,7 +798,7 @@ impl Bolt12Invoice {
 	}
 
 	/// Verifies that the invoice was for a request or refund created using the given key by
-	/// checking a payment id and nonce included with the [`BlindedPath`] for which the invoice was
+	/// checking a payment id and nonce included with the [`BlindedMessagePath`] for which the invoice was
 	/// sent through.
 	pub fn verify_using_payer_data<T: secp256k1::Signing>(
 		&self, payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
@@ -935,7 +935,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn message_paths(&self) -> &[BlindedPath] {
+	fn message_paths(&self) -> &[BlindedMessagePath] {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				invoice_request.inner.offer.paths()
@@ -1203,7 +1203,7 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
 	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
 	(176, node_id: PublicKey),
 	// Only present in `StaticInvoice`s.
-	(238, message_paths: (Vec<BlindedPath>, WithoutLength)),
+	(238, message_paths: (Vec<BlindedMessagePath>, WithoutLength)),
 });
 
 pub(super) type BlindedPathIter<'a> = core::iter::Map<
@@ -1415,7 +1415,7 @@ pub(super) fn check_invoice_signing_pubkey(
 		(None, Some(paths)) => {
 			if !paths
 				.iter()
-				.filter_map(|path| path.blinded_hops.last())
+				.filter_map(|path| path.0.blinded_hops.last())
 				.any(|last_hop| invoice_signing_pubkey == &last_hop.blinded_node_id)
 			{
 				return Err(Bolt12SemanticError::InvalidSigningPubkey);
@@ -1442,6 +1442,7 @@ mod tests {
 	use core::time::Duration;
 
 	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::ln::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -1790,14 +1791,14 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let blinded_path = BlindedPath {
+		let blinded_path = BlindedMessagePath(BlindedPath {
 			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
 			],
-		};
+		});
 
 		#[cfg(c_bindings)]
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
@@ -1866,14 +1867,14 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
 
-		let blinded_path = BlindedPath {
+		let blinded_path = BlindedMessagePath(BlindedPath {
 			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
 			],
-		};
+		});
 
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.path(blinded_path)
@@ -2370,22 +2371,22 @@ mod tests {
 	#[test]
 	fn parses_invoice_with_node_id_from_blinded_path() {
 		let paths = vec![
-			BlindedPath {
+			BlindedMessagePath(BlindedPath {
 				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
 				],
-			},
-			BlindedPath {
+			}),
+			BlindedMessagePath(BlindedPath {
 				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
 				],
-			},
+			}),
 		];
 
 		let blinded_node_id_sign = |message: &UnsignedBolt12Invoice| {
@@ -2523,14 +2524,14 @@ mod tests {
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
-		let blinded_path = BlindedPath {
+		let blinded_path = BlindedMessagePath(BlindedPath {
 			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
 			],
-		};
+		});
 
 		let mut tlv_stream = invoice.as_tlv_stream();
 		let message_paths = vec![blinded_path];

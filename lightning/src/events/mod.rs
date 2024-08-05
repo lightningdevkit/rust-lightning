@@ -811,9 +811,9 @@ pub enum Event {
 		payment_id: PaymentId,
 		/// The invoice to pay.
 		invoice: Bolt12Invoice,
-		/// The context of the [`BlindedPath`] used to send the invoice.
+		/// The context of the [`BlindedMessagePath`] used to send the invoice.
 		///
-		/// [`BlindedPath`]: crate::blinded_path::BlindedPath
+		/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 		context: Option<OffersContext>,
 		/// A responder for replying with an [`InvoiceError`] if needed.
 		///

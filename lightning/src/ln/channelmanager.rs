@@ -32,8 +32,8 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::blinded_path::message::{MessageContext, OffersContext};
-use crate::blinded_path::{BlindedPath, NodeIdLookUp};
-use crate::blinded_path::message::ForwardNode;
+use crate::blinded_path::NodeIdLookUp;
+use crate::blinded_path::message::{BlindedMessagePath, ForwardNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
@@ -2472,11 +2472,11 @@ const MAX_NO_CHANNEL_PEERS: usize = 250;
 /// short-lived, while anything with a greater expiration is considered long-lived.
 ///
 /// Using [`ChannelManager::create_offer_builder`] or [`ChannelManager::create_refund_builder`],
-/// will included a [`BlindedPath`] created using:
+/// will included a [`BlindedMessagePath`] created using:
 /// - [`MessageRouter::create_compact_blinded_paths`] when short-lived, and
 /// - [`MessageRouter::create_blinded_paths`] when long-lived.
 ///
-/// Using compact [`BlindedPath`]s may provide better privacy as the [`MessageRouter`] could select
+/// Using compact [`BlindedMessagePath`]s may provide better privacy as the [`MessageRouter`] could select
 /// more hops. However, since they use short channel ids instead of pubkeys, they are more likely to
 /// become invalid over time as channels are closed. Thus, they are only suitable for short-term use.
 pub const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24);
@@ -8789,7 +8789,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedPath`] for the offer based on the given
+	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the offer based on the given
 	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
 	/// privacy implications as well as those of the parameterized [`Router`], which implements
 	/// [`MessageRouter`].
@@ -8856,7 +8856,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// # Privacy
 	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedPath`] for the refund based on the given
+	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the refund based on the given
 	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
 	/// privacy implications as well as those of the parameterized [`Router`], which implements
 	/// [`MessageRouter`].
@@ -8970,7 +8970,7 @@ where
 	/// # Privacy
 	///
 	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
-	/// to construct a [`BlindedPath`] for the reply path. For further privacy implications, see the
+	/// to construct a [`BlindedMessagePath`] for the reply path. For further privacy implications, see the
 	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
 	///
 	/// # Limitations
@@ -9273,7 +9273,7 @@ where
 	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
 	fn create_blinded_paths_using_absolute_expiry(
 		&self, context: OffersContext, absolute_expiry: Option<Duration>,
-	) -> Result<Vec<BlindedPath>, ()> {
+	) -> Result<Vec<BlindedMessagePath>, ()> {
 		let now = self.duration_since_epoch();
 		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
 
@@ -9301,7 +9301,7 @@ where
 	/// [`MessageRouter::create_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors.
-	fn create_blinded_paths(&self, context: OffersContext) -> Result<Vec<BlindedPath>, ()> {
+	fn create_blinded_paths(&self, context: OffersContext) -> Result<Vec<BlindedMessagePath>, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
@@ -9322,7 +9322,7 @@ where
 	/// [`MessageRouter::create_compact_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors.
-	fn create_compact_blinded_paths(&self, context: OffersContext) -> Result<Vec<BlindedPath>, ()> {
+	fn create_compact_blinded_paths(&self, context: OffersContext) -> Result<Vec<BlindedMessagePath>, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
