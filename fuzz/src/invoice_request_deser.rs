@@ -11,10 +11,9 @@ use crate::utils::test_logger;
 use bitcoin::secp256k1::{self, Keypair, Parity, PublicKey, Secp256k1, SecretKey};
 use core::convert::TryFrom;
 use lightning::blinded_path::payment::{
-	Bolt12OfferContext, ForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay,
-	ReceiveTlvs,
+	BlindedPaymentPath, Bolt12OfferContext, ForwardNode, ForwardTlvs, PaymentConstraints,
+	PaymentContext, PaymentRelay, ReceiveTlvs,
 };
-use lightning::blinded_path::BlindedPath;
 use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
 use lightning::ln::features::BlindedHopFeatures;
 use lightning::ln::types::PaymentSecret;
@@ -118,7 +117,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 		node_id: pubkey(43),
 		htlc_maximum_msat: 1_000_000_000_000,
 	}];
-	let payment_path = BlindedPath::new_for_payment(
+	let payment_path = BlindedPaymentPath::new(
 		&intermediate_nodes,
 		pubkey(42),
 		payee_tlvs,

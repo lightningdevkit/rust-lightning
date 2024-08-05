@@ -8,8 +8,7 @@
 // licenses.
 
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-use crate::blinded_path::BlindedPath;
-use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentPath, ForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, ReceiveTlvs};
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentFailureReason};
 use crate::ln::types::PaymentSecret;
 use crate::ln::channelmanager;
@@ -31,7 +30,7 @@ fn blinded_payment_path(
 	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
 	node_ids: Vec<PublicKey>, channel_upds: &[&msgs::UnsignedChannelUpdate],
 	keys_manager: &test_utils::TestKeysInterface
-) -> (BlindedPayInfo, BlindedPath) {
+) -> (BlindedPayInfo, BlindedPaymentPath) {
 	let mut intermediate_nodes = Vec::new();
 	let mut intro_node_min_htlc_opt = Some(intro_node_min_htlc);
 	let mut intro_node_max_htlc_opt = Some(intro_node_max_htlc);
@@ -66,7 +65,7 @@ fn blinded_payment_path(
 		payment_context: PaymentContext::unknown(),
 	};
 	let mut secp_ctx = Secp256k1::new();
-	BlindedPath::new_for_payment(
+	BlindedPaymentPath::new(
 		&intermediate_nodes[..], *node_ids.last().unwrap(), payee_tlvs,
 		intro_node_max_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_maximum_msat),
 		TEST_FINAL_CLTV as u16, keys_manager, &secp_ctx
@@ -112,8 +111,8 @@ fn do_one_hop_blinded_path(success: bool) {
 		payment_context: PaymentContext::unknown(),
 	};
 	let mut secp_ctx = Secp256k1::new();
-	let blinded_path = BlindedPath::one_hop_for_payment(
-		nodes[1].node.get_our_node_id(), payee_tlvs, TEST_FINAL_CLTV as u16,
+	let blinded_path = BlindedPaymentPath::new(
+		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -155,8 +154,8 @@ fn mpp_to_one_hop_blinded_path() {
 		},
 		payment_context: PaymentContext::unknown(),
 	};
-	let blinded_path = BlindedPath::one_hop_for_payment(
-		nodes[3].node.get_our_node_id(), payee_tlvs, TEST_FINAL_CLTV as u16,
+	let blinded_path = BlindedPaymentPath::new(
+		&[], nodes[3].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[3].keys_manager, &secp_ctx
 	).unwrap();
 
@@ -1301,8 +1300,8 @@ fn custom_tlvs_to_blinded_path() {
 		payment_context: PaymentContext::unknown(),
 	};
 	let mut secp_ctx = Secp256k1::new();
-	let blinded_path = BlindedPath::one_hop_for_payment(
-		nodes[1].node.get_our_node_id(), payee_tlvs, TEST_FINAL_CLTV as u16,
+	let blinded_path = BlindedPaymentPath::new(
+		&[], nodes[1].node.get_our_node_id(), payee_tlvs, u64::MAX, TEST_FINAL_CLTV as u16,
 		&chanmon_cfgs[1].keys_manager, &secp_ctx
 	).unwrap();
 
