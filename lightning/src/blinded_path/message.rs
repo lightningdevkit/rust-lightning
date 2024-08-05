@@ -258,11 +258,11 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
 }
 
-// Advance the blinded onion message path by one hop, so make the second hop into the new
-// introduction node.
-//
-// Will only modify `path` when returning `Ok`.
-pub(crate) fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+/// Advance the blinded onion message path by one hop, so make the second hop into the new
+/// introduction node.
+///
+/// Will only modify `path` when returning `Ok`.
+pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
 	path: &mut BlindedMessagePath, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
 ) -> Result<(), ()>
 where
