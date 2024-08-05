@@ -34,12 +34,12 @@
 //! use lightning::offers::refund::{Refund, RefundBuilder};
 //! use lightning::util::ser::{Readable, Writeable};
 //!
-//! # use lightning::blinded_path::BlindedPath;
+//! # use lightning::blinded_path::message::BlindedMessagePath;
 //! # #[cfg(feature = "std")]
 //! # use std::time::SystemTime;
 //! #
-//! # fn create_blinded_path() -> BlindedPath { unimplemented!() }
-//! # fn create_another_blinded_path() -> BlindedPath { unimplemented!() }
+//! # fn create_blinded_path() -> BlindedMessagePath { unimplemented!() }
+//! # fn create_another_blinded_path() -> BlindedMessagePath { unimplemented!() }
 //! #
 //! # #[cfg(feature = "std")]
 //! # fn build() -> Result<(), Bolt12ParseError> {
@@ -91,7 +91,7 @@ use core::str::FromStr;
 use core::time::Duration;
 use crate::sign::EntropySource;
 use crate::io;
-use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
@@ -194,7 +194,7 @@ macro_rules! refund_builder_methods { (
 	/// Also, sets the metadata when [`RefundBuilder::build`] is called such that it can be used by
 	/// [`Bolt12Invoice::verify_using_metadata`] to determine if the invoice was produced for the
 	/// refund given an [`ExpandedKey`]. However, if [`RefundBuilder::path`] is called, then the
-	/// metadata must be included in each [`BlindedPath`] instead. In this case, use
+	/// metadata must be included in each [`BlindedMessagePath`] instead. In this case, use
 	/// [`Bolt12Invoice::verify_using_payer_data`].
 	///
 	/// The `payment_id` is encrypted in the metadata and should be unique. This ensures that only
@@ -254,7 +254,7 @@ macro_rules! refund_builder_methods { (
 	///
 	/// Successive calls to this method will add another blinded path. Caller is responsible for not
 	/// adding duplicate paths.
-	pub fn path($($self_mut)* $self: $self_type, path: BlindedPath) -> $return_type {
+	pub fn path($($self_mut)* $self: $self_type, path: BlindedMessagePath) -> $return_type {
 		$self.refund.paths.get_or_insert_with(Vec::new).push(path);
 		$return_value
 	}
@@ -437,7 +437,7 @@ pub(super) struct RefundContents {
 	quantity: Option<u64>,
 	payer_id: PublicKey,
 	payer_note: Option<String>,
-	paths: Option<Vec<BlindedPath>>,
+	paths: Option<Vec<BlindedMessagePath>>,
 }
 
 impl Refund {
@@ -473,7 +473,7 @@ impl Refund {
 
 	/// Paths to the sender originating from publicly reachable nodes. Blinded paths provide sender
 	/// privacy by obfuscating its node id.
-	pub fn paths(&self) -> &[BlindedPath] {
+	pub fn paths(&self) -> &[BlindedMessagePath] {
 		self.contents.paths()
 	}
 
@@ -694,7 +694,7 @@ impl RefundContents {
 		self.issuer.as_ref().map(|issuer| PrintableString(issuer.as_str()))
 	}
 
-	pub fn paths(&self) -> &[BlindedPath] {
+	pub fn paths(&self) -> &[BlindedMessagePath] {
 		self.paths.as_ref().map(|paths| paths.as_slice()).unwrap_or(&[])
 	}
 
@@ -939,6 +939,7 @@ mod tests {
 	use core::time::Duration;
 
 	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
@@ -1097,14 +1098,14 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let blinded_path = BlindedPath {
+		let blinded_path = BlindedMessagePath(BlindedPath {
 			introduction_node: IntroductionNode::NodeId(pubkey(40)),
 			blinding_point: pubkey(41),
 			blinded_hops: vec![
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
 			],
-		};
+		});
 
 		let refund = RefundBuilder
 			::deriving_payer_id(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
@@ -1190,22 +1191,22 @@ mod tests {
 	#[test]
 	fn builds_refund_with_paths() {
 		let paths = vec![
-			BlindedPath {
+			BlindedMessagePath(BlindedPath {
 				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
 				],
-			},
-			BlindedPath {
+			}),
+			BlindedMessagePath(BlindedPath {
 				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
 				],
-			},
+			}),
 		];
 
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
@@ -1407,22 +1408,22 @@ mod tests {
 	fn parses_refund_with_optional_fields() {
 		let past_expiry = Duration::from_secs(0);
 		let paths = vec![
-			BlindedPath {
+			BlindedMessagePath(BlindedPath {
 				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
 				],
-			},
-			BlindedPath {
+			}),
+			BlindedMessagePath(BlindedPath {
 				introduction_node: IntroductionNode::NodeId(pubkey(40)),
 				blinding_point: pubkey(41),
 				blinded_hops: vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
 				],
-			},
+			}),
 		];
 
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()

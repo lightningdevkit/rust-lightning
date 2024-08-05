@@ -18,7 +18,7 @@
 //! information on its usage.
 //!
 //! [offers]: <https://github.com/lightning/bolts/pull/798>
-//! [blinded paths]: crate::blinded_path::BlindedPath
+//! [blinded paths]: crate::blinded_path::message::BlindedMessagePath
 //! [`OnionMessenger`]: self::messenger::OnionMessenger
 
 pub mod async_payments;

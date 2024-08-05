@@ -13,13 +13,11 @@ pub mod payment;
 pub mod message;
 pub(crate) mod utils;
 
-use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
-use message::MessageContext;
+use bitcoin::secp256k1::PublicKey;
 use core::ops::Deref;
 
 use crate::ln::msgs::DecodeError;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
-use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 use crate::util::scid_utils;
 
@@ -121,38 +119,6 @@ pub struct BlindedHop {
 }
 
 impl BlindedPath {
-	/// Create a one-hop blinded path for a message.
-	pub fn one_hop_for_message<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		recipient_node_id: PublicKey, context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> where ES::Target: EntropySource {
-		Self::new_for_message(&[], recipient_node_id, context, entropy_source, secp_ctx)
-	}
-
-	/// Create a blinded path for an onion message, to be forwarded along `node_pks`. The last node
-	/// pubkey in `node_pks` will be the destination node.
-	///
-	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
-	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_message<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[message::ForwardNode], recipient_node_id: PublicKey,
-		context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> where ES::Target: EntropySource {
-		let introduction_node = IntroductionNode::NodeId(
-			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id)
-		);
-		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
-		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-
-		Ok(BlindedPath {
-			introduction_node,
-			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops: message::blinded_hops(
-				secp_ctx, intermediate_nodes, recipient_node_id,
-				context, &blinding_secret,
-			).map_err(|_| ())?,
-		})
-	}
-
 	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
 	/// it is found in the network graph).
 	pub fn public_introduction_node_id<'a>(

@@ -62,7 +62,7 @@ use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
 use crate::io;
-use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
@@ -805,7 +805,7 @@ macro_rules! invoice_request_verify_method { ($self: ident, $self_type: ty) => {
 	}
 
 	/// Verifies that the request was for an offer created using the given key by checking a nonce
-	/// included with the [`BlindedPath`] for which the request was sent through.
+	/// included with the [`BlindedMessagePath`] for which the request was sent through.
 	///
 	/// Returns the verified request which contains the derived keys needed to sign a
 	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
@@ -1058,7 +1058,7 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, INVOICE_REQUEST
 	(INVOICE_REQUEST_PAYER_ID_TYPE, payer_id: PublicKey),
 	(89, payer_note: (String, WithoutLength)),
 	// Only used for Refund since the onion message of an InvoiceRequest has a reply path.
-	(90, paths: (Vec<BlindedPath>, WithoutLength)),
+	(90, paths: (Vec<BlindedMessagePath>, WithoutLength)),
 });
 
 type FullInvoiceRequestTlvStream =

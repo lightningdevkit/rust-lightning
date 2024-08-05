@@ -16,6 +16,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey, Scalar};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 
 use super::{BlindedHop, BlindedPath};
+use super::message::BlindedMessagePath;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::onion_message::messenger::Destination;
@@ -97,7 +98,7 @@ where
 			Destination::Node(pk) => {
 				build_keys!(pk, false, None);
 			},
-			Destination::BlindedPath(BlindedPath { blinded_hops, .. }) => {
+			Destination::BlindedPath(BlindedMessagePath(BlindedPath { blinded_hops, .. })) => {
 				for hop in blinded_hops {
 					build_keys_in_loop!(hop.blinded_node_id, true, Some(hop.encrypted_payload));
 				}
