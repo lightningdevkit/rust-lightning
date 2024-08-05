@@ -1538,6 +1538,10 @@ pub fn do_check_spends<F: Fn(&bitcoin::blockdata::transaction::OutPoint) -> Opti
 	let min_fee = (tx.weight().to_wu() as u64 + 3) / 4; // One sat per vbyte (ie per weight/4, rounded up)
 	// Input amount - output amount = fee, so check that out + min_fee is smaller than input
 	assert!(total_value_out + min_fee <= total_value_in);
+
+	// If we're fuzzing, we shouldn't ever get here, but transactions won't validate anyway (as
+	// we're not using valid signatures) so just skip the bitcoinconsensus step
+	#[cfg(not(fuzzing))]
 	tx.verify(get_output).unwrap();
 }
 
