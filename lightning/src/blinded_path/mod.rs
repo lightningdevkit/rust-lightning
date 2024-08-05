@@ -18,7 +18,6 @@ use message::MessageContext;
 use core::ops::Deref;
 
 use crate::ln::msgs::DecodeError;
-use crate::offers::invoice::BlindedPayInfo;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
@@ -152,52 +151,6 @@ impl BlindedPath {
 				context, &blinding_secret,
 			).map_err(|_| ())?,
 		})
-	}
-
-	/// Create a one-hop blinded path for a payment.
-	pub fn one_hop_for_payment<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		payee_node_id: PublicKey, payee_tlvs: payment::ReceiveTlvs, min_final_cltv_expiry_delta: u16,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
-		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
-		// be in relation to a specific channel.
-		let htlc_maximum_msat = u64::max_value();
-		Self::new_for_payment(
-			&[], payee_node_id, payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta,
-			entropy_source, secp_ctx
-		)
-	}
-
-	/// Create a blinded path for a payment, to be forwarded along `intermediate_nodes`.
-	///
-	/// Errors if:
-	/// * a provided node id is invalid
-	/// * [`BlindedPayInfo`] calculation results in an integer overflow
-	/// * any unknown features are required in the provided [`ForwardTlvs`]
-	///
-	/// [`ForwardTlvs`]: crate::blinded_path::payment::ForwardTlvs
-	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_payment<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[payment::ForwardNode], payee_node_id: PublicKey,
-		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
-		let introduction_node = IntroductionNode::NodeId(
-			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id)
-		);
-		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
-		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-
-		let blinded_payinfo = payment::compute_payinfo(
-			intermediate_nodes, &payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
-		)?;
-		Ok((blinded_payinfo, BlindedPath {
-			introduction_node,
-			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops: payment::blinded_hops(
-				secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
-			).map_err(|_| ())?,
-		}))
 	}
 
 	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,

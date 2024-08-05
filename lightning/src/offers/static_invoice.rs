@@ -9,6 +9,7 @@
 
 //! Data structures and encoding for static BOLT 12 invoices.
 
+use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::blinded_path::BlindedPath;
 use crate::io;
 use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
@@ -70,7 +71,7 @@ pub struct StaticInvoice {
 #[derive(Clone, Debug)]
 struct InvoiceContents {
 	offer: OfferContents,
-	payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
+	payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
 	created_at: Duration,
 	relative_expiry: Option<Duration>,
 	fallbacks: Option<Vec<FallbackAddress>>,
@@ -96,7 +97,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 	/// Unless [`StaticInvoiceBuilder::relative_expiry`] is set, the invoice will expire 24 hours
 	/// after `created_at`.
 	pub fn for_offer_using_derived_keys<T: secp256k1::Signing>(
-		offer: &'a Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
+		offer: &'a Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
 		message_paths: Vec<BlindedPath>, created_at: Duration, expanded_key: &ExpandedKey,
 		nonce: Nonce, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, Bolt12SemanticError> {
@@ -325,7 +326,7 @@ impl InvoiceContents {
 	}
 
 	fn new(
-		offer: &Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
+		offer: &Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
 		message_paths: Vec<BlindedPath>, created_at: Duration, signing_pubkey: PublicKey,
 	) -> Self {
 		Self {
@@ -406,7 +407,7 @@ impl InvoiceContents {
 		self.offer.supported_quantity()
 	}
 
-	fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPath)] {
+	fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPaymentPath)] {
 		&self.payment_paths[..]
 	}
 

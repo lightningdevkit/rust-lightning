@@ -428,10 +428,10 @@ pub enum RetryableSendFailure {
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	DuplicatePayment,
 	/// The [`RecipientOnionFields::payment_metadata`], [`RecipientOnionFields::custom_tlvs`], or
-	/// [`BlindedPath`]s provided are too large and caused us to exceed the maximum onion packet size
-	/// of 1300 bytes.
+	/// [`BlindedPaymentPath`]s provided are too large and caused us to exceed the maximum onion
+	/// packet size of 1300 bytes.
 	///
-	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
+	/// [`BlindedPaymentPath`]: crate::blinded_path::payment::BlindedPaymentPath
 	OnionPacketSizeExceeded,
 }
 
@@ -835,7 +835,7 @@ impl OutboundPayments {
 		// Advance any blinded path where the introduction node is our node.
 		if let Ok(our_node_id) = node_signer.get_node_id(Recipient::Node) {
 			for (_, path) in payment_params.payee.blinded_route_hints_mut().iter_mut() {
-				let introduction_node_id = match path.introduction_node {
+				let introduction_node_id = match path.0.introduction_node {
 					IntroductionNode::NodeId(pubkey) => pubkey,
 					IntroductionNode::DirectedShortChannelId(direction, scid) => {
 						match node_id_lookup.next_node_id(scid) {

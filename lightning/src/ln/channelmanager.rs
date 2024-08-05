@@ -34,7 +34,7 @@ use bitcoin::{secp256k1, Sequence};
 use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::blinded_path::{BlindedPath, NodeIdLookUp};
 use crate::blinded_path::message::ForwardNode;
-use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -9073,8 +9073,8 @@ where
 	/// message.
 	///
 	/// The resulting invoice uses a [`PaymentHash`] recognized by the [`ChannelManager`] and a
-	/// [`BlindedPath`] containing the [`PaymentSecret`] needed to reconstruct the corresponding
-	/// [`PaymentPreimage`]. It is returned purely for informational purposes.
+	/// [`BlindedPaymentPath`] containing the [`PaymentSecret`] needed to reconstruct the
+	/// corresponding [`PaymentPreimage`]. It is returned purely for informational purposes.
 	///
 	/// # Limitations
 	///
@@ -9350,7 +9350,7 @@ where
 	/// [`Router::create_blinded_payment_paths`].
 	fn create_blinded_payment_paths(
 		&self, amount_msats: u64, payment_secret: PaymentSecret, payment_context: PaymentContext
-	) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, ()> {
+	) -> Result<Vec<(BlindedPayInfo, BlindedPaymentPath)>, ()> {
 		let secp_ctx = &self.secp_ctx;
 
 		let first_hops = self.list_usable_channels();
