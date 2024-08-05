@@ -119,6 +119,52 @@ pub struct BlindedHop {
 }
 
 impl BlindedPath {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match &self.introduction_node {
+			IntroductionNode::NodeId(pubkey) => pubkey.write(w)?,
+			IntroductionNode::DirectedShortChannelId(direction, scid) => {
+				match direction {
+					Direction::NodeOne => 0u8.write(w)?,
+					Direction::NodeTwo => 1u8.write(w)?,
+				}
+				scid.write(w)?;
+			},
+		}
+
+		self.blinding_point.write(w)?;
+		(self.blinded_hops.len() as u8).write(w)?;
+		for hop in &self.blinded_hops {
+			hop.write(w)?;
+		}
+		Ok(())
+	}
+
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut first_byte: u8 = Readable::read(r)?;
+		let introduction_node = match first_byte {
+			0 => IntroductionNode::DirectedShortChannelId(Direction::NodeOne, Readable::read(r)?),
+			1 => IntroductionNode::DirectedShortChannelId(Direction::NodeTwo, Readable::read(r)?),
+			2|3 => {
+				use io::Read;
+				let mut pubkey_read = core::slice::from_mut(&mut first_byte).chain(r.by_ref());
+				IntroductionNode::NodeId(Readable::read(&mut pubkey_read)?)
+			},
+			_ => return Err(DecodeError::InvalidValue),
+		};
+		let blinding_point = Readable::read(r)?;
+		let num_hops: u8 = Readable::read(r)?;
+		if num_hops == 0 { return Err(DecodeError::InvalidValue) }
+		let mut blinded_hops: Vec<BlindedHop> = Vec::with_capacity(num_hops.into());
+		for _ in 0..num_hops {
+			blinded_hops.push(Readable::read(r)?);
+		}
+		Ok(Self {
+			introduction_node,
+			blinding_point,
+			blinded_hops,
+		})
+	}
+
 	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
 	/// it is found in the network graph).
 	pub fn public_introduction_node_id<'a>(
@@ -167,56 +213,6 @@ impl BlindedPath {
 				}
 			}
 		}
-	}
-}
-
-impl Writeable for BlindedPath {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match &self.introduction_node {
-			IntroductionNode::NodeId(pubkey) => pubkey.write(w)?,
-			IntroductionNode::DirectedShortChannelId(direction, scid) => {
-				match direction {
-					Direction::NodeOne => 0u8.write(w)?,
-					Direction::NodeTwo => 1u8.write(w)?,
-				}
-				scid.write(w)?;
-			},
-		}
-
-		self.blinding_point.write(w)?;
-		(self.blinded_hops.len() as u8).write(w)?;
-		for hop in &self.blinded_hops {
-			hop.write(w)?;
-		}
-		Ok(())
-	}
-}
-
-impl Readable for BlindedPath {
-	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let mut first_byte: u8 = Readable::read(r)?;
-		let introduction_node = match first_byte {
-			0 => IntroductionNode::DirectedShortChannelId(Direction::NodeOne, Readable::read(r)?),
-			1 => IntroductionNode::DirectedShortChannelId(Direction::NodeTwo, Readable::read(r)?),
-			2|3 => {
-				use io::Read;
-				let mut pubkey_read = core::slice::from_mut(&mut first_byte).chain(r.by_ref());
-				IntroductionNode::NodeId(Readable::read(&mut pubkey_read)?)
-			},
-			_ => return Err(DecodeError::InvalidValue),
-		};
-		let blinding_point = Readable::read(r)?;
-		let num_hops: u8 = Readable::read(r)?;
-		if num_hops == 0 { return Err(DecodeError::InvalidValue) }
-		let mut blinded_hops: Vec<BlindedHop> = Vec::with_capacity(num_hops.into());
-		for _ in 0..num_hops {
-			blinded_hops.push(Readable::read(r)?);
-		}
-		Ok(BlindedPath {
-			introduction_node,
-			blinding_point,
-			blinded_hops,
-		})
 	}
 }
 
