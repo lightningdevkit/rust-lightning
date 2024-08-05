@@ -550,7 +550,7 @@ fn send_payment(
 		.map(|chan| (chan.next_outbound_htlc_minimum_msat, chan.next_outbound_htlc_limit_msat))
 		.unwrap_or((0, 0));
 	if let Err(err) = source.send_payment_with_route(
-		&Route {
+		Route {
 			paths: vec![Path {
 				hops: vec![RouteHop {
 					pubkey: dest.get_our_node_id(),
@@ -619,7 +619,7 @@ fn send_hop_payment(
 		.unwrap_or((0, 0));
 	let first_hop_fee = 50_000;
 	if let Err(err) = source.send_payment_with_route(
-		&Route {
+		Route {
 			paths: vec![Path {
 				hops: vec![
 					RouteHop {

@@ -63,7 +63,7 @@ fn chanmon_fail_from_stale_commitment() {
 	let (update_a, _, chan_id_2, _) = create_announced_chan_between_nodes(&nodes, 1, 2);
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[2], 1_000_000);
-	nodes[0].node.send_payment_with_route(&route, payment_hash,
+	nodes[0].node.send_payment_with_route(route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
@@ -747,7 +747,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000_000);
 	let htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
-	nodes[0].node.send_payment_with_route(&route, payment_hash,
+	nodes[0].node.send_payment_with_route(route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
@@ -759,7 +759,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, 10_000_000);
 
 	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[1], 20_000_000);
-	nodes[0].node.send_payment_with_route(&route_2, payment_hash_2,
+	nodes[0].node.send_payment_with_route(route_2, payment_hash_2,
 		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 

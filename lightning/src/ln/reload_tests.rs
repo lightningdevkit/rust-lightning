@@ -716,7 +716,7 @@ fn test_forwardable_regen() {
 
 	// First send a payment to nodes[1]
 	let (route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100_000);
-	nodes[0].node.send_payment_with_route(&route, payment_hash,
+	nodes[0].node.send_payment_with_route(route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
@@ -730,7 +730,7 @@ fn test_forwardable_regen() {
 
 	// Next send a payment which is forwarded by nodes[1]
 	let (route_2, payment_hash_2, payment_preimage_2, payment_secret_2) = get_route_and_payment_hash!(nodes[0], nodes[2], 200_000);
-	nodes[0].node.send_payment_with_route(&route_2, payment_hash_2,
+	nodes[0].node.send_payment_with_route(route_2, payment_hash_2,
 		RecipientOnionFields::secret_only(payment_secret_2), PaymentId(payment_hash_2.0)).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
@@ -815,7 +815,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 			core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater }
 	});
 
-	nodes[0].node.send_payment_with_route(&route, payment_hash,
+	nodes[0].node.send_payment_with_route(route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 	check_added_monitors!(nodes[0], 2);
 
@@ -983,7 +983,7 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	}
 	let payment_id = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
 	let htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV;
-	nodes[0].node.send_payment_with_route(&route, payment_hash,
+	nodes[0].node.send_payment_with_route(route, payment_hash,
 		RecipientOnionFields::secret_only(payment_secret), payment_id).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
