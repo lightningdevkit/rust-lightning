@@ -252,23 +252,23 @@ impl CommonOpenChannelFields {
 }
 
 /// A subset of [`CommonOpenChannelFields`], containing various parameters which are set by the
-/// counterparty and which are not part of the channel funding transaction.
+/// channel initiator and which are not part of the channel funding transaction.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ChannelParameters {
 	/// The threshold below which outputs on transactions broadcast by the channel initiator will be
-	/// omitted
+	/// omitted.
 	pub dust_limit_satoshis: u64,
 	/// The maximum inbound HTLC value in flight towards channel initiator, in milli-satoshi
 	pub max_htlc_value_in_flight_msat: u64,
-	/// The minimum HTLC size incoming to channel initiator, in milli-satoshi
+	/// The minimum HTLC size for HTLCs towards the channel initiator, in milli-satoshi
 	pub htlc_minimum_msat: u64,
 	/// The feerate for the commitment transaction set by the channel initiator until updated by
 	/// [`UpdateFee`]
 	pub commitment_feerate_sat_per_1000_weight: u32,
-	/// The number of blocks which the counterparty will have to wait to claim on-chain funds if they
-	/// broadcast a commitment transaction
+	/// The number of blocks which the non-channel-initator will have to wait to claim on-chain
+	/// funds if they broadcast a commitment transaction.
 	pub to_self_delay: u16,
-	/// The maximum number of inbound HTLCs towards channel initiator
+	/// The maximum number of pending HTLCs towards the channel initiator.
 	pub max_accepted_htlcs: u16,
 }
 
