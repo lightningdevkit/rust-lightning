@@ -501,7 +501,7 @@ impl_writeable_tlv_based_enum!(InterceptNextHop,
 /// The reason the payment failed. Used in [`Event::PaymentFailed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaymentFailureReason {
-	/// The intended recipient rejected our payment or invoice request.
+	/// The intended recipient rejected our payment.
 	RecipientRejected,
 	/// The user chose to abandon this payment by calling [`ChannelManager::abandon_payment`].
 	///
@@ -532,6 +532,10 @@ pub enum PaymentFailureReason {
 	UnknownRequiredFeatures,
 	/// A [`Bolt12Invoice`] was not received in a reasonable amount of time.
 	InvoiceRequestExpired,
+	/// An [`InvoiceRequest`] for the payment was rejected by the recipient.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	InvoiceRequestRejected,
 }
 
 impl_writeable_tlv_based_enum!(PaymentFailureReason,
@@ -540,6 +544,7 @@ impl_writeable_tlv_based_enum!(PaymentFailureReason,
 	(2, UserAbandoned) => {},
 	(3, InvoiceRequestExpired) => {},
 	(4, RetriesExhausted) => {},
+	(5, InvoiceRequestRejected) => {},
 	(6, PaymentExpired) => {},
 	(8, RouteNotFound) => {},
 	(10, UnexpectedError) => {},
