@@ -1698,7 +1698,9 @@ mod tests {
 					message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
-				ExperimentalOfferTlvStreamRef {},
+				ExperimentalOfferTlvStreamRef {
+					experimental_foo: None,
+				},
 			),
 		);
 
@@ -1792,7 +1794,9 @@ mod tests {
 					message_paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
-				ExperimentalOfferTlvStreamRef {},
+				ExperimentalOfferTlvStreamRef {
+					experimental_foo: None,
+				},
 			),
 		);
 
@@ -1886,6 +1890,7 @@ mod tests {
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.path(blinded_path)
+			.experimental_foo(42)
 			.build().unwrap();
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -1907,6 +1912,7 @@ mod tests {
 		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			// Omit the path so that node_id is used for the signing pubkey instead of deriving it
+			.experimental_foo(42)
 			.build().unwrap();
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -1928,6 +1934,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.experimental_foo(42)
 			.build().unwrap();
 
 		if let Err(e) = refund
