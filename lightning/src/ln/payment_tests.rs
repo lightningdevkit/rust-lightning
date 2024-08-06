@@ -2268,7 +2268,7 @@ fn do_automatic_retries(test: AutoRetry) {
 			} else {
 				match events[1] {
 					Event::PaymentFailed { payment_hash: ev_payment_hash, .. } => {
-						assert_eq!(payment_hash, ev_payment_hash);
+						assert_eq!(Some(payment_hash), ev_payment_hash);
 					},
 					_ => panic!("Unexpected event"),
 				}
@@ -2351,7 +2351,7 @@ fn do_automatic_retries(test: AutoRetry) {
 			assert_eq!(events.len(), 1);
 			match events[0] {
 				Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id, reason: ref ev_reason } => {
-					assert_eq!(payment_hash, *ev_payment_hash);
+					assert_eq!(Some(payment_hash), *ev_payment_hash);
 					assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
 					assert_eq!(PaymentFailureReason::RetriesExhausted, ev_reason.unwrap());
 				},
@@ -2388,7 +2388,7 @@ fn do_automatic_retries(test: AutoRetry) {
 		assert_eq!(events.len(), 1);
 		match events[0] {
 			Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id, reason: ref ev_reason } => {
-				assert_eq!(payment_hash, *ev_payment_hash);
+				assert_eq!(Some(payment_hash), *ev_payment_hash);
 				assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
 				assert_eq!(PaymentFailureReason::RetriesExhausted, ev_reason.unwrap());
 			},
@@ -2409,7 +2409,7 @@ fn do_automatic_retries(test: AutoRetry) {
 		assert_eq!(events.len(), 1);
 		match events[0] {
 			Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id, reason: ref ev_reason } => {
-				assert_eq!(payment_hash, *ev_payment_hash);
+				assert_eq!(Some(payment_hash), *ev_payment_hash);
 				assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
 				assert_eq!(PaymentFailureReason::RouteNotFound, ev_reason.unwrap());
 			},
@@ -3099,7 +3099,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 	}
 	match events[1] {
 		Event::PaymentFailed { payment_hash: ref ev_payment_hash, payment_id: ref ev_payment_id, reason: ref ev_reason } => {
-			assert_eq!(payment_hash, *ev_payment_hash);
+			assert_eq!(Some(payment_hash), *ev_payment_hash);
 			assert_eq!(PaymentId(payment_hash.0), *ev_payment_id);
 			assert_eq!(PaymentFailureReason::RetriesExhausted, ev_reason.unwrap());
 		},

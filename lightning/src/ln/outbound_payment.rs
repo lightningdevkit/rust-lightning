@@ -961,7 +961,7 @@ impl OutboundPayments {
 				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = pmt {
 					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 						payment_id: *pmt_id,
-						payment_hash: *payment_hash,
+						payment_hash: Some(*payment_hash),
 						reason: *reason,
 					}, None));
 					retain = false;
@@ -1127,7 +1127,7 @@ impl OutboundPayments {
 					if $payment.get().remaining_parts() == 0 {
 						pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 							payment_id,
-							payment_hash,
+							payment_hash: Some(payment_hash),
 							reason: *reason,
 						}, None));
 						$payment.remove();
@@ -1795,7 +1795,7 @@ impl OutboundPayments {
 					if !payment_is_probe {
 						full_failure_ev = Some(events::Event::PaymentFailed {
 							payment_id: *payment_id,
-							payment_hash: *payment_hash,
+							payment_hash: Some(*payment_hash),
 							reason: *reason,
 						});
 					}
@@ -1864,7 +1864,7 @@ impl OutboundPayments {
 				if payment.get().remaining_parts() == 0 {
 					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 						payment_id,
-						payment_hash: *payment_hash,
+						payment_hash: Some(*payment_hash),
 						reason: *reason,
 					}, None));
 					payment.remove();
@@ -2337,7 +2337,7 @@ mod tests {
 		);
 		assert!(!outbound_payments.has_pending_payments());
 
-		let payment_hash = invoice.payment_hash();
+		let payment_hash = Some(invoice.payment_hash());
 		let reason = Some(PaymentFailureReason::PaymentExpired);
 
 		assert!(!pending_events.lock().unwrap().is_empty());
@@ -2398,7 +2398,7 @@ mod tests {
 		);
 		assert!(!outbound_payments.has_pending_payments());
 
-		let payment_hash = invoice.payment_hash();
+		let payment_hash = Some(invoice.payment_hash());
 		let reason = Some(PaymentFailureReason::RouteNotFound);
 
 		assert!(!pending_events.lock().unwrap().is_empty());

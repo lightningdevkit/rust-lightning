@@ -879,10 +879,12 @@ pub enum Event {
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_id: PaymentId,
-		/// The hash that was given to [`ChannelManager::send_payment`].
+		/// The hash that was given to [`ChannelManager::send_payment`]. `None` if the payment failed
+		/// before receiving an invoice when paying a BOLT12 [`Offer`].
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-		payment_hash: PaymentHash,
+		/// [`Offer`]: crate::offers::offer::Offer
+		payment_hash: Option<PaymentHash>,
 		/// The reason the payment failed. This is only `None` for events generated or serialized
 		/// by versions prior to 0.0.115.
 		reason: Option<PaymentFailureReason>,
@@ -1555,10 +1557,15 @@ impl Writeable for Event {
 			},
 			&Event::PaymentFailed { ref payment_id, ref payment_hash, ref reason } => {
 				15u8.write(writer)?;
+				let (payment_hash, invoice_received) = match payment_hash {
+					Some(payment_hash) => (payment_hash, true),
+					None => (&PaymentHash([0; 32]), false),
+				};
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(1, reason, option),
 					(2, payment_hash, required),
+					(3, invoice_received, required),
 				})
 			},
 			&Event::OpenChannelRequest { .. } => {
@@ -1932,11 +1939,17 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_id = PaymentId([0; 32]);
 					let mut reason = None;
+					let mut invoice_received: Option<bool> = None;
 					read_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(1, reason, upgradable_option),
 						(2, payment_hash, required),
+						(3, invoice_received, option),
 					});
+					let payment_hash = match invoice_received {
+						Some(invoice_received) => invoice_received.then(|| payment_hash),
+						None => (payment_hash != PaymentHash([0; 32])).then(|| payment_hash),
+					};
 					Ok(Some(Event::PaymentFailed {
 						payment_id,
 						payment_hash,

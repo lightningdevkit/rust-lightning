@@ -2168,7 +2168,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	match get_event!(david, Event::PaymentFailed) {
 		Event::PaymentFailed {
 			payment_id: event_payment_id,
-			payment_hash: event_payment_hash,
+			payment_hash: Some(event_payment_hash),
 			reason: Some(event_reason),
 		} => {
 			assert_eq!(event_payment_id, payment_id);
