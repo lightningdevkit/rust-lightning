@@ -530,12 +530,15 @@ pub enum PaymentFailureReason {
 	UnexpectedError,
 	/// An invoice was received that required unknown features.
 	UnknownRequiredFeatures,
+	/// A [`Bolt12Invoice`] was not received in a reasonable amount of time.
+	InvoiceRequestExpired,
 }
 
 impl_writeable_tlv_based_enum!(PaymentFailureReason,
 	(0, RecipientRejected) => {},
 	(1, UnknownRequiredFeatures) => {},
 	(2, UserAbandoned) => {},
+	(3, InvoiceRequestExpired) => {},
 	(4, RetriesExhausted) => {},
 	(6, PaymentExpired) => {},
 	(8, RouteNotFound) => {},

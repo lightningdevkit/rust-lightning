@@ -1711,7 +1711,7 @@ impl OutboundPayments {
 					let event = events::Event::PaymentFailed {
 						payment_id: *payment_id,
 						payment_hash: None,
-						reason: None,
+						reason: Some(PaymentFailureReason::InvoiceRequestExpired),
 					};
 					pending_events.push_back((event, None));
 					false
@@ -2205,7 +2205,11 @@ mod tests {
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
-			Some((Event::PaymentFailed { payment_id, payment_hash: None, reason: None }, None)),
+			Some((Event::PaymentFailed {
+				payment_id,
+				payment_hash: None,
+				reason: Some(PaymentFailureReason::InvoiceRequestExpired),
+			}, None)),
 		);
 		assert!(pending_events.lock().unwrap().is_empty());
 
@@ -2254,7 +2258,11 @@ mod tests {
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
-			Some((Event::PaymentFailed { payment_id, payment_hash: None, reason: None }, None)),
+			Some((Event::PaymentFailed {
+				payment_id,
+				payment_hash: None,
+				reason: Some(PaymentFailureReason::InvoiceRequestExpired),
+			}, None)),
 		);
 		assert!(pending_events.lock().unwrap().is_empty());
 
