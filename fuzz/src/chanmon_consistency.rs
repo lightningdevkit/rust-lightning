@@ -64,6 +64,7 @@ use lightning::routing::router::{InFlightHtlcs, Path, Route, RouteHop, RoutePara
 use lightning::sign::{
 	EntropySource, InMemorySigner, KeyMaterial, NodeSigner, Recipient, SignerProvider,
 };
+use lightning::util::bech32::u5;
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
@@ -79,7 +80,6 @@ use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use bech32::u5;
 use std::cmp::{self, Ordering};
 use std::io::Cursor;
 use std::mem;

@@ -7,6 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use crate::util::bech32::u5;
 use crate::blinded_path::message::MessageContext;
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::ForwardNode;
@@ -72,7 +73,6 @@ use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
-use bech32::u5;
 use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
@@ -1217,7 +1217,7 @@ impl NodeSigner for TestNodeSigner {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn sign_invoice(&self, _: &[u8], _: &[bech32::u5], _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
+	fn sign_invoice(&self, _: &[u8], _: &[u5], _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
 		unreachable!()
 	}
 

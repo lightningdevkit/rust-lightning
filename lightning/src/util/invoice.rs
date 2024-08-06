@@ -1,6 +1,6 @@
 //! Low level invoice utilities.
 
-use bech32::{u5, FromBase32};
+use crate::util::bech32::{FromBase32, u5};
 
 #[allow(unused)]
 use crate::prelude::*;
@@ -13,11 +13,11 @@ pub fn construct_invoice_preimage(hrp_bytes: &[u8], data_without_signature: &[u5
 	let overhang = (data_part.len() * 5) % 8;
 	if overhang > 0 {
 		// add padding if data does not end at a byte boundary
-		data_part.push(u5::try_from_u8(0).unwrap());
+		data_part.push(u5::ZERO);
 
 		// if overhang is in (1..3) we need to add u5(0) padding two times
 		if overhang < 3 {
-			data_part.push(u5::try_from_u8(0).unwrap());
+			data_part.push(u5::ZERO);
 		}
 	}
 

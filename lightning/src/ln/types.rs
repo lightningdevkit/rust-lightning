@@ -162,14 +162,14 @@ impl From<PaymentPreimage> for PaymentHash {
 #[derive(Hash, Copy, Clone, PartialEq, Eq, Debug, Ord, PartialOrd)]
 pub struct PaymentSecret(pub [u8; 32]);
 
-use bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
+use crate::util::bech32::{Base32Len, Bech32Error, FromBase32, ToBase32, WriteBase32, u5};
 
 impl FromBase32 for PaymentSecret {
-	type Err = bech32::Error;
+	type Err = Bech32Error;
 
-	fn from_base32(field_data: &[u5]) -> Result<PaymentSecret, bech32::Error> {
+	fn from_base32(field_data: &[u5]) -> Result<PaymentSecret, Bech32Error> {
 		if field_data.len() != 52 {
-			return Err(bech32::Error::InvalidLength)
+			return Err(Bech32Error::InvalidLength)
 		} else {
 			let data_bytes = Vec::<u8>::from_base32(field_data)?;
 			let mut payment_secret = [0; 32];

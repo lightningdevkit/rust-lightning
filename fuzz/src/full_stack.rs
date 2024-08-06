@@ -61,6 +61,7 @@ use lightning::routing::utxo::UtxoLookup;
 use lightning::sign::{
 	EntropySource, InMemorySigner, KeyMaterial, NodeSigner, Recipient, SignerProvider,
 };
+use lightning::util::bech32::u5;
 use lightning::util::config::{ChannelConfig, UserConfig};
 use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;
@@ -76,7 +77,6 @@ use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use bech32::u5;
 use std::cell::RefCell;
 use std::cmp;
 use std::convert::TryInto;

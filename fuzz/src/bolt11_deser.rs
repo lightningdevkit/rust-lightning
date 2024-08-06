@@ -8,8 +8,8 @@
 // licenses.
 
 use crate::utils::test_logger;
-use bech32::{u5, FromBase32, ToBase32};
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
+use lightning::util::bech32::{u5, FromBase32, ToBase32};
 use lightning_invoice::{
 	Bolt11Invoice, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField, TaggedField,
 };

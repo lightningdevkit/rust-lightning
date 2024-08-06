@@ -4,6 +4,7 @@ extern crate lightning_invoice;
 extern crate secp256k1;
 extern crate hex;
 
+use bech32::primitives::decode::{CharError, CheckedHrpstringError, ChecksumError, UncheckedHrpstringError};
 use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::hashes::{sha256, Hash};
@@ -419,13 +420,13 @@ fn test_bolt_invalid_invoices() {
 		), Err(ParseOrSemanticError::SemanticError(Bolt11SemanticError::InvalidFeatures)));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrnt"
-		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::InvalidChecksum))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32ExternalError(CheckedHrpstringError::Checksum(ChecksumError::InvalidResidue)))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
-		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::MissingSeparator))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32ExternalError(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::MissingSeparator))))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"LNBC2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpquwpc4curk03c9wlrswe78q4eyqc7d8d0xqzpuyk0sg5g70me25alkluzd2x62aysf2pyy8edtjeevuv4p2d5p76r4zkmneet7uvyakky2zr4cusd45tftc9c5fh0nnqpnl2jfll544esqchsrny"
-		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32Error(bech32::Error::MixedCase))));
+		), Err(ParseOrSemanticError::ParseError(Bolt11ParseError::Bech32ExternalError(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::MixedCase))))));
 	assert_eq!(Bolt11Invoice::from_str(
 		"lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpusp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9qrsgqwgt7mcn5yqw3yx0w94pswkpq6j9uh6xfqqqtsk4tnarugeektd4hg5975x9am52rz4qskukxdmjemg92vvqz8nvmsye63r5ykel43pgz7zq0g2"
 		), Err(ParseOrSemanticError::SemanticError(Bolt11SemanticError::InvalidSignature)));
