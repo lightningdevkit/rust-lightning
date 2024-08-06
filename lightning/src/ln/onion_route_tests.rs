@@ -215,7 +215,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 	}
 	match events[1] {
 		Event::PaymentFailed { payment_hash: ev_payment_hash, payment_id: ev_payment_id, reason: ref ev_reason } => {
-			assert_eq!(*payment_hash, ev_payment_hash);
+			assert_eq!(Some(*payment_hash), ev_payment_hash);
 			assert_eq!(payment_id, ev_payment_id);
 			assert_eq!(if expected_retryable {
 				PaymentFailureReason::RetriesExhausted

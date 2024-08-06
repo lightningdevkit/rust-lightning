@@ -879,10 +879,12 @@ pub enum Event {
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_id: PaymentId,
-		/// The hash that was given to [`ChannelManager::send_payment`].
+		/// The hash that was given to [`ChannelManager::send_payment`]. `None` if the payment failed
+		/// before receiving an invoice when paying a BOLT12 [`Offer`].
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-		payment_hash: PaymentHash,
+		/// [`Offer`]: crate::offers::offer::Offer
+		payment_hash: Option<PaymentHash>,
 		/// The reason the payment failed. This is only `None` for events generated or serialized
 		/// by versions prior to 0.0.115.
 		reason: Option<PaymentFailureReason>,
@@ -1558,7 +1560,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
 					(1, reason, option),
-					(2, payment_hash, required),
+					(2, payment_hash, option),
 				})
 			},
 			&Event::OpenChannelRequest { .. } => {
@@ -1929,13 +1931,13 @@ impl MaybeReadable for Event {
 			},
 			15u8 => {
 				let mut f = || {
-					let mut payment_hash = PaymentHash([0; 32]);
+					let mut payment_hash = None;
 					let mut payment_id = PaymentId([0; 32]);
 					let mut reason = None;
 					read_tlv_fields!(reader, {
 						(0, payment_id, required),
 						(1, reason, upgradable_option),
-						(2, payment_hash, required),
+						(2, payment_hash, option),
 					});
 					Ok(Some(Event::PaymentFailed {
 						payment_id,

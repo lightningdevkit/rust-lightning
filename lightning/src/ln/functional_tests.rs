@@ -3380,7 +3380,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	)));
 	assert!(events.iter().any(|ev| matches!(
 		ev,
-		Event::PaymentFailed { ref payment_hash, .. } if *payment_hash == fourth_payment_hash
+		Event::PaymentFailed { ref payment_hash, .. } if *payment_hash == Some(fourth_payment_hash)
 	)));
 
 	nodes[1].node.process_pending_htlc_forwards();
@@ -3442,7 +3442,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			}
 			match events[1] {
 				Event::PaymentFailed { ref payment_hash, .. } => {
-					assert_eq!(*payment_hash, first_payment_hash);
+					assert_eq!(*payment_hash, Some(first_payment_hash));
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -3454,7 +3454,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			}
 			match events[3] {
 				Event::PaymentFailed { ref payment_hash, .. } => {
-					assert_eq!(*payment_hash, second_payment_hash);
+					assert_eq!(*payment_hash, Some(second_payment_hash));
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -3466,7 +3466,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			}
 			match events[5] {
 				Event::PaymentFailed { ref payment_hash, .. } => {
-					assert_eq!(*payment_hash, third_payment_hash);
+					assert_eq!(*payment_hash, Some(third_payment_hash));
 				},
 				_ => panic!("Unexpected event"),
 			}
@@ -3572,7 +3572,7 @@ fn fail_backward_pending_htlc_upon_channel_failure() {
 	}
 	match events[1] {
 		Event::PaymentFailed { payment_hash, .. } => {
-			assert_eq!(payment_hash, failed_payment_hash);
+			assert_eq!(payment_hash, Some(failed_payment_hash));
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -3851,7 +3851,7 @@ fn test_simple_peer_disconnect() {
 		}
 		match events[3] {
 			Event::PaymentFailed { payment_hash, .. } => {
-				assert_eq!(payment_hash, payment_hash_5);
+				assert_eq!(payment_hash, Some(payment_hash_5));
 			},
 			_ => panic!("Unexpected event"),
 		}
@@ -6007,7 +6007,7 @@ fn test_fail_holding_cell_htlc_upon_free() {
 	}
 	match &events[1] {
 		&Event::PaymentFailed { ref payment_hash, .. } => {
-			assert_eq!(our_payment_hash.clone(), *payment_hash);
+			assert_eq!(Some(our_payment_hash), *payment_hash);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -6095,7 +6095,7 @@ fn test_free_and_fail_holding_cell_htlcs() {
 	}
 	match &events[1] {
 		&Event::PaymentFailed { ref payment_hash, .. } => {
-			assert_eq!(payment_hash_2.clone(), *payment_hash);
+			assert_eq!(Some(payment_hash_2), *payment_hash);
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -7048,7 +7048,7 @@ fn test_channel_failed_after_message_with_badonion_node_perm_bits_set() {
 	}
 	match events_5[1] {
 		Event::PaymentFailed { payment_hash, .. } => {
-			assert_eq!(payment_hash, our_payment_hash);
+			assert_eq!(payment_hash, Some(our_payment_hash));
 		},
 		_ => panic!("Unexpected event"),
 	}

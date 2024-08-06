@@ -1068,7 +1068,7 @@ fn blinded_path_retries() {
 	assert_eq!(evs.len(), 1);
 	match evs[0] {
 		Event::PaymentFailed { payment_hash: ev_payment_hash, reason, .. } => {
-			assert_eq!(ev_payment_hash, payment_hash);
+			assert_eq!(ev_payment_hash, Some(payment_hash));
 			// We have 1 retry attempt remaining, but we're out of blinded paths to try.
 			assert_eq!(reason, Some(PaymentFailureReason::RouteNotFound));
 		},

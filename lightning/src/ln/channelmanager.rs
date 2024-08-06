@@ -1681,7 +1681,8 @@ where
 /// channel_manager.process_pending_events(&|event| {
 ///     match event {
 ///         Event::PaymentSent { payment_hash, .. } => println!("Paid {}", payment_hash),
-///         Event::PaymentFailed { payment_hash, .. } => println!("Failed paying {}", payment_hash),
+///         Event::PaymentFailed { payment_hash: Some(payment_hash), .. } =>
+///             println!("Failed paying {}", payment_hash),
 ///         // ...
 ///     #     _ => {},
 ///     }

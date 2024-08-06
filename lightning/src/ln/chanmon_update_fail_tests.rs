@@ -1776,7 +1776,7 @@ fn test_monitor_update_on_pending_forwards() {
 	} else { panic!("Unexpected event!"); }
 	match events[2] {
 		Event::PaymentFailed { payment_hash, .. } => {
-			assert_eq!(payment_hash, payment_hash_1);
+			assert_eq!(payment_hash, Some(payment_hash_1));
 		},
 		_ => panic!("Unexpected event"),
 	}
