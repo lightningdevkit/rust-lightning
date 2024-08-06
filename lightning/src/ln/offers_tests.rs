@@ -1932,8 +1932,9 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 
 	// Confirm that david drops this failed payment from his pending outbound payments.
 	match get_event!(david, Event::PaymentFailed) {
-		Event::PaymentFailed { payment_id: actual_payment_id, .. } => {
+		Event::PaymentFailed { payment_id: actual_payment_id, reason, .. } => {
 			assert_eq!(payment_id, actual_payment_id);
+			assert_eq!(reason, Some(PaymentFailureReason::InvoiceRequestRejected));
 		},
 		_ => panic!("No Event::PaymentFailed"),
 	}
