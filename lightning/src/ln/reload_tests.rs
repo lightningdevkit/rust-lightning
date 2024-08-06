@@ -252,7 +252,7 @@ fn test_manager_serialize_deserialize_events() {
 
 	let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&node_a, &node_b.node.get_our_node_id(), channel_value, 42);
 
-	node_a.node.funding_transaction_generated(&temporary_channel_id, &node_b.node.get_our_node_id(), tx.clone()).unwrap();
+	node_a.node.funding_transaction_generated(temporary_channel_id, node_b.node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors!(node_a, 0);
 
 	node_b.node.handle_funding_created(&node_a.node.get_our_node_id(), &get_event_msg!(node_a, MessageSendEvent::SendFundingCreated, node_b.node.get_our_node_id()));

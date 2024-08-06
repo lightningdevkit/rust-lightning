@@ -49,7 +49,7 @@ fn test_async_commitment_signature_for_funding_created() {
 	// message...
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
 	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors(&nodes[0], 0);
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -96,7 +96,7 @@ fn test_async_commitment_signature_for_funding_signed() {
 
 	// nodes[0] --- funding_created --> nodes[1]
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors(&nodes[0], 0);
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
@@ -236,7 +236,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 
 	// nodes[0] --- funding_created --> nodes[1]
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
-	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+	nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 	check_added_monitors(&nodes[0], 0);
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());

@@ -861,29 +861,29 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			$source.handle_accept_channel(&$dest.get_our_node_id(), &accept_channel);
 			let funding_output;
 			{
-				let events = $source.get_and_clear_pending_events();
+				let mut events = $source.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
 				if let events::Event::FundingGenerationReady {
-					ref temporary_channel_id,
-					ref channel_value_satoshis,
-					ref output_script,
+					temporary_channel_id,
+					channel_value_satoshis,
+					output_script,
 					..
-				} = events[0]
+				} = events.pop().unwrap()
 				{
 					let tx = Transaction {
 						version: Version($chan_id),
 						lock_time: LockTime::ZERO,
 						input: Vec::new(),
 						output: vec![TxOut {
-							value: Amount::from_sat(*channel_value_satoshis),
-							script_pubkey: output_script.clone(),
+							value: Amount::from_sat(channel_value_satoshis),
+							script_pubkey: output_script,
 						}],
 					};
 					funding_output = OutPoint { txid: tx.txid(), index: 0 };
 					$source
 						.funding_transaction_generated(
-							&temporary_channel_id,
-							&$dest.get_our_node_id(),
+							temporary_channel_id,
+							$dest.get_our_node_id(),
 							tx.clone(),
 						)
 						.unwrap();
