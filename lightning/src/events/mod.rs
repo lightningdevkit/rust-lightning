@@ -530,12 +530,15 @@ pub enum PaymentFailureReason {
 	UnexpectedError,
 	/// An invoice was received that required unknown features.
 	UnknownRequiredFeatures,
+	/// A [`Bolt12Invoice`] was not received in a reasonable amount of time.
+	InvoiceRequestExpired,
 }
 
 impl_writeable_tlv_based_enum!(PaymentFailureReason,
 	(0, RecipientRejected) => {},
 	(1, UnknownRequiredFeatures) => {},
 	(2, UserAbandoned) => {},
+	(3, InvoiceRequestExpired) => {},
 	(4, RetriesExhausted) => {},
 	(6, PaymentExpired) => {},
 	(8, RouteNotFound) => {},
@@ -870,8 +873,7 @@ pub enum Event {
 		/// [`Offer`]: crate::offers::offer::Offer
 		payment_hash: Option<PaymentHash>,
 		/// The reason the payment failed. This is only `None` for events generated or serialized
-		/// by versions prior to 0.0.115 or when deserializing an `Event::InvoiceRequestFailed`,
-		/// which was removed in 0.0.124.
+		/// by versions prior to 0.0.115.
 		reason: Option<PaymentFailureReason>,
 	},
 	/// Indicates that a path for an outbound payment was successful.
@@ -2080,7 +2082,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentFailed {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: None,
-						reason: None,
+						reason: Some(PaymentFailureReason::InvoiceRequestExpired),
 					}))
 				};
 				f()
