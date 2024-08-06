@@ -1234,7 +1234,7 @@ impl core::fmt::Display for Offer {
 
 #[cfg(test)]
 mod tests {
-	use super::{Amount, ExperimentalOfferTlvStreamRef, OFFER_TYPES, Offer, OfferTlvStreamRef, Quantity};
+	use super::{Amount, EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStreamRef, OFFER_TYPES, Offer, OfferTlvStreamRef, Quantity};
 	#[cfg(not(c_bindings))]
 	use {
 		super::OfferBuilder,
@@ -1963,12 +1963,54 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_offer_with_experimental_tlv_records() {
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+
+		let mut encoded_offer = Vec::new();
+		offer.write(&mut encoded_offer).unwrap();
+		BigSize(EXPERIMENTAL_OFFER_TYPES.start + 1).write(&mut encoded_offer).unwrap();
+		BigSize(32).write(&mut encoded_offer).unwrap();
+		[42u8; 32].write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer.clone()) {
+			Ok(offer) => assert_eq!(offer.bytes, encoded_offer),
+			Err(e) => panic!("error parsing offer: {:?}", e),
+		}
+
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+
+		let mut encoded_offer = Vec::new();
+		offer.write(&mut encoded_offer).unwrap();
+		BigSize(EXPERIMENTAL_OFFER_TYPES.start).write(&mut encoded_offer).unwrap();
+		BigSize(32).write(&mut encoded_offer).unwrap();
+		[42u8; 32].write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
+		}
+	}
+
+	#[test]
 	fn fails_parsing_offer_with_out_of_range_tlv_records() {
 		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
 
 		let mut encoded_offer = Vec::new();
 		offer.write(&mut encoded_offer).unwrap();
 		BigSize(OFFER_TYPES.end).write(&mut encoded_offer).unwrap();
+		BigSize(32).write(&mut encoded_offer).unwrap();
+		[42u8; 32].write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		}
+
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+
+		let mut encoded_offer = Vec::new();
+		offer.write(&mut encoded_offer).unwrap();
+		BigSize(EXPERIMENTAL_OFFER_TYPES.end).write(&mut encoded_offer).unwrap();
 		BigSize(32).write(&mut encoded_offer).unwrap();
 		[42u8; 32].write(&mut encoded_offer).unwrap();
 
