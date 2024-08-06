@@ -936,6 +936,8 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 	fn handle_tx_abort(&self, _their_node_id: &PublicKey, msg: &msgs::TxAbort) {
 		self.received_msg(wire::Message::TxAbort(msg.clone()));
 	}
+
+	fn handle_message_received(&self) {}
 }
 
 impl events::MessageSendEventsProvider for TestChannelMessageHandler {
