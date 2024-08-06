@@ -772,22 +772,6 @@ pub enum Event {
 		/// Sockets for connecting to the node.
 		addresses: Vec<msgs::SocketAddress>,
 	},
-	/// Indicates a request for an invoice failed to yield a response in a reasonable amount of time
-	/// or was explicitly abandoned by [`ChannelManager::abandon_payment`]. This may be for an
-	/// [`InvoiceRequest`] sent for an [`Offer`] or for a [`Refund`] that hasn't been redeemed.
-	///
-	/// # Failure Behavior and Persistence
-	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
-	///
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	/// [`Offer`]: crate::offers::offer::Offer
-	/// [`Refund`]: crate::offers::refund::Refund
-	InvoiceRequestFailed {
-		/// The `payment_id` to have been associated with payment for the requested invoice.
-		payment_id: PaymentId,
-	},
 	/// Indicates a [`Bolt12Invoice`] in response to an [`InvoiceRequest`] or a [`Refund`] was
 	/// received.
 	///
@@ -886,7 +870,8 @@ pub enum Event {
 		/// [`Offer`]: crate::offers::offer::Offer
 		payment_hash: Option<PaymentHash>,
 		/// The reason the payment failed. This is only `None` for events generated or serialized
-		/// by versions prior to 0.0.115.
+		/// by versions prior to 0.0.115 or when deserializing an `Event::InvoiceRequestFailed`,
+		/// which was removed in 0.0.124.
 		reason: Option<PaymentFailureReason>,
 	},
 	/// Indicates that a path for an outbound payment was successful.
@@ -1644,12 +1629,6 @@ impl Writeable for Event {
 					(8, funding_txo, required),
 				});
 			},
-			&Event::InvoiceRequestFailed { ref payment_id } => {
-				33u8.write(writer)?;
-				write_tlv_fields!(writer, {
-					(0, payment_id, required),
-				})
-			},
 			&Event::ConnectionNeeded { .. } => {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
@@ -2092,13 +2071,16 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			// This was Event::InvoiceRequestFailed prior to version 0.0.124.
 			33u8 => {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 					});
-					Ok(Some(Event::InvoiceRequestFailed {
+					Ok(Some(Event::PaymentFailed {
 						payment_id: payment_id.0.unwrap(),
+						payment_hash: None,
+						reason: None,
 					}))
 				};
 				f()

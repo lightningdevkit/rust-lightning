@@ -1708,9 +1708,12 @@ impl OutboundPayments {
 					},
 				};
 				if is_stale {
-					pending_events.push_back(
-						(events::Event::InvoiceRequestFailed { payment_id: *payment_id }, None)
-					);
+					let event = events::Event::PaymentFailed {
+						payment_id: *payment_id,
+						payment_hash: None,
+						reason: None,
+					};
+					pending_events.push_back((event, None));
 					false
 				} else {
 					true
@@ -1870,8 +1873,10 @@ impl OutboundPayments {
 					payment.remove();
 				}
 			} else if let PendingOutboundPayment::AwaitingInvoice { .. } = payment.get() {
-				pending_events.lock().unwrap().push_back((events::Event::InvoiceRequestFailed {
+				pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 					payment_id,
+					payment_hash: None,
+					reason: Some(reason),
 				}, None));
 				payment.remove();
 			}
@@ -2200,7 +2205,7 @@ mod tests {
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
-			Some((Event::InvoiceRequestFailed { payment_id }, None)),
+			Some((Event::PaymentFailed { payment_id, payment_hash: None, reason: None }, None)),
 		);
 		assert!(pending_events.lock().unwrap().is_empty());
 
@@ -2249,7 +2254,7 @@ mod tests {
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
-			Some((Event::InvoiceRequestFailed { payment_id }, None)),
+			Some((Event::PaymentFailed { payment_id, payment_hash: None, reason: None }, None)),
 		);
 		assert!(pending_events.lock().unwrap().is_empty());
 
@@ -2289,7 +2294,9 @@ mod tests {
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
-			Some((Event::InvoiceRequestFailed { payment_id }, None)),
+			Some((Event::PaymentFailed {
+				payment_id, payment_hash: None, reason: Some(PaymentFailureReason::UserAbandoned),
+			}, None)),
 		);
 		assert!(pending_events.lock().unwrap().is_empty());
 	}

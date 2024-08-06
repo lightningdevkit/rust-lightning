@@ -1332,7 +1332,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
 
 	david.node.abandon_payment(payment_id);
-	get_event!(david, Event::InvoiceRequestFailed);
+	get_event!(david, Event::PaymentFailed);
 
 	// Send the invoice request to Alice using an invalid blinded path.
 	let payment_id = PaymentId([2; 32]);
@@ -1419,7 +1419,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
 		.unwrap();
 	david.node.abandon_payment(payment_id);
-	get_event!(david, Event::InvoiceRequestFailed);
+	get_event!(david, Event::PaymentFailed);
 
 	// Don't send the invoice request, but grab its reply path to use with a different request.
 	let invalid_reply_path = {
@@ -1547,7 +1547,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 	david.node.abandon_payment(payment_id);
-	get_event!(david, Event::InvoiceRequestFailed);
+	get_event!(david, Event::PaymentFailed);
 
 	// Send the invoice to David using an invalid blinded path.
 	let invalid_path = refund.paths().first().unwrap().clone();
@@ -1931,11 +1931,11 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 	assert_eq!(invoice_error, InvoiceError::from(Bolt12SemanticError::MissingPaths));
 
 	// Confirm that david drops this failed payment from his pending outbound payments.
-	match get_event!(david, Event::InvoiceRequestFailed) {
-		Event::InvoiceRequestFailed { payment_id: pay_id } => {
-			assert_eq!(pay_id, payment_id)
+	match get_event!(david, Event::PaymentFailed) {
+		Event::PaymentFailed { payment_id: actual_payment_id, .. } => {
+			assert_eq!(payment_id, actual_payment_id);
 		},
-		_ => panic!("No Event::InvoiceRequestFailed"),
+		_ => panic!("No Event::PaymentFailed"),
 	}
 }
 
