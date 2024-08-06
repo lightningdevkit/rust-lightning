@@ -1745,8 +1745,7 @@ where
 /// ```
 ///
 /// Use [`pay_for_offer`] to initiated payment, which sends an [`InvoiceRequest`] for an [`Offer`]
-/// and pays the [`Bolt12Invoice`] response. In addition to success and failure events,
-/// [`ChannelManager`] may also generate an [`Event::InvoiceRequestFailed`].
+/// and pays the [`Bolt12Invoice`] response.
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
@@ -1788,7 +1787,6 @@ where
 ///     match event {
 ///         Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
 ///         Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
-///         Event::InvoiceRequestFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
 ///         // ...
 ///     #     _ => {},
 ///     }
@@ -4265,15 +4263,13 @@ where
 	/// # Requested Invoices
 	///
 	/// In the case of paying a [`Bolt12Invoice`] via [`ChannelManager::pay_for_offer`], abandoning
-	/// the payment prior to receiving the invoice will result in an [`Event::InvoiceRequestFailed`]
-	/// and prevent any attempts at paying it once received. The other events may only be generated
-	/// once the invoice has been received.
+	/// the payment prior to receiving the invoice will result in an [`Event::PaymentFailed`] and
+	/// prevent any attempts at paying it once received.
 	///
 	/// # Restart Behavior
 	///
 	/// If an [`Event::PaymentFailed`] is generated and we restart without first persisting the
-	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated; likewise for
-	/// [`Event::InvoiceRequestFailed`].
+	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
@@ -8853,7 +8849,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// To revoke the refund, use [`ChannelManager::abandon_payment`] prior to receiving the
 	/// invoice. If abandoned, or an invoice isn't received before expiration, the payment will fail
-	/// with an [`Event::InvoiceRequestFailed`].
+	/// with an [`Event::PaymentFailed`].
 	///
 	/// If `max_total_routing_fee_msat` is not specified, The default from
 	/// [`RouteParameters::from_payment_params_and_value`] is applied.
@@ -8969,7 +8965,7 @@ where
 	///
 	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
 	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
-	/// payment will fail with an [`Event::InvoiceRequestFailed`].
+	/// payment will fail with an [`Event::PaymentFailed`].
 	///
 	/// # Privacy
 	///
