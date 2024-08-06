@@ -835,6 +835,8 @@ pub trait NodeSigner {
 	/// [phantom node payments]: PhantomKeysManager
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial;
 
+	fn get_peer_storage_key(&self) -> [u8;32];
+
 	/// Get node id based on the provided [`Recipient`].
 	///
 	/// This method must return the same value each time it is called with a given [`Recipient`]
@@ -2173,6 +2175,11 @@ impl NodeSigner for KeysManager {
 		self.inbound_payment_key.clone()
 	}
 
+	fn get_peer_storage_key(&self) -> [u8;32] {
+		let (t1, _) = hkdf_extract_expand_twice(b"Peer Storage Encryption Key", &self.get_node_secret_key().secret_bytes());
+		t1
+	}
+
 	fn sign_invoice(
 		&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
@@ -2349,6 +2356,11 @@ impl NodeSigner for PhantomKeysManager {
 
 	fn get_inbound_payment_key_material(&self) -> KeyMaterial {
 		self.inbound_payment_key.clone()
+	}
+
+	fn get_peer_storage_key(&self) -> [u8;32] {
+		let (t1, _) = hkdf_extract_expand_twice(b"Peer Storage Encryption Key", &self.get_node_secret_key().secret_bytes());
+		t1
 	}
 
 	fn sign_invoice(

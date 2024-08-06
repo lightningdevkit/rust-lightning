@@ -16,7 +16,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::Network;
 use bitcoin::secp256k1::PublicKey;
 
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
+use crate::chain::channelmonitor::{ChannelMonitor, StubChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
@@ -305,6 +305,16 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)>;
+
+	/// Watches a dummy channel identified by `funding_txo` using `monitor`.
+	/// This is called when we receive a peer storage and finds an unknown channel in it.
+	/// 
+	/// A return of `Err(())` indicates that the channel is already being tracked and there is no
+	/// need to take any action.
+	/// 
+	/// If the given `funding_txo` has previously been registered via `watch_channel`, `Err(())`
+	/// must be returned.
+	fn watch_dummy(&self, funding_outpoint: OutPoint, stub_monitor: StubChannelMonitor<ChannelSigner>) -> Result<(), ()>;
 }
 
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to

@@ -38,7 +38,7 @@ use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, Paym
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, StubChannelMonitor, StubChannel, OurPeerStorage, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::events;
 use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
@@ -54,6 +54,8 @@ use crate::ln::features::Bolt11InvoiceFeatures;
 use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
+use crate::ln::channel_keys::RevocationBasepoint;
+use crate::ln::chan_utils::{make_funding_redeemscript, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, ChannelPublicKeys};
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{HTLCFailReason, INVALID_ONION_BLINDING};
 use crate::ln::msgs::{ChannelMessageHandler, DecodeError, LightningError};
@@ -71,8 +73,8 @@ use crate::offers::refund::{Refund, RefundBuilder};
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
-use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::{EntropySource, ChannelSigner, NodeSigner, Recipient, SignerProvider};
 use crate::util::config::{UserConfig, ChannelConfig, ChannelConfigUpdate};
 use crate::util::wakers::{Future, Notifier};
 use crate::util::scid_utils::fake_scid;
@@ -2171,6 +2173,9 @@ where
 
 	inbound_payment_key: inbound_payment::ExpandedKey,
 
+	/// The key used to encrypt our peer storage that would be sent to our peers.
+	our_peerstorage_encryption_key: [u8;32],
+
 	/// LDK puts the [fake scids] that it generates into namespaces, to identify the type of an
 	/// incoming payment. To make it harder for a third-party to identify the type of a payment,
 	/// we encrypt the namespace identifier using these bytes.
@@ -2281,7 +2286,8 @@ where
 	entropy_source: ES,
 	node_signer: NS,
 	signer_provider: SP,
-
+	our_peer_storage: FairRwLock<OurPeerStorage>,
+	peer_storage: Mutex<HashMap<PublicKey, Vec<u8>>>,
 	logger: L,
 }
 
@@ -3037,6 +3043,7 @@ where
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 		let inbound_pmt_key_material = node_signer.get_inbound_payment_key_material();
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+		let our_peerstorage_encryption_key = node_signer.get_peer_storage_key();
 		ChannelManager {
 			default_configuration: config.clone(),
 			chain_hash: ChainHash::using_genesis_block(params.network),
@@ -3061,6 +3068,8 @@ where
 			secp_ctx,
 
 			inbound_payment_key: expanded_inbound_key,
+			our_peerstorage_encryption_key,
+
 			fake_scid_rand_bytes: entropy_source.get_secure_random_bytes(),
 
 			probing_cookie_secret: entropy_source.get_secure_random_bytes(),
@@ -3086,7 +3095,8 @@ where
 			entropy_source,
 			node_signer,
 			signer_provider,
-
+			our_peer_storage: FairRwLock::new(OurPeerStorage::new()),
+			peer_storage: Mutex::new(new_hash_map()),
 			logger,
 		}
 	}
@@ -3094,6 +3104,11 @@ where
 	/// Gets the current configuration applied to all new channels.
 	pub fn get_current_default_configuration(&self) -> &UserConfig {
 		&self.default_configuration
+	}
+
+	pub fn get_encrypted_our_peer_storage(&self) -> Vec<u8> {
+		let our_peer_storage = self.our_peer_storage.read().unwrap();
+		our_peer_storage.encrypt_our_peer_storage(self.our_peerstorage_encryption_key)
 	}
 
 	fn create_and_insert_outbound_scid_alias(&self) -> u64 {
@@ -6589,6 +6604,8 @@ where
 								if let Some(raa_blocker) = raa_blocker_opt {
 									peer_state.actions_blocking_raa_monitor_updates.entry(chan_id).or_insert_with(Vec::new).push(raa_blocker);
 								}
+
+								let _ = self.our_peer_storage.write().unwrap().update_state_from_monitor_update(chan.context.channel_id(), monitor_update.clone());
 								if !during_init {
 									handle_new_monitor_update!(self, prev_hop.outpoint, monitor_update, peer_state_lock,
 										peer_state, per_peer_state, chan);
@@ -7586,6 +7603,77 @@ where
 		}
 	}
 
+	fn internal_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::PeerStorageMessage) {
+		let per_peer_state = self.per_peer_state.write().unwrap();
+		let peer_state_mutex = match per_peer_state.get(counterparty_node_id) {
+			Some(peer_state_mutex) => peer_state_mutex,
+			None => return,
+		};
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None, None);
+
+		// Check if we have any channels with the peer (Currently we only provide the servie to peers we have a channel with).
+		if peer_state.total_channel_count() == 0 {
+			log_debug!(logger, "We do not have any channel with {}", log_pubkey!(counterparty_node_id));
+			return;
+		}
+		log_trace!(logger, "Received Peer Storage from {}", log_pubkey!(counterparty_node_id));
+		self.peer_storage.lock().unwrap().insert(*counterparty_node_id, msg.data.clone());
+	}
+
+	fn internal_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), None, None);
+		let our_peer_storage = self.our_peer_storage.read().unwrap();
+		if msg.data.len() < 16 {
+			log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+			return;
+		}
+
+ 		let mut res = vec![0; msg.data.len() - 16];
+
+		match our_peer_storage.decrypt_our_peer_storage(&mut res, msg.data.as_slice(), self.our_peerstorage_encryption_key) {
+			Ok(()) => {
+				// Decryption successful, the plaintext is now stored in `res`
+				log_debug!(logger, "Decryption successful");
+				let our_peer_storage = <OurPeerStorage as Readable>::read(&mut ::std::io::Cursor::new(res)).unwrap();
+
+				for ps_channel in &our_peer_storage.channels {
+					let mut keys = self.signer_provider.derive_channel_signer(ps_channel.channel_value_stoshis, ps_channel.channel_keys_id);
+					let channel_parameters = ChannelTransactionParameters{
+						holder_pubkeys:keys.pubkeys().clone(),
+						is_outbound_from_holder: true,
+						holder_selected_contest_delay: 66,
+						counterparty_parameters: Some(CounterpartyChannelTransactionParameters { 
+							pubkeys: ChannelPublicKeys {
+								funding_pubkey: PublicKey::from_secret_key(&self.secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
+								revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(&self.secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap())),
+								payment_point: PublicKey::from_secret_key(&self.secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
+								delayed_payment_basepoint: ps_channel.counterparty_delayed_payment_base_key,
+								htlc_basepoint: ps_channel.counterparty_htlc_base_key,
+							}, selected_contest_delay: ps_channel.on_counterparty_tx_csv}),
+						funding_outpoint: Some(ps_channel.funding_outpoint),
+						channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+					};
+					keys.provide_channel_parameters(&channel_parameters);
+					let pubkeys  = keys.pubkeys().clone();
+					let funding_redeemscript = make_funding_redeemscript(&pubkeys.funding_pubkey, counterparty_node_id);
+					let funding_txo_script = funding_redeemscript.to_p2wsh();
+					let monitor = StubChannelMonitor::new_stub(self.secp_ctx.clone(), ps_channel, *self.best_block.read().unwrap(), keys, channel_parameters, funding_txo_script);
+					let monitor_res =  self.chain_monitor.watch_dummy(ps_channel.funding_outpoint, monitor);
+					if let Ok(_persist_state) = monitor_res {
+						log_trace!(logger, "Dummy channel persisted!");
+					}
+				}
+			}
+			Err(_) => {
+				log_debug!(logger, "Invalid YourPeerStorage received from {}", log_pubkey!(counterparty_node_id));
+				return;
+			}
+		}
+
+	}
+
 	fn internal_funding_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingSigned) -> Result<(), MsgHandleErrInternal> {
 		let best_block = *self.best_block.read().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
@@ -7689,7 +7777,17 @@ where
 						let mut pending_events = self.pending_events.lock().unwrap();
 						emit_channel_ready_event!(pending_events, chan);
 					}
-
+					// Update Peer Storage.
+					let counterparty_channel_parameters = chan.context.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap();
+					let counterparty_delayed_payment_base_key = counterparty_channel_parameters.pubkeys.delayed_payment_basepoint;
+					let counterparty_htlc_base_key = counterparty_channel_parameters.pubkeys.htlc_basepoint;
+					let stub_chan = StubChannel::new(chan.context.channel_id(), chan.context.get_funding_txo().unwrap(), chan.context.get_value_satoshis(),
+																chan.context.get_channel_keys_id(), chan.context.get_commitment_secret(),
+																chan.context.get_counterparty_node_id(), counterparty_delayed_payment_base_key, counterparty_htlc_base_key,
+																chan.context.get_holder_selected_contest_delay(),
+																chan.context.get_commitment_txn_number_obscure_factor(), new_hash_map(),
+																None, chan.context.channel_transaction_parameters.channel_type_features.clone());
+					self.our_peer_storage.write().unwrap().stub_channel(stub_chan);
 					Ok(())
 				} else {
 					try_chan_phase_entry!(self, Err(ChannelError::close(
@@ -8036,6 +8134,7 @@ where
 					let funding_txo = chan.context.get_funding_txo();
 					let monitor_update_opt = try_chan_phase_entry!(self, chan.commitment_signed(&msg, &&logger), chan_phase_entry);
 					if let Some(monitor_update) = monitor_update_opt {
+						let _ = self.our_peer_storage.write().unwrap().update_state_from_monitor_update(chan.context.channel_id(), monitor_update.clone());
 						handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
 							peer_state, per_peer_state, chan);
 					}
@@ -8236,9 +8335,15 @@ where
 						} else { false };
 						let (htlcs_to_fail, monitor_update_opt) = try_chan_phase_entry!(self,
 							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_phase_entry);
+
+						let mut our_peer_storage = self.our_peer_storage.write().unwrap();
+						let _ = our_peer_storage.provide_secret(chan.context.channel_id(), chan.get_cur_counterparty_commitment_transaction_number() + 1, msg.per_commitment_secret);
 						if let Some(monitor_update) = monitor_update_opt {
 							let funding_txo = funding_txo_opt
 								.expect("Funding outpoint must have been set for RAA handling to succeed");
+
+							let _ = our_peer_storage.update_state_from_monitor_update(chan.context.channel_id(), monitor_update.clone());
+
 							handle_new_monitor_update!(self, funding_txo, monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan);
 						}
@@ -8251,6 +8356,30 @@ where
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		};
+
+		{
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let mut peer_state_lock = per_peer_state.get(counterparty_node_id)
+				.ok_or_else(|| {
+					debug_assert!(false);
+					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				}).map(|mtx| mtx.lock().unwrap())?;
+			let peer_state = &mut *peer_state_lock;
+			let our_peer_storage = self.get_encrypted_our_peer_storage();
+
+			for context in peer_state.channel_by_id.iter().map(|(_, phase)| phase.context()) {
+				// Update latest PeerStorage for the peer.
+				peer_state.pending_msg_events.push(
+					events::MessageSendEvent::SendPeerStorageMessage {
+						node_id: context.get_counterparty_node_id(),
+						msg: msgs::PeerStorageMessage {
+							data: our_peer_storage.clone()
+						},
+					}
+				);
+			}
+		}
+
 		self.fail_holding_cell_htlcs(htlcs_to_fail, msg.channel_id, counterparty_node_id);
 		Ok(())
 	}
@@ -8582,6 +8711,7 @@ where
 						}
 						if let Some(monitor_update) = monitor_opt {
 							has_monitor_update = true;
+							let _ = self.our_peer_storage.write().unwrap().update_state_from_monitor_update(chan.context.channel_id(), monitor_update.clone());
 
 							handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update,
 								peer_state_lock, peer_state, per_peer_state, chan);
@@ -10138,6 +10268,16 @@ where
 		let _ = handle_error!(self, self.internal_funding_signed(counterparty_node_id, msg), *counterparty_node_id);
 	}
 
+	fn handle_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::PeerStorageMessage) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.internal_peer_storage(counterparty_node_id, msg);
+	}
+
+	fn handle_your_peer_storage(&self, counterparty_node_id: &PublicKey, msg: &msgs::YourPeerStorageMessage) {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.internal_your_peer_storage(counterparty_node_id, msg);
+	}
+
 	fn handle_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
 		// channel_ready message - while the channel's state will change, any channel_ready message
@@ -10403,6 +10543,10 @@ where
 						&events::MessageSendEvent::SendShortIdsQuery { .. } => false,
 						&events::MessageSendEvent::SendReplyChannelRange { .. } => false,
 						&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
+
+						// Peer Storage
+						&events::MessageSendEvent::SendPeerStorageMessage { .. } => false,
+						&events::MessageSendEvent::SendYourPeerStorageMessage { .. } => false,
 					}
 				});
 				debug_assert!(peer_state.is_connected, "A disconnected peer cannot disconnect");
@@ -10481,7 +10625,28 @@ where
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
+				let num_channels = peer_state.total_channel_count();
 				let pending_msg_events = &mut peer_state.pending_msg_events;
+				let peer_storage = self.peer_storage.lock().unwrap().get(counterparty_node_id).unwrap_or(&Vec::<u8>::new()).clone();
+
+				if peer_storage.len() > 0 {
+					pending_msg_events.push(events::MessageSendEvent::SendYourPeerStorageMessage { 
+						node_id: counterparty_node_id.clone(),
+						msg: msgs::YourPeerStorageMessage {
+							data: peer_storage
+						},
+					});
+				}
+
+				if peer_state.latest_features.supports_provide_peer_storage() && num_channels > 0 {
+					let our_peer_storage = self.get_encrypted_our_peer_storage();
+					pending_msg_events.push(events::MessageSendEvent::SendPeerStorageMessage { 
+						node_id: counterparty_node_id.clone(),
+						msg: msgs::PeerStorageMessage {
+							data: our_peer_storage
+						},
+					});
+				}
 
 				for (_, phase) in peer_state.channel_by_id.iter_mut() {
 					match phase {
@@ -11014,6 +11179,7 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	features.set_scid_privacy_optional();
 	features.set_zero_conf_optional();
 	features.set_route_blinding_optional();
+	features.set_provide_peer_backup_storage_optional();
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
 	}
@@ -11540,6 +11706,13 @@ where
 			pending_payment.write(writer)?;
 		}
 
+		let peer_storage = self.peer_storage.lock().unwrap();
+		(peer_storage.len() as u64).write(writer)?;
+		for (node_id, peer_data) in peer_storage.iter() {
+			node_id.write(writer)?;
+			peer_data.write(writer)?;
+		}
+
 		// For backwards compat, write the session privs and their total length.
 		let mut num_pending_outbounds_compat: u64 = 0;
 		for (_, outbound) in pending_outbound_payments.iter() {
@@ -11830,6 +12003,8 @@ where
 		let mut channel_closures = VecDeque::new();
 		let mut close_background_events = Vec::new();
 		let mut funding_txo_to_channel_id = hash_map_with_capacity(channel_count as usize);
+		let mut our_peer_storage: OurPeerStorage = OurPeerStorage::new();
+
 		for _ in 0..channel_count {
 			let mut channel: Channel<SP> = Channel::read(reader, (
 				&args.entropy_source, &args.signer_provider, best_block_height, &provided_channel_type_features(&args.default_config)
@@ -11838,7 +12013,39 @@ where
 			let funding_txo = channel.context.get_funding_txo().ok_or(DecodeError::InvalidValue)?;
 			funding_txo_to_channel_id.insert(funding_txo, channel.context.channel_id());
 			funding_txo_set.insert(funding_txo.clone());
+			let counterparty_channel_parameters = channel.context.channel_transaction_parameters.counterparty_parameters.as_ref().unwrap();
+			let counterparty_delayed_payment_base_key = counterparty_channel_parameters.pubkeys.delayed_payment_basepoint;
+			let counterparty_htlc_base_key = counterparty_channel_parameters.pubkeys.htlc_basepoint;
+
+			let stub_chan = StubChannel::new(
+				channel.context.channel_id(),
+				funding_txo,
+				channel.context.get_value_satoshis(),
+				channel.context.get_channel_keys_id(),
+				channel.context.get_commitment_secret(),
+				channel.context.get_counterparty_node_id(),
+				counterparty_delayed_payment_base_key,
+				counterparty_htlc_base_key,
+				channel.context.get_holder_selected_contest_delay(),
+				channel.context.get_commitment_txn_number_obscure_factor(),
+				new_hash_map(),
+				None,
+				channel.context.channel_transaction_parameters.channel_type_features.clone(),
+			);
+			our_peer_storage.stub_channel(stub_chan);
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&funding_txo) {
+				if let Some(latest_commitment_txn_info) = monitor.get_latest_commitment_txn_and_its_claiming_info() {
+
+					let mut htlc_data = latest_commitment_txn_info.1;
+
+					// We do not need HTLCSource to be backed up.
+					for htlc in &mut htlc_data {
+						htlc.1 = None;
+					}
+
+					our_peer_storage.update_latest_state(monitor.channel_id(), latest_commitment_txn_info.0, htlc_data, latest_commitment_txn_info.2);
+				}
+
 				if channel.get_cur_holder_commitment_transaction_number() > monitor.get_cur_holder_commitment_number() ||
 						channel.get_revoked_counterparty_commitment_transaction_number() > monitor.get_min_seen_secret() ||
 						channel.get_cur_counterparty_commitment_transaction_number() > monitor.get_cur_counterparty_commitment_number() ||
@@ -12041,6 +12248,14 @@ where
 		let mut pending_inbound_payments: HashMap<PaymentHash, PendingInboundPayment> = hash_map_with_capacity(cmp::min(pending_inbound_payment_count as usize, MAX_ALLOC_SIZE/(3*32)));
 		for _ in 0..pending_inbound_payment_count {
 			if pending_inbound_payments.insert(Readable::read(reader)?, Readable::read(reader)?).is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+
+		let peer_storage_count: u64 = Readable::read(reader)?;
+		let mut peer_storage: HashMap<PublicKey, Vec<u8>> = hash_map_with_capacity(cmp::min(peer_storage_count as usize, MAX_ALLOC_SIZE/(3*32)));
+		for _ in 0..peer_storage_count {
+			if peer_storage.insert(Readable::read(reader)?, Readable::read(reader)?).is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -12415,6 +12630,7 @@ where
 
 		let inbound_pmt_key_material = args.node_signer.get_inbound_payment_key_material();
 		let expanded_inbound_key = inbound_payment::ExpandedKey::new(&inbound_pmt_key_material);
+		let our_peerstorage_encryption_key = args.node_signer.get_peer_storage_key();
 
 		let mut claimable_payments = hash_map_with_capacity(claimable_htlcs_list.len());
 		if let Some(purposes) = claimable_htlc_purposes {
@@ -12637,6 +12853,7 @@ where
 			best_block: RwLock::new(BestBlock::new(best_block_hash, best_block_height)),
 
 			inbound_payment_key: expanded_inbound_key,
+			our_peerstorage_encryption_key,
 			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: pending_outbounds,
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
@@ -12679,6 +12896,8 @@ where
 
 			last_days_feerates: Mutex::new(VecDeque::new()),
 
+			our_peer_storage: FairRwLock::new(our_peer_storage),
+			peer_storage: Mutex::new(peer_storage),
 			logger: args.logger,
 			default_configuration: args.default_config,
 		};

@@ -68,6 +68,8 @@
 //!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
 //! - `Trampoline` - supports receiving and forwarding Trampoline payments
 //!     (see the [`Trampoline` feature proposal](https://github.com/lightning/bolts/pull/836) for more information).
+//! - `provide_peer_backup_storage` - Indicates that we offer the capability to store data of our peers
+//! 	(see https://github.com/lightning/bolts/pull/1110 for more info).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -153,7 +155,7 @@ mod sealed {
 		// Byte 4
 		OnionMessages,
 		// Byte 5
-		ChannelType | SCIDPrivacy,
+		ProvidePeerBackupStorage | ChannelType | SCIDPrivacy,
 		// Byte 6
 		ZeroConf,
 		// Byte 7
@@ -171,7 +173,7 @@ mod sealed {
 		// Byte 4
 		OnionMessages,
 		// Byte 5
-		ChannelType | SCIDPrivacy,
+		ProvidePeerBackupStorage | ChannelType | SCIDPrivacy,
 		// Byte 6
 		ZeroConf | Keysend,
 		// Byte 7
@@ -415,6 +417,9 @@ mod sealed {
 	define_feature!(39, OnionMessages, [InitContext, NodeContext],
 		"Feature flags for `option_onion_messages`.", set_onion_messages_optional,
 		set_onion_messages_required, supports_onion_messages, requires_onion_messages);
+	define_feature!(43, ProvidePeerBackupStorage, [InitContext, NodeContext],
+		"Feature flags for `provide_peer_backup_storage`.", set_provide_peer_backup_storage_optional,
+		set_provide_peer_backup_storage_required, supports_provide_peer_storage, requires_provide_peer_storage);
 	define_feature!(45, ChannelType, [InitContext, NodeContext],
 		"Feature flags for `option_channel_type`.", set_channel_type_optional,
 		set_channel_type_required, supports_channel_type, requires_channel_type);
@@ -1088,6 +1093,14 @@ mod tests {
 	fn requires_unknown_bits_from() {
 		let mut features1 = InitFeatures::empty();
 		let mut features2 = InitFeatures::empty();
+		assert!(!features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features1.set_provide_peer_backup_storage_required();
+		assert!(features1.requires_unknown_bits_from(&features2));
+		assert!(!features2.requires_unknown_bits_from(&features1));
+
+		features2.set_provide_peer_backup_storage_optional();
 		assert!(!features1.requires_unknown_bits_from(&features2));
 		assert!(!features2.requires_unknown_bits_from(&features1));
 

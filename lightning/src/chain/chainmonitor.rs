@@ -29,7 +29,7 @@ use bitcoin::hash_types::{Txid, BlockHash};
 use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Filter, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor};
+use crate::chain::channelmonitor::{ChannelMonitor, StubChannelMonitor, ChannelMonitorUpdate, Balance, MonitorEvent, TransactionOutputs, WithChannelMonitor, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -161,6 +161,9 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	/// Archiving the data in a backup location (rather than deleting it fully) is useful for
 	/// hedging against data loss in case of unexpected failure.
 	fn archive_persisted_channel(&self, channel_funding_outpoint: OutPoint);
+	/// Persist a new channel's data in response to a [`chain::Watch::watch_dummy`] call. This is
+	/// called by [`ChannelManager`] for new stub channels received from peer storage backup,
+	fn persist_new_stub_channel(&self, funding_txo: OutPoint, stub_monitor: &StubChannelMonitor<ChannelSigner>) -> Result<(), std::io::Error>;
 }
 
 struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
@@ -196,6 +199,19 @@ pub struct LockedChannelMonitor<'a, ChannelSigner: EcdsaChannelSigner> {
 	funding_txo: OutPoint,
 }
 
+/// A read-only reference to a current StubChannelMonitors similar to [LockedChannelMonitor]
+pub struct LockedStubChannelMonitor<'a, ChannelSigner: EcdsaChannelSigner> {
+	lock: RwLockReadGuard<'a, HashMap<OutPoint, StubChannelMonitor<ChannelSigner>>>,
+	funding_txo: OutPoint,
+}
+
+impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedStubChannelMonitor<'_, ChannelSigner> {
+	type Target = StubChannelMonitor<ChannelSigner>;
+	fn deref(&self) -> &StubChannelMonitor<ChannelSigner> {
+		&self.lock.get(&self.funding_txo).expect("Checked at construction")
+	}
+}
+
 impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, ChannelSigner> {
 	type Target = ChannelMonitor<ChannelSigner>;
 	fn deref(&self) -> &ChannelMonitor<ChannelSigner> {
@@ -227,6 +243,8 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
         P::Target: Persist<ChannelSigner>,
 {
 	monitors: RwLock<HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
+	stub_monitors: RwLock<HashMap<OutPoint, StubChannelMonitor<ChannelSigner>>>,
+
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
@@ -261,9 +279,10 @@ where C::Target: chain::Filter,
 	/// updated `txdata`.
 	///
 	/// Calls which represent a new blockchain tip height should set `best_height`.
-	fn process_chain_data<FN>(&self, header: &Header, best_height: Option<u32>, txdata: &TransactionData, process: FN)
+	fn process_chain_data<FN, SN>(&self, header: &Header, best_height: Option<u32>, txdata: &TransactionData, process: FN, stub_process: SN)
 	where
-		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
+		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>,
+		SN: Fn(&StubChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
 	{
 		let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
 		let funding_outpoints = hash_set_from_iter(self.monitors.read().unwrap().keys().cloned());
@@ -293,6 +312,14 @@ where C::Target: chain::Filter,
 			}
 		}
 
+		let stub_monitors = self.stub_monitors.write().unwrap();
+		for (funding_outpoint, stub_monitor) in stub_monitors.iter() {
+			if self.update_stub_with_chain_data(header, best_height, txdata, &stub_process, funding_outpoint, stub_monitor).is_err() {
+				log_error!(self.logger, "{}", err_str);
+				panic!("{}", err_str);
+			};
+		}
+
 		if let Some(height) = best_height {
 			// If the best block height is being updated, update highest_chain_height under the
 			// monitors write lock.
@@ -302,6 +329,34 @@ where C::Target: chain::Filter,
 				self.highest_chain_height.store(new_height, Ordering::Release);
 			}
 		}
+	}
+
+	fn update_stub_with_chain_data<SN>(&self, header: &Header, _best_height: Option<u32>, txdata: &TransactionData, stub_process: SN,
+		_funding_outpoint: &OutPoint, stub_monitor: &StubChannelMonitor<ChannelSigner>) -> Result<(), ()> 
+		where SN: Fn(&StubChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs> {
+		let logger = WithChannelMonitor::from_stub(&self.logger, stub_monitor);
+		let mut txn_outputs;
+		{
+			txn_outputs = stub_process(stub_monitor, txdata);
+		}
+
+		if let Some(ref chain_source) = self.chain_source {
+			let block_hash = header.block_hash();
+			for (txid, mut outputs) in txn_outputs.drain(..) {
+				for (idx, output) in outputs.drain(..) {
+					// Register any new outputs with the chain source for filtering
+					let output = WatchedOutput {
+						block_hash: Some(block_hash),
+						outpoint: OutPoint { txid, index: idx as u16 },
+						script_pubkey: output.script_pubkey,
+					};
+					log_trace!(logger, "Adding monitoring for spends of outpoint from stub {} to the filter", output.outpoint);
+					chain_source.register_output(output);
+				}
+			}
+		}
+
+		Ok(())
 	}
 
 	fn update_monitor_with_chain_data<FN>(
@@ -378,6 +433,7 @@ where C::Target: chain::Filter,
 	pub fn new(chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
+			stub_monitors: RwLock::new(new_hash_map()),
 			chain_source,
 			broadcaster,
 			logger,
@@ -428,6 +484,15 @@ where C::Target: chain::Filter,
 		}
 	}
 
+	pub fn get_stub_monitor(&self, funding_txo: OutPoint) -> Result<LockedStubChannelMonitor<'_, ChannelSigner>, ()> {
+		let lock = self.stub_monitors.read().unwrap();
+		if lock.get(&funding_txo).is_some() {
+			Ok(LockedStubChannelMonitor { lock, funding_txo })
+		} else {
+			Err(())
+		}
+	}
+
 	/// Lists the funding outpoint and channel ID of each [`ChannelMonitor`] being monitored.
 	///
 	/// Note that [`ChannelMonitor`]s are not removed when a channel is closed as they are always
@@ -435,6 +500,13 @@ where C::Target: chain::Filter,
 	pub fn list_monitors(&self) -> Vec<(OutPoint, ChannelId)> {
 		self.monitors.read().unwrap().iter().map(|(outpoint, monitor_holder)| {
 			let channel_id = monitor_holder.monitor.channel_id();
+			(*outpoint, channel_id)
+		}).collect()
+	}
+
+	pub fn list_stub_monitors(&self) -> Vec<(OutPoint, ChannelId)> {
+		self.stub_monitors.read().unwrap().iter().map(|(outpoint, stub_monitor)| {
+			let channel_id = stub_monitor.channel_id();
 			(*outpoint, channel_id)
 		}).collect()
 	}
@@ -670,6 +742,9 @@ where
 		self.process_chain_data(header, Some(height), &txdata, |monitor, txdata| {
 			monitor.block_connected(
 				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
+		}, |stub_monitor, txdata| {
+			stub_monitor.block_connected(
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
 		// Assume we may have some new events and wake the event processor
 		self.event_notifier.notify();
@@ -699,6 +774,9 @@ where
 		self.process_chain_data(header, None, txdata, |monitor, txdata| {
 			monitor.transactions_confirmed(
 				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
+		}, |stub_monitor, txdata| {
+			stub_monitor.transactions_confirmed(
+				header, txdata, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
 		// Assume we may have some new events and wake the event processor
 		self.event_notifier.notify();
@@ -721,6 +799,10 @@ where
 			monitor.best_block_updated(
 				header, height, &*self.broadcaster, &*self.fee_estimator, &self.logger
 			)
+		}, |stub_monitor, txdata| {
+			debug_assert!(txdata.is_empty());
+			stub_monitor.best_block_updated(
+				header, height, &*self.broadcaster, &*self.fee_estimator, &self.logger)
 		});
 		// Assume we may have some new events and wake the event processor
 		self.event_notifier.notify();
@@ -747,6 +829,39 @@ where C::Target: chain::Filter,
 	    L::Target: Logger,
 	    P::Target: Persist<ChannelSigner>,
 {
+	fn watch_dummy(&self, funding_outpoint: OutPoint, stub_monitor: StubChannelMonitor<ChannelSigner>) -> Result<(), ()> {
+		let logger = WithChannelMonitor::from_stub(&self.logger, &stub_monitor);
+		let mut monitors = self.monitors.write().unwrap();
+		match monitors.entry(funding_outpoint) {
+			hash_map::Entry::Occupied(_) => {
+				log_error!(logger, "Failed to add new channel data: channel monitor for given outpoint is already present");
+				return Err(());
+			},
+			hash_map::Entry::Vacant(e) => e,
+		};
+		let mut stub_monitors = self.stub_monitors.write().unwrap();
+		let entry = match stub_monitors.entry(funding_outpoint) {
+			hash_map::Entry::Occupied(_) => {
+				log_error!(logger, "Failed to add new channel data: channel monitor for given outpoint is already present");
+				return Err(());
+			},
+			hash_map::Entry::Vacant(e) => e,
+		};
+		log_trace!(logger, "Got new StubChannelMonitor for channel {}", stub_monitor.channel_id());
+		let persist_res = self.persister.persist_new_stub_channel(funding_outpoint, &stub_monitor);
+
+		if persist_res.is_err() {
+			log_error!(logger, "Failed to add new dummy channel data");
+			return Err(());
+		}
+		if let Some(ref chain_source) = self.chain_source {
+			stub_monitor.load_outputs_to_watch(chain_source , &self.logger);
+		}
+		entry.insert(stub_monitor);
+
+		Ok(())
+	}
+
 	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut monitors = self.monitors.write().unwrap();
