@@ -848,7 +848,7 @@ mod tests {
 					message_paths: Some(&paths),
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
-				ExperimentalOfferTlvStreamRef {},
+				ExperimentalOfferTlvStreamRef { experimental_foo: None },
 			)
 		);
 
@@ -911,6 +911,52 @@ mod tests {
 		.build_and_sign(&secp_ctx)
 		{
 			assert_eq!(e, Bolt12SemanticError::AlreadyExpired);
+		} else {
+			panic!("expected error")
+		}
+	}
+
+	#[test]
+	fn builds_invoice_from_offer_using_derived_key() {
+		let node_id = recipient_pubkey();
+		let now = now();
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.experimental_foo(42)
+			.build()
+			.unwrap();
+
+		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			nonce,
+			&secp_ctx,
+		)
+		.unwrap()
+		.build_and_sign(&secp_ctx)
+		{
+			panic!("error building invoice: {:?}", e);
+		}
+
+		let expanded_key = ExpandedKey::new(&KeyMaterial([41; 32]));
+		if let Err(e) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			nonce,
+			&secp_ctx,
+		) {
+			assert_eq!(e, Bolt12SemanticError::InvalidMetadata);
 		} else {
 			panic!("expected error")
 		}

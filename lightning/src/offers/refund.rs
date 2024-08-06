@@ -176,6 +176,8 @@ macro_rules! refund_explicit_metadata_builder_methods { () => {
 				payer: PayerContents(metadata), description: String::new(), absolute_expiry: None,
 				issuer: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
 				quantity: None, payer_signing_pubkey: signing_pubkey, payer_note: None, paths: None,
+				#[cfg(test)]
+				experimental_foo: None,
 			},
 			secp_ctx: None,
 		})
@@ -218,6 +220,8 @@ macro_rules! refund_builder_methods { (
 				payer: PayerContents(metadata), description: String::new(), absolute_expiry: None,
 				issuer: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
 				quantity: None, payer_signing_pubkey: node_id, payer_note: None, paths: None,
+				#[cfg(test)]
+				experimental_foo: None,
 			},
 			secp_ctx: Some(secp_ctx),
 		})
@@ -358,6 +362,12 @@ macro_rules! refund_builder_test_methods { (
 		$self.refund.features = features;
 		$return_value
 	}
+
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(super) fn experimental_foo($($self_mut)* $self: $self_type, experimental_foo: u64) -> $return_type {
+		$self.refund.experimental_foo = Some(experimental_foo);
+		$return_value
+	}
 } }
 
 impl<'a> RefundBuilder<'a, secp256k1::SignOnly> {
@@ -437,6 +447,8 @@ pub(super) struct RefundContents {
 	payer_signing_pubkey: PublicKey,
 	payer_note: Option<String>,
 	paths: Option<Vec<BlindedMessagePath>>,
+	#[cfg(test)]
+	experimental_foo: Option<u64>,
 }
 
 impl Refund {
@@ -770,7 +782,10 @@ impl RefundContents {
 			paths: self.paths.as_ref(),
 		};
 
-		let experimental_offer = ExperimentalOfferTlvStreamRef {};
+		let experimental_offer = ExperimentalOfferTlvStreamRef {
+			#[cfg(test)]
+			experimental_foo: self.experimental_foo,
+		};
 
 		(payer, offer, invoice_request, experimental_offer)
 	}
@@ -855,7 +870,10 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			InvoiceRequestTlvStream {
 				chain, amount, features, quantity, payer_id, payer_note, paths
 			},
-			_experimental_offer_tlv_stream,
+			ExperimentalOfferTlvStream {
+				#[cfg(test)]
+				experimental_foo,
+			},
 		) = tlv_stream;
 
 		let payer = match payer_metadata {
@@ -916,6 +934,8 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 		Ok(RefundContents {
 			payer, description, absolute_expiry, issuer, chain, amount_msats, features, quantity,
 			payer_signing_pubkey, payer_note, paths,
+			#[cfg(test)]
+			experimental_foo,
 		})
 	}
 }
@@ -1021,7 +1041,9 @@ mod tests {
 					payer_note: None,
 					paths: None,
 				},
-				ExperimentalOfferTlvStreamRef {},
+				ExperimentalOfferTlvStreamRef {
+					experimental_foo: None,
+				},
 			),
 		);
 
@@ -1050,6 +1072,7 @@ mod tests {
 		let refund = RefundBuilder
 			::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
 			.unwrap()
+			.experimental_foo(42)
 			.build().unwrap();
 		assert_eq!(refund.payer_signing_pubkey(), node_id);
 
@@ -1117,6 +1140,7 @@ mod tests {
 			::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
 			.unwrap()
 			.path(blinded_path)
+			.experimental_foo(42)
 			.build().unwrap();
 		assert_ne!(refund.payer_signing_pubkey(), node_id);
 

@@ -1434,7 +1434,9 @@ mod tests {
 					paths: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice_request.signature()) },
-				ExperimentalOfferTlvStreamRef {},
+				ExperimentalOfferTlvStreamRef {
+					experimental_foo: None,
+				},
 			),
 		);
 
@@ -1482,6 +1484,7 @@ mod tests {
 
 		let offer = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
+			.experimental_foo(42)
 			.build().unwrap();
 		let invoice_request = offer
 			.request_invoice_deriving_metadata(signing_pubkey, &expanded_key, nonce, payment_id)
@@ -1565,6 +1568,7 @@ mod tests {
 
 		let offer = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
+			.experimental_foo(42)
 			.build().unwrap();
 		let invoice_request = offer
 			.request_invoice_deriving_signing_pubkey(&expanded_key, nonce, &secp_ctx, payment_id)
