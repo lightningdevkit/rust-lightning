@@ -1,6 +1,8 @@
 #!/bin/bash
 set -eo pipefail
 
+export LC_ALL=C
+
 # Generate initial exclusion list
 #find . -name '*.rs' -type f |sort >rustfmt_excluded_files
 
