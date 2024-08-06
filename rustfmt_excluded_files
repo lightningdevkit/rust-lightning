@@ -1,11 +1,3 @@
-./lightning-invoice/fuzz/fuzz_targets/serde_data_part.rs
-./lightning-invoice/src/de.rs
-./lightning-invoice/src/lib.rs
-./lightning-invoice/src/payment.rs
-./lightning-invoice/src/ser.rs
-./lightning-invoice/src/tb.rs
-./lightning-invoice/src/utils.rs
-./lightning-invoice/tests/ser_de.rs
 ./lightning-persister/src/fs_store.rs
 ./lightning-persister/src/lib.rs
 ./lightning-persister/src/test_utils.rs
