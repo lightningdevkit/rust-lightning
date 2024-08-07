@@ -96,7 +96,8 @@ pub(crate) enum PendingOutboundPayment {
 	Abandoned {
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: PaymentHash,
-		/// Will be `None` if the payment was serialized before 0.0.115.
+		/// Will be `None` if the payment was serialized before 0.0.115 or if downgrading to 0.0.124
+		/// or later with a reason that was added after.
 		reason: Option<PaymentFailureReason>,
 	},
 }
@@ -1940,7 +1941,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	},
 	(3, Abandoned) => {
 		(0, session_privs, required),
-		(1, reason, option),
+		(1, reason, upgradable_option),
 		(2, payment_hash, required),
 	},
 	(5, AwaitingInvoice) => {
