@@ -1804,12 +1804,12 @@ where
 /// ```
 /// # use core::time::Duration;
 /// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, Bolt12CreationError, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::ln::channelmanager::{AChannelManager, Bolt12RequestError, PaymentId, RecentPaymentDetails, Retry};
 /// #
 /// # fn example<T: AChannelManager>(
 /// #     channel_manager: T, amount_msats: u64, absolute_expiry: Duration, retry: Retry,
 /// #     max_total_routing_fee_msat: Option<u64>
-/// # ) -> Result<(), Bolt12CreationError> {
+/// # ) -> Result<(), Bolt12RequestError> {
 /// # let channel_manager = channel_manager.get_cm();
 /// let payment_id = PaymentId([42; 32]);
 /// let refund = channel_manager
@@ -2529,10 +2529,6 @@ pub enum RecentPaymentDetails {
 pub enum Bolt12CreationError {
     /// Error from  BOLT 12 semantic checks.
     InvalidSemantics(Bolt12SemanticError),
-    /// The payment id for a refund or request is already in use.
-    DuplicatePaymentId,
-    /// There is insufficient liquidity to complete the payment.
-    InsufficientLiquidity,
     /// Failed to create a blinded path.
     BlindedPathCreationFailed,
 }
@@ -2543,6 +2539,34 @@ impl From<Bolt12SemanticError> for Bolt12CreationError {
 	}
 }
 
+/// Error during requesting a BOLT 12 related payment.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Bolt12RequestError {
+	/// Error from  BOLT 12 semantic checks.
+	InvalidSemantics(Bolt12SemanticError),
+	/// The payment id for a refund or request is already in use.
+	DuplicatePaymentId,
+	/// There is insufficient liquidity to complete the payment.
+	InsufficientLiquidity,
+	/// Failed to create a blinded path.
+	BlindedPathCreationFailed,
+
+}
+
+impl From<Bolt12SemanticError> for Bolt12RequestError {
+	fn from(err: Bolt12SemanticError) -> Self {
+		Bolt12RequestError::InvalidSemantics(err)
+	}
+}
+
+impl From<Bolt12CreationError> for Bolt12RequestError {
+	fn from(err: Bolt12CreationError) -> Self {
+		match err {
+			Bolt12CreationError::InvalidSemantics(semantic_err) => Bolt12RequestError::InvalidSemantics(semantic_err),
+			Bolt12CreationError::BlindedPathCreationFailed => Bolt12RequestError::BlindedPathCreationFailed,
+		}
+	}
+}
 
 /// Route hints used in constructing invoices for [phantom node payents].
 ///
@@ -8897,7 +8921,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	pub fn create_refund_builder(
 		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
 		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
-	) -> Result<$builder, Bolt12CreationError> {
+	) -> Result<$builder, Bolt12RequestError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
 		let entropy = &*$self.entropy_source;
@@ -8907,12 +8931,12 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let context = OffersContext::OutboundPayment { payment_id, nonce };
 		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12CreationError::BlindedPathCreationFailed)?;
+			.map_err(|_| Bolt12RequestError::BlindedPathCreationFailed)?;
 
 		let total_liquidity: u64 = $self.list_channels().iter().filter(|channel| channel.is_usable).map(|channel| channel.next_outbound_htlc_limit_msat).sum();
 		if amount_msats > total_liquidity {
 			log_error!($self.logger, "Insufficient liquidity for payment with payment id: {}", payment_id);
-			return Err(Bolt12CreationError::InsufficientLiquidity);
+			return Err(Bolt12RequestError::InsufficientLiquidity);
 		}
 
 		let builder = RefundBuilder::deriving_payer_id(
@@ -8929,7 +8953,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 			.add_new_awaiting_invoice(
 				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
 			)
-			.map_err(|_| Bolt12CreationError::DuplicatePaymentId)?;
+			.map_err(|_| Bolt12RequestError::DuplicatePaymentId)?;
 
 		Ok(builder.into())
 	}
@@ -9020,7 +9044,7 @@ where
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>
-	) -> Result<(), Bolt12CreationError> {
+	) -> Result<(), Bolt12RequestError> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
@@ -9061,7 +9085,7 @@ where
 		if let Some(amount) = total_amount_msats {
 			if amount > total_liquidity {
 				log_error!(self.logger, "Insufficient liquidity for payment with payment id: {}", payment_id);
-				return Err(Bolt12CreationError::InsufficientLiquidity);
+				return Err(Bolt12RequestError::InsufficientLiquidity);
 			}
 		}
 
@@ -9072,7 +9096,7 @@ where
 			.add_new_awaiting_invoice(
 				payment_id, expiration, retry_strategy, max_total_routing_fee_msat
 			)
-			.map_err(|_| Bolt12CreationError::DuplicatePaymentId)?;
+			.map_err(|_| Bolt12RequestError::DuplicatePaymentId)?;
 
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 		if !offer.paths().is_empty() {
@@ -9099,7 +9123,7 @@ where
 			}
 		} else {
 			debug_assert!(false);
-			return Err(Bolt12CreationError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey));
+			return Err(Bolt12RequestError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey));
 		}
 
 		Ok(())
