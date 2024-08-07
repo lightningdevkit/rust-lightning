@@ -2084,6 +2084,9 @@ mod bolt12_tests {
 
 			// unknown odd field
 			"lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxfppf5x2mrvdamk7unvvs",
+
+			// unknown odd experimental field
+			"lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvx078wdv5gg2dpjkcmr0wahhymry",
 		];
 		for encoded_offer in &offers {
 			if let Err(e) = encoded_offer.parse::<Offer>() {
@@ -2223,6 +2226,18 @@ mod bolt12_tests {
 		// Contains type >= 80
 		assert_eq!(
 			"lno1pgz5znzfgdz3vggzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgp9qgr0u2xq4dh3kdevrf4zg6hx8a60jv0gxe0ptgyfc6xkryqqqqqqqq".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		);
+
+		// Contains type > 1999999999
+		assert_eq!(
+			"lno1pgz5znzfgdz3vggzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgp06ae4jsq9qgr0u2xq4dh3kdevrf4zg6hx8a60jv0gxe0ptgyfc6xkryqqqqqqqq".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		);
+
+		// Contains unknown even type (1000000002)
+		assert_eq!(
+			"lno1pgz5znzfgdz3vggzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgp06wu6egp9qgr0u2xq4dh3kdevrf4zg6hx8a60jv0gxe0ptgyfc6xkryqqqqqqqq".parse::<Offer>(),
 			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		);
 
