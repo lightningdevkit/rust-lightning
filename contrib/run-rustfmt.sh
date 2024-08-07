@@ -1,5 +1,5 @@
 #!/bin/bash
-set -eox pipefail
+set -eo pipefail
 
 export LC_ALL=C
 
@@ -16,6 +16,6 @@ VERS=""
 TMP_FILE=$(mktemp)
 find . -name '*.rs' -type f |sort >$TMP_FILE
 for file in $(comm -23 $TMP_FILE rustfmt_excluded_files); do
-	echo "Checking formatting of $file"
-	rustfmt $VERS --edition 2021 --check $file
+	echo "Formatting $file..."
+	rustfmt $VERS --edition 2021 $file
 done
