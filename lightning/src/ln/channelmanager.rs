@@ -8909,6 +8909,12 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12CreationError::BlindedPathCreationFailed)?;
 
+		let total_liquidity: u64 = $self.list_channels().iter().filter(|channel| channel.is_usable).map(|channel| channel.next_outbound_htlc_limit_msat).sum();
+		if amount_msats > total_liquidity {
+			log_error!($self.logger, "Insufficient liquidity for payment with payment id: {}", payment_id);
+			return Err(Bolt12CreationError::InsufficientLiquidity);
+		}
+
 		let builder = RefundBuilder::deriving_payer_id(
 			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
 		)?
