@@ -9043,7 +9043,7 @@ where
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12CreationError::BlindedPathCreationFailed)?;
 
-		let total_liquidity: u64 = self.list_usable_channels().iter().map(|channel| channel.next_outbound_htlc_limit_msat).sum();
+		let total_liquidity: u64 = self.list_channels().iter().filter(|channel| channel.is_usable).map(|channel| channel.next_outbound_htlc_limit_msat).sum();
 		let total_amount_msats = match invoice_request.amount_msats() {
 			Some(amount_msats) => Some(amount_msats),
 			None => match offer.amount() {
