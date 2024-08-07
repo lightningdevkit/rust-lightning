@@ -538,7 +538,7 @@ pub enum PaymentFailureReason {
 	InvoiceRequestRejected,
 }
 
-impl_writeable_tlv_based_enum!(PaymentFailureReason,
+impl_writeable_tlv_based_enum_upgradable!(PaymentFailureReason,
 	(0, RecipientRejected) => {},
 	(1, UnknownRequiredFeatures) => {},
 	(2, UserAbandoned) => {},
@@ -878,8 +878,9 @@ pub enum Event {
 		/// [`Offer`]: crate::offers::offer::Offer
 		payment_hash: Option<PaymentHash>,
 		/// The reason the payment failed. This is only `None` for events generated or serialized
-		/// by versions prior to 0.0.115 or when deserializing an `Event::InvoiceRequestFailed`,
-		/// which was removed in 0.0.124.
+		/// by versions prior to 0.0.115, when deserializing an `Event::InvoiceRequestFailed`, which
+		/// was removed in 0.0.124, or when downgrading to 0.0.124 or later with a reason that was
+		/// added after.
 		reason: Option<PaymentFailureReason>,
 	},
 	/// Indicates that a path for an outbound payment was successful.
@@ -1934,7 +1935,7 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentFailed {
 						payment_id,
 						payment_hash: invoice_received.then(|| payment_hash),
-						reason,
+						reason: _init_tlv_based_struct_field!(reason, upgradable_option),
 					}))
 				};
 				f()
