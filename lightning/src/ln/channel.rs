@@ -8,9 +8,9 @@
 // licenses.
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::script::{Script, ScriptBuf, Builder};
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::constants::ChainHash;
+use bitcoin::script::{Script, ScriptBuf, Builder};
+use bitcoin::transaction::Transaction;
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::consensus::encode;
@@ -9586,10 +9586,10 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 mod tests {
 	use std::cmp;
 	use bitcoin::amount::Amount;
-	use bitcoin::blockdata::constants::ChainHash;
-	use bitcoin::blockdata::script::{ScriptBuf, Builder};
-	use bitcoin::blockdata::transaction::{Transaction, TxOut, Version};
-	use bitcoin::blockdata::opcodes;
+	use bitcoin::constants::ChainHash;
+	use bitcoin::script::{ScriptBuf, Builder};
+	use bitcoin::transaction::{Transaction, TxOut, Version};
+	use bitcoin::opcodes;
 	use bitcoin::network::Network;
 	use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 	use crate::ln::types::{PaymentHash, PaymentPreimage};
@@ -9619,7 +9619,7 @@ mod tests {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::hex::FromHex;
-	use bitcoin::blockdata::locktime::absolute::LockTime;
+	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::{WitnessProgram, WitnessVersion, WPubkeyHash};
 	use crate::prelude::*;
 

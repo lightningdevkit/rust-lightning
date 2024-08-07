@@ -31,9 +31,9 @@ use crate::prelude::*;
 
 use bitcoin::{Transaction, TxOut, WitnessProgram, WitnessVersion};
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::script::Builder;
-use bitcoin::blockdata::opcodes;
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::script::Builder;
+use bitcoin::opcodes;
 use bitcoin::network::Network;
 use bitcoin::transaction::Version;
 

@@ -2,7 +2,7 @@ use crate::http::{BinaryResponse, JsonResponse};
 use crate::utils::hex_to_work;
 use crate::{BlockHeaderData, BlockSourceError};
 
-use bitcoin::blockdata::block::{Block, Header};
+use bitcoin::block::{Block, Header};
 use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode, Txid};
 use bitcoin::hashes::hex::FromHex;
@@ -95,7 +95,7 @@ impl TryFrom<serde_json::Value> for BlockHeaderData {
 
 		Ok(BlockHeaderData {
 			header: Header {
-				version: bitcoin::blockdata::block::Version::from_consensus(
+				version: bitcoin::block::Version::from_consensus(
 					get_field!("version", as_i64).try_into().map_err(|_| ())?,
 				),
 				prev_blockhash: if let Some(hash_str) = response.get("previousblockhash") {
@@ -292,7 +292,7 @@ impl TryInto<GetUtxosResponse> for JsonResponse {
 #[cfg(test)]
 pub(crate) mod tests {
 	use super::*;
-	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::constants::genesis_block;
 	use bitcoin::hashes::Hash;
 	use bitcoin::network::Network;
 	use hex::DisplayHex;

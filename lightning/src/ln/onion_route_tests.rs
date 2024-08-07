@@ -30,7 +30,7 @@ use crate::util::test_utils;
 use crate::util::config::{UserConfig, ChannelConfig, MaxDustHTLCExposure};
 use crate::util::errors::APIError;
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;

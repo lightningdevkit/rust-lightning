@@ -23,7 +23,7 @@
 //! events. The remote server would make use of [`ChainMonitor`] for block processing and for
 //! servicing [`ChannelMonitor`] updates from the client.
 
-use bitcoin::blockdata::block::Header;
+use bitcoin::block::Header;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use crate::chain;

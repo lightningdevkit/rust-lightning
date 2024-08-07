@@ -15,7 +15,7 @@
 //! call into the provided message handlers (probably a ChannelManager and P2PGossipSync) with
 //! messages they should handle, and encoding/sending response messages.
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
 use crate::blinded_path::message::OffersContext;
@@ -2712,7 +2712,7 @@ mod tests {
 	use crate::util::test_utils;
 
 	use bitcoin::Network;
-	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 
 	use crate::sync::{Arc, Mutex};

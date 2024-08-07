@@ -25,8 +25,8 @@ use crate::util::persist::{
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::{impl_writeable_tlv_based, log_debug, log_error};
 
-use bitcoin::blockdata::block::Header;
-use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::block::Header;
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{BlockHash, Transaction, Txid};
 

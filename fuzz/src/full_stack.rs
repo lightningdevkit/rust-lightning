@@ -14,11 +14,11 @@
 //! This test has been very useful, though due to its complexity good starting inputs are critical.
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::script::{Builder, ScriptBuf};
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
+use bitcoin::constants::genesis_block;
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::opcodes;
+use bitcoin::script::{Builder, ScriptBuf};
+use bitcoin::transaction::{Transaction, TxOut};
 use bitcoin::consensus::encode::deserialize;
 use bitcoin::network::Network;
 use bitcoin::transaction::Version;

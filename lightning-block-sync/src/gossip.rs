@@ -4,9 +4,9 @@
 
 use crate::{AsyncBlockSourceResult, BlockData, BlockSource, BlockSourceError};
 
-use bitcoin::blockdata::block::Block;
-use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::transaction::{OutPoint, TxOut};
+use bitcoin::block::Block;
+use bitcoin::constants::ChainHash;
+use bitcoin::transaction::{OutPoint, TxOut};
 use bitcoin::hash_types::BlockHash;
 
 use lightning::ln::peer_handler::APeerManager;

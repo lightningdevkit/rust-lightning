@@ -2,7 +2,7 @@ use core::cmp::max;
 use core::ops::Deref;
 use core::sync::atomic::Ordering;
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::PublicKey;
 
 use lightning::io;

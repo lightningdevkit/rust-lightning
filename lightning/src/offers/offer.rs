@@ -77,7 +77,7 @@
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 //! [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use core::hash::{Hash, Hasher};
@@ -580,7 +580,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	/// The chains that may be used when paying a requested invoice (e.g., bitcoin mainnet).
 	/// Payments must be denominated in units of the minimal lightning-payable unit (e.g., msats)
 	/// for the selected chain.
-	pub fn chains(&$self) -> Vec<bitcoin::blockdata::constants::ChainHash> {
+	pub fn chains(&$self) -> Vec<bitcoin::constants::ChainHash> {
 		$contents.chains()
 	}
 
@@ -1172,7 +1172,7 @@ mod tests {
 		super::OfferWithExplicitMetadataBuilder as OfferBuilder,
 	};
 
-	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::Secp256k1;
 	use core::num::NonZeroU64;

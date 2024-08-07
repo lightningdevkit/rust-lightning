@@ -44,7 +44,7 @@ mod utils;
 
 use crate::poll::{ChainTip, Poll, ValidatedBlockHeader};
 
-use bitcoin::blockdata::block::{Block, Header};
+use bitcoin::block::{Block, Header};
 use bitcoin::hash_types::BlockHash;
 use bitcoin::pow::Work;
 

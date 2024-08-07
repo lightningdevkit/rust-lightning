@@ -14,11 +14,11 @@
 
 use bitcoin::{Sequence, Witness};
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::transaction::{TxOut,TxIn, Transaction};
-use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::script::{Script, ScriptBuf};
+use bitcoin::constants::WITNESS_SCALE_FACTOR;
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::transaction::{TxOut,TxIn, Transaction};
+use bitcoin::transaction::OutPoint as BitcoinOutPoint;
+use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hash_types::Txid;
 use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::sighash::EcdsaSighashType;
@@ -1201,9 +1201,9 @@ mod tests {
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 
 	use bitcoin::amount::Amount;
-	use bitcoin::blockdata::constants::WITNESS_SCALE_FACTOR;
-	use bitcoin::blockdata::script::ScriptBuf;
-	use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
+	use bitcoin::constants::WITNESS_SCALE_FACTOR;
+	use bitcoin::script::ScriptBuf;
+	use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 
 	use bitcoin::hashes::hex::FromHex;
 

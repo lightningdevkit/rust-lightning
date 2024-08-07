@@ -1329,7 +1329,7 @@ mod test {
 		} else {
 			None
 		};
-		let genesis_timestamp = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Testnet).header.time as u64;
+		let genesis_timestamp = bitcoin::constants::genesis_block(bitcoin::Network::Testnet).header.time as u64;
 		let non_default_invoice_expiry_secs = 4200;
 
 		let invoice =

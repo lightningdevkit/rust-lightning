@@ -57,7 +57,7 @@
 //! # }
 //! ```
 
-use bitcoin::blockdata::constants::ChainHash;
+use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
 use bitcoin::secp256k1::schnorr::Signature;
@@ -1232,7 +1232,7 @@ impl Readable for InvoiceRequestFields {
 mod tests {
 	use super::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestTlvStreamRef, PAYER_NOTE_LIMIT, SIGNATURE_TAG, UnsignedInvoiceRequest};
 
-	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey, self};
 	use core::num::NonZeroU64;

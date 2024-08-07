@@ -36,8 +36,8 @@ use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReada
 use crate::util::string::UntrustedString;
 
 use bitcoin::{Transaction, OutPoint};
-use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::script::ScriptBuf;
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::script::ScriptBuf;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;

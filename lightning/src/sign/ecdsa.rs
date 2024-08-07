@@ -1,6 +1,6 @@
 //! Defines ECDSA-specific signer types.
 
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::transaction::Transaction;
 
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::ecdsa::Signature;
