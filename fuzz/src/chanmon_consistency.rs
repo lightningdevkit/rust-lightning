@@ -21,11 +21,11 @@
 use bitcoin::amount::Amount;
 use bitcoin::constants::genesis_block;
 use bitcoin::locktime::absolute::LockTime;
+use bitcoin::network::Network;
 use bitcoin::opcodes;
 use bitcoin::script::{Builder, ScriptBuf};
-use bitcoin::transaction::{Transaction, TxOut};
-use bitcoin::network::Network;
 use bitcoin::transaction::Version;
+use bitcoin::transaction::{Transaction, TxOut};
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::hashes::sha256::Hash as Sha256;

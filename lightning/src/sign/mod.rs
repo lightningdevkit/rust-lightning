@@ -14,15 +14,15 @@
 
 use bitcoin::amount::Amount;
 use bitcoin::bip32::{ChildNumber, Xpriv, Xpub};
+use bitcoin::ecdsa::Signature as EcdsaSignature;
 use bitcoin::locktime::absolute::LockTime;
+use bitcoin::network::Network;
 use bitcoin::opcodes;
 use bitcoin::script::{Builder, Script, ScriptBuf};
-use bitcoin::transaction::{Transaction, TxIn, TxOut};
-use bitcoin::ecdsa::Signature as EcdsaSignature;
-use bitcoin::network::Network;
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
+use bitcoin::transaction::{Transaction, TxIn, TxOut};
 
 use bech32::u5;
 use bitcoin::hashes::sha256::Hash as Sha256;

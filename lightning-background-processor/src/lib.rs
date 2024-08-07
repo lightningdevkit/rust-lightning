@@ -1012,12 +1012,12 @@ impl Drop for BackgroundProcessor {
 mod tests {
 	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
 	use bitcoin::constants::{genesis_block, ChainHash};
-	use bitcoin::locktime::absolute::LockTime;
-	use bitcoin::transaction::{Transaction, TxOut};
 	use bitcoin::hashes::Hash;
+	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use bitcoin::transaction::Version;
+	use bitcoin::transaction::{Transaction, TxOut};
 	use bitcoin::{Amount, ScriptBuf, Txid};
 	use core::sync::atomic::{AtomicBool, Ordering};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;

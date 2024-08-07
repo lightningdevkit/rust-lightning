@@ -6,8 +6,8 @@ use crate::{
 
 use bitcoin::block::{Block, Header, Version};
 use bitcoin::constants::genesis_block;
-use bitcoin::locktime::absolute::LockTime;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::Network;
 use bitcoin::transaction;
 use bitcoin::Transaction;

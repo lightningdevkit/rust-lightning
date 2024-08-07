@@ -6,8 +6,8 @@ use crate::{AsyncBlockSourceResult, BlockData, BlockSource, BlockSourceError};
 
 use bitcoin::block::Block;
 use bitcoin::constants::ChainHash;
-use bitcoin::transaction::{OutPoint, TxOut};
 use bitcoin::hash_types::BlockHash;
+use bitcoin::transaction::{OutPoint, TxOut};
 
 use lightning::ln::peer_handler::APeerManager;
 
