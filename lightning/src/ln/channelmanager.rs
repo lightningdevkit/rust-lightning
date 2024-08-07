@@ -10857,7 +10857,6 @@ where
 				let error = match self.send_payment_for_verified_bolt12_invoice(
 					&invoice, payment_id,
 				) {
-					// Payments with UnknownRequiredFeatures error will already have been abandoned.
 					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
 						log_trace!(
 							logger, "Invoice requires unknown features: {:?}",
@@ -10865,12 +10864,10 @@ where
 						);
 						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
 					},
-					// Payments with SendingFailed error will already have been abandoned.
 					Err(Bolt12PaymentError::SendingFailed(e)) => {
 						log_trace!(logger, "Failed paying invoice: {:?}", e);
 						InvoiceError::from_string(format!("{:?}", e))
 					},
-					// Otherwise, don't abandon unknown, pending, or successful payments.
 					Err(Bolt12PaymentError::UnexpectedInvoice)
 						| Err(Bolt12PaymentError::DuplicateInvoice)
 						| Ok(()) => return ResponseInstruction::NoResponse,
