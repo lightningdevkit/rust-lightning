@@ -9231,6 +9231,27 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|()| Bolt12RequestError::BlindedPathCreationFailed)?;
 
+		let total_liquidity: u64 = {
+			let per_peer_state = &$self.per_peer_state.read().unwrap();
+			let mut sum: u64 = 0;
+
+			per_peer_state.iter().for_each(|(_, peer_state_mutex)| {
+				let peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &*peer_state_lock;
+
+				sum += peer_state.channel_by_id
+					.iter()
+					.map(|(_, phase)| phase.context().get_available_balances(&$self.fee_estimator).outbound_capacity_msat)
+					.sum::<u64>();
+			});
+			sum
+		};
+
+		if amount_msats > total_liquidity {
+			log_error!($self.logger, "Insufficient liquidity for payment with payment id: {}", payment_id);
+			return Err(Bolt12RequestError::InsufficientLiquidity);
+		}
+
 		let builder = RefundBuilder::deriving_signing_pubkey(
 			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
 		)?
