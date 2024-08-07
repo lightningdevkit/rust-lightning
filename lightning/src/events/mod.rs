@@ -885,7 +885,6 @@ pub enum Event {
 		payment_hash: PaymentHash,
 		/// The reason the payment failed. This is only `None` for events generated or serialized
 		/// by versions prior to 0.0.115.
-		/// TODO: Will downgrading cause this to be None for UnknownRequiredFeatures?
 		reason: Option<PaymentFailureReason>,
 	},
 	/// Indicates that a path for an outbound payment was successful.
