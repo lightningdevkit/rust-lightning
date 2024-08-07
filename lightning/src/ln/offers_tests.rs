@@ -205,12 +205,12 @@ fn extract_invoice_request<'a, 'b, 'c>(
 	}
 }
 
-fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> (Bolt12Invoice, Option<BlindedPath>) {
+fn extract_invoice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> (Bolt12Invoice, BlindedPath) {
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Receive(message, _, reply_path)) => match message {
 			ParsedOnionMessageContents::Offers(offers_message) => match offers_message {
 				OffersMessage::InvoiceRequest(invoice_request) => panic!("Unexpected invoice_request: {:?}", invoice_request),
-				OffersMessage::Invoice(invoice) => (invoice, reply_path),
+				OffersMessage::Invoice(invoice) => (invoice, reply_path.unwrap()),
 				#[cfg(async_payments)]
 				OffersMessage::StaticInvoice(invoice) => panic!("Unexpected static invoice: {:?}", invoice),
 				OffersMessage::InvoiceError(error) => panic!("Unexpected invoice_error: {:?}", error),
@@ -494,15 +494,15 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	features.set_onion_messages_optional();
 	features.set_route_blinding_optional();
 
-	let chanmon_cfgs = create_chanmon_cfgs(6);
-	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+	let chanmon_cfgs = create_chanmon_cfgs(7);
+	let node_cfgs = create_node_cfgs(7, &chanmon_cfgs);
 
 	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
 
 	let node_chanmgrs = create_node_chanmgrs(
-		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+		7, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None, None]
 	);
-	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+	let nodes = create_network(7, &node_cfgs, &node_chanmgrs);
 
 	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
 	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
@@ -511,6 +511,12 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
 	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
 	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	// Create an announced channel between Bob and node[6] to ensure that in the event of a tie
+	// between Bob and Charlie for becoming the introduction node candidate, Bob is deterministically
+	// preferred over Charlie.
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 6, 10_000_000, 1_000_000_000);
+
 
 	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
 	let alice_id = alice.node.get_our_node_id();
@@ -566,13 +572,14 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
 	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
 
-	let (invoice, _) = extract_invoice(david, &onion_message);
+	let (invoice, reply_path) = extract_invoice(david, &onion_message);
 	assert_eq!(invoice.amount_msats(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
 	}
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(bob_id));
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
@@ -645,7 +652,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
 	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
 
-	let (invoice, _) = extract_invoice(david, &onion_message);
+	let (invoice, reply_path) = extract_invoice(david, &onion_message);
 	assert_eq!(invoice, expected_invoice);
 
 	assert_eq!(invoice.amount_msats(), 10_000_000);
@@ -654,6 +661,8 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	for (_, path) in invoice.payment_paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
 	}
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(bob_id));
+
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
@@ -712,13 +721,14 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
-	let (invoice, _) = extract_invoice(bob, &onion_message);
+	let (invoice, reply_path) = extract_invoice(bob, &onion_message);
 	assert_eq!(invoice.amount_msats(), 10_000_000);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
 	}
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(alice_id));
 
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
@@ -765,7 +775,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
-	let (invoice, _) = extract_invoice(bob, &onion_message);
+	let (invoice, reply_path) = extract_invoice(bob, &onion_message);
 	assert_eq!(invoice, expected_invoice);
 
 	assert_eq!(invoice.amount_msats(), 10_000_000);
@@ -774,6 +784,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	for (_, path) in invoice.payment_paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(alice_id));
 	}
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(alice_id));
 
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
@@ -1030,7 +1041,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 
 	let (_, reply_path) = extract_invoice(alice, &onion_message);
-	assert_eq!(reply_path.unwrap().introduction_node, IntroductionNode::NodeId(charlie_id));
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(charlie_id));
 
 	// Send, extract and verify the second Invoice Request message
 	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1039,7 +1050,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 
 	let (_, reply_path) = extract_invoice(alice, &onion_message);
-	assert_eq!(reply_path.unwrap().introduction_node, IntroductionNode::NodeId(nodes[6].node.get_our_node_id()));
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(nodes[6].node.get_our_node_id()));
 }
 
 /// Checks that a deferred invoice can be paid asynchronously from an Event::InvoiceReceived.
@@ -1176,12 +1187,13 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
 
-	let (invoice, _) = extract_invoice(bob, &onion_message);
+	let (invoice, reply_path) = extract_invoice(bob, &onion_message);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
 	}
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(bob_id));
 
 	route_bolt12_payment(bob, &[alice], &invoice);
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
@@ -1225,13 +1237,14 @@ fn creates_refund_with_blinded_path_using_unannounced_introduction_node() {
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 
-	let (invoice, _) = extract_invoice(bob, &onion_message);
+	let (invoice, reply_path) = extract_invoice(bob, &onion_message);
 	assert_eq!(invoice, expected_invoice);
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
 		assert_eq!(path.introduction_node, IntroductionNode::NodeId(bob_id));
 	}
+	assert_eq!(reply_path.introduction_node, IntroductionNode::NodeId(bob_id));
 }
 
 /// Check that authentication fails when an invoice request is handled using the wrong context

@@ -10834,7 +10834,10 @@ where
 				};
 
 				match response {
-					Ok(invoice) => responder.respond(OffersMessage::Invoice(invoice)),
+					Ok(invoice) => {
+						let context = MessageContext::Offers(OffersContext::Unknown {});
+						responder.respond_with_reply_path(OffersMessage::Invoice(invoice), context)
+					},
 					Err(error) => responder.respond(OffersMessage::InvoiceError(error.into())),
 				}
 			},
