@@ -124,23 +124,6 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 	pub fn invoice_features(&$self) -> &Bolt12InvoiceFeatures {
 		$contents.features()
 	}
-
-	/// The public key corresponding to the key used to sign the invoice.
-	///
-	/// If the invoices was created in response to an [`Offer`], then will be:
-	/// - [`Offer::issuer_id`] if `Some`, otherwise
-	/// - the final blinded node id from a [`BlindedPath`] in [`Offer::paths`] if `None`.
-	///
-	/// If the invoice was created in response to a [`Refund`], then may be transient id chosen by
-	/// the recipient.
-	///
-	/// [`Offer`]: crate::offers::offer::Offer
-	/// [`Offer::issuer_id`]: crate::offers::offer::Offer::issuer_id
-	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
-	/// [`Refund`]: crate::offers::refund::Refund
-	pub fn signing_pubkey(&$self) -> PublicKey {
-		$contents.signing_pubkey()
-	}
 } }
 
 pub(super) use invoice_accessors_common;

@@ -247,6 +247,22 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	}
 } }
 
+macro_rules! invoice_accessors_signing_pubkey {
+	($self: ident, $contents: expr, $invoice_type: ty) =>
+{
+	/// The public key corresponding to the key used to sign the invoice.
+	///
+	/// This will be:
+	/// - [`Offer::issuer_id`] if `Some`, otherwise
+	/// - the final blinded node id from a [`BlindedPath`] in [`Offer::paths`] if `None`.
+	///
+	/// [`Offer::issuer_id`]: crate::offers::offer::Offer::issuer_id
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	pub fn signing_pubkey(&$self) -> PublicKey {
+		$contents.signing_pubkey()
+	}
+} }
+
 impl UnsignedStaticInvoice {
 	fn new(offer_bytes: &Vec<u8>, contents: InvoiceContents) -> Self {
 		let (_, invoice_tlv_stream) = contents.as_tlv_stream();
@@ -276,6 +292,7 @@ impl UnsignedStaticInvoice {
 	}
 
 	invoice_accessors_common!(self, self.contents, StaticInvoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, StaticInvoice);
 	invoice_accessors!(self, self.contents);
 }
 
@@ -311,6 +328,7 @@ where
 
 impl StaticInvoice {
 	invoice_accessors_common!(self, self.contents, StaticInvoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, StaticInvoice);
 	invoice_accessors!(self, self.contents);
 
 	/// Signature of the invoice verified using [`StaticInvoice::signing_pubkey`].

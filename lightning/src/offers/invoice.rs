@@ -762,13 +762,37 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	}
 } }
 
+
+macro_rules! invoice_accessors_signing_pubkey {
+	($self: ident, $contents: expr, $invoice_type: ty) =>
+{
+	/// The public key corresponding to the key used to sign the invoice.
+	///
+	/// If the invoices was created in response to an [`Offer`], then will be:
+	/// - [`Offer::issuer_id`] if `Some`, otherwise
+	/// - the final blinded node id from a [`BlindedPath`] in [`Offer::paths`] if `None`.
+	///
+	/// If the invoice was created in response to a [`Refund`], then may be a transient id chosen by
+	/// the recipient.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Offer::issuer_id`]: crate::offers::offer::Offer::issuer_id
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	/// [`Refund`]: crate::offers::refund::Refund
+	pub fn signing_pubkey(&$self) -> PublicKey {
+		$contents.signing_pubkey()
+	}
+} }
+
 impl UnsignedBolt12Invoice {
 	invoice_accessors_common!(self, self.contents, Bolt12Invoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, Bolt12Invoice);
 	invoice_accessors!(self, self.contents);
 }
 
 impl Bolt12Invoice {
 	invoice_accessors_common!(self, self.contents, Bolt12Invoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, Bolt12Invoice);
 	invoice_accessors!(self, self.contents);
 
 	/// Signature of the invoice verified using [`Bolt12Invoice::signing_pubkey`].
