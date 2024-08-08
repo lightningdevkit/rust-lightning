@@ -10,6 +10,8 @@
 //! Utilities for strings.
 
 use core::fmt;
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 use crate::io::{self, Read};
 use crate::ln::msgs;
 use crate::util::ser::{Writeable, Writer, Readable};
@@ -19,6 +21,7 @@ use crate::prelude::*;
 
 /// Struct to `Display` fields in a safe way using `PrintableString`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UntrustedString(pub String);
 
 impl Writeable for UntrustedString {

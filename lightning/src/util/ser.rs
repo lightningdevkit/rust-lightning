@@ -35,6 +35,8 @@ use bitcoin::{consensus, Witness};
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hash_types::{Txid, BlockHash};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use core::time::Duration;
 use crate::chain::ClaimId;
 use crate::ln::msgs::DecodeError;
@@ -1356,6 +1358,7 @@ impl Readable for String {
 ///
 /// [`BOLT 7`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Hostname(String);
 impl Hostname {
 	/// Returns the length of the hostname.
