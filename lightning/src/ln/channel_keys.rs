@@ -256,7 +256,7 @@ key_read_write!(RevocationKey);
 #[cfg(test)]
 mod test {
 	use super::derive_public_key;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	#[test]

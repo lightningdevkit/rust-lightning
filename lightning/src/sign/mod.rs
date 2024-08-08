@@ -328,7 +328,7 @@ impl SpendableOutputDescriptor {
 	/// To get the proprietary field use:
 	/// ```
 	/// use bitcoin::psbt::{Psbt};
-	/// use bitcoin::hashes::hex::FromHex;
+	/// use bitcoin::hex::FromHex;
 	///
 	/// # let s = "70736274ff0100520200000001dee978529ab3e61a2987bea5183713d0e6d5ceb5ac81100fdb54a1a2\
 	///	# 		 69cef505000000000090000000011f26000000000000160014abb3ab63280d4ccc5c11d6b50fd427a8\

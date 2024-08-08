@@ -281,7 +281,7 @@ impl SignerProvider for KeyProvider {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use lightning::util::logger::{Logger, Record};
 	use std::collections::HashMap;
 	use std::sync::Mutex;

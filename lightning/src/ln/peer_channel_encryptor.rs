@@ -570,7 +570,7 @@ impl MessageBuf {
 mod tests {
 	use super::{MessageBuf, LN_MAX_MSG_LEN};
 
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
 

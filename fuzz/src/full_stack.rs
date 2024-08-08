@@ -24,10 +24,10 @@ use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxOut};
 
 use bitcoin::hash_types::{BlockHash, Txid};
-use bitcoin::hashes::hex::FromHex;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::Hash as _;
+use bitcoin::hex::FromHex;
 use bitcoin::WPubkeyHash;
 
 use lightning::blinded_path::message::MessageContext;
@@ -1087,7 +1087,7 @@ pub extern "C" fn full_stack_run(data: *const u8, datalen: usize) {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use lightning::util::logger::{Logger, Record};
 	use std::collections::HashMap;
 	use std::sync::{Arc, Mutex};

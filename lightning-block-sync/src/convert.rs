@@ -5,7 +5,7 @@ use crate::{BlockHeaderData, BlockSourceError};
 use bitcoin::block::{Block, Header};
 use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode, Txid};
-use bitcoin::hashes::hex::FromHex;
+use bitcoin::hex::FromHex;
 use bitcoin::Transaction;
 
 use serde_json;

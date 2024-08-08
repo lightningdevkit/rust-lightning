@@ -304,7 +304,7 @@ mod tests {
 	use super::{SIGNATURE_TYPES, TlvStream, WithoutSignatures};
 
 	use bitcoin::hashes::{Hash, sha256};
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 	use bitcoin::secp256k1::schnorr::Signature;
 	use crate::offers::offer::{Amount, OfferBuilder};

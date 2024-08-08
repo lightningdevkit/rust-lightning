@@ -3276,7 +3276,7 @@ mod tests {
 	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::address::Address;
 	use bitcoin::network::Network;
 	use bitcoin::constants::ChainHash;

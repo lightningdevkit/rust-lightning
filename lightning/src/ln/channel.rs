@@ -9618,7 +9618,7 @@ mod tests {
 	use bitcoin::secp256k1::{SecretKey,PublicKey};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::{WitnessProgram, WitnessVersion, WPubkeyHash};
 	use crate::prelude::*;
@@ -10272,7 +10272,7 @@ mod tests {
 		use bitcoin::sighash;
 		use bitcoin::consensus::encode::serialize;
 		use bitcoin::sighash::EcdsaSighashType;
-		use bitcoin::hashes::hex::FromHex;
+		use bitcoin::hex::FromHex;
 		use bitcoin::hash_types::Txid;
 		use bitcoin::hex::DisplayHex;
 		use bitcoin::secp256k1::Message;

@@ -2430,7 +2430,7 @@ pub(crate) mod tests {
 
 	use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 	use bitcoin::hashes::Hash;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::network::Network;
 	use bitcoin::amount::Amount;
 	use bitcoin::constants::ChainHash;

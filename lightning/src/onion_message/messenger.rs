@@ -144,7 +144,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 /// ```
 /// # extern crate bitcoin;
 /// # use bitcoin::hashes::_export::_core::time::Duration;
-/// # use bitcoin::hashes::hex::FromHex;
+/// # use bitcoin::hex::FromHex;
 /// # use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, self};
 /// # use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
 /// # use lightning::blinded_path::message::{ForwardNode, MessageContext};
