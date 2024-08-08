@@ -40,7 +40,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use crate::io;
 use crate::prelude::*;
-use bitcoin::hashes::hex::FromHex;
+use bitcoin::hex::FromHex;
 
 use crate::ln::functional_test_utils::*;
 

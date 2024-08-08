@@ -1,4 +1,4 @@
-use bitcoin::hashes::hex::{FromHex, HexToArrayError};
+use bitcoin::hex::{FromHex, HexToArrayError};
 use bitcoin::pow::Work;
 
 pub fn hex_to_work(hex: &str) -> Result<Work, HexToArrayError> {
@@ -9,7 +9,7 @@ pub fn hex_to_work(hex: &str) -> Result<Work, HexToArrayError> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use bitcoin::hashes::hex::HexToBytesError;
+	use bitcoin::hex::HexToBytesError;
 	use bitcoin::pow::Work;
 
 	#[test]

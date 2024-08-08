@@ -1294,7 +1294,7 @@ mod tests {
 	use crate::io::{self, Cursor};
 	use crate::ln::msgs::DecodeError;
 	use crate::util::ser::{MaybeReadable, Readable, Writeable, HighZeroBytesDroppedBigSize, VecWriter};
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::PublicKey;
 
 	// The BOLT TLV test cases don't include any tests which use our "required-value" logic since

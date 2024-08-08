@@ -23,7 +23,6 @@ lightning-invoice = { path = "../lightning-invoice" }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
 bech32 = "0.9.1"
 bitcoin = { version = "0.31.2", features = ["secp-lowmemory"] }
-hex = { package = "hex-conservative", version = "0.1.1", default-features = false }
 
 afl = { version = "0.12", optional = true }
 honggfuzz = { version = "0.5", optional = true, default-features = false }

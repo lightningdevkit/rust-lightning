@@ -92,7 +92,7 @@ mod tests {
 
 	use bitcoin::transaction::Transaction;
 	use bitcoin::consensus::encode;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 
 	#[test]
 	fn test_channel_id_calculation() {

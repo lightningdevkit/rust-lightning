@@ -200,7 +200,7 @@ mod tests {
 		sha256::Hash as Sha256,
 	};
 	use bitcoin::secp256k1::PublicKey;
-	use hex::DisplayHex;
+	use bitcoin::hex::DisplayHex;
 
 	use super::ChannelId;
 	use crate::ln::channel_keys::RevocationBasepoint;

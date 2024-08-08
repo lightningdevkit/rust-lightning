@@ -1280,7 +1280,7 @@ mod tests {
 	#[allow(unused_imports)]
 	use crate::prelude::*;
 
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 

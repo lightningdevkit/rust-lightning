@@ -3598,7 +3598,7 @@ mod tests {
 	use bitcoin::script::Builder;
 	use bitcoin::opcodes;
 	use bitcoin::transaction::TxOut;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
 

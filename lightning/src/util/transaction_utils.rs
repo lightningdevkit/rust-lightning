@@ -78,7 +78,7 @@ mod tests {
 	use bitcoin::script::Builder;
 	use bitcoin::hash_types::Txid;
 	use bitcoin::hashes::Hash;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::{PubkeyHash, Sequence, Witness};
 
 	use alloc::vec;

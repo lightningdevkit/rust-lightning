@@ -1842,7 +1842,7 @@ mod tests {
 	use crate::sign::{ChannelSigner, SignerProvider};
 	use bitcoin::{Network, Txid, ScriptBuf};
 	use bitcoin::hashes::Hash;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use crate::ln::types::PaymentHash;
 	use bitcoin::address::Payload;
 	use bitcoin::PublicKey as BitcoinPublicKey;

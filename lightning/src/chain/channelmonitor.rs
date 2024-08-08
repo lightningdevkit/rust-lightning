@@ -4819,7 +4819,7 @@ mod tests {
 	use bitcoin::sighash::EcdsaSighashType;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::hash_types::{BlockHash, Txid};
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{SecretKey,PublicKey};

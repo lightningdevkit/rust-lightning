@@ -1507,7 +1507,7 @@ impl Readable for ClaimId {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::ecdsa;
 	use crate::util::ser::{Readable, Hostname, Writeable};
 	use crate::prelude::*;
