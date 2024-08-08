@@ -620,7 +620,7 @@ impl Hash for SocketDescriptor {
 
 #[cfg(test)]
 mod tests {
-	use bitcoin::blockdata::constants::ChainHash;
+	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use bitcoin::Network;
 	use lightning::events::*;

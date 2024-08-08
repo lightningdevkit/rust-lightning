@@ -49,12 +49,12 @@ use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 use crate::util::persist::KVStore;
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::transaction::{Transaction, TxOut};
-use bitcoin::blockdata::script::{Builder, Script, ScriptBuf};
-use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::block::Block;
+use bitcoin::constants::ChainHash;
+use bitcoin::constants::genesis_block;
+use bitcoin::transaction::{Transaction, TxOut};
+use bitcoin::script::{Builder, Script, ScriptBuf};
+use bitcoin::opcodes;
+use bitcoin::block::Block;
 use bitcoin::network::Network;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::Hash;

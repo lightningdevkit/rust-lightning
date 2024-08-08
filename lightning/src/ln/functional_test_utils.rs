@@ -38,9 +38,9 @@ use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysI
 use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::block::{Block, Header, Version};
-use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut};
+use bitcoin::block::{Block, Header, Version};
+use bitcoin::locktime::absolute::LockTime;
+use bitcoin::transaction::{Transaction, TxIn, TxOut};
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
@@ -1523,7 +1523,7 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 	}
 }
 
-pub fn do_check_spends<F: Fn(&bitcoin::blockdata::transaction::OutPoint) -> Option<TxOut>>(tx: &Transaction, get_output: F) {
+pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(tx: &Transaction, get_output: F) {
 	for outp in tx.output.iter() {
 		assert!(outp.value >= outp.script_pubkey.dust_value(), "Spending tx output didn't meet dust limit");
 	}
@@ -1550,7 +1550,7 @@ macro_rules! check_spends {
 				assert!(outp.value >= outp.script_pubkey.dust_value(), "Input tx output didn't meet dust limit");
 			}
 			)*
-			let get_output = |out_point: &bitcoin::blockdata::transaction::OutPoint| {
+			let get_output = |out_point: &bitcoin::transaction::OutPoint| {
 				$(
 					if out_point.txid == $spends_txn.txid() {
 						return $spends_txn.output.get(out_point.vout as usize).cloned()
@@ -3252,7 +3252,7 @@ pub fn create_node_chanmgrs<'a, 'b>(node_count: usize, cfgs: &'a Vec<NodeCfg<'b>
 	let mut chanmgrs = Vec::new();
 	for i in 0..node_count {
 		let network = Network::Testnet;
-		let genesis_block = bitcoin::blockdata::constants::genesis_block(network);
+		let genesis_block = bitcoin::constants::genesis_block(network);
 		let params = ChainParameters {
 			network,
 			best_block: BestBlock::from_network(network),

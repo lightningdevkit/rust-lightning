@@ -1011,13 +1011,13 @@ impl Drop for BackgroundProcessor {
 #[cfg(all(feature = "std", test))]
 mod tests {
 	use super::{BackgroundProcessor, GossipSync, FRESHNESS_TIMER};
-	use bitcoin::blockdata::constants::{genesis_block, ChainHash};
-	use bitcoin::blockdata::locktime::absolute::LockTime;
-	use bitcoin::blockdata::transaction::{Transaction, TxOut};
+	use bitcoin::constants::{genesis_block, ChainHash};
 	use bitcoin::hashes::Hash;
+	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use bitcoin::transaction::Version;
+	use bitcoin::transaction::{Transaction, TxOut};
 	use bitcoin::{Amount, ScriptBuf, Txid};
 	use core::sync::atomic::{AtomicBool, Ordering};
 	use lightning::chain::channelmonitor::ANTI_REORG_DELAY;

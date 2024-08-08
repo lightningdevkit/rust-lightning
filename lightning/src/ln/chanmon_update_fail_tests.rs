@@ -12,7 +12,7 @@
 //! There are a bunch of these as their handling is relatively error-prone so they are split out
 //! here. See also the chanmon_fail_consistency fuzz test.
 
-use bitcoin::blockdata::constants::genesis_block;
+use bitcoin::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::Network;
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ChannelMonitor};

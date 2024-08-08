@@ -14,15 +14,15 @@
 
 use bitcoin::amount::Amount;
 use bitcoin::bip32::{ChildNumber, Xpriv, Xpub};
-use bitcoin::blockdata::locktime::absolute::LockTime;
-use bitcoin::blockdata::opcodes;
-use bitcoin::blockdata::script::{Builder, Script, ScriptBuf};
-use bitcoin::blockdata::transaction::{Transaction, TxIn, TxOut};
 use bitcoin::ecdsa::Signature as EcdsaSignature;
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::Network;
+use bitcoin::opcodes;
+use bitcoin::script::{Builder, Script, ScriptBuf};
 use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
+use bitcoin::transaction::{Transaction, TxIn, TxOut};
 
 use bech32::u5;
 use bitcoin::hashes::sha256::Hash as Sha256;
@@ -2516,7 +2516,7 @@ pub fn dyn_sign() {
 #[cfg(ldk_bench)]
 pub mod benches {
 	use crate::sign::{EntropySource, KeysManager};
-	use bitcoin::blockdata::constants::genesis_block;
+	use bitcoin::constants::genesis_block;
 	use bitcoin::Network;
 	use std::sync::mpsc::TryRecvError;
 	use std::sync::{mpsc, Arc};

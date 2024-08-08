@@ -28,9 +28,9 @@ use bitcoin::secp256k1::constants::{PUBLIC_KEY_SIZE, SECRET_KEY_SIZE, COMPACT_SI
 use bitcoin::secp256k1::ecdsa;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::amount::Amount;
-use bitcoin::blockdata::constants::ChainHash;
-use bitcoin::blockdata::script::{self, ScriptBuf};
-use bitcoin::blockdata::transaction::{OutPoint, Transaction, TxOut};
+use bitcoin::constants::ChainHash;
+use bitcoin::script::{self, ScriptBuf};
+use bitcoin::transaction::{OutPoint, Transaction, TxOut};
 use bitcoin::{consensus, Witness};
 use bitcoin::consensus::Encodable;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;

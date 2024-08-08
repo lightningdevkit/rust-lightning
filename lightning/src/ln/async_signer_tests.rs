@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 
 use bitcoin::{Transaction, TxOut, TxIn, Amount};
-use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::transaction::Version;
 
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;

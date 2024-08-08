@@ -4,7 +4,7 @@
 use crate::poll::{ChainPoller, Validate, ValidatedBlockHeader};
 use crate::{BlockSource, BlockSourceResult, Cache, ChainNotifier};
 
-use bitcoin::blockdata::block::Header;
+use bitcoin::block::Header;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::Network;
 

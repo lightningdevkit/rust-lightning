@@ -10,8 +10,8 @@
 //! Types describing on-chain transactions.
 
 use bitcoin::hash_types::Txid;
-use bitcoin::blockdata::transaction::OutPoint as BitcoinOutPoint;
-use bitcoin::blockdata::transaction::Transaction;
+use bitcoin::transaction::OutPoint as BitcoinOutPoint;
+use bitcoin::transaction::Transaction;
 
 /// Transaction data where each item consists of a transaction reference paired with the index of
 /// the transaction within a block.
@@ -23,8 +23,8 @@ use bitcoin::blockdata::transaction::Transaction;
 /// extern crate bitcoin;
 /// extern crate lightning;
 ///
-/// use bitcoin::blockdata::block::Block;
-/// use bitcoin::blockdata::constants::genesis_block;
+/// use bitcoin::block::Block;
+/// use bitcoin::constants::genesis_block;
 /// use bitcoin::network::Network;
 /// use lightning::chain::transaction::TransactionData;
 ///
@@ -45,7 +45,7 @@ pub type TransactionData<'a> = [(usize, &'a Transaction)];
 
 /// A reference to a transaction output.
 ///
-/// Differs from bitcoin::blockdata::transaction::OutPoint as the index is a u16 instead of u32
+/// Differs from bitcoin::transaction::OutPoint as the index is a u16 instead of u32
 /// due to LN's restrictions on index values. Should reduce (possibly) unsafe conversions this way.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub struct OutPoint {
@@ -90,7 +90,7 @@ mod tests {
 	use crate::chain::transaction::OutPoint;
 	use crate::ln::types::ChannelId;
 
-	use bitcoin::blockdata::transaction::Transaction;
+	use bitcoin::transaction::Transaction;
 	use bitcoin::consensus::encode;
 	use bitcoin::hashes::hex::FromHex;
 

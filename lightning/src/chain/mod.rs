@@ -9,9 +9,9 @@
 
 //! Structs and traits which allow other parts of rust-lightning to interact with the blockchain.
 
-use bitcoin::blockdata::block::{Block, Header};
-use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::script::{Script, ScriptBuf};
+use bitcoin::block::{Block, Header};
+use bitcoin::constants::genesis_block;
+use bitcoin::script::{Script, ScriptBuf};
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::Network;
 use bitcoin::secp256k1::PublicKey;

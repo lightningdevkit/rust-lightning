@@ -4,10 +4,10 @@ use crate::{
 	UnboundedCache,
 };
 
-use bitcoin::blockdata::block::{Block, Header, Version};
-use bitcoin::blockdata::constants::genesis_block;
-use bitcoin::blockdata::locktime::absolute::LockTime;
+use bitcoin::block::{Block, Header, Version};
+use bitcoin::constants::genesis_block;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
+use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::Network;
 use bitcoin::transaction;
 use bitcoin::Transaction;
