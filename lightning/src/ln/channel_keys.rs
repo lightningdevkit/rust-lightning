@@ -124,7 +124,7 @@ key_read_write!(DelayedPaymentBasepoint);
 /// punish and claim all the channel funds if the state broadcasted was previously revoked.
 ///
 /// [See the BOLT specs]
-/// (https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation)
+/// <https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation>
 /// for more information on key derivation details.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct DelayedPaymentKey(pub PublicKey);
@@ -151,7 +151,7 @@ key_read_write!(HtlcBasepoint);
 /// Thus, both channel counterparties' HTLC keys will appears in each HTLC output's script.
 ///
 /// [See the BOLT specs]
-/// (https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation)
+/// <https://github.com/lightning/bolts/blob/master/03-transactions.md#localpubkey-local_htlcpubkey-remote_htlcpubkey-local_delayedpubkey-and-remote_delayedpubkey-derivation>
 /// for more information on key derivation details.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub struct HtlcKey(pub PublicKey);
@@ -204,7 +204,7 @@ key_read_write!(RevocationBasepoint);
 /// per_commitment_point which is used in both commitment and HTLC transactions.
 ///
 /// See [the BOLT spec for derivation details]
-/// (https://github.com/lightning/bolts/blob/master/03-transactions.md#revocationpubkey-derivation)
+/// <https://github.com/lightning/bolts/blob/master/03-transactions.md#revocationpubkey-derivation>
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct RevocationKey(pub PublicKey);
 
