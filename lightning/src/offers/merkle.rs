@@ -249,6 +249,7 @@ impl<'a> TlvStream<'a> {
 }
 
 /// A slice into a [`TlvStream`] for a record.
+#[derive(Eq, PartialEq)]
 pub(super) struct TlvRecord<'a> {
 	pub(super) r#type: u64,
 	type_bytes: &'a [u8],
