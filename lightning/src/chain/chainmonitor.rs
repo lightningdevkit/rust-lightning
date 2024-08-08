@@ -170,14 +170,15 @@ struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
 	/// Note that this lock must be held from [`ChannelMonitor::update_monitor`] through to
 	/// [`Persist::update_persisted_channel`] to prevent a race where we call
 	/// [`Persist::update_persisted_channel`], the user returns a
-	/// [`ChannelMonitorUpdateStatus::InProgress`], and then calls channel_monitor_updated
-	/// immediately, racing our insertion of the pending update into the contained Vec.
+	/// [`ChannelMonitorUpdateStatus::InProgress`], and then calls
+	/// [`ChainMonitor::channel_monitor_updated`] immediately, racing our insertion of the pending
+	/// update into the contained Vec.
 	///
 	/// This also avoids a race where we update a [`ChannelMonitor`], then while connecting a block
 	/// persist a full [`ChannelMonitor`] prior to persisting the [`ChannelMonitorUpdate`]. This
 	/// could cause users to have a full [`ChannelMonitor`] on disk as well as a
 	/// [`ChannelMonitorUpdate`] which was already applied. While this isn't an issue for the
-	/// LDK-provided update-based [`Persist`], its somewhat surprising for users so we avoid it.
+	/// LDK-provided update-based [`Persist`], it is somewhat surprising for users so we avoid it.
 	pending_monitor_updates: Mutex<Vec<u64>>,
 }
 
