@@ -270,6 +270,11 @@ macro_rules! invoice_request_builder_methods { (
 	/// Sets the [`InvoiceRequest::amount_msats`] for paying an invoice. Errors if `amount_msats` is
 	/// not at least the expected invoice amount (i.e., [`Offer::amount`] times [`quantity`]).
 	///
+	/// When the [`Offer`] specifies a currency, this method allows setting the `amount_msats` in the
+	/// `InvoiceRequest`. The issuer of the Offer will validate this amount and must set a matching
+	/// amount in the final invoice. If the issuer disagrees with the specfified amount, the invoice
+	/// request will be rejected. This is also useful if the Offer doesn't specify an amount.
+	///
 	/// Successive calls to this method will override the previous setting.
 	///
 	/// [`quantity`]: Self::quantity
