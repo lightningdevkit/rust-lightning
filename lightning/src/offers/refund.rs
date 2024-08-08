@@ -178,6 +178,8 @@ macro_rules! refund_explicit_metadata_builder_methods { () => {
 				quantity: None, payer_signing_pubkey: signing_pubkey, payer_note: None, paths: None,
 				#[cfg(test)]
 				experimental_foo: None,
+				#[cfg(test)]
+				experimental_bar: None,
 			},
 			secp_ctx: None,
 		})
@@ -222,6 +224,8 @@ macro_rules! refund_builder_methods { (
 				quantity: None, payer_signing_pubkey: node_id, payer_note: None, paths: None,
 				#[cfg(test)]
 				experimental_foo: None,
+				#[cfg(test)]
+				experimental_bar: None,
 			},
 			secp_ctx: Some(secp_ctx),
 		})
@@ -368,6 +372,12 @@ macro_rules! refund_builder_test_methods { (
 		$self.refund.experimental_foo = Some(experimental_foo);
 		$return_value
 	}
+
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(super) fn experimental_bar($($self_mut)* $self: $self_type, experimental_bar: u64) -> $return_type {
+		$self.refund.experimental_bar = Some(experimental_bar);
+		$return_value
+	}
 } }
 
 impl<'a> RefundBuilder<'a, secp256k1::SignOnly> {
@@ -449,6 +459,8 @@ pub(super) struct RefundContents {
 	paths: Option<Vec<BlindedMessagePath>>,
 	#[cfg(test)]
 	experimental_foo: Option<u64>,
+	#[cfg(test)]
+	experimental_bar: Option<u64>,
 }
 
 impl Refund {
@@ -787,7 +799,10 @@ impl RefundContents {
 			experimental_foo: self.experimental_foo,
 		};
 
-		let experimental_invoice_request = ExperimentalInvoiceRequestTlvStreamRef {};
+		let experimental_invoice_request = ExperimentalInvoiceRequestTlvStreamRef {
+			#[cfg(test)]
+			experimental_bar: self.experimental_bar,
+		};
 
 		(payer, offer, invoice_request, experimental_offer, experimental_invoice_request)
 	}
@@ -879,7 +894,10 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				#[cfg(test)]
 				experimental_foo,
 			},
-			ExperimentalInvoiceRequestTlvStream {},
+			ExperimentalInvoiceRequestTlvStream {
+				#[cfg(test)]
+				experimental_bar,
+			},
 		) = tlv_stream;
 
 		let payer = match payer_metadata {
@@ -942,6 +960,8 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			payer_signing_pubkey, payer_note, paths,
 			#[cfg(test)]
 			experimental_foo,
+			#[cfg(test)]
+			experimental_bar,
 		})
 	}
 }
@@ -1050,7 +1070,9 @@ mod tests {
 				ExperimentalOfferTlvStreamRef {
 					experimental_foo: None,
 				},
-				ExperimentalInvoiceRequestTlvStreamRef {},
+				ExperimentalInvoiceRequestTlvStreamRef {
+					experimental_bar: None,
+				},
 			),
 		);
 
@@ -1080,6 +1102,7 @@ mod tests {
 			::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
 			.unwrap()
 			.experimental_foo(42)
+			.experimental_bar(42)
 			.build().unwrap();
 		assert_eq!(refund.payer_signing_pubkey(), node_id);
 
@@ -1148,6 +1171,7 @@ mod tests {
 			.unwrap()
 			.path(blinded_path)
 			.experimental_foo(42)
+			.experimental_bar(42)
 			.build().unwrap();
 		assert_ne!(refund.payer_signing_pubkey(), node_id);
 

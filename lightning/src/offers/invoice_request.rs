@@ -241,6 +241,8 @@ macro_rules! invoice_request_builder_methods { (
 		InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
+			#[cfg(test)]
+			experimental_bar: None,
 		}
 	}
 
@@ -401,6 +403,12 @@ macro_rules! invoice_request_builder_test_methods { (
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	fn quantity_unchecked($($self_mut)* $self: $self_type, quantity: u64) -> $return_type {
 		$self.invoice_request.quantity = Some(quantity);
+		$return_value
+	}
+
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(super) fn experimental_bar($($self_mut)* $self: $self_type, experimental_bar: u64) -> $return_type {
+		$self.invoice_request.experimental_bar = Some(experimental_bar);
 		$return_value
 	}
 
@@ -691,6 +699,8 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	features: InvoiceRequestFeatures,
 	quantity: Option<u64>,
 	payer_note: Option<String>,
+	#[cfg(test)]
+	experimental_bar: Option<u64>,
 }
 
 macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
@@ -994,7 +1004,9 @@ impl VerifiedInvoiceRequest {
 		let InvoiceRequestContents {
 			payer_signing_pubkey,
 			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
-				payer: _, offer: _, chain: _, amount_msats: _, features: _, quantity, payer_note
+				payer: _, offer: _, chain: _, amount_msats: _, features: _, quantity, payer_note,
+				#[cfg(test)]
+				experimental_bar: _,
 			},
 		} = &self.inner.contents;
 
@@ -1076,7 +1088,10 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 			paths: None,
 		};
 
-		let experimental_invoice_request = ExperimentalInvoiceRequestTlvStreamRef {};
+		let experimental_invoice_request = ExperimentalInvoiceRequestTlvStreamRef {
+			#[cfg(test)]
+			experimental_bar: self.experimental_bar,
+		};
 
 		(payer, offer, invoice_request, experimental_offer, experimental_invoice_request)
 	}
@@ -1133,9 +1148,18 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef<'a>, INVOICE_REQ
 pub(super) const EXPERIMENTAL_INVOICE_REQUEST_TYPES: core::ops::Range<u64> =
 	2_000_000_000..3_000_000_000;
 
+#[cfg(not(test))]
 tlv_stream!(
 	ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef,
 	EXPERIMENTAL_INVOICE_REQUEST_TYPES, {}
+);
+
+#[cfg(test)]
+tlv_stream!(
+	ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef,
+	EXPERIMENTAL_INVOICE_REQUEST_TYPES, {
+		(2_999_999_999, experimental_bar: (u64, HighZeroBytesDroppedBigSize)),
+	}
 );
 
 type FullInvoiceRequestTlvStream = (
@@ -1244,7 +1268,10 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 				chain, amount, features, quantity, payer_id, payer_note, paths,
 			},
 			experimental_offer_tlv_stream,
-			ExperimentalInvoiceRequestTlvStream {},
+			ExperimentalInvoiceRequestTlvStream {
+				#[cfg(test)]
+				experimental_bar,
+			},
 		) = tlv_stream;
 
 		let payer = match metadata {
@@ -1278,6 +1305,8 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		Ok(InvoiceRequestContents {
 			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
 				payer, offer, chain, amount_msats: amount, features, quantity, payer_note,
+				#[cfg(test)]
+				experimental_bar,
 			},
 			payer_signing_pubkey,
 		})
@@ -1460,7 +1489,9 @@ mod tests {
 				ExperimentalOfferTlvStreamRef {
 					experimental_foo: None,
 				},
-				ExperimentalInvoiceRequestTlvStreamRef {},
+				ExperimentalInvoiceRequestTlvStreamRef {
+					experimental_bar: None,
+				},
 			),
 		);
 
@@ -1513,6 +1544,7 @@ mod tests {
 		let invoice_request = offer
 			.request_invoice_deriving_metadata(signing_pubkey, &expanded_key, nonce, payment_id)
 			.unwrap()
+			.experimental_bar(42)
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
 		assert_eq!(invoice_request.payer_signing_pubkey(), payer_pubkey());
@@ -1603,6 +1635,7 @@ mod tests {
 		let invoice_request = offer
 			.request_invoice_deriving_signing_pubkey(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
+			.experimental_bar(42)
 			.build_and_sign()
 			.unwrap();
 
