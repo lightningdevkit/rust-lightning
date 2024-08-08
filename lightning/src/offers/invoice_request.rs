@@ -79,7 +79,7 @@ use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OFFER_TYPES, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Amount, EXPERIMENTAL_OFFER_TYPES, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OFFER_TYPES, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
@@ -974,7 +974,15 @@ impl InvoiceRequestContents {
 	}
 
 	pub(super) fn amount_msats(&self) -> Option<u64> {
-		self.inner.amount_msats
+		self.inner
+			.amount_msats()
+			.or_else(|| match self.inner.offer.amount() {
+				Some(Amount::Bitcoin { amount_msats }) => {
+					Some(amount_msats.saturating_mul(self.quantity().unwrap_or(1)))
+				},
+				Some(Amount::Currency { .. }) => None,
+				None => { debug_assert!(false); None},
+			})
 	}
 
 	pub(super) fn features(&self) -> &InvoiceRequestFeatures {
@@ -1013,6 +1021,10 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 
 	pub(super) fn chain(&self) -> ChainHash {
 		self.chain.unwrap_or_else(|| self.offer.implied_chain())
+	}
+
+	pub(super) fn amount_msats(&self) -> Option<u64> {
+		self.amount_msats
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {
@@ -1381,7 +1393,7 @@ mod tests {
 		assert_eq!(invoice_request.supported_quantity(), Quantity::One);
 		assert_eq!(invoice_request.issuer_signing_pubkey(), Some(recipient_pubkey()));
 		assert_eq!(invoice_request.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
-		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(invoice_request.amount_msats(), Some(1000));
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice_request.quantity(), None);
 		assert_eq!(invoice_request.payer_note(), None);
@@ -1746,6 +1758,44 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
+	}
+
+	#[test]
+	fn builds_invoice_request_without_amount() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
+		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(1000));
+		assert_eq!(tlv_stream.amount, None);
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Unbounded)
+			.build().unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.quantity(2).unwrap()
+			.build_and_sign().unwrap();
+		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(2000));
+		assert_eq!(tlv_stream.amount, None);
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 10 })
+			.build_unchecked()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_unchecked_and_sign();
+		let (_, _, tlv_stream, _, _, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(tlv_stream.amount, None);
 	}
 
 	#[test]
