@@ -159,6 +159,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	let amt_msat = 100_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 	let payee_tlvs = ReceiveTlvs {
+		padding: None,
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),

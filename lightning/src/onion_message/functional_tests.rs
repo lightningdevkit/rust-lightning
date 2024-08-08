@@ -9,6 +9,7 @@
 
 //! Onion message testing and test utilities live here.
 
+use crate::blinded_path::utils::is_properly_padded;
 use crate::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
 use crate::blinded_path::message::{ForwardNode, MessageContext, OffersContext};
 use crate::events::{Event, EventsProvider};
@@ -537,6 +538,29 @@ fn too_big_packet_error() {
 	};
 	let err = nodes[0].messenger.send_onion_message_using_path(path, test_msg, None).unwrap_err();
 	assert_eq!(err, SendError::TooBigPacket);
+}
+
+#[test]
+fn blinded_path_padding() {
+	// Make sure that for a blinded path, all encrypted payloads are padded to equal lengths.
+	let nodes = create_nodes(4);
+	let test_msg = TestCustomMessage::Pong;
+
+	let secp_ctx = Secp256k1::new();
+	let intermediate_nodes = [
+		ForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
+		ForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
+	];
+	let context = MessageContext::Custom(Vec::new());
+	let blinded_path = BlindedPath::new_for_message(&intermediate_nodes, nodes[3].node_id, context, &*nodes[3].entropy_source, &secp_ctx).unwrap();
+
+	assert!(is_properly_padded(&blinded_path));
+
+	let destination = Destination::BlindedPath(blinded_path);
+
+	nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap();
+	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Pong);
+	pass_along_path(&nodes);
 }
 
 #[test]

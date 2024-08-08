@@ -17,7 +17,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use crate::prelude::*;
 
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
-use crate::blinded_path::utils;
+use crate::blinded_path::utils::{self, Padding};
 use crate::io;
 use crate::io::Cursor;
 use crate::ln::channelmanager::PaymentId;
@@ -44,7 +44,10 @@ pub struct ForwardNode {
 
 /// TLVs to encode in an intermediate onion message packet's hop data. When provided in a blinded
 /// route, they are encoded into [`BlindedHop::encrypted_payload`].
+#[derive(Clone)]
 pub(crate) struct ForwardTlvs {
+	/// The padding data used to make all packets of a Blinded Path of same size
+	pub(crate) padding: Option<Padding>,
 	/// The next hop in the onion message's path.
 	pub(crate) next_hop: NextMessageHop,
 	/// Senders to a blinded path use this value to concatenate the route they find to the
@@ -53,7 +56,10 @@ pub(crate) struct ForwardTlvs {
 }
 
 /// Similar to [`ForwardTlvs`], but these TLVs are for the final node.
+#[derive(Clone)]
 pub(crate) struct ReceiveTlvs {
+	/// The padding data used to make all packets of a Blinded Path of same size
+	pub(crate) padding: Option<Padding>,
 	/// If `context` is `Some`, it is used to identify the blinded path that this onion message is
 	/// sending to. This is useful for receivers to check that said blinded path is being used in
 	/// the right context.
@@ -66,8 +72,8 @@ impl Writeable for ForwardTlvs {
 			NextMessageHop::NodeId(pubkey) => (Some(pubkey), None),
 			NextMessageHop::ShortChannelId(scid) => (None, Some(scid)),
 		};
-		// TODO: write padding
 		encode_tlv_stream!(writer, {
+			(1, self.padding, option),
 			(2, short_channel_id, option),
 			(4, next_node_id, option),
 			(8, self.next_blinding_override, option)
@@ -78,8 +84,8 @@ impl Writeable for ForwardTlvs {
 
 impl Writeable for ReceiveTlvs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		// TODO: write padding
 		encode_tlv_stream!(writer, {
+			(1, self.padding, option),
 			(65537, self.context, option),
 		});
 		Ok(())
@@ -193,10 +199,17 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 			Some(scid) => NextMessageHop::ShortChannelId(scid),
 			None => NextMessageHop::NodeId(*pubkey),
 		})
-		.map(|next_hop| ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None }))
-		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs{ context: Some(context) })));
+		.map(|next_hop| ControlTlvs::Forward(ForwardTlvs { padding: None, next_hop, next_blinding_override: None }))
+		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs{ padding: None, context: Some(context) })));
 
-	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
+	let max_length = tlvs.clone()
+		.map(|tlv| tlv.serialized_length())
+		.max()
+		.unwrap_or(0);
+
+	let length_tlvs = tlvs.map(|tlv| tlv.pad_tlvs(max_length));
+
+	utils::construct_blinded_hops(secp_ctx, pks, length_tlvs, session_priv)
 }
 
 // Advance the blinded onion message path by one hop, so make the second hop into the new
@@ -218,7 +231,7 @@ where
 	let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
 	match ChaChaPolyReadAdapter::read(&mut reader, rho) {
 		Ok(ChaChaPolyReadAdapter {
-			readable: ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override })
+			readable: ControlTlvs::Forward(ForwardTlvs {padding: _, next_hop, next_blinding_override })
 		}) => {
 			let next_node_id = match next_hop {
 				NextMessageHop::NodeId(pubkey) => pubkey,

@@ -9354,6 +9354,7 @@ where
 		let max_cltv_expiry = self.best_block.read().unwrap().height + CLTV_FAR_FAR_AWAY
 			+ LATENCY_GRACE_PERIOD_BLOCKS;
 		let payee_tlvs = ReceiveTlvs {
+			padding: None,
 			payment_secret,
 			payment_constraints: PaymentConstraints {
 				max_cltv_expiry,

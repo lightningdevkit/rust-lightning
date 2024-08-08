@@ -20,7 +20,7 @@ use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::onion_message::messenger::Destination;
 use crate::crypto::streams::ChaChaPolyWriteAdapter;
-use crate::util::ser::{Readable, Writeable};
+use crate::util::ser::{Readable, Writeable, Writer};
 
 use crate::io;
 
@@ -135,17 +135,54 @@ fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Ve
 	write_adapter.encode()
 }
 
-/// Blinded path encrypted payloads may be padded to ensure they are equal length.
-///
-/// Reads padding to the end, ignoring what's read.
-pub(crate) struct Padding {}
+/// Represents optional padding for encrypted payloads.
+/// Padding is used to ensure payloads have a consistent length.
+#[derive(Clone, Debug)]
+pub struct Padding {
+	length: usize,
+}
+
+impl Padding {
+	/// Creates a new [`Padding`] instance with a specified size.
+	/// Use this method when defining the padding size before writing
+	/// an encrypted payload.
+	pub fn new(length: usize) -> Self {
+		Self { length }
+	}
+}
+
 impl Readable for Padding {
+	/// Reads and discards the padding data.
 	#[inline]
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		loop {
 			let mut buf = [0; 8192];
 			if reader.read(&mut buf[..])? == 0 { break; }
 		}
-		Ok(Self {})
+		Ok(Self::new(0))
 	}
+}
+
+impl Writeable for Padding {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		const BUFFER_SIZE: usize = 1024;
+		let buffer = [0u8; BUFFER_SIZE];
+
+		let mut remaining = self.length;
+		loop {
+			let to_write = core::cmp::min(remaining, BUFFER_SIZE);
+			writer.write_all(&buffer[..to_write])?;
+			remaining -= to_write;
+			if remaining == 0 { break; }
+		}
+		Ok(())
+	}
+}
+
+#[cfg(test)]
+/// Checks if all the packets in the blinded path are properly padded, ensuring they are of equal size.
+pub fn is_properly_padded(path: &BlindedPath) -> bool {
+	let first_hop = path.blinded_hops.first().expect("BlindedPath must have at least one hop");
+	let first_payload_size = first_hop.encrypted_payload.len();
+	path.blinded_hops.iter().all(|hop| hop.encrypted_payload.len() == first_payload_size)
 }

@@ -8,6 +8,7 @@
 // licenses.
 
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use crate::blinded_path::utils::is_properly_padded;
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, ReceiveTlvs};
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentFailureReason};
@@ -39,6 +40,7 @@ fn blinded_payment_path(
 		intermediate_nodes.push(ForwardNode {
 			node_id: *node_id,
 			tlvs: ForwardTlvs {
+				padding: None,
 				short_channel_id: chan_upd.short_channel_id,
 				payment_relay: PaymentRelay {
 					cltv_expiry_delta: chan_upd.cltv_expiry_delta,
@@ -57,6 +59,7 @@ fn blinded_payment_path(
 		});
 	}
 	let payee_tlvs = ReceiveTlvs {
+		padding: None,
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
@@ -104,6 +107,7 @@ fn do_one_hop_blinded_path(success: bool) {
 	let amt_msat = 5000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
 	let payee_tlvs = ReceiveTlvs {
+		padding: None,
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
@@ -148,6 +152,7 @@ fn mpp_to_one_hop_blinded_path() {
 	let amt_msat = 15_000_000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
 	let payee_tlvs = ReceiveTlvs {
+		padding: None,
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
@@ -289,7 +294,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
-	route_params.payment_params.max_path_length = 18;
+	route_params.payment_params.max_path_length = 17;
 
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
@@ -1293,6 +1298,7 @@ fn custom_tlvs_to_blinded_path() {
 	let amt_msat = 5000;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
 	let payee_tlvs = ReceiveTlvs {
+		padding: None,
 		payment_secret,
 		payment_constraints: PaymentConstraints {
 			max_cltv_expiry: u32::max_value(),
@@ -1331,4 +1337,40 @@ fn custom_tlvs_to_blinded_path() {
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
 			.with_custom_tlvs(recipient_onion_fields.custom_tlvs.clone())
 	);
+}
+
+#[test]
+fn blinded_payment_path_padding() {
+	// Make sure that for a blinded payment path, all encrypted payloads are padded to equal lengths.
+	let chanmon_cfgs = create_chanmon_cfgs(5);
+	let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+	let mut nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let chan_upd_2_3 = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0).0.contents;
+	let chan_upd_3_4 = create_announced_chan_between_nodes_with_value(&nodes, 3, 4, 1_000_000, 0).0.contents;
+
+	// Get all our nodes onto the same height so payments don't fail for CLTV violations.
+	connect_blocks(&nodes[0], nodes[4].best_block_info().1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], nodes[4].best_block_info().1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], nodes[4].best_block_info().1 - nodes[2].best_block_info().1);
+	assert_eq!(nodes[4].best_block_info().1, nodes[3].best_block_info().1);
+
+	let amt_msat = 5000;
+	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[4], Some(amt_msat), None);
+
+	let blinded_path = blinded_payment_path(payment_secret, 1, 1_0000_0000,
+		nodes.iter().skip(2).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_2_3, &chan_upd_3_4],
+		&chanmon_cfgs[4].keys_manager
+	);
+
+	assert!(is_properly_padded(&blinded_path.1));
+
+	let route_params = RouteParameters::from_payment_params_and_value(PaymentParameters::blinded(vec![blinded_path]), amt_msat);
+
+	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
+	claim_payment(&nodes[0], &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]], payment_preimage);
 }

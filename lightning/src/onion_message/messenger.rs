@@ -950,7 +950,7 @@ where
 		(control_tlvs_ss, custom_handler.deref(), logger.deref())
 	) {
 		Ok((Payload::Receive::<ParsedOnionMessageContents<<<CMH as Deref>::Target as CustomOnionMessageHandler>::CustomMessage>> {
-			message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }), reply_path,
+			message, control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { padding: _, context }), reply_path,
 		}, None)) => {
 			match (&message, &context) {
 				(_, None) => {
@@ -969,7 +969,7 @@ where
 			}
 		},
 		Ok((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
-			next_hop, next_blinding_override
+			padding: _, next_hop, next_blinding_override
 		})), Some((next_hop_hmac, new_packet_bytes)))) => {
 			// TODO: we need to check whether `next_hop` is our node, in which case this is a dummy
 			// blinded hop and this onion message is destined for us. In this situation, we should keep
@@ -1772,6 +1772,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 				if let Some(ss) = prev_control_tlvs_ss.take() {
 					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(
 						ForwardTlvs {
+							padding: None,
 							next_hop: NextMessageHop::NodeId(unblinded_pk_opt.unwrap()),
 							next_blinding_override: None,
 						}
@@ -1782,6 +1783,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 			} else if let Some((intro_node_id, blinding_pt)) = intro_node_id_blinding_pt.take() {
 				if let Some(control_tlvs_ss) = prev_control_tlvs_ss.take() {
 					payloads.push((Payload::Forward(ForwardControlTlvs::Unblinded(ForwardTlvs {
+						padding: None,
 						next_hop: NextMessageHop::NodeId(intro_node_id),
 						next_blinding_override: Some(blinding_pt),
 					})), control_tlvs_ss));
@@ -1817,7 +1819,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 		}, prev_control_tlvs_ss.unwrap()));
 	} else {
 		payloads.push((Payload::Receive {
-			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None }),
+			control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { padding: None, context: None }),
 			reply_path: reply_path.take(),
 			message,
 		}, prev_control_tlvs_ss.unwrap()));

@@ -2793,7 +2793,8 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
 			match ChaChaPolyReadAdapter::read(&mut reader, rho)? {
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
-					short_channel_id, payment_relay, payment_constraints, features
+					padding: _, short_channel_id, payment_relay,
+					payment_constraints, features
 				})} => {
 					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
 						keysend_preimage.is_some()
@@ -2809,7 +2810,8 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
-					payment_secret, payment_constraints, payment_context
+					padding: _, payment_secret, payment_constraints,
+					payment_context
 				})} => {
 					if total_msat.unwrap_or(0) > MAX_VALUE_MSAT { return Err(DecodeError::InvalidValue) }
 					Ok(Self::BlindedReceive {

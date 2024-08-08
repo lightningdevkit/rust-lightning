@@ -146,6 +146,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 				};
 				Some(payment::ForwardNode {
 					tlvs: ForwardTlvs {
+						padding: None,
 						short_channel_id,
 						payment_relay,
 						payment_constraints,
