@@ -295,8 +295,8 @@ impl UnsignedStaticInvoice {
 		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature })
 	}
 
-	invoice_accessors_common!(self, self.contents, StaticInvoice);
-	invoice_accessors_signing_pubkey!(self, self.contents, StaticInvoice);
+	invoice_accessors_common!(self, self.contents, UnsignedStaticInvoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, UnsignedStaticInvoice);
 	invoice_accessors!(self, self.contents);
 }
 

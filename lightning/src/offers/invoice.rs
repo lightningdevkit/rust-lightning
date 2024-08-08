@@ -771,7 +771,6 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	}
 } }
 
-
 macro_rules! invoice_accessors_signing_pubkey {
 	($self: ident, $contents: expr, $invoice_type: ty) =>
 {
@@ -794,8 +793,8 @@ macro_rules! invoice_accessors_signing_pubkey {
 } }
 
 impl UnsignedBolt12Invoice {
-	invoice_accessors_common!(self, self.contents, Bolt12Invoice);
-	invoice_accessors_signing_pubkey!(self, self.contents, Bolt12Invoice);
+	invoice_accessors_common!(self, self.contents, UnsignedBolt12Invoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, UnsignedBolt12Invoice);
 	invoice_accessors!(self, self.contents);
 }
 
