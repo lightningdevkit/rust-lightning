@@ -492,23 +492,28 @@ pub(crate) mod futures_util {
 	pub(crate) struct Selector<
 		A: Future<Output = ()> + Unpin,
 		B: Future<Output = ()> + Unpin,
-		C: Future<Output = bool> + Unpin,
+		C: Future<Output = ()> + Unpin,
+		D: Future<Output = bool> + Unpin,
 	> {
 		pub a: A,
 		pub b: B,
 		pub c: C,
+		pub d: D,
 	}
+
 	pub(crate) enum SelectorOutput {
 		A,
 		B,
-		C(bool),
+		C,
+		D(bool),
 	}
 
 	impl<
 			A: Future<Output = ()> + Unpin,
 			B: Future<Output = ()> + Unpin,
-			C: Future<Output = bool> + Unpin,
-		> Future for Selector<A, B, C>
+			C: Future<Output = ()> + Unpin,
+			D: Future<Output = bool> + Unpin,
+		> Future for Selector<A, B, C, D>
 	{
 		type Output = SelectorOutput;
 		fn poll(
@@ -527,12 +532,40 @@ pub(crate) mod futures_util {
 				Poll::Pending => {},
 			}
 			match Pin::new(&mut self.c).poll(ctx) {
+				Poll::Ready(()) => {
+					return Poll::Ready(SelectorOutput::C);
+				},
+				Poll::Pending => {},
+			}
+			match Pin::new(&mut self.d).poll(ctx) {
 				Poll::Ready(res) => {
-					return Poll::Ready(SelectorOutput::C(res));
+					return Poll::Ready(SelectorOutput::D(res));
 				},
 				Poll::Pending => {},
 			}
 			Poll::Pending
+		}
+	}
+
+	/// A selector that takes a future wrapped in an option that will be polled if it is `Some` and
+	/// will always be pending otherwise.
+	pub(crate) struct OptionalSelector<F: Future<Output = ()> + Unpin> {
+		pub optional_future: Option<F>,
+	}
+
+	impl<F: Future<Output = ()> + Unpin> Future for OptionalSelector<F> {
+		type Output = ();
+		fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+			match self.optional_future.as_mut() {
+				Some(f) => match Pin::new(f).poll(ctx) {
+					Poll::Ready(()) => {
+						self.optional_future.take();
+						Poll::Ready(())
+					},
+					Poll::Pending => Poll::Pending,
+				},
+				None => Poll::Pending,
+			}
 		}
 	}
 
@@ -557,7 +590,7 @@ pub(crate) mod futures_util {
 #[cfg(feature = "futures")]
 use core::task;
 #[cfg(feature = "futures")]
-use futures_util::{dummy_waker, Selector, SelectorOutput};
+use futures_util::{dummy_waker, OptionalSelector, Selector, SelectorOutput};
 
 /// Processes background events in a future.
 ///
@@ -782,18 +815,25 @@ where
 		scorer,
 		should_break,
 		{
+			let om_fut = if let Some(om) = onion_messenger.as_ref() {
+				let fut = om.get_om().get_update_future();
+				OptionalSelector { optional_future: Some(fut) }
+			} else {
+				OptionalSelector { optional_future: None }
+			};
 			let fut = Selector {
 				a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
 				b: chain_monitor.get_update_future(),
-				c: sleeper(if mobile_interruptable_platform {
+				c: om_fut,
+				d: sleeper(if mobile_interruptable_platform {
 					Duration::from_millis(100)
 				} else {
 					Duration::from_secs(FASTEST_TIMER)
 				}),
 			};
 			match fut.await {
-				SelectorOutput::A | SelectorOutput::B => {},
-				SelectorOutput::C(exit) => {
+				SelectorOutput::A | SelectorOutput::B | SelectorOutput::C => {},
+				SelectorOutput::D(exit) => {
 					should_break = exit;
 				},
 			}
@@ -938,11 +978,19 @@ impl BackgroundProcessor {
 				scorer,
 				stop_thread.load(Ordering::Acquire),
 				{
-					Sleeper::from_two_futures(
-						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-						&chain_monitor.get_update_future(),
-					)
-					.wait_timeout(Duration::from_millis(100));
+					let sleeper = if let Some(om) = onion_messenger.as_ref() {
+						Sleeper::from_three_futures(
+							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+							&chain_monitor.get_update_future(),
+							&om.get_om().get_update_future(),
+						)
+					} else {
+						Sleeper::from_two_futures(
+							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
+							&chain_monitor.get_update_future(),
+						)
+					};
+					sleeper.wait_timeout(Duration::from_millis(100));
 				},
 				|_| Instant::now(),
 				|time: &Instant, dur| time.elapsed().as_secs() > dur,
