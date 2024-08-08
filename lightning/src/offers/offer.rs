@@ -311,7 +311,7 @@ macro_rules! offer_builder_methods { (
 	/// Sets the [`Offer::amount`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub(super) fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
+	pub(crate) fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
 		$self.offer.amount = Some(amount);
 		$return_value
 	}
@@ -465,7 +465,7 @@ macro_rules! offer_builder_test_methods { (
 	}
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(super) fn build_unchecked($self: $self_type) -> Offer {
+	pub(crate) fn build_unchecked($self: $self_type) -> Offer {
 		$self.build_without_checks()
 	}
 } }
@@ -862,9 +862,8 @@ impl OfferContents {
 		&self, amount_msats: Option<u64>, quantity: Option<u64>
 	) -> Result<(), Bolt12SemanticError> {
 		let offer_amount_msats = match self.amount {
-			None => 0,
 			Some(Amount::Bitcoin { amount_msats }) => amount_msats,
-			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
+			_ => 0,
 		};
 
 		if !self.expects_quantity() || quantity.is_some() {

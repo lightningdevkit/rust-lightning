@@ -46,7 +46,7 @@ use core::time::Duration;
 use crate::blinded_path::{BlindedPath, IntroductionNode};
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
-use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
+use crate::ln::channelmanager::{Bolt12CreationError, Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self, Bolt12RequestError};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
@@ -55,6 +55,7 @@ use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{Destination, PeeledOnion};
+use crate::offers::offer::Amount;
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -1599,7 +1600,7 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	match alice.node.create_offer_builder(Some(absolute_expiry)) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
 	}
 
 	let mut args = ReconnectArgs::new(alice, bob);
@@ -1607,15 +1608,15 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 	reconnect_nodes(args);
 
 	let offer = alice.node
-		.create_offer_builder(Some(absolute_expiry)).unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.create_offer_builder(None).unwrap()
+		.amount(Amount::Currency {iso4217_code: *b"USD", amount: 6_000})
+		.build_unchecked();
 
 	let payment_id = PaymentId([1; 32]);
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12RequestError::BlindedPathCreationFailed),
 	}
 
 	assert!(nodes[0].node.list_recent_payments().is_empty());
@@ -1673,7 +1674,7 @@ fn fails_creating_refund_or_sending_invoice_without_connected_peers() {
 		10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12RequestError::BlindedPathCreationFailed),
 	}
 
 	let mut args = ReconnectArgs::new(charlie, david);
@@ -1687,7 +1688,7 @@ fn fails_creating_refund_or_sending_invoice_without_connected_peers() {
 
 	match alice.node.request_refund_payment(&refund) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
 	}
 
 	let mut args = ReconnectArgs::new(alice, bob);
@@ -1719,7 +1720,7 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 	let payment_id = PaymentId([1; 32]);
 	match bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedChain),
+		Err(e) => assert_eq!(e, Bolt12RequestError::InvalidSemantics(Bolt12SemanticError::UnsupportedChain)),
 	}
 }
 
@@ -1746,7 +1747,7 @@ fn fails_sending_invoice_with_unsupported_chain_for_refund() {
 
 	match alice.node.request_refund_payment(&refund) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedChain),
+		Err(e) => assert_eq!(e, Bolt12CreationError::InvalidSemantics(Bolt12SemanticError::UnsupportedChain)),
 	}
 }
 
@@ -1771,14 +1772,15 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 
 	let offer = alice.node
 		.create_offer_builder(None).unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
+		.amount(Amount::Currency {iso4217_code: *b"USD", amount: 6_000})
+		.build_unchecked();
+
 
 	let payment_id = PaymentId([1; 32]);
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12RequestError::BlindedPathCreationFailed),
 	}
 
 	assert!(nodes[0].node.list_recent_payments().is_empty());
@@ -1818,7 +1820,7 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
+		Err(e) => assert_eq!(e, Bolt12RequestError::DuplicatePaymentId),
 	}
 
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
@@ -1846,7 +1848,7 @@ fn fails_creating_refund_with_duplicate_payment_id() {
 		10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
+		Err(e) => assert_eq!(e, Bolt12RequestError::DuplicatePaymentId),
 	}
 
 	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
@@ -1968,7 +1970,7 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_refund() {
 
 	match alice.node.request_refund_payment(&refund) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
 	}
 }
 
@@ -2063,4 +2065,35 @@ fn fails_paying_invoice_more_than_once() {
 
 	let invoice_error = extract_invoice_error(alice, &onion_message);
 	assert_eq!(invoice_error, InvoiceError::from_string("DuplicateInvoice".to_string()));
+}
+
+#[test]
+fn fails_paying_offer_with_insufficient_liquidity() {
+	let channel_mon_config = create_chanmon_cfgs(2);
+	let node_config = create_node_cfgs(2, &channel_mon_config);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_config, &[None, None]);
+	let nodes = create_network(2, &node_config, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let (alice, bob) = (&nodes[0], &nodes[1]);
+	let alice_id = alice.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder(None).unwrap()
+		.clear_paths()
+		.amount_msats(1_000_000_001)
+		.build().unwrap();
+	assert_eq!(offer.signing_pubkey(), Some(alice_id));
+	assert!(offer.paths().is_empty());
+
+	let payment_id = PaymentId([1; 32]);
+
+	let result = bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None);
+	match result {
+		Ok(_) => panic!("Expected error with insufficient liquidity."),
+		Err(e) => {
+			assert_eq!(e, Bolt12RequestError::InsufficientLiquidity);
+		}
+	}
 }

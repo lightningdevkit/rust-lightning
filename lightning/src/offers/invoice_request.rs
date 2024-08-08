@@ -71,7 +71,7 @@ use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Amount, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
@@ -269,6 +269,11 @@ macro_rules! invoice_request_builder_methods { (
 
 	/// Sets the [`InvoiceRequest::amount_msats`] for paying an invoice. Errors if `amount_msats` is
 	/// not at least the expected invoice amount (i.e., [`Offer::amount`] times [`quantity`]).
+	///
+	/// When the [`Offer`] specifies a currency, this method allows setting the `amount_msats` in the
+	/// `InvoiceRequest`. The issuer of the offer will validate this amount and must set a matching
+	/// amount in the final invoice. If the issuer disagrees with the specfified amount, the invoice
+	/// request will be rejected.
 	///
 	/// Successive calls to this method will override the previous setting.
 	///
@@ -1159,8 +1164,13 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 			return Err(Bolt12SemanticError::MissingAmount);
 		}
 
-		offer.check_quantity(quantity)?;
-		offer.check_amount_msats_for_quantity(amount, quantity)?;
+		match offer.amount() {
+			Some(Amount::Currency {..}) => return Err(Bolt12SemanticError::UnsupportedCurrency),
+			_ => {
+				offer.check_amount_msats_for_quantity(amount, quantity)?;
+				offer.check_quantity(quantity)?;
+			},
+		};
 
 		let features = features.unwrap_or_else(InvoiceRequestFeatures::empty);
 
@@ -1725,6 +1735,26 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount(Amount::Currency {iso4217_code: *b"USD", amount: 1000})
+			.build_unchecked()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		assert_eq!(invoice_request.amount(), Some(Amount::Currency {iso4217_code: *b"USD", amount: 1000}));
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount(Amount::Currency {iso4217_code: *b"USD", amount: 100})
+			.build_unchecked()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(150_000_000)
+			.unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(150_000_000));
+		assert_eq!(tlv_stream.amount, Some(150_000_000));
 	}
 
 	#[test]
