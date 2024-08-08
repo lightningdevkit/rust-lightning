@@ -27,7 +27,7 @@ use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::invoice_request::InvoiceRequestFields;
 use crate::offers::offer::OfferId;
 use crate::sign::{NodeSigner, Recipient};
-use crate::util::ser::{FixedLengthReader, LengthReadableArgs, HighZeroBytesDroppedBigSize, Readable, Writeable, Writer};
+use crate::util::ser::{FixedLengthReader, LengthReadableArgs, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 
 use core::mem;
 use core::ops::Deref;
@@ -61,6 +61,9 @@ pub struct ForwardTlvs {
 	///
 	/// [`BlindedHop::encrypted_payload`]: crate::blinded_path::BlindedHop::encrypted_payload
 	pub features: BlindedHopFeatures,
+	/// Set if this [`BlindedPath`] is concatenated to another, to indicate the
+	/// [`BlindedPath::blinding_point`] of the appended blinded path.
+	pub next_blinding_override: Option<PublicKey>,
 }
 
 /// Data to construct a [`BlindedHop`] for receiving a payment. This payload is custom to LDK and
@@ -94,7 +97,7 @@ enum BlindedPaymentTlvsRef<'a> {
 /// Parameters for relaying over a given [`BlindedHop`].
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PaymentRelay {
 	/// Number of blocks subtracted from an incoming HTLC's `cltv_expiry` for this [`BlindedHop`].
 	pub cltv_expiry_delta: u16,
@@ -108,7 +111,7 @@ pub struct PaymentRelay {
 /// Constraints for relaying over a given [`BlindedHop`].
 ///
 /// [`BlindedHop`]: crate::blinded_path::BlindedHop
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PaymentConstraints {
 	/// The maximum total CLTV that is acceptable when relaying a payment over this [`BlindedHop`].
 	pub max_cltv_expiry: u32,
@@ -202,7 +205,7 @@ impl Writeable for ForwardTlvs {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		let features_opt =
 			if self.features == BlindedHopFeatures::empty() { None }
-			else { Some(&self.features) };
+			else { Some(WithoutLength(&self.features)) };
 		encode_tlv_stream!(w, {
 			(2, self.short_channel_id, required),
 			(10, self.payment_relay, required),
@@ -240,9 +243,10 @@ impl Readable for BlindedPaymentTlvs {
 		_init_and_read_tlv_stream!(r, {
 			(1, _padding, option),
 			(2, scid, option),
+			(8, next_blinding_override, option),
 			(10, payment_relay, option),
 			(12, payment_constraints, required),
-			(14, features, option),
+			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, (default_value, PaymentContext::unknown())),
 		});
@@ -256,6 +260,7 @@ impl Readable for BlindedPaymentTlvs {
 				short_channel_id,
 				payment_relay: payment_relay.ok_or(DecodeError::InvalidValue)?,
 				payment_constraints: payment_constraints.0.unwrap(),
+				next_blinding_override,
 				features: features.unwrap_or_else(BlindedHopFeatures::empty),
 			}))
 		} else {
@@ -500,6 +505,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 100,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value(),
@@ -516,6 +522,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 1_000,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value(),
@@ -573,6 +580,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 1,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
@@ -589,6 +597,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 2_000,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
@@ -624,6 +633,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 5_000,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
@@ -640,6 +650,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 2_000,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
@@ -679,6 +690,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 1,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: 5_000,
@@ -695,6 +707,7 @@ mod tests {
 					max_cltv_expiry: 0,
 					htlc_minimum_msat: 1,
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: 10_000

@@ -1764,6 +1764,7 @@ mod fuzzy_internal_msgs {
 			payment_constraints: PaymentConstraints,
 			features: BlindedHopFeatures,
 			intro_node_blinding_point: Option<PublicKey>,
+			next_blinding_override: Option<PublicKey>,
 		},
 		BlindedReceive {
 			sender_intended_htlc_amt_msat: u64,
@@ -2740,8 +2741,8 @@ impl Writeable for OutboundTrampolinePayload {
 }
 
 
-impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload where NS::Target: NodeSigner {
-	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, &NS)) -> Result<Self, DecodeError> {
+impl<NS: Deref> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPayload where NS::Target: NodeSigner {
+	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
 		let (update_add_blinding_point, node_signer) = args;
 
 		let mut amt = None;
@@ -2793,7 +2794,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 			let mut reader = FixedLengthReader::new(&mut s, enc_tlvs.len() as u64);
 			match ChaChaPolyReadAdapter::read(&mut reader, rho)? {
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Forward(ForwardTlvs {
-					short_channel_id, payment_relay, payment_constraints, features
+					short_channel_id, payment_relay, payment_constraints, features, next_blinding_override
 				})} => {
 					if amt.is_some() || cltv_value.is_some() || total_msat.is_some() ||
 						keysend_preimage.is_some()
@@ -2806,6 +2807,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 						payment_constraints,
 						features,
 						intro_node_blinding_point,
+						next_blinding_override,
 					})
 				},
 				ChaChaPolyReadAdapter { readable: BlindedPaymentTlvs::Receive(ReceiveTlvs {
@@ -4439,7 +4441,7 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Forward {
 			short_channel_id, amt_to_forward, outgoing_cltv_value
 		} = inbound_msg {
@@ -4464,7 +4466,7 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
 			payment_data: None, sender_intended_htlc_amt_msat, cltv_expiry_height, ..
 		} = inbound_msg {
@@ -4492,7 +4494,7 @@ mod tests {
 		assert_eq!(encoded_value, target_value);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
 			payment_data: Some(FinalOnionHopData {
 				payment_secret,
@@ -4528,7 +4530,7 @@ mod tests {
 		};
 		let encoded_value = msg.encode();
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		assert!(msgs::InboundOnionPayload::read(&mut Cursor::new(&encoded_value[..]), (None, &&node_signer)).is_err());
+		assert!(msgs::InboundOnionPayload::read(&mut Cursor::new(&encoded_value[..]), (None, &node_signer)).is_err());
 		let good_type_range_tlvs = vec![
 			((1 << 16) - 3, vec![42]),
 			((1 << 16) - 1, vec![42; 32]),
@@ -4537,7 +4539,7 @@ mod tests {
 			*custom_tlvs = &good_type_range_tlvs;
 		}
 		let encoded_value = msg.encode();
-		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&encoded_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg = ReadableArgs::read(&mut Cursor::new(&encoded_value[..]), (None, &node_signer)).unwrap();
 		match inbound_msg {
 			msgs::InboundOnionPayload::Receive { custom_tlvs, .. } => assert!(custom_tlvs.is_empty()),
 			_ => panic!(),
@@ -4562,7 +4564,7 @@ mod tests {
 		let target_value = <Vec<u8>>::from_hex("2e02080badf00d010203040404ffffffffff0000000146c6616b021234ff0000000146c6616f084242424242424242").unwrap();
 		assert_eq!(encoded_value, target_value);
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		let inbound_msg: msgs::InboundOnionPayload = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &&node_signer)).unwrap();
+		let inbound_msg: msgs::InboundOnionPayload = ReadableArgs::read(&mut Cursor::new(&target_value[..]), (None, &node_signer)).unwrap();
 		if let msgs::InboundOnionPayload::Receive {
 			payment_data: None,
 			payment_metadata: None,
@@ -4792,7 +4794,7 @@ mod tests {
 		let mut rd = Cursor::new(&big_payload[..]);
 
 		let node_signer = test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
-		<msgs::InboundOnionPayload as ReadableArgs<(Option<PublicKey>, &&test_utils::TestKeysInterface)>>
+		<msgs::InboundOnionPayload as ReadableArgs<(Option<PublicKey>, &test_utils::TestKeysInterface)>>
 			::read(&mut rd, (None, &&node_signer)).unwrap();
 	}
 	// see above test, needs to be a separate method for use of the serialization macros.
