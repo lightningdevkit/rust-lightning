@@ -207,8 +207,8 @@ impl MetadataStrategy for DerivedMetadata {}
 macro_rules! offer_explicit_metadata_builder_methods { (
 	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr
 ) => {
-	/// Creates a new builder for an offer using the [`Offer::signing_pubkey`] for signing invoices.
-	/// The associated secret key must be remembered while the offer is valid.
+	/// Creates a new builder for an offer using the [`Offer::issuer_id`] for signing invoices. The
+	/// associated secret key must be remembered while the offer is valid.
 	///
 	/// Use a different pubkey per offer to avoid correlating offers.
 	///
@@ -219,12 +219,12 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
-	pub fn new(signing_pubkey: PublicKey) -> Self {
+	pub fn new(issuer_id: PublicKey) -> Self {
 		Self {
 			offer: OfferContents {
 				chains: None, metadata: None, amount: None, description: None,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
-				supported_quantity: Quantity::One, signing_pubkey: Some(signing_pubkey),
+				supported_quantity: Quantity::One, issuer_id: Some(issuer_id),
 			},
 			metadata_strategy: core::marker::PhantomData,
 			secp_ctx: None,
@@ -241,10 +241,10 @@ macro_rules! offer_explicit_metadata_builder_methods { (
 } }
 
 macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
-	/// Similar to [`OfferBuilder::new`] except, if [`OfferBuilder::path`] is called, the signing
-	/// pubkey is derived from the given [`ExpandedKey`] and [`Nonce`]. This provides recipient
-	/// privacy by using a different signing pubkey for each offer. Otherwise, the provided
-	/// `node_id` is used for the signing pubkey.
+	/// Similar to [`OfferBuilder::new`] except, if [`OfferBuilder::path`] is called, the issuer id
+	/// is derived from the given [`ExpandedKey`] and [`Nonce`]. This provides recipient privacy by
+	/// using a different issuer id for each offer. Otherwise, the provided `node_id` is used for
+	/// the [`Offer::issuer_id`].
 	///
 	/// Also, sets the metadata when [`OfferBuilder::build`] is called such that it can be used by
 	/// [`InvoiceRequest::verify_using_metadata`] to determine if the request was produced for the
@@ -255,7 +255,7 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 	/// [`InvoiceRequest::verify_using_metadata`]: crate::offers::invoice_request::InvoiceRequest::verify_using_metadata
 	/// [`InvoiceRequest::verify_using_recipient_data`]: crate::offers::invoice_request::InvoiceRequest::verify_using_recipient_data
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-	pub fn deriving_signing_pubkey(
+	pub fn deriving_issuer_id(
 		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'a Secp256k1<$secp_context>
 	) -> Self {
@@ -265,7 +265,7 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 			offer: OfferContents {
 				chains: None, metadata: Some(metadata), amount: None, description: None,
 				features: OfferFeatures::empty(), absolute_expiry: None, issuer: None, paths: None,
-				supported_quantity: Quantity::One, signing_pubkey: Some(node_id),
+				supported_quantity: Quantity::One, issuer_id: Some(node_id),
 			},
 			metadata_strategy: core::marker::PhantomData,
 			secp_ctx: Some(secp_ctx),
@@ -342,7 +342,7 @@ macro_rules! offer_builder_methods { (
 	}
 
 	/// Adds a blinded path to [`Offer::paths`]. Must include at least one path if only connected by
-	/// private channels or if [`Offer::signing_pubkey`] is not a public node id.
+	/// private channels or if [`Offer::issuer_id`] is not a public node id.
 	///
 	/// Successive calls to this method will add another blinded path. Caller is responsible for not
 	/// adding duplicate paths.
@@ -390,8 +390,8 @@ macro_rules! offer_builder_methods { (
 			// Create the metadata for stateless verification of an InvoiceRequest.
 			if metadata.has_derivation_material() {
 
-				// Don't derive keys if no blinded paths were given since this means the signing
-				// pubkey must be the node id of an announced node.
+				// Don't derive keys if no blinded paths were given since this means the issuer id
+				// must be the node id of an announced node.
 				let iv_bytes = if $self.offer.paths.is_none() {
 					metadata = metadata.without_keys();
 					IV_BYTES_WITH_METADATA
@@ -403,16 +403,16 @@ macro_rules! offer_builder_methods { (
 				debug_assert_eq!(tlv_stream.metadata, None);
 				tlv_stream.metadata = None;
 				if metadata.derives_recipient_keys() {
-					tlv_stream.node_id = None;
+					tlv_stream.issuer_id = None;
 				}
 
-				// Either replace the signing pubkey with the derived pubkey or include the metadata
-				// for verification. In the former case, the blinded paths must include
+				// Either replace the issuer id with the derived pubkey or include the metadata for
+				// verification. In the former case, the blinded paths must include
 				// `OffersContext::InvoiceRequest` instead.
 				let (derived_metadata, keys) =
 					metadata.derive_from(iv_bytes, tlv_stream, $self.secp_ctx);
 				match keys {
-					Some(keys) => $self.offer.signing_pubkey = Some(keys.public_key()),
+					Some(keys) => $self.offer.issuer_id = Some(keys.public_key()),
 					None => $self.offer.metadata = Some(derived_metadata),
 				}
 			} else {
@@ -459,8 +459,8 @@ macro_rules! offer_builder_test_methods { (
 	}
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(crate) fn clear_signing_pubkey($($self_mut)* $self: $self_type) -> $return_type {
-		$self.offer.signing_pubkey = None;
+	pub(crate) fn clear_issuer_id($($self_mut)* $self: $self_type) -> $return_type {
+		$self.offer.issuer_id = None;
 		$return_value
 	}
 
@@ -570,7 +570,7 @@ pub(super) struct OfferContents {
 	issuer: Option<String>,
 	paths: Option<Vec<BlindedPath>>,
 	supported_quantity: Quantity,
-	signing_pubkey: Option<PublicKey>,
+	issuer_id: Option<PublicKey>,
 }
 
 macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
@@ -631,9 +631,19 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 		$contents.supported_quantity()
 	}
 
-	/// The public key used by the recipient to sign invoices.
-	pub fn signing_pubkey(&$self) -> Option<bitcoin::secp256k1::PublicKey> {
-		$contents.signing_pubkey()
+	/// A possibly transient id of the offer's issuer.
+	/// - If [`Offer::paths`] is empty, MUST be `Some` and contain the recipient's public key for
+	///   sending an [`InvoiceRequest`].
+	/// - If [`Offer::paths`] is not empty, MAY be `Some` and contain a transient id.
+	/// - If `Some`, then the corresponding private key will be used by the recipient to sign
+	///   invoices.
+	///
+	/// See also [`Bolt12Invoice::signing_pubkey`].
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`Bolt12Invoice::signing_pubkey`]: crate::offers::invoice::Bolt12Invoice::signing_pubkey
+	pub fn issuer_id(&$self) -> Option<bitcoin::secp256k1::PublicKey> {
+		$contents.issuer_id()
 	}
 } }
 
@@ -916,8 +926,8 @@ impl OfferContents {
 		}
 	}
 
-	pub(super) fn signing_pubkey(&self) -> Option<PublicKey> {
-		self.signing_pubkey
+	pub(super) fn issuer_id(&self) -> Option<PublicKey> {
+		self.issuer_id
 	}
 
 	pub(super) fn verify_using_metadata<T: secp256k1::Signing>(
@@ -943,12 +953,12 @@ impl OfferContents {
 				let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES).filter(|record| {
 					match record.r#type {
 						OFFER_METADATA_TYPE => false,
-						OFFER_NODE_ID_TYPE => !metadata.derives_recipient_keys(),
+						OFFER_ISSUER_ID_TYPE => !metadata.derives_recipient_keys(),
 						_ => true,
 					}
 				});
-				let signing_pubkey = match self.signing_pubkey() {
-					Some(signing_pubkey) => signing_pubkey,
+				let signing_pubkey = match self.issuer_id() {
+					Some(issuer_id) => issuer_id,
 					None => return Err(()),
 				};
 				let keys = signer::verify_recipient_metadata(
@@ -987,7 +997,7 @@ impl OfferContents {
 			paths: self.paths.as_ref(),
 			issuer: self.issuer.as_ref(),
 			quantity_max: self.supported_quantity.to_tlv_record(),
-			node_id: self.signing_pubkey.as_ref(),
+			issuer_id: self.issuer_id.as_ref(),
 		}
 	}
 }
@@ -1063,8 +1073,8 @@ pub(super) const OFFER_TYPES: core::ops::Range<u64> = 1..80;
 /// TLV record type for [`Offer::metadata`].
 const OFFER_METADATA_TYPE: u64 = 4;
 
-/// TLV record type for [`Offer::signing_pubkey`].
-const OFFER_NODE_ID_TYPE: u64 = 22;
+/// TLV record type for [`Offer::issuer_id`].
+const OFFER_ISSUER_ID_TYPE: u64 = 22;
 
 tlv_stream!(OfferTlvStream, OfferTlvStreamRef, OFFER_TYPES, {
 	(2, chains: (Vec<ChainHash>, WithoutLength)),
@@ -1077,7 +1087,7 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef, OFFER_TYPES, {
 	(16, paths: (Vec<BlindedPath>, WithoutLength)),
 	(18, issuer: (String, WithoutLength)),
 	(20, quantity_max: (u64, HighZeroBytesDroppedBigSize)),
-	(OFFER_NODE_ID_TYPE, node_id: PublicKey),
+	(OFFER_ISSUER_ID_TYPE, issuer_id: PublicKey),
 });
 
 impl Bech32Encode for Offer {
@@ -1111,7 +1121,7 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 	fn try_from(tlv_stream: OfferTlvStream) -> Result<Self, Self::Error> {
 		let OfferTlvStream {
 			chains, metadata, currency, amount, description, features, absolute_expiry, paths,
-			issuer, quantity_max, node_id,
+			issuer, quantity_max, issuer_id,
 		} = tlv_stream;
 
 		let metadata = metadata.map(|metadata| Metadata::Bytes(metadata));
@@ -1141,15 +1151,15 @@ impl TryFrom<OfferTlvStream> for OfferContents {
 			Some(n) => Quantity::Bounded(NonZeroU64::new(n).unwrap()),
 		};
 
-		let (signing_pubkey, paths) = match (node_id, paths) {
-			(None, None) => return Err(Bolt12SemanticError::MissingSigningPubkey),
+		let (issuer_id, paths) = match (issuer_id, paths) {
+			(None, None) => return Err(Bolt12SemanticError::MissingIssuerId),
 			(_, Some(paths)) if paths.is_empty() => return Err(Bolt12SemanticError::MissingPaths),
-			(node_id, paths) => (node_id, paths),
+			(issuer_id, paths) => (issuer_id, paths),
 		};
 
 		Ok(OfferContents {
 			chains, metadata, amount, description, features, absolute_expiry, issuer, paths,
-			supported_quantity, signing_pubkey,
+			supported_quantity, issuer_id,
 		})
 	}
 }
@@ -1209,7 +1219,7 @@ mod tests {
 		assert_eq!(offer.issuer(), None);
 		assert_eq!(offer.supported_quantity(), Quantity::One);
 		assert!(!offer.expects_quantity());
-		assert_eq!(offer.signing_pubkey(), Some(pubkey(42)));
+		assert_eq!(offer.issuer_id(), Some(pubkey(42)));
 
 		assert_eq!(
 			offer.as_tlv_stream(),
@@ -1224,7 +1234,7 @@ mod tests {
 				paths: None,
 				issuer: None,
 				quantity_max: None,
-				node_id: Some(&pubkey(42)),
+				issuer_id: Some(&pubkey(42)),
 			},
 		);
 
@@ -1302,11 +1312,11 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let offer = OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.build().unwrap();
 		assert!(offer.metadata().is_some());
-		assert_eq!(offer.signing_pubkey(), Some(node_id));
+		assert_eq!(offer.issuer_id(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -1353,7 +1363,7 @@ mod tests {
 	}
 
 	#[test]
-	fn builds_offer_with_derived_signing_pubkey() {
+	fn builds_offer_with_derived_issuer_id() {
 		let node_id = recipient_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
@@ -1371,12 +1381,12 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let offer = OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.path(blinded_path)
 			.build().unwrap();
 		assert!(offer.metadata().is_none());
-		assert_ne!(offer.signing_pubkey(), Some(node_id));
+		assert_ne!(offer.issuer_id(), Some(node_id));
 
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -1407,10 +1417,10 @@ mod tests {
 			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
 		);
 
-		// Fails verification with altered signing pubkey
+		// Fails verification with altered issuer id
 		let mut tlv_stream = offer.as_tlv_stream();
-		let signing_pubkey = pubkey(1);
-		tlv_stream.node_id = Some(&signing_pubkey);
+		let issuer_id = pubkey(1);
+		tlv_stream.issuer_id = Some(&issuer_id);
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1569,10 +1579,10 @@ mod tests {
 			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
 		assert_eq!(offer.paths(), paths.as_slice());
-		assert_eq!(offer.signing_pubkey(), Some(pubkey(42)));
+		assert_eq!(offer.issuer_id(), Some(pubkey(42)));
 		assert_ne!(pubkey(42), pubkey(44));
 		assert_eq!(tlv_stream.paths, Some(&paths));
-		assert_eq!(tlv_stream.node_id, Some(&pubkey(42)));
+		assert_eq!(tlv_stream.issuer_id, Some(&pubkey(42)));
 	}
 
 	#[test]
@@ -1778,7 +1788,7 @@ mod tests {
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
 				],
 			})
-			.clear_signing_pubkey()
+			.clear_issuer_id()
 			.build()
 			.unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
@@ -1833,14 +1843,14 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_offer_with_node_id() {
+	fn parses_offer_with_issuer_id() {
 		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
 			panic!("error parsing offer: {:?}", e);
 		}
 
 		let mut tlv_stream = offer.as_tlv_stream();
-		tlv_stream.node_id = None;
+		tlv_stream.issuer_id = None;
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
@@ -1848,7 +1858,7 @@ mod tests {
 		match Offer::try_from(encoded_offer) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingIssuerId));
 			},
 		}
 	}
@@ -1879,6 +1889,8 @@ mod bolt12_tests {
 	fn parses_bech32_encoded_offers() {
 		let offers = [
 			// Minimal bolt12 offer
+			"lno1zcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese",
+			// with description (but no amount)
 			"lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg",
 
 			// for testnet
@@ -1923,8 +1935,11 @@ mod bolt12_tests {
 			// ... and with sciddir introduction node
 			"lno1pgx9getnwss8vetrw3hhyucs3yqqqqqqqqqqqqp2qgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqqyqqqqqqqqqqqqqqqqqqqqqqqqqqqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqqgzyg3zyg3zyg3z93pqthvwfzadd7jejes8q9lhc4rvjxd022zv5l44g6qah82ru5rdpnpj",
 
-			// ... and with second blinded path via Carol (0x434343...), blinding 020202...
-			"lno1pgx9getnwss8vetrw3hhyucsl5q5yqeyv5l2cs6y3qqzesrth7mlzrlp3xg7xhulusczm04x6g6nms9trspqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqqsqqqqqqqqqqqqqqqqqqqqqqqqqqpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsqpqg3zyg3zyg3zygz0uc7h32x9s0aecdhxlk075kn046aafpuuyw8f5j652t3vha2yqrsyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsqzqqqqqqqqqqqqqqqqqqqqqqqqqqqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqqyzyg3zyg3zyg3zzcss9mk8y3wkklfvevcrszlmu23kfrxh49px20665dqwmn4p72pksese",
+			// with no issuer_id and blinded path via Bob (0x424242...), blinding 020202...
+			"lno1pgx9getnwss8vetrw3hhyucs5ypjgef743p5fzqq9nqxh0ah7y87rzv3ud0eleps9kl2d5348hq2k8qzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgqpqqqqqqqqqqqqqqqqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqqzq3zyg3zyg3zygs",
+
+			//... and with second blinded path via 1x2x3 (direction 1), blinding 020202...
+			"lno1pgx9getnwss8vetrw3hhyucsl5qj5qeyv5l2cs6y3qqzesrth7mlzrlp3xg7xhulusczm04x6g6nms9trspqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqqsqqqqqqqqqqqqqqqqqqqqqqqqqqpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsqpqg3zyg3zyg3zygpqqqqzqqqqgqqxqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqqgqqqqqqqqqqqqqqqqqqqqqqqqqqqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgqqsg3zyg3zyg3zygtzzqhwcuj966ma9n9nqwqtl032xeyv6755yeflt235pmww58egx6rxry",
 
 			// unknown odd field
 			"lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxfppf5x2mrvdamk7unvvs",
@@ -1953,7 +1968,7 @@ mod bolt12_tests {
 		// Malformed: empty
 		assert_eq!(
 			"lno1".parse::<Offer>(),
-			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey)),
+			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingIssuerId)),
 		);
 
 		// Malformed: truncated at type
@@ -2058,7 +2073,7 @@ mod bolt12_tests {
 			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		);
 
-		// Malformed: invalid offer_node_id
+		// Malformed: invalid offer_issuer_id
 		assert_eq!(
 			"lno1pgz5znzfgdz3vggzqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvps".parse::<Offer>(),
 			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
@@ -2083,10 +2098,16 @@ mod bolt12_tests {
 			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingDescription)),
 		);
 
-		// Missing offer_node_id"
+		// Missing offer_issuer_id"
 		assert_eq!(
 			"lno1pgx9getnwss8vetrw3hhyuc".parse::<Offer>(),
-			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingSigningPubkey)),
+			Err(Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingIssuerId)),
+		);
+
+		// Second offer_path is empty
+		assert_eq!(
+			"lno1pgx9getnwss8vetrw3hhyucsespjgef743p5fzqq9nqxh0ah7y87rzv3ud0eleps9kl2d5348hq2k8qzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgqpqqqqqqqqqqqqqqqqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqqzq3zyg3zyg3zygszqqqqyqqqqsqqvpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqsq".parse::<Offer>(),
+			Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		);
 	}
 }

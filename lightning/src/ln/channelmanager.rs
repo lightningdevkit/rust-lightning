@@ -8817,7 +8817,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		let path = $self.create_blinded_paths_using_absolute_expiry(context, absolute_expiry)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-		let builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
+		let builder = OfferBuilder::deriving_issuer_id(node_id, expanded_key, nonce, secp_ctx)
 			.chain_hash($self.chain_hash)
 			.path(path);
 
@@ -8973,7 +8973,7 @@ where
 	/// # Limitations
 	///
 	/// Requires a direct connection to an introduction node in [`Offer::paths`] or to
-	/// [`Offer::signing_pubkey`], if empty. A similar restriction applies to the responding
+	/// [`Offer::issuer_id`], if empty. A similar restriction applies to the responding
 	/// [`Bolt12Invoice::payment_paths`].
 	///
 	/// # Errors
@@ -9048,18 +9048,18 @@ where
 					);
 					pending_offers_messages.push(message);
 				});
-		} else if let Some(signing_pubkey) = offer.signing_pubkey() {
+		} else if let Some(issuer_id) = offer.issuer_id() {
 			for reply_path in reply_paths {
 				let message = new_pending_onion_message(
 					OffersMessage::InvoiceRequest(invoice_request.clone()),
-					Destination::Node(signing_pubkey),
+					Destination::Node(issuer_id),
 					Some(reply_path),
 				);
 				pending_offers_messages.push(message);
 			}
 		} else {
 			debug_assert!(false);
-			return Err(Bolt12SemanticError::MissingSigningPubkey);
+			return Err(Bolt12SemanticError::MissingIssuerId);
 		}
 
 		Ok(())

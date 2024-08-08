@@ -705,6 +705,16 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 		$contents.supported_quantity()
 	}
 
+	/// A possibly transient id of the recipient.
+	///
+	/// From [`Offer::issuer_id`]; `None` if the invoice was created in response to a [`Refund`].
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Offer::issuer_id`]: crate::offers::offer::Offer::issuer_id
+	pub fn issuer_id(&$self) -> Option<PublicKey> {
+		$contents.issuer_id()
+	}
+
 	/// An unpredictable series of bytes from the payer.
 	///
 	/// From [`InvoiceRequest::payer_metadata`] or [`Refund::payer_metadata`].
@@ -752,13 +762,36 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	}
 } }
 
+macro_rules! invoice_accessors_signing_pubkey {
+	($self: ident, $contents: expr, $invoice_type: ty) =>
+{
+	/// The public key corresponding to the key used to sign the invoice.
+	///
+	/// If the invoices was created in response to an [`Offer`], then will be:
+	/// - [`Offer::issuer_id`] if `Some`, otherwise
+	/// - the final blinded node id from a [`BlindedPath`] in [`Offer::paths`] if `None`.
+	///
+	/// If the invoice was created in response to a [`Refund`], then may be a transient id chosen by
+	/// the recipient.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`Offer::issuer_id`]: crate::offers::offer::Offer::issuer_id
+	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
+	/// [`Refund`]: crate::offers::refund::Refund
+	pub fn signing_pubkey(&$self) -> PublicKey {
+		$contents.signing_pubkey()
+	}
+} }
+
 impl UnsignedBolt12Invoice {
-	invoice_accessors_common!(self, self.contents, Bolt12Invoice);
+	invoice_accessors_common!(self, self.contents, UnsignedBolt12Invoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, UnsignedBolt12Invoice);
 	invoice_accessors!(self, self.contents);
 }
 
 impl Bolt12Invoice {
 	invoice_accessors_common!(self, self.contents, Bolt12Invoice);
+	invoice_accessors_signing_pubkey!(self, self.contents, Bolt12Invoice);
 	invoice_accessors!(self, self.contents);
 
 	/// Signature of the invoice verified using [`Bolt12Invoice::signing_pubkey`].
@@ -940,6 +973,15 @@ impl InvoiceContents {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				Some(invoice_request.inner.offer.supported_quantity())
+			},
+			InvoiceContents::ForRefund { .. } => None,
+		}
+	}
+
+	fn issuer_id(&self) -> Option<PublicKey> {
+		match self {
+			InvoiceContents::ForOffer { invoice_request, .. } => {
+				invoice_request.inner.offer.issuer_id()
 			},
 			InvoiceContents::ForRefund { .. } => None,
 		}
@@ -1365,7 +1407,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 
 		check_invoice_signing_pubkey(&fields.signing_pubkey, &offer_tlv_stream)?;
 
-		if offer_tlv_stream.node_id.is_none() && offer_tlv_stream.paths.is_none() {
+		if offer_tlv_stream.issuer_id.is_none() && offer_tlv_stream.paths.is_none() {
 			let refund = RefundContents::try_from(
 				(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
 			)?;
@@ -1398,9 +1440,9 @@ pub(super) fn construct_payment_paths(
 pub(super) fn check_invoice_signing_pubkey(
 	invoice_signing_pubkey: &PublicKey, offer_tlv_stream: &OfferTlvStream
 ) -> Result<(), Bolt12SemanticError> {
-	match (&offer_tlv_stream.node_id, &offer_tlv_stream.paths) {
-		(Some(expected_signing_pubkey), _) => {
-			if invoice_signing_pubkey != expected_signing_pubkey {
+	match (&offer_tlv_stream.issuer_id, &offer_tlv_stream.paths) {
+		(Some(offer_issuer_id), _) => {
+			if invoice_signing_pubkey != offer_issuer_id {
 				return Err(Bolt12SemanticError::InvalidSigningPubkey);
 			}
 		},
@@ -1585,7 +1627,7 @@ mod tests {
 					paths: None,
 					issuer: None,
 					quantity_max: None,
-					node_id: Some(&recipient_pubkey()),
+					issuer_id: Some(&recipient_pubkey()),
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -1678,7 +1720,7 @@ mod tests {
 					paths: None,
 					issuer: None,
 					quantity_max: None,
-					node_id: None,
+					issuer_id: None,
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -1793,7 +1835,7 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let offer = OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.path(blinded_path)
 			.build().unwrap();
@@ -1814,9 +1856,9 @@ mod tests {
 			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
 		);
 
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let offer = OfferBuilder::deriving_issuer_id(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
-			// Omit the path so that node_id is used for the signing pubkey instead of deriving
+			// Omit the path so that node_id is used for the issuer id instead of deriving it
 			.build().unwrap();
 		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
@@ -2387,7 +2429,7 @@ mod tests {
 		};
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.clear_signing_pubkey()
+			.clear_issuer_id()
 			.amount_msats(1000)
 			.path(paths[0].clone())
 			.path(paths[1].clone())
@@ -2409,7 +2451,7 @@ mod tests {
 		}
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
-			.clear_signing_pubkey()
+			.clear_issuer_id()
 			.amount_msats(1000)
 			.path(paths[0].clone())
 			.path(paths[1].clone())
