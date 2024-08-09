@@ -457,7 +457,7 @@ pub trait MessageRouter {
 	///
 	/// Implementations using additional intermediate nodes are responsible for using a
 	/// [`ForwardNode`] with `Some` short channel id, if possible. Similarly, implementations should
-	/// call [`BlindedPath::use_compact_introduction_node`].
+	/// call [`BlindedMessagePath::use_compact_introduction_node`].
 	///
 	/// The provided implementation simply delegates to [`MessageRouter::create_blinded_paths`],
 	/// ignoring the short channel ids.
@@ -565,7 +565,7 @@ where
 
 		if compact_paths {
 			for path in &mut paths {
-				path.0.use_compact_introduction_node(&network_graph);
+				path.use_compact_introduction_node(&network_graph);
 			}
 		}
 

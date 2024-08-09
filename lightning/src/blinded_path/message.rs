@@ -16,7 +16,7 @@ use crate::prelude::*;
 
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
+use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, NextMessageHop, NodeIdLookUp};
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
@@ -25,8 +25,10 @@ use crate::ln::msgs::DecodeError;
 use crate::ln::{PaymentHash, onion_utils};
 use crate::offers::nonce::Nonce;
 use crate::onion_message::packet::ControlTlvs;
+use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
+use crate::util::scid_utils;
 use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer};
 
 use core::mem;
@@ -80,6 +82,35 @@ impl BlindedMessagePath {
 				context, &blinding_secret,
 			).map_err(|_| ())?,
 		}))
+	}
+
+	/// Attempts to a use a compact representation for the [`IntroductionNode`] by using a directed
+	/// short channel id from a channel in `network_graph` leading to the introduction node.
+	///
+	/// While this may result in a smaller encoding, there is a trade off in that the path may
+	/// become invalid if the channel is closed or hasn't been propagated via gossip. Therefore,
+	/// calling this may not be suitable for long-lived blinded paths.
+	pub fn use_compact_introduction_node(&mut self, network_graph: &ReadOnlyNetworkGraph) {
+		if let IntroductionNode::NodeId(pubkey) = &self.0.introduction_node {
+			let node_id = NodeId::from_pubkey(pubkey);
+			if let Some(node_info) = network_graph.node(&node_id) {
+				if let Some((scid, channel_info)) = node_info
+					.channels
+						.iter()
+						.filter_map(|scid| network_graph.channel(*scid).map(|info| (*scid, info)))
+						.min_by_key(|(scid, _)| scid_utils::block_from_scid(*scid))
+				{
+					let direction = if node_id == channel_info.node_one {
+						Direction::NodeOne
+					} else {
+						debug_assert_eq!(node_id, channel_info.node_two);
+						Direction::NodeTwo
+					};
+					self.0.introduction_node =
+						IntroductionNode::DirectedShortChannelId(direction, scid);
+				}
+			}
+		}
 	}
 }
 
