@@ -1,22 +1,24 @@
 //! Convenient utilities to create an invoice.
 
-use crate::{Bolt11Invoice, CreationError, Currency, InvoiceBuilder, SignOrCreationError};
+use lightning_invoice::{Bolt11Invoice, CreationError, Currency, InvoiceBuilder, SignOrCreationError};
+use lightning_invoice::{Description, Bolt11InvoiceDescription, Sha256};
 
-use crate::{prelude::*, Description, Bolt11InvoiceDescription, Sha256};
+use crate::prelude::*;
+
 use bech32::ToBase32;
 use bitcoin::hashes::Hash;
-use lightning::chain;
-use lightning::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
-use lightning::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
-use lightning::ln::types::{PaymentHash, PaymentSecret};
-use lightning::ln::channel_state::ChannelDetails;
-use lightning::ln::channelmanager::{ChannelManager, MIN_FINAL_CLTV_EXPIRY_DELTA};
-use lightning::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
-use lightning::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
-use lightning::routing::gossip::RoutingFees;
-use lightning::routing::router::{RouteHint, RouteHintHop, Router};
-use lightning::util::logger::{Logger, Record};
-use secp256k1::PublicKey;
+use crate::chain;
+use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
+use crate::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
+use crate::ln::types::{PaymentHash, PaymentSecret};
+use crate::ln::channel_state::ChannelDetails;
+use crate::ln::channelmanager::{ChannelManager, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
+use crate::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
+use crate::routing::gossip::RoutingFees;
+use crate::routing::router::{RouteHint, RouteHintHop, Router};
+use crate::util::logger::{Logger, Record};
+use bitcoin::secp256k1::PublicKey;
 use alloc::collections::{btree_map, BTreeMap};
 use core::ops::Deref;
 use core::time::Duration;
@@ -54,12 +56,12 @@ use core::iter::Iterator;
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
 /// requirement).
 ///
-/// [`PhantomKeysManager`]: lightning::sign::PhantomKeysManager
-/// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
-/// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
-/// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
-/// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
-/// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
+/// [`PhantomKeysManager`]: crate::sign::PhantomKeysManager
+/// [`ChannelManager::get_phantom_route_hints`]: crate::ln::channelmanager::ChannelManager::get_phantom_route_hints
+/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
+/// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
+/// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 ///
 /// This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
@@ -111,11 +113,11 @@ where
 /// invoices in its `sign_invoice` implementation ([`PhantomKeysManager`] satisfies this
 /// requirement).
 ///
-/// [`PhantomKeysManager`]: lightning::sign::PhantomKeysManager
-/// [`ChannelManager::get_phantom_route_hints`]: lightning::ln::channelmanager::ChannelManager::get_phantom_route_hints
-/// [`ChannelManager::create_inbound_payment`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment
-/// [`ChannelManager::create_inbound_payment_for_hash`]: lightning::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
-/// [`PhantomRouteHints::channels`]: lightning::ln::channelmanager::PhantomRouteHints::channels
+/// [`PhantomKeysManager`]: crate::sign::PhantomKeysManager
+/// [`ChannelManager::get_phantom_route_hints`]: crate::ln::channelmanager::ChannelManager::get_phantom_route_hints
+/// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+/// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
+/// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
 ///
 /// This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
 /// available and the current time is supplied by the caller.
@@ -161,7 +163,7 @@ where
 
 	let invoice = match description {
 		Bolt11InvoiceDescription::Direct(description) => {
-			InvoiceBuilder::new(network).description(description.0.0.clone())
+			InvoiceBuilder::new(network).description(description.as_inner().0.clone())
 		}
 		Bolt11InvoiceDescription::Hash(hash) => InvoiceBuilder::new(network).description_hash(hash.0),
 	};
@@ -234,7 +236,7 @@ where
 /// * Select up to three channels per node.
 /// * Select one hint from each node, up to three hints or until we run out of hints.
 ///
-/// [`PhantomKeysManager`]: lightning::sign::PhantomKeysManager
+/// [`PhantomKeysManager`]: crate::sign::PhantomKeysManager
 fn select_phantom_hints<L: Deref>(amt_msat: Option<u64>, phantom_route_hints: Vec<PhantomRouteHints>,
 	logger: L) -> impl Iterator<Item = RouteHint>
 where
@@ -331,7 +333,7 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 /// Note that LDK will add a buffer of 3 blocks to the delta to allow for up to a few new block
 /// confirmations during routing.
 ///
-/// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
+/// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
@@ -372,7 +374,7 @@ where
 /// Note that LDK will add a buffer of 3 blocks to the delta to allow for up to a few new block
 /// confirmations during routing.
 ///
-/// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
+/// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
@@ -541,7 +543,7 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 
 	let invoice = match description {
 		Bolt11InvoiceDescription::Direct(description) => {
-			InvoiceBuilder::new(network).description(description.0.0.clone())
+			InvoiceBuilder::new(network).description(description.as_inner().0.clone())
 		}
 		Bolt11InvoiceDescription::Hash(hash) => InvoiceBuilder::new(network).description_hash(hash.0),
 	};
@@ -819,50 +821,49 @@ impl<'a, 'b, L: Deref> WithChannelDetails<'a, 'b, L> where L::Target: Logger {
 
 #[cfg(test)]
 mod test {
+	use super::*;
 	use core::time::Duration;
-	use crate::{Currency, Description, Bolt11InvoiceDescription, SignOrCreationError, CreationError};
+	use lightning_invoice::{Currency, Description, Bolt11InvoiceDescription, SignOrCreationError, CreationError};
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use lightning::sign::PhantomKeysManager;
-	use lightning::events::{MessageSendEvent, MessageSendEventsProvider};
-	use lightning::ln::types::PaymentHash;
+	use crate::sign::PhantomKeysManager;
+	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
+	use crate::ln::types::PaymentHash;
 	#[cfg(feature = "std")]
-	use lightning::ln::types::PaymentPreimage;
-	use lightning::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
-	use lightning::ln::functional_test_utils::*;
-	use lightning::ln::msgs::ChannelMessageHandler;
-	use lightning::routing::router::{PaymentParameters, RouteParameters};
-	use lightning::util::test_utils;
-	use lightning::util::config::UserConfig;
-	use crate::utils::{create_invoice_from_channelmanager_and_duration_since_epoch, rotate_through_iterators};
+	use crate::ln::types::PaymentPreimage;
+	use crate::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
+	use crate::ln::functional_test_utils::*;
+	use crate::ln::msgs::ChannelMessageHandler;
+	use crate::routing::router::{PaymentParameters, RouteParameters};
+	use crate::util::test_utils;
+	use crate::util::config::UserConfig;
 	use std::collections::HashSet;
-	use lightning::util::string::UntrustedString;
 
 	#[test]
 	fn test_prefer_current_channel() {
 		// No minimum, prefer larger candidate channel.
-		assert_eq!(crate::utils::prefer_current_channel(None, 100, 200), false);
+		assert_eq!(prefer_current_channel(None, 100, 200), false);
 
 		// No minimum, prefer larger current channel.
-		assert_eq!(crate::utils::prefer_current_channel(None, 200, 100), true);
+		assert_eq!(prefer_current_channel(None, 200, 100), true);
 
 		// Minimum set, prefer current channel over minimum + buffer.
-		assert_eq!(crate::utils::prefer_current_channel(Some(100), 115, 100), true);
+		assert_eq!(prefer_current_channel(Some(100), 115, 100), true);
 
 		// Minimum set, prefer candidate channel over minimum + buffer.
-		assert_eq!(crate::utils::prefer_current_channel(Some(100), 105, 125), false);
+		assert_eq!(prefer_current_channel(Some(100), 105, 125), false);
 
 		// Minimum set, both channels sufficient, prefer smaller current channel.
-		assert_eq!(crate::utils::prefer_current_channel(Some(100), 115, 125), true);
+		assert_eq!(prefer_current_channel(Some(100), 115, 125), true);
 
 		// Minimum set, both channels sufficient, prefer smaller candidate channel.
-		assert_eq!(crate::utils::prefer_current_channel(Some(100), 200, 160), false);
+		assert_eq!(prefer_current_channel(Some(100), 200, 160), false);
 
 		// Minimum set, neither sufficient, prefer larger current channel.
-		assert_eq!(crate::utils::prefer_current_channel(Some(200), 100, 50), true);
+		assert_eq!(prefer_current_channel(Some(200), 100, 50), true);
 
 		// Minimum set, neither sufficient, prefer larger candidate channel.
-		assert_eq!(crate::utils::prefer_current_channel(Some(200), 100, 150), false);
+		assert_eq!(prefer_current_channel(Some(200), 100, 150), false);
 	}
 
 
@@ -878,10 +879,10 @@ mod test {
 			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
 			Some(10_000), "test".to_string(), Duration::from_secs(1234567),
 			non_default_invoice_expiry_secs, None).unwrap();
-		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
+		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
 		// If no `min_final_cltv_expiry_delta` is specified, then it should be `MIN_FINAL_CLTV_EXPIRY_DELTA`.
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
-		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description(UntrustedString("test".to_string()))));
+		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description::new("test".to_string()).unwrap()));
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 
 		// Invoice SCIDs should always use inbound SCID aliases over the real channel ID, if one is
@@ -925,7 +926,7 @@ mod test {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let custom_min_final_cltv_expiry_delta = Some(50);
 
-		let invoice = crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch(
+		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
 			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
 			Some(10_000), "".into(), Duration::from_secs(1234567), 3600,
 			if with_custom_delta { custom_min_final_cltv_expiry_delta } else { None },
@@ -948,7 +949,7 @@ mod test {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let custom_min_final_cltv_expiry_delta = Some(21);
 
-		let invoice = crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch(
+		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch(
 			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
 			Some(10_000), "".into(), Duration::from_secs(1234567), 3600,
 			custom_min_final_cltv_expiry_delta,
@@ -962,14 +963,14 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let description_hash = crate::Sha256(Hash::hash("Testing description_hash".as_bytes()));
-		let invoice = crate::utils::create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
+		let description_hash = Sha256(Hash::hash("Testing description_hash".as_bytes()));
+		let invoice = create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch(
 			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
 			Some(10_000), description_hash, Duration::from_secs(1234567), 3600, None,
 		).unwrap();
-		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
+		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
-		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Hash(&crate::Sha256(Sha256::hash("Testing description_hash".as_bytes()))));
+		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Hash(&Sha256(Sha256::hash("Testing description_hash".as_bytes()))));
 	}
 
 	#[test]
@@ -979,14 +980,14 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let payment_hash = PaymentHash([0; 32]);
-		let invoice = crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
+		let invoice = create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
 			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
 			Some(10_000), "test".to_string(), Duration::from_secs(1234567), 3600,
 			payment_hash, None,
 		).unwrap();
-		assert_eq!(invoice.amount_pico_btc(), Some(100_000));
+		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
-		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description(UntrustedString("test".to_string()))));
+		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description::new("test".to_string()).unwrap()));
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&payment_hash.0[..]).unwrap());
 	}
 
@@ -1278,7 +1279,7 @@ mod test {
 		let hints = invoice.private_routes();
 
 		for hint in hints {
-			let hint_short_chan_id = (hint.0).0[0].short_channel_id;
+			let hint_short_chan_id = hint.0[0].short_channel_id;
 			assert!(chan_ids_to_match.remove(&hint_short_chan_id));
 		}
 		assert!(chan_ids_to_match.is_empty(), "Unmatched short channel ids: {:?}", chan_ids_to_match);
@@ -1293,7 +1294,7 @@ mod test {
 
 	#[cfg(feature = "std")]
 	fn do_test_multi_node_receive(user_generated_pmt_hash: bool) {
-		use lightning::events::{Event, EventsProvider};
+		use crate::events::{Event, EventsProvider};
 		use core::cell::RefCell;
 
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
@@ -1328,7 +1329,7 @@ mod test {
 		let non_default_invoice_expiry_secs = 4200;
 
 		let invoice =
-			crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
+			create_phantom_invoice::<&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger>(
 				Some(payment_amt), payment_hash, "test".to_string(), non_default_invoice_expiry_secs,
 				route_hints, nodes[1].keys_manager, nodes[1].keys_manager, nodes[1].logger,
 				Currency::BitcoinTestnet, None, Duration::from_secs(genesis_timestamp)
@@ -1341,7 +1342,7 @@ mod test {
 		};
 
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
-		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description(UntrustedString("test".to_string()))));
+		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Direct(&Description::new("test".to_string()).unwrap()));
 		assert_eq!(invoice.route_hints().len(), 2);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 		assert!(!invoice.features().unwrap().supports_basic_mpp());
@@ -1421,7 +1422,7 @@ mod test {
 			nodes[2].node.get_phantom_route_hints(),
 		];
 
-		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface,
+		let invoice = create_phantom_invoice::<&test_utils::TestKeysInterface,
 			&test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), Some(payment_hash),
 				"test".to_string(), 3600, route_hints, nodes[1].keys_manager, nodes[1].keys_manager,
 				nodes[1].logger, Currency::BitcoinTestnet, None, Duration::from_secs(1234567)).unwrap();
@@ -1437,7 +1438,7 @@ mod test {
 
 	#[test]
 	#[cfg(feature = "std")]
-	fn create_phantom_invoice_with_description_hash() {
+	fn test_create_phantom_invoice_with_description_hash() {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
@@ -1449,9 +1450,9 @@ mod test {
 			nodes[2].node.get_phantom_route_hints(),
 		];
 
-		let description_hash = crate::Sha256(Hash::hash("Description hash phantom invoice".as_bytes()));
+		let description_hash = Sha256(Hash::hash("Description hash phantom invoice".as_bytes()));
 		let non_default_invoice_expiry_secs = 4200;
-		let invoice = crate::utils::create_phantom_invoice_with_description_hash::<
+		let invoice = create_phantom_invoice_with_description_hash::<
 			&test_utils::TestKeysInterface, &test_utils::TestKeysInterface, &test_utils::TestLogger,
 		>(
 			Some(payment_amt), None, non_default_invoice_expiry_secs, description_hash,
@@ -1459,10 +1460,10 @@ mod test {
 			Currency::BitcoinTestnet, None, Duration::from_secs(1234567),
 		)
 		.unwrap();
-		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
+		assert_eq!(invoice.amount_milli_satoshis(), Some(20_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
-		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Hash(&crate::Sha256(Sha256::hash("Description hash phantom invoice".as_bytes()))));
+		assert_eq!(invoice.description(), Bolt11InvoiceDescription::Hash(&Sha256(Sha256::hash("Description hash phantom invoice".as_bytes()))));
 	}
 
 	#[test]
@@ -1483,11 +1484,11 @@ mod test {
 		let non_default_invoice_expiry_secs = 4200;
 		let min_final_cltv_expiry_delta = Some(100);
 		let duration_since_epoch = Duration::from_secs(1234567);
-		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface,
+		let invoice = create_phantom_invoice::<&test_utils::TestKeysInterface,
 			&test_utils::TestKeysInterface, &test_utils::TestLogger>(Some(payment_amt), payment_hash,
 				"".to_string(), non_default_invoice_expiry_secs, route_hints, nodes[1].keys_manager, nodes[1].keys_manager,
 				nodes[1].logger, Currency::BitcoinTestnet, min_final_cltv_expiry_delta, duration_since_epoch).unwrap();
-		assert_eq!(invoice.amount_pico_btc(), Some(200_000));
+		assert_eq!(invoice.amount_milli_satoshis(), Some(20_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), (min_final_cltv_expiry_delta.unwrap() + 3) as u64);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 	}
@@ -1888,7 +1889,7 @@ mod test {
 			.map(|route_hint| route_hint.phantom_scid)
 			.collect::<HashSet<u64>>();
 
-		let invoice = crate::utils::create_phantom_invoice::<&test_utils::TestKeysInterface,
+		let invoice = create_phantom_invoice::<&test_utils::TestKeysInterface,
 			&test_utils::TestKeysInterface, &test_utils::TestLogger>(invoice_amt, None, "test".to_string(),
 				3600, phantom_route_hints, invoice_node.keys_manager, invoice_node.keys_manager,
 				invoice_node.logger, Currency::BitcoinTestnet, None, Duration::from_secs(1234567)).unwrap();
@@ -1896,7 +1897,7 @@ mod test {
 		let invoice_hints = invoice.private_routes();
 
 		for hint in invoice_hints {
-			let hints = &(hint.0).0;
+			let hints = &hint.0;
 			match hints.len() {
 				1 => {
 					assert!(nodes_contains_public_channels);
@@ -1921,7 +1922,7 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let result = crate::utils::create_invoice_from_channelmanager_and_duration_since_epoch(
+		let result = create_invoice_from_channelmanager_and_duration_since_epoch(
 			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
 			Some(10_000), "Some description".into(), Duration::from_secs(1234567), 3600, Some(MIN_FINAL_CLTV_EXPIRY_DELTA - 4),
 		);
