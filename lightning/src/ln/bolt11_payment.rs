@@ -9,12 +9,12 @@
 
 //! Convenient utilities for paying Lightning invoices.
 
-use crate::Bolt11Invoice;
 use bitcoin::hashes::Hash;
+use lightning_invoice::Bolt11Invoice;
 
-use lightning::ln::types::PaymentHash;
-use lightning::ln::channelmanager::RecipientOnionFields;
-use lightning::routing::router::{PaymentParameters, RouteParameters};
+use crate::ln::channelmanager::RecipientOnionFields;
+use crate::ln::types::PaymentHash;
+use crate::routing::router::{PaymentParameters, RouteParameters};
 
 /// Builds the necessary parameters to pay or pre-flight probe the given zero-amount
 /// [`Bolt11Invoice`] using [`ChannelManager::send_payment`] or
@@ -26,8 +26,8 @@ use lightning::routing::router::{PaymentParameters, RouteParameters};
 /// Will always succeed unless the invoice has an amount specified, in which case
 /// [`payment_parameters_from_invoice`] should be used.
 ///
-/// [`ChannelManager::send_payment`]: lightning::ln::channelmanager::ChannelManager::send_payment
-/// [`ChannelManager::send_preflight_probes`]: lightning::ln::channelmanager::ChannelManager::send_preflight_probes
+/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+/// [`ChannelManager::send_preflight_probes`]: crate::ln::channelmanager::ChannelManager::send_preflight_probes
 pub fn payment_parameters_from_zero_amount_invoice(invoice: &Bolt11Invoice, amount_msat: u64)
 -> Result<(PaymentHash, RecipientOnionFields, RouteParameters), ()> {
 	if invoice.amount_milli_satoshis().is_some() {
@@ -46,8 +46,8 @@ pub fn payment_parameters_from_zero_amount_invoice(invoice: &Bolt11Invoice, amou
 /// Will always succeed unless the invoice has no amount specified, in which case
 /// [`payment_parameters_from_zero_amount_invoice`] should be used.
 ///
-/// [`ChannelManager::send_payment`]: lightning::ln::channelmanager::ChannelManager::send_payment
-/// [`ChannelManager::send_preflight_probes`]: lightning::ln::channelmanager::ChannelManager::send_preflight_probes
+/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+/// [`ChannelManager::send_preflight_probes`]: crate::ln::channelmanager::ChannelManager::send_preflight_probes
 pub fn payment_parameters_from_invoice(invoice: &Bolt11Invoice)
 -> Result<(PaymentHash, RecipientOnionFields, RouteParameters), ()> {
 	if let Some(amount_msat) = invoice.amount_milli_satoshis() {
@@ -83,11 +83,11 @@ fn params_from_invoice(invoice: &Bolt11Invoice, amount_msat: u64)
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{InvoiceBuilder, Currency};
+	use lightning_invoice::{InvoiceBuilder, Currency};
 	use bitcoin::hashes::sha256::Hash as Sha256;
-	use lightning::ln::types::PaymentSecret;
-	use lightning::routing::router::Payee;
-	use secp256k1::{SecretKey, PublicKey, Secp256k1};
+	use crate::ln::types::PaymentSecret;
+	use crate::routing::router::Payee;
+	use bitcoin::secp256k1::{SecretKey, PublicKey, Secp256k1};
 	use core::time::Duration;
 	#[cfg(feature = "std")]
 	use std::time::SystemTime;
@@ -169,10 +169,10 @@ mod tests {
 	#[test]
 	#[cfg(feature = "std")]
 	fn payment_metadata_end_to_end() {
-		use lightning::events::Event;
-		use lightning::ln::channelmanager::{Retry, PaymentId};
-		use lightning::ln::msgs::ChannelMessageHandler;
-		use lightning::ln::functional_test_utils::*;
+		use crate::events::Event;
+		use crate::ln::channelmanager::{Retry, PaymentId};
+		use crate::ln::msgs::ChannelMessageHandler;
+		use crate::ln::functional_test_utils::*;
 		// Test that a payment metadata read from an invoice passed to `pay_invoice` makes it all
 		// the way out through the `PaymentClaimable` event.
 		let chanmon_cfgs = create_chanmon_cfgs(2);

@@ -25,6 +25,11 @@ pub mod features;
 pub mod script;
 pub mod types;
 
+// TODO: These modules were moved from lightning-invoice and need to be better integrated into this
+// crate now:
+pub mod invoice_utils;
+pub mod bolt11_payment;
+
 pub use lightning_types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 
 #[cfg(fuzzing)]
