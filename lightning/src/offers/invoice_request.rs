@@ -69,9 +69,9 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
-use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
+use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
@@ -488,6 +488,7 @@ for InvoiceRequestBuilder<'a, 'b, DerivedPayerSigningPubkey, secp256k1::All> {
 #[derive(Clone)]
 pub struct UnsignedInvoiceRequest {
 	bytes: Vec<u8>,
+	experimental_bytes: Vec<u8>,
 	contents: InvoiceRequestContents,
 	tagged_hash: TaggedHash,
 }
@@ -520,17 +521,51 @@ impl UnsignedInvoiceRequest {
 	fn new(offer: &Offer, contents: InvoiceRequestContents) -> Self {
 		// Use the offer bytes instead of the offer TLV stream as the offer may have contained
 		// unknown TLV records, which are not stored in `OfferContents`.
-		let (payer_tlv_stream, _offer_tlv_stream, invoice_request_tlv_stream) =
-			contents.as_tlv_stream();
-		let offer_bytes = WithoutLength(&offer.bytes);
-		let unsigned_tlv_stream = (payer_tlv_stream, offer_bytes, invoice_request_tlv_stream);
+		let (
+			payer_tlv_stream, _offer_tlv_stream, invoice_request_tlv_stream,
+		) = contents.as_tlv_stream();
 
-		let mut bytes = Vec::new();
-		unsigned_tlv_stream.write(&mut bytes).unwrap();
+		// Allocate enough space for the invoice_request, which will include:
+		// - all TLV records from `offer.bytes`,
+		// - all invoice_request-specific TLV records, and
+		// - a signature TLV record once the invoice_request is signed.
+		let mut bytes = Vec::with_capacity(
+			offer.bytes.len()
+				+ payer_tlv_stream.serialized_length()
+				+ invoice_request_tlv_stream.serialized_length()
+				+ SIGNATURE_TLV_RECORD_SIZE
+		);
 
-		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+		payer_tlv_stream.write(&mut bytes).unwrap();
 
-		Self { bytes, contents, tagged_hash }
+		for record in TlvStream::new(&offer.bytes).range(OFFER_TYPES) {
+			record.write(&mut bytes).unwrap();
+		}
+
+		let remaining_bytes = &offer.bytes[bytes.len() - payer_tlv_stream.serialized_length()..];
+
+		invoice_request_tlv_stream.write(&mut bytes).unwrap();
+
+		let mut experimental_tlv_stream = TlvStream::new(remaining_bytes)
+			.range(EXPERIMENTAL_OFFER_TYPES)
+			.peekable();
+		let mut experimental_bytes = Vec::with_capacity(
+			remaining_bytes.len()
+				- experimental_tlv_stream
+					.peek()
+					.map_or(remaining_bytes.len(), |first_record| first_record.start)
+		);
+
+		for record in experimental_tlv_stream {
+			record.write(&mut experimental_bytes).unwrap();
+		}
+
+		debug_assert_eq!(experimental_bytes.len(), experimental_bytes.capacity());
+
+		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
+		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		Self { bytes, experimental_bytes, contents, tagged_hash }
 	}
 
 	/// Returns the [`TaggedHash`] of the invoice to sign.
@@ -556,6 +591,15 @@ macro_rules! unsigned_invoice_request_sign_method { (
 			signature: Some(&signature),
 		};
 		signature_tlv_stream.write(&mut $self.bytes).unwrap();
+
+		// Append the experimental bytes after the signature.
+		debug_assert_eq!(
+			// The two-byte overallocation results from SIGNATURE_TLV_RECORD_SIZE accommodating TLV
+			// records with types >= 253.
+			$self.bytes.len() + $self.experimental_bytes.len() + 2,
+			$self.bytes.capacity(),
+		);
+		$self.bytes.extend_from_slice(&$self.experimental_bytes);
 
 		Ok(InvoiceRequest {
 			#[cfg(not(c_bindings))]
@@ -1072,6 +1116,10 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef<'a>, INVOICE_REQ
 	(90, paths: (Vec<BlindedMessagePath>, WithoutLength)),
 });
 
+/// Valid type range for experimental invoice_request TLV records.
+pub(super) const EXPERIMENTAL_INVOICE_REQUEST_TYPES: core::ops::Range<u64> =
+	2_000_000_000..3_000_000_000;
+
 type FullInvoiceRequestTlvStream =
 	(PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, SignatureTlvStream);
 
@@ -1106,7 +1154,7 @@ impl TryFrom<Vec<u8>> for UnsignedInvoiceRequest {
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let invoice_request = ParsedMessage::<PartialInvoiceRequestTlvStream>::try_from(bytes)?;
-		let ParsedMessage { bytes, tlv_stream } = invoice_request;
+		let ParsedMessage { mut bytes, tlv_stream } = invoice_request;
 		let (
 			payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream,
 		) = tlv_stream;
@@ -1116,7 +1164,13 @@ impl TryFrom<Vec<u8>> for UnsignedInvoiceRequest {
 
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
-		Ok(UnsignedInvoiceRequest { bytes, contents, tagged_hash })
+		let offset = TlvStream::new(&bytes)
+			.range(0..INVOICE_REQUEST_TYPES.end)
+			.last()
+			.map_or(0, |last_record| last_record.end);
+		let experimental_bytes = bytes.split_off(offset);
+
+		Ok(UnsignedInvoiceRequest { bytes, experimental_bytes, contents, tagged_hash })
 	}
 }
 
@@ -2306,10 +2360,17 @@ mod tests {
 			.request_invoice(vec![1; 32], keys.public_key()).unwrap()
 			.build().unwrap();
 
-		BigSize(UNKNOWN_ODD_TYPE).write(&mut unsigned_invoice_request.bytes).unwrap();
-		BigSize(32).write(&mut unsigned_invoice_request.bytes).unwrap();
-		[42u8; 32].write(&mut unsigned_invoice_request.bytes).unwrap();
+		let mut unknown_bytes = Vec::new();
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut unknown_bytes).unwrap();
+		BigSize(32).write(&mut unknown_bytes).unwrap();
+		[42u8; 32].write(&mut unknown_bytes).unwrap();
 
+		unsigned_invoice_request.bytes.reserve_exact(
+			unsigned_invoice_request.bytes.capacity()
+				- unsigned_invoice_request.bytes.len()
+				+ unknown_bytes.len(),
+		);
+		unsigned_invoice_request.bytes.extend_from_slice(&unknown_bytes);
 		unsigned_invoice_request.tagged_hash =
 			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &unsigned_invoice_request.bytes);
 
@@ -2336,10 +2397,17 @@ mod tests {
 			.request_invoice(vec![1; 32], keys.public_key()).unwrap()
 			.build().unwrap();
 
-		BigSize(UNKNOWN_EVEN_TYPE).write(&mut unsigned_invoice_request.bytes).unwrap();
-		BigSize(32).write(&mut unsigned_invoice_request.bytes).unwrap();
-		[42u8; 32].write(&mut unsigned_invoice_request.bytes).unwrap();
+		let mut unknown_bytes = Vec::new();
+		BigSize(UNKNOWN_EVEN_TYPE).write(&mut unknown_bytes).unwrap();
+		BigSize(32).write(&mut unknown_bytes).unwrap();
+		[42u8; 32].write(&mut unknown_bytes).unwrap();
 
+		unsigned_invoice_request.bytes.reserve_exact(
+			unsigned_invoice_request.bytes.capacity()
+				- unsigned_invoice_request.bytes.len()
+				+ unknown_bytes.len(),
+		);
+		unsigned_invoice_request.bytes.extend_from_slice(&unknown_bytes);
 		unsigned_invoice_request.tagged_hash =
 			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &unsigned_invoice_request.bytes);
 

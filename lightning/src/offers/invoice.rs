@@ -121,10 +121,10 @@ use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test;
-use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
-use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
+use crate::offers::invoice_request::{EXPERIMENTAL_INVOICE_REQUEST_TYPES, INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
+use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self, SIGNATURE_TLV_RECORD_SIZE};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
+use crate::offers::offer::{Amount, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::refund::{IV_BYTES_WITH_METADATA as REFUND_IV_BYTES_WITH_METADATA, IV_BYTES_WITHOUT_METADATA as REFUND_IV_BYTES_WITHOUT_METADATA, Refund, RefundContents};
@@ -461,6 +461,7 @@ for InvoiceBuilder<'a, DerivedSigningPubkey> {
 #[derive(Clone)]
 pub struct UnsignedBolt12Invoice {
 	bytes: Vec<u8>,
+	experimental_bytes: Vec<u8>,
 	contents: InvoiceContents,
 	tagged_hash: TaggedHash,
 }
@@ -491,19 +492,57 @@ where
 
 impl UnsignedBolt12Invoice {
 	fn new(invreq_bytes: &[u8], contents: InvoiceContents) -> Self {
+		// TLV record ranges applicable to invreq_bytes.
+		const NON_EXPERIMENTAL_TYPES: core::ops::Range<u64> = 0..INVOICE_REQUEST_TYPES.end;
+		const EXPERIMENTAL_TYPES: core::ops::Range<u64> =
+			EXPERIMENTAL_OFFER_TYPES.start..EXPERIMENTAL_INVOICE_REQUEST_TYPES.end;
+
+		let (_, _, _, invoice_tlv_stream) = contents.as_tlv_stream();
+
+		// Allocate enough space for the invoice, which will include:
+		// - all TLV records from `invreq_bytes` except signatures,
+		// - all invoice-specific TLV records, and
+		// - a signature TLV record once the invoice is signed.
+		//
+		// This assumes both the invoice request and the invoice will each only have one signature
+		// using SIGNATURE_TYPES.start as the TLV record. Thus, it is accounted for by invreq_bytes.
+		let mut bytes = Vec::with_capacity(
+			invreq_bytes.len()
+				+ invoice_tlv_stream.serialized_length()
+				+ if contents.is_for_offer() { 0 } else { SIGNATURE_TLV_RECORD_SIZE }
+		);
+
 		// Use the invoice_request bytes instead of the invoice_request TLV stream as the latter may
 		// have contained unknown TLV records, which are not stored in `InvoiceRequestContents` or
 		// `RefundContents`.
-		let (_, _, _, invoice_tlv_stream) = contents.as_tlv_stream();
-		let invoice_request_bytes = WithoutSignatures(invreq_bytes);
-		let unsigned_tlv_stream = (invoice_request_bytes, invoice_tlv_stream);
+		for record in TlvStream::new(invreq_bytes).range(NON_EXPERIMENTAL_TYPES) {
+			record.write(&mut bytes).unwrap();
+		}
 
-		let mut bytes = Vec::new();
-		unsigned_tlv_stream.write(&mut bytes).unwrap();
+		let remaining_bytes = &invreq_bytes[bytes.len()..];
 
-		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+		invoice_tlv_stream.write(&mut bytes).unwrap();
 
-		Self { bytes, contents, tagged_hash }
+		let mut experimental_tlv_stream = TlvStream::new(remaining_bytes)
+			.range(EXPERIMENTAL_TYPES)
+			.peekable();
+		let mut experimental_bytes = Vec::with_capacity(
+			remaining_bytes.len()
+				- experimental_tlv_stream
+					.peek()
+					.map_or(remaining_bytes.len(), |first_record| first_record.start)
+		);
+
+		for record in experimental_tlv_stream {
+			record.write(&mut experimental_bytes).unwrap();
+		}
+
+		debug_assert_eq!(experimental_bytes.len(), experimental_bytes.capacity());
+
+		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
+		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		Self { bytes, experimental_bytes, contents, tagged_hash }
 	}
 
 	/// Returns the [`TaggedHash`] of the invoice to sign.
@@ -527,6 +566,17 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 			signature: Some(&signature),
 		};
 		signature_tlv_stream.write(&mut $self.bytes).unwrap();
+
+		// Append the experimental bytes after the signature.
+		debug_assert_eq!(
+			// The two-byte overallocation results from SIGNATURE_TLV_RECORD_SIZE accommodating TLV
+			// records with types >= 253.
+			$self.bytes.len()
+				+ $self.experimental_bytes.len()
+				+ if $self.contents.is_for_offer() { 0 } else { 2 },
+			$self.bytes.capacity(),
+		);
+		$self.bytes.extend_from_slice(&$self.experimental_bytes);
 
 		Ok(Bolt12Invoice {
 			#[cfg(not(c_bindings))]
@@ -882,6 +932,13 @@ impl Hash for Bolt12Invoice {
 }
 
 impl InvoiceContents {
+	fn is_for_offer(&self) -> bool {
+		match self {
+			InvoiceContents::ForOffer { .. } => true,
+			InvoiceContents::ForRefund { .. } => false,
+		}
+	}
+
 	/// Whether the original offer or refund has expired.
 	#[cfg(feature = "std")]
 	fn is_offer_or_refund_expired(&self) -> bool {
@@ -1211,7 +1268,7 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let invoice = ParsedMessage::<PartialInvoiceTlvStream>::try_from(bytes)?;
-		let ParsedMessage { bytes, tlv_stream } = invoice;
+		let ParsedMessage { mut bytes, tlv_stream } = invoice;
 		let (
 			payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream,
 		) = tlv_stream;
@@ -1221,7 +1278,13 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
-		Ok(UnsignedBolt12Invoice { bytes, contents, tagged_hash })
+		let offset = TlvStream::new(&bytes)
+			.range(0..INVOICE_TYPES.end)
+			.last()
+			.map_or(0, |last_record| last_record.end);
+		let experimental_bytes = bytes.split_off(offset);
+
+		Ok(UnsignedBolt12Invoice { bytes, experimental_bytes, contents, tagged_hash })
 	}
 }
 
@@ -2512,10 +2575,15 @@ mod tests {
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap();
 
-		BigSize(UNKNOWN_ODD_TYPE).write(&mut unsigned_invoice.bytes).unwrap();
-		BigSize(32).write(&mut unsigned_invoice.bytes).unwrap();
-		[42u8; 32].write(&mut unsigned_invoice.bytes).unwrap();
+		let mut unknown_bytes = Vec::new();
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut unknown_bytes).unwrap();
+		BigSize(32).write(&mut unknown_bytes).unwrap();
+		[42u8; 32].write(&mut unknown_bytes).unwrap();
 
+		unsigned_invoice.bytes.reserve_exact(
+			unsigned_invoice.bytes.capacity() - unsigned_invoice.bytes.len() + unknown_bytes.len(),
+		);
+		unsigned_invoice.bytes.extend_from_slice(&unknown_bytes);
 		unsigned_invoice.tagged_hash =
 			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &unsigned_invoice.bytes);
 
@@ -2545,10 +2613,15 @@ mod tests {
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap();
 
-		BigSize(UNKNOWN_EVEN_TYPE).write(&mut unsigned_invoice.bytes).unwrap();
-		BigSize(32).write(&mut unsigned_invoice.bytes).unwrap();
-		[42u8; 32].write(&mut unsigned_invoice.bytes).unwrap();
+		let mut unknown_bytes = Vec::new();
+		BigSize(UNKNOWN_EVEN_TYPE).write(&mut unknown_bytes).unwrap();
+		BigSize(32).write(&mut unknown_bytes).unwrap();
+		[42u8; 32].write(&mut unknown_bytes).unwrap();
 
+		unsigned_invoice.bytes.reserve_exact(
+			unsigned_invoice.bytes.capacity() - unsigned_invoice.bytes.len() + unknown_bytes.len(),
+		);
+		unsigned_invoice.bytes.extend_from_slice(&unknown_bytes);
 		unsigned_invoice.tagged_hash =
 			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &unsigned_invoice.bytes);
 
