@@ -49,7 +49,7 @@ use lightning::ln::peer_handler::{
 	IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 };
 use lightning::ln::script::ShutdownScript;
-use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};

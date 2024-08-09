@@ -25,7 +25,7 @@ pub mod features;
 pub mod script;
 pub mod types;
 
-pub use types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
+pub use lightning_types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 
 #[cfg(fuzzing)]
 pub mod peer_channel_encryptor;

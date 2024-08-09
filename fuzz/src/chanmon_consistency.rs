@@ -56,7 +56,7 @@ use lightning::ln::msgs::{
 	self, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
 };
 use lightning::ln::script::ShutdownScript;
-use lightning::ln::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
