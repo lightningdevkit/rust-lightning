@@ -834,24 +834,6 @@ impl<T: sealed::Context> Features<T> {
 		})
 	}
 
-	// Returns true if the features within `self` are a subset of the features within `other`.
-	pub(crate) fn is_subset(&self, other: &Self) -> bool {
-		for (idx, byte) in self.flags.iter().enumerate() {
-			if let Some(other_byte) = other.flags.get(idx) {
-				if byte & other_byte != *byte {
-					// `self` has bits set that `other` doesn't.
-					return false;
-				}
-			} else {
-				if *byte > 0 {
-					// `self` has a non-zero byte that `other` doesn't.
-					return false;
-				}
-			}
-		}
-		true
-	}
-
 	/// Sets a required feature bit. Errors if `bit` is outside the feature range as defined
 	/// by [BOLT 9].
 	///
