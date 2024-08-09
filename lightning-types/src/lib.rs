@@ -37,6 +37,7 @@ use hex_conservative::display::impl_fmt_traits;
 
 pub mod features;
 pub mod routing;
+pub mod string;
 
 /// The payment hash is the hash of the [`PaymentPreimage`] which is the value used to lock funds
 /// in HTLCs while they transit the lightning network.

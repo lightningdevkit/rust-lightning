@@ -9,30 +9,12 @@
 
 //! Utilities for strings.
 
+use alloc::string::String;
 use core::fmt;
-use crate::io::{self, Read};
-use crate::ln::msgs;
-use crate::util::ser::{Writeable, Writer, Readable};
-
-#[allow(unused_imports)]
-use crate::prelude::*;
 
 /// Struct to `Display` fields in a safe way using `PrintableString`
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct UntrustedString(pub String);
-
-impl Writeable for UntrustedString {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.0.write(w)
-	}
-}
-
-impl Readable for UntrustedString {
-	fn read<R: Read>(r: &mut R) -> Result<Self, msgs::DecodeError> {
-		let s: String = Readable::read(r)?;
-		Ok(Self(s))
-	}
-}
 
 impl fmt::Display for UntrustedString {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
