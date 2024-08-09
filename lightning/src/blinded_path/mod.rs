@@ -13,14 +13,11 @@ pub mod payment;
 pub mod message;
 pub(crate) mod utils;
 
-use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
-use message::MessageContext;
+use bitcoin::secp256k1::PublicKey;
 use core::ops::Deref;
 
 use crate::ln::msgs::DecodeError;
-use crate::offers::invoice::BlindedPayInfo;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
-use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
 use crate::util::scid_utils;
 
@@ -122,82 +119,50 @@ pub struct BlindedHop {
 }
 
 impl BlindedPath {
-	/// Create a one-hop blinded path for a message.
-	pub fn one_hop_for_message<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		recipient_node_id: PublicKey, context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> where ES::Target: EntropySource {
-		Self::new_for_message(&[], recipient_node_id, context, entropy_source, secp_ctx)
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		match &self.introduction_node {
+			IntroductionNode::NodeId(pubkey) => pubkey.write(w)?,
+			IntroductionNode::DirectedShortChannelId(direction, scid) => {
+				match direction {
+					Direction::NodeOne => 0u8.write(w)?,
+					Direction::NodeTwo => 1u8.write(w)?,
+				}
+				scid.write(w)?;
+			},
+		}
+
+		self.blinding_point.write(w)?;
+		(self.blinded_hops.len() as u8).write(w)?;
+		for hop in &self.blinded_hops {
+			hop.write(w)?;
+		}
+		Ok(())
 	}
 
-	/// Create a blinded path for an onion message, to be forwarded along `node_pks`. The last node
-	/// pubkey in `node_pks` will be the destination node.
-	///
-	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
-	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_message<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[message::ForwardNode], recipient_node_id: PublicKey,
-		context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> where ES::Target: EntropySource {
-		let introduction_node = IntroductionNode::NodeId(
-			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id)
-		);
-		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
-		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-
-		Ok(BlindedPath {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let mut first_byte: u8 = Readable::read(r)?;
+		let introduction_node = match first_byte {
+			0 => IntroductionNode::DirectedShortChannelId(Direction::NodeOne, Readable::read(r)?),
+			1 => IntroductionNode::DirectedShortChannelId(Direction::NodeTwo, Readable::read(r)?),
+			2|3 => {
+				use io::Read;
+				let mut pubkey_read = core::slice::from_mut(&mut first_byte).chain(r.by_ref());
+				IntroductionNode::NodeId(Readable::read(&mut pubkey_read)?)
+			},
+			_ => return Err(DecodeError::InvalidValue),
+		};
+		let blinding_point = Readable::read(r)?;
+		let num_hops: u8 = Readable::read(r)?;
+		if num_hops == 0 { return Err(DecodeError::InvalidValue) }
+		let mut blinded_hops: Vec<BlindedHop> = Vec::with_capacity(num_hops.into());
+		for _ in 0..num_hops {
+			blinded_hops.push(Readable::read(r)?);
+		}
+		Ok(Self {
 			introduction_node,
-			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops: message::blinded_hops(
-				secp_ctx, intermediate_nodes, recipient_node_id,
-				context, &blinding_secret,
-			).map_err(|_| ())?,
+			blinding_point,
+			blinded_hops,
 		})
-	}
-
-	/// Create a one-hop blinded path for a payment.
-	pub fn one_hop_for_payment<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		payee_node_id: PublicKey, payee_tlvs: payment::ReceiveTlvs, min_final_cltv_expiry_delta: u16,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
-		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
-		// be in relation to a specific channel.
-		let htlc_maximum_msat = u64::max_value();
-		Self::new_for_payment(
-			&[], payee_node_id, payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta,
-			entropy_source, secp_ctx
-		)
-	}
-
-	/// Create a blinded path for a payment, to be forwarded along `intermediate_nodes`.
-	///
-	/// Errors if:
-	/// * a provided node id is invalid
-	/// * [`BlindedPayInfo`] calculation results in an integer overflow
-	/// * any unknown features are required in the provided [`ForwardTlvs`]
-	///
-	/// [`ForwardTlvs`]: crate::blinded_path::payment::ForwardTlvs
-	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_payment<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[payment::ForwardNode], payee_node_id: PublicKey,
-		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
-		let introduction_node = IntroductionNode::NodeId(
-			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id)
-		);
-		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
-		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-
-		let blinded_payinfo = payment::compute_payinfo(
-			intermediate_nodes, &payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
-		)?;
-		Ok((blinded_payinfo, BlindedPath {
-			introduction_node,
-			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops: payment::blinded_hops(
-				secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
-			).map_err(|_| ())?,
-		}))
 	}
 
 	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
@@ -248,56 +213,6 @@ impl BlindedPath {
 				}
 			}
 		}
-	}
-}
-
-impl Writeable for BlindedPath {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		match &self.introduction_node {
-			IntroductionNode::NodeId(pubkey) => pubkey.write(w)?,
-			IntroductionNode::DirectedShortChannelId(direction, scid) => {
-				match direction {
-					Direction::NodeOne => 0u8.write(w)?,
-					Direction::NodeTwo => 1u8.write(w)?,
-				}
-				scid.write(w)?;
-			},
-		}
-
-		self.blinding_point.write(w)?;
-		(self.blinded_hops.len() as u8).write(w)?;
-		for hop in &self.blinded_hops {
-			hop.write(w)?;
-		}
-		Ok(())
-	}
-}
-
-impl Readable for BlindedPath {
-	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let mut first_byte: u8 = Readable::read(r)?;
-		let introduction_node = match first_byte {
-			0 => IntroductionNode::DirectedShortChannelId(Direction::NodeOne, Readable::read(r)?),
-			1 => IntroductionNode::DirectedShortChannelId(Direction::NodeTwo, Readable::read(r)?),
-			2|3 => {
-				use io::Read;
-				let mut pubkey_read = core::slice::from_mut(&mut first_byte).chain(r.by_ref());
-				IntroductionNode::NodeId(Readable::read(&mut pubkey_read)?)
-			},
-			_ => return Err(DecodeError::InvalidValue),
-		};
-		let blinding_point = Readable::read(r)?;
-		let num_hops: u8 = Readable::read(r)?;
-		if num_hops == 0 { return Err(DecodeError::InvalidValue) }
-		let mut blinded_hops: Vec<BlindedHop> = Vec::with_capacity(num_hops.into());
-		for _ in 0..num_hops {
-			blinded_hops.push(Readable::read(r)?);
-		}
-		Ok(BlindedPath {
-			introduction_node,
-			blinding_point,
-			blinded_hops,
-		})
 	}
 }
 

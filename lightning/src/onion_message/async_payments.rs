@@ -55,7 +55,7 @@ pub trait AsyncPaymentsMessageHandler {
 	) -> Vec<(
 		AsyncPaymentsMessage,
 		crate::onion_message::messenger::Destination,
-		Option<crate::blinded_path::BlindedPath>,
+		Option<crate::blinded_path::message::BlindedMessagePath>,
 	)> {
 		vec![]
 	}
