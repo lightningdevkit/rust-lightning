@@ -16,7 +16,7 @@ use crate::prelude::*;
 
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, NextMessageHop, NodeIdLookUp};
+use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, NodeIdLookUp};
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
@@ -157,6 +157,17 @@ impl BlindedMessagePath {
 	pub fn clear_blinded_hops(&mut self) {
 		self.0.blinded_hops.clear()
 	}
+}
+
+/// The next hop to forward an onion message along its path.
+///
+/// Note that payment blinded paths always specify their next hop using an explicit node id.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum NextMessageHop {
+	/// The node id of the next hop.
+	NodeId(PublicKey),
+	/// The short channel id leading to the next hop.
+	ShortChannelId(u64),
 }
 
 /// An intermediate node, and possibly a short channel id leading to the next node.
