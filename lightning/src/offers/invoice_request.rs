@@ -1242,7 +1242,7 @@ impl Readable for InvoiceRequestFields {
 
 #[cfg(test)]
 mod tests {
-	use super::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestTlvStreamRef, PAYER_NOTE_LIMIT, SIGNATURE_TAG, UnsignedInvoiceRequest};
+	use super::{INVOICE_REQUEST_TYPES, InvoiceRequest, InvoiceRequestFields, InvoiceRequestTlvStreamRef, PAYER_NOTE_LIMIT, SIGNATURE_TAG, UnsignedInvoiceRequest};
 
 	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
@@ -2294,7 +2294,72 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_parsing_invoice_request_with_extra_tlv_records() {
+	fn parses_invoice_request_with_unknown_tlv_records() {
+		const UNKNOWN_ODD_TYPE: u64 = INVOICE_REQUEST_TYPES.end - 1;
+		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
+
+		let secp_ctx = Secp256k1::new();
+		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let mut unsigned_invoice_request = OfferBuilder::new(keys.public_key())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], keys.public_key()).unwrap()
+			.build().unwrap();
+
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut unsigned_invoice_request.bytes).unwrap();
+		BigSize(32).write(&mut unsigned_invoice_request.bytes).unwrap();
+		[42u8; 32].write(&mut unsigned_invoice_request.bytes).unwrap();
+
+		unsigned_invoice_request.tagged_hash =
+			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &unsigned_invoice_request.bytes);
+
+		let invoice_request = unsigned_invoice_request
+			.sign(|message: &UnsignedInvoiceRequest|
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
+			.unwrap();
+
+		let mut encoded_invoice_request = Vec::new();
+		invoice_request.write(&mut encoded_invoice_request).unwrap();
+
+		match InvoiceRequest::try_from(encoded_invoice_request.clone()) {
+			Ok(invoice_request) => assert_eq!(invoice_request.bytes, encoded_invoice_request),
+			Err(e) => panic!("error parsing invoice_request: {:?}", e),
+		}
+
+		const UNKNOWN_EVEN_TYPE: u64 = INVOICE_REQUEST_TYPES.end - 2;
+		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
+
+		let mut unsigned_invoice_request = OfferBuilder::new(keys.public_key())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], keys.public_key()).unwrap()
+			.build().unwrap();
+
+		BigSize(UNKNOWN_EVEN_TYPE).write(&mut unsigned_invoice_request.bytes).unwrap();
+		BigSize(32).write(&mut unsigned_invoice_request.bytes).unwrap();
+		[42u8; 32].write(&mut unsigned_invoice_request.bytes).unwrap();
+
+		unsigned_invoice_request.tagged_hash =
+			TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &unsigned_invoice_request.bytes);
+
+		let invoice_request = unsigned_invoice_request
+			.sign(|message: &UnsignedInvoiceRequest|
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
+			.unwrap();
+
+		let mut encoded_invoice_request = Vec::new();
+		invoice_request.write(&mut encoded_invoice_request).unwrap();
+
+		match InvoiceRequest::try_from(encoded_invoice_request) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_request_with_out_of_range_tlv_records() {
 		let secp_ctx = Secp256k1::new();
 		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let invoice_request = OfferBuilder::new(keys.public_key())

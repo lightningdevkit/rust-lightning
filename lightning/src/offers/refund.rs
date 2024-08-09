@@ -944,7 +944,7 @@ mod tests {
 	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
+	use crate::offers::invoice_request::{INVOICE_REQUEST_TYPES, InvoiceRequestTlvStreamRef};
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::OfferTlvStreamRef;
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
@@ -1522,7 +1522,44 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_parsing_refund_with_extra_tlv_records() {
+	fn parses_refund_with_unknown_tlv_records() {
+		const UNKNOWN_ODD_TYPE: u64 = INVOICE_REQUEST_TYPES.end - 1;
+		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
+
+		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+
+		let mut encoded_refund = Vec::new();
+		refund.write(&mut encoded_refund).unwrap();
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut encoded_refund).unwrap();
+		BigSize(32).write(&mut encoded_refund).unwrap();
+		[42u8; 32].write(&mut encoded_refund).unwrap();
+
+		match Refund::try_from(encoded_refund.clone()) {
+			Ok(refund) => assert_eq!(refund.bytes, encoded_refund),
+			Err(e) => panic!("error parsing refund: {:?}", e),
+		}
+
+		const UNKNOWN_EVEN_TYPE: u64 = INVOICE_REQUEST_TYPES.end - 2;
+		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
+
+		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+
+		let mut encoded_refund = Vec::new();
+		refund.write(&mut encoded_refund).unwrap();
+		BigSize(UNKNOWN_EVEN_TYPE).write(&mut encoded_refund).unwrap();
+		BigSize(32).write(&mut encoded_refund).unwrap();
+		[42u8; 32].write(&mut encoded_refund).unwrap();
+
+		match Refund::try_from(encoded_refund) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_refund_with_out_of_range_tlv_records() {
 		let secp_ctx = Secp256k1::new();
 		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let refund = RefundBuilder::new(vec![1; 32], keys.public_key(), 1000).unwrap()

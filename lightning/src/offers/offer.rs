@@ -1173,7 +1173,7 @@ impl core::fmt::Display for Offer {
 
 #[cfg(test)]
 mod tests {
-	use super::{Amount, Offer, OfferTlvStreamRef, Quantity};
+	use super::{Amount, OFFER_TYPES, Offer, OfferTlvStreamRef, Quantity};
 	#[cfg(not(c_bindings))]
 	use {
 		super::OfferBuilder,
@@ -1860,12 +1860,47 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_parsing_offer_with_extra_tlv_records() {
+	fn parses_offer_with_unknown_tlv_records() {
+		const UNKNOWN_ODD_TYPE: u64 = OFFER_TYPES.end - 1;
+		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
+
 		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
 
 		let mut encoded_offer = Vec::new();
 		offer.write(&mut encoded_offer).unwrap();
-		BigSize(80).write(&mut encoded_offer).unwrap();
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut encoded_offer).unwrap();
+		BigSize(32).write(&mut encoded_offer).unwrap();
+		[42u8; 32].write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer.clone()) {
+			Ok(offer) => assert_eq!(offer.bytes, encoded_offer),
+			Err(e) => panic!("error parsing offer: {:?}", e),
+		}
+
+		const UNKNOWN_EVEN_TYPE: u64 = OFFER_TYPES.end - 2;
+		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
+
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+
+		let mut encoded_offer = Vec::new();
+		offer.write(&mut encoded_offer).unwrap();
+		BigSize(UNKNOWN_EVEN_TYPE).write(&mut encoded_offer).unwrap();
+		BigSize(32).write(&mut encoded_offer).unwrap();
+		[42u8; 32].write(&mut encoded_offer).unwrap();
+
+		match Offer::try_from(encoded_offer) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_offer_with_out_of_range_tlv_records() {
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+
+		let mut encoded_offer = Vec::new();
+		offer.write(&mut encoded_offer).unwrap();
+		BigSize(OFFER_TYPES.end).write(&mut encoded_offer).unwrap();
 		BigSize(32).write(&mut encoded_offer).unwrap();
 		[42u8; 32].write(&mut encoded_offer).unwrap();
 
