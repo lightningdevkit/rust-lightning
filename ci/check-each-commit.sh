@@ -12,4 +12,4 @@ if [ "$(git log --pretty="%H %D" | grep "^[0-9a-f]*.* $1")" = "" ]; then
 	echo "It seems like the current checked-out commit is not based on $1"
 	exit 1
 fi
-git rebase --exec ci/check-compiles.sh $1
+git rebase --exec ci/check-compiles.sh "$1"
