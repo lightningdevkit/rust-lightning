@@ -13,6 +13,7 @@ edition = "2021"
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
+_test_utils = []
 
 [dependencies]
 bitcoin = { version = "0.31", default-features = false }
