@@ -1877,7 +1877,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 
 		let channel_type = get_initial_channel_type(&config, their_features);
-		debug_assert!(channel_type.is_subset(&channelmanager::provided_channel_type_features(&config)));
+		debug_assert!(!channel_type.supports_any_optional_bits());
+		debug_assert!(!channel_type.requires_unknown_bits_from(&channelmanager::provided_channel_type_features(&config)));
 
 		let (commitment_conf_target, anchor_outputs_value_msat)  = if channel_type.supports_anchors_zero_fee_htlc_tx() {
 			(ConfirmationTarget::AnchorChannelFee, ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000)
@@ -7967,7 +7968,7 @@ pub(super) fn channel_type_from_open_channel(
 			return Err(ChannelError::close("Channel Type was not understood - we require static remote key".to_owned()));
 		}
 		// Make sure we support all of the features behind the channel type.
-		if !channel_type.is_subset(our_supported_features) {
+		if channel_type.requires_unknown_bits_from(&our_supported_features) {
 			return Err(ChannelError::close("Channel Type contains unsupported features".to_owned()));
 		}
 		let announced_channel = if (common_fields.channel_flags & 1) == 1 { true } else { false };
@@ -9355,7 +9356,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		}
 
 		let chan_features = channel_type.as_ref().unwrap();
-		if !chan_features.is_subset(our_supported_features) {
+		if chan_features.supports_any_optional_bits() || chan_features.requires_unknown_bits_from(&our_supported_features) {
 			// If the channel was written by a new version and negotiated with features we don't
 			// understand yet, refuse to read it.
 			return Err(DecodeError::UnknownRequiredFeature);

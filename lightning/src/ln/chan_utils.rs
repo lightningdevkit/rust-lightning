@@ -772,10 +772,12 @@ pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features
 	legacy_version_bit_set.set_scid_privacy_required();
 	legacy_version_bit_set.set_zero_conf_required();
 
-	if features.is_subset(&legacy_version_bit_set) {
-		None
-	} else {
+	debug_assert!(!legacy_version_bit_set.supports_any_optional_bits());
+	debug_assert!(!features.supports_any_optional_bits());
+	if features.requires_unknown_bits_from(&legacy_version_bit_set) {
 		Some(())
+	} else {
+		None
 	}
 }
 
