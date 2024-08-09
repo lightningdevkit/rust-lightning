@@ -45,6 +45,8 @@ use core::str::FromStr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::{cmp, fmt};
 
+pub use lightning_types::routing::RoutingFees;
+
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1210,16 +1212,6 @@ impl EffectiveCapacity {
 			EffectiveCapacity::Unknown => UNKNOWN_CHANNEL_CAPACITY_MSAT,
 		}
 	}
-}
-
-/// Fees for routing via a given channel or a node
-#[derive(Eq, PartialEq, Copy, Clone, Debug, Hash, Ord, PartialOrd)]
-pub struct RoutingFees {
-	/// Flat routing fee in millisatoshis.
-	pub base_msat: u32,
-	/// Liquidity-based routing fee in millionths of a routed amount.
-	/// In other words, 10000 is 1%.
-	pub proportional_millionths: u32,
 }
 
 impl_writeable_tlv_based!(RoutingFees, {
