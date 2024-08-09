@@ -13,10 +13,7 @@ use alloc::vec::Vec;
 
 use core::borrow::Borrow;
 
-use bitcoin::hashes::{
-	Hash as _,
-	sha256::Hash as Sha256,
-};
+use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _};
 
 // TODO: Once we switch to rust-bitcoin 0.32, import this as bitcoin::hex
 use hex_conservative::display::impl_fmt_traits;
@@ -85,14 +82,14 @@ impl_fmt_traits! {
 	}
 }
 
-use bech32::{Base32Len, FromBase32, ToBase32, WriteBase32, u5};
+use bech32::{u5, Base32Len, FromBase32, ToBase32, WriteBase32};
 
 impl FromBase32 for PaymentSecret {
 	type Err = bech32::Error;
 
 	fn from_base32(field_data: &[u5]) -> Result<PaymentSecret, bech32::Error> {
 		if field_data.len() != 52 {
-			return Err(bech32::Error::InvalidLength)
+			return Err(bech32::Error::InvalidLength);
 		} else {
 			let data_bytes = Vec::<u8>::from_base32(field_data)?;
 			let mut payment_secret = [0; 32];
