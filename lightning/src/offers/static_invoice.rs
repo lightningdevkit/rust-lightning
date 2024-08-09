@@ -169,6 +169,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 /// A semantically valid [`StaticInvoice`] that hasn't been signed.
 pub struct UnsignedStaticInvoice {
 	bytes: Vec<u8>,
+	experimental_bytes: Vec<u8>,
 	contents: InvoiceContents,
 	tagged_hash: TaggedHash,
 }
@@ -274,16 +275,30 @@ macro_rules! invoice_accessors_signing_pubkey {
 
 impl UnsignedStaticInvoice {
 	fn new(offer_bytes: &Vec<u8>, contents: InvoiceContents) -> Self {
-		let (_, invoice_tlv_stream) = contents.as_tlv_stream();
-		let offer_bytes = WithoutLength(offer_bytes);
-		let unsigned_tlv_stream = (offer_bytes, invoice_tlv_stream);
+		const NON_EXPERIMENTAL_TYPES: core::ops::Range<u64> = OFFER_TYPES;
+		const EXPERIMENTAL_TYPES: core::ops::Range<u64> = 0..0;
 
 		let mut bytes = Vec::new();
-		unsigned_tlv_stream.write(&mut bytes).unwrap();
 
-		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+		// Use the offer bytes instead of the offer TLV stream as the latter may have contained
+		// unknown TLV records, which are not stored in `InvoiceContents`.
+		for record in TlvStream::new(offer_bytes).range(NON_EXPERIMENTAL_TYPES) {
+			record.write(&mut bytes).unwrap();
+		}
 
-		Self { contents, tagged_hash, bytes }
+		let (_, invoice_tlv_stream) = contents.as_tlv_stream();
+		invoice_tlv_stream.write(&mut bytes).unwrap();
+
+		let mut experimental_bytes = Vec::new();
+
+		for record in TlvStream::new(offer_bytes).range(EXPERIMENTAL_TYPES) {
+			record.write(&mut experimental_bytes).unwrap();
+		}
+
+		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
+		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		Self { bytes, experimental_bytes, contents, tagged_hash }
 	}
 
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
@@ -296,6 +311,9 @@ impl UnsignedStaticInvoice {
 		// Append the signature TLV record to the bytes.
 		let signature_tlv_stream = SignatureTlvStreamRef { signature: Some(&signature) };
 		signature_tlv_stream.write(&mut self.bytes).unwrap();
+
+		// Append the experimental bytes after the signature.
+		WithoutLength(&self.experimental_bytes).write(&mut self.bytes).unwrap();
 
 		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature })
 	}

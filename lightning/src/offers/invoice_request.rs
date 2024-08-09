@@ -69,9 +69,9 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
-use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
+use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{OFFER_TYPES, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
@@ -488,6 +488,7 @@ for InvoiceRequestBuilder<'a, 'b, DerivedPayerSigningPubkey, secp256k1::All> {
 #[derive(Clone)]
 pub struct UnsignedInvoiceRequest {
 	bytes: Vec<u8>,
+	experimental_bytes: Vec<u8>,
 	contents: InvoiceRequestContents,
 	tagged_hash: TaggedHash,
 }
@@ -518,19 +519,33 @@ where
 
 impl UnsignedInvoiceRequest {
 	fn new(offer: &Offer, contents: InvoiceRequestContents) -> Self {
+		let mut bytes = Vec::new();
+
 		// Use the offer bytes instead of the offer TLV stream as the offer may have contained
 		// unknown TLV records, which are not stored in `OfferContents`.
-		let (payer_tlv_stream, _offer_tlv_stream, invoice_request_tlv_stream) =
-			contents.as_tlv_stream();
-		let offer_bytes = WithoutLength(&offer.bytes);
-		let unsigned_tlv_stream = (payer_tlv_stream, offer_bytes, invoice_request_tlv_stream);
+		let (
+			payer_tlv_stream, _offer_tlv_stream, invoice_request_tlv_stream,
+		) = contents.as_tlv_stream();
 
-		let mut bytes = Vec::new();
-		unsigned_tlv_stream.write(&mut bytes).unwrap();
+		payer_tlv_stream.write(&mut bytes).unwrap();
 
-		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+		for record in TlvStream::new(&offer.bytes).range(OFFER_TYPES) {
+			record.write(&mut bytes).unwrap();
+		}
 
-		Self { bytes, contents, tagged_hash }
+		invoice_request_tlv_stream.write(&mut bytes).unwrap();
+
+		const EXPERIMENTAL_OFFER_TYPES: core::ops::Range<u64> = 0..0;
+		let mut experimental_bytes = Vec::new();
+
+		for record in TlvStream::new(&offer.bytes).range(EXPERIMENTAL_OFFER_TYPES) {
+			record.write(&mut experimental_bytes).unwrap();
+		}
+
+		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
+		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		Self { bytes, experimental_bytes, contents, tagged_hash }
 	}
 
 	/// Returns the [`TaggedHash`] of the invoice to sign.
@@ -556,6 +571,9 @@ macro_rules! unsigned_invoice_request_sign_method { (
 			signature: Some(&signature),
 		};
 		signature_tlv_stream.write(&mut $self.bytes).unwrap();
+
+		// Append the experimental bytes after the signature.
+		WithoutLength(&$self.experimental_bytes).write(&mut $self.bytes).unwrap();
 
 		Ok(InvoiceRequest {
 			#[cfg(not(c_bindings))]
@@ -1106,7 +1124,7 @@ impl TryFrom<Vec<u8>> for UnsignedInvoiceRequest {
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let invoice_request = ParsedMessage::<PartialInvoiceRequestTlvStream>::try_from(bytes)?;
-		let ParsedMessage { bytes, tlv_stream } = invoice_request;
+		let ParsedMessage { mut bytes, tlv_stream } = invoice_request;
 		let (
 			payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream,
 		) = tlv_stream;
@@ -1116,7 +1134,14 @@ impl TryFrom<Vec<u8>> for UnsignedInvoiceRequest {
 
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
-		Ok(UnsignedInvoiceRequest { bytes, contents, tagged_hash })
+		let mut offset = 0;
+		for tlv_record in TlvStream::new(&bytes).range(0..INVOICE_REQUEST_TYPES.end) {
+			offset = tlv_record.end;
+		}
+
+		let experimental_bytes = bytes.split_off(offset);
+
+		Ok(UnsignedInvoiceRequest { bytes, experimental_bytes, contents, tagged_hash })
 	}
 }
 

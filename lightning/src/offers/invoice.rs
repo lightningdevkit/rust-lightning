@@ -122,7 +122,7 @@ use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_me
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test;
 use crate::offers::invoice_request::{INVOICE_REQUEST_PAYER_ID_TYPE, INVOICE_REQUEST_TYPES, IV_BYTES as INVOICE_REQUEST_IV_BYTES, InvoiceRequest, InvoiceRequestContents, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
-use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, WithoutSignatures, self};
+use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream, self};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Amount, OFFER_TYPES, OfferTlvStream, OfferTlvStreamRef, Quantity};
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -461,6 +461,7 @@ for InvoiceBuilder<'a, DerivedSigningPubkey> {
 #[derive(Clone)]
 pub struct UnsignedBolt12Invoice {
 	bytes: Vec<u8>,
+	experimental_bytes: Vec<u8>,
 	contents: InvoiceContents,
 	tagged_hash: TaggedHash,
 }
@@ -491,19 +492,32 @@ where
 
 impl UnsignedBolt12Invoice {
 	fn new(invreq_bytes: &[u8], contents: InvoiceContents) -> Self {
+		const NON_EXPERIMENTAL_TYPES: core::ops::Range<u64> = 0..INVOICE_REQUEST_TYPES.end;
+		const EXPERIMENTAL_TYPES: core::ops::Range<u64> = 0..0;
+
+		let mut bytes = Vec::new();
+
 		// Use the invoice_request bytes instead of the invoice_request TLV stream as the latter may
 		// have contained unknown TLV records, which are not stored in `InvoiceRequestContents` or
 		// `RefundContents`.
+		for record in TlvStream::new(invreq_bytes).range(NON_EXPERIMENTAL_TYPES) {
+			record.write(&mut bytes).unwrap();
+		}
+
 		let (_, _, _, invoice_tlv_stream) = contents.as_tlv_stream();
-		let invoice_request_bytes = WithoutSignatures(invreq_bytes);
-		let unsigned_tlv_stream = (invoice_request_bytes, invoice_tlv_stream);
 
-		let mut bytes = Vec::new();
-		unsigned_tlv_stream.write(&mut bytes).unwrap();
+		invoice_tlv_stream.write(&mut bytes).unwrap();
 
-		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+		let mut experimental_bytes = Vec::new();
 
-		Self { bytes, contents, tagged_hash }
+		for record in TlvStream::new(invreq_bytes).range(EXPERIMENTAL_TYPES) {
+			record.write(&mut experimental_bytes).unwrap();
+		}
+
+		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
+		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		Self { bytes, experimental_bytes, contents, tagged_hash }
 	}
 
 	/// Returns the [`TaggedHash`] of the invoice to sign.
@@ -527,6 +541,9 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 			signature: Some(&signature),
 		};
 		signature_tlv_stream.write(&mut $self.bytes).unwrap();
+
+		// Append the experimental bytes after the signature.
+		WithoutLength(&$self.experimental_bytes).write(&mut $self.bytes).unwrap();
 
 		Ok(Bolt12Invoice {
 			#[cfg(not(c_bindings))]
@@ -1211,7 +1228,7 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let invoice = ParsedMessage::<PartialInvoiceTlvStream>::try_from(bytes)?;
-		let ParsedMessage { bytes, tlv_stream } = invoice;
+		let ParsedMessage { mut bytes, tlv_stream } = invoice;
 		let (
 			payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream,
 		) = tlv_stream;
@@ -1221,7 +1238,14 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
-		Ok(UnsignedBolt12Invoice { bytes, contents, tagged_hash })
+		let mut offset = 0;
+		for tlv_record in TlvStream::new(&bytes).range(0..INVOICE_TYPES.end) {
+			offset = tlv_record.end;
+		}
+
+		let experimental_bytes = bytes.split_off(offset);
+
+		Ok(UnsignedBolt12Invoice { bytes, experimental_bytes, contents, tagged_hash })
 	}
 }
 
