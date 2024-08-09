@@ -18,7 +18,7 @@ use lightning::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelS
 use lightning::ln::channelmanager;
 use lightning::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use lightning::ln::msgs;
-use lightning::ln::ChannelId;
+use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::BlindedPayInfo;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{

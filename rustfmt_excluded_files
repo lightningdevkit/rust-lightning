@@ -41,6 +41,7 @@
 ./lightning/src/ln/functional_test_utils.rs
 ./lightning/src/ln/functional_tests.rs
 ./lightning/src/ln/inbound_payment.rs
+./lightning/src/ln/invoice_utils.rs
 ./lightning/src/ln/max_payment_path_len_tests.rs
 ./lightning/src/ln/mod.rs
 ./lightning/src/ln/monitor_tests.rs

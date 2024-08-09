@@ -66,9 +66,6 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # The addr2line v0.21 crate (a dependency of `backtrace` starting with 0.3.69) relies on rustc 1.65
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p backtrace --precise "0.3.68" --verbose
 
-# Starting with version 0.5.9 (there is no .6-.8), the `home` crate has an MSRV of rustc 1.70.0.
-[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p home --precise "0.5.5" --verbose
-
 export RUST_BACKTRACE=1
 
 # Build `lightning-transaction-sync` in no_download mode.

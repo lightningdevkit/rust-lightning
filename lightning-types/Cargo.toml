@@ -1,0 +1,25 @@
+[package]
+name = "lightning-types"
+version = "0.1.0"
+authors = ["Matt Corallo"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lightningdevkit/rust-lightning/"
+description = """
+Basic types which are used in the lightning network
+"""
+edition = "2021"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+_test_utils = []
+
+[dependencies]
+bitcoin = { version = "0.31", default-features = false }
+# TODO: Once we switch to bitcoin 0.32 drop this explicit dep:
+hex-conservative = { version = "0.2", default-features = false }
+bech32 = { version = "0.9", default-features = false }
+
+[lints]
+workspace = true
