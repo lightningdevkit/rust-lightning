@@ -388,7 +388,7 @@ fn bolt12_invoice_too_large_blinded_paths() {
 	let invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(nodes[0].node.get_our_node_id()).unwrap();
 	nodes[0].onion_messenger.handle_onion_message(&nodes[1].node.get_our_node_id(), &invoice_om);
 	// TODO: assert on the invoice error once we support replying to invoice OMs with failure info
-	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Failed paying invoice: SendingFailed(OnionPacketSizeExceeded)", 1);
+	nodes[0].logger.assert_log_contains("lightning::ln::channelmanager", "Failed paying invoice: OnionPacketSizeExceeded", 1);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);

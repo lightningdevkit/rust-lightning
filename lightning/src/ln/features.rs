@@ -436,7 +436,7 @@ mod sealed {
 	// Note: update the module-level docs when a new feature bit is added!
 
 	#[cfg(test)]
-	define_feature!(123456789, UnknownFeature,
+	define_feature!(12345, UnknownFeature,
 		[NodeContext, ChannelContext, Bolt11InvoiceContext, OfferContext, InvoiceRequestContext, Bolt12InvoiceContext, BlindedHopContext],
 		"Feature flags for an unknown feature used in testing.", set_unknown_feature_optional,
 		set_unknown_feature_required, supports_unknown_test_feature, requires_unknown_test_feature);
@@ -1064,7 +1064,7 @@ mod tests {
 		features.set_unknown_feature_required();
 		assert!(features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
-		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![123456788]);
+		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![12344]);
 
 		let mut features = ChannelFeatures::empty();
 		features.set_unknown_feature_optional();
@@ -1074,14 +1074,14 @@ mod tests {
 
 		let mut features = ChannelFeatures::empty();
 		features.set_unknown_feature_required();
-		features.set_custom_bit(123456786).unwrap();
+		features.set_custom_bit(12346).unwrap();
 		assert!(features.requires_unknown_bits());
 		assert!(features.supports_unknown_bits());
-		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![123456786, 123456788]);
+		assert_eq!(features.required_unknown_bits_from(&ChannelFeatures::empty()), vec![12344, 12346]);
 
 		let mut limiter = ChannelFeatures::empty();
 		limiter.set_unknown_feature_optional();
-		assert_eq!(features.required_unknown_bits_from(&limiter), vec![123456786]);
+		assert_eq!(features.required_unknown_bits_from(&limiter), vec![12346]);
 	}
 
 	#[test]

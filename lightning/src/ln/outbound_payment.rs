@@ -19,6 +19,7 @@ use crate::events::{self, PaymentFailureReason};
 use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{EventCompletionAction, HTLCSource, PaymentId};
+use crate::ln::features::Bolt12InvoiceFeatures;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
@@ -95,7 +96,8 @@ pub(crate) enum PendingOutboundPayment {
 	Abandoned {
 		session_privs: HashSet<[u8; 32]>,
 		payment_hash: PaymentHash,
-		/// Will be `None` if the payment was serialized before 0.0.115.
+		/// Will be `None` if the payment was serialized before 0.0.115 or if downgrading to 0.0.124
+		/// or later with a reason that was added after.
 		reason: Option<PaymentFailureReason>,
 	},
 }
@@ -510,6 +512,8 @@ pub enum Bolt12PaymentError {
 	UnexpectedInvoice,
 	/// Payment for an invoice with the corresponding [`PaymentId`] was already initiated.
 	DuplicateInvoice,
+	/// The invoice was valid for the corresponding [`PaymentId`], but required unknown features.
+	UnknownRequiredFeatures,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
 }
@@ -783,9 +787,9 @@ impl OutboundPayments {
 		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
 	>(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, router: &R,
-		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
-		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
-		logger: &L,
+		first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
+		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		send_payment_along_path: SP,
 	) -> Result<(), Bolt12PaymentError>
@@ -817,6 +821,13 @@ impl OutboundPayments {
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+		}
+
+		if invoice.invoice_features().requires_unknown_bits_from(&features) {
+			self.abandon_payment(
+				payment_id, PaymentFailureReason::UnknownRequiredFeatures, pending_events,
+			);
+			return Err(Bolt12PaymentError::UnknownRequiredFeatures);
 		}
 
 		let mut payment_params = PaymentParameters::from_bolt12_invoice(&invoice);
@@ -951,7 +962,7 @@ impl OutboundPayments {
 				if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = pmt {
 					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 						payment_id: *pmt_id,
-						payment_hash: *payment_hash,
+						payment_hash: Some(*payment_hash),
 						reason: *reason,
 					}, None));
 					retain = false;
@@ -1117,7 +1128,7 @@ impl OutboundPayments {
 					if $payment.get().remaining_parts() == 0 {
 						pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 							payment_id,
-							payment_hash,
+							payment_hash: Some(payment_hash),
 							reason: *reason,
 						}, None));
 						$payment.remove();
@@ -1698,9 +1709,12 @@ impl OutboundPayments {
 					},
 				};
 				if is_stale {
-					pending_events.push_back(
-						(events::Event::InvoiceRequestFailed { payment_id: *payment_id }, None)
-					);
+					let event = events::Event::PaymentFailed {
+						payment_id: *payment_id,
+						payment_hash: None,
+						reason: Some(PaymentFailureReason::InvoiceRequestExpired),
+					};
+					pending_events.push_back((event, None));
 					false
 				} else {
 					true
@@ -1785,7 +1799,7 @@ impl OutboundPayments {
 					if !payment_is_probe {
 						full_failure_ev = Some(events::Event::PaymentFailed {
 							payment_id: *payment_id,
-							payment_hash: *payment_hash,
+							payment_hash: Some(*payment_hash),
 							reason: *reason,
 						});
 					}
@@ -1854,14 +1868,16 @@ impl OutboundPayments {
 				if payment.get().remaining_parts() == 0 {
 					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 						payment_id,
-						payment_hash: *payment_hash,
+						payment_hash: Some(*payment_hash),
 						reason: *reason,
 					}, None));
 					payment.remove();
 				}
 			} else if let PendingOutboundPayment::AwaitingInvoice { .. } = payment.get() {
-				pending_events.lock().unwrap().push_back((events::Event::InvoiceRequestFailed {
+				pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 					payment_id,
+					payment_hash: None,
+					reason: Some(reason),
 				}, None));
 				payment.remove();
 			}
@@ -1925,7 +1941,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 	},
 	(3, Abandoned) => {
 		(0, session_privs, required),
-		(1, reason, option),
+		(1, reason, upgradable_option),
 		(2, payment_hash, required),
 	},
 	(5, AwaitingInvoice) => {
@@ -1951,7 +1967,7 @@ mod tests {
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
 	use crate::ln::types::PaymentHash;
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
-	use crate::ln::features::{ChannelFeatures, NodeFeatures};
+	use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, Retry, RetryableSendFailure, StaleExpiration};
 	#[cfg(feature = "std")]
@@ -2190,7 +2206,11 @@ mod tests {
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
-			Some((Event::InvoiceRequestFailed { payment_id }, None)),
+			Some((Event::PaymentFailed {
+				payment_id,
+				payment_hash: None,
+				reason: Some(PaymentFailureReason::InvoiceRequestExpired),
+			}, None)),
 		);
 		assert!(pending_events.lock().unwrap().is_empty());
 
@@ -2239,7 +2259,11 @@ mod tests {
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
-			Some((Event::InvoiceRequestFailed { payment_id }, None)),
+			Some((Event::PaymentFailed {
+				payment_id,
+				payment_hash: None,
+				reason: Some(PaymentFailureReason::InvoiceRequestExpired),
+			}, None)),
 		);
 		assert!(pending_events.lock().unwrap().is_empty());
 
@@ -2279,7 +2303,9 @@ mod tests {
 		assert!(!pending_events.lock().unwrap().is_empty());
 		assert_eq!(
 			pending_events.lock().unwrap().pop_front(),
-			Some((Event::InvoiceRequestFailed { payment_id }, None)),
+			Some((Event::PaymentFailed {
+				payment_id, payment_hash: None, reason: Some(PaymentFailureReason::UserAbandoned),
+			}, None)),
 		);
 		assert!(pending_events.lock().unwrap().is_empty());
 	}
@@ -2319,15 +2345,15 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| panic!()
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
 			Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::PaymentExpired)),
 		);
 		assert!(!outbound_payments.has_pending_payments());
 
-		let payment_hash = invoice.payment_hash();
+		let payment_hash = Some(invoice.payment_hash());
 		let reason = Some(PaymentFailureReason::PaymentExpired);
 
 		assert!(!pending_events.lock().unwrap().is_empty());
@@ -2380,15 +2406,15 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| panic!()
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
 			Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound)),
 		);
 		assert!(!outbound_payments.has_pending_payments());
 
-		let payment_hash = invoice.payment_hash();
+		let payment_hash = Some(invoice.payment_hash());
 		let reason = Some(PaymentFailureReason::RouteNotFound);
 
 		assert!(!pending_events.lock().unwrap().is_empty());
@@ -2454,9 +2480,9 @@ mod tests {
 		assert!(!outbound_payments.has_pending_payments());
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| panic!()
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
 			Err(Bolt12PaymentError::UnexpectedInvoice),
 		);
@@ -2472,9 +2498,9 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| Ok(())
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| Ok(())
 			),
 			Ok(()),
 		);
@@ -2483,9 +2509,9 @@ mod tests {
 
 		assert_eq!(
 			outbound_payments.send_payment_for_bolt12_invoice(
-				&invoice, payment_id, &&router, vec![], || InFlightHtlcs::new(), &&keys_manager,
-				&&keys_manager, &EmptyNodeIdLookUp {}, &secp_ctx, 0, &&logger, &pending_events,
-				|_| panic!()
+				&invoice, payment_id, &&router, vec![], Bolt12InvoiceFeatures::empty(),
+				|| InFlightHtlcs::new(), &&keys_manager, &&keys_manager, &EmptyNodeIdLookUp {},
+				&secp_ctx, 0, &&logger, &pending_events, |_| panic!()
 			),
 			Err(Bolt12PaymentError::DuplicateInvoice),
 		);

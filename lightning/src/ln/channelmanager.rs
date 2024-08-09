@@ -68,6 +68,7 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
+use crate::offers::signer;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
@@ -1680,7 +1681,8 @@ where
 /// channel_manager.process_pending_events(&|event| {
 ///     match event {
 ///         Event::PaymentSent { payment_hash, .. } => println!("Paid {}", payment_hash),
-///         Event::PaymentFailed { payment_hash, .. } => println!("Failed paying {}", payment_hash),
+///         Event::PaymentFailed { payment_hash: Some(payment_hash), .. } =>
+///             println!("Failed paying {}", payment_hash),
 ///         // ...
 ///     #     _ => {},
 ///     }
@@ -1743,8 +1745,7 @@ where
 /// ```
 ///
 /// Use [`pay_for_offer`] to initiated payment, which sends an [`InvoiceRequest`] for an [`Offer`]
-/// and pays the [`Bolt12Invoice`] response. In addition to success and failure events,
-/// [`ChannelManager`] may also generate an [`Event::InvoiceRequestFailed`].
+/// and pays the [`Bolt12Invoice`] response.
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
@@ -1786,7 +1787,6 @@ where
 ///     match event {
 ///         Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
 ///         Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
-///         Event::InvoiceRequestFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
 ///         // ...
 ///     #     _ => {},
 ///     }
@@ -4227,7 +4227,7 @@ where
 			None if invoice.is_for_refund_without_paths() => {
 				invoice.verify_using_metadata(expanded_key, secp_ctx)
 			},
-			Some(&OffersContext::OutboundPayment { payment_id, nonce }) => {
+			Some(&OffersContext::OutboundPayment { payment_id, nonce, .. }) => {
 				invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx)
 			},
 			_ => Err(()),
@@ -4237,9 +4237,10 @@ where
 	fn send_payment_for_verified_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let features = self.bolt12_invoice_features();
 		self.pending_outbound_payments
 			.send_payment_for_bolt12_invoice(
-				invoice, payment_id, &self.router, self.list_usable_channels(),
+				invoice, payment_id, &self.router, self.list_usable_channels(), features,
 				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, &self,
 				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
 				|args| self.send_payment_along_path(args)
@@ -4262,20 +4263,22 @@ where
 	/// # Requested Invoices
 	///
 	/// In the case of paying a [`Bolt12Invoice`] via [`ChannelManager::pay_for_offer`], abandoning
-	/// the payment prior to receiving the invoice will result in an [`Event::InvoiceRequestFailed`]
-	/// and prevent any attempts at paying it once received. The other events may only be generated
-	/// once the invoice has been received.
+	/// the payment prior to receiving the invoice will result in an [`Event::PaymentFailed`] and
+	/// prevent any attempts at paying it once received.
 	///
 	/// # Restart Behavior
 	///
 	/// If an [`Event::PaymentFailed`] is generated and we restart without first persisting the
-	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated; likewise for
-	/// [`Event::InvoiceRequestFailed`].
+	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
+		self.abandon_payment_with_reason(payment_id, PaymentFailureReason::UserAbandoned)
+	}
+
+	fn abandon_payment_with_reason(&self, payment_id: PaymentId, reason: PaymentFailureReason) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.pending_outbound_payments.abandon_payment(payment_id, PaymentFailureReason::UserAbandoned, &self.pending_events);
+		self.pending_outbound_payments.abandon_payment(payment_id, reason, &self.pending_events);
 	}
 
 	/// Send a spontaneous payment, which is a payment that does not require the recipient to have
@@ -8846,7 +8849,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	///
 	/// To revoke the refund, use [`ChannelManager::abandon_payment`] prior to receiving the
 	/// invoice. If abandoned, or an invoice isn't received before expiration, the payment will fail
-	/// with an [`Event::InvoiceRequestFailed`].
+	/// with an [`Event::PaymentFailed`].
 	///
 	/// If `max_total_routing_fee_msat` is not specified, The default from
 	/// [`RouteParameters::from_payment_params_and_value`] is applied.
@@ -8886,7 +8889,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let secp_ctx = &$self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::OutboundPayment { payment_id, nonce };
+		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: None };
 		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
@@ -8962,7 +8965,7 @@ where
 	///
 	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
 	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
-	/// payment will fail with an [`Event::InvoiceRequestFailed`].
+	/// payment will fail with an [`Event::PaymentFailed`].
 	///
 	/// # Privacy
 	///
@@ -9021,7 +9024,8 @@ where
 		};
 		let invoice_request = builder.build_and_sign()?;
 
-		let context = OffersContext::OutboundPayment { payment_id, nonce };
+		let hmac = signer::hmac_for_payment_id(payment_id, nonce, expanded_key);
+		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) };
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -10726,15 +10730,6 @@ where
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
-		let abandon_if_payment = |context| {
-			match context {
-				Some(OffersContext::OutboundPayment { payment_id, .. }) => {
-					self.abandon_payment(payment_id)
-				},
-				_ => {},
-			}
-		};
-
 		match message {
 			OffersMessage::InvoiceRequest(invoice_request) => {
 				let responder = match responder {
@@ -10848,42 +10843,38 @@ where
 					&self.logger, None, None, Some(invoice.payment_hash()),
 				);
 
-				let result = {
-					let features = self.bolt12_invoice_features();
-					if invoice.invoice_features().requires_unknown_bits_from(&features) {
-						Err(InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures))
-					} else if self.default_configuration.manually_handle_bolt12_invoices {
-						let event = Event::InvoiceReceived {
-							payment_id, invoice, context, responder,
-						};
-						self.pending_events.lock().unwrap().push_back((event, None));
-						return ResponseInstruction::NoResponse;
-					} else {
-						self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id)
-							.map_err(|e| {
-								log_trace!(logger, "Failed paying invoice: {:?}", e);
-								InvoiceError::from_string(format!("{:?}", e))
-							})
-					}
+				if self.default_configuration.manually_handle_bolt12_invoices {
+					let event = Event::InvoiceReceived {
+						payment_id, invoice, context, responder,
+					};
+					self.pending_events.lock().unwrap().push_back((event, None));
+					return ResponseInstruction::NoResponse;
+				}
+
+				let error = match self.send_payment_for_verified_bolt12_invoice(
+					&invoice, payment_id,
+				) {
+					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
+						log_trace!(
+							logger, "Invoice requires unknown features: {:?}",
+							invoice.invoice_features()
+						);
+						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
+					},
+					Err(Bolt12PaymentError::SendingFailed(e)) => {
+						log_trace!(logger, "Failed paying invoice: {:?}", e);
+						InvoiceError::from_string(format!("{:?}", e))
+					},
+					Err(Bolt12PaymentError::UnexpectedInvoice)
+						| Err(Bolt12PaymentError::DuplicateInvoice)
+						| Ok(()) => return ResponseInstruction::NoResponse,
 				};
 
-				match result {
-					Ok(_) => ResponseInstruction::NoResponse,
-					Err(err) => match responder {
-						Some(responder) => {
-							abandon_if_payment(context);
-							responder.respond(OffersMessage::InvoiceError(err))
-						},
-						None => {
-							abandon_if_payment(context);
-							log_trace!(
-								logger,
-								"An error response was generated, but there is no reply_path specified \
-								for sending the response. Error: {}",
-								err
-							);
-							return ResponseInstruction::NoResponse;
-						},
+				match responder {
+					Some(responder) => responder.respond(OffersMessage::InvoiceError(error)),
+					None => {
+						log_trace!(logger, "No reply path to send error: {:?}", error);
+						ResponseInstruction::NoResponse
 					},
 				}
 			},
@@ -10903,10 +10894,21 @@ where
 					Some(OffersContext::InboundPayment { payment_hash }) => Some(payment_hash),
 					_ => None,
 				};
+
 				let logger = WithContext::from(&self.logger, None, None, payment_hash);
 				log_trace!(logger, "Received invoice_error: {}", invoice_error);
 
-				abandon_if_payment(context);
+				match context {
+					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
+						if signer::verify_payment_id(payment_id, hmac, nonce, expanded_key) {
+							self.abandon_payment_with_reason(
+								payment_id, PaymentFailureReason::InvoiceRequestRejected,
+							);
+						}
+					},
+					_ => {},
+				}
+
 				ResponseInstruction::NoResponse
 			},
 		}
