@@ -112,6 +112,14 @@ impl BlindedMessagePath {
 			}
 		}
 	}
+
+	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
+	/// it is found in the network graph).
+	pub fn public_introduction_node_id<'a>(
+		&self, network_graph: &'a ReadOnlyNetworkGraph
+	) -> Option<&'a NodeId> {
+		self.0.public_introduction_node_id(network_graph)
+	}
 }
 
 /// An intermediate node, and possibly a short channel id leading to the next node.

@@ -1646,7 +1646,7 @@ where L::Target: Logger {
 					node_counters.node_counter_from_id(&NodeId::from_pubkey(&pubkey))
 				},
 				IntroductionNode::DirectedShortChannelId(direction, scid) => {
-					path.0.public_introduction_node_id(network_graph)
+					path.public_introduction_node_id(network_graph)
 						.map(|node_id_ref| *node_id_ref)
 						.or_else(|| {
 							first_hop_targets.iter().find(|(_, (channels, _))|
@@ -5671,7 +5671,7 @@ mod tests {
 							NodeId::from_pubkey(&path.hops.last().unwrap().pubkey),
 							payment_params.payee.blinded_route_hints().iter()
 								.find(|(p, _)| p.htlc_maximum_msat == path.final_value_msat())
-								.and_then(|(_, p)| p.0.public_introduction_node_id(&network_graph))
+								.and_then(|(_, p)| p.public_introduction_node_id(&network_graph))
 								.copied()
 								.unwrap()
 						);
@@ -7878,7 +7878,7 @@ mod tests {
 		let final_hop = route.paths[0].hops.last().unwrap();
 		assert_eq!(
 			NodeId::from_pubkey(&final_hop.pubkey),
-			*blinded_path.0.public_introduction_node_id(&network_graph).unwrap()
+			*blinded_path.public_introduction_node_id(&network_graph).unwrap()
 		);
 		if tail.hops.len() > 1 {
 			assert_eq!(final_hop.fee_msat,

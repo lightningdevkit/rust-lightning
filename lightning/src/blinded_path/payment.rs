@@ -24,6 +24,7 @@ use crate::ln::onion_utils;
 use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::invoice_request::InvoiceRequestFields;
 use crate::offers::offer::OfferId;
+use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadableArgs, HighZeroBytesDroppedBigSize, Readable, Writeable, Writer};
 
@@ -93,6 +94,14 @@ impl BlindedPaymentPath {
 				secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
 			).map_err(|_| ())?,
 		})))
+	}
+
+	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
+	/// it is found in the network graph).
+	pub fn public_introduction_node_id<'a>(
+		&self, network_graph: &'a ReadOnlyNetworkGraph
+	) -> Option<&'a NodeId> {
+		self.0.public_introduction_node_id(network_graph)
 	}
 }
 

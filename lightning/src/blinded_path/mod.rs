@@ -118,9 +118,7 @@ pub struct BlindedHop {
 }
 
 impl BlindedPath {
-	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
-	/// it is found in the network graph).
-	pub fn public_introduction_node_id<'a>(
+	pub(super) fn public_introduction_node_id<'a>(
 		&self, network_graph: &'a ReadOnlyNetworkGraph
 	) -> Option<&'a NodeId> {
 		match &self.introduction_node {

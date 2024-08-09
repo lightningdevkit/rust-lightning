@@ -699,7 +699,6 @@ impl Destination {
 		if let Destination::BlindedPath(path) = self {
 			if let IntroductionNode::DirectedShortChannelId(..) = path.0.introduction_node {
 				if let Some(pubkey) = path
-					.0
 					.public_introduction_node_id(network_graph)
 					.and_then(|node_id| node_id.as_pubkey().ok())
 				{

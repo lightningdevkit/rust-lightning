@@ -141,7 +141,7 @@ fn announce_node_address<'a, 'b, 'c>(
 }
 
 fn resolve_introduction_node<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, path: &BlindedMessagePath) -> PublicKey {
-	path.0.public_introduction_node_id(&node.network_graph.read_only())
+	path.public_introduction_node_id(&node.network_graph.read_only())
 		.and_then(|node_id| node_id.as_pubkey().ok())
 		.unwrap()
 }
