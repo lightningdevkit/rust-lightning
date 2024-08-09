@@ -2320,11 +2320,26 @@ impl_writeable_msg!(ChannelReady, {
 	(1, short_channel_id_alias, option),
 });
 
+pub(crate) fn write_features_up_to_13<W: Writer>(w: &mut W, le_flags: &[u8]) -> Result<(), io::Error> {
+	let len = core::cmp::min(2, le_flags.len());
+	(len as u16).write(w)?;
+	for i in (0..len).rev() {
+		if i == 0 {
+			le_flags[i].write(w)?;
+		} else {
+			// On byte 1, we want up-to-and-including-bit-13, 0-indexed, which is
+			// up-to-and-including-bit-5, 0-indexed, on this byte:
+			(le_flags[i] & 0b00_11_11_11).write(w)?;
+		}
+	}
+	Ok(())
+}
+
 impl Writeable for Init {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		// global_features gets the bottom 13 bits of our features, and local_features gets all of
 		// our relevant feature bits. This keeps us compatible with old nodes.
-		self.features.write_up_to_13(w)?;
+		write_features_up_to_13(w, self.features.le_flags())?;
 		self.features.write(w)?;
 		encode_tlv_stream!(w, {
 			(1, self.networks.as_ref().map(|n| WithoutLength(n)), option),
