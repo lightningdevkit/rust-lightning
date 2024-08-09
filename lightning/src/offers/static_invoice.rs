@@ -169,6 +169,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 /// A semantically valid [`StaticInvoice`] that hasn't been signed.
 pub struct UnsignedStaticInvoice {
 	bytes: Vec<u8>,
+	experimental_bytes: Vec<u8>,
 	contents: InvoiceContents,
 	tagged_hash: TaggedHash,
 }
@@ -281,9 +282,12 @@ impl UnsignedStaticInvoice {
 		let mut bytes = Vec::new();
 		unsigned_tlv_stream.write(&mut bytes).unwrap();
 
-		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+		let experimental_bytes = Vec::new();
 
-		Self { contents, tagged_hash, bytes }
+		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
+		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		Self { bytes, experimental_bytes, contents, tagged_hash }
 	}
 
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
@@ -296,6 +300,9 @@ impl UnsignedStaticInvoice {
 		// Append the signature TLV record to the bytes.
 		let signature_tlv_stream = SignatureTlvStreamRef { signature: Some(&signature) };
 		signature_tlv_stream.write(&mut self.bytes).unwrap();
+
+		// Append the experimental bytes after the signature.
+		WithoutLength(&self.experimental_bytes).write(&mut self.bytes).unwrap();
 
 		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature })
 	}

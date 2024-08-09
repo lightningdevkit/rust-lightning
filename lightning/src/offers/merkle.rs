@@ -254,6 +254,7 @@ pub(super) struct TlvRecord<'a> {
 	type_bytes: &'a [u8],
 	// The entire TLV record.
 	pub(super) record_bytes: &'a [u8],
+	pub(super) end: usize,
 }
 
 impl<'a> Iterator for TlvStream<'a> {
@@ -276,7 +277,7 @@ impl<'a> Iterator for TlvStream<'a> {
 
 			self.data.set_position(end);
 
-			Some(TlvRecord { r#type, type_bytes, record_bytes })
+			Some(TlvRecord { r#type, type_bytes, record_bytes, end: end as usize })
 		} else {
 			None
 		}

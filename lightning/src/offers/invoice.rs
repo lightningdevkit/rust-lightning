@@ -461,6 +461,7 @@ for InvoiceBuilder<'a, DerivedSigningPubkey> {
 #[derive(Clone)]
 pub struct UnsignedBolt12Invoice {
 	bytes: Vec<u8>,
+	experimental_bytes: Vec<u8>,
 	contents: InvoiceContents,
 	tagged_hash: TaggedHash,
 }
@@ -501,9 +502,12 @@ impl UnsignedBolt12Invoice {
 		let mut bytes = Vec::new();
 		unsigned_tlv_stream.write(&mut bytes).unwrap();
 
-		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+		let experimental_bytes = Vec::new();
 
-		Self { bytes, contents, tagged_hash }
+		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
+		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		Self { bytes, experimental_bytes, contents, tagged_hash }
 	}
 
 	/// Returns the [`TaggedHash`] of the invoice to sign.
@@ -527,6 +531,9 @@ macro_rules! unsigned_invoice_sign_method { ($self: ident, $self_type: ty $(, $s
 			signature: Some(&signature),
 		};
 		signature_tlv_stream.write(&mut $self.bytes).unwrap();
+
+		// Append the experimental bytes after the signature.
+		WithoutLength(&$self.experimental_bytes).write(&mut $self.bytes).unwrap();
 
 		Ok(Bolt12Invoice {
 			#[cfg(not(c_bindings))]
@@ -1211,7 +1218,7 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let invoice = ParsedMessage::<PartialInvoiceTlvStream>::try_from(bytes)?;
-		let ParsedMessage { bytes, tlv_stream } = invoice;
+		let ParsedMessage { mut bytes, tlv_stream } = invoice;
 		let (
 			payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream,
 		) = tlv_stream;
@@ -1221,7 +1228,14 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
-		Ok(UnsignedBolt12Invoice { bytes, contents, tagged_hash })
+		let mut offset = 0;
+		for tlv_record in TlvStream::new(&bytes).range(0..INVOICE_TYPES.end) {
+			offset = tlv_record.end;
+		}
+
+		let experimental_bytes = bytes.split_off(offset);
+
+		Ok(UnsignedBolt12Invoice { bytes, experimental_bytes, contents, tagged_hash })
 	}
 }
 
