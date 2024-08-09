@@ -627,6 +627,18 @@ impl<'a> From<&'a String> for WithoutLength<&'a String> {
 	fn from(s: &'a String) -> Self { Self(s) }
 }
 
+impl Writeable for UntrustedString {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for UntrustedString {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let s: String = Readable::read(r)?;
+		Ok(Self(s))
+	}
+}
 
 impl Writeable for WithoutLength<&UntrustedString> {
 	#[inline]

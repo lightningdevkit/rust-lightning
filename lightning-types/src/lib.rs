@@ -26,3 +26,4 @@ extern crate core;
 pub mod features;
 pub mod payment;
 pub mod routing;
+pub mod string;
