@@ -30,6 +30,7 @@ pub mod utils;
 
 extern crate bech32;
 #[macro_use] extern crate lightning;
+extern crate lightning_types;
 extern crate secp256k1;
 extern crate alloc;
 #[cfg(any(test, feature = "std"))]
@@ -44,7 +45,7 @@ use bech32::u5;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash, WitnessProgram, WitnessVersion};
 use bitcoin::address::Payload;
 use bitcoin::hashes::{Hash, sha256};
-use lightning::ln::features::Bolt11InvoiceFeatures;
+use lightning_types::features::Bolt11InvoiceFeatures;
 use lightning::util::invoice::construct_invoice_preimage;
 
 use secp256k1::PublicKey;
@@ -64,12 +65,10 @@ use core::str;
 use serde::{Deserialize, Deserializer,Serialize, Serializer, de::Error};
 
 #[doc(no_inline)]
-pub use lightning::ln::types::PaymentSecret;
+pub use lightning_types::payment::PaymentSecret;
 #[doc(no_inline)]
-pub use lightning::routing::router::{RouteHint, RouteHintHop};
-#[doc(no_inline)]
-pub use lightning::routing::gossip::RoutingFees;
-use lightning::util::string::UntrustedString;
+pub use lightning_types::routing::{RoutingFees, RouteHint, RouteHintHop};
+use lightning_types::string::UntrustedString;
 
 mod de;
 mod ser;
@@ -161,7 +160,7 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// use secp256k1::Secp256k1;
 /// use secp256k1::SecretKey;
 ///
-/// use lightning::ln::types::PaymentSecret;
+/// use lightning_types::payment::PaymentSecret;
 ///
 /// use lightning_invoice::{Currency, InvoiceBuilder};
 ///
@@ -1877,14 +1876,14 @@ mod test {
 	#[test]
 	fn test_check_feature_bits() {
 		use crate::TaggedField::*;
-		use lightning::ln::features::Bolt11InvoiceFeatures;
+		use lightning_types::features::Bolt11InvoiceFeatures;
 		use secp256k1::Secp256k1;
 		use secp256k1::SecretKey;
 		use crate::{Bolt11Invoice, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256, PositiveTimestamp,
 			 Bolt11SemanticError};
 
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
-		let payment_secret = lightning::ln::types::PaymentSecret([21; 32]);
+		let payment_secret = lightning_types::payment::PaymentSecret([21; 32]);
 		let invoice_template = RawBolt11Invoice {
 			hrp: RawHrp {
 				currency: Currency::Bitcoin,
@@ -1998,7 +1997,7 @@ mod test {
 	#[test]
 	fn test_builder_fail() {
 		use crate::*;
-		use lightning::routing::router::RouteHintHop;
+		use lightning_types::routing::RouteHintHop;
 		use std::iter::FromIterator;
 		use secp256k1::PublicKey;
 
@@ -2052,7 +2051,7 @@ mod test {
 	#[test]
 	fn test_builder_ok() {
 		use crate::*;
-		use lightning::routing::router::RouteHintHop;
+		use lightning_types::routing::RouteHintHop;
 		use secp256k1::Secp256k1;
 		use secp256k1::{SecretKey, PublicKey};
 		use std::time::Duration;
