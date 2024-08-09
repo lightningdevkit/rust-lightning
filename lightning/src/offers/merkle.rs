@@ -11,6 +11,7 @@
 
 use bitcoin::hashes::{Hash, HashEngine, sha256};
 use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, self};
+use bitcoin::secp256k1::constants::SCHNORR_SIGNATURE_SIZE;
 use bitcoin::secp256k1::schnorr::Signature;
 use crate::io;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
@@ -19,11 +20,15 @@ use crate::util::ser::{BigSize, Readable, Writeable, Writer};
 use crate::prelude::*;
 
 /// Valid type range for signature TLV records.
-const SIGNATURE_TYPES: core::ops::RangeInclusive<u64> = 240..=1000;
+pub(super) const SIGNATURE_TYPES: core::ops::RangeInclusive<u64> = 240..=1000;
 
 tlv_stream!(SignatureTlvStream, SignatureTlvStreamRef<'a>, SIGNATURE_TYPES, {
 	(240, signature: Signature),
 });
+
+/// Size of a TLV record in `SIGNATURE_TYPES` when the type is 1000. TLV types are encoded using
+/// BigSize, so a TLV record with type 240 will use two less bytes.
+pub(super) const SIGNATURE_TLV_RECORD_SIZE: usize = 3 + 1 + SCHNORR_SIGNATURE_SIZE;
 
 /// A hash for use in a specific context by tweaking with a context-dependent tag as per [BIP 340]
 /// and computed over the merkle root of a TLV stream to sign as defined in [BOLT 12].
@@ -164,7 +169,7 @@ fn root_hash<'a, I: core::iter::Iterator<Item = TlvRecord<'a>>>(tlv_stream: I) -
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
 	let mut leaves = Vec::new();
-	for record in TlvStream::skip_signatures(tlv_stream) {
+	for record in tlv_stream.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type)) {
 		leaves.push(tagged_hash_from_engine(leaf_tag.clone(), &record.record_bytes));
 		leaves.push(tagged_hash_from_engine(nonce_tag.clone(), &record.type_bytes));
 	}
@@ -240,12 +245,6 @@ impl<'a> TlvStream<'a> {
 		self.skip_while(move |record| !types.contains(&record.r#type))
 			.take_while(move |record| take_range.contains(&record.r#type))
 	}
-
-	fn skip_signatures(
-		tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>
-	) -> impl core::iter::Iterator<Item = TlvRecord<'a>> {
-		tlv_stream.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type))
-	}
 }
 
 /// A slice into a [`TlvStream`] for a record.
@@ -254,6 +253,8 @@ pub(super) struct TlvRecord<'a> {
 	type_bytes: &'a [u8],
 	// The entire TLV record.
 	pub(super) record_bytes: &'a [u8],
+	pub(super) start: usize,
+	pub(super) end: usize,
 }
 
 impl<'a> Iterator for TlvStream<'a> {
@@ -276,32 +277,25 @@ impl<'a> Iterator for TlvStream<'a> {
 
 			self.data.set_position(end);
 
-			Some(TlvRecord { r#type, type_bytes, record_bytes })
+			Some(TlvRecord {
+				r#type, type_bytes, record_bytes, start: start as usize, end: end as usize,
+			})
 		} else {
 			None
 		}
 	}
 }
 
-/// Encoding for a pre-serialized TLV stream that excludes any signature TLV records.
-///
-/// Panics if the wrapped bytes are not a well-formed TLV stream.
-pub(super) struct WithoutSignatures<'a>(pub &'a [u8]);
-
-impl<'a> Writeable for WithoutSignatures<'a> {
+impl<'a> Writeable for TlvRecord<'a> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let tlv_stream = TlvStream::new(self.0);
-		for record in TlvStream::skip_signatures(tlv_stream) {
-			writer.write_all(record.record_bytes)?;
-		}
-		Ok(())
+		writer.write_all(self.record_bytes)
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{SIGNATURE_TYPES, TlvStream, WithoutSignatures};
+	use super::{SIGNATURE_TYPES, TlvStream};
 
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::hex::FromHex;
@@ -411,7 +405,11 @@ mod tests {
 			.unwrap();
 
 		let mut bytes_without_signature = Vec::new();
-		WithoutSignatures(&invoice_request.bytes).write(&mut bytes_without_signature).unwrap();
+		let tlv_stream_without_signatures = TlvStream::new(&invoice_request.bytes)
+			.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type));
+		for record in tlv_stream_without_signatures {
+			record.write(&mut bytes_without_signature).unwrap();
+		}
 
 		assert_ne!(bytes_without_signature, invoice_request.bytes);
 		assert_eq!(

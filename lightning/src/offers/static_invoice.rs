@@ -23,10 +23,12 @@ use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_me
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::merkle::{
 	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
+	SIGNATURE_TLV_RECORD_SIZE,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
-	Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, Quantity, OFFER_TYPES,
+	Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, Quantity,
+	EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::util::ser::{CursorReadable, Iterable, WithoutLength, Writeable, Writer};
@@ -170,6 +172,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 /// A semantically valid [`StaticInvoice`] that hasn't been signed.
 pub struct UnsignedStaticInvoice {
 	bytes: Vec<u8>,
+	experimental_bytes: Vec<u8>,
 	contents: InvoiceContents,
 	tagged_hash: TaggedHash,
 }
@@ -276,15 +279,42 @@ macro_rules! invoice_accessors_signing_pubkey {
 impl UnsignedStaticInvoice {
 	fn new(offer_bytes: &Vec<u8>, contents: InvoiceContents) -> Self {
 		let (_, invoice_tlv_stream) = contents.as_tlv_stream();
-		let offer_bytes = WithoutLength(offer_bytes);
-		let unsigned_tlv_stream = (offer_bytes, invoice_tlv_stream);
 
-		let mut bytes = Vec::new();
-		unsigned_tlv_stream.write(&mut bytes).unwrap();
+		// Allocate enough space for the invoice, which will include:
+		// - all TLV records from `offer_bytes`,
+		// - all invoice-specific TLV records, and
+		// - a signature TLV record once the invoice is signed.
+		let mut bytes = Vec::with_capacity(
+			offer_bytes.len() + invoice_tlv_stream.serialized_length() + SIGNATURE_TLV_RECORD_SIZE,
+		);
 
-		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
+		// Use the offer bytes instead of the offer TLV stream as the latter may have contained
+		// unknown TLV records, which are not stored in `InvoiceContents`.
+		for record in TlvStream::new(offer_bytes).range(OFFER_TYPES) {
+			record.write(&mut bytes).unwrap();
+		}
 
-		Self { contents, tagged_hash, bytes }
+		let remaining_bytes = &offer_bytes[bytes.len()..];
+
+		invoice_tlv_stream.write(&mut bytes).unwrap();
+
+		let mut experimental_tlv_stream =
+			TlvStream::new(remaining_bytes).range(EXPERIMENTAL_OFFER_TYPES).peekable();
+		let mut experimental_bytes = Vec::with_capacity(
+			offer_bytes.len()
+				- experimental_tlv_stream
+					.peek()
+					.map_or(offer_bytes.len(), |first_record| first_record.start),
+		);
+
+		for record in experimental_tlv_stream {
+			record.write(&mut experimental_bytes).unwrap();
+		}
+
+		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
+		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		Self { bytes, experimental_bytes, contents, tagged_hash }
 	}
 
 	/// Signs the [`TaggedHash`] of the invoice using the given function.
@@ -297,6 +327,9 @@ impl UnsignedStaticInvoice {
 		// Append the signature TLV record to the bytes.
 		let signature_tlv_stream = SignatureTlvStreamRef { signature: Some(&signature) };
 		signature_tlv_stream.write(&mut self.bytes).unwrap();
+
+		// Append the experimental bytes after the signature.
+		WithoutLength(&self.experimental_bytes).write(&mut self.bytes).unwrap();
 
 		Ok(StaticInvoice { bytes: self.bytes, contents: self.contents, signature })
 	}

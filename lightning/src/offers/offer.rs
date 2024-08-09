@@ -1091,6 +1091,9 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef<'a>, OFFER_TYPES, {
 	(OFFER_ISSUER_ID_TYPE, issuer_id: PublicKey),
 });
 
+/// Valid type range for experimental offer TLV records.
+pub(super) const EXPERIMENTAL_OFFER_TYPES: core::ops::Range<u64> = 1_000_000_000..2_000_000_000;
+
 impl Bech32Encode for Offer {
 	const BECH32_HRP: &'static str = "lno";
 }
