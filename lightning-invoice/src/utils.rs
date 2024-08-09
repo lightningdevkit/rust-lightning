@@ -905,20 +905,15 @@ mod test {
 			nodes[0].node.send_payment(payment_hash,
 				RecipientOnionFields::secret_only(*invoice.payment_secret()),
 				PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
-			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), 1);
-			added_monitors.clear();
+			check_added_monitors(&nodes[0], 1);
 
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
 			SendEvent::from_event(events.remove(0))
-
 		};
 		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
-		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
-		assert_eq!(added_monitors.len(), 1);
-		added_monitors.clear();
+		check_added_monitors(&nodes[1], 1);
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 	}
@@ -1362,9 +1357,7 @@ mod test {
 			nodes[0].node.send_payment(payment_hash,
 				RecipientOnionFields::secret_only(*invoice.payment_secret()),
 				PaymentId(payment_hash.0), params, Retry::Attempts(0)).unwrap();
-			let mut added_monitors = nodes[0].chain_monitor.added_monitors.lock().unwrap();
-			assert_eq!(added_monitors.len(), 1);
-			added_monitors.clear();
+			check_added_monitors(&nodes[0], 1);
 
 			let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 			assert_eq!(events.len(), 1);
