@@ -10,3 +10,9 @@
  * Any `Event::PaymentFailed` generated without a payment hash will deserialize
    with `PaymentHash([0; 32])` when downgrading. This can be treated like an
    `Event::InvoiceRequestFailed` (#3192).
+ * An `Event::PaymentFailed` generated with one of the following
+   `PaymentFailureReason`s will deserialize with the corresponding reason after
+   downgrading to a version prior to 0.0.124:
+   - `UnknownRequiredFeatures` to `RecipientRejected`,
+   - `InvoiceRequestExpired` to `RetriesExhausted`, and
+   - `InvoiceRequestRejected` to `RecipientRejected` (#3192).

@@ -502,6 +502,12 @@ impl_writeable_tlv_based_enum!(InterceptNextHop,
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaymentFailureReason {
 	/// The intended recipient rejected our payment.
+	///
+	/// Also used for [`UnknownRequiredFeatures`] and [`InvoiceRequestRejected`] when downgrading to
+	/// version prior to 0.0.124.
+	///
+	/// [`UnknownRequiredFeatures`]: Self::UnknownRequiredFeatures
+	/// [`InvoiceRequestRejected`]: Self::InvoiceRequestRejected
 	RecipientRejected,
 	/// The user chose to abandon this payment by calling [`ChannelManager::abandon_payment`].
 	///
@@ -517,7 +523,10 @@ pub enum PaymentFailureReason {
 	/// The payment expired while retrying, based on the provided
 	/// [`PaymentParameters::expiry_time`].
 	///
+	/// Also used for [`InvoiceRequestExpired`] when downgrading to version prior to 0.0.124.
+	///
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
+	/// [`InvoiceRequestExpired`]: Self::InvoiceRequestExpired
 	PaymentExpired,
 	/// We failed to find a route while retrying the payment.
 	///
@@ -878,8 +887,8 @@ pub enum Event {
 		/// [`Offer`]: crate::offers::offer::Offer
 		payment_hash: Option<PaymentHash>,
 		/// The reason the payment failed. This is only `None` for events generated or serialized
-		/// by versions prior to 0.0.115, or when downgrading to 0.0.124 or later with a reason that
-		/// was added after.
+		/// by versions prior to 0.0.115, or when downgrading to a version with a reason that was
+		/// added after.
 		reason: Option<PaymentFailureReason>,
 	},
 	/// Indicates that a path for an outbound payment was successful.
@@ -1554,11 +1563,30 @@ impl Writeable for Event {
 					Some(payment_hash) => (payment_hash, true),
 					None => (&PaymentHash([0; 32]), false),
 				};
+				let legacy_reason = match reason {
+					None => &None,
+					// Variants available prior to version 0.0.124.
+					Some(PaymentFailureReason::RecipientRejected)
+						| Some(PaymentFailureReason::UserAbandoned)
+						| Some(PaymentFailureReason::RetriesExhausted)
+						| Some(PaymentFailureReason::PaymentExpired)
+						| Some(PaymentFailureReason::RouteNotFound)
+						| Some(PaymentFailureReason::UnexpectedError) => reason,
+					// Variants introduced at version 0.0.124 or later. Prior versions fail to parse
+					// unknown variants, while versions 0.0.124 or later will use None.
+					Some(PaymentFailureReason::UnknownRequiredFeatures) =>
+						&Some(PaymentFailureReason::RecipientRejected),
+					Some(PaymentFailureReason::InvoiceRequestExpired) =>
+						&Some(PaymentFailureReason::RetriesExhausted),
+					Some(PaymentFailureReason::InvoiceRequestRejected) =>
+						&Some(PaymentFailureReason::RecipientRejected),
+				};
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
-					(1, reason, option),
+					(1, legacy_reason, option),
 					(2, payment_hash, required),
 					(3, invoice_received, required),
+					(5, reason, option),
 				})
 			},
 			&Event::OpenChannelRequest { .. } => {
@@ -1926,17 +1954,20 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_id = PaymentId([0; 32]);
 					let mut reason = None;
+					let mut legacy_reason = None;
 					let mut invoice_received: Option<bool> = None;
 					read_tlv_fields!(reader, {
 						(0, payment_id, required),
-						(1, reason, upgradable_option),
+						(1, legacy_reason, upgradable_option),
 						(2, payment_hash, required),
 						(3, invoice_received, option),
+						(5, reason, upgradable_option),
 					});
 					let payment_hash = match invoice_received {
 						Some(invoice_received) => invoice_received.then(|| payment_hash),
 						None => (payment_hash != PaymentHash([0; 32])).then(|| payment_hash),
 					};
+					let reason = reason.or(legacy_reason);
 					Ok(Some(Event::PaymentFailed {
 						payment_id,
 						payment_hash,
