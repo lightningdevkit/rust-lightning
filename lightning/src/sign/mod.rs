@@ -24,7 +24,6 @@ use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxIn, TxOut};
 
-use bech32::u5;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::{Hash, HashEngine};
@@ -36,6 +35,8 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::{Keypair, PublicKey, Scalar, Secp256k1, SecretKey, Signing};
 use bitcoin::{secp256k1, Psbt, Sequence, Txid, WPubkeyHash, Witness};
+
+use lightning_invoice::RawBolt11Invoice;
 
 use crate::chain::transaction::OutPoint;
 use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
@@ -69,7 +70,6 @@ use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
-use crate::util::invoice::construct_invoice_preimage;
 use core::convert::TryInto;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -867,7 +867,7 @@ pub trait NodeSigner {
 	///
 	/// Errors if the [`Recipient`] variant is not supported by the implementation.
 	fn sign_invoice(
-		&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient,
+		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()>;
 
 	/// Signs the [`TaggedHash`] of a BOLT 12 invoice request.
@@ -2174,17 +2174,14 @@ impl NodeSigner for KeysManager {
 	}
 
 	fn sign_invoice(
-		&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient,
+		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
-		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
+		let hash = invoice.signable_hash();
 		let secret = match recipient {
 			Recipient::Node => Ok(&self.node_secret),
 			Recipient::PhantomNode => Err(()),
 		}?;
-		Ok(self.secp_ctx.sign_ecdsa_recoverable(
-			&hash_to_message!(&Sha256::hash(&preimage).to_byte_array()),
-			secret,
-		))
+		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&hash), secret))
 	}
 
 	fn sign_bolt12_invoice_request(
@@ -2352,17 +2349,14 @@ impl NodeSigner for PhantomKeysManager {
 	}
 
 	fn sign_invoice(
-		&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient,
+		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
-		let preimage = construct_invoice_preimage(&hrp_bytes, &invoice_data);
+		let hash = invoice.signable_hash();
 		let secret = match recipient {
 			Recipient::Node => &self.inner.node_secret,
 			Recipient::PhantomNode => &self.phantom_secret,
 		};
-		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(
-			&hash_to_message!(&Sha256::hash(&preimage).to_byte_array()),
-			secret,
-		))
+		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&hash), secret))
 	}
 
 	fn sign_bolt12_invoice_request(
