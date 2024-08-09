@@ -1555,10 +1555,17 @@ impl Writeable for Event {
 					Some(payment_hash) => payment_hash,
 					None => &PaymentHash([0; 32]),
 				};
+				let legacy_reason = match reason {
+					Some(PaymentFailureReason::UnknownRequiredFeatures)
+						| Some(PaymentFailureReason::InvoiceRequestExpired)
+						| Some(PaymentFailureReason::InvoiceRequestRejected) => &None,
+					reason => reason,
+				};
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
-					(1, reason, option),
+					(1, legacy_reason, option),
 					(2, payment_hash, required),
+					(3, reason, option),
 				})
 			},
 			&Event::OpenChannelRequest { .. } => {
@@ -1926,12 +1933,15 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_id = PaymentId([0; 32]);
 					let mut reason = None;
+					let mut legacy_reason = None;
 					read_tlv_fields!(reader, {
 						(0, payment_id, required),
-						(1, reason, upgradable_option),
+						(1, legacy_reason, upgradable_option),
 						(2, payment_hash, required),
+						(3, reason, upgradable_option),
 					});
 					let invoice_received = payment_hash != PaymentHash([0; 32]);
+					let reason = reason.or(legacy_reason);
 					Ok(Some(Event::PaymentFailed {
 						payment_id,
 						payment_hash: invoice_received.then(|| payment_hash),
