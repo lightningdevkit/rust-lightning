@@ -186,6 +186,8 @@ mod tests {
 		let (payment_hash, payment_secret) =
 			nodes[1].node.create_inbound_payment(None, 7200, None).unwrap();
 
+		let secp_ctx = Secp256k1::new();
+		let node_secret = nodes[1].keys_manager.backing.get_node_secret_key();
 		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("test".into())
 			.payment_hash(Sha256::from_slice(&payment_hash.0).unwrap())
@@ -194,10 +196,7 @@ mod tests {
 			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(50_000)
 			.payment_metadata(payment_metadata.clone())
-			.build_signed(|hash| {
-				Secp256k1::new().sign_ecdsa_recoverable(hash,
-					&nodes[1].keys_manager.backing.get_node_secret_key())
-			})
+			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &node_secret))
 			.unwrap();
 
 		let (hash, onion, params) = payment_parameters_from_invoice(&invoice).unwrap();
