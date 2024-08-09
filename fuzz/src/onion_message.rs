@@ -1,5 +1,4 @@
 // Imports that need to be added manually
-use bech32::u5;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::RecoverableSignature;
@@ -26,6 +25,8 @@ use lightning::sign::{EntropySource, KeyMaterial, NodeSigner, Recipient, SignerP
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
 use lightning::util::test_channel_signer::TestChannelSigner;
+
+use lightning_invoice::RawBolt11Invoice;
 
 use crate::utils::test_logger;
 
@@ -225,7 +226,7 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn sign_invoice(
-		&self, _hrp_bytes: &[u8], _invoice_data: &[u5], _recipient: Recipient,
+		&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}

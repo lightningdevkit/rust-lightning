@@ -65,6 +65,8 @@ use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 
+use lightning_invoice::RawBolt11Invoice;
+
 use crate::io;
 use crate::prelude::*;
 use core::cell::RefCell;
@@ -72,7 +74,6 @@ use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
-use bech32::u5;
 use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 #[cfg(feature = "std")]
@@ -1217,7 +1218,7 @@ impl NodeSigner for TestNodeSigner {
 		Ok(SharedSecret::new(other_key, &node_secret))
 	}
 
-	fn sign_invoice(&self, _: &[u8], _: &[bech32::u5], _: Recipient) -> Result<bitcoin::secp256k1::ecdsa::RecoverableSignature, ()> {
+	fn sign_invoice(&self, _: &RawBolt11Invoice, _: Recipient) -> Result<RecoverableSignature, ()> {
 		unreachable!()
 	}
 
@@ -1270,8 +1271,8 @@ impl NodeSigner for TestKeysInterface {
 		self.backing.get_inbound_payment_key_material()
 	}
 
-	fn sign_invoice(&self, hrp_bytes: &[u8], invoice_data: &[u5], recipient: Recipient) -> Result<RecoverableSignature, ()> {
-		self.backing.sign_invoice(hrp_bytes, invoice_data, recipient)
+	fn sign_invoice(&self, invoice: &RawBolt11Invoice, recipient: Recipient) -> Result<RecoverableSignature, ()> {
+		self.backing.sign_invoice(invoice, recipient)
 	}
 
 	fn sign_bolt12_invoice_request(

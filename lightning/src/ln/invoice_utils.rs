@@ -5,7 +5,6 @@ use lightning_invoice::{Description, Bolt11InvoiceDescription, Sha256};
 
 use crate::prelude::*;
 
-use bech32::ToBase32;
 use bitcoin::hashes::Hash;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
@@ -219,10 +218,8 @@ where
 		Ok(inv) => inv,
 		Err(e) => return Err(SignOrCreationError::CreationError(e))
 	};
-	let hrp_str = raw_invoice.hrp.to_string();
-	let hrp_bytes = hrp_str.as_bytes();
-	let data_without_signature = raw_invoice.data.to_base32();
-	let signed_raw_invoice = raw_invoice.sign(|_| node_signer.sign_invoice(hrp_bytes, &data_without_signature, Recipient::PhantomNode));
+	let signature = node_signer.sign_invoice(&raw_invoice, Recipient::PhantomNode);
+	let signed_raw_invoice = raw_invoice.sign(|_| signature);
 	match signed_raw_invoice {
 		Ok(inv) => Ok(Bolt11Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))
@@ -571,10 +568,8 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_has
 		Ok(inv) => inv,
 		Err(e) => return Err(SignOrCreationError::CreationError(e))
 	};
-	let hrp_str = raw_invoice.hrp.to_string();
-	let hrp_bytes = hrp_str.as_bytes();
-	let data_without_signature = raw_invoice.data.to_base32();
-	let signed_raw_invoice = raw_invoice.sign(|_| node_signer.sign_invoice(hrp_bytes, &data_without_signature, Recipient::Node));
+	let signature = node_signer.sign_invoice(&raw_invoice, Recipient::Node);
+	let signed_raw_invoice = raw_invoice.sign(|_| signature);
 	match signed_raw_invoice {
 		Ok(inv) => Ok(Bolt11Invoice::from_signed(inv).unwrap()),
 		Err(e) => Err(SignOrCreationError::SignError(e))

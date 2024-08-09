@@ -18,7 +18,6 @@ pub mod ser_macros;
 pub mod errors;
 pub mod ser;
 pub mod message_signing;
-pub mod invoice;
 pub mod persist;
 pub mod scid_utils;
 pub mod sweep;
