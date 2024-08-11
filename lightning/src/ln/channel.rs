@@ -937,6 +937,7 @@ pub(crate) struct ShutdownResult {
 	pub(crate) is_manual_broadcast: bool,
 	pub(crate) unbroadcasted_funding_tx: Option<Transaction>,
 	pub(crate) channel_funding_txo: Option<OutPoint>,
+	pub(crate) last_local_balance_msat: u64,
 }
 
 /// Tracks the transaction number, along with current and next commitment points.
@@ -2065,6 +2066,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			is_manual_broadcast: false,
 		})
 	}
+
+	pub(crate) fn get_value_to_self_msat(&self) -> u64 {self.value_to_self_msat}
 
 	/// Allowed in any state (including after shutdown)
 	pub fn get_update_time_counter(&self) -> u32 {
@@ -3532,6 +3535,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			unbroadcasted_funding_tx,
 			is_manual_broadcast: self.is_manual_broadcast,
 			channel_funding_txo: self.get_funding_txo(),
+			last_local_balance_msat: self.value_to_self_msat,
 		}
 	}
 
@@ -6180,6 +6184,7 @@ impl<SP: Deref> Channel<SP> where
 			unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
 			is_manual_broadcast: self.context.is_manual_broadcast,
 			channel_funding_txo: self.context.get_funding_txo(),
+			last_local_balance_msat: self.context.value_to_self_msat,
 		}
 	}
 
