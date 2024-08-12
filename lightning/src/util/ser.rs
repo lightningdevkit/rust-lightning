@@ -1488,6 +1488,30 @@ impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable, E: Writeable, F: Wr
 	}
 }
 
+impl<A: Readable, B: Readable, C: Readable, D: Readable, E: Readable, F: Readable, G: Readable> Readable for (A, B, C, D, E, F, G) {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let a: A = Readable::read(r)?;
+		let b: B = Readable::read(r)?;
+		let c: C = Readable::read(r)?;
+		let d: D = Readable::read(r)?;
+		let e: E = Readable::read(r)?;
+		let f: F = Readable::read(r)?;
+		let g: G = Readable::read(r)?;
+		Ok((a, b, c, d, e, f, g))
+	}
+}
+impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable, E: Writeable, F: Writeable, G: Writeable> Writeable for (A, B, C, D, E, F, G) {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)?;
+		self.1.write(w)?;
+		self.2.write(w)?;
+		self.3.write(w)?;
+		self.4.write(w)?;
+		self.5.write(w)?;
+		self.6.write(w)
+	}
+}
+
 impl Writeable for () {
 	fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
 		Ok(())
