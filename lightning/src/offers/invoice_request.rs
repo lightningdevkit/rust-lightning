@@ -1538,7 +1538,7 @@ mod tests {
 		let (
 			payer_tlv_stream, offer_tlv_stream, mut invoice_request_tlv_stream,
 			mut invoice_tlv_stream, mut signature_tlv_stream, experimental_offer_tlv_stream,
-			experimental_invoice_request_tlv_stream,
+			experimental_invoice_request_tlv_stream, experimental_invoice_tlv_stream,
 		) = invoice.as_tlv_stream();
 		invoice_request_tlv_stream.amount = Some(2000);
 		invoice_tlv_stream.amount = Some(2000);
@@ -1547,6 +1547,7 @@ mod tests {
 			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream);
 		let experimental_tlv_stream = (
 			experimental_offer_tlv_stream, experimental_invoice_request_tlv_stream,
+			experimental_invoice_tlv_stream,
 		);
 		let mut bytes = Vec::new();
 		(&tlv_stream, &experimental_tlv_stream).write(&mut bytes).unwrap();
@@ -1567,7 +1568,7 @@ mod tests {
 		let (
 			mut payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream,
 			mut signature_tlv_stream, experimental_offer_tlv_stream,
-			experimental_invoice_request_tlv_stream,
+			experimental_invoice_request_tlv_stream, experimental_invoice_tlv_stream,
 		) = invoice.as_tlv_stream();
 		let metadata = payer_tlv_stream.metadata.unwrap().iter().copied().rev().collect();
 		payer_tlv_stream.metadata = Some(&metadata);
@@ -1576,6 +1577,7 @@ mod tests {
 			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream);
 		let experimental_tlv_stream = (
 			experimental_offer_tlv_stream, experimental_invoice_request_tlv_stream,
+			experimental_invoice_tlv_stream,
 		);
 		let mut bytes = Vec::new();
 		(&tlv_stream, &experimental_tlv_stream).write(&mut bytes).unwrap();
@@ -1625,7 +1627,7 @@ mod tests {
 		let (
 			payer_tlv_stream, offer_tlv_stream, mut invoice_request_tlv_stream,
 			mut invoice_tlv_stream, mut signature_tlv_stream, experimental_offer_tlv_stream,
-			experimental_invoice_request_tlv_stream,
+			experimental_invoice_request_tlv_stream, experimental_invoice_tlv_stream,
 		) = invoice.as_tlv_stream();
 		invoice_request_tlv_stream.amount = Some(2000);
 		invoice_tlv_stream.amount = Some(2000);
@@ -1634,6 +1636,7 @@ mod tests {
 			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream);
 		let experimental_tlv_stream = (
 			experimental_offer_tlv_stream, experimental_invoice_request_tlv_stream,
+			experimental_invoice_tlv_stream,
 		);
 		let mut bytes = Vec::new();
 		(&tlv_stream, &experimental_tlv_stream).write(&mut bytes).unwrap();
@@ -1656,7 +1659,7 @@ mod tests {
 		let (
 			payer_tlv_stream, offer_tlv_stream, mut invoice_request_tlv_stream, invoice_tlv_stream,
 			mut signature_tlv_stream, experimental_offer_tlv_stream,
-			experimental_invoice_request_tlv_stream,
+			experimental_invoice_request_tlv_stream, experimental_invoice_tlv_stream,
 		) = invoice.as_tlv_stream();
 		let payer_id = pubkey(1);
 		invoice_request_tlv_stream.payer_id = Some(&payer_id);
@@ -1665,6 +1668,7 @@ mod tests {
 			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream);
 		let experimental_tlv_stream = (
 			experimental_offer_tlv_stream, experimental_invoice_request_tlv_stream,
+			experimental_invoice_tlv_stream,
 		);
 		let mut bytes = Vec::new();
 		(&tlv_stream, &experimental_tlv_stream).write(&mut bytes).unwrap();
