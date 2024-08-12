@@ -9618,7 +9618,7 @@ mod tests {
 	use bitcoin::secp256k1::{SecretKey,PublicKey};
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::hashes::Hash;
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::{WitnessProgram, WitnessVersion, WPubkeyHash};
 	use crate::prelude::*;
@@ -10272,8 +10272,9 @@ mod tests {
 		use bitcoin::sighash;
 		use bitcoin::consensus::encode::serialize;
 		use bitcoin::sighash::EcdsaSighashType;
-		use bitcoin::hashes::hex::FromHex;
+		use bitcoin::hex::FromHex;
 		use bitcoin::hash_types::Txid;
+		use bitcoin::hex::DisplayHex;
 		use bitcoin::secp256k1::Message;
 		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
 		use crate::ln::PaymentPreimage;
@@ -10283,7 +10284,6 @@ mod tests {
 		use crate::util::logger::Logger;
 		use crate::sync::Arc;
 		use core::str::FromStr;
-		use hex::DisplayHex;
 
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
 		let feeest = TestFeeEstimator{fee_est: 15000};

@@ -1205,7 +1205,7 @@ mod tests {
 	use bitcoin::script::ScriptBuf;
 	use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 
 	use bitcoin::secp256k1::{PublicKey,SecretKey};
 	use bitcoin::secp256k1::Secp256k1;

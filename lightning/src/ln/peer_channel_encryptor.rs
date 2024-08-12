@@ -17,12 +17,12 @@ use crate::ln::wire;
 use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
+use bitcoin::hex::DisplayHex;
+
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1;
-
-use hex::DisplayHex;
 
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::crypto::utils::hkdf_extract_expand_twice;
@@ -570,7 +570,7 @@ impl MessageBuf {
 mod tests {
 	use super::{MessageBuf, LN_MAX_MSG_LEN};
 
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 	use bitcoin::secp256k1::Secp256k1;
 

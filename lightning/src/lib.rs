@@ -65,7 +65,6 @@ pub extern crate bitcoin;
 #[cfg(any(test, feature = "std"))]
 extern crate core;
 
-extern crate hex;
 #[cfg(any(test, feature = "_test_utils"))] extern crate regex;
 
 #[cfg(not(feature = "std"))] extern crate core2;

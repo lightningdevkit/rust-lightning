@@ -28,7 +28,6 @@ bitcoin = { version = "0.31.2", default-features = false }
 
 [dev-dependencies]
 lightning = { version = "0.0.123-beta", path = "../lightning", default-features = false, features = ["_test_utils"] }
-hex = { package = "hex-conservative", version = "0.1.1", default-features = false }
 serde_json = { version = "1"}
 hashbrown = { version = "0.13", default-features = false }
 

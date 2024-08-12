@@ -3267,7 +3267,7 @@ impl_writeable_msg!(GossipTimestampFilter, {
 #[cfg(test)]
 mod tests {
 	use bitcoin::{Amount, Transaction, TxIn, ScriptBuf, Sequence, Witness, TxOut};
-	use hex::DisplayHex;
+	use bitcoin::hex::DisplayHex;
 	use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket};
@@ -3276,7 +3276,7 @@ mod tests {
 	use crate::util::ser::{BigSize, FixedLengthReader, Hostname, LengthReadable, Readable, ReadableArgs, TransactionU16LenLimited, Writeable};
 	use crate::util::test_utils;
 
-	use bitcoin::hashes::hex::FromHex;
+	use bitcoin::hex::FromHex;
 	use bitcoin::address::Address;
 	use bitcoin::network::Network;
 	use bitcoin::constants::ChainHash;

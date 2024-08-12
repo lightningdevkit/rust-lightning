@@ -17,7 +17,7 @@ use bitcoin::TxOut;
 use bitcoin::amount::Amount;
 use bitcoin::constants::ChainHash;
 
-use hex::DisplayHex;
+use bitcoin::hex::DisplayHex;
 
 use crate::events::MessageSendEvent;
 use crate::ln::chan_utils::make_funding_redeemscript_from_slices;

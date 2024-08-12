@@ -28,7 +28,7 @@ use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::script::Builder;
 use bitcoin::opcodes;
-use bitcoin::hashes::hex::FromHex;
+use bitcoin::hex::FromHex;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use bitcoin::sighash::{SighashCache, EcdsaSighashType};
 use bitcoin::transaction::Version;
