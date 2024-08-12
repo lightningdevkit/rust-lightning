@@ -1452,7 +1452,7 @@ where
 ///                 channel_value_satoshis, output_script
 ///             );
 ///             match channel_manager.funding_transaction_generated(
-///                 &temporary_channel_id, &counterparty_node_id, funding_transaction
+///                 temporary_channel_id, counterparty_node_id, funding_transaction
 ///             ) {
 ///                 Ok(()) => println!("Funding channel {}", temporary_channel_id),
 ///                 Err(e) => println!("Error funding channel {}: {:?}", temporary_channel_id, e),
@@ -4446,17 +4446,17 @@ where
 	/// Handles the generation of a funding transaction, optionally (for tests) with a function
 	/// which checks the correctness of the funding transaction given the associated channel.
 	fn funding_transaction_generated_intern<FundingOutput: FnMut(&OutboundV1Channel<SP>) -> Result<OutPoint, &'static str>>(
-		&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, is_batch_funding: bool,
+		&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction, is_batch_funding: bool,
 		mut find_funding_output: FundingOutput, is_manual_broadcast: bool,
 	) -> Result<(), APIError> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
 			.ok_or_else(|| APIError::ChannelUnavailable { err: format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id) })?;
 
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 		let funding_txo;
-		let (mut chan, msg_opt) = match peer_state.channel_by_id.remove(temporary_channel_id) {
+		let (mut chan, msg_opt) = match peer_state.channel_by_id.remove(&temporary_channel_id) {
 			Some(ChannelPhase::UnfundedOutboundV1(mut chan)) => {
 				macro_rules! close_chan { ($err: expr, $api_err: expr, $chan: expr) => { {
 					let counterparty;
@@ -4492,7 +4492,7 @@ where
 				}
 			},
 			Some(phase) => {
-				peer_state.channel_by_id.insert(*temporary_channel_id, phase);
+				peer_state.channel_by_id.insert(temporary_channel_id, phase);
 				return Err(APIError::APIMisuseError {
 					err: format!(
 						"Channel with id {} for the passed counterparty node_id {} is not an unfunded, outbound V1 channel",
@@ -4542,7 +4542,7 @@ where
 	}
 
 	#[cfg(test)]
-	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
+	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
 		let txid = funding_transaction.txid();
 		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, false, |_| {
 			Ok(OutPoint { txid, index: output_index })
@@ -4579,8 +4579,8 @@ where
 	///
 	/// [`Event::FundingGenerationReady`]: crate::events::Event::FundingGenerationReady
 	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
-	pub fn funding_transaction_generated(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
-		self.batch_funding_transaction_generated(&[(temporary_channel_id, counterparty_node_id)], funding_transaction)
+	pub fn funding_transaction_generated(&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction) -> Result<(), APIError> {
+		self.batch_funding_transaction_generated(&[(&temporary_channel_id, &counterparty_node_id)], funding_transaction)
 	}
 
 
@@ -4611,10 +4611,10 @@ where
 	/// [`Event::FundingTxBroadcastSafe`]: crate::events::Event::FundingTxBroadcastSafe
 	/// [`Event::ChannelClosed`]: crate::events::Event::ChannelClosed
 	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
-	pub fn unsafe_manual_funding_transaction_generated(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, funding: OutPoint) -> Result<(), APIError> {
+	pub fn unsafe_manual_funding_transaction_generated(&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding: OutPoint) -> Result<(), APIError> {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let temporary_channels = &[(temporary_channel_id, counterparty_node_id)];
+		let temporary_channels = &[(&temporary_channel_id, &counterparty_node_id)];
 		return self.batch_funding_transaction_generated_intern(temporary_channels, FundingType::Unchecked(funding));
 
 	}
@@ -4688,8 +4688,8 @@ where
 		let is_manual_broadcast = funding.is_manual_broadcast();
 		for &(temporary_channel_id, counterparty_node_id) in temporary_channels {
 			result = result.and_then(|_| self.funding_transaction_generated_intern(
-				temporary_channel_id,
-				counterparty_node_id,
+				*temporary_channel_id,
+				*counterparty_node_id,
 				funding.transaction_or_dummy(),
 				is_batch_funding,
 				|chan| {
@@ -13348,7 +13348,7 @@ mod tests {
 			assert_eq!(nodes[1].node.outpoint_to_peer.lock().unwrap().len(), 0);
 		}
 
-		nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+		nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
 		{
 			// Assert that `nodes[0]`'s `outpoint_to_peer` map is populated with the channel as soon as
 			// as it has the funding transaction.
@@ -13560,7 +13560,7 @@ mod tests {
 				nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 				let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100_000, 42);
 				funding_tx = Some(tx.clone());
-				nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx).unwrap();
+				nodes[0].node.funding_transaction_generated(temporary_channel_id, nodes[1].node.get_our_node_id(), tx).unwrap();
 				let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
 
 				nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
@@ -14215,7 +14215,7 @@ pub mod bench {
 			tx = Transaction { version: Version::TWO, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 				value: Amount::from_sat(8_000_000), script_pubkey: output_script,
 			}]};
-			node_a.funding_transaction_generated(&temporary_channel_id, &node_b.get_our_node_id(), tx.clone()).unwrap();
+			node_a.funding_transaction_generated(temporary_channel_id, node_b.get_our_node_id(), tx.clone()).unwrap();
 		} else { panic!(); }
 
 		node_b.handle_funding_created(&node_a.get_our_node_id(), &get_event_msg!(node_a_holder, MessageSendEvent::SendFundingCreated, node_b.get_our_node_id()));

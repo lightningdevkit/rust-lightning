@@ -1676,8 +1676,8 @@ mod tests {
 			$node_a
 				.node
 				.funding_transaction_generated(
-					&temporary_channel_id,
-					&$node_b.node.get_our_node_id(),
+					temporary_channel_id,
+					$node_b.node.get_our_node_id(),
 					tx.clone(),
 				)
 				.unwrap();
@@ -2110,7 +2110,7 @@ mod tests {
 			.expect("FundingGenerationReady not handled within deadline");
 		nodes[0]
 			.node
-			.funding_transaction_generated(&temporary_channel_id, &node_1_id, funding_tx.clone())
+			.funding_transaction_generated(temporary_channel_id, node_1_id, funding_tx.clone())
 			.unwrap();
 		let msg_0 = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_1_id);
 		nodes[1].node.handle_funding_created(&node_0_id, &msg_0);
