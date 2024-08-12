@@ -41,7 +41,7 @@ use core::ops::Deref;
 ///
 /// Implements [`MessageRouter`] by delegating to [`DefaultMessageRouter`]. See those docs for
 /// privacy implications.
-pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
+pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
 	ES::Target: EntropySource,
@@ -51,22 +51,20 @@ pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, E
 	entropy_source: ES,
 	scorer: S,
 	score_params: SP,
-	message_router: DefaultMessageRouter<G, L, ES>,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref + Clone, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> DefaultRouter<G, L, ES, S, SP, Sc> where
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> DefaultRouter<G, L, ES, S, SP, Sc> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
 	ES::Target: EntropySource,
 {
 	/// Creates a new router.
 	pub fn new(network_graph: G, logger: L, entropy_source: ES, scorer: S, score_params: SP) -> Self {
-		let message_router = DefaultMessageRouter::new(network_graph.clone(), entropy_source.clone());
-		Self { network_graph, logger, entropy_source, scorer, score_params, message_router }
+		Self { network_graph, logger, entropy_source, scorer, score_params }
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> Router for DefaultRouter<G, L, ES, S, SP, Sc> where
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> Router for DefaultRouter<G, L, ES, S, SP, Sc> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
 	ES::Target: EntropySource,
@@ -179,7 +177,7 @@ impl<G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, 
 	}
 }
 
-impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> MessageRouter for DefaultRouter<G, L, ES, S, SP, Sc> where
+impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> MessageRouter for DefaultRouter<G, L, ES, S, SP, Sc> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
 	ES::Target: EntropySource,
@@ -187,7 +185,7 @@ impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref,
 	fn find_path(
 		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
 	) -> Result<OnionMessagePath, ()> {
-		self.message_router.find_path(sender, peers, destination)
+		DefaultMessageRouter::<_, _, ES>::find_path(&self.network_graph, sender, peers, destination)
 	}
 
 	fn create_blinded_paths<
@@ -195,7 +193,7 @@ impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref,
 	> (
 		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.message_router.create_blinded_paths(recipient, context, peers, secp_ctx)
+		DefaultMessageRouter::create_blinded_paths(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
 	}
 
 	fn create_compact_blinded_paths<
@@ -203,7 +201,7 @@ impl< G: Deref<Target = NetworkGraph<L>> + Clone, L: Deref, ES: Deref, S: Deref,
 	> (
 		&self, recipient: PublicKey, context: MessageContext, peers: Vec<message::ForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPath>, ()> {
-		self.message_router.create_compact_blinded_paths(recipient, context, peers, secp_ctx)
+		DefaultMessageRouter::create_compact_blinded_paths(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
 	}
 }
 
