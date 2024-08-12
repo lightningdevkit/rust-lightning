@@ -16,7 +16,8 @@ use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
-	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks, FallbackAddress,
+	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks,
+	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, FallbackAddress,
 	InvoiceTlvStream, InvoiceTlvStreamRef,
 };
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
@@ -278,14 +279,17 @@ macro_rules! invoice_accessors_signing_pubkey {
 
 impl UnsignedStaticInvoice {
 	fn new(offer_bytes: &Vec<u8>, contents: InvoiceContents) -> Self {
-		let (_, invoice_tlv_stream, _) = contents.as_tlv_stream();
+		let (_, invoice_tlv_stream, _, experimental_invoice_tlv_stream) = contents.as_tlv_stream();
 
 		// Allocate enough space for the invoice, which will include:
 		// - all TLV records from `offer_bytes`,
 		// - all invoice-specific TLV records, and
 		// - a signature TLV record once the invoice is signed.
 		let mut bytes = Vec::with_capacity(
-			offer_bytes.len() + invoice_tlv_stream.serialized_length() + SIGNATURE_TLV_RECORD_SIZE,
+			offer_bytes.len()
+				+ invoice_tlv_stream.serialized_length()
+				+ SIGNATURE_TLV_RECORD_SIZE
+				+ experimental_invoice_tlv_stream.serialized_length(),
 		);
 
 		// Use the offer bytes instead of the offer TLV stream as the latter may have contained
@@ -304,12 +308,15 @@ impl UnsignedStaticInvoice {
 			offer_bytes.len()
 				- experimental_tlv_stream
 					.peek()
-					.map_or(offer_bytes.len(), |first_record| first_record.start),
+					.map_or(offer_bytes.len(), |first_record| first_record.start)
+				+ experimental_invoice_tlv_stream.serialized_length(),
 		);
 
 		for record in experimental_tlv_stream {
 			record.write(&mut experimental_bytes).unwrap();
 		}
+
+		experimental_invoice_tlv_stream.write(&mut experimental_bytes).unwrap();
 
 		let tlv_stream = TlvStream::new(&bytes).chain(TlvStream::new(&experimental_bytes));
 		let tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
@@ -437,9 +444,11 @@ impl InvoiceContents {
 			payment_hash: None,
 		};
 
+		let experimental_invoice = ExperimentalInvoiceTlvStreamRef {};
+
 		let (offer, experimental_offer) = self.offer.as_tlv_stream();
 
-		(offer, invoice, experimental_offer)
+		(offer, invoice, experimental_offer, experimental_invoice)
 	}
 
 	fn chain(&self) -> ChainHash {
@@ -536,8 +545,13 @@ impl TryFrom<Vec<u8>> for StaticInvoice {
 	}
 }
 
-type FullInvoiceTlvStream =
-	(OfferTlvStream, InvoiceTlvStream, SignatureTlvStream, ExperimentalOfferTlvStream);
+type FullInvoiceTlvStream = (
+	OfferTlvStream,
+	InvoiceTlvStream,
+	SignatureTlvStream,
+	ExperimentalOfferTlvStream,
+	ExperimentalInvoiceTlvStream,
+);
 
 impl CursorReadable for FullInvoiceTlvStream {
 	fn read<R: AsRef<[u8]>>(r: &mut io::Cursor<R>) -> Result<Self, DecodeError> {
@@ -545,15 +559,21 @@ impl CursorReadable for FullInvoiceTlvStream {
 		let invoice = CursorReadable::read(r)?;
 		let signature = CursorReadable::read(r)?;
 		let experimental_offer = CursorReadable::read(r)?;
+		let experimental_invoice = CursorReadable::read(r)?;
 
-		Ok((offer, invoice, signature, experimental_offer))
+		Ok((offer, invoice, signature, experimental_offer, experimental_invoice))
 	}
 }
 
-type PartialInvoiceTlvStream = (OfferTlvStream, InvoiceTlvStream, ExperimentalOfferTlvStream);
+type PartialInvoiceTlvStream =
+	(OfferTlvStream, InvoiceTlvStream, ExperimentalOfferTlvStream, ExperimentalInvoiceTlvStream);
 
-type PartialInvoiceTlvStreamRef<'a> =
-	(OfferTlvStreamRef<'a>, InvoiceTlvStreamRef<'a>, ExperimentalOfferTlvStreamRef);
+type PartialInvoiceTlvStreamRef<'a> = (
+	OfferTlvStreamRef<'a>,
+	InvoiceTlvStreamRef<'a>,
+	ExperimentalOfferTlvStreamRef,
+	ExperimentalInvoiceTlvStreamRef,
+);
 
 impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for StaticInvoice {
 	type Error = Bolt12ParseError;
@@ -565,11 +585,13 @@ impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for StaticInvoice {
 			invoice_tlv_stream,
 			SignatureTlvStream { signature },
 			experimental_offer_tlv_stream,
+			experimental_invoice_tlv_stream,
 		) = tlv_stream;
 		let contents = InvoiceContents::try_from((
 			offer_tlv_stream,
 			invoice_tlv_stream,
 			experimental_offer_tlv_stream,
+			experimental_invoice_tlv_stream,
 		))?;
 
 		let signature = match signature {
@@ -607,6 +629,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				amount,
 			},
 			experimental_offer_tlv_stream,
+			ExperimentalInvoiceTlvStream {},
 		) = tlv_stream;
 
 		if payment_hash.is_some() {
@@ -658,7 +681,9 @@ mod tests {
 	use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;
-	use crate::offers::invoice::{InvoiceTlvStreamRef, INVOICE_TYPES};
+	use crate::offers::invoice::{
+		ExperimentalInvoiceTlvStreamRef, InvoiceTlvStreamRef, INVOICE_TYPES,
+	};
 	use crate::offers::merkle;
 	use crate::offers::merkle::{SignatureTlvStreamRef, TaggedHash};
 	use crate::offers::nonce::Nonce;
@@ -683,17 +708,23 @@ mod tests {
 		InvoiceTlvStreamRef<'a>,
 		SignatureTlvStreamRef<'a>,
 		ExperimentalOfferTlvStreamRef,
+		ExperimentalInvoiceTlvStreamRef,
 	);
 
 	impl StaticInvoice {
 		fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef {
-			let (offer_tlv_stream, invoice_tlv_stream, experimental_offer_tlv_stream) =
-				self.contents.as_tlv_stream();
+			let (
+				offer_tlv_stream,
+				invoice_tlv_stream,
+				experimental_offer_tlv_stream,
+				experimental_invoice_tlv_stream,
+			) = self.contents.as_tlv_stream();
 			(
 				offer_tlv_stream,
 				invoice_tlv_stream,
 				SignatureTlvStreamRef { signature: Some(&self.signature) },
 				experimental_offer_tlv_stream,
+				experimental_invoice_tlv_stream,
 			)
 		}
 	}
@@ -704,6 +735,7 @@ mod tests {
 			InvoiceTlvStreamRef,
 			SignatureTlvStreamRef,
 			ExperimentalOfferTlvStreamRef,
+			ExperimentalInvoiceTlvStreamRef,
 		),
 	) -> Vec<u8> {
 		let mut buffer = Vec::new();
@@ -711,6 +743,7 @@ mod tests {
 		tlv_stream.1.write(&mut buffer).unwrap();
 		tlv_stream.2.write(&mut buffer).unwrap();
 		tlv_stream.3.write(&mut buffer).unwrap();
+		tlv_stream.4.write(&mut buffer).unwrap();
 		buffer
 	}
 
@@ -841,6 +874,7 @@ mod tests {
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
+				ExperimentalInvoiceTlvStreamRef {},
 			)
 		);
 
