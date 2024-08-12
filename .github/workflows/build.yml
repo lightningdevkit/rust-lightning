@@ -32,11 +32,12 @@ jobs:
         run: |
           rustup target add thumbv7m-none-eabi
           sudo apt-get -y install gcc-arm-none-eabi
-      - name: shellcheck the CI script
+      - name: shellcheck the CI and `contrib` scripts
         if: "matrix.platform == 'ubuntu-latest'"
         run: |
           sudo apt-get -y install shellcheck
           shellcheck ci/*.sh -aP ci
+          shellcheck contrib/*.sh -aP contrib
       - name: Set RUSTFLAGS to deny warnings
         if: "matrix.toolchain == '1.63.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
