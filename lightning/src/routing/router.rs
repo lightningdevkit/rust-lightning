@@ -3541,7 +3541,7 @@ fn build_route_from_hops_internal<L: Deref>(
 
 #[cfg(test)]
 mod tests {
-	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::blinded_path::BlindedHop;
 	use crate::blinded_path::payment::BlindedPaymentPath;
 	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
 	use crate::routing::utxo::UtxoResult;
@@ -7682,22 +7682,6 @@ mod tests {
 
 	#[test]
 	fn blinded_route_ser() {
-		let blinded_path_1 = BlindedPath {
-			introduction_node: IntroductionNode::NodeId(ln_test_utils::pubkey(42)),
-			blinding_point: ln_test_utils::pubkey(43),
-			blinded_hops: vec![
-				BlindedHop { blinded_node_id: ln_test_utils::pubkey(44), encrypted_payload: Vec::new() },
-				BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() }
-			],
-		};
-		let blinded_path_2 = BlindedPath {
-			introduction_node: IntroductionNode::NodeId(ln_test_utils::pubkey(46)),
-			blinding_point: ln_test_utils::pubkey(47),
-			blinded_hops: vec![
-				BlindedHop { blinded_node_id: ln_test_utils::pubkey(48), encrypted_payload: Vec::new() },
-				BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }
-			],
-		};
 		// (De)serialize a Route with 1 blinded path out of two total paths.
 		let mut route = Route { paths: vec![Path {
 			hops: vec![RouteHop {
@@ -7710,8 +7694,11 @@ mod tests {
 				maybe_announced_channel: true,
 			}],
 			blinded_tail: Some(BlindedTail {
-				hops: blinded_path_1.blinded_hops,
-				blinding_point: blinded_path_1.blinding_point,
+				hops: vec![
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(44), encrypted_payload: Vec::new() },
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() }
+				],
+				blinding_point: ln_test_utils::pubkey(43),
 				excess_final_cltv_expiry_delta: 40,
 				final_value_msat: 100,
 			})}, Path {
@@ -7733,8 +7720,11 @@ mod tests {
 
 		// (De)serialize a Route with two paths, each containing a blinded tail.
 		route.paths[1].blinded_tail = Some(BlindedTail {
-			hops: blinded_path_2.blinded_hops,
-			blinding_point: blinded_path_2.blinding_point,
+			hops: vec![
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(48), encrypted_payload: Vec::new() },
+				BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }
+			],
+			blinding_point: ln_test_utils::pubkey(47),
 			excess_final_cltv_expiry_delta: 41,
 			final_value_msat: 101,
 		});
@@ -7749,11 +7739,6 @@ mod tests {
 		// Ensure we'll score the channel that's inbound to a blinded path's introduction node, and
 		// account for the blinded tail's final amount_msat.
 		let mut inflight_htlcs = InFlightHtlcs::new();
-		let blinded_path = BlindedPath {
-			introduction_node: IntroductionNode::NodeId(ln_test_utils::pubkey(43)),
-			blinding_point: ln_test_utils::pubkey(48),
-			blinded_hops: vec![BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }],
-		};
 		let path = Path {
 			hops: vec![RouteHop {
 				pubkey: ln_test_utils::pubkey(42),
@@ -7774,8 +7759,8 @@ mod tests {
 				maybe_announced_channel: false,
 			}],
 			blinded_tail: Some(BlindedTail {
-				hops: blinded_path.blinded_hops,
-				blinding_point: blinded_path.blinding_point,
+				hops: vec![BlindedHop { blinded_node_id: ln_test_utils::pubkey(49), encrypted_payload: Vec::new() }],
+				blinding_point: ln_test_utils::pubkey(48),
 				excess_final_cltv_expiry_delta: 0,
 				final_value_msat: 200,
 			}),
@@ -7788,14 +7773,6 @@ mod tests {
 	#[test]
 	fn blinded_path_cltv_shadow_offset() {
 		// Make sure we add a shadow offset when sending to blinded paths.
-		let blinded_path = BlindedPath {
-			introduction_node: IntroductionNode::NodeId(ln_test_utils::pubkey(43)),
-			blinding_point: ln_test_utils::pubkey(44),
-			blinded_hops: vec![
-				BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() },
-				BlindedHop { blinded_node_id: ln_test_utils::pubkey(46), encrypted_payload: Vec::new() }
-			],
-		};
 		let mut route = Route { paths: vec![Path {
 			hops: vec![RouteHop {
 				pubkey: ln_test_utils::pubkey(42),
@@ -7817,8 +7794,11 @@ mod tests {
 			}
 			],
 			blinded_tail: Some(BlindedTail {
-				hops: blinded_path.blinded_hops,
-				blinding_point: blinded_path.blinding_point,
+				hops: vec![
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(45), encrypted_payload: Vec::new() },
+					BlindedHop { blinded_node_id: ln_test_utils::pubkey(46), encrypted_payload: Vec::new() }
+				],
+				blinding_point: ln_test_utils::pubkey(44),
 				excess_final_cltv_expiry_delta: 0,
 				final_value_msat: 200,
 			}),

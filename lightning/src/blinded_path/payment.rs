@@ -34,7 +34,7 @@ use core::ops::Deref;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-/// A [`BlindedPath`] to be used for sending or receiving a payment, hiding the identity of the
+/// A blinded path to be used for sending or receiving a payment, hiding the identity of the
 /// recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedPaymentPath(pub(super) BlindedPath);

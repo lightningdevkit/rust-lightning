@@ -37,7 +37,7 @@ pub enum NextMessageHop {
 /// Onion messages and payments can be sent and received to blinded paths, which serve to hide the
 /// identity of the recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct BlindedPath {
+struct BlindedPath {
 	/// To send to a blinded path, the sender first finds a route to the unblinded
 	/// `introduction_node`, which can unblind its [`encrypted_payload`] to find out the onion
 	/// message or payment's next hop and forward it along.
@@ -53,7 +53,7 @@ pub struct BlindedPath {
 	pub blinded_hops: Vec<BlindedHop>,
 }
 
-/// The unblinded node in a [`BlindedPath`].
+/// The unblinded node in a blinded path.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum IntroductionNode {
 	/// The node id of the introduction node.
@@ -63,8 +63,8 @@ pub enum IntroductionNode {
 	DirectedShortChannelId(Direction, u64),
 }
 
-/// The side of a channel that is the [`IntroductionNode`] in a [`BlindedPath`]. [BOLT 7] defines
-/// which nodes is which in the [`ChannelAnnouncement`] message.
+/// The side of a channel that is the [`IntroductionNode`] in a blinded path. [BOLT 7] defines which
+/// nodes is which in the [`ChannelAnnouncement`] message.
 ///
 /// [BOLT 7]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
 /// [`ChannelAnnouncement`]: crate::ln::msgs::ChannelAnnouncement
@@ -109,9 +109,9 @@ impl Deref for EmptyNodeIdLookUp {
 /// and thus can be used to hide the identity of the recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedHop {
-	/// The blinded node id of this hop in a [`BlindedPath`].
+	/// The blinded node id of this hop in a blinded path.
 	pub blinded_node_id: PublicKey,
-	/// The encrypted payload intended for this hop in a [`BlindedPath`].
+	/// The encrypted payload intended for this hop in a blinded path.
 	// The node sending to this blinded path will later encode this payload into the onion packet for
 	// this hop.
 	pub encrypted_payload: Vec<u8>,
