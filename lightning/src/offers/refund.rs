@@ -1110,6 +1110,7 @@ mod tests {
 		let invoice = refund
 			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
+			.experimental_baz(42)
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 		match invoice.verify_using_metadata(&expanded_key, &secp_ctx) {
@@ -1178,6 +1179,7 @@ mod tests {
 		let invoice = refund
 			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
+			.experimental_baz(42)
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
