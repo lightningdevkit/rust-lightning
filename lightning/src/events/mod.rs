@@ -1271,6 +1271,7 @@ pub enum Event {
 		///
 		/// This field will be `None` for objects serialized prior to LDK 0.0.117.
 		channel_capacity_sats: Option<u64>,
+
 		/// The original channel funding TXO; this helps checking for the existence and confirmation
 		/// status of the closing tx.
 		/// Note that for instances serialized in v0.0.119 or prior this will be missing (None).
@@ -2049,7 +2050,7 @@ impl MaybeReadable for Event {
 						payment_hash,
 						purpose: _init_tlv_based_struct_field!(purpose, upgradable_required),
 						amount_msat,
-						htlcs: htlcs.unwrap_or(vec![]),
+						htlcs: htlcs.unwrap_or_default(),
 						sender_intended_total_msat,
 						onion_fields,
 					}))

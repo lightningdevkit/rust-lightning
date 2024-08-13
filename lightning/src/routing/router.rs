@@ -1704,7 +1704,7 @@ where L::Target: Logger {
 						.filter(|(p, _)| p.blinded_hops().len() == 1)
 						.any(|(_, iter_info_opt)| iter_info_opt.is_some() && iter_info_opt != info_opt)
 				{
-					return Err(LightningError{err: format!("1-hop blinded paths must all have matching introduction node ids"), action: ErrorAction::IgnoreError});
+					return Err(LightningError{err: "1-hop blinded paths must all have matching introduction node ids".to_string(), action: ErrorAction::IgnoreError});
 				}
 			}
 		}

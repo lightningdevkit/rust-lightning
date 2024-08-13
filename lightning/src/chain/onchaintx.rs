@@ -761,7 +761,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					for outpoint in req.outpoints() {
 						log_info!(logger, "  Outpoint {}", outpoint);
 					}
-					self.locktimed_packages.entry(package_locktime).or_insert(Vec::new()).push(req);
+					self.locktimed_packages.entry(package_locktime).or_default().push(req);
 					continue;
 				}
 

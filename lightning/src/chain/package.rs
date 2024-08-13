@@ -1033,8 +1033,7 @@ impl PackageTemplate {
 
 	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, height_original: u32) -> Self {
 		let (malleability, aggregable) = PackageSolvingData::map_output_type_flags(&input_solving_data);
-		let mut inputs = Vec::with_capacity(1);
-		inputs.push((BitcoinOutPoint { txid, vout }, input_solving_data));
+		let inputs = vec![(BitcoinOutPoint { txid, vout }, input_solving_data)];
 		PackageTemplate {
 			inputs,
 			malleability,

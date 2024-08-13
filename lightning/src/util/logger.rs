@@ -247,7 +247,7 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 		if let Some(item) = iter.next() {
 			write!(f, "{}", item)?;
 		}
-		while let Some(item) = iter.next() {
+		for item in iter {
 			write!(f, ", {}", item)?;
 		}
 		write!(f, "]")?;

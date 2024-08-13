@@ -240,7 +240,7 @@ impl MetadataMaterial {
 		self.hmac.input(DERIVED_METADATA_HMAC_INPUT);
 		self.maybe_include_encrypted_payment_id();
 
-		let mut bytes = self.encrypted_payment_id.map(|id| id.to_vec()).unwrap_or(vec![]);
+		let mut bytes = self.encrypted_payment_id.map(|id| id.to_vec()).unwrap_or_default();
 		bytes.extend_from_slice(self.nonce.as_slice());
 		bytes.extend_from_slice(Hmac::from_engine(self.hmac).as_byte_array());
 		bytes
@@ -256,7 +256,7 @@ impl MetadataMaterial {
 		self.hmac.input(DERIVED_METADATA_AND_KEYS_HMAC_INPUT);
 		self.maybe_include_encrypted_payment_id();
 
-		let bytes = self.encrypted_payment_id.map(|id| id.to_vec()).unwrap_or(vec![]);
+		let bytes = self.encrypted_payment_id.map(|id| id.to_vec()).unwrap_or_default();
 
 		let hmac = Hmac::from_engine(self.hmac);
 		let privkey = SecretKey::from_slice(hmac.as_byte_array()).unwrap();

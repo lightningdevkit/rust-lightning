@@ -512,9 +512,9 @@ impl PendingChecks {
 								if let Some(msg) = full_msg { ChannelAnnouncement::Full(msg.clone()) }
 								else { ChannelAnnouncement::Unsigned(msg.clone()) });
 							pending_checks.nodes.entry(msg.node_id_1)
-								.or_insert(Vec::new()).push(Arc::downgrade(&future.state));
+								.or_default().push(Arc::downgrade(&future.state));
 							pending_checks.nodes.entry(msg.node_id_2)
-								.or_insert(Vec::new()).push(Arc::downgrade(&future.state));
+								.or_default().push(Arc::downgrade(&future.state));
 							Err(LightningError {
 								err: "Channel being checked async".to_owned(),
 								action: ErrorAction::IgnoreAndLog(Level::Gossip),

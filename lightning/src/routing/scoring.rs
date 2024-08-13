@@ -1587,7 +1587,7 @@ mod bucketed_history {
 	}
 
 	impl LegacyHistoricalBucketRangeTracker {
-		pub(crate) fn into_current(&self) -> HistoricalBucketRangeTracker {
+		pub(crate) fn into_current(self) -> HistoricalBucketRangeTracker {
 			let mut buckets = [0; 32];
 			for (idx, legacy_bucket) in self.buckets.iter().enumerate() {
 				let mut new_val = *legacy_bucket;
