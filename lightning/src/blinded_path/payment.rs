@@ -37,7 +37,7 @@ use crate::prelude::*;
 /// A [`BlindedPath`] to be used for sending or receiving a payment, hiding the identity of the
 /// recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct BlindedPaymentPath(pub BlindedPath);
+pub struct BlindedPaymentPath(pub(super) BlindedPath);
 
 impl Writeable for BlindedPaymentPath {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -119,6 +119,22 @@ impl BlindedPaymentPath {
 	/// The [`BlindedHop`]s within the blinded path.
 	pub fn blinded_hops(&self) -> &[BlindedHop] {
 		&self.0.blinded_hops
+	}
+
+	#[cfg(any(test, fuzzing))]
+	pub fn from_raw(
+		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>
+	) -> Self {
+		Self(BlindedPath {
+			introduction_node: IntroductionNode::NodeId(introduction_node_id),
+			blinding_point,
+			blinded_hops,
+		})
+	}
+
+	#[cfg(test)]
+	pub fn clear_blinded_hops(&mut self) {
+		self.0.blinded_hops.clear()
 	}
 }
 

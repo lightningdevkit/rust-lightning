@@ -340,8 +340,8 @@ pub(crate) fn set_max_path_length(
 		.map(|(_, path)| path)
 		.max_by_key(|path| path.serialized_length())
 		.map(|largest_path| BlindedTailHopIter {
-			hops: largest_path.0.blinded_hops.iter(),
-			blinding_point: largest_path.0.blinding_point,
+			hops: largest_path.blinded_hops().iter(),
+			blinding_point: largest_path.blinding_point(),
 			final_value_msat: final_value_msat_with_overpay_buffer,
 			excess_final_cltv_expiry_delta: 0,
 		});

@@ -11,7 +11,7 @@
 //! and/or blinded paths present.
 
 use bitcoin::secp256k1::{Secp256k1, PublicKey};
-use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+use crate::blinded_path::BlindedHop;
 use crate::blinded_path::payment::{BlindedPaymentPath, PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::events::{Event, MessageSendEventsProvider};
 use crate::ln::PaymentSecret;
@@ -182,8 +182,8 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		sender_intended_htlc_amt_msat: MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
 		total_msat: MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
 		cltv_expiry_height: nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
-		encrypted_tlvs: &blinded_path.1.0.blinded_hops[0].encrypted_payload,
-		intro_node_blinding_point: Some(blinded_path.1.0.blinding_point),
+		encrypted_tlvs: &blinded_path.1.blinded_hops()[0].encrypted_payload,
+		intro_node_blinding_point: Some(blinded_path.1.blinding_point()),
 		keysend_preimage: None,
 		custom_tlvs: &Vec::new()
 	}.serialized_length();
@@ -363,10 +363,9 @@ fn bolt12_invoice_too_large_blinded_paths() {
 			htlc_maximum_msat: 42_000_000,
 			features: BlindedHopFeatures::empty(),
 		},
-		BlindedPaymentPath(BlindedPath {
-			introduction_node: IntroductionNode::NodeId(PublicKey::from_slice(&[2; 33]).unwrap()),
-			blinding_point: PublicKey::from_slice(&[2; 33]).unwrap(),
-			blinded_hops: vec![
+		BlindedPaymentPath::from_raw(
+			PublicKey::from_slice(&[2; 33]).unwrap(), PublicKey::from_slice(&[2; 33]).unwrap(),
+			vec![
 				BlindedHop {
 					blinded_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
 					encrypted_payload: vec![42; 1300],
@@ -375,8 +374,8 @@ fn bolt12_invoice_too_large_blinded_paths() {
 					blinded_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
 					encrypted_payload: vec![42; 1300],
 				},
-			],
-		})
+			]
+		)
 	)]);
 
 	let offer = nodes[1].node.create_offer_builder(None).unwrap().build().unwrap();

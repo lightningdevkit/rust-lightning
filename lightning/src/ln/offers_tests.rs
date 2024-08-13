@@ -585,7 +585,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
@@ -666,7 +666,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice);
@@ -731,7 +731,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(alice_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
 
 	route_bolt12_payment(bob, &[alice], &invoice);
@@ -786,7 +786,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(alice_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
 
 	route_bolt12_payment(bob, &[alice], &invoice);
@@ -1110,7 +1110,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(alice_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
 
 	assert!(bob.node.send_payment_for_bolt12_invoice(&invoice, context.as_ref()).is_ok());
@@ -1194,7 +1194,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 
 	route_bolt12_payment(bob, &[alice], &invoice);
@@ -1244,7 +1244,7 @@ fn creates_refund_with_blinded_path_using_unannounced_introduction_node() {
 	assert_ne!(invoice.signing_pubkey(), alice_id);
 	assert!(!invoice.payment_paths().is_empty());
 	for (_, path) in invoice.payment_paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 }
 
