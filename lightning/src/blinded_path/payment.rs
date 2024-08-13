@@ -103,6 +103,23 @@ impl BlindedPaymentPath {
 	) -> Option<&'a NodeId> {
 		self.0.public_introduction_node_id(network_graph)
 	}
+
+	/// The [`IntroductionNode`] of the blinded path.
+	pub fn introduction_node(&self) -> &IntroductionNode {
+		&self.0.introduction_node
+	}
+
+	/// Used by the [`IntroductionNode`] to decrypt its [`encrypted_payload`] to forward the payment.
+	///
+	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
+	pub fn blinding_point(&self) -> PublicKey {
+		self.0.blinding_point
+	}
+
+	/// The [`BlindedHop`]s within the blinded path.
+	pub fn blinded_hops(&self) -> &[BlindedHop] {
+		&self.0.blinded_hops
+	}
 }
 
 /// An intermediate node, its outbound channel, and relay parameters.
