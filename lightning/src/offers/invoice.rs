@@ -363,6 +363,8 @@ macro_rules! invoice_builder_methods { (
 		InvoiceFields {
 			payment_paths, created_at, relative_expiry: None, payment_hash, amount_msats,
 			fallbacks: None, features: Bolt12InvoiceFeatures::empty(), signing_pubkey,
+			#[cfg(test)]
+			experimental_baz: None,
 		}
 	}
 
@@ -666,6 +668,8 @@ struct InvoiceFields {
 	fallbacks: Option<Vec<FallbackAddress>>,
 	features: Bolt12InvoiceFeatures,
 	signing_pubkey: PublicKey,
+	#[cfg(test)]
+	experimental_baz: Option<u64>,
 }
 
 macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
@@ -1256,7 +1260,10 @@ impl InvoiceFields {
 				node_id: Some(&self.signing_pubkey),
 				message_paths: None,
 			},
-			ExperimentalInvoiceTlvStreamRef {},
+			ExperimentalInvoiceTlvStreamRef {
+				#[cfg(test)]
+				experimental_baz: self.experimental_baz,
+			},
 		)
 	}
 }
@@ -1333,10 +1340,18 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef<'a>, INVOICE_TYPES, {
 });
 
 /// Valid type range for experimental invoice TLV records.
-const EXPERIMENTAL_INVOICE_TYPES: core::ops::RangeFrom<u64> = 3_000_000_000..;
+pub(super) const EXPERIMENTAL_INVOICE_TYPES: core::ops::RangeFrom<u64> = 3_000_000_000..;
 
+#[cfg(not(test))]
 tlv_stream!(
 	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, EXPERIMENTAL_INVOICE_TYPES, {}
+);
+
+#[cfg(test)]
+tlv_stream!(
+	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, EXPERIMENTAL_INVOICE_TYPES, {
+		(3_999_999_999, experimental_baz: (u64, HighZeroBytesDroppedBigSize)),
+	}
 );
 
 pub(super) type BlindedPathIter<'a> = core::iter::Map<
@@ -1473,7 +1488,10 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			},
 			experimental_offer_tlv_stream,
 			experimental_invoice_request_tlv_stream,
-			ExperimentalInvoiceTlvStream {},
+			ExperimentalInvoiceTlvStream {
+				#[cfg(test)]
+				experimental_baz,
+			},
 		) = tlv_stream;
 
 		if message_paths.is_some() { return Err(Bolt12SemanticError::UnexpectedPaths) }
@@ -1500,6 +1518,8 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		let fields = InvoiceFields {
 			payment_paths, created_at, relative_expiry, payment_hash, amount_msats, fallbacks,
 			features, signing_pubkey,
+			#[cfg(test)]
+			experimental_baz,
 		};
 
 		check_invoice_signing_pubkey(&fields.signing_pubkey, &offer_tlv_stream)?;
@@ -1570,7 +1590,7 @@ pub(super) fn check_invoice_signing_pubkey(
 
 #[cfg(test)]
 mod tests {
-	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, ExperimentalInvoiceTlvStreamRef, FallbackAddress, FullInvoiceTlvStreamRef, INVOICE_TYPES, InvoiceTlvStreamRef, SIGNATURE_TAG, UnsignedBolt12Invoice};
+	use super::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, EXPERIMENTAL_INVOICE_TYPES, ExperimentalInvoiceTlvStreamRef, FallbackAddress, FullInvoiceTlvStreamRef, INVOICE_TYPES, InvoiceTlvStreamRef, SIGNATURE_TAG, UnsignedBolt12Invoice};
 
 	use bitcoin::{CompressedPublicKey, WitnessProgram, WitnessVersion};
 	use bitcoin::constants::ChainHash;
@@ -1590,7 +1610,7 @@ mod tests {
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice_request::{ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequestTlvStreamRef};
-	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, TaggedHash, self};
+	use crate::offers::merkle::{SignError, SignatureTlvStreamRef, TaggedHash, TlvStream, self};
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{Amount, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity};
 	use crate::prelude::*;
@@ -1766,7 +1786,9 @@ mod tests {
 				ExperimentalInvoiceRequestTlvStreamRef {
 					experimental_bar: None,
 				},
-				ExperimentalInvoiceTlvStreamRef {},
+				ExperimentalInvoiceTlvStreamRef {
+					experimental_baz: None,
+				},
 			),
 		);
 
@@ -1866,7 +1888,9 @@ mod tests {
 				ExperimentalInvoiceRequestTlvStreamRef {
 					experimental_bar: None,
 				},
-				ExperimentalInvoiceTlvStreamRef {},
+				ExperimentalInvoiceTlvStreamRef {
+					experimental_baz: None,
+				},
 			),
 		);
 
@@ -2721,6 +2745,135 @@ mod tests {
 		match Bolt12Invoice::try_from(encoded_invoice) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
+		}
+	}
+
+	#[test]
+	fn parses_invoice_with_experimental_tlv_records() {
+		let secp_ctx = Secp256k1::new();
+		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let invoice = OfferBuilder::new(keys.public_key())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.experimental_baz(42)
+			.build().unwrap()
+			.sign(|message: &UnsignedBolt12Invoice|
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
+			.unwrap();
+
+		let mut encoded_invoice = Vec::new();
+		invoice.write(&mut encoded_invoice).unwrap();
+
+		assert!(Bolt12Invoice::try_from(encoded_invoice).is_ok());
+
+		const UNKNOWN_ODD_TYPE: u64 = EXPERIMENTAL_INVOICE_TYPES.start + 1;
+		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
+
+		let mut unsigned_invoice = OfferBuilder::new(keys.public_key())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.build().unwrap();
+
+		let mut unknown_bytes = Vec::new();
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut unknown_bytes).unwrap();
+		BigSize(32).write(&mut unknown_bytes).unwrap();
+		[42u8; 32].write(&mut unknown_bytes).unwrap();
+
+		unsigned_invoice.bytes.reserve_exact(
+			unsigned_invoice.bytes.capacity() - unsigned_invoice.bytes.len() + unknown_bytes.len(),
+		);
+		unsigned_invoice.experimental_bytes.extend_from_slice(&unknown_bytes);
+
+		let tlv_stream = TlvStream::new(&unsigned_invoice.bytes)
+			.chain(TlvStream::new(&unsigned_invoice.experimental_bytes));
+		unsigned_invoice.tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		let invoice = unsigned_invoice
+			.sign(|message: &UnsignedBolt12Invoice|
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
+			.unwrap();
+
+		let mut encoded_invoice = Vec::new();
+		invoice.write(&mut encoded_invoice).unwrap();
+
+		match Bolt12Invoice::try_from(encoded_invoice.clone()) {
+			Ok(invoice) => assert_eq!(invoice.bytes, encoded_invoice),
+			Err(e) => panic!("error parsing invoice: {:?}", e),
+		}
+
+		const UNKNOWN_EVEN_TYPE: u64 = EXPERIMENTAL_INVOICE_TYPES.start;
+		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
+
+		let mut unsigned_invoice = OfferBuilder::new(keys.public_key())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.build().unwrap();
+
+		let mut unknown_bytes = Vec::new();
+		BigSize(UNKNOWN_EVEN_TYPE).write(&mut unknown_bytes).unwrap();
+		BigSize(32).write(&mut unknown_bytes).unwrap();
+		[42u8; 32].write(&mut unknown_bytes).unwrap();
+
+		unsigned_invoice.bytes.reserve_exact(
+			unsigned_invoice.bytes.capacity() - unsigned_invoice.bytes.len() + unknown_bytes.len(),
+		);
+		unsigned_invoice.experimental_bytes.extend_from_slice(&unknown_bytes);
+
+		let tlv_stream = TlvStream::new(&unsigned_invoice.bytes)
+			.chain(TlvStream::new(&unsigned_invoice.experimental_bytes));
+		unsigned_invoice.tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		let invoice = unsigned_invoice
+			.sign(|message: &UnsignedBolt12Invoice|
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
+			.unwrap();
+
+		let mut encoded_invoice = Vec::new();
+		invoice.write(&mut encoded_invoice).unwrap();
+
+		match Bolt12Invoice::try_from(encoded_invoice) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
+		}
+
+		let invoice = OfferBuilder::new(keys.public_key())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.build().unwrap()
+			.sign(|message: &UnsignedBolt12Invoice|
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			)
+			.unwrap();
+
+		let mut encoded_invoice = Vec::new();
+		invoice.write(&mut encoded_invoice).unwrap();
+
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut encoded_invoice).unwrap();
+		BigSize(32).write(&mut encoded_invoice).unwrap();
+		[42u8; 32].write(&mut encoded_invoice).unwrap();
+
+		match Bolt12Invoice::try_from(encoded_invoice) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSignature(secp256k1::Error::IncorrectSignature)),
 		}
 	}
 
