@@ -580,7 +580,7 @@ fn invalid_blinded_path_error() {
 	let intermediate_nodes = [ForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let mut blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx).unwrap();
-	blinded_path.0.blinded_hops.clear();
+	blinded_path.clear_blinded_hops();
 	let destination = Destination::BlindedPath(blinded_path);
 	let err = nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);

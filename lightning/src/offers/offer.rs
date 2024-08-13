@@ -1177,7 +1177,7 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
-	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::blinded_path::BlindedHop;
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::ln::features::OfferFeatures;
@@ -1361,14 +1361,13 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let blinded_path = BlindedMessagePath(BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		let blinded_path = BlindedMessagePath::from_raw(
+			pubkey(40), pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
-			],
-		});
+			]
+		);
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
@@ -1545,22 +1544,20 @@ mod tests {
 	#[test]
 	fn builds_offer_with_paths() {
 		let paths = vec![
-			BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			}),
-			BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+				]
+			),
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-				],
-			}),
+				]
+			),
 		];
 
 		let offer = OfferBuilder::new(pubkey(42))
@@ -1748,22 +1745,20 @@ mod tests {
 	#[test]
 	fn parses_offer_with_paths() {
 		let offer = OfferBuilder::new(pubkey(42))
-			.path(BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+			.path(BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			}))
-			.path(BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
-					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
-					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-				],
-			}))
+				]
+			))
+			.path(BlindedMessagePath::from_raw(
+					pubkey(40), pubkey(41),
+					vec![
+						BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
+						BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
+					]
+			))
 			.build()
 			.unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
@@ -1771,14 +1766,13 @@ mod tests {
 		}
 
 		let offer = OfferBuilder::new(pubkey(42))
-			.path(BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
-					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
-					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			}))
+			.path(BlindedMessagePath::from_raw(
+					pubkey(40), pubkey(41),
+					vec![
+						BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+						BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+					]
+			))
 			.clear_signing_pubkey()
 			.build()
 			.unwrap();

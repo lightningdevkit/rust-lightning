@@ -1415,7 +1415,7 @@ pub(super) fn check_invoice_signing_pubkey(
 		(None, Some(paths)) => {
 			if !paths
 				.iter()
-				.filter_map(|path| path.0.blinded_hops.last())
+				.filter_map(|path| path.blinded_hops().last())
 				.any(|last_hop| invoice_signing_pubkey == &last_hop.blinded_node_id)
 			{
 				return Err(Bolt12SemanticError::InvalidSigningPubkey);
@@ -1441,7 +1441,7 @@ mod tests {
 
 	use core::time::Duration;
 
-	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::blinded_path::BlindedHop;
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::ln::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
@@ -1791,14 +1791,13 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let blinded_path = BlindedMessagePath(BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		let blinded_path = BlindedMessagePath::from_raw(
+			pubkey(40), pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
-			],
-		});
+			]
+		);
 
 		#[cfg(c_bindings)]
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
@@ -1867,14 +1866,13 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
 
-		let blinded_path = BlindedMessagePath(BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		let blinded_path = BlindedMessagePath::from_raw(
+			pubkey(40), pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
-			],
-		});
+			]
+		);
 
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.path(blinded_path)
@@ -2371,22 +2369,20 @@ mod tests {
 	#[test]
 	fn parses_invoice_with_node_id_from_blinded_path() {
 		let paths = vec![
-			BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			}),
-			BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+				]
+			),
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-				],
-			}),
+				]
+			),
 		];
 
 		let blinded_node_id_sign = |message: &UnsignedBolt12Invoice| {
@@ -2524,14 +2520,13 @@ mod tests {
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
-		let blinded_path = BlindedMessagePath(BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		let blinded_path = BlindedMessagePath::from_raw(
+			pubkey(40), pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
-			],
-		});
+			]
+		);
 
 		let mut tlv_stream = invoice.as_tlv_stream();
 		let message_paths = vec![blinded_path];

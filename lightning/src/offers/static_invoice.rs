@@ -561,7 +561,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 #[cfg(test)]
 mod tests {
 	use crate::blinded_path::message::BlindedMessagePath;
-	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::blinded_path::BlindedHop;
 	use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;
@@ -635,14 +635,14 @@ mod tests {
 	}
 
 	fn blinded_path() -> BlindedMessagePath {
-		BlindedMessagePath(BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		BlindedMessagePath::from_raw(
+			pubkey(40),
+			pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
 			],
-		})
+		)
 	}
 
 	#[test]

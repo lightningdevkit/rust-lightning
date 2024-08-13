@@ -402,7 +402,7 @@ fn creates_short_lived_offer() {
 	for path in offer.paths() {
 		let introduction_node_id = resolve_introduction_node(bob, &path);
 		assert_eq!(introduction_node_id, alice_id);
-		assert!(matches!(path.0.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
+		assert!(matches!(path.introduction_node(), &IntroductionNode::DirectedShortChannelId(..)));
 	}
 }
 
@@ -428,7 +428,7 @@ fn creates_long_lived_offer() {
 	assert_eq!(offer.absolute_expiry(), Some(absolute_expiry));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(alice_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
 
 	let offer = alice.node
@@ -437,7 +437,7 @@ fn creates_long_lived_offer() {
 	assert_eq!(offer.absolute_expiry(), None);
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(alice_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
 }
 
@@ -466,7 +466,7 @@ fn creates_short_lived_refund() {
 	for path in refund.paths() {
 		let introduction_node_id = resolve_introduction_node(alice, &path);
 		assert_eq!(introduction_node_id, bob_id);
-		assert!(matches!(path.0.introduction_node, IntroductionNode::DirectedShortChannelId(..)));
+		assert!(matches!(path.introduction_node(), &IntroductionNode::DirectedShortChannelId(..)));
 	}
 }
 
@@ -493,7 +493,7 @@ fn creates_long_lived_refund() {
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 }
 
@@ -543,7 +543,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 
 	let payment_id = PaymentId([1; 32]);
@@ -572,7 +572,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), david_id);
-	assert_eq!(reply_path.0.introduction_node, IntroductionNode::NodeId(charlie_id));
+	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
@@ -644,7 +644,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	assert_ne!(refund.payer_id(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(charlie_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 	}
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -700,7 +700,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(alice_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
 
 	let payment_id = PaymentId([1; 32]);
@@ -721,7 +721,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), bob_id);
-	assert_eq!(reply_path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
@@ -769,7 +769,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	assert_ne!(refund.payer_id(), bob_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -944,7 +944,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 
 	let payment_id = PaymentId([1; 32]);
@@ -963,7 +963,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
 	let (_, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(reply_path.0.introduction_node, IntroductionNode::NodeId(charlie_id));
+	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	// Send, extract and verify the second Invoice Request message
 	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -973,7 +973,7 @@ fn send_invoice_requests_with_distinct_reply_path() {
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
 	let (_, reply_path) = extract_invoice_request(alice, &onion_message);
-	assert_eq!(reply_path.0.introduction_node, IntroductionNode::NodeId(nodes[6].node.get_our_node_id()));
+	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(nodes[6].node.get_our_node_id()));
 }
 
 /// This test checks that when multiple potential introduction nodes are available for the payee,
@@ -1028,7 +1028,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 		.build().unwrap();
 	assert_ne!(refund.payer_id(), alice_id);
 	for path in refund.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 	expect_recent_payment!(alice, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -1044,7 +1044,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 
 	let (_, reply_path) = extract_invoice(alice, &onion_message);
-	assert_eq!(reply_path.unwrap().0.introduction_node, IntroductionNode::NodeId(charlie_id));
+	assert_eq!(reply_path.unwrap().introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	// Send, extract and verify the second Invoice Request message
 	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1053,7 +1053,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 
 	let (_, reply_path) = extract_invoice(alice, &onion_message);
-	assert_eq!(reply_path.unwrap().0.introduction_node, IntroductionNode::NodeId(nodes[6].node.get_our_node_id()));
+	assert_eq!(reply_path.unwrap().introduction_node(), &IntroductionNode::NodeId(nodes[6].node.get_our_node_id()));
 }
 
 /// Checks that a deferred invoice can be paid asynchronously from an Event::InvoiceReceived.
@@ -1165,7 +1165,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 
 	let payment_id = PaymentId([1; 32]);
@@ -1185,7 +1185,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 		},
 	});
 	assert_ne!(invoice_request.payer_id(), bob_id);
-	assert_eq!(reply_path.0.introduction_node, IntroductionNode::NodeId(alice_id));
+	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&alice_id, &onion_message);
@@ -1231,7 +1231,7 @@ fn creates_refund_with_blinded_path_using_unannounced_introduction_node() {
 	assert_ne!(refund.payer_id(), bob_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(alice_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 	}
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -1295,7 +1295,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 
 	let invalid_path = alice.node
@@ -1304,7 +1304,7 @@ fn fails_authentication_when_handling_invoice_request() {
 		.build().unwrap()
 		.paths().first().unwrap()
 		.clone();
-	assert_eq!(invalid_path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+	assert_eq!(invalid_path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 
 	// Send the invoice request directly to Alice instead of using a blinded path.
 	let payment_id = PaymentId([1; 32]);
@@ -1328,7 +1328,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), david_id);
-	assert_eq!(reply_path.0.introduction_node, IntroductionNode::NodeId(charlie_id));
+	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
 
@@ -1361,7 +1361,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), david_id);
-	assert_eq!(reply_path.0.introduction_node, IntroductionNode::NodeId(charlie_id));
+	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
 }
@@ -1412,7 +1412,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	assert_ne!(offer.signing_pubkey(), Some(alice_id));
 	assert!(!offer.paths().is_empty());
 	for path in offer.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(bob_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
 
 	// Initiate an invoice request, but abandon tracking it.
@@ -1466,7 +1466,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), None);
 	assert_ne!(invoice_request.payer_id(), david_id);
-	assert_eq!(reply_path.0.introduction_node, IntroductionNode::NodeId(charlie_id));
+	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
 	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
@@ -1523,7 +1523,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 	assert_ne!(refund.payer_id(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(charlie_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 	}
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -1560,7 +1560,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 	assert_ne!(refund.payer_id(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
-		assert_eq!(path.0.introduction_node, IntroductionNode::NodeId(charlie_id));
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 	}
 
 	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();

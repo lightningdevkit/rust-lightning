@@ -15,7 +15,7 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use crate::blinded_path::{BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
+use crate::blinded_path::{IntroductionNode, NextMessageHop, NodeIdLookUp};
 use crate::blinded_path::message::{advance_path_by_one, BlindedMessagePath, ForwardNode, ForwardTlvs, MessageContext, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
@@ -697,12 +697,12 @@ impl Destination {
 	/// provided [`ReadOnlyNetworkGraph`].
 	pub fn resolve(&mut self, network_graph: &ReadOnlyNetworkGraph) {
 		if let Destination::BlindedPath(path) = self {
-			if let IntroductionNode::DirectedShortChannelId(..) = path.0.introduction_node {
+			if let IntroductionNode::DirectedShortChannelId(..) = path.introduction_node() {
 				if let Some(pubkey) = path
 					.public_introduction_node_id(network_graph)
 					.and_then(|node_id| node_id.as_pubkey().ok())
 				{
-					path.0.introduction_node = IntroductionNode::NodeId(pubkey);
+					*path.introduction_node_mut() = IntroductionNode::NodeId(pubkey);
 				}
 			}
 		}
@@ -711,15 +711,15 @@ impl Destination {
 	pub(super) fn num_hops(&self) -> usize {
 		match self {
 			Destination::Node(_) => 1,
-			Destination::BlindedPath(BlindedMessagePath(BlindedPath { blinded_hops, .. })) => blinded_hops.len(),
+			Destination::BlindedPath(path) => path.blinded_hops().len(),
 		}
 	}
 
 	fn first_node(&self) -> Option<PublicKey> {
 		match self {
 			Destination::Node(node_id) => Some(*node_id),
-			Destination::BlindedPath(BlindedMessagePath(BlindedPath { introduction_node, .. })) => {
-				match introduction_node {
+			Destination::BlindedPath(path) => {
+				match path.introduction_node() {
 					IntroductionNode::NodeId(pubkey) => Some(*pubkey),
 					IntroductionNode::DirectedShortChannelId(..) => None,
 				}
@@ -877,8 +877,8 @@ where
 	NL::Target: NodeIdLookUp,
 {
 	let OnionMessagePath { intermediate_nodes, mut destination, first_node_addresses } = path;
-	if let Destination::BlindedPath(BlindedMessagePath(BlindedPath { ref blinded_hops, .. })) = destination {
-		if blinded_hops.is_empty() {
+	if let Destination::BlindedPath(ref path) = destination {
+		if path.blinded_hops().is_empty() {
 			return Err(SendError::TooFewBlindedHops);
 		}
 	}
@@ -891,10 +891,10 @@ where
 		if let Destination::BlindedPath(ref mut blinded_path) = destination {
 			let our_node_id = node_signer.get_node_id(Recipient::Node)
 				.map_err(|()| SendError::GetNodeIdFailed)?;
-			let introduction_node_id = match blinded_path.0.introduction_node {
-				IntroductionNode::NodeId(pubkey) => pubkey,
+			let introduction_node_id = match blinded_path.introduction_node() {
+				IntroductionNode::NodeId(pubkey) => *pubkey,
 				IntroductionNode::DirectedShortChannelId(direction, scid) => {
-					match node_id_lookup.next_node_id(scid) {
+					match node_id_lookup.next_node_id(*scid) {
 						Some(next_node_id) => *direction.select_pubkey(&our_node_id, &next_node_id),
 						None => return Err(SendError::UnresolvedIntroductionNode),
 					}
@@ -914,9 +914,9 @@ where
 	} else {
 		match &destination {
 			Destination::Node(pk) => (*pk, PublicKey::from_secret_key(&secp_ctx, &blinding_secret)),
-			Destination::BlindedPath(BlindedMessagePath(BlindedPath { introduction_node, blinding_point, .. })) => {
-				match introduction_node {
-					IntroductionNode::NodeId(pubkey) => (*pubkey, *blinding_point),
+			Destination::BlindedPath(path) => {
+				match path.introduction_node() {
+					IntroductionNode::NodeId(pubkey) => (*pubkey, path.blinding_point()),
 					IntroductionNode::DirectedShortChannelId(..) => {
 						return Err(SendError::UnresolvedIntroductionNode);
 					},
@@ -1793,14 +1793,14 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 
 	let (mut intro_node_id_blinding_pt, num_blinded_hops) = match &destination {
 		Destination::Node(_) => (None, 0),
-		Destination::BlindedPath(BlindedMessagePath(BlindedPath { introduction_node, blinding_point, blinded_hops })) => {
-			let introduction_node_id = match introduction_node {
+		Destination::BlindedPath(path) => {
+			let introduction_node_id = match path.introduction_node() {
 				IntroductionNode::NodeId(pubkey) => pubkey,
 				IntroductionNode::DirectedShortChannelId(..) => {
 					return Err(SendError::UnresolvedIntroductionNode);
 				},
 			};
-			(Some((*introduction_node_id, *blinding_point)), blinded_hops.len())
+			(Some((*introduction_node_id, path.blinding_point())), path.blinded_hops().len())
 		},
 	};
 	let num_unblinded_hops = num_hops - num_blinded_hops;

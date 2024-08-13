@@ -938,7 +938,7 @@ mod tests {
 
 	use core::time::Duration;
 
-	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::blinded_path::BlindedHop;
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::ln::channelmanager::PaymentId;
@@ -1098,14 +1098,13 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let blinded_path = BlindedMessagePath(BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		let blinded_path = BlindedMessagePath::from_raw(
+			pubkey(40), pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
-			],
-		});
+			]
+		);
 
 		let refund = RefundBuilder
 			::deriving_payer_id(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
@@ -1191,22 +1190,20 @@ mod tests {
 	#[test]
 	fn builds_refund_with_paths() {
 		let paths = vec![
-			BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			}),
-			BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+				]
+			),
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-				],
-			}),
+				]
+			),
 		];
 
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
@@ -1408,22 +1405,20 @@ mod tests {
 	fn parses_refund_with_optional_fields() {
 		let past_expiry = Duration::from_secs(0);
 		let paths = vec![
-			BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			}),
-			BlindedMessagePath(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+				]
+			),
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-				],
-			}),
+				]
+			),
 		];
 
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
