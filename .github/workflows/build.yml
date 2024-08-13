@@ -22,7 +22,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install Rust ${{ matrix.toolchain }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ matrix.toolchain }}
@@ -32,14 +32,38 @@ jobs:
         run: |
           rustup target add thumbv7m-none-eabi
           sudo apt-get -y install gcc-arm-none-eabi
-      - name: shellcheck the CI script
+      - name: shellcheck the CI and `contrib` scripts
         if: "matrix.platform == 'ubuntu-latest'"
         run: |
           sudo apt-get -y install shellcheck
-          shellcheck ci/ci-tests.sh
+          shellcheck ci/*.sh -aP ci
+          shellcheck contrib/*.sh -aP contrib
       - name: Set RUSTFLAGS to deny warnings
         if: "matrix.toolchain == '1.63.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
+      - name: Enable caching for bitcoind
+        id: cache-bitcoind
+        uses: actions/cache@v4
+        with:
+          path: bin/bitcoind-${{ runner.os }}-${{ runner.arch }}
+          key: bitcoind-${{ runner.os }}-${{ runner.arch }}
+      - name: Enable caching for electrs
+        id: cache-electrs
+        uses: actions/cache@v4
+        with:
+          path: bin/electrs-${{ runner.os }}-${{ runner.arch }}
+          key: electrs-${{ runner.os }}-${{ runner.arch }}
+      - name: Download bitcoind/electrs
+        if: "matrix.platform != 'windows-latest' && (steps.cache-bitcoind.outputs.cache-hit != 'true' || steps.cache-electrs.outputs.cache-hit != 'true')"
+        run: |
+            source ./contrib/download_bitcoind_electrs.sh
+            mkdir bin
+            mv "$BITCOIND_EXE" bin/bitcoind-${{ runner.os }}-${{ runner.arch }}
+            mv "$ELECTRS_EXE" bin/electrs-${{ runner.os }}-${{ runner.arch }}
+      - name: Set bitcoind/electrs environment variables
+        run: |
+            echo "BITCOIND_EXE=$( pwd )/bin/bitcoind-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
+            echo "ELECTRS_EXE=$( pwd )/bin/electrs-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
       - name: Run CI script
         shell: bash # Default on Winblows is powershell
         run: CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
@@ -50,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Install Rust stable toolchain
@@ -72,14 +96,14 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
           rustup override set ${{ env.TOOLCHAIN }}
       - name: Cache routing graph snapshot
         id: cache-graph
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: lightning/net_graph-2023-12-10.bin
           key: ldk-net_graph-v0.0.118-2023-12-10.bin
@@ -96,7 +120,7 @@ jobs:
           EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM: e94b38ef4b3ce683893bf6a3ee28d60cb37c73b059403ff77b7e7458157968c2
       - name: Cache scorer snapshot
         id: cache-scorer
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: lightning/scorer-2023-12-10.bin
           key: ldk-scorer-v0.0.118-2023-12-10.bin
@@ -142,7 +166,7 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
@@ -165,7 +189,7 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
@@ -194,7 +218,7 @@ jobs:
       TOOLCHAIN: 1.63
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
@@ -217,7 +241,7 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
@@ -235,7 +259,7 @@ jobs:
       TOOLCHAIN: 1.63.0
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
@@ -250,7 +274,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref_name != 'main' # `main` has no diff with itself
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Relative diff

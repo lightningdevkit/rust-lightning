@@ -34,10 +34,7 @@ electrum-client = { version = "0.19.0", optional = true }
 lightning = { version = "0.0.123-beta", path = "../lightning", default-features = false, features = ["std", "_test_utils"] }
 tokio = { version = "1.35.0", features = ["full"] }
 
-[target.'cfg(all(not(target_os = "windows"), not(no_download)))'.dev-dependencies]
-electrsd = { version = "0.27.3", default-features = false, features = ["legacy", "esplora_a33e97e1", "bitcoind_25_0"] }
-
-[target.'cfg(all(not(target_os = "windows"), no_download))'.dev-dependencies]
+[target.'cfg(not(target_os = "windows"))'.dev-dependencies]
 electrsd = { version = "0.27.3", default-features = false, features = ["legacy"] }
 
 [lints]
