@@ -297,7 +297,7 @@ impl ToBase32 for PayeePubKey {
 
 impl Base32Len for PayeePubKey {
 	fn base32_len(&self) -> usize {
-		bytes_size_to_base32_size(secp256k1::constants::PUBLIC_KEY_SIZE)
+		bytes_size_to_base32_size(bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE)
 	}
 }
 

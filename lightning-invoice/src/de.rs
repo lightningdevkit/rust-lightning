@@ -17,8 +17,8 @@ use crate::prelude::*;
 use lightning_types::payment::PaymentSecret;
 use lightning_types::routing::{RoutingFees, RouteHint, RouteHintHop};
 
-use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
-use secp256k1::PublicKey;
+use bitcoin::secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
+use bitcoin::secp256k1::PublicKey;
 
 use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, Bolt11InvoiceSignature, PositiveTimestamp,
 	Bolt11SemanticError, PrivateRoute, Bolt11ParseError, ParseOrSemanticError, Description, RawTaggedField, Currency, RawHrp, SiPrefix, RawBolt11Invoice,
@@ -698,7 +698,7 @@ macro_rules! from_error {
     }
 }
 
-from_error!(Bolt11ParseError::MalformedSignature, secp256k1::Error);
+from_error!(Bolt11ParseError::MalformedSignature, bitcoin::secp256k1::Error);
 from_error!(Bolt11ParseError::ParseAmountError, ParseIntError);
 from_error!(Bolt11ParseError::DescriptionDecodeError, str::Utf8Error);
 
@@ -726,7 +726,7 @@ impl From<crate::Bolt11SemanticError> for ParseOrSemanticError {
 #[cfg(test)]
 mod test {
 	use crate::de::Bolt11ParseError;
-	use secp256k1::PublicKey;
+	use bitcoin::secp256k1::PublicKey;
 	use bech32::u5;
 	use bitcoin::hashes::sha256;
 	use std::str::FromStr;
@@ -973,7 +973,7 @@ mod test {
 	#[test]
 	fn test_payment_secret_and_features_de_and_ser() {
 		use lightning_types::features::Bolt11InvoiceFeatures;
-		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
+		use bitcoin::secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use crate::TaggedField::*;
 		use crate::{SiPrefix, SignedRawBolt11Invoice, Bolt11InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart,
 				 Currency, Sha256, PositiveTimestamp};
@@ -1020,7 +1020,7 @@ mod test {
 	#[test]
 	fn test_raw_signed_invoice_deserialization() {
 		use crate::TaggedField::*;
-		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
+		use bitcoin::secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use crate::{SignedRawBolt11Invoice, Bolt11InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart, Currency, Sha256,
 			 PositiveTimestamp};
 
