@@ -595,7 +595,7 @@ where
 
 			match node_details {
 				Some((features, addresses)) if features.supports_onion_messages() && addresses.len() > 0 => {
-					let first_node_addresses = Some(addresses.clone());
+					let first_node_addresses = Some(addresses.to_vec());
 					Ok(OnionMessagePath {
 						intermediate_nodes: vec![], destination, first_node_addresses
 					})
