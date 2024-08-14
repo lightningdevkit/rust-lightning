@@ -53,7 +53,7 @@ impl Blockchain {
 				input: vec![],
 				output: vec![],
 			};
-			let merkle_root = TxMerkleNode::from_raw_hash(coinbase.txid().to_raw_hash());
+			let merkle_root = TxMerkleNode::from_raw_hash(coinbase.compute_txid().to_raw_hash());
 			self.blocks.push(Block {
 				header: Header {
 					version: Version::NO_SOFT_FORK_SIGNALLING,

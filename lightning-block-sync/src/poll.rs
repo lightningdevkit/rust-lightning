@@ -144,8 +144,8 @@ impl ValidatedBlockHeader {
 			if self.height % 2016 == 0 {
 				let target = self.header.target();
 				let previous_target = previous_header.header.target();
-				let min_target = previous_target.min_difficulty_transition_threshold();
-				let max_target = previous_target.max_difficulty_transition_threshold();
+				let min_target = previous_target.min_transition_threshold();
+				let max_target = previous_target.max_transition_threshold_unchecked();
 				if target > max_target || target < min_target {
 					return Err(BlockSourceError::persistent("invalid difficulty transition"));
 				}
