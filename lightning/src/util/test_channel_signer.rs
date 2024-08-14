@@ -352,6 +352,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 }
 
 #[cfg(taproot)]
+#[allow(unused)]
 impl TaprootChannelSigner for TestChannelSigner {
 	fn generate_local_nonce_pair(&self, commitment_number: u64, secp_ctx: &Secp256k1<All>) -> PublicNonce {
 		todo!()
