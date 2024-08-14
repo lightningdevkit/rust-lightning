@@ -1019,8 +1019,8 @@ impl InvoiceContents {
 
 	fn payer_signing_pubkey(&self) -> PublicKey {
 		match self {
-			InvoiceContents::ForRefund { refund, .. } => refund.payer_id(),
 			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.payer_signing_pubkey(),
+			InvoiceContents::ForRefund { refund, .. } => refund.payer_signing_pubkey(),
 		}
 	}
 

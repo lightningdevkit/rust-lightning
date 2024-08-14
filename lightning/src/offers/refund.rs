@@ -150,8 +150,8 @@ pub struct RefundMaybeWithDerivedMetadataBuilder<'a> {
 }
 
 macro_rules! refund_explicit_metadata_builder_methods { () => {
-	/// Creates a new builder for a refund using the [`Refund::payer_id`] for the public node id to
-	/// send to if no [`Refund::paths`] are set. Otherwise, it may be a transient pubkey.
+	/// Creates a new builder for a refund using the `signing_pubkey` for the public node id to send
+	/// to if no [`Refund::paths`] are set. Otherwise, `signing_pubkey` may be a transient pubkey.
 	///
 	/// Additionally, sets the required (empty) [`Refund::description`], [`Refund::payer_metadata`],
 	/// and [`Refund::amount_msats`].
@@ -164,7 +164,7 @@ macro_rules! refund_explicit_metadata_builder_methods { () => {
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::create_refund_builder`]: crate::ln::channelmanager::ChannelManager::create_refund_builder
 	pub fn new(
-		metadata: Vec<u8>, payer_id: PublicKey, amount_msats: u64
+		metadata: Vec<u8>, signing_pubkey: PublicKey, amount_msats: u64
 	) -> Result<Self, Bolt12SemanticError> {
 		if amount_msats > MAX_VALUE_MSAT {
 			return Err(Bolt12SemanticError::InvalidAmount);
@@ -175,7 +175,7 @@ macro_rules! refund_explicit_metadata_builder_methods { () => {
 			refund: RefundContents {
 				payer: PayerContents(metadata), description: String::new(), absolute_expiry: None,
 				issuer: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
-				quantity: None, payer_id, payer_note: None, paths: None,
+				quantity: None, payer_signing_pubkey: signing_pubkey, payer_note: None, paths: None,
 			},
 			secp_ctx: None,
 		})
@@ -202,7 +202,7 @@ macro_rules! refund_builder_methods { (
 	/// [`Bolt12Invoice::verify_using_metadata`]: crate::offers::invoice::Bolt12Invoice::verify_using_metadata
 	/// [`Bolt12Invoice::verify_using_payer_data`]: crate::offers::invoice::Bolt12Invoice::verify_using_payer_data
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-	pub fn deriving_payer_id(
+	pub fn deriving_signing_pubkey(
 		node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'a Secp256k1<$secp_context>, amount_msats: u64, payment_id: PaymentId
 	) -> Result<Self, Bolt12SemanticError> {
@@ -217,7 +217,7 @@ macro_rules! refund_builder_methods { (
 			refund: RefundContents {
 				payer: PayerContents(metadata), description: String::new(), absolute_expiry: None,
 				issuer: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
-				quantity: None, payer_id: node_id, payer_note: None, paths: None,
+				quantity: None, payer_signing_pubkey: node_id, payer_note: None, paths: None,
 			},
 			secp_ctx: Some(secp_ctx),
 		})
@@ -249,7 +249,7 @@ macro_rules! refund_builder_methods { (
 	}
 
 	/// Adds a blinded path to [`Refund::paths`]. Must include at least one path if only connected
-	/// by private channels or if [`Refund::payer_id`] is not a public node id.
+	/// by private channels or if [`Refund::payer_signing_pubkey`] is not a public node id.
 	///
 	/// Successive calls to this method will add another blinded path. Caller is responsible for not
 	/// adding duplicate paths.
@@ -324,7 +324,7 @@ macro_rules! refund_builder_methods { (
 				metadata.derive_from(iv_bytes, tlv_stream, $self.secp_ctx);
 			metadata = derived_metadata;
 			if let Some(keys) = keys {
-				$self.refund.payer_id = keys.public_key();
+				$self.refund.payer_signing_pubkey = keys.public_key();
 			}
 
 			$self.refund.payer.0 = metadata;
@@ -434,7 +434,7 @@ pub(super) struct RefundContents {
 	amount_msats: u64,
 	features: InvoiceRequestFeatures,
 	quantity: Option<u64>,
-	payer_id: PublicKey,
+	payer_signing_pubkey: PublicKey,
 	payer_note: Option<String>,
 	paths: Option<Vec<BlindedMessagePath>>,
 }
@@ -477,9 +477,9 @@ impl Refund {
 	}
 
 	/// An unpredictable series of bytes, typically containing information about the derivation of
-	/// [`payer_id`].
+	/// [`payer_signing_pubkey`].
 	///
-	/// [`payer_id`]: Self::payer_id
+	/// [`payer_signing_pubkey`]: Self::payer_signing_pubkey
 	pub fn payer_metadata(&self) -> &[u8] {
 		self.contents.metadata()
 	}
@@ -510,8 +510,8 @@ impl Refund {
 	/// transient pubkey.
 	///
 	/// [`paths`]: Self::paths
-	pub fn payer_id(&self) -> PublicKey {
-		self.contents.payer_id()
+	pub fn payer_signing_pubkey(&self) -> PublicKey {
+		self.contents.payer_signing_pubkey()
 	}
 
 	/// Payer provided note to include in the invoice.
@@ -727,8 +727,8 @@ impl RefundContents {
 	/// transient pubkey.
 	///
 	/// [`paths`]: Self::paths
-	pub fn payer_id(&self) -> PublicKey {
-		self.payer_id
+	pub fn payer_signing_pubkey(&self) -> PublicKey {
+		self.payer_signing_pubkey
 	}
 
 	/// Payer provided note to include in the invoice.
@@ -765,7 +765,7 @@ impl RefundContents {
 			amount: Some(self.amount_msats),
 			features,
 			quantity: self.quantity,
-			payer_id: Some(&self.payer_id),
+			payer_id: Some(&self.payer_signing_pubkey),
 			payer_note: self.payer_note.as_ref(),
 			paths: self.paths.as_ref(),
 		};
@@ -901,14 +901,14 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 
 		let features = features.unwrap_or_else(InvoiceRequestFeatures::empty);
 
-		let payer_id = match payer_id {
+		let payer_signing_pubkey = match payer_id {
 			None => return Err(Bolt12SemanticError::MissingPayerSigningPubkey),
 			Some(payer_id) => payer_id,
 		};
 
 		Ok(RefundContents {
 			payer, description, absolute_expiry, issuer, chain, amount_msats, features, quantity,
-			payer_id, payer_note, paths,
+			payer_signing_pubkey, payer_note, paths,
 		})
 	}
 }
@@ -985,7 +985,7 @@ mod tests {
 		assert_eq!(refund.chain(), ChainHash::using_genesis_block(Network::Bitcoin));
 		assert_eq!(refund.amount_msats(), 1000);
 		assert_eq!(refund.features(), &InvoiceRequestFeatures::empty());
-		assert_eq!(refund.payer_id(), payer_pubkey());
+		assert_eq!(refund.payer_signing_pubkey(), payer_pubkey());
 		assert_eq!(refund.payer_note(), None);
 
 		assert_eq!(
@@ -1040,10 +1040,10 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 
 		let refund = RefundBuilder
-			::deriving_payer_id(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
+			::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
 			.unwrap()
 			.build().unwrap();
-		assert_eq!(refund.payer_id(), node_id);
+		assert_eq!(refund.payer_signing_pubkey(), node_id);
 
 		// Fails verification with altered fields
 		let invoice = refund
@@ -1089,7 +1089,7 @@ mod tests {
 	}
 
 	#[test]
-	fn builds_refund_with_derived_payer_id() {
+	fn builds_refund_with_derived_signing_pubkey() {
 		let node_id = payer_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
@@ -1106,11 +1106,11 @@ mod tests {
 		);
 
 		let refund = RefundBuilder
-			::deriving_payer_id(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
+			::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
 			.unwrap()
 			.path(blinded_path)
 			.build().unwrap();
-		assert_ne!(refund.payer_id(), node_id);
+		assert_ne!(refund.payer_signing_pubkey(), node_id);
 
 		let invoice = refund
 			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
@@ -1211,7 +1211,7 @@ mod tests {
 			.build()
 			.unwrap();
 		let (_, _, invoice_request_tlv_stream) = refund.as_tlv_stream();
-		assert_eq!(refund.payer_id(), pubkey(42));
+		assert_eq!(refund.payer_signing_pubkey(), pubkey(42));
 		assert_eq!(refund.paths(), paths.as_slice());
 		assert_ne!(pubkey(42), pubkey(44));
 		assert_eq!(invoice_request_tlv_stream.payer_id, Some(&pubkey(42)));

@@ -1054,9 +1054,10 @@ impl Readable for InvoiceRequest {
 /// Valid type range for invoice_request TLV records.
 pub(super) const INVOICE_REQUEST_TYPES: core::ops::Range<u64> = 80..160;
 
-/// TLV record type for [`InvoiceRequest::payer_signing_pubkey`] and [`Refund::payer_id`].
+/// TLV record type for [`InvoiceRequest::payer_signing_pubkey`] and
+/// [`Refund::payer_signing_pubkey`].
 ///
-/// [`Refund::payer_id`]: crate::offers::refund::Refund::payer_id
+/// [`Refund::payer_signing_pubkey`]: crate::offers::refund::Refund::payer_signing_pubkey
 pub(super) const INVOICE_REQUEST_PAYER_ID_TYPE: u64 = 88;
 
 // This TLV stream is used for both InvoiceRequest and Refund, but not all TLV records are valid for

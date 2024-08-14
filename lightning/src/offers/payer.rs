@@ -16,9 +16,10 @@ use crate::util::ser::WithoutLength;
 use crate::prelude::*;
 
 /// An unpredictable sequence of bytes typically containing information needed to derive
-/// [`InvoiceRequest::payer_signing_pubkey`].
+/// [`InvoiceRequest::payer_signing_pubkey`] and [`Refund::payer_signing_pubkey`].
 ///
 /// [`InvoiceRequest::payer_signing_pubkey`]: crate::offers::invoice_request::InvoiceRequest::payer_signing_pubkey
+/// [`Refund::payer_signing_pubkey`]: crate::offers::refund::Refund::payer_signing_pubkey
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct PayerContents(pub Metadata);

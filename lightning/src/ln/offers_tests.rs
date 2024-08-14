@@ -651,7 +651,7 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 		.build().unwrap();
 	assert_eq!(refund.amount_msats(), 10_000_000);
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
-	assert_ne!(refund.payer_id(), david_id);
+	assert_ne!(refund.payer_signing_pubkey(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
@@ -779,7 +779,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 		.build().unwrap();
 	assert_eq!(refund.amount_msats(), 10_000_000);
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
-	assert_ne!(refund.payer_id(), bob_id);
+	assert_ne!(refund.payer_signing_pubkey(), bob_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
@@ -886,7 +886,7 @@ fn pays_for_refund_without_blinded_paths() {
 		.unwrap()
 		.clear_paths()
 		.build().unwrap();
-	assert_eq!(refund.payer_id(), bob_id);
+	assert_eq!(refund.payer_signing_pubkey(), bob_id);
 	assert!(refund.paths().is_empty());
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
@@ -1040,7 +1040,7 @@ fn send_invoice_for_refund_with_distinct_reply_path() {
 		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
-	assert_ne!(refund.payer_id(), alice_id);
+	assert_ne!(refund.payer_signing_pubkey(), alice_id);
 	for path in refund.paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	}
@@ -1315,7 +1315,7 @@ fn creates_refund_with_blinded_path_using_unannounced_introduction_node() {
 		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
-	assert_ne!(refund.payer_id(), bob_id);
+	assert_ne!(refund.payer_signing_pubkey(), bob_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
@@ -1598,7 +1598,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
-	assert_ne!(refund.payer_id(), david_id);
+	assert_ne!(refund.payer_signing_pubkey(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
@@ -1632,7 +1632,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
 		.unwrap()
 		.build().unwrap();
-	assert_ne!(refund.payer_id(), david_id);
+	assert_ne!(refund.payer_signing_pubkey(), david_id);
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
 		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(charlie_id));

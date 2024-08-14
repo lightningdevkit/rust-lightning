@@ -9115,7 +9115,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		let builder = RefundBuilder::deriving_payer_id(
+		let builder = RefundBuilder::deriving_signing_pubkey(
 			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
 		)?
 			.chain_hash($self.chain_hash)
@@ -9315,9 +9315,9 @@ where
 	/// # Limitations
 	///
 	/// Requires a direct connection to an introduction node in [`Refund::paths`] or to
-	/// [`Refund::payer_id`], if empty. This request is best effort; an invoice will be sent to each
-	/// node meeting the aforementioned criteria, but there's no guarantee that they will be
-	/// received and no retries will be made.
+	/// [`Refund::payer_signing_pubkey`], if empty. This request is best effort; an invoice will be
+	/// sent to each node meeting the aforementioned criteria, but there's no guarantee that they
+	/// will be received and no retries will be made.
 	///
 	/// # Errors
 	///
@@ -9378,7 +9378,7 @@ where
 				if refund.paths().is_empty() {
 					for reply_path in reply_paths {
 						let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-							destination: Destination::Node(refund.payer_id()),
+							destination: Destination::Node(refund.payer_signing_pubkey()),
 							reply_path,
 						};
 						let message = OffersMessage::Invoice(invoice.clone());
