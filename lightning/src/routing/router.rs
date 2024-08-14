@@ -22,7 +22,7 @@ use crate::ln::msgs::{DecodeError, ErrorAction, LightningError, MAX_VALUE_MSAT};
 use crate::ln::onion_utils;
 use crate::offers::invoice::{BlindedPayInfo, Bolt12Invoice};
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
-use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId, RoutingFees};
+use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId};
 use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
 use crate::sign::EntropySource;
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
@@ -34,6 +34,10 @@ use crate::prelude::*;
 use alloc::collections::BinaryHeap;
 use core::{cmp, fmt};
 use core::ops::Deref;
+
+use lightning_types::routing::RoutingFees;
+
+pub use lightning_types::routing::{RouteHint, RouteHintHop};
 
 /// A [`Router`] implemented using [`find_route`].
 ///
@@ -1099,10 +1103,6 @@ impl ReadableArgs<bool> for Features {
 	}
 }
 
-/// A list of hops along a payment path terminating with a channel to the recipient.
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct RouteHint(pub Vec<RouteHintHop>);
-
 impl Writeable for RouteHint {
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		(self.0.len() as u64).write(writer)?;
@@ -1122,27 +1122,6 @@ impl Readable for RouteHint {
 		}
 		Ok(Self(hops))
 	}
-}
-
-/// A channel descriptor for a hop along a payment path.
-///
-/// While this generally comes from BOLT 11's `r` field, this struct includes more fields than are
-/// available in BOLT 11. Thus, encoding and decoding this via `lightning-invoice` is lossy, as
-/// fields not supported in BOLT 11 will be stripped.
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub struct RouteHintHop {
-	/// The node_id of the non-target end of the route
-	pub src_node_id: PublicKey,
-	/// The short_channel_id of this channel
-	pub short_channel_id: u64,
-	/// The fees which must be paid to use this channel
-	pub fees: RoutingFees,
-	/// The difference in CLTV values between this node and the next node.
-	pub cltv_expiry_delta: u16,
-	/// The minimum value, in msat, which must be relayed to the next hop.
-	pub htlc_minimum_msat: Option<u64>,
-	/// The maximum value in msat available for routing with a single HTLC.
-	pub htlc_maximum_msat: Option<u64>,
 }
 
 impl_writeable_tlv_based!(RouteHintHop, {

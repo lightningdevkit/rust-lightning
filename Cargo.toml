@@ -3,6 +3,7 @@ resolver = "2"
 
 members = [
     "lightning",
+    "lightning-types",
     "lightning-block-sync",
     "lightning-invoice",
     "lightning-net-tokio",

@@ -14,9 +14,8 @@ use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256;
 use crate::prelude::*;
-use lightning::ln::types::PaymentSecret;
-use lightning::routing::gossip::RoutingFees;
-use lightning::routing::router::{RouteHint, RouteHintHop};
+use lightning_types::payment::PaymentSecret;
+use lightning_types::routing::{RoutingFees, RouteHint, RouteHintHop};
 
 use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 use secp256k1::PublicKey;
@@ -918,8 +917,7 @@ mod test {
 
 	#[test]
 	fn test_parse_route() {
-		use lightning::routing::gossip::RoutingFees;
-		use lightning::routing::router::{RouteHint, RouteHintHop};
+		use lightning_types::routing::{RoutingFees, RouteHint, RouteHintHop};
 		use crate::PrivateRoute;
 		use bech32::FromBase32;
 
@@ -974,7 +972,7 @@ mod test {
 
 	#[test]
 	fn test_payment_secret_and_features_de_and_ser() {
-		use lightning::ln::features::Bolt11InvoiceFeatures;
+		use lightning_types::features::Bolt11InvoiceFeatures;
 		use secp256k1::ecdsa::{RecoveryId, RecoverableSignature};
 		use crate::TaggedField::*;
 		use crate::{SiPrefix, SignedRawBolt11Invoice, Bolt11InvoiceSignature, RawBolt11Invoice, RawHrp, RawDataPart,

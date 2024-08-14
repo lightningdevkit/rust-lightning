@@ -93,7 +93,7 @@ pub(crate) fn verify_channel_type_features(channel_type_features: &Option<Channe
 			supported_feature_set |= additional_permitted_features;
 		}
 
-		if !features.is_subset(&supported_feature_set) {
+		if features.requires_unknown_bits_from(&supported_feature_set) {
 			return Err(DecodeError::UnknownRequiredFeature);
 		}
 	}

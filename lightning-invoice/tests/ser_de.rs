@@ -1,5 +1,4 @@
 extern crate bech32;
-extern crate lightning;
 extern crate lightning_invoice;
 extern crate secp256k1;
 

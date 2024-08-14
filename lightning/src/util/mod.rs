@@ -18,10 +18,8 @@ pub mod ser_macros;
 pub mod errors;
 pub mod ser;
 pub mod message_signing;
-pub mod invoice;
 pub mod persist;
 pub mod scid_utils;
-pub mod string;
 pub mod sweep;
 pub mod wakers;
 #[cfg(fuzzing)]
@@ -54,3 +52,7 @@ pub mod test_utils;
 #[cfg(any(test, feature = "_test_utils"))]
 pub mod test_channel_signer;
 
+pub mod string {
+	//! Utilities to wrap untrusted strings and handle them (more) safely
+	pub use lightning_types::string::{PrintableString, UntrustedString};
+}
