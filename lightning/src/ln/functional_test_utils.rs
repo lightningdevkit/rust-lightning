@@ -2520,7 +2520,7 @@ pub fn expect_payment_failed_conditions_event<'a, 'b, 'c, 'd, 'e>(
 	if !conditions.expected_mpp_parts_remain {
 		match &payment_failed_events[1] {
 			Event::PaymentFailed { ref payment_hash, ref payment_id, ref reason } => {
-				assert_eq!(*payment_hash, expected_payment_hash, "unexpected second payment_hash");
+				assert_eq!(*payment_hash, Some(expected_payment_hash), "unexpected second payment_hash");
 				assert_eq!(*payment_id, expected_payment_id);
 				assert_eq!(reason.unwrap(), if expected_payment_failed_permanently {
 					PaymentFailureReason::RecipientRejected
@@ -3162,7 +3162,7 @@ pub fn pass_failed_payment_back<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expe
 			if i == expected_paths.len() - 1 {
 				match events[1] {
 					Event::PaymentFailed { ref payment_hash, ref payment_id, ref reason } => {
-						assert_eq!(*payment_hash, our_payment_hash, "unexpected second payment_hash");
+						assert_eq!(*payment_hash, Some(our_payment_hash), "unexpected second payment_hash");
 						assert_eq!(*payment_id, expected_payment_id);
 						assert_eq!(reason.unwrap(), expected_fail_reason);
 					}

@@ -41,20 +41,24 @@
 //! blinded paths are used.
 
 use bitcoin::network::Network;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::secp256k1::{PublicKey, Secp256k1};
 use core::time::Duration;
 use crate::blinded_path::{BlindedPath, IntroductionNode};
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
-use crate::events::{Event, MessageSendEventsProvider, PaymentPurpose};
+use crate::blinded_path::message::{MessageContext, OffersContext};
+use crate::events::{Event, MessageSendEventsProvider, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
+use crate::ln::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
+use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
+use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
-use crate::onion_message::messenger::{Destination, PeeledOnion};
+use crate::onion_message::messenger::{Destination, PeeledOnion, new_pending_onion_message};
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
 use crate::routing::gossip::{NodeAlias, NodeId};
@@ -182,6 +186,15 @@ fn claim_bolt12_payment<'a, 'b, 'c>(
 		_ => panic!("Unexpected payment purpose: {:?}", payment_purpose),
 	}
 	claim_payment(node, path, payment_preimage);
+}
+
+fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> Nonce {
+	match node.onion_messenger.peel_onion_message(message) {
+		Ok(PeeledOnion::Receive(_, Some(MessageContext::Offers(OffersContext::InvoiceRequest { nonce })), _)) => nonce,
+		Ok(PeeledOnion::Receive(_, context, _)) => panic!("Unexpected onion message context: {:?}", context),
+		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Err(e) => panic!("Failed to process onion message {:?}", e),
+	}
 }
 
 fn extract_invoice_request<'a, 'b, 'c>(
@@ -1319,7 +1332,7 @@ fn fails_authentication_when_handling_invoice_request() {
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
 
 	david.node.abandon_payment(payment_id);
-	get_event!(david, Event::InvoiceRequestFailed);
+	get_event!(david, Event::PaymentFailed);
 
 	// Send the invoice request to Alice using an invalid blinded path.
 	let payment_id = PaymentId([2; 32]);
@@ -1406,7 +1419,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
 		.unwrap();
 	david.node.abandon_payment(payment_id);
-	get_event!(david, Event::InvoiceRequestFailed);
+	get_event!(david, Event::PaymentFailed);
 
 	// Don't send the invoice request, but grab its reply path to use with a different request.
 	let invalid_reply_path = {
@@ -1534,7 +1547,7 @@ fn fails_authentication_when_handling_invoice_for_refund() {
 
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 	david.node.abandon_payment(payment_id);
-	get_event!(david, Event::InvoiceRequestFailed);
+	get_event!(david, Event::PaymentFailed);
 
 	// Send the invoice to David using an invalid blinded path.
 	let invalid_path = refund.paths().first().unwrap().clone();
@@ -1918,11 +1931,12 @@ fn fails_sending_invoice_without_blinded_payment_paths_for_offer() {
 	assert_eq!(invoice_error, InvoiceError::from(Bolt12SemanticError::MissingPaths));
 
 	// Confirm that david drops this failed payment from his pending outbound payments.
-	match get_event!(david, Event::InvoiceRequestFailed) {
-		Event::InvoiceRequestFailed { payment_id: pay_id } => {
-			assert_eq!(pay_id, payment_id)
+	match get_event!(david, Event::PaymentFailed) {
+		Event::PaymentFailed { payment_id: actual_payment_id, reason, .. } => {
+			assert_eq!(payment_id, actual_payment_id);
+			assert_eq!(reason, Some(PaymentFailureReason::InvoiceRequestRejected));
 		},
-		_ => panic!("No Event::InvoiceRequestFailed"),
+		_ => panic!("No Event::PaymentFailed"),
 	}
 }
 
@@ -2027,15 +2041,12 @@ fn fails_paying_invoice_more_than_once() {
 	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
 	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
 
-	// David pays the first invoice
+	// David initiates paying the first invoice
 	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {});
 	let (invoice1, _) = extract_invoice(david, &onion_message);
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice1);
 	expect_recent_payment!(david, RecentPaymentDetails::Pending, payment_id);
-
-	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context);
-	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
 
 	disconnect_peers(alice, &[charlie]);
 
@@ -2054,13 +2065,117 @@ fn fails_paying_invoice_more_than_once() {
 	let (invoice2, _) = extract_invoice(david, &onion_message);
 	assert_eq!(invoice1.payer_metadata(), invoice2.payer_metadata());
 
-	// David sends an error instead of paying the second invoice
+	// David doesn't initiate paying the second invoice
+	assert!(david.onion_messenger.next_onion_message_for_peer(bob_id).is_none());
+	assert!(david.node.get_and_clear_pending_msg_events().is_empty());
+
+	// Complete paying the first invoice
+	claim_bolt12_payment(david, &[charlie, bob, alice], payment_context);
+	expect_recent_payment!(david, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+#[test]
+fn fails_paying_invoice_with_unknown_required_features() {
+	let mut accept_forward_cfg = test_default_channel_config();
+	accept_forward_cfg.accept_forwards_to_priv_channels = true;
+
+	// Clearing route_blinding prevents forming any payment paths since the node is unannounced.
+	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
+	features.set_onion_messages_optional();
+	features.set_route_blinding_optional();
+
+	let chanmon_cfgs = create_chanmon_cfgs(6);
+	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
+
+	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
+
+	let node_chanmgrs = create_node_chanmgrs(
+		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
+	);
+	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
+
+	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
+	let alice_id = alice.node.get_our_node_id();
+	let bob_id = bob.node.get_our_node_id();
+	let charlie_id = charlie.node.get_our_node_id();
+	let david_id = david.node.get_our_node_id();
+
+	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
+	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
+
+	let offer = alice.node
+		.create_offer_builder(None).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+	david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None)
+		.unwrap();
+
+	connect_peers(david, bob);
+
 	let onion_message = david.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(&david_id, &onion_message);
+
+	connect_peers(alice, charlie);
 
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 	alice.onion_messenger.handle_onion_message(&bob_id, &onion_message);
 
-	let invoice_error = extract_invoice_error(alice, &onion_message);
-	assert_eq!(invoice_error, InvoiceError::from_string("DuplicateInvoice".to_string()));
+	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
+	let nonce = extract_offer_nonce(alice, &onion_message);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
+	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	// Drop the invoice in favor for one with unknown required features.
+	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	let (invoice, _) = extract_invoice(david, &onion_message);
+
+	let payment_paths = invoice.payment_paths().to_vec();
+	let payment_hash = invoice.payment_hash();
+
+	let expanded_key = ExpandedKey::new(&alice.keys_manager.get_inbound_payment_key_material());
+	let secp_ctx = Secp256k1::new();
+
+	let created_at = alice.node.duration_since_epoch();
+	let invoice = invoice_request
+		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap()
+		.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at).unwrap()
+		.features_unchecked(Bolt12InvoiceFeatures::unknown())
+		.build_and_sign(&secp_ctx).unwrap();
+
+	// Enqueue an onion message containing the new invoice.
+	let pending_message = new_pending_onion_message(
+		OffersMessage::Invoice(invoice), Destination::BlindedPath(reply_path), None
+	);
+	alice.node.pending_offers_messages.lock().unwrap().push(pending_message);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
+	charlie.onion_messenger.handle_onion_message(&alice_id, &onion_message);
+
+	let onion_message = charlie.onion_messenger.next_onion_message_for_peer(david_id).unwrap();
+	david.onion_messenger.handle_onion_message(&charlie_id, &onion_message);
+
+	// Confirm that david drops this failed payment from his pending outbound payments.
+	match get_event!(david, Event::PaymentFailed) {
+		Event::PaymentFailed {
+			payment_id: event_payment_id,
+			payment_hash: Some(event_payment_hash),
+			reason: Some(event_reason),
+		} => {
+			assert_eq!(event_payment_id, payment_id);
+			assert_eq!(event_payment_hash, payment_hash);
+			assert_eq!(event_reason, PaymentFailureReason::UnknownRequiredFeatures);
+		},
+		_ => panic!("Expected Event::PaymentFailed with reason"),
+	}
 }

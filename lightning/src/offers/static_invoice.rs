@@ -156,7 +156,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 		Ok(invoice)
 	}
 
-	invoice_builder_methods_common!(self, Self, self.invoice, Self, self, S, StaticInvoice, mut);
+	invoice_builder_methods_common!(self, Self, self.invoice, Self, self, StaticInvoice, mut);
 }
 
 /// A semantically valid [`StaticInvoice`] that hasn't been signed.

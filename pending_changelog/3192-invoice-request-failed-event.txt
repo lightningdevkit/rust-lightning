@@ -1,0 +1,18 @@
+## API Updates
+ * `Event::PaymentFailed` now uses an `Option` for its payment hash, which will
+   be `None` if the invoice hasn't been received yet for a BOLT12 payment
+   (#3192).
+ * `Event::PaymentFailed` is now generated instead `Event::InvoiceRequestFailed`,
+   which has been removed. When deserialized the latter will be converted to the
+   former with `None` for the payment hash (#3192).
+
+## Backwards Compatibility
+ * Any `Event::PaymentFailed` generated without a payment hash will deserialize
+   with `PaymentHash([0; 32])` when downgrading. This can be treated like an
+   `Event::InvoiceRequestFailed` (#3192).
+ * An `Event::PaymentFailed` generated with one of the following
+   `PaymentFailureReason`s will deserialize with the corresponding reason after
+   downgrading to a version prior to 0.0.124:
+   - `UnknownRequiredFeatures` to `RecipientRejected`,
+   - `InvoiceRequestExpired` to `RetriesExhausted`, and
+   - `InvoiceRequestRejected` to `RecipientRejected` (#3192).

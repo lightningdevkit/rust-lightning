@@ -502,6 +502,12 @@ impl_writeable_tlv_based_enum!(InterceptNextHop,
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaymentFailureReason {
 	/// The intended recipient rejected our payment.
+	///
+	/// Also used for [`UnknownRequiredFeatures`] and [`InvoiceRequestRejected`] when downgrading to
+	/// version prior to 0.0.124.
+	///
+	/// [`UnknownRequiredFeatures`]: Self::UnknownRequiredFeatures
+	/// [`InvoiceRequestRejected`]: Self::InvoiceRequestRejected
 	RecipientRejected,
 	/// The user chose to abandon this payment by calling [`ChannelManager::abandon_payment`].
 	///
@@ -517,7 +523,10 @@ pub enum PaymentFailureReason {
 	/// The payment expired while retrying, based on the provided
 	/// [`PaymentParameters::expiry_time`].
 	///
+	/// Also used for [`InvoiceRequestExpired`] when downgrading to version prior to 0.0.124.
+	///
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
+	/// [`InvoiceRequestExpired`]: Self::InvoiceRequestExpired
 	PaymentExpired,
 	/// We failed to find a route while retrying the payment.
 	///
@@ -528,12 +537,23 @@ pub enum PaymentFailureReason {
 	/// This error should generally never happen. This likely means that there is a problem with
 	/// your router.
 	UnexpectedError,
+	/// An invoice was received that required unknown features.
+	UnknownRequiredFeatures,
+	/// A [`Bolt12Invoice`] was not received in a reasonable amount of time.
+	InvoiceRequestExpired,
+	/// An [`InvoiceRequest`] for the payment was rejected by the recipient.
+	///
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	InvoiceRequestRejected,
 }
 
-impl_writeable_tlv_based_enum!(PaymentFailureReason,
+impl_writeable_tlv_based_enum_upgradable!(PaymentFailureReason,
 	(0, RecipientRejected) => {},
+	(1, UnknownRequiredFeatures) => {},
 	(2, UserAbandoned) => {},
+	(3, InvoiceRequestExpired) => {},
 	(4, RetriesExhausted) => {},
+	(5, InvoiceRequestRejected) => {},
 	(6, PaymentExpired) => {},
 	(8, RouteNotFound) => {},
 	(10, UnexpectedError) => {},
@@ -769,22 +789,6 @@ pub enum Event {
 		/// Sockets for connecting to the node.
 		addresses: Vec<msgs::SocketAddress>,
 	},
-	/// Indicates a request for an invoice failed to yield a response in a reasonable amount of time
-	/// or was explicitly abandoned by [`ChannelManager::abandon_payment`]. This may be for an
-	/// [`InvoiceRequest`] sent for an [`Offer`] or for a [`Refund`] that hasn't been redeemed.
-	///
-	/// # Failure Behavior and Persistence
-	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
-	///
-	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	/// [`Offer`]: crate::offers::offer::Offer
-	/// [`Refund`]: crate::offers::refund::Refund
-	InvoiceRequestFailed {
-		/// The `payment_id` to have been associated with payment for the requested invoice.
-		payment_id: PaymentId,
-	},
 	/// Indicates a [`Bolt12Invoice`] in response to an [`InvoiceRequest`] or a [`Refund`] was
 	/// received.
 	///
@@ -876,12 +880,15 @@ pub enum Event {
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 		payment_id: PaymentId,
-		/// The hash that was given to [`ChannelManager::send_payment`].
+		/// The hash that was given to [`ChannelManager::send_payment`]. `None` if the payment failed
+		/// before receiving an invoice when paying a BOLT12 [`Offer`].
 		///
 		/// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
-		payment_hash: PaymentHash,
+		/// [`Offer`]: crate::offers::offer::Offer
+		payment_hash: Option<PaymentHash>,
 		/// The reason the payment failed. This is only `None` for events generated or serialized
-		/// by versions prior to 0.0.115.
+		/// by versions prior to 0.0.115, or when downgrading to a version with a reason that was
+		/// added after.
 		reason: Option<PaymentFailureReason>,
 	},
 	/// Indicates that a path for an outbound payment was successful.
@@ -1552,10 +1559,34 @@ impl Writeable for Event {
 			},
 			&Event::PaymentFailed { ref payment_id, ref payment_hash, ref reason } => {
 				15u8.write(writer)?;
+				let (payment_hash, invoice_received) = match payment_hash {
+					Some(payment_hash) => (payment_hash, true),
+					None => (&PaymentHash([0; 32]), false),
+				};
+				let legacy_reason = match reason {
+					None => &None,
+					// Variants available prior to version 0.0.124.
+					Some(PaymentFailureReason::RecipientRejected)
+						| Some(PaymentFailureReason::UserAbandoned)
+						| Some(PaymentFailureReason::RetriesExhausted)
+						| Some(PaymentFailureReason::PaymentExpired)
+						| Some(PaymentFailureReason::RouteNotFound)
+						| Some(PaymentFailureReason::UnexpectedError) => reason,
+					// Variants introduced at version 0.0.124 or later. Prior versions fail to parse
+					// unknown variants, while versions 0.0.124 or later will use None.
+					Some(PaymentFailureReason::UnknownRequiredFeatures) =>
+						&Some(PaymentFailureReason::RecipientRejected),
+					Some(PaymentFailureReason::InvoiceRequestExpired) =>
+						&Some(PaymentFailureReason::RetriesExhausted),
+					Some(PaymentFailureReason::InvoiceRequestRejected) =>
+						&Some(PaymentFailureReason::RecipientRejected),
+				};
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
-					(1, reason, option),
+					(1, legacy_reason, option),
 					(2, payment_hash, required),
+					(3, invoice_received, required),
+					(5, reason, option),
 				})
 			},
 			&Event::OpenChannelRequest { .. } => {
@@ -1633,12 +1664,6 @@ impl Writeable for Event {
 					(6, counterparty_node_id, required),
 					(8, funding_txo, required),
 				});
-			},
-			&Event::InvoiceRequestFailed { ref payment_id } => {
-				33u8.write(writer)?;
-				write_tlv_fields!(writer, {
-					(0, payment_id, required),
-				})
 			},
 			&Event::ConnectionNeeded { .. } => {
 				35u8.write(writer)?;
@@ -1929,15 +1954,24 @@ impl MaybeReadable for Event {
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_id = PaymentId([0; 32]);
 					let mut reason = None;
+					let mut legacy_reason = None;
+					let mut invoice_received: Option<bool> = None;
 					read_tlv_fields!(reader, {
 						(0, payment_id, required),
-						(1, reason, upgradable_option),
+						(1, legacy_reason, upgradable_option),
 						(2, payment_hash, required),
+						(3, invoice_received, option),
+						(5, reason, upgradable_option),
 					});
+					let payment_hash = match invoice_received {
+						Some(invoice_received) => invoice_received.then(|| payment_hash),
+						None => (payment_hash != PaymentHash([0; 32])).then(|| payment_hash),
+					};
+					let reason = reason.or(legacy_reason);
 					Ok(Some(Event::PaymentFailed {
 						payment_id,
 						payment_hash,
-						reason,
+						reason: _init_tlv_based_struct_field!(reason, upgradable_option),
 					}))
 				};
 				f()
@@ -2076,13 +2110,16 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			// This was Event::InvoiceRequestFailed prior to version 0.0.124.
 			33u8 => {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, payment_id, required),
 					});
-					Ok(Some(Event::InvoiceRequestFailed {
+					Ok(Some(Event::PaymentFailed {
 						payment_id: payment_id.0.unwrap(),
+						payment_hash: None,
+						reason: Some(PaymentFailureReason::InvoiceRequestExpired),
 					}))
 				};
 				f()

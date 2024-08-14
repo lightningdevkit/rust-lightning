@@ -11,7 +11,7 @@
 
 macro_rules! invoice_builder_methods_common { (
 	$self: ident, $self_type: ty, $invoice_fields: expr, $return_type: ty, $return_value: expr,
-	$type_param: ty, $invoice_type: ty $(, $self_mut: tt)?
+	$invoice_type: ty $(, $self_mut: tt)?
 ) => {
 	#[doc = concat!("Sets the [`", stringify!($invoice_type), "::relative_expiry`]")]
 	#[doc = concat!("as seconds since [`", stringify!($invoice_type), "::created_at`].")]
@@ -82,6 +82,21 @@ macro_rules! invoice_builder_methods_common { (
 	}
 } }
 
+#[cfg(test)]
+macro_rules! invoice_builder_methods_test { (
+	$self: ident, $self_type: ty, $invoice_fields: expr, $return_type: ty, $return_value: expr
+	$(, $self_mut: tt)?
+) => {
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn features_unchecked(
+		$($self_mut)* $self: $self_type, features: Bolt12InvoiceFeatures
+	) -> $return_type {
+		$invoice_fields.features = features;
+		$return_value
+	}
+
+} }
+
 macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice_type: ty) => {
 	/// Paths to the recipient originating from publicly reachable nodes, including information
 	/// needed for routing payments across them.
@@ -133,3 +148,5 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 
 pub(super) use invoice_accessors_common;
 pub(super) use invoice_builder_methods_common;
+#[cfg(test)]
+pub(super) use invoice_builder_methods_test;
