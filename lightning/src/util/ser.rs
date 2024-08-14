@@ -164,18 +164,18 @@ impl<'a, R: Read> LengthRead for FixedLengthReader<'a, R> {
 /// between "EOF reached before we started" and "EOF reached mid-read".
 ///
 /// This is not exported to bindings users as manual TLV building is not currently supported in bindings
-pub struct ReadTrackingReader<R: Read> {
-	read: R,
+pub struct ReadTrackingReader<'a, R: Read> {
+	read: &'a mut R,
 	/// Returns whether we have read from this reader or not yet.
 	pub have_read: bool,
 }
-impl<R: Read> ReadTrackingReader<R> {
+impl<'a, R: Read> ReadTrackingReader<'a, R> {
 	/// Returns a new [`ReadTrackingReader`].
-	pub fn new(read: R) -> Self {
+	pub fn new(read: &'a mut R) -> Self {
 		Self { read, have_read: false }
 	}
 }
-impl<R: Read> Read for ReadTrackingReader<R> {
+impl<'a, R: Read> Read for ReadTrackingReader<'a, R> {
 	#[inline]
 	fn read(&mut self, dest: &mut [u8]) -> Result<usize, io::Error> {
 		match self.read.read(dest) {
@@ -669,7 +669,7 @@ impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
 	fn read<R: Read>(mut reader: &mut R) -> Result<Self, DecodeError> {
 		let mut values = Vec::new();
 		loop {
-			let mut track_read = ReadTrackingReader::new(&mut reader);
+			let mut track_read = ReadTrackingReader::new(reader);
 			match MaybeReadable::read(&mut track_read) {
 				Ok(Some(v)) => { values.push(v); },
 				Ok(None) => { },

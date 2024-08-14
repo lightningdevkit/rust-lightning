@@ -57,12 +57,12 @@ impl<T: Readable> LengthReadableArgs<[u8; 32]> for ChaChaPolyReadAdapter<T> {
 	// Simultaneously read and decrypt an object from a LengthRead, storing it in Self::readable.
 	// LengthRead must be used instead of std::io::Read because we need the total length to separate
 	// out the tag at the end.
-	fn read<R: LengthRead>(mut r: &mut R, secret: [u8; 32]) -> Result<Self, DecodeError> {
+	fn read<R: LengthRead>(r: &mut R, secret: [u8; 32]) -> Result<Self, DecodeError> {
 		if r.total_bytes() < 16 { return Err(DecodeError::InvalidValue) }
 
 		let mut chacha = ChaCha20Poly1305RFC::new(&secret, &[0; 12], &[]);
 		let decrypted_len = r.total_bytes() - 16;
-		let s = FixedLengthReader::new(&mut r, decrypted_len);
+		let s = FixedLengthReader::new(r, decrypted_len);
 		let mut chacha_stream = ChaChaPolyReader { chacha: &mut chacha, read: s };
 		let readable: T = Readable::read(&mut chacha_stream)?;
 		chacha_stream.read.eat_remaining()?;
@@ -194,7 +194,7 @@ mod tests {
 
 		// Now deserialize the object back and make sure it matches the original.
 		let mut read_adapter: Option<ChaChaPolyReadAdapter<TestWriteable>> = None;
-		decode_tlv_stream!(&writer.0[..], {
+		decode_tlv_stream!(&mut &writer.0[..], {
 			(1, read_adapter, (option: LengthReadableArgs, rho)),
 		});
 		assert_eq!(writeable, read_adapter.unwrap().readable);

@@ -2771,8 +2771,8 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 		let mut custom_tlvs = Vec::new();
 
 		let tlv_len = BigSize::read(r)?;
-		let rd = FixedLengthReader::new(r, tlv_len.0);
-		decode_tlv_stream_with_custom_tlv_decode!(rd, {
+		let mut rd = FixedLengthReader::new(r, tlv_len.0);
+		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
 			(2, amt, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, cltv_value, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
 			(6, short_id, option),

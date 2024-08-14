@@ -275,14 +275,16 @@ impl Writeable for BlindedPath {
 
 impl Readable for BlindedPath {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let mut first_byte: u8 = Readable::read(r)?;
+		let first_byte: u8 = Readable::read(r)?;
 		let introduction_node = match first_byte {
 			0 => IntroductionNode::DirectedShortChannelId(Direction::NodeOne, Readable::read(r)?),
 			1 => IntroductionNode::DirectedShortChannelId(Direction::NodeTwo, Readable::read(r)?),
 			2|3 => {
 				use io::Read;
-				let mut pubkey_read = core::slice::from_mut(&mut first_byte).chain(r.by_ref());
-				IntroductionNode::NodeId(Readable::read(&mut pubkey_read)?)
+				let mut bytes = [0; 33];
+				bytes[0] = first_byte;
+				r.read_exact(&mut bytes[1..])?;
+				IntroductionNode::NodeId(Readable::read(&mut &bytes[..])?)
 			},
 			_ => return Err(DecodeError::InvalidValue),
 		};
