@@ -32,7 +32,14 @@ use crate::ln::msgs::DecodeError;
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
 use crate::ln::channelmanager::{self, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
-use crate::ln::chan_utils::{CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight, htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction, HolderCommitmentTransaction, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, MAX_HTLCS, get_commitment_transaction_number_obscure_factor, ClosingTransaction};
+use crate::ln::chan_utils::{
+	CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight,
+	htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction,
+	HolderCommitmentTransaction, ChannelTransactionParameters,
+	CounterpartyChannelTransactionParameters, MAX_HTLCS,
+	get_commitment_transaction_number_obscure_factor,
+	ClosingTransaction, commit_tx_fee_sat, per_outbound_htlc_counterparty_commit_tx_fee_msat,
+};
 use crate::ln::chan_utils;
 use crate::ln::onion_utils::HTLCFailReason;
 use crate::chain::BestBlock;
@@ -654,17 +661,6 @@ impl ChannelState {
 pub const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
 
 pub const DEFAULT_MAX_HTLCS: u16 = 50;
-
-pub(crate) fn commitment_tx_base_weight(channel_type_features: &ChannelTypeFeatures) -> u64 {
-	const COMMITMENT_TX_BASE_WEIGHT: u64 = 724;
-	const COMMITMENT_TX_BASE_ANCHOR_WEIGHT: u64 = 1124;
-	if channel_type_features.supports_anchors_zero_fee_htlc_tx() { COMMITMENT_TX_BASE_ANCHOR_WEIGHT } else { COMMITMENT_TX_BASE_WEIGHT }
-}
-
-#[cfg(not(test))]
-const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
-#[cfg(test)]
-pub const COMMITMENT_TX_WEIGHT_PER_HTLC: u64 = 172;
 
 pub const ANCHOR_OUTPUT_VALUE_SATOSHI: u64 = 330;
 
@@ -1621,7 +1617,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			0
 		};
 		let funders_amount_msat = open_channel_fields.funding_satoshis * 1000 - msg_push_msat;
-		let commitment_tx_fee = commit_tx_fee_msat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) / 1000;
+		let commitment_tx_fee = commit_tx_fee_sat(open_channel_fields.commitment_feerate_sat_per_1000_weight, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
 		if (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value) < commitment_tx_fee {
 			return Err(ChannelError::close(format!("Funding amount ({} sats) can't even pay fee for initial commitment transaction fee of {} sats.", (funders_amount_msat / 1000).saturating_sub(anchor_outputs_value), commitment_tx_fee)));
 		}
@@ -1888,7 +1884,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let commitment_feerate = fee_estimator.bounded_sat_per_1000_weight(commitment_conf_target);
 
 		let value_to_self_msat = channel_value_satoshis * 1000 - push_msat;
-		let commitment_tx_fee = commit_tx_fee_msat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type);
+		let commitment_tx_fee = commit_tx_fee_sat(commitment_feerate, MIN_AFFORDABLE_HTLC_COUNT, &channel_type) * 1000;
 		if value_to_self_msat.saturating_sub(anchor_outputs_value_msat) < commitment_tx_fee {
 			return Err(APIError::APIMisuseError{ err: format!("Funding amount ({}) can't even pay fee for initial commitment transaction fee of {}.", value_to_self_msat / 1000, commitment_tx_fee / 1000) });
 		}
@@ -2949,7 +2945,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			let on_counterparty_tx_nondust_htlcs =
 				on_counterparty_tx_accepted_nondust_htlcs + on_counterparty_tx_offered_nondust_htlcs;
 			on_counterparty_tx_dust_exposure_msat +=
-				commit_tx_fee_msat(excess_feerate, on_counterparty_tx_nondust_htlcs, &self.channel_type);
+				commit_tx_fee_sat(excess_feerate, on_counterparty_tx_nondust_htlcs, &self.channel_type) * 1000;
 			if !self.channel_type.supports_anchors_zero_fee_htlc_tx() {
 				on_counterparty_tx_dust_exposure_msat +=
 					on_counterparty_tx_accepted_nondust_htlcs as u64 * htlc_success_tx_weight(&self.channel_type)
@@ -3314,12 +3310,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, &context.channel_type);
+		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, &context.channel_type) * 1000;
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, &context.channel_type);
+				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, &context.channel_type) * 1000;
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len()
 				+ context.holding_cell_htlc_updates.len();
@@ -3405,12 +3401,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		}
 
 		let num_htlcs = included_htlcs + addl_htlcs;
-		let res = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs, &context.channel_type);
+		let res = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs, &context.channel_type) * 1000;
 		#[cfg(any(test, fuzzing))]
 		{
 			let mut fee = res;
 			if fee_spike_buffer_htlc.is_some() {
-				fee = commit_tx_fee_msat(context.feerate_per_kw, num_htlcs - 1, &context.channel_type);
+				fee = commit_tx_fee_sat(context.feerate_per_kw, num_htlcs - 1, &context.channel_type) * 1000;
 			}
 			let total_pending_htlcs = context.pending_inbound_htlcs.len() + context.pending_outbound_htlcs.len();
 			let commitment_tx_info = CommitmentTxInfoCached {
@@ -3674,32 +3670,6 @@ fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satos
 	// Fixed at 1% of channel value by spec.
 	let (q, _) = channel_value_satoshis.overflowing_div(100);
 	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
-}
-
-// Get the fee cost in SATS of a commitment tx with a given number of HTLC outputs.
-// Note that num_htlcs should not include dust HTLCs.
-#[inline]
-fn commit_tx_fee_sat(feerate_per_kw: u32, num_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
-	feerate_per_kw as u64 * (commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000
-}
-
-// Get the fee cost in MSATS of a commitment tx with a given number of HTLC outputs.
-// Note that num_htlcs should not include dust HTLCs.
-pub(crate) fn commit_tx_fee_msat(feerate_per_kw: u32, num_htlcs: usize, channel_type_features: &ChannelTypeFeatures) -> u64 {
-	// Note that we need to divide before multiplying to round properly,
-	// since the lowest denomination of bitcoin on-chain is the satoshi.
-	(commitment_tx_base_weight(channel_type_features) + num_htlcs as u64 * COMMITMENT_TX_WEIGHT_PER_HTLC) * feerate_per_kw as u64 / 1000 * 1000
-}
-
-pub(crate) fn per_outbound_htlc_counterparty_commit_tx_fee_msat(feerate_per_kw: u32, channel_type_features: &ChannelTypeFeatures) -> u64 {
-	// Note that we need to divide before multiplying to round properly,
-	// since the lowest denomination of bitcoin on-chain is the satoshi.
-	let commitment_tx_fee = COMMITMENT_TX_WEIGHT_PER_HTLC * feerate_per_kw as u64 / 1000 * 1000;
-	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		commitment_tx_fee + htlc_success_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
-	} else {
-		commitment_tx_fee
-	}
 }
 
 /// Context for dual-funded channels.
@@ -7396,7 +7366,7 @@ impl<SP: Deref> Channel<SP> where
 						&& info.next_holder_htlc_id == self.context.next_holder_htlc_id
 						&& info.next_counterparty_htlc_id == self.context.next_counterparty_htlc_id
 						&& info.feerate == self.context.feerate_per_kw {
-							let actual_fee = commit_tx_fee_msat(self.context.feerate_per_kw, commitment_stats.num_nondust_htlcs, self.context.get_channel_type());
+							let actual_fee = commit_tx_fee_sat(self.context.feerate_per_kw, commitment_stats.num_nondust_htlcs, self.context.get_channel_type()) * 1000;
 							assert_eq!(actual_fee, info.fee);
 						}
 				}
@@ -7892,7 +7862,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let channel_monitor = ChannelMonitor::new(self.context.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.context.get_holder_selected_contest_delay(),
 		                                          &self.context.destination_script, (funding_txo, funding_txo_script),
-		                                          &self.context.channel_transaction_parameters,
+		                                          &self.context.channel_transaction_parameters, self.context.is_outbound(),
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id, self.context.channel_id());
@@ -8204,7 +8174,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let channel_monitor = ChannelMonitor::new(self.context.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, self.context.get_holder_selected_contest_delay(),
 		                                          &self.context.destination_script, (funding_txo, funding_txo_script.clone()),
-		                                          &self.context.channel_transaction_parameters,
+		                                          &self.context.channel_transaction_parameters, self.context.is_outbound(),
 		                                          funding_redeemscript.clone(), self.context.channel_value_satoshis,
 		                                          obscure_factor,
 		                                          holder_commitment_tx, best_block, self.context.counterparty_node_id, self.context.channel_id());
@@ -9597,7 +9567,7 @@ mod tests {
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{AwaitingChannelReadyFlags, Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_msat};
+	use crate::ln::channel::{AwaitingChannelReadyFlags, Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_sat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 	use crate::ln::msgs;
@@ -9820,13 +9790,13 @@ mod tests {
 		// the dust limit check.
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
 		let local_commit_tx_fee = node_a_chan.context.next_local_commit_tx_fee_msat(htlc_candidate, None);
-		let local_commit_fee_0_htlcs = commit_tx_fee_msat(node_a_chan.context.feerate_per_kw, 0, node_a_chan.context.get_channel_type());
+		let local_commit_fee_0_htlcs = commit_tx_fee_sat(node_a_chan.context.feerate_per_kw, 0, node_a_chan.context.get_channel_type()) * 1000;
 		assert_eq!(local_commit_tx_fee, local_commit_fee_0_htlcs);
 
 		// Finally, make sure that when Node A calculates the remote's commitment transaction fees, all
 		// of the HTLCs are seen to be above the dust limit.
 		node_a_chan.context.channel_transaction_parameters.is_outbound_from_holder = false;
-		let remote_commit_fee_3_htlcs = commit_tx_fee_msat(node_a_chan.context.feerate_per_kw, 3, node_a_chan.context.get_channel_type());
+		let remote_commit_fee_3_htlcs = commit_tx_fee_sat(node_a_chan.context.feerate_per_kw, 3, node_a_chan.context.get_channel_type()) * 1000;
 		let htlc_candidate = HTLCCandidate::new(htlc_amount_msat, HTLCInitiator::LocalOffered);
 		let remote_commit_tx_fee = node_a_chan.context.next_remote_commit_tx_fee_msat(htlc_candidate, None);
 		assert_eq!(remote_commit_tx_fee, remote_commit_fee_3_htlcs);
@@ -9849,8 +9819,8 @@ mod tests {
 		let config = UserConfig::default();
 		let mut chan = OutboundV1Channel::<&TestKeysInterface>::new(&fee_est, &&keys_provider, &&keys_provider, node_id, &channelmanager::provided_init_features(&config), 10000000, 100000, 42, &config, 0, 42, None, &logger).unwrap();
 
-		let commitment_tx_fee_0_htlcs = commit_tx_fee_msat(chan.context.feerate_per_kw, 0, chan.context.get_channel_type());
-		let commitment_tx_fee_1_htlc = commit_tx_fee_msat(chan.context.feerate_per_kw, 1, chan.context.get_channel_type());
+		let commitment_tx_fee_0_htlcs = commit_tx_fee_sat(chan.context.feerate_per_kw, 0, chan.context.get_channel_type()) * 1000;
+		let commitment_tx_fee_1_htlc = commit_tx_fee_sat(chan.context.feerate_per_kw, 1, chan.context.get_channel_type()) * 1000;
 
 		// If HTLC_SUCCESS_TX_WEIGHT and HTLC_TIMEOUT_TX_WEIGHT were swapped: then this HTLC would be
 		// counted as dust when it shouldn't be.

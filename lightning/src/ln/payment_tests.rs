@@ -15,11 +15,12 @@ use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::sign::EntropySource;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentFailureReason, PaymentPurpose};
-use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS, commit_tx_fee_msat, get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI};
+use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS, get_holder_selected_channel_reserve_satoshis, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::ln::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::ln::msgs;
 use crate::ln::types::{ChannelId, PaymentHash, PaymentSecret, PaymentPreimage};
+use crate::ln::chan_utils;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::onion_utils;
 use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, Retry};
@@ -4182,9 +4183,9 @@ fn  test_htlc_forward_considers_anchor_outputs_value() {
 	let (_, _, chan_id_2, _) = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, CHAN_AMT, PUSH_MSAT);
 
 	let channel_reserve_msat = get_holder_selected_channel_reserve_satoshis(CHAN_AMT, &config) * 1000;
-	let commitment_fee_msat = commit_tx_fee_msat(
+	let commitment_fee_msat = chan_utils::commit_tx_fee_sat(
 		*nodes[1].fee_estimator.sat_per_kw.lock().unwrap(), 2, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()
-	);
+	) * 1000;
 	let anchor_outpus_value_msat = ANCHOR_OUTPUT_VALUE_SATOSHI * 2 * 1000;
 	let sendable_balance_msat = CHAN_AMT * 1000 - PUSH_MSAT - channel_reserve_msat - commitment_fee_msat - anchor_outpus_value_msat;
 	let channel_details = nodes[1].node.list_channels().into_iter().find(|channel| channel.channel_id == chan_id_2).unwrap();
