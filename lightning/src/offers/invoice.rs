@@ -749,8 +749,8 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// refund in case there are no [`message_paths`].
 	///
 	/// [`message_paths`]: Self::message_paths
-	pub fn payer_id(&$self) -> PublicKey {
-		$contents.payer_id()
+	pub fn payer_signing_pubkey(&$self) -> PublicKey {
+		$contents.payer_signing_pubkey()
 	}
 
 	/// A payer-provided note reflected back in the invoice.
@@ -1017,10 +1017,10 @@ impl InvoiceContents {
 		}
 	}
 
-	fn payer_id(&self) -> PublicKey {
+	fn payer_signing_pubkey(&self) -> PublicKey {
 		match self {
-			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.payer_id(),
 			InvoiceContents::ForRefund { refund, .. } => refund.payer_id(),
+			InvoiceContents::ForOffer { invoice_request, .. } => invoice_request.payer_signing_pubkey(),
 		}
 	}
 
@@ -1099,9 +1099,9 @@ impl InvoiceContents {
 		});
 		let tlv_stream = offer_records.chain(invreq_records);
 
-		let payer_id = self.payer_id();
+		let signing_pubkey = self.payer_signing_pubkey();
 		signer::verify_payer_metadata(
-			metadata.as_ref(), key, iv_bytes, payer_id, tlv_stream, secp_ctx,
+			metadata.as_ref(), key, iv_bytes, signing_pubkey, tlv_stream, secp_ctx,
 		)
 	}
 
@@ -1526,7 +1526,7 @@ mod tests {
 		assert_eq!(unsigned_invoice.amount_msats(), 1000);
 		assert_eq!(unsigned_invoice.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(unsigned_invoice.quantity(), None);
-		assert_eq!(unsigned_invoice.payer_id(), payer_pubkey());
+		assert_eq!(unsigned_invoice.payer_signing_pubkey(), payer_pubkey());
 		assert_eq!(unsigned_invoice.payer_note(), None);
 		assert_eq!(unsigned_invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(unsigned_invoice.created_at(), now);
@@ -1568,7 +1568,7 @@ mod tests {
 		assert_eq!(invoice.amount_msats(), 1000);
 		assert_eq!(invoice.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice.quantity(), None);
-		assert_eq!(invoice.payer_id(), payer_pubkey());
+		assert_eq!(invoice.payer_signing_pubkey(), payer_pubkey());
 		assert_eq!(invoice.payer_note(), None);
 		assert_eq!(invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(invoice.created_at(), now);
@@ -1666,7 +1666,7 @@ mod tests {
 		assert_eq!(invoice.amount_msats(), 1000);
 		assert_eq!(invoice.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice.quantity(), None);
-		assert_eq!(invoice.payer_id(), payer_pubkey());
+		assert_eq!(invoice.payer_signing_pubkey(), payer_pubkey());
 		assert_eq!(invoice.payer_note(), None);
 		assert_eq!(invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(invoice.created_at(), now);

@@ -99,11 +99,11 @@ use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
 use {
-	crate::offers::invoice_request::{DerivedPayerId, ExplicitPayerId, InvoiceRequestBuilder},
+	crate::offers::invoice_request::{DerivedPayerSigningPubkey, ExplicitPayerSigningPubkey, InvoiceRequestBuilder},
 };
 #[cfg(c_bindings)]
 use {
-	crate::offers::invoice_request::{InvoiceRequestWithDerivedPayerIdBuilder, InvoiceRequestWithExplicitPayerIdBuilder},
+	crate::offers::invoice_request::{InvoiceRequestWithDerivedPayerSigningPubkeyBuilder, InvoiceRequestWithExplicitPayerSigningPubkeyBuilder},
 };
 
 #[allow(unused_imports)]
@@ -695,10 +695,10 @@ impl Offer {
 	}
 }
 
-macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => {
+macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $builder: ty) => {
 	/// Similar to [`Offer::request_invoice`] except it:
-	/// - derives the [`InvoiceRequest::payer_id`] such that a different key can be used for each
-	///   request,
+	/// - derives the [`InvoiceRequest::payer_signing_pubkey`] such that a different key can be used
+	///   for each request,
 	/// - sets [`InvoiceRequest::payer_metadata`] when [`InvoiceRequestBuilder::build`] is called
 	///   such that it can be used by [`Bolt12Invoice::verify_using_metadata`] to determine if the
 	///   invoice was requested using a base [`ExpandedKey`] from which the payer id was derived,
@@ -708,11 +708,11 @@ macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => 
 	///
 	/// Useful to protect the sender's privacy.
 	///
-	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
+	/// [`InvoiceRequest::payer_signing_pubkey`]: crate::offers::invoice_request::InvoiceRequest::payer_signing_pubkey
 	/// [`InvoiceRequest::payer_metadata`]: crate::offers::invoice_request::InvoiceRequest::payer_metadata
 	/// [`Bolt12Invoice::verify_using_metadata`]: crate::offers::invoice::Bolt12Invoice::verify_using_metadata
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-	pub fn request_invoice_deriving_payer_id<
+	pub fn request_invoice_deriving_signing_pubkey<
 		'a, 'b,
 		#[cfg(not(c_bindings))]
 		T: secp256k1::Signing
@@ -728,34 +728,35 @@ macro_rules! request_invoice_derived_payer_id { ($self: ident, $builder: ty) => 
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(<$builder>::deriving_payer_id($self, expanded_key, nonce, secp_ctx, payment_id))
+		Ok(<$builder>::deriving_signing_pubkey($self, expanded_key, nonce, secp_ctx, payment_id))
 	}
 } }
 
-macro_rules! request_invoice_explicit_payer_id { ($self: ident, $builder: ty) => {
-	/// Similar to [`Offer::request_invoice_deriving_payer_id`] except uses `payer_id` for the
-	/// [`InvoiceRequest::payer_id`] instead of deriving a different key for each request.
+macro_rules! request_invoice_explicit_signing_pubkey { ($self: ident, $builder: ty) => {
+	/// Similar to [`Offer::request_invoice_deriving_signing_pubkey`] except uses `signing_pubkey`
+	/// for the [`InvoiceRequest::payer_signing_pubkey`] instead of deriving a different key for
+	/// each request.
 	///
-	/// Useful for recurring payments using the same `payer_id` with different invoices.
+	/// Useful for recurring payments using the same `signing_pubkey` with different invoices.
 	///
-	/// [`InvoiceRequest::payer_id`]: crate::offers::invoice_request::InvoiceRequest::payer_id
+	/// [`InvoiceRequest::payer_signing_pubkey`]: crate::offers::invoice_request::InvoiceRequest::payer_signing_pubkey
 	pub fn request_invoice_deriving_metadata(
-		&$self, payer_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
+		&$self, signing_pubkey: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		payment_id: PaymentId
 	) -> Result<$builder, Bolt12SemanticError> {
 		if $self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(<$builder>::deriving_metadata($self, payer_id, expanded_key, nonce, payment_id))
+		Ok(<$builder>::deriving_metadata($self, signing_pubkey, expanded_key, nonce, payment_id))
 	}
 
-	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and `payer_id`,
-	/// which will be reflected in the `Bolt12Invoice` response.
+	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and
+	/// `signing_pubkey`, which will be reflected in the `Bolt12Invoice` response.
 	///
-	/// The `metadata` is useful for including information about the derivation of `payer_id` such
-	/// that invoice response handling can be stateless. Also serves as payer-provided entropy while
-	/// hashing in the signature calculation.
+	/// The `metadata` is useful for including information about the derivation of `signing_pubkey`
+	/// such that invoice response handling can be stateless. Also serves as payer-provided entropy
+	/// while hashing in the signature calculation.
 	///
 	/// This should not leak any information such as by using a simple BIP-32 derivation path.
 	/// Otherwise, payments may be correlated.
@@ -764,26 +765,26 @@ macro_rules! request_invoice_explicit_payer_id { ($self: ident, $builder: ty) =>
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn request_invoice(
-		&$self, metadata: Vec<u8>, payer_id: PublicKey
+		&$self, metadata: Vec<u8>, signing_pubkey: PublicKey
 	) -> Result<$builder, Bolt12SemanticError> {
 		if $self.offer_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		Ok(<$builder>::new($self, metadata, payer_id))
+		Ok(<$builder>::new($self, metadata, signing_pubkey))
 	}
 } }
 
 #[cfg(not(c_bindings))]
 impl Offer {
-	request_invoice_derived_payer_id!(self, InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T>);
-	request_invoice_explicit_payer_id!(self, InvoiceRequestBuilder<ExplicitPayerId, secp256k1::SignOnly>);
+	request_invoice_derived_signing_pubkey!(self, InvoiceRequestBuilder<'a, 'b, DerivedPayerSigningPubkey, T>);
+	request_invoice_explicit_signing_pubkey!(self, InvoiceRequestBuilder<ExplicitPayerSigningPubkey, secp256k1::SignOnly>);
 }
 
 #[cfg(c_bindings)]
 impl Offer {
-	request_invoice_derived_payer_id!(self, InvoiceRequestWithDerivedPayerIdBuilder<'a, 'b>);
-	request_invoice_explicit_payer_id!(self, InvoiceRequestWithExplicitPayerIdBuilder);
+	request_invoice_derived_signing_pubkey!(self, InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>);
+	request_invoice_explicit_signing_pubkey!(self, InvoiceRequestWithExplicitPayerSigningPubkeyBuilder);
 }
 
 #[cfg(test)]

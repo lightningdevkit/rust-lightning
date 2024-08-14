@@ -902,7 +902,7 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 		let features = features.unwrap_or_else(InvoiceRequestFeatures::empty);
 
 		let payer_id = match payer_id {
-			None => return Err(Bolt12SemanticError::MissingPayerId),
+			None => return Err(Bolt12SemanticError::MissingPayerSigningPubkey),
 			Some(payer_id) => payer_id,
 		};
 
@@ -1395,7 +1395,7 @@ mod tests {
 		match Refund::try_from(tlv_stream.to_bytes()) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPayerId));
+				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPayerSigningPubkey));
 			},
 		}
 	}

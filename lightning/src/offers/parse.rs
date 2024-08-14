@@ -173,8 +173,8 @@ pub enum Bolt12SemanticError {
 	UnexpectedMetadata,
 	/// Payer metadata was expected but was missing.
 	MissingPayerMetadata,
-	/// A payer id was expected but was missing.
-	MissingPayerId,
+	/// A payer signing pubkey was expected but was missing.
+	MissingPayerSigningPubkey,
 	/// The payment id for a refund or request is already in use.
 	DuplicatePaymentId,
 	/// Blinded paths were expected but were missing.

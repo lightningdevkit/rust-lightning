@@ -566,13 +566,13 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
-			payer_id: invoice_request.payer_id(),
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
-	assert_ne!(invoice_request.payer_id(), david_id);
+	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();
@@ -726,13 +726,13 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
-			payer_id: invoice_request.payer_id(),
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
-	assert_ne!(invoice_request.payer_id(), bob_id);
+	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -846,7 +846,7 @@ fn pays_for_offer_without_blinded_paths() {
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
-			payer_id: invoice_request.payer_id(),
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
@@ -1112,13 +1112,13 @@ fn creates_and_pays_for_offer_with_retry() {
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
-			payer_id: invoice_request.payer_id(),
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
-	assert_ne!(invoice_request.payer_id(), bob_id);
+	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(bob_id));
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
 	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
@@ -1176,7 +1176,7 @@ fn pays_bolt12_invoice_asynchronously() {
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
-			payer_id: invoice_request.payer_id(),
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
@@ -1265,12 +1265,12 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: offer.id(),
 		invoice_request: InvoiceRequestFields {
-			payer_id: invoice_request.payer_id(),
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
 		},
 	});
-	assert_ne!(invoice_request.payer_id(), bob_id);
+	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
 	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(alice_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1411,7 +1411,7 @@ fn fails_authentication_when_handling_invoice_request() {
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), None);
-	assert_ne!(invoice_request.payer_id(), david_id);
+	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
@@ -1441,7 +1441,7 @@ fn fails_authentication_when_handling_invoice_request() {
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), None);
-	assert_ne!(invoice_request.payer_id(), david_id);
+	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	assert_eq!(alice.onion_messenger.next_onion_message_for_peer(charlie_id), None);
@@ -1543,7 +1543,7 @@ fn fails_authentication_when_handling_invoice_for_offer() {
 
 	let (invoice_request, reply_path) = extract_invoice_request(alice, &onion_message);
 	assert_eq!(invoice_request.amount_msats(), None);
-	assert_ne!(invoice_request.payer_id(), david_id);
+	assert_ne!(invoice_request.payer_signing_pubkey(), david_id);
 	assert_eq!(reply_path.introduction_node(), &IntroductionNode::NodeId(charlie_id));
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(charlie_id).unwrap();

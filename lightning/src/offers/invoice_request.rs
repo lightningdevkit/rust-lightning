@@ -36,8 +36,8 @@
 //! let pubkey = PublicKey::from(keys);
 //! let mut buffer = Vec::new();
 //!
-//! # use lightning::offers::invoice_request::{ExplicitPayerId, InvoiceRequestBuilder};
-//! # <InvoiceRequestBuilder<ExplicitPayerId, _>>::from(
+//! # use lightning::offers::invoice_request::{ExplicitPayerSigningPubkey, InvoiceRequestBuilder};
+//! # <InvoiceRequestBuilder<ExplicitPayerSigningPubkey, _>>::from(
 //! "lno1qcp4256ypq"
 //!     .parse::<Offer>()?
 //!     .request_invoice(vec![42; 64], pubkey)?
@@ -102,11 +102,11 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Invreq ~~~~~";
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 ///
 /// [module-level documentation]: self
-pub struct InvoiceRequestBuilder<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> {
+pub struct InvoiceRequestBuilder<'a, 'b, P: PayerSigningPubkeyStrategy, T: secp256k1::Signing> {
 	offer: &'a Offer,
-	invoice_request: InvoiceRequestContentsWithoutPayerId,
-	payer_id: Option<PublicKey>,
-	payer_id_strategy: core::marker::PhantomData<P>,
+	invoice_request: InvoiceRequestContentsWithoutPayerSigningPubkey,
+	payer_signing_pubkey: Option<PublicKey>,
+	payer_signing_pubkey_strategy: core::marker::PhantomData<P>,
 	secp_ctx: Option<&'b Secp256k1<T>>,
 }
 
@@ -116,11 +116,11 @@ pub struct InvoiceRequestBuilder<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signi
 ///
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
-pub struct InvoiceRequestWithExplicitPayerIdBuilder<'a, 'b> {
+pub struct InvoiceRequestWithExplicitPayerSigningPubkeyBuilder<'a, 'b> {
 	offer: &'a Offer,
-	invoice_request: InvoiceRequestContentsWithoutPayerId,
-	payer_id: Option<PublicKey>,
-	payer_id_strategy: core::marker::PhantomData<ExplicitPayerId>,
+	invoice_request: InvoiceRequestContentsWithoutPayerSigningPubkey,
+	payer_signing_pubkey: Option<PublicKey>,
+	payer_signing_pubkey_strategy: core::marker::PhantomData<ExplicitPayerSigningPubkey>,
 	secp_ctx: Option<&'b Secp256k1<secp256k1::All>>,
 }
 
@@ -130,47 +130,47 @@ pub struct InvoiceRequestWithExplicitPayerIdBuilder<'a, 'b> {
 ///
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
-pub struct InvoiceRequestWithDerivedPayerIdBuilder<'a, 'b> {
+pub struct InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b> {
 	offer: &'a Offer,
-	invoice_request: InvoiceRequestContentsWithoutPayerId,
-	payer_id: Option<PublicKey>,
-	payer_id_strategy: core::marker::PhantomData<DerivedPayerId>,
+	invoice_request: InvoiceRequestContentsWithoutPayerSigningPubkey,
+	payer_signing_pubkey: Option<PublicKey>,
+	payer_signing_pubkey_strategy: core::marker::PhantomData<DerivedPayerSigningPubkey>,
 	secp_ctx: Option<&'b Secp256k1<secp256k1::All>>,
 }
 
-/// Indicates how [`InvoiceRequest::payer_id`] will be set.
+/// Indicates how [`InvoiceRequest::payer_signing_pubkey`] will be set.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub trait PayerIdStrategy {}
+pub trait PayerSigningPubkeyStrategy {}
 
-/// [`InvoiceRequest::payer_id`] will be explicitly set.
+/// [`InvoiceRequest::payer_signing_pubkey`] will be explicitly set.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub struct ExplicitPayerId {}
+pub struct ExplicitPayerSigningPubkey {}
 
-/// [`InvoiceRequest::payer_id`] will be derived.
+/// [`InvoiceRequest::payer_signing_pubkey`] will be derived.
 ///
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub struct DerivedPayerId {}
+pub struct DerivedPayerSigningPubkey {}
 
-impl PayerIdStrategy for ExplicitPayerId {}
-impl PayerIdStrategy for DerivedPayerId {}
+impl PayerSigningPubkeyStrategy for ExplicitPayerSigningPubkey {}
+impl PayerSigningPubkeyStrategy for DerivedPayerSigningPubkey {}
 
-macro_rules! invoice_request_explicit_payer_id_builder_methods { ($self: ident, $self_type: ty) => {
+macro_rules! invoice_request_explicit_payer_signing_pubkey_builder_methods { ($self: ident, $self_type: ty) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(super) fn new(offer: &'a Offer, metadata: Vec<u8>, payer_id: PublicKey) -> Self {
+	pub(super) fn new(offer: &'a Offer, metadata: Vec<u8>, signing_pubkey: PublicKey) -> Self {
 		Self {
 			offer,
 			invoice_request: Self::create_contents(offer, Metadata::Bytes(metadata)),
-			payer_id: Some(payer_id),
-			payer_id_strategy: core::marker::PhantomData,
+			payer_signing_pubkey: Some(signing_pubkey),
+			payer_signing_pubkey_strategy: core::marker::PhantomData,
 			secp_ctx: None,
 		}
 	}
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn deriving_metadata(
-		offer: &'a Offer, payer_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
+		offer: &'a Offer, signing_pubkey: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
 		payment_id: PaymentId,
 	) -> Self {
 		let payment_id = Some(payment_id);
@@ -179,8 +179,8 @@ macro_rules! invoice_request_explicit_payer_id_builder_methods { ($self: ident, 
 		Self {
 			offer,
 			invoice_request: Self::create_contents(offer, metadata),
-			payer_id: Some(payer_id),
-			payer_id_strategy: core::marker::PhantomData,
+			payer_signing_pubkey: Some(signing_pubkey),
+			payer_signing_pubkey_strategy: core::marker::PhantomData,
 			secp_ctx: None,
 		}
 	}
@@ -194,11 +194,11 @@ macro_rules! invoice_request_explicit_payer_id_builder_methods { ($self: ident, 
 	}
 } }
 
-macro_rules! invoice_request_derived_payer_id_builder_methods { (
+macro_rules! invoice_request_derived_payer_signing_pubkey_builder_methods { (
 	$self: ident, $self_type: ty, $secp_context: ty
 ) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
-	pub(super) fn deriving_payer_id(
+	pub(super) fn deriving_signing_pubkey(
 		offer: &'a Offer, expanded_key: &ExpandedKey, nonce: Nonce,
 		secp_ctx: &'b Secp256k1<$secp_context>, payment_id: PaymentId
 	) -> Self {
@@ -208,8 +208,8 @@ macro_rules! invoice_request_derived_payer_id_builder_methods { (
 		Self {
 			offer,
 			invoice_request: Self::create_contents(offer, metadata),
-			payer_id: None,
-			payer_id_strategy: core::marker::PhantomData,
+			payer_signing_pubkey: None,
+			payer_signing_pubkey_strategy: core::marker::PhantomData,
 			secp_ctx: Some(secp_ctx),
 		}
 	}
@@ -236,9 +236,9 @@ macro_rules! invoice_request_builder_methods { (
 	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr, $secp_context: ty $(, $self_mut: tt)?
 ) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
-	fn create_contents(offer: &Offer, metadata: Metadata) -> InvoiceRequestContentsWithoutPayerId {
+	fn create_contents(offer: &Offer, metadata: Metadata) -> InvoiceRequestContentsWithoutPayerSigningPubkey {
 		let offer = offer.contents.clone();
-		InvoiceRequestContentsWithoutPayerId {
+		InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
 		}
@@ -343,7 +343,7 @@ macro_rules! invoice_request_builder_methods { (
 			debug_assert!(tlv_stream.2.payer_id.is_none());
 			tlv_stream.0.metadata = None;
 			if !metadata.derives_payer_keys() {
-				tlv_stream.2.payer_id = $self.payer_id.as_ref();
+				tlv_stream.2.payer_id = $self.payer_signing_pubkey.as_ref();
 			}
 
 			let (derived_metadata, derived_keys) =
@@ -351,23 +351,23 @@ macro_rules! invoice_request_builder_methods { (
 			metadata = derived_metadata;
 			keys = derived_keys;
 			if let Some(keys) = keys {
-				debug_assert!($self.payer_id.is_none());
-				$self.payer_id = Some(keys.public_key());
+				debug_assert!($self.payer_signing_pubkey.is_none());
+				$self.payer_signing_pubkey = Some(keys.public_key());
 			}
 
 			$self.invoice_request.payer.0 = metadata;
 		}
 
 		debug_assert!($self.invoice_request.payer.0.as_bytes().is_some());
-		debug_assert!($self.payer_id.is_some());
-		let payer_id = $self.payer_id.unwrap();
+		debug_assert!($self.payer_signing_pubkey.is_some());
+		let payer_signing_pubkey = $self.payer_signing_pubkey.unwrap();
 
 		let invoice_request = InvoiceRequestContents {
 			#[cfg(not(c_bindings))]
 			inner: $self.invoice_request,
 			#[cfg(c_bindings)]
 			inner: $self.invoice_request.clone(),
-			payer_id,
+			payer_signing_pubkey,
 		};
 		let unsigned_invoice_request = UnsignedInvoiceRequest::new($self.offer, invoice_request);
 
@@ -410,15 +410,15 @@ macro_rules! invoice_request_builder_test_methods { (
 	}
 } }
 
-impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerId, T> {
-	invoice_request_explicit_payer_id_builder_methods!(self, Self);
+impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, ExplicitPayerSigningPubkey, T> {
+	invoice_request_explicit_payer_signing_pubkey_builder_methods!(self, Self);
 }
 
-impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerId, T> {
-	invoice_request_derived_payer_id_builder_methods!(self, Self, T);
+impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerSigningPubkey, T> {
+	invoice_request_derived_payer_signing_pubkey_builder_methods!(self, Self, T);
 }
 
-impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, P, T> {
+impl<'a, 'b, P: PayerSigningPubkeyStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, P, T> {
 	invoice_request_builder_methods!(self, Self, Self, self, T, mut);
 
 	#[cfg(test)]
@@ -426,55 +426,55 @@ impl<'a, 'b, P: PayerIdStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a
 }
 
 #[cfg(all(c_bindings, not(test)))]
-impl<'a, 'b> InvoiceRequestWithExplicitPayerIdBuilder<'a, 'b> {
-	invoice_request_explicit_payer_id_builder_methods!(self, &mut Self);
+impl<'a, 'b> InvoiceRequestWithExplicitPayerSigningPubkeyBuilder<'a, 'b> {
+	invoice_request_explicit_payer_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_request_builder_methods!(self, &mut Self, (), (), secp256k1::All);
 }
 
 #[cfg(all(c_bindings, test))]
-impl<'a, 'b> InvoiceRequestWithExplicitPayerIdBuilder<'a, 'b> {
-	invoice_request_explicit_payer_id_builder_methods!(self, &mut Self);
+impl<'a, 'b> InvoiceRequestWithExplicitPayerSigningPubkeyBuilder<'a, 'b> {
+	invoice_request_explicit_payer_signing_pubkey_builder_methods!(self, &mut Self);
 	invoice_request_builder_methods!(self, &mut Self, &mut Self, self, secp256k1::All);
 	invoice_request_builder_test_methods!(self, &mut Self, &mut Self, self);
 }
 
 #[cfg(all(c_bindings, not(test)))]
-impl<'a, 'b> InvoiceRequestWithDerivedPayerIdBuilder<'a, 'b> {
-	invoice_request_derived_payer_id_builder_methods!(self, &mut Self, secp256k1::All);
+impl<'a, 'b> InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b> {
+	invoice_request_derived_payer_signing_pubkey_builder_methods!(self, &mut Self, secp256k1::All);
 	invoice_request_builder_methods!(self, &mut Self, (), (), secp256k1::All);
 }
 
 #[cfg(all(c_bindings, test))]
-impl<'a, 'b> InvoiceRequestWithDerivedPayerIdBuilder<'a, 'b> {
-	invoice_request_derived_payer_id_builder_methods!(self, &mut Self, secp256k1::All);
+impl<'a, 'b> InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b> {
+	invoice_request_derived_payer_signing_pubkey_builder_methods!(self, &mut Self, secp256k1::All);
 	invoice_request_builder_methods!(self, &mut Self, &mut Self, self, secp256k1::All);
 	invoice_request_builder_test_methods!(self, &mut Self, &mut Self, self);
 }
 
 #[cfg(c_bindings)]
-impl<'a, 'b> From<InvoiceRequestWithExplicitPayerIdBuilder<'a, 'b>>
-for InvoiceRequestBuilder<'a, 'b, ExplicitPayerId, secp256k1::All> {
-	fn from(builder: InvoiceRequestWithExplicitPayerIdBuilder<'a, 'b>) -> Self {
-		let InvoiceRequestWithExplicitPayerIdBuilder {
-			offer, invoice_request, payer_id, payer_id_strategy, secp_ctx,
+impl<'a, 'b> From<InvoiceRequestWithExplicitPayerSigningPubkeyBuilder<'a, 'b>>
+for InvoiceRequestBuilder<'a, 'b, ExplicitPayerSigningPubkey, secp256k1::All> {
+	fn from(builder: InvoiceRequestWithExplicitPayerSigningPubkeyBuilder<'a, 'b>) -> Self {
+		let InvoiceRequestWithExplicitPayerSigningPubkeyBuilder {
+			offer, invoice_request, payer_signing_pubkey, payer_signing_pubkey_strategy, secp_ctx,
 		} = builder;
 
 		Self {
-			offer, invoice_request, payer_id, payer_id_strategy, secp_ctx,
+			offer, invoice_request, payer_signing_pubkey, payer_signing_pubkey_strategy, secp_ctx,
 		}
 	}
 }
 
 #[cfg(c_bindings)]
-impl<'a, 'b> From<InvoiceRequestWithDerivedPayerIdBuilder<'a, 'b>>
-for InvoiceRequestBuilder<'a, 'b, DerivedPayerId, secp256k1::All> {
-	fn from(builder: InvoiceRequestWithDerivedPayerIdBuilder<'a, 'b>) -> Self {
-		let InvoiceRequestWithDerivedPayerIdBuilder {
-			offer, invoice_request, payer_id, payer_id_strategy, secp_ctx,
+impl<'a, 'b> From<InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>>
+for InvoiceRequestBuilder<'a, 'b, DerivedPayerSigningPubkey, secp256k1::All> {
+	fn from(builder: InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>) -> Self {
+		let InvoiceRequestWithDerivedPayerSigningPubkeyBuilder {
+			offer, invoice_request, payer_signing_pubkey, payer_signing_pubkey_strategy, secp_ctx,
 		} = builder;
 
 		Self {
-			offer, invoice_request, payer_id, payer_id_strategy, secp_ctx,
+			offer, invoice_request, payer_signing_pubkey, payer_signing_pubkey_strategy, secp_ctx,
 		}
 	}
 }
@@ -548,7 +548,7 @@ macro_rules! unsigned_invoice_request_sign_method { (
 	pub fn sign<F: SignInvoiceRequestFn>(
 		$($self_mut)* $self: $self_type, sign: F
 	) -> Result<InvoiceRequest, SignError> {
-		let pubkey = $self.contents.payer_id;
+		let pubkey = $self.contents.payer_signing_pubkey;
 		let signature = merkle::sign_message(sign, &$self, pubkey)?;
 
 		// Append the signature TLV record to the bytes.
@@ -630,13 +630,13 @@ pub struct VerifiedInvoiceRequest {
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct InvoiceRequestContents {
-	pub(super) inner: InvoiceRequestContentsWithoutPayerId,
-	payer_id: PublicKey,
+	pub(super) inner: InvoiceRequestContentsWithoutPayerSigningPubkey,
+	payer_signing_pubkey: PublicKey,
 }
 
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
-pub(super) struct InvoiceRequestContentsWithoutPayerId {
+pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	pub(super) payer: PayerContents,
 	pub(super) offer: OfferContents,
 	chain: Option<ChainHash>,
@@ -648,9 +648,9 @@ pub(super) struct InvoiceRequestContentsWithoutPayerId {
 
 macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	/// An unpredictable series of bytes, typically containing information about the derivation of
-	/// [`payer_id`].
+	/// [`payer_signing_pubkey`].
 	///
-	/// [`payer_id`]: Self::payer_id
+	/// [`payer_signing_pubkey`]: Self::payer_signing_pubkey
 	pub fn payer_metadata(&$self) -> &[u8] {
 		$contents.metadata()
 	}
@@ -679,8 +679,8 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// A possibly transient pubkey used to sign the invoice request.
-	pub fn payer_id(&$self) -> PublicKey {
-		$contents.payer_id()
+	pub fn payer_signing_pubkey(&$self) -> PublicKey {
+		$contents.payer_signing_pubkey()
 	}
 
 	/// A payer-provided note which will be seen by the recipient and reflected back in the invoice
@@ -856,9 +856,9 @@ impl InvoiceRequest {
 }
 
 impl InvoiceRequest {
-	/// Signature of the invoice request using [`payer_id`].
+	/// Signature of the invoice request using [`payer_signing_pubkey`].
 	///
-	/// [`payer_id`]: Self::payer_id
+	/// [`payer_signing_pubkey`]: Self::payer_signing_pubkey
 	pub fn signature(&self) -> Signature {
 		self.signature
 	}
@@ -939,14 +939,14 @@ impl VerifiedInvoiceRequest {
 
 	pub(crate) fn fields(&self) -> InvoiceRequestFields {
 		let InvoiceRequestContents {
-			payer_id,
-			inner: InvoiceRequestContentsWithoutPayerId {
+			payer_signing_pubkey,
+			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
 				payer: _, offer: _, chain: _, amount_msats: _, features: _, quantity, payer_note
 			},
 		} = &self.inner.contents;
 
 		InvoiceRequestFields {
-			payer_id: *payer_id,
+			payer_signing_pubkey: *payer_signing_pubkey,
 			quantity: *quantity,
 			payer_note_truncated: payer_note.clone()
 				.map(|mut s| { s.truncate(PAYER_NOTE_LIMIT); UntrustedString(s) }),
@@ -975,8 +975,8 @@ impl InvoiceRequestContents {
 		self.inner.quantity
 	}
 
-	pub(super) fn payer_id(&self) -> PublicKey {
-		self.payer_id
+	pub(super) fn payer_signing_pubkey(&self) -> PublicKey {
+		self.payer_signing_pubkey
 	}
 
 	pub(super) fn payer_note(&self) -> Option<PrintableString> {
@@ -986,12 +986,12 @@ impl InvoiceRequestContents {
 
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {
 		let (payer, offer, mut invoice_request) = self.inner.as_tlv_stream();
-		invoice_request.payer_id = Some(&self.payer_id);
+		invoice_request.payer_id = Some(&self.payer_signing_pubkey);
 		(payer, offer, invoice_request)
 	}
 }
 
-impl InvoiceRequestContentsWithoutPayerId {
+impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 	pub(super) fn metadata(&self) -> &[u8] {
 		self.payer.0.as_bytes().map(|bytes| bytes.as_slice()).unwrap_or(&[])
 	}
@@ -1054,7 +1054,7 @@ impl Readable for InvoiceRequest {
 /// Valid type range for invoice_request TLV records.
 pub(super) const INVOICE_REQUEST_TYPES: core::ops::Range<u64> = 80..160;
 
-/// TLV record type for [`InvoiceRequest::payer_id`] and [`Refund::payer_id`].
+/// TLV record type for [`InvoiceRequest::payer_signing_pubkey`] and [`Refund::payer_id`].
 ///
 /// [`Refund::payer_id`]: crate::offers::refund::Refund::payer_id
 pub(super) const INVOICE_REQUEST_PAYER_ID_TYPE: u64 = 88;
@@ -1139,7 +1139,7 @@ impl TryFrom<Vec<u8>> for InvoiceRequest {
 			Some(signature) => signature,
 		};
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
-		merkle::verify_signature(&signature, &message, contents.payer_id)?;
+		merkle::verify_signature(&signature, &message, contents.payer_signing_pubkey)?;
 
 		Ok(InvoiceRequest { bytes, contents, signature })
 	}
@@ -1176,8 +1176,8 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 
 		let features = features.unwrap_or_else(InvoiceRequestFeatures::empty);
 
-		let payer_id = match payer_id {
-			None => return Err(Bolt12SemanticError::MissingPayerId),
+		let payer_signing_pubkey = match payer_id {
+			None => return Err(Bolt12SemanticError::MissingPayerSigningPubkey),
 			Some(payer_id) => payer_id,
 		};
 
@@ -1186,10 +1186,10 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		}
 
 		Ok(InvoiceRequestContents {
-			inner: InvoiceRequestContentsWithoutPayerId {
+			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
 				payer, offer, chain, amount_msats: amount, features, quantity, payer_note,
 			},
-			payer_id,
+			payer_signing_pubkey,
 		})
 	}
 }
@@ -1200,7 +1200,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvoiceRequestFields {
 	/// A possibly transient pubkey used to sign the invoice request.
-	pub payer_id: PublicKey,
+	pub payer_signing_pubkey: PublicKey,
 
 	/// The quantity of the offer's item conforming to [`Offer::is_valid_quantity`].
 	pub quantity: Option<u64>,
@@ -1216,7 +1216,7 @@ pub const PAYER_NOTE_LIMIT: usize = 512;
 impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
-			(0, self.payer_id, required),
+			(0, self.payer_signing_pubkey, required),
 			(2, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
 			(4, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
 		});
@@ -1227,13 +1227,13 @@ impl Writeable for InvoiceRequestFields {
 impl Readable for InvoiceRequestFields {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
-			(0, payer_id, required),
+			(0, payer_signing_pubkey, required),
 			(2, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, payer_note_truncated, (option, encoding: (String, WithoutLength))),
 		});
 
 		Ok(InvoiceRequestFields {
-			payer_id: payer_id.0.unwrap(),
+			payer_signing_pubkey: payer_signing_pubkey.0.unwrap(),
 			quantity,
 			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
 		})
@@ -1302,7 +1302,7 @@ mod tests {
 		assert_eq!(unsigned_invoice_request.amount_msats(), None);
 		assert_eq!(unsigned_invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(unsigned_invoice_request.quantity(), None);
-		assert_eq!(unsigned_invoice_request.payer_id(), payer_pubkey());
+		assert_eq!(unsigned_invoice_request.payer_signing_pubkey(), payer_pubkey());
 		assert_eq!(unsigned_invoice_request.payer_note(), None);
 
 		match UnsignedInvoiceRequest::try_from(buffer) {
@@ -1334,7 +1334,7 @@ mod tests {
 		assert_eq!(invoice_request.amount_msats(), None);
 		assert_eq!(invoice_request.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice_request.quantity(), None);
-		assert_eq!(invoice_request.payer_id(), payer_pubkey());
+		assert_eq!(invoice_request.payer_signing_pubkey(), payer_pubkey());
 		assert_eq!(invoice_request.payer_note(), None);
 
 		let message = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &invoice_request.bytes);
@@ -1405,7 +1405,7 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_request_with_derived_metadata() {
-		let payer_id = payer_pubkey();
+		let signing_pubkey = payer_pubkey();
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
@@ -1416,11 +1416,11 @@ mod tests {
 			.amount_msats(1000)
 			.build().unwrap();
 		let invoice_request = offer
-			.request_invoice_deriving_metadata(payer_id, &expanded_key, nonce, payment_id)
+			.request_invoice_deriving_metadata(signing_pubkey, &expanded_key, nonce, payment_id)
 			.unwrap()
 			.build().unwrap()
 			.sign(payer_sign).unwrap();
-		assert_eq!(invoice_request.payer_id(), payer_pubkey());
+		assert_eq!(invoice_request.payer_signing_pubkey(), payer_pubkey());
 
 		let invoice = invoice_request.respond_with_no_std(payment_paths(), payment_hash(), now())
 			.unwrap()
@@ -1482,7 +1482,7 @@ mod tests {
 	}
 
 	#[test]
-	fn builds_invoice_request_with_derived_payer_id() {
+	fn builds_invoice_request_with_derived_payer_signing_pubkey() {
 		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
@@ -1493,7 +1493,7 @@ mod tests {
 			.amount_msats(1000)
 			.build().unwrap();
 		let invoice_request = offer
-			.request_invoice_deriving_payer_id(&expanded_key, nonce, &secp_ctx, payment_id)
+			.request_invoice_deriving_signing_pubkey(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
 			.build_and_sign()
 			.unwrap();
@@ -2215,7 +2215,7 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_parsing_invoice_request_without_payer_id() {
+	fn fails_parsing_invoice_request_without_payer_signing_pubkey() {
 		let offer = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap();
@@ -2229,7 +2229,7 @@ mod tests {
 
 		match InvoiceRequest::try_from(buffer) {
 			Ok(_) => panic!("expected error"),
-			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPayerId)),
+			Err(e) => assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::MissingPayerSigningPubkey)),
 		}
 	}
 
@@ -2349,7 +2349,7 @@ mod tests {
 				assert_eq!(
 					fields,
 					InvoiceRequestFields {
-						payer_id: payer_pubkey(),
+						payer_signing_pubkey: payer_pubkey(),
 						quantity: Some(1),
 						payer_note_truncated: Some(UntrustedString("0".repeat(PAYER_NOTE_LIMIT))),
 					}
