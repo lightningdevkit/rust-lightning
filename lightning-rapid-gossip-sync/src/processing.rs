@@ -178,7 +178,7 @@ where
 							synthetic_node_announcement.features = info.features().clone();
 							synthetic_node_announcement.rgb = info.rgb().clone();
 							synthetic_node_announcement.alias = info.alias().clone();
-							synthetic_node_announcement.addresses = info.addresses().clone();
+							synthetic_node_announcement.addresses = info.addresses().to_vec();
 						});
 
 					if has_address_details {

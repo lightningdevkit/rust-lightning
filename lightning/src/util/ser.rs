@@ -656,10 +656,24 @@ impl Readable for WithoutLength<UntrustedString> {
 	}
 }
 
-impl<'a, T: Writeable> Writeable for WithoutLength<&'a Vec<T>> {
+trait AsWriteableSlice {
+	type Inner: Writeable;
+	fn as_slice(&self) -> &[Self::Inner];
+}
+
+impl<T: Writeable> AsWriteableSlice for &Vec<T> {
+	type Inner = T;
+	fn as_slice(&self) -> &[T] { &self }
+}
+impl<T: Writeable> AsWriteableSlice for &[T] {
+	type Inner = T;
+	fn as_slice(&self) -> &[T] { &self }
+}
+
+impl<S: AsWriteableSlice> Writeable for WithoutLength<S> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		for ref v in self.0.iter() {
+		for ref v in self.0.as_slice() {
 			v.write(writer)?;
 		}
 		Ok(())

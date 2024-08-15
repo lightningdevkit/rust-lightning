@@ -1308,7 +1308,7 @@ impl NodeAnnouncementInfo {
 	}
 
 	/// Internet-level addresses via which one can connect to the node
-	pub fn addresses(&self) -> &Vec<SocketAddress> {
+	pub fn addresses(&self) -> &[SocketAddress] {
 		match self {
 			NodeAnnouncementInfo::Relayed(relayed) => {
 				&relayed.contents.addresses
