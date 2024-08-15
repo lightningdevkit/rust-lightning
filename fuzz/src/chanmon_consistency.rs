@@ -880,7 +880,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							script_pubkey: output_script,
 						}],
 					};
-					funding_output = OutPoint { txid: tx.txid(), index: 0 };
+					funding_output = OutPoint { txid: tx.compute_txid(), index: 0 };
 					$source
 						.funding_transaction_generated(
 							temporary_channel_id,
