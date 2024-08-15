@@ -432,7 +432,7 @@ where
 	fn get_confirmed_tx(
 		&self, tx: &Transaction, prob_conf_height: u32,
 	) -> Result<ConfirmedTx, InternalError> {
-		let txid = tx.txid();
+		let txid = tx.compute_txid();
 		match self.client.transaction_get_merkle(&txid, prob_conf_height as usize) {
 			Ok(merkle_res) => {
 				debug_assert_eq!(prob_conf_height, merkle_res.block_height as u32);

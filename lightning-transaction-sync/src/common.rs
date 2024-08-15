@@ -74,11 +74,12 @@ impl SyncState {
 				);
 			}
 
-			self.watched_transactions.remove(&ctx.tx.txid());
+			self.watched_transactions.remove(&ctx.tx.compute_txid());
 
 			for input in &ctx.tx.input {
 				if let Some(output) = self.watched_outputs.remove(&input.previous_output) {
-					let spent = (ctx.tx.txid(), ctx.block_height, input.previous_output, output);
+					let spent =
+						(ctx.tx.compute_txid(), ctx.block_height, input.previous_output, output);
 					self.outputs_spends_pending_threshold_conf.push(spent);
 				}
 			}

@@ -367,7 +367,7 @@ where
 			// unwrap() safety: len() > 0 is checked above
 			let pos = *indexes.first().unwrap() as usize;
 			if let Some(tx) = maybe_await!(self.client.get_tx(&txid))? {
-				if tx.txid() != txid {
+				if tx.compute_txid() != txid {
 					log_error!(self.logger, "Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
 					return Err(InternalError::Failed);
 				}

@@ -134,7 +134,7 @@ impl TestConfirmable {
 impl Confirm for TestConfirmable {
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData<'_>, height: u32) {
 		for (_, tx) in txdata {
-			let txid = tx.txid();
+			let txid = tx.compute_txid();
 			let block_hash = header.block_hash();
 			self.confirmed_txs.lock().unwrap().insert(txid, (block_hash, height));
 			self.unconfirmed_txs.lock().unwrap().remove(&txid);
