@@ -925,7 +925,7 @@ where
 		}
 	};
 	let (packet_payloads, packet_keys) = packet_payloads_and_keys(
-		&secp_ctx, &intermediate_nodes, destination, contents, reply_path, &blinding_secret
+		&secp_ctx, intermediate_nodes, destination, contents, reply_path, &blinding_secret
 	)?;
 
 	let prng_seed = entropy_source.get_secure_random_bytes();
@@ -1784,7 +1784,7 @@ pub type SimpleRefOnionMessenger<
 /// Construct onion packet payloads and keys for sending an onion message along the given
 /// `unblinded_path` to the given `destination`.
 fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<S>, unblinded_path: &[PublicKey], destination: Destination, message: T,
+	secp_ctx: &Secp256k1<S>, unblinded_path: Vec<PublicKey>, destination: Destination, message: T,
 	mut reply_path: Option<BlindedMessagePath>, session_priv: &SecretKey
 ) -> Result<(Vec<(Payload<T>, [u8; 32])>, Vec<onion_utils::OnionKeys>), SendError> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
@@ -1809,7 +1809,8 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 	let mut blinded_path_idx = 0;
 	let mut prev_control_tlvs_ss = None;
 	let mut final_control_tlvs = None;
-	utils::construct_keys_callback(secp_ctx, unblinded_path.iter(), Some(destination), session_priv,
+	utils::construct_keys_callback(
+		secp_ctx, unblinded_path.into_iter(), Some(destination), session_priv,
 		|_, onion_packet_ss, ephemeral_pubkey, control_tlvs_ss, unblinded_pk_opt, enc_payload_opt| {
 			if num_unblinded_hops != 0 && unblinded_path_idx < num_unblinded_hops {
 				if let Some(ss) = prev_control_tlvs_ss.take() {
