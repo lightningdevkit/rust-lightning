@@ -16,7 +16,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
-use crate::blinded_path::message::{advance_path_by_one, BlindedMessagePath, ForwardNode, ForwardTlvs, MessageContext, NextMessageHop, ReceiveTlvs};
+use crate::blinded_path::message::{BlindedMessagePath, ForwardNode, ForwardTlvs, MessageContext, NextMessageHop, ReceiveTlvs};
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
@@ -901,7 +901,7 @@ where
 				},
 			};
 			if introduction_node_id == our_node_id {
-				advance_path_by_one(blinded_path, node_signer, node_id_lookup, &secp_ctx)
+				blinded_path.advance_path_by_one(node_signer, node_id_lookup, &secp_ctx)
 					.map_err(|()| SendError::BlindedPathAdvanceFailed)?;
 			}
 		}

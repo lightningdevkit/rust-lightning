@@ -14,7 +14,6 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
-use crate::blinded_path::payment::advance_path_by_one;
 use crate::events::{self, PaymentFailureReason};
 use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel_state::ChannelDetails;
@@ -845,7 +844,7 @@ impl OutboundPayments {
 					},
 				};
 				if introduction_node_id == our_node_id {
-					let _ = advance_path_by_one(path, node_signer, node_id_lookup, secp_ctx);
+					let _ = path.advance_path_by_one(node_signer, node_id_lookup, secp_ctx);
 				}
 			}
 		}

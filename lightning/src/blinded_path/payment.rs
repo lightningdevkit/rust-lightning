@@ -121,6 +121,43 @@ impl BlindedPaymentPath {
 		&self.0.blinded_hops
 	}
 
+	/// Advance the blinded onion payment path by one hop, making the second hop into the new
+	/// introduction node.
+	///
+	/// Will only modify `self` when returning `Ok`.
+	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
+	) -> Result<(), ()>
+	where
+		NS::Target: NodeSigner,
+		NL::Target: NodeIdLookUp,
+		T: secp256k1::Signing + secp256k1::Verification,
+	{
+		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.0.blinding_point, None)?;
+		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
+		let encrypted_control_tlvs = &self.0.blinded_hops.get(0).ok_or(())?.encrypted_payload;
+		let mut s = Cursor::new(encrypted_control_tlvs);
+		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
+		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
+			Ok(ChaChaPolyReadAdapter {
+				readable: BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. })
+			}) => {
+				let next_node_id = match node_id_lookup.next_node_id(short_channel_id) {
+					Some(node_id) => node_id,
+					None => return Err(()),
+				};
+				let mut new_blinding_point = onion_utils::next_hop_pubkey(
+					secp_ctx, self.0.blinding_point, control_tlvs_ss.as_ref()
+				).map_err(|_| ())?;
+				mem::swap(&mut self.0.blinding_point, &mut new_blinding_point);
+				self.0.introduction_node = IntroductionNode::NodeId(next_node_id);
+				self.0.blinded_hops.remove(0);
+				Ok(())
+			},
+			_ => Err(())
+		}
+	}
+
 	#[cfg(any(test, fuzzing))]
 	pub fn from_raw(
 		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>
@@ -381,43 +418,6 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	let tlvs = intermediate_nodes.iter().map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
 		.chain(core::iter::once(BlindedPaymentTlvsRef::Receive(&payee_tlvs)));
 	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
-}
-
-/// Advance the blinded onion payment path by one hop, making the second hop into the new
-/// introduction node.
-///
-/// Will only modify `path` when returning `Ok`.
-pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
-	path: &mut BlindedPaymentPath, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
-) -> Result<(), ()>
-where
-	NS::Target: NodeSigner,
-	NL::Target: NodeIdLookUp,
-	T: secp256k1::Signing + secp256k1::Verification,
-{
-	let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &path.0.blinding_point, None)?;
-	let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
-	let encrypted_control_tlvs = &path.0.blinded_hops.get(0).ok_or(())?.encrypted_payload;
-	let mut s = Cursor::new(encrypted_control_tlvs);
-	let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
-	match ChaChaPolyReadAdapter::read(&mut reader, rho) {
-		Ok(ChaChaPolyReadAdapter {
-			readable: BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. })
-		}) => {
-			let next_node_id = match node_id_lookup.next_node_id(short_channel_id) {
-				Some(node_id) => node_id,
-				None => return Err(()),
-			};
-			let mut new_blinding_point = onion_utils::next_hop_pubkey(
-				secp_ctx, path.0.blinding_point, control_tlvs_ss.as_ref()
-			).map_err(|_| ())?;
-			mem::swap(&mut path.0.blinding_point, &mut new_blinding_point);
-			path.0.introduction_node = IntroductionNode::NodeId(next_node_id);
-			path.0.blinded_hops.remove(0);
-			Ok(())
-		},
-		_ => Err(())
-	}
 }
 
 /// `None` if underflow occurs.
