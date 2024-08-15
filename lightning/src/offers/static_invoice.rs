@@ -27,7 +27,7 @@ use crate::offers::offer::{
 	Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, Quantity,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
-use crate::util::ser::{Iterable, SeekReadable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{CursorReadable, Iterable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 use bitcoin::address::Address;
 use bitcoin::constants::ChainHash;
@@ -457,11 +457,11 @@ impl TryFrom<Vec<u8>> for StaticInvoice {
 
 type FullInvoiceTlvStream = (OfferTlvStream, InvoiceTlvStream, SignatureTlvStream);
 
-impl SeekReadable for FullInvoiceTlvStream {
-	fn read<R: io::Read + io::Seek>(r: &mut R) -> Result<Self, DecodeError> {
-		let offer = SeekReadable::read(r)?;
-		let invoice = SeekReadable::read(r)?;
-		let signature = SeekReadable::read(r)?;
+impl CursorReadable for FullInvoiceTlvStream {
+	fn read<R: AsRef<[u8]>>(r: &mut io::Cursor<R>) -> Result<Self, DecodeError> {
+		let offer = CursorReadable::read(r)?;
+		let invoice = CursorReadable::read(r)?;
+		let signature = CursorReadable::read(r)?;
 
 		Ok((offer, invoice, signature))
 	}

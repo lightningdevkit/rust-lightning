@@ -952,13 +952,13 @@ macro_rules! tlv_stream {
 			}
 		}
 
-		impl $crate::util::ser::SeekReadable for $name {
-			fn read<R: $crate::io::Read + $crate::io::Seek>(reader: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
+		impl $crate::util::ser::CursorReadable for $name {
+			fn read<R: AsRef<[u8]>>(reader: &mut crate::io::Cursor<R>) -> Result<Self, $crate::ln::msgs::DecodeError> {
 				$(
 					_init_tlv_field_var!($field, option);
 				)*
-				let rewind = |cursor: &mut R, offset: usize| {
-					cursor.seek($crate::io::SeekFrom::Current(-(offset as i64))).expect("");
+				let rewind = |cursor: &mut crate::io::Cursor<R>, offset: usize| {
+					cursor.set_position(cursor.position().checked_sub(offset as u64).expect("Cannot rewind past 0."));
 				};
 				_decode_tlv_stream_range!(reader, $range, rewind, {
 					$(($type, $field, (option, encoding: $fieldty))),*

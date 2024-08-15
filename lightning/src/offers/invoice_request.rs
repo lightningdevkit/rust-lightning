@@ -75,7 +75,7 @@ use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferT
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
-use crate::util::ser::{HighZeroBytesDroppedBigSize, Readable, SeekReadable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{CursorReadable, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::{PrintableString, UntrustedString};
 
 #[cfg(not(c_bindings))]
@@ -1070,12 +1070,12 @@ type FullInvoiceRequestTlvStreamRef<'a> = (
 	SignatureTlvStreamRef<'a>,
 );
 
-impl SeekReadable for FullInvoiceRequestTlvStream {
-	fn read<R: io::Read + io::Seek>(r: &mut R) -> Result<Self, DecodeError> {
-		let payer = SeekReadable::read(r)?;
-		let offer = SeekReadable::read(r)?;
-		let invoice_request = SeekReadable::read(r)?;
-		let signature = SeekReadable::read(r)?;
+impl CursorReadable for FullInvoiceRequestTlvStream {
+	fn read<R: AsRef<[u8]>>(r: &mut io::Cursor<R>) -> Result<Self, DecodeError> {
+		let payer = CursorReadable::read(r)?;
+		let offer = CursorReadable::read(r)?;
+		let invoice_request = CursorReadable::read(r)?;
+		let signature = CursorReadable::read(r)?;
 
 		Ok((payer, offer, invoice_request, signature))
 	}

@@ -125,7 +125,7 @@ use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage}
 use crate::offers::payer::{PAYER_METADATA_TYPE, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::refund::{IV_BYTES_WITH_METADATA as REFUND_IV_BYTES_WITH_METADATA, IV_BYTES_WITHOUT_METADATA as REFUND_IV_BYTES_WITHOUT_METADATA, Refund, RefundContents};
 use crate::offers::signer::{Metadata, self};
-use crate::util::ser::{HighZeroBytesDroppedBigSize, Iterable, Readable, SeekReadable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{CursorReadable, HighZeroBytesDroppedBigSize, Iterable, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 #[allow(unused_imports)]
@@ -1266,13 +1266,13 @@ type FullInvoiceTlvStreamRef<'a> = (
 	SignatureTlvStreamRef<'a>,
 );
 
-impl SeekReadable for FullInvoiceTlvStream {
-	fn read<R: io::Read + io::Seek>(r: &mut R) -> Result<Self, DecodeError> {
-		let payer = SeekReadable::read(r)?;
-		let offer = SeekReadable::read(r)?;
-		let invoice_request = SeekReadable::read(r)?;
-		let invoice = SeekReadable::read(r)?;
-		let signature = SeekReadable::read(r)?;
+impl CursorReadable for FullInvoiceTlvStream {
+	fn read<R: AsRef<[u8]>>(r: &mut io::Cursor<R>) -> Result<Self, DecodeError> {
+		let payer = CursorReadable::read(r)?;
+		let offer = CursorReadable::read(r)?;
+		let invoice_request = CursorReadable::read(r)?;
+		let invoice = CursorReadable::read(r)?;
+		let signature = CursorReadable::read(r)?;
 
 		Ok((payer, offer, invoice_request, invoice, signature))
 	}
@@ -1288,12 +1288,12 @@ type PartialInvoiceTlvStreamRef<'a> = (
 	InvoiceTlvStreamRef<'a>,
 );
 
-impl SeekReadable for PartialInvoiceTlvStream {
-	fn read<R: io::Read + io::Seek>(r: &mut R) -> Result<Self, DecodeError> {
-		let payer = SeekReadable::read(r)?;
-		let offer = SeekReadable::read(r)?;
-		let invoice_request = SeekReadable::read(r)?;
-		let invoice = SeekReadable::read(r)?;
+impl CursorReadable for PartialInvoiceTlvStream {
+	fn read<R: AsRef<[u8]>>(r: &mut io::Cursor<R>) -> Result<Self, DecodeError> {
+		let payer = CursorReadable::read(r)?;
+		let offer = CursorReadable::read(r)?;
+		let invoice_request = CursorReadable::read(r)?;
+		let invoice = CursorReadable::read(r)?;
 
 		Ok((payer, offer, invoice_request, invoice))
 	}
