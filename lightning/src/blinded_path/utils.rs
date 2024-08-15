@@ -114,6 +114,23 @@ where
 	Ok(())
 }
 
+#[inline]
+pub(super) fn construct_keys_callback_for_blinded_path<'a, T, I, F>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv: &SecretKey, mut callback: F,
+) -> Result<(), secp256k1::Error>
+where
+	T: secp256k1::Signing + secp256k1::Verification,
+	I: Iterator<Item=PublicKey>,
+	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
+{
+	build_keys_helper!(session_priv, secp_ctx, callback);
+
+	for pk in unblinded_path {
+		build_keys_in_loop!(pk, false, None);
+	}
+	Ok(())
+}
+
 // Panics if `unblinded_tlvs` length is less than `unblinded_pks` length
 pub(crate) fn construct_blinded_hops<'a, T, I1, I2>(
 	secp_ctx: &Secp256k1<T>, unblinded_pks: I1, mut unblinded_tlvs: I2, session_priv: &SecretKey
@@ -125,8 +142,8 @@ where
 	I2::Item: Writeable
 {
 	let mut blinded_hops = Vec::with_capacity(unblinded_pks.size_hint().0);
-	construct_keys_callback(
-		secp_ctx, unblinded_pks, None, session_priv,
+	construct_keys_callback_for_blinded_path(
+		secp_ctx, unblinded_pks, session_priv,
 		|blinded_node_id, _, _, encrypted_payload_rho, _, _| {
 			blinded_hops.push(BlindedHop {
 				blinded_node_id,
