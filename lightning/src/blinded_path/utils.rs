@@ -29,18 +29,11 @@ use crate::io;
 use crate::prelude::*;
 
 // TODO: DRY with onion_utils::construct_onion_keys_callback
-#[inline]
-pub(crate) fn construct_keys_callback<'a, T, I, F>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Option<Destination>,
-	session_priv: &SecretKey, mut callback: F
-) -> Result<(), secp256k1::Error>
-where
-	T: secp256k1::Signing + secp256k1::Verification,
-	I: Iterator<Item=&'a PublicKey>,
-	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
+macro_rules! build_keys_helper {
+	($session_priv: ident, $secp_ctx: ident, $callback: ident) =>
 {
-	let mut msg_blinding_point_priv = session_priv.clone();
-	let mut msg_blinding_point = PublicKey::from_secret_key(secp_ctx, &msg_blinding_point_priv);
+	let mut msg_blinding_point_priv = $session_priv.clone();
+	let mut msg_blinding_point = PublicKey::from_secret_key($secp_ctx, &msg_blinding_point_priv);
 	let mut onion_packet_pubkey_priv = msg_blinding_point_priv.clone();
 	let mut onion_packet_pubkey = msg_blinding_point.clone();
 
@@ -54,13 +47,13 @@ where
 					hmac.input(encrypted_data_ss.as_ref());
 					Hmac::from_engine(hmac).to_byte_array()
 				};
-				$pk.mul_tweak(secp_ctx, &Scalar::from_be_bytes(hop_pk_blinding_factor).unwrap())?
+				$pk.mul_tweak($secp_ctx, &Scalar::from_be_bytes(hop_pk_blinding_factor).unwrap())?
 			};
 			let onion_packet_ss = SharedSecret::new(&blinded_hop_pk, &onion_packet_pubkey_priv);
 
 			let rho = onion_utils::gen_rho_from_shared_secret(encrypted_data_ss.as_ref());
 			let unblinded_pk_opt = if $blinded { None } else { Some($pk) };
-			callback(blinded_hop_pk, onion_packet_ss, onion_packet_pubkey, rho, unblinded_pk_opt, $encrypted_payload);
+			$callback(blinded_hop_pk, onion_packet_ss, onion_packet_pubkey, rho, unblinded_pk_opt, $encrypted_payload);
 			(encrypted_data_ss, onion_packet_ss)
 		}}
 	}
@@ -77,7 +70,7 @@ where
 			};
 
 			msg_blinding_point_priv = msg_blinding_point_priv.mul_tweak(&Scalar::from_be_bytes(msg_blinding_point_blinding_factor).unwrap())?;
-			msg_blinding_point = PublicKey::from_secret_key(secp_ctx, &msg_blinding_point_priv);
+			msg_blinding_point = PublicKey::from_secret_key($secp_ctx, &msg_blinding_point_priv);
 
 			let onion_packet_pubkey_blinding_factor = {
 				let mut sha = Sha256::engine();
@@ -86,9 +79,22 @@ where
 				Sha256::from_engine(sha).to_byte_array()
 			};
 			onion_packet_pubkey_priv = onion_packet_pubkey_priv.mul_tweak(&Scalar::from_be_bytes(onion_packet_pubkey_blinding_factor).unwrap())?;
-			onion_packet_pubkey = PublicKey::from_secret_key(secp_ctx, &onion_packet_pubkey_priv);
+			onion_packet_pubkey = PublicKey::from_secret_key($secp_ctx, &onion_packet_pubkey_priv);
 		};
 	}
+}}
+
+#[inline]
+pub(crate) fn construct_keys_callback<'a, T, I, F>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Option<Destination>,
+	session_priv: &SecretKey, mut callback: F
+) -> Result<(), secp256k1::Error>
+where
+	T: secp256k1::Signing + secp256k1::Verification,
+	I: Iterator<Item=&'a PublicKey>,
+	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
+{
+	build_keys_helper!(session_priv, secp_ctx, callback);
 
 	for pk in unblinded_path {
 		build_keys_in_loop!(*pk, false, None);
