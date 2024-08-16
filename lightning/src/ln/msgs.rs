@@ -2771,8 +2771,8 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 		let mut custom_tlvs = Vec::new();
 
 		let tlv_len = BigSize::read(r)?;
-		let rd = FixedLengthReader::new(r, tlv_len.0);
-		decode_tlv_stream_with_custom_tlv_decode!(rd, {
+		let mut rd = FixedLengthReader::new(r, tlv_len.0);
+		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
 			(2, amt, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, cltv_value, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
 			(6, short_id, option),
@@ -2786,7 +2786,7 @@ impl<NS: Deref> ReadableArgs<(Option<PublicKey>, &NS)> for InboundOnionPayload w
 		}, |msg_type: u64, msg_reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
 			if msg_type < 1 << 16 { return Ok(false) }
 			let mut value = Vec::new();
-			msg_reader.read_to_end(&mut value)?;
+			msg_reader.read_to_limit(&mut value, u64::MAX)?;
 			custom_tlvs.push((msg_type, value));
 			Ok(true)
 		});
@@ -4007,11 +4007,11 @@ mod tests {
 				output: vec![
 					TxOut {
 						value: Amount::from_sat(12704566),
-						script_pubkey: Address::from_str("bc1qzlffunw52jav8vwdu5x3jfk6sr8u22rmq3xzw2").unwrap().payload().script_pubkey(),
+						script_pubkey: Address::from_str("bc1qzlffunw52jav8vwdu5x3jfk6sr8u22rmq3xzw2").unwrap().assume_checked().script_pubkey(),
 					},
 					TxOut {
 						value: Amount::from_sat(245148),
-						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().payload().script_pubkey(),
+						script_pubkey: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().assume_checked().script_pubkey(),
 					},
 				],
 			}).unwrap(),
@@ -4030,7 +4030,7 @@ mod tests {
 			channel_id: ChannelId::from_bytes([2; 32]),
 			serial_id: 4886718345,
 			sats: 4886718345,
-			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().payload().script_pubkey(),
+			script: Address::from_str("bc1qxmk834g5marzm227dgqvynd23y2nvt2ztwcw2z").unwrap().assume_checked().script_pubkey(),
 		};
 		let encoded_value = tx_add_output.encode();
 		let target_value = <Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202000000012345678900000001234567890016001436ec78d514df462da95e6a00c24daa8915362d42").unwrap();
@@ -4179,7 +4179,7 @@ mod tests {
 			scriptpubkey:
 				if script_type == 1 { Address::p2pkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).script_pubkey() }
 				else if script_type == 2 { Address::p2sh(&script, Network::Testnet).unwrap().script_pubkey() }
-				else if script_type == 3 { Address::p2wpkh(&::bitcoin::PublicKey{compressed: true, inner: pubkey_1}, Network::Testnet).unwrap().script_pubkey() }
+				else if script_type == 3 { Address::p2wpkh(&::bitcoin::CompressedPublicKey(pubkey_1), Network::Testnet).script_pubkey() }
 				else { Address::p2wsh(&script, Network::Testnet).script_pubkey() },
 		};
 		let encoded_value = shutdown.encode();

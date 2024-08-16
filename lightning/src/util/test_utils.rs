@@ -732,7 +732,7 @@ impl TestBroadcaster {
 	pub fn unique_txn_broadcast(&self) -> Vec<Transaction> {
 		let mut txn = self.txn_broadcasted.lock().unwrap().split_off(0);
 		let mut seen = new_hash_set();
-		txn.retain(|tx| seen.insert(tx.txid()));
+		txn.retain(|tx| seen.insert(tx.compute_txid()));
 		txn
 	}
 }
@@ -1591,8 +1591,8 @@ impl WalletSource for TestWalletSource {
 				let sighash = SighashCache::new(&tx)
 					.legacy_signature_hash(i, &utxo.output.script_pubkey, EcdsaSighashType::All as u32)
 					.map_err(|_| ())?;
-				let sig = self.secp.sign_ecdsa(&secp256k1::Message::from_digest(sighash.to_byte_array()), &self.secret_key);
-				let bitcoin_sig = bitcoin::ecdsa::Signature { sig, hash_ty: EcdsaSighashType::All };
+				let signature = self.secp.sign_ecdsa(&secp256k1::Message::from_digest(sighash.to_byte_array()), &self.secret_key);
+				let bitcoin_sig = bitcoin::ecdsa::Signature { signature, sighash_type: EcdsaSighashType::All };
 				tx.input[i].script_sig = Builder::new()
 					.push_slice(&bitcoin_sig.serialize())
 					.push_slice(&self.secret_key.public_key(&self.secp).serialize())

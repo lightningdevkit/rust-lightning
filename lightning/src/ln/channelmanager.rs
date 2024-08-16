@@ -724,7 +724,7 @@ enum FundingType {
 impl FundingType {
 	fn txid(&self) -> Txid {
 		match self {
-			FundingType::Checked(tx) => tx.txid(),
+			FundingType::Checked(tx) => tx.compute_txid(),
 			FundingType::Unchecked(outp) => outp.txid,
 		}
 	}
@@ -2850,7 +2850,7 @@ macro_rules! handle_monitor_update_completion {
 					}
 				}
 				if let Some(tx) = batch_funding_tx {
-					log_info!($self.logger, "Broadcasting batch funding transaction with txid {}", tx.txid());
+					log_info!($self.logger, "Broadcasting batch funding transaction with txid {}", tx.compute_txid());
 					$self.tx_broadcaster.broadcast_transactions(&[&tx]);
 				}
 			}
@@ -4546,7 +4546,7 @@ where
 
 	#[cfg(test)]
 	pub(crate) fn funding_transaction_generated_unchecked(&self, temporary_channel_id: ChannelId, counterparty_node_id: PublicKey, funding_transaction: Transaction, output_index: u16) -> Result<(), APIError> {
-		let txid = funding_transaction.txid();
+		let txid = funding_transaction.compute_txid();
 		self.funding_transaction_generated_intern(temporary_channel_id, counterparty_node_id, funding_transaction, false, |_| {
 			Ok(OutPoint { txid, index: output_index })
 		}, false)
@@ -7051,7 +7051,7 @@ where
 
 		if let Some(tx) = funding_broadcastable {
 			if channel.context.is_manual_broadcast() {
-				log_info!(logger, "Not broadcasting funding transaction with txid {} as it is manually managed", tx.txid());
+				log_info!(logger, "Not broadcasting funding transaction with txid {} as it is manually managed", tx.compute_txid());
 				let mut pending_events = self.pending_events.lock().unwrap();
 				match channel.context.get_funding_txo() {
 					Some(funding_txo) => {
@@ -7063,7 +7063,7 @@ where
 					}
 				};
 			} else {
-				log_info!(logger, "Broadcasting funding transaction with txid {}", tx.txid());
+				log_info!(logger, "Broadcasting funding transaction with txid {}", tx.compute_txid());
 				self.tx_broadcaster.broadcast_transactions(&[&tx]);
 			}
 		}
@@ -13342,7 +13342,7 @@ mod tests {
 		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
 
 		let (temporary_channel_id, tx, funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
-		let channel_id = ChannelId::from_bytes(tx.txid().to_byte_array());
+		let channel_id = ChannelId::from_bytes(tx.compute_txid().to_byte_array());
 		{
 			// Ensure that the `outpoint_to_peer` map is empty until either party has received the
 			// funding transaction, and have the real `channel_id`.

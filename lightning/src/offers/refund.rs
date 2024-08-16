@@ -105,7 +105,7 @@ use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
-use crate::util::ser::{SeekReadable, Readable, WithoutLength, Writeable, Writer};
+use crate::util::ser::{CursorReadable, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
@@ -802,11 +802,11 @@ type RefundTlvStreamRef<'a> = (
 	InvoiceRequestTlvStreamRef<'a>,
 );
 
-impl SeekReadable for RefundTlvStream {
-	fn read<R: io::Read + io::Seek>(r: &mut R) -> Result<Self, DecodeError> {
-		let payer = SeekReadable::read(r)?;
-		let offer = SeekReadable::read(r)?;
-		let invoice_request = SeekReadable::read(r)?;
+impl CursorReadable for RefundTlvStream {
+	fn read<R: AsRef<[u8]>>(r: &mut io::Cursor<R>) -> Result<Self, DecodeError> {
+		let payer = CursorReadable::read(r)?;
+		let offer = CursorReadable::read(r)?;
+		let invoice_request = CursorReadable::read(r)?;
 
 		Ok((payer, offer, invoice_request))
 	}

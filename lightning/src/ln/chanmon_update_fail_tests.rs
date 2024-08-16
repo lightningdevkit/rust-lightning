@@ -50,7 +50,7 @@ fn test_monitor_and_persister_update_fail() {
 
 	// Create some initial channel
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let outpoint = OutPoint { txid: chan.3.txid(), index: 0 };
+	let outpoint = OutPoint { txid: chan.3.compute_txid(), index: 0 };
 
 	// Rebalance the network to generate htlc in the two directions
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000);
@@ -1884,7 +1884,7 @@ fn do_during_funding_monitor_fail(confirm_a_first: bool, restore_b_before_conf: 
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 0);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0].txid(), funding_output.txid);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0)[0].compute_txid(), funding_output.txid);
 
 	if confirm_a_first {
 		confirm_transaction(&nodes[0], &funding_tx);

@@ -120,8 +120,8 @@ impl InputData {
 		Some(&self.data[old_pos..old_pos + len])
 	}
 }
-impl std::io::Read for &InputData {
-	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl lightning::io::Read for &InputData {
+	fn read(&mut self, buf: &mut [u8]) -> lightning::io::Result<usize> {
 		if let Some(sl) = self.get_slice(buf.len()) {
 			buf.copy_from_slice(sl);
 			Ok(buf.len())
@@ -305,7 +305,7 @@ impl<'a> MoneyLossDetector<'a> {
 	fn connect_block(&mut self, all_txn: &[Transaction]) {
 		let mut txdata = Vec::with_capacity(all_txn.len());
 		for (idx, tx) in all_txn.iter().enumerate() {
-			let txid = tx.txid();
+			let txid = tx.compute_txid();
 			self.txids_confirmed.entry(txid).or_insert_with(|| {
 				txdata.push((idx + 1, tx));
 				self.height
@@ -897,7 +897,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 					if tx.version.0 > 0xff {
 						break;
 					}
-					let funding_txid = tx.txid();
+					let funding_txid = tx.compute_txid();
 					if loss_detector.txids_confirmed.get(&funding_txid).is_none() {
 						let outpoint = OutPoint { txid: funding_txid, index: 0 };
 						for chan in channelmanager.list_channels() {
@@ -922,7 +922,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 							panic!();
 						}
 					}
-					let funding_txid = tx.txid();
+					let funding_txid = tx.compute_txid();
 					for idx in 0..tx.output.len() {
 						let outpoint = OutPoint { txid: funding_txid, index: idx as u16 };
 						pending_funding_signatures.insert(outpoint, tx.clone());

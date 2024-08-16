@@ -622,10 +622,7 @@ pub(crate) mod tests {
 		match TryInto::<Txid>::try_into(response) {
 			Err(e) => {
 				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(
-					e.get_ref().unwrap().to_string(),
-					"bad hex string length 6 (expected 64)"
-				);
+				assert_eq!(e.get_ref().unwrap().to_string(), "failed to parse hex");
 			},
 			Ok(_) => panic!("Expected error"),
 		}
@@ -637,10 +634,7 @@ pub(crate) mod tests {
 		match TryInto::<Txid>::try_into(response) {
 			Err(e) => {
 				assert_eq!(e.kind(), io::ErrorKind::InvalidData);
-				assert_eq!(
-					e.get_ref().unwrap().to_string(),
-					"bad hex string length 4 (expected 64)"
-				);
+				assert_eq!(e.get_ref().unwrap().to_string(), "failed to parse hex");
 			},
 			Ok(_) => panic!("Expected error"),
 		}

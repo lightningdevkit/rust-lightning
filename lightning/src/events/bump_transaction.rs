@@ -471,7 +471,7 @@ where
 				WITNESS_SCALE_FACTOR as u64,
 		);
 		let change_output_amount = Amount::from_sat(remaining_amount.to_sat().saturating_sub(change_output_fee));
-		let change_output = if change_output_amount < change_script.dust_value() {
+		let change_output = if change_output_amount < change_script.minimal_non_dust() {
 			log_debug!(self.logger, "Coin selection attempt did not yield change output");
 			None
 		} else {
@@ -632,7 +632,7 @@ where
 			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
 
 		self.process_coin_selection(&mut anchor_tx, &coin_selection);
-		let anchor_txid = anchor_tx.txid();
+		let anchor_txid = anchor_tx.compute_txid();
 
 		// construct psbt
 		let mut anchor_psbt = Psbt::from_unsigned_tx(anchor_tx).unwrap();
@@ -679,7 +679,7 @@ where
 		}
 
 		log_info!(self.logger, "Broadcasting anchor transaction {} to bump channel close with txid {}",
-			anchor_txid, commitment_tx.txid());
+			anchor_txid, commitment_tx.compute_txid());
 		self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
 		Ok(())
 	}
@@ -755,7 +755,7 @@ where
 		#[cfg(debug_assertions)]
 		let unsigned_tx_weight = htlc_psbt.unsigned_tx.weight().to_wu() - (htlc_psbt.unsigned_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
-		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_psbt.unsigned_tx.txid());
+		log_debug!(self.logger, "Signing HTLC transaction {}", htlc_psbt.unsigned_tx.compute_txid());
 		htlc_tx = self.utxo_source.sign_psbt(htlc_psbt)?;
 
 		let mut signers = BTreeMap::new();
@@ -798,13 +798,13 @@ where
 				commitment_tx_fee_satoshis, anchor_descriptor, ..
 			} => {
 				log_info!(self.logger, "Handling channel close bump (claim_id = {}, commitment_txid = {})",
-					log_bytes!(claim_id.0), commitment_tx.txid());
+					log_bytes!(claim_id.0), commitment_tx.compute_txid());
 				if let Err(_) = self.handle_channel_close(
 					*claim_id, *package_target_feerate_sat_per_1000_weight, commitment_tx,
 					*commitment_tx_fee_satoshis, anchor_descriptor,
 				) {
 					log_error!(self.logger, "Failed bumping commitment transaction fee for {}",
-						commitment_tx.txid());
+						commitment_tx.compute_txid());
 				}
 			}
 			BumpTransactionEvent::HTLCResolution {

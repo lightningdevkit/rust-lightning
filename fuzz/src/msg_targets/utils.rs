@@ -12,7 +12,7 @@
 use lightning::util::ser::Writer;
 pub struct VecWriter(pub Vec<u8>);
 impl Writer for VecWriter {
-	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::lightning::io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
 	}
@@ -31,7 +31,7 @@ impl Writer for VecWriter {
 macro_rules! test_msg {
 	($MsgType: path, $data: ident) => {{
 		use lightning::util::ser::{Readable, Writeable};
-		let mut r = ::std::io::Cursor::new($data);
+		let mut r = ::lightning::io::Cursor::new($data);
 		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
 			let p = r.position() as usize;
 			let mut w = VecWriter(Vec::new());
@@ -50,13 +50,14 @@ macro_rules! test_msg {
 macro_rules! test_msg_simple {
 	($MsgType: path, $data: ident) => {{
 		use lightning::util::ser::{Readable, Writeable};
-		let mut r = ::std::io::Cursor::new($data);
+		let mut r = ::lightning::io::Cursor::new($data);
 		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
 			let mut w = VecWriter(Vec::new());
 			msg.write(&mut w).unwrap();
 			assert_eq!(msg.serialized_length(), w.0.len());
 
-			let msg = <$MsgType as Readable>::read(&mut ::std::io::Cursor::new(&w.0)).unwrap();
+			let msg =
+				<$MsgType as Readable>::read(&mut ::lightning::io::Cursor::new(&w.0)).unwrap();
 			let mut w_two = VecWriter(Vec::new());
 			msg.write(&mut w_two).unwrap();
 			assert_eq!(&w.0[..], &w_two.0[..]);
@@ -70,7 +71,7 @@ macro_rules! test_msg_simple {
 macro_rules! test_msg_exact {
 	($MsgType: path, $data: ident) => {{
 		use lightning::util::ser::{Readable, Writeable};
-		let mut r = ::std::io::Cursor::new($data);
+		let mut r = ::lightning::io::Cursor::new($data);
 		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
 			let mut w = VecWriter(Vec::new());
 			msg.write(&mut w).unwrap();
@@ -86,7 +87,7 @@ macro_rules! test_msg_exact {
 macro_rules! test_msg_hole {
 	($MsgType: path, $data: ident, $hole: expr, $hole_len: expr) => {{
 		use lightning::util::ser::{Readable, Writeable};
-		let mut r = ::std::io::Cursor::new($data);
+		let mut r = ::lightning::io::Cursor::new($data);
 		if let Ok(msg) = <$MsgType as Readable>::read(&mut r) {
 			let mut w = VecWriter(Vec::new());
 			msg.write(&mut w).unwrap();

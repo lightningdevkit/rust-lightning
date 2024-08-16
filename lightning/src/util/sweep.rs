@@ -500,7 +500,7 @@ where
 				log_debug!(
 					self.logger,
 					"Generating and broadcasting sweeping transaction {}",
-					spending_tx.txid()
+					spending_tx.compute_txid()
 				);
 				spending_tx
 			},
@@ -534,7 +534,7 @@ where
 				if cur_height >= confirmation_height + ANTI_REORG_DELAY - 1 {
 					log_debug!(self.logger,
 						"Pruning swept output as sufficiently confirmed via spend in transaction {:?}. Pruned descriptor: {:?}",
-						o.status.latest_spending_tx().map(|t| t.txid()), o.descriptor
+						o.status.latest_spending_tx().map(|t| t.compute_txid()), o.descriptor
 					);
 					return false;
 				}
@@ -697,7 +697,7 @@ where
 		let unconf_height = state_lock
 			.outputs
 			.iter()
-			.find(|o| o.status.latest_spending_tx().map(|tx| tx.txid()) == Some(*txid))
+			.find(|o| o.status.latest_spending_tx().map(|tx| tx.compute_txid()) == Some(*txid))
 			.and_then(|o| o.status.confirmation_height());
 
 		if let Some(unconf_height) = unconf_height {
@@ -742,7 +742,11 @@ where
 					confirmation_height,
 					confirmation_hash,
 					..
-				} => Some((latest_spending_tx.txid(), confirmation_height, Some(confirmation_hash))),
+				} => Some((
+					latest_spending_tx.compute_txid(),
+					confirmation_height,
+					Some(confirmation_hash),
+				)),
 				_ => None,
 			})
 			.collect::<Vec<_>>()

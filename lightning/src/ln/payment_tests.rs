@@ -702,7 +702,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	if !confirm_before_reload {
 		let as_broadcasted_txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(as_broadcasted_txn.len(), 1);
-		assert_eq!(as_broadcasted_txn[0].txid(), as_commitment_tx.txid());
+		assert_eq!(as_broadcasted_txn[0].compute_txid(), as_commitment_tx.compute_txid());
 	} else {
 		assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 	}
@@ -772,7 +772,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 		mine_transaction(&nodes[0], &as_commitment_tx);
 		let txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 		assert_eq!(txn.len(), 1);
-		assert_eq!(txn[0].txid(), as_commitment_tx.txid());
+		assert_eq!(txn[0].compute_txid(), as_commitment_tx.compute_txid());
 	}
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn);
 	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, false);

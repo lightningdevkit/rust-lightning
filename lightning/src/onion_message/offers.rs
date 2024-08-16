@@ -172,7 +172,7 @@ impl<L: Logger + ?Sized> ReadableArgs<(u64, &L)> for OffersMessage {
 		}
 
 		let mut bytes = Vec::new();
-		r.read_to_end(&mut bytes).unwrap();
+		r.read_to_limit(&mut bytes, u64::MAX).unwrap();
 
 		match Self::parse(tlv_type, bytes) {
 			Ok(message) => Ok(message),

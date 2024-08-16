@@ -16,7 +16,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 _test_utils = []
 
 [dependencies]
-bitcoin = { version = "0.31", default-features = false }
+bitcoin = { version = "0.32.2", default-features = false }
 # TODO: Once we switch to bitcoin 0.32 drop this explicit dep:
 hex-conservative = { version = "0.2", default-features = false }
 bech32 = { version = "0.9", default-features = false }

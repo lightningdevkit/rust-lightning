@@ -277,7 +277,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 			assert_eq!(relevant_txids[0].1, chan_conf_height);
 			assert_eq!(block_hash_opt, Some(expected_hash));
 			let txid = relevant_txids[0].0;
-			assert_eq!(txid, chan.3.txid());
+			assert_eq!(txid, chan.3.compute_txid());
 			nodes[0].node.transaction_unconfirmed(&txid);
 			assert_eq!(nodes[0].node.list_usable_channels().len(), 0);
 		} else if connect_style == ConnectStyle::FullBlockViaListen {
@@ -323,7 +323,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 			assert_eq!(chan_conf_height, relevant_txids[0].1);
 			assert_eq!(block_hash_opt, Some(expected_hash));
 			let txid = relevant_txids[0].0;
-			assert_eq!(txid, chan.3.txid());
+			assert_eq!(txid, chan.3.compute_txid());
 			nodes[0].node.transaction_unconfirmed(&txid);
 			assert_eq!(nodes[0].node.list_channels().len(), 0);
 		} else if connect_style == ConnectStyle::FullBlockViaListen {
@@ -436,7 +436,7 @@ fn test_set_outpoints_partial_claiming() {
 	assert_eq!(remote_txn.len(), 3);
 	assert_eq!(remote_txn[0].output.len(), 4);
 	assert_eq!(remote_txn[0].input.len(), 1);
-	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.txid());
+	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
 	check_spends!(remote_txn[1], remote_txn[0]);
 	check_spends!(remote_txn[2], remote_txn[0]);
 
@@ -532,7 +532,7 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
-	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let funding_outpoint = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	let remote_txn_a = get_local_commitment_txn!(nodes[0], chan_id);
@@ -732,7 +732,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 	let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 	assert_eq!(txn.len(), 1);
 	let current_commitment_a = txn.pop().unwrap();
-	assert_ne!(current_commitment_a.txid(), prev_commitment_a.txid());
+	assert_ne!(current_commitment_a.compute_txid(), prev_commitment_a.compute_txid());
 	check_spends!(current_commitment_a, funding_tx);
 
 	mine_transaction(&nodes[0], &current_commitment_a);
@@ -871,7 +871,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 			assert_eq!(txn.len(), 2);
 			check_spends!(txn[0], txn[1]); // HTLC timeout A
 			check_spends!(txn[1], funding_tx); // Commitment A
-			assert_ne!(txn[1].txid(), commitment_b.txid());
+			assert_ne!(txn[1].compute_txid(), commitment_b.compute_txid());
 		}
 	}
 }

@@ -2382,7 +2382,7 @@ fn channel_monitor_network_test() {
 		let node_txn = test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::NONE);
 		connect_blocks(&nodes[2], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + MIN_CLTV_EXPIRY_DELTA as u32 + 1);
 		test_txn_broadcast(&nodes[2], &chan_3, None, HTLCType::TIMEOUT);
-		node2_commitment_txid = node_txn[0].txid();
+		node2_commitment_txid = node_txn[0].compute_txid();
 
 		// Claim the payment on nodes[3], giving it knowledge of the preimage
 		claim_funds!(nodes[3], nodes[2], payment_preimage_1, payment_hash_1);
@@ -2398,7 +2398,7 @@ fn channel_monitor_network_test() {
 
 	// Drop the ChannelMonitor for the previous channel to avoid it broadcasting transactions and
 	// confusing us in the following tests.
-	let chan_3_mon = nodes[3].chain_monitor.chain_monitor.remove_monitor(&OutPoint { txid: chan_3.3.txid(), index: 0 });
+	let chan_3_mon = nodes[3].chain_monitor.chain_monitor.remove_monitor(&OutPoint { txid: chan_3.3.compute_txid(), index: 0 });
 
 	// One pending HTLC to time out:
 	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[3], &[&nodes[4]], 3_000_000);
@@ -2466,7 +2466,7 @@ fn channel_monitor_network_test() {
 	assert_eq!(nodes[3].node.list_channels().len(), 0);
 	assert_eq!(nodes[4].node.list_channels().len(), 0);
 
-	assert_eq!(nodes[3].chain_monitor.chain_monitor.watch_channel(OutPoint { txid: chan_3.3.txid(), index: 0 }, chan_3_mon),
+	assert_eq!(nodes[3].chain_monitor.chain_monitor.watch_channel(OutPoint { txid: chan_3.3.compute_txid(), index: 0 }, chan_3_mon),
 		Ok(ChannelMonitorUpdateStatus::Completed));
 	check_closed_event!(nodes[3], 1, ClosureReason::HTLCsTimedOut, [nodes[4].node.get_our_node_id()], 100000);
 }
@@ -2498,10 +2498,10 @@ fn test_justice_tx_htlc_timeout() {
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_5.2);
 	assert_eq!(revoked_local_txn.len(), 2); // First commitment tx, then HTLC tx
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_5.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_5.3.compute_txid());
 	assert_eq!(revoked_local_txn[0].output.len(), 2); // Only HTLC and output back to 0 are present
 	assert_eq!(revoked_local_txn[1].input.len(), 1);
-	assert_eq!(revoked_local_txn[1].input[0].previous_output.txid, revoked_local_txn[0].txid());
+	assert_eq!(revoked_local_txn[1].input[0].previous_output.txid, revoked_local_txn[0].compute_txid());
 	assert_eq!(revoked_local_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC-Timeout
 	// Revoke the old state
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_3);
@@ -2561,7 +2561,7 @@ fn test_justice_tx_htlc_success() {
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan_6.2);
 	assert_eq!(revoked_local_txn.len(), 1); // Only commitment tx
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_6.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_6.3.compute_txid());
 	assert_eq!(revoked_local_txn[0].output.len(), 2); // Only HTLC and output back to A are present
 	// Revoke the old state
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_4);
@@ -2644,7 +2644,7 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let funding_txo = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let funding_txo = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 
 	if !broadcast_initial_commitment {
 		// Send a payment to move the channel forward
@@ -2660,7 +2660,7 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	// Send another payment, now revoking the previous commitment tx
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 5_000_000);
 
-	let justice_tx = persisters[1].justice_tx(funding_txo, &revoked_commitment_tx.txid()).unwrap();
+	let justice_tx = persisters[1].justice_tx(funding_txo, &revoked_commitment_tx.compute_txid()).unwrap();
 	check_spends!(justice_tx, revoked_commitment_tx);
 
 	mine_transactions(&nodes[1], &[revoked_commitment_tx, &justice_tx]);
@@ -2712,9 +2712,9 @@ fn claim_htlc_outputs_shared_tx() {
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(revoked_local_txn.len(), 2); // commitment tx + 1 HTLC-Timeout tx
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.compute_txid());
 	assert_eq!(revoked_local_txn[1].input.len(), 1);
-	assert_eq!(revoked_local_txn[1].input[0].previous_output.txid, revoked_local_txn[0].txid());
+	assert_eq!(revoked_local_txn[1].input[0].previous_output.txid, revoked_local_txn[0].compute_txid());
 	assert_eq!(revoked_local_txn[1].input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT); // HTLC-Timeout
 	check_spends!(revoked_local_txn[1], revoked_local_txn[0]);
 
@@ -2808,7 +2808,7 @@ fn claim_htlc_outputs_single_tx() {
 		check_spends!(node_txn[1], node_txn[0]);
 
 		// Filter out any non justice transactions.
-		node_txn.retain(|tx| tx.input[0].previous_output.txid == revoked_local_txn[0].txid());
+		node_txn.retain(|tx| tx.input[0].previous_output.txid == revoked_local_txn[0].compute_txid());
 		assert!(node_txn.len() > 3);
 
 		assert_eq!(node_txn[0].input.len(), 1);
@@ -2916,7 +2916,7 @@ fn test_htlc_on_chain_success() {
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 1);
-		assert_eq!(added_monitors[0].0.txid, chan_2.3.txid());
+		assert_eq!(added_monitors[0].0.txid, chan_2.3.compute_txid());
 		added_monitors.clear();
 	}
 	let forwarded_events = nodes[1].node.get_and_clear_pending_events();
@@ -2954,8 +2954,8 @@ fn test_htlc_on_chain_success() {
 	{
 		let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 		assert_eq!(added_monitors.len(), 2);
-		assert_eq!(added_monitors[0].0.txid, chan_1.3.txid());
-		assert_eq!(added_monitors[1].0.txid, chan_1.3.txid());
+		assert_eq!(added_monitors[0].0.txid, chan_1.3.compute_txid());
+		assert_eq!(added_monitors[1].0.txid, chan_1.3.compute_txid());
 		added_monitors.clear();
 	}
 	assert_eq!(events.len(), 3);
@@ -3028,7 +3028,7 @@ fn test_htlc_on_chain_success() {
 		} else {
 			// Certain `ConnectStyle`s will cause RBF bumps of the previous HTLC transaction to be broadcast.
 			// FullBlockViaListen
-			if node_txn[0].input[0].previous_output.txid == node_a_commitment_tx[0].txid() {
+			if node_txn[0].input[0].previous_output.txid == node_a_commitment_tx[0].compute_txid() {
 				check_spends!(node_txn[1], commitment_tx[0]);
 				check_spends!(node_txn[2], commitment_tx[0]);
 				assert_ne!(node_txn[1].input[0].previous_output.vout, node_txn[2].input[0].previous_output.vout);
@@ -3697,7 +3697,7 @@ fn test_force_close_fail_back() {
 	assert_eq!(node_txn.len(), if nodes[2].connect_style.borrow().updates_best_block_first() { 2 } else { 1 });
 	let htlc_tx = node_txn.pop().unwrap();
 	assert_eq!(htlc_tx.input.len(), 1);
-	assert_eq!(htlc_tx.input[0].previous_output.txid, commitment_tx.txid());
+	assert_eq!(htlc_tx.input[0].previous_output.txid, commitment_tx.compute_txid());
 	assert_eq!(htlc_tx.lock_time, LockTime::ZERO); // Must be an HTLC-Success
 	assert_eq!(htlc_tx.input[0].witness.len(), 5); // Must be an HTLC-Success
 
@@ -4614,7 +4614,7 @@ fn test_claim_on_remote_revoked_sizeable_push_msat() {
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
 
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
 	mine_transaction(&nodes[1], &revoked_local_txn[0]);
@@ -4647,7 +4647,7 @@ fn test_static_spendable_outputs_preimage_tx() {
 
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(commitment_tx[0].input.len(), 1);
-	assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.txid());
+	assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.compute_txid());
 
 	// Settle A's commitment tx on B's chain
 	nodes[1].node.claim_funds(payment_preimage);
@@ -4697,7 +4697,7 @@ fn test_static_spendable_outputs_timeout_tx() {
 
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(commitment_tx[0].input.len(), 1);
-	assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.txid());
+	assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.compute_txid());
 
 	// Settle A's commitment tx on B' chain
 	mine_transaction(&nodes[1], &commitment_tx[0]);
@@ -4740,7 +4740,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_commitment_tx() {
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.compute_txid());
 
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
 
@@ -4776,7 +4776,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let revoked_local_txn = get_local_commitment_txn!(nodes[0], chan_1.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.compute_txid());
 
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
 
@@ -4810,10 +4810,10 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_timeout_tx() {
 
 	assert_eq!(node_txn[1].input.len(), 2);
 	check_spends!(node_txn[1], revoked_local_txn[0], revoked_htlc_txn[0]);
-	if node_txn[1].input[1].previous_output.txid == revoked_htlc_txn[0].txid() {
+	if node_txn[1].input[1].previous_output.txid == revoked_htlc_txn[0].compute_txid() {
 		assert_ne!(node_txn[1].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
 	} else {
-		assert_eq!(node_txn[1].input[0].previous_output.txid, revoked_htlc_txn[0].txid());
+		assert_eq!(node_txn[1].input[0].previous_output.txid, revoked_htlc_txn[0].compute_txid());
 		assert_ne!(node_txn[1].input[1].previous_output, revoked_htlc_txn[0].input[0].previous_output);
 	}
 
@@ -4841,7 +4841,7 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	let payment_preimage = route_payment(&nodes[0], &vec!(&nodes[1])[..], 3000000).0;
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan_1.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan_1.3.compute_txid());
 
 	// The to-be-revoked commitment tx should have one HTLC and one to_remote output
 	assert_eq!(revoked_local_txn[0].output.len(), 2);
@@ -4878,10 +4878,10 @@ fn test_static_spendable_outputs_justice_tx_revoked_htlc_success_tx() {
 	// transactions next...
 	assert_eq!(node_txn[0].input.len(), 2);
 	check_spends!(node_txn[0], revoked_local_txn[0], revoked_htlc_txn[0]);
-	if node_txn[0].input[1].previous_output.txid == revoked_htlc_txn[0].txid() {
+	if node_txn[0].input[1].previous_output.txid == revoked_htlc_txn[0].compute_txid() {
 		assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
 	} else {
-		assert_eq!(node_txn[0].input[0].previous_output.txid, revoked_htlc_txn[0].txid());
+		assert_eq!(node_txn[0].input[0].previous_output.txid, revoked_htlc_txn[0].compute_txid());
 		assert_eq!(node_txn[0].input[1].previous_output, revoked_htlc_txn[0].input[0].previous_output);
 	}
 
@@ -7205,7 +7205,7 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 
 		connect_blocks(&nodes[0], TEST_FINAL_CLTV); // Confirm blocks until the HTLC expires
 		timeout_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().drain(..)
-			.filter(|tx| tx.input[0].previous_output.txid == bs_commitment_tx[0].txid()).collect();
+			.filter(|tx| tx.input[0].previous_output.txid == bs_commitment_tx[0].compute_txid()).collect();
 		check_spends!(timeout_tx[0], bs_commitment_tx[0]);
 		// For both a revoked or non-revoked commitment transaction, after ANTI_REORG_DELAY the
 		// dust HTLC should have been failed.
@@ -7490,8 +7490,8 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 	// Revoked commitment txn with 4 outputs : to_local, to_remote, 1 outgoing HTLC, 1 incoming HTLC
 	assert_eq!(revoked_txn[0].output.len(), 4);
 	assert_eq!(revoked_txn[0].input.len(), 1);
-	assert_eq!(revoked_txn[0].input[0].previous_output.txid, chan.3.txid());
-	let revoked_txid = revoked_txn[0].txid();
+	assert_eq!(revoked_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
+	let revoked_txid = revoked_txn[0].compute_txid();
 
 	let mut penalty_sum = 0;
 	for outp in revoked_txn[0].output.iter() {
@@ -7519,7 +7519,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 		check_spends!(node_txn[0], revoked_txn[0]);
 		let fee_1 = penalty_sum - node_txn[0].output[0].value.to_sat();
 		feerate_1 = fee_1 * 1000 / node_txn[0].weight().to_wu();
-		penalty_1 = node_txn[0].txid();
+		penalty_1 = node_txn[0].compute_txid();
 		node_txn.clear();
 	};
 
@@ -7534,7 +7534,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 			assert_eq!(node_txn[0].input.len(), 3); // Penalty txn claims to_local, offered_htlc and received_htlc outputs
 			assert_eq!(node_txn[0].output.len(), 1);
 			check_spends!(node_txn[0], revoked_txn[0]);
-			penalty_2 = node_txn[0].txid();
+			penalty_2 = node_txn[0].compute_txid();
 			// Verify new bumped tx is different from last claiming transaction, we don't want spurrious rebroadcast
 			assert_ne!(penalty_2, penalty_1);
 			let fee_2 = penalty_sum - node_txn[0].output[0].value.to_sat();
@@ -7557,7 +7557,7 @@ fn test_bump_penalty_txn_on_revoked_commitment() {
 			assert_eq!(node_txn[0].input.len(), 3); // Penalty txn claims to_local, offered_htlc and received_htlc outputs
 			assert_eq!(node_txn[0].output.len(), 1);
 			check_spends!(node_txn[0], revoked_txn[0]);
-			penalty_3 = node_txn[0].txid();
+			penalty_3 = node_txn[0].compute_txid();
 			// Verify new bumped tx is different from last claiming transaction, we don't want spurrious rebroadcast
 			assert_ne!(penalty_3, penalty_2);
 			let fee_3 = penalty_sum - node_txn[0].output[0].value.to_sat();
@@ -7602,7 +7602,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
 
 	// Revoke local commitment tx
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage);
@@ -7677,7 +7677,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		assert_eq!(node_txn[3].output.len(), 1);
 		check_spends!(node_txn[3], revoked_htlc_txn[0], revoked_htlc_txn[1]);
 
-		first = node_txn[3].txid();
+		first = node_txn[3].compute_txid();
 		// Store both feerates for later comparison
 		let fee_1 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[3].output[0].value;
 		feerate_1 = fee_1 * 1000 / node_txn[3].weight().to_wu();
@@ -7702,7 +7702,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		assert_eq!(node_txn[0].input.len(), 2);
 		check_spends!(node_txn[0], revoked_htlc_txn[0], revoked_htlc_txn[1]);
 		// Verify bumped tx is different and 25% bump heuristic
-		assert_ne!(first, node_txn[0].txid());
+		assert_ne!(first, node_txn[0].compute_txid());
 		let fee_2 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[0].output[0].value;
 		let feerate_2 = fee_2 * 1000 / node_txn[0].weight().to_wu();
 		assert!(feerate_2 * 100 > feerate_1 * 125);
@@ -7750,7 +7750,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	let remote_txn = get_local_commitment_txn!(nodes[0], chan.2);
 	assert_eq!(remote_txn[0].output.len(), 4);
 	assert_eq!(remote_txn[0].input.len(), 1);
-	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.txid());
+	assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
 
 	// Claim a HTLC without revocation (provide B monitor with preimage)
 	nodes[1].node.claim_funds(payment_preimage);
@@ -7777,7 +7777,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 		check_spends!(node_txn[1], remote_txn[0]);
 		check_spends!(node_txn[2], remote_txn[0]);
 
-		preimage = node_txn[0].txid();
+		preimage = node_txn[0].compute_txid();
 		let index = node_txn[0].input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value.to_sat() - node_txn[0].output[0].value.to_sat();
 		feerate_preimage = fee * 1000 / node_txn[0].weight().to_wu();
@@ -7792,7 +7792,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 		check_spends!(preimage_bump, remote_txn[0]);
 		assert_eq!(node_txn[0].input[0].previous_output, preimage_bump.input[0].previous_output);
 
-		timeout = timeout_tx.txid();
+		timeout = timeout_tx.compute_txid();
 		let index = timeout_tx.input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value.to_sat() - timeout_tx.output[0].value.to_sat();
 		feerate_timeout = fee * 1000 / timeout_tx.weight().to_wu();
@@ -7816,13 +7816,13 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 		let fee = remote_txn[0].output[index as usize].value.to_sat() - preimage_bump.output[0].value.to_sat();
 		let new_feerate = fee * 1000 / preimage_bump.weight().to_wu();
 		assert!(new_feerate * 100 > feerate_timeout * 125);
-		assert_ne!(timeout, preimage_bump.txid());
+		assert_ne!(timeout, preimage_bump.compute_txid());
 
 		let index = node_txn[0].input[0].previous_output.vout;
 		let fee = remote_txn[0].output[index as usize].value.to_sat() - node_txn[0].output[0].value.to_sat();
 		let new_feerate = fee * 1000 / node_txn[0].weight().to_wu();
 		assert!(new_feerate * 100 > feerate_preimage * 125);
-		assert_ne!(preimage, node_txn[0].txid());
+		assert_ne!(preimage, node_txn[0].compute_txid());
 
 		node_txn.clear();
 	}
@@ -7902,7 +7902,7 @@ fn test_bump_txn_sanitize_tracking_maps() {
 
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan.2);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
 
 	// Revoke local commitment tx
 	claim_payment(&nodes[0], &vec!(&nodes[1])[..], payment_preimage_1);
@@ -7929,7 +7929,7 @@ fn test_bump_txn_sanitize_tracking_maps() {
 	connect_block(&nodes[0], &create_dummy_block(nodes[0].best_block_hash(), 42, penalty_txn));
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	{
-		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(OutPoint { txid: chan.3.txid(), index: 0 }).unwrap();
+		let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(OutPoint { txid: chan.3.compute_txid(), index: 0 }).unwrap();
 		assert!(monitor.inner.lock().unwrap().onchain_tx_handler.pending_claim_requests.is_empty());
 		assert!(monitor.inner.lock().unwrap().onchain_tx_handler.claimable_outpoints.is_empty());
 	}
@@ -8544,7 +8544,7 @@ fn test_update_err_monitor_lockdown() {
 
 	// Create some initial channel
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let outpoint = OutPoint { txid: chan_1.3.txid(), index: 0 };
+	let outpoint = OutPoint { txid: chan_1.3.compute_txid(), index: 0 };
 
 	// Rebalance the network to generate htlc in the two directions
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000);
@@ -8614,7 +8614,7 @@ fn test_concurrent_monitor_claim() {
 
 	// Create some initial channel
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
-	let outpoint = OutPoint { txid: chan_1.3.txid(), index: 0 };
+	let outpoint = OutPoint { txid: chan_1.3.compute_txid(), index: 0 };
 
 	// Rebalance the network to generate htlc in the two directions
 	send_payment(&nodes[0], &vec!(&nodes[1])[..], 10_000_000);
@@ -8965,7 +8965,7 @@ fn do_test_onchain_htlc_settlement_after_close(broadcast_alice: bool, go_onchain
 		} else {
 			if nodes[1].connect_style.borrow().updates_best_block_first() {
 				assert_eq!(bob_txn.len(), 3);
-				assert_eq!(bob_txn[0].txid(), bob_txn[1].txid());
+				assert_eq!(bob_txn[0].compute_txid(), bob_txn[1].compute_txid());
 			} else {
 				assert_eq!(bob_txn.len(), 2);
 			}
@@ -9164,7 +9164,7 @@ fn test_duplicate_funding_err_in_funding() {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, _, real_channel_id, funding_tx) = create_chan_between_nodes(&nodes[0], &nodes[1]);
-	let real_chan_funding_txo = chain::transaction::OutPoint { txid: funding_tx.txid(), index: 0 };
+	let real_chan_funding_txo = chain::transaction::OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(real_chan_funding_txo), real_channel_id);
 
 	nodes[2].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
@@ -9491,7 +9491,7 @@ fn test_invalid_funding_tx() {
 		version: Version::TWO, lock_time: LockTime::ZERO,
 		input: tx.output.iter().enumerate().map(|(idx, _)| TxIn {
 			previous_output: BitcoinOutPoint {
-				txid: tx.txid(),
+				txid: tx.compute_txid(),
 				vout: idx as u32,
 			},
 			script_sig: ScriptBuf::new(),
@@ -9618,7 +9618,7 @@ fn do_test_tx_confirmed_skipping_blocks_immediate_broadcast(test_height_before_t
 		// We should broadcast an HTLC transaction spending our funding transaction first
 		let spending_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(spending_txn.len(), 2);
-		let htlc_tx = if spending_txn[0].txid() == node_txn[0].txid() {
+		let htlc_tx = if spending_txn[0].compute_txid() == node_txn[0].compute_txid() {
 			&spending_txn[1]
 		} else {
 			&spending_txn[0]
@@ -10923,7 +10923,7 @@ fn test_batch_channel_open() {
 
 	// Complete the persistence of the monitor.
 	nodes[0].chain_monitor.complete_sole_pending_chan_update(
-		&ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.txid(), index: 1 })
+		&ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.compute_txid(), index: 1 })
 	);
 	let events = nodes[0].node.get_and_clear_pending_events();
 
@@ -10977,8 +10977,8 @@ fn test_close_in_funding_batch() {
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
 
 	// Force-close the channel for which we've completed the initial monitor.
-	let funding_txo_1 = OutPoint { txid: tx.txid(), index: 0 };
-	let funding_txo_2 = OutPoint { txid: tx.txid(), index: 1 };
+	let funding_txo_1 = OutPoint { txid: tx.compute_txid(), index: 0 };
+	let funding_txo_2 = OutPoint { txid: tx.compute_txid(), index: 1 };
 	let channel_id_1 = ChannelId::v1_from_funding_outpoint(funding_txo_1);
 	let channel_id_2 = ChannelId::v1_from_funding_outpoint(funding_txo_2);
 	let error_message = "Channel force-closed";
@@ -11003,9 +11003,9 @@ fn test_close_in_funding_batch() {
 	{
 		let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(broadcasted_txs.len(), 1);
-		assert!(broadcasted_txs[0].txid() != tx.txid());
+		assert!(broadcasted_txs[0].compute_txid() != tx.compute_txid());
 		assert_eq!(broadcasted_txs[0].input.len(), 1);
-		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.txid());
+		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.compute_txid());
 	}
 
 	// All channels in the batch should close immediately.
@@ -11066,8 +11066,8 @@ fn test_batch_funding_close_after_funding_signed() {
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
 
 	// Force-close the channel for which we've completed the initial monitor.
-	let funding_txo_1 = OutPoint { txid: tx.txid(), index: 0 };
-	let funding_txo_2 = OutPoint { txid: tx.txid(), index: 1 };
+	let funding_txo_1 = OutPoint { txid: tx.compute_txid(), index: 0 };
+	let funding_txo_2 = OutPoint { txid: tx.compute_txid(), index: 1 };
 	let channel_id_1 = ChannelId::v1_from_funding_outpoint(funding_txo_1);
 	let channel_id_2 = ChannelId::v1_from_funding_outpoint(funding_txo_2);
 	let error_message = "Channel force-closed";
@@ -11092,9 +11092,9 @@ fn test_batch_funding_close_after_funding_signed() {
 	{
 		let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(broadcasted_txs.len(), 1);
-		assert!(broadcasted_txs[0].txid() != tx.txid());
+		assert!(broadcasted_txs[0].compute_txid() != tx.compute_txid());
 		assert_eq!(broadcasted_txs[0].input.len(), 1);
-		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.txid());
+		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.compute_txid());
 	}
 
 	// All channels in the batch should close immediately.
@@ -11130,7 +11130,7 @@ fn do_test_funding_and_commitment_tx_confirm_same_block(confirm_remote_commitmen
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let funding_tx = create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 0);
-	let chan_id = ChannelId::v1_from_funding_outpoint(chain::transaction::OutPoint { txid: funding_tx.txid(), index: 0 });
+	let chan_id = ChannelId::v1_from_funding_outpoint(chain::transaction::OutPoint { txid: funding_tx.compute_txid(), index: 0 });
 
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
 	assert_eq!(nodes[1].node.list_channels().len(), 1);

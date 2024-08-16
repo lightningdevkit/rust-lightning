@@ -3908,14 +3908,16 @@ pub mod benches {
 		let mut v = Vec::new();
 		d.read_to_end(&mut v).unwrap();
 		bench.bench_function("read_network_graph", |b| b.iter(||
-			NetworkGraph::read(&mut std::io::Cursor::new(black_box(&v)), &logger).unwrap()
+			NetworkGraph::read(&mut crate::io::Cursor::new(black_box(&v)), &logger).unwrap()
 		));
 	}
 
 	pub fn write_network_graph(bench: &mut Criterion) {
 		let logger = crate::util::test_utils::TestLogger::new();
 		let (mut d, _) = crate::routing::router::bench_utils::get_graph_scorer_file().unwrap();
-		let net_graph = NetworkGraph::read(&mut d, &logger).unwrap();
+		let mut graph_buffer = Vec::new();
+		d.read_to_end(&mut graph_buffer).unwrap();
+		let net_graph = NetworkGraph::read(&mut &graph_buffer[..], &logger).unwrap();
 		bench.bench_function("write_network_graph", |b| b.iter(||
 			black_box(&net_graph).encode()
 		));

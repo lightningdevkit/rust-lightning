@@ -33,7 +33,7 @@ use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::{SecretKey, PublicKey};
 use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 #[cfg(taproot)]
-use musig2::types::{PartialSignature, PublicNonce, SecretNonce};
+use musig2::types::{PartialSignature, PublicNonce};
 use crate::sign::HTLCDescriptor;
 use crate::util::ser::{Writeable, Writer};
 use crate::io::Error;
@@ -352,6 +352,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 }
 
 #[cfg(taproot)]
+#[allow(unused)]
 impl TaprootChannelSigner for TestChannelSigner {
 	fn generate_local_nonce_pair(&self, commitment_number: u64, secp_ctx: &Secp256k1<All>) -> PublicNonce {
 		todo!()

@@ -8,6 +8,7 @@ where
 	// in practice, this will only ever be an EcdsaChannelSigner (specifically, Writeable)
 	Ecdsa(<SP::Target as SignerProvider>::EcdsaSigner),
 	#[cfg(taproot)]
+	#[allow(unused)]
 	Taproot(<SP::Target as SignerProvider>::TaprootSigner),
 }
 
@@ -19,6 +20,7 @@ where
 		match self {
 			ChannelSignerType::Ecdsa(ecs) => ecs,
 			#[cfg(taproot)]
+			#[allow(unused)]
 			ChannelSignerType::Taproot(tcs) => tcs,
 		}
 	}
@@ -27,6 +29,7 @@ where
 		match self {
 			ChannelSignerType::Ecdsa(ecs) => ecs,
 			#[cfg(taproot)]
+			#[allow(unused)]
 			ChannelSignerType::Taproot(tcs) => tcs,
 		}
 	}

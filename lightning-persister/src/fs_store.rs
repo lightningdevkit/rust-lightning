@@ -91,7 +91,7 @@ impl FilesystemStore {
 }
 
 impl KVStore for FilesystemStore {
-	fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> std::io::Result<Vec<u8>> {
+	fn read(&self, primary_namespace: &str, secondary_namespace: &str, key: &str) -> lightning::io::Result<Vec<u8>> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "read")?;
 
 		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
@@ -114,7 +114,7 @@ impl KVStore for FilesystemStore {
 		Ok(buf)
 	}
 
-	fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> std::io::Result<()> {
+	fn write(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: &[u8]) -> lightning::io::Result<()> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "write")?;
 
 		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
@@ -191,7 +191,7 @@ impl KVStore for FilesystemStore {
 						dest_file.sync_all()?;
 						Ok(())
 					}
-					Err(e) => Err(e),
+					Err(e) => Err(e.into()),
 				}
 			}
 		};
@@ -201,7 +201,7 @@ impl KVStore for FilesystemStore {
 		res
 	}
 
-	fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> std::io::Result<()> {
+	fn remove(&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool) -> lightning::io::Result<()> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, Some(key), "remove")?;
 
 		let mut dest_file_path = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
@@ -290,7 +290,7 @@ impl KVStore for FilesystemStore {
 		Ok(())
 	}
 
-	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> std::io::Result<Vec<String>> {
+	fn list(&self, primary_namespace: &str, secondary_namespace: &str) -> lightning::io::Result<Vec<String>> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, None, "list")?;
 
 		let prefixed_dest = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
@@ -331,7 +331,7 @@ impl KVStore for FilesystemStore {
 					PrintableString(primary_namespace), PrintableString(secondary_namespace));
 				let msg = format!("Failed to list keys of {}/{}: file couldn't be accessed.",
 					PrintableString(primary_namespace), PrintableString(secondary_namespace));
-				return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
+				return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
 			}
 
 			match p.strip_prefix(&prefixed_dest) {
@@ -345,7 +345,7 @@ impl KVStore for FilesystemStore {
 							PrintableString(primary_namespace), PrintableString(secondary_namespace));
 						let msg = format!("Failed to list keys of {}/{}: file path is not valid UTF-8",
 							PrintableString(primary_namespace), PrintableString(secondary_namespace));
-						return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
+						return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
 					}
 				}
 				Err(e) => {
@@ -353,7 +353,7 @@ impl KVStore for FilesystemStore {
 						PrintableString(primary_namespace), PrintableString(secondary_namespace), e);
 					let msg = format!("Failed to list keys of {}/{}: {}",
 						PrintableString(primary_namespace), PrintableString(secondary_namespace), e);
-					return Err(std::io::Error::new(std::io::ErrorKind::Other, msg));
+					return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
 				}
 			}
 		}

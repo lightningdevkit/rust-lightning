@@ -198,7 +198,7 @@ where
 						return Err(UtxoLookupError::UnknownTx);
 					}
 
-					outpoint = OutPoint::new(transaction.txid(), output_index.into());
+					outpoint = OutPoint::new(transaction.compute_txid(), output_index.into());
 					output = transaction.output[output_index as usize].clone();
 				}};
 			}

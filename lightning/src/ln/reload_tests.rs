@@ -201,7 +201,7 @@ fn test_no_txn_manager_serialize_deserialize() {
 	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
 
 	let chan_0_monitor_serialized =
-		get_monitor!(nodes[0], ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.txid(), index: 0 })).encode();
+		get_monitor!(nodes[0], ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.compute_txid(), index: 0 })).encode();
 	reload_node!(nodes[0], nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
 
 	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
@@ -289,7 +289,7 @@ fn test_manager_serialize_deserialize_events() {
 	let events_4 = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events_4.len(), 0);
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().len(), 1);
-	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].txid(), funding_output.txid);
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap()[0].compute_txid(), funding_output.txid);
 
 	// Make sure the channel is functioning as though the de/serialization never happened
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
@@ -459,7 +459,7 @@ fn test_manager_serialize_deserialize_inconsistent_monitor() {
 		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(txn.len(), 1);
 		check_spends!(txn[0], funding_tx);
-		assert_eq!(txn[0].input[0].previous_output.txid, funding_tx.txid());
+		assert_eq!(txn[0].input[0].previous_output.txid, funding_tx.compute_txid());
 	}
 	check_added_monitors!(nodes[0], 1);
 
@@ -1227,7 +1227,7 @@ fn test_reload_partial_funding_batch() {
 	assert_eq!(nodes[0].tx_broadcaster.txn_broadcast().len(), 0);
 
 	// Reload the node while a subset of the channels in the funding batch have persisted monitors.
-	let channel_id_1 = ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.txid(), index: 0 });
+	let channel_id_1 = ChannelId::v1_from_funding_outpoint(OutPoint { txid: tx.compute_txid(), index: 0 });
 	let node_encoded = nodes[0].node.encode();
 	let channel_monitor_1_serialized = get_monitor!(nodes[0], channel_id_1).encode();
 	reload_node!(nodes[0], node_encoded, &[&channel_monitor_1_serialized], new_persister, new_chain_monitor, new_channel_manager);
@@ -1249,9 +1249,9 @@ fn test_reload_partial_funding_batch() {
 	{
 		let broadcasted_txs = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(broadcasted_txs.len(), 1);
-		assert!(broadcasted_txs[0].txid() != tx.txid());
+		assert!(broadcasted_txs[0].compute_txid() != tx.compute_txid());
 		assert_eq!(broadcasted_txs[0].input.len(), 1);
-		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.txid());
+		assert_eq!(broadcasted_txs[0].input[0].previous_output.txid, tx.compute_txid());
 	}
 
 	// Ensure the channels don't exist anymore.

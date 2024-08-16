@@ -63,7 +63,7 @@ where
 	}
 
 	pub(crate) fn update_network_graph_from_byte_stream_no_std<R: io::Read>(
-		&self, mut read_cursor: &mut R, current_time_unix: Option<u64>,
+		&self, read_cursor: &mut R, current_time_unix: Option<u64>,
 	) -> Result<u32, GraphSyncError> {
 		log_trace!(self.logger, "Processing RGS data...");
 		let mut protocol_prefix = [0u8; 3];
@@ -73,7 +73,7 @@ where
 			return Err(DecodeError::UnknownVersion.into());
 		}
 
-		let version: u8 = Readable::read(&mut read_cursor)?;
+		let version: u8 = Readable::read(read_cursor)?;
 		if version != 1 && version != 2 {
 			return Err(DecodeError::UnknownVersion.into());
 		}
@@ -187,7 +187,7 @@ where
 						for address_index in 0..address_count {
 							let current_byte_count: u8 = Readable::read(read_cursor)?;
 							let mut address_reader =
-								FixedLengthReader::new(&mut read_cursor, current_byte_count as u64);
+								FixedLengthReader::new(read_cursor, current_byte_count as u64);
 							if let Ok(current_address) = Readable::read(&mut address_reader) {
 								node_addresses.push(current_address);
 								if address_reader.bytes_remain() {
@@ -330,11 +330,11 @@ where
 		}
 
 		// obtain default values for non-incremental updates
-		let default_cltv_expiry_delta: u16 = Readable::read(&mut read_cursor)?;
-		let default_htlc_minimum_msat: u64 = Readable::read(&mut read_cursor)?;
-		let default_fee_base_msat: u32 = Readable::read(&mut read_cursor)?;
-		let default_fee_proportional_millionths: u32 = Readable::read(&mut read_cursor)?;
-		let default_htlc_maximum_msat: u64 = Readable::read(&mut read_cursor)?;
+		let default_cltv_expiry_delta: u16 = Readable::read(read_cursor)?;
+		let default_htlc_minimum_msat: u64 = Readable::read(read_cursor)?;
+		let default_fee_base_msat: u32 = Readable::read(read_cursor)?;
+		let default_fee_proportional_millionths: u32 = Readable::read(read_cursor)?;
+		let default_htlc_maximum_msat: u64 = Readable::read(read_cursor)?;
 
 		let mut previous_channel_direction = None;
 
