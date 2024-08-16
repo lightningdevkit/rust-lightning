@@ -1215,11 +1215,16 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV2(OutboundV2Channel<SP>),
 	#[cfg(any(dual_funding, splicing))]
 	UnfundedInboundV2(InboundV2Channel<SP>),
-	#[cfg(splicing)]
-	RenegotiatingFundingOutbound(RenegotiatingChannel<SP>),
-	#[cfg(splicing)]
-	RenegotiatingFundingInbound(RenegotiatingChannel<SP>),
+	/// Funding transaction negotiated (pending or locked)
 	Funded(Channel<SP>),
+	/// Renegotiating existing channel, outbound (initiated by us)
+	/// Contains already negotiated channel (pre-splice) and channel being negotiated (post-splice)
+	#[cfg(splicing)]
+	RenegotiatingFundingOutbound((Channel<SP>, RenegotiatingChannel<SP>)),
+	/// Renegotiating existing channel, inbound (initiated by the peer)
+	/// Contains already negotiated channel (pre-splice) and channel being negotiated (post-splice)
+	#[cfg(splicing)]
+	RenegotiatingFundingInbound((Channel<SP>, RenegotiatingChannel<SP>)),
 }
 
 impl<'a, SP: Deref> ChannelPhase<SP> where
@@ -1236,9 +1241,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingOutbound(chan) => &chan.context,
+			ChannelPhase::RenegotiatingFundingOutbound((_pre_chan, post_chan)) => &post_chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingInbound(chan) => &chan.context,
+			ChannelPhase::RenegotiatingFundingInbound((_pre_chan, post_chan)) => &post_chan.context,
 		}
 	}
 
@@ -1252,9 +1257,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingOutbound(ref mut chan) => &mut chan.context,
+			ChannelPhase::RenegotiatingFundingOutbound((ref mut _pre_chan, post_chan)) => &mut post_chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingInbound(ref mut chan) => &mut chan.context,
+			ChannelPhase::RenegotiatingFundingInbound((ref mut _pre_chan, post_chan)) => &mut post_chan.context,
 		}
 	}
 }

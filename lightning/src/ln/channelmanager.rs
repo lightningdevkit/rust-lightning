@@ -3928,8 +3928,8 @@ where
 						(None, chan_phase.context().get_counterparty_node_id())
 					},
 					#[cfg(splicing)]
-					ChannelPhase::RenegotiatingFundingOutbound(_chan) |
-					ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
+					ChannelPhase::RenegotiatingFundingOutbound(_) |
+					ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
 				}
 			} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
 				log_error!(logger, "Force-closing channel {}", &channel_id);
@@ -6291,8 +6291,8 @@ where
 									pending_msg_events, counterparty_node_id)
 							},
 							#[cfg(splicing)]
-							ChannelPhase::RenegotiatingFundingOutbound(_chan) |
-							ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
+							ChannelPhase::RenegotiatingFundingOutbound(_) |
+							ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
 						}
 					});
 
@@ -7622,8 +7622,8 @@ where
 					continue;
 				},
 				#[cfg(splicing)]
-				ChannelPhase::RenegotiatingFundingOutbound(_chan) |
-				ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
+				ChannelPhase::RenegotiatingFundingOutbound(_) |
+				ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
 			}
 		}
 		num_unfunded_channels + peer.inbound_channel_request_by_id.len()
@@ -8075,9 +8075,9 @@ where
 						channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id)
 					},
 					#[cfg(splicing)]
-					ChannelPhase::RenegotiatingFundingInbound(ref mut channel) |
-					ChannelPhase::RenegotiatingFundingOutbound(ref mut channel) => {
-						channel.tx_add_input(msg).into_msg_send_event(counterparty_node_id)
+					ChannelPhase::RenegotiatingFundingInbound((ref _pre_chan, ref mut post_chan)) |
+					ChannelPhase::RenegotiatingFundingOutbound((ref _pre_chan, ref mut post_chan)) => {
+						post_chan.tx_add_input(msg).into_msg_send_event(counterparty_node_id)
 					},
 					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
 						"Got a tx_add_input message with no interactive transaction construction expected or in-progress"
@@ -8115,9 +8115,9 @@ where
 						channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
 					},
 					#[cfg(splicing)]
-					ChannelPhase::RenegotiatingFundingInbound(ref mut channel) |
-					ChannelPhase::RenegotiatingFundingOutbound(ref mut channel) => {
-						channel.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
+					ChannelPhase::RenegotiatingFundingInbound((ref _pre_chan, ref mut post_chan)) |
+					ChannelPhase::RenegotiatingFundingOutbound((ref _pre_chan, ref mut post_chan)) => {
+						post_chan.tx_add_output(msg).into_msg_send_event(counterparty_node_id)
 					},
 					_ => try_chan_phase_entry!(self, Err(ChannelError::Warn(
 						"Got a tx_add_output message with no interactive transaction construction expected or in-progress"
@@ -8225,9 +8225,9 @@ where
 						channel.tx_complete(msg).into_msg_send_event(counterparty_node_id)
 					},
 					#[cfg(splicing)]
-					ChannelPhase::RenegotiatingFundingInbound(channel) |
-					ChannelPhase::RenegotiatingFundingOutbound(channel) => {
-						channel.tx_complete(msg).into_msg_send_event(counterparty_node_id)
+					ChannelPhase::RenegotiatingFundingInbound((_pre_chan, post_chan)) |
+					ChannelPhase::RenegotiatingFundingOutbound((_pre_chan, post_chan)) => {
+						post_chan.tx_complete(msg).into_msg_send_event(counterparty_node_id)
 					},
 					_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got a tx_complete message with no interactive transaction construction expected or in-progress"
@@ -8255,20 +8255,18 @@ where
 							)
 						},
 						#[cfg(splicing)]
-						ChannelPhase::RenegotiatingFundingInbound(chan) => {
-							chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger).map_err(
-								|(chan, err)| {
-									(ChannelPhase::RenegotiatingFundingInbound(chan), err)
-								}
-							)
+						ChannelPhase::RenegotiatingFundingInbound((pre_chan, post_chan)) => {
+							match post_chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger) {
+								Ok(r) => Ok(r),
+								Err((chan, err)) => Err((ChannelPhase::RenegotiatingFundingInbound((pre_chan, chan)), err)),
+							}
 						},
 						#[cfg(splicing)]
-						ChannelPhase::RenegotiatingFundingOutbound(chan) => {
-							chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger).map_err(
-								|(chan, err)| {
-									(ChannelPhase::RenegotiatingFundingOutbound(chan), err)
-								}
-							)
+						ChannelPhase::RenegotiatingFundingOutbound((pre_chan, post_chan)) => {
+							match post_chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger) {
+								Ok(r) => Ok(r),
+								Err((chan, err)) => Err((ChannelPhase::RenegotiatingFundingOutbound((pre_chan, chan)), err)),
+							}
 						},
 						_ => Err((channel_phase, ChannelError::Warn(
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
@@ -8547,8 +8545,8 @@ where
 						finish_shutdown = Some(chan.context_mut().force_shutdown(false, ClosureReason::CounterpartyCoopClosedUnfundedChannel));
 					},
 					#[cfg(splicing)]
-					ChannelPhase::RenegotiatingFundingOutbound(_chan) |
-					ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
+					ChannelPhase::RenegotiatingFundingOutbound(_) |
+					ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -9362,13 +9360,13 @@ where
 
 		// Add the modified channel
 		let post_chan_id = post_chan.context.channel_id();
-		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::RenegotiatingFundingInbound(post_chan));
+		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::RenegotiatingFundingInbound((prev_chan, post_chan)));
 
 		// Perform state changes
 		match peer_state.channel_by_id.entry(post_chan_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal consistency error".to_string(), post_chan_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let ChannelPhase::RenegotiatingFundingInbound(post_chan) = chan_entry.get_mut() {
+				if let ChannelPhase::RenegotiatingFundingInbound((_pre_chan, post_chan)) = chan_entry.get_mut() {
 					// Apply start of splice change in the state 
 					post_chan.context.splice_start(false, &self.logger);
 
@@ -9457,13 +9455,13 @@ where
 
 		// Add the modified channel
 		let post_chan_id = post_chan.context.channel_id();
-		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::RenegotiatingFundingOutbound(post_chan));
+		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::RenegotiatingFundingOutbound((prev_chan, post_chan)));
 
 		// Perform state changes
 		match peer_state.channel_by_id.entry(post_chan_id) {
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal consistency error".to_string(), post_chan_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let ChannelPhase::RenegotiatingFundingOutbound(post_chan) = chan_entry.get_mut() {
+				if let ChannelPhase::RenegotiatingFundingOutbound((_pre_chan, post_chan)) = chan_entry.get_mut() {
 					// Apply start of splice change in the state
 					post_chan.context.splice_start(true, &self.logger);
 
@@ -10864,8 +10862,8 @@ where
 							true
 						}
 						#[cfg(splicing)]
-						ChannelPhase::RenegotiatingFundingOutbound(_chan) |
-						ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
+						ChannelPhase::RenegotiatingFundingOutbound(_) |
+						ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
 					}
 				});
 			}
@@ -11292,8 +11290,8 @@ where
 							&mut chan.context
 						},
 						#[cfg(splicing)]
-						ChannelPhase::RenegotiatingFundingOutbound(_chan) |
-						ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
+						ChannelPhase::RenegotiatingFundingOutbound(_) |
+						ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
 					};
 					// Clean up for removal.
 					update_maps_on_chan_removal!(self, &context);
@@ -11477,8 +11475,8 @@ where
 						},
 
 						#[cfg(splicing)]
-						ChannelPhase::RenegotiatingFundingOutbound(_chan) |
-						ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
+						ChannelPhase::RenegotiatingFundingOutbound(_) |
+						ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
 					}
 				}
 			}
@@ -11589,8 +11587,8 @@ where
 					#[cfg(any(dual_funding, splicing))]
 					Some(ChannelPhase::UnfundedInboundV2(_)) => (),
 					#[cfg(splicing)]
-					Some(ChannelPhase::RenegotiatingFundingOutbound(_chan) |
-					ChannelPhase::RenegotiatingFundingInbound(_chan)) => todo!("splicing"),
+					Some(ChannelPhase::RenegotiatingFundingOutbound(_)) |
+					Some(ChannelPhase::RenegotiatingFundingInbound(_)) => todo!("splicing"),
 				}
 			}
 
