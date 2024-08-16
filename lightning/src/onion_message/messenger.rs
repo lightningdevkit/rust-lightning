@@ -1809,7 +1809,7 @@ fn packet_payloads_and_keys<T: OnionMessageContents, S: secp256k1::Signing + sec
 	let mut blinded_path_idx = 0;
 	let mut prev_control_tlvs_ss = None;
 	let mut final_control_tlvs = None;
-	utils::construct_keys_callback(
+	utils::construct_keys_for_onion_message(
 		secp_ctx, unblinded_path.into_iter(), destination, session_priv,
 		|_, onion_packet_ss, ephemeral_pubkey, control_tlvs_ss, unblinded_pk_opt, enc_payload_opt| {
 			if num_unblinded_hops != 0 && unblinded_path_idx < num_unblinded_hops {

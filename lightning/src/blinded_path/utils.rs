@@ -88,7 +88,7 @@ macro_rules! build_keys_helper {
 }}
 
 #[inline]
-pub(crate) fn construct_keys_callback<'a, T, I, F>(
+pub(crate) fn construct_keys_for_onion_message<'a, T, I, F>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Destination, session_priv: &SecretKey,
 	mut callback: F,
 ) -> Result<(), secp256k1::Error>
@@ -116,7 +116,7 @@ where
 }
 
 #[inline]
-pub(super) fn construct_keys_callback_for_blinded_path<'a, T, I, F, H>(
+pub(super) fn construct_keys_for_blinded_path<'a, T, I, F, H>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv: &SecretKey, mut callback: F,
 ) -> Result<(), secp256k1::Error>
 where
@@ -153,7 +153,7 @@ where
 	W: Writeable
 {
 	let mut blinded_hops = Vec::with_capacity(unblinded_path.size_hint().0);
-	construct_keys_callback_for_blinded_path(
+	construct_keys_for_blinded_path(
 		secp_ctx, unblinded_path.map(|(pubkey, tlvs)| PublicKeyWithTlvs { pubkey, tlvs }), session_priv,
 		|blinded_node_id, _, _, encrypted_payload_rho, unblinded_hop_data, _| {
 			blinded_hops.push(BlindedHop {
