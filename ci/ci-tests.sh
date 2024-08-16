@@ -63,6 +63,7 @@ fi
 
 echo -e "\n\nTest futures builds"
 cargo test -p lightning-background-processor --verbose --color always --features futures
+cargo test -p lightning-background-processor --verbose --color always --features futures --no-default-features
 
 echo -e "\n\nTest Custom Message Macros"
 cargo test -p lightning-custom-message --verbose --color always
