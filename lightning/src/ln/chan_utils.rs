@@ -1427,7 +1427,7 @@ impl CommitmentTransaction {
 
 		let (obscured_commitment_transaction_number, txins) = Self::internal_build_inputs(commitment_number, channel_parameters);
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
-		let txid = transaction.txid();
+		let txid = transaction.compute_txid();
 		CommitmentTransaction {
 			commitment_number,
 			to_broadcaster_value_sat,
@@ -1459,7 +1459,7 @@ impl CommitmentTransaction {
 		let (outputs, _) = Self::internal_build_outputs(keys, self.to_broadcaster_value_sat, self.to_countersignatory_value_sat, &mut htlcs_with_aux, channel_parameters, broadcaster_funding_key, countersignatory_funding_key)?;
 
 		let transaction = Self::make_transaction(obscured_commitment_transaction_number, txins, outputs);
-		let txid = transaction.txid();
+		let txid = transaction.compute_txid();
 		let built_transaction = BuiltCommitmentTransaction {
 			transaction,
 			txid
@@ -2052,7 +2052,7 @@ mod tests {
 
 		let justice_tx = tx.trust().build_to_local_justice_tx(253, destination_script.clone()).unwrap();
 		assert_eq!(justice_tx.input.len(), 1);
-		assert_eq!(justice_tx.input[0].previous_output.txid, tx.built.transaction.txid());
+		assert_eq!(justice_tx.input[0].previous_output.txid, tx.built.transaction.compute_txid());
 		assert_eq!(justice_tx.input[0].previous_output.vout, tx.trust().revokeable_output_index().unwrap() as u32);
 		assert!(justice_tx.input[0].sequence.is_rbf());
 

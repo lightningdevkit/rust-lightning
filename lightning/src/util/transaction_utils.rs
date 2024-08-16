@@ -45,7 +45,7 @@ pub(crate) fn maybe_add_change_output(tx: &mut Transaction, input_value: Amount,
 		if output_value >= input_value { return Err(()); }
 	}
 
-	let dust_value = change_destination_script.dust_value();
+	let dust_value = change_destination_script.minimal_non_dust();
 	let mut change_output = TxOut {
 		script_pubkey: change_destination_script,
 		value: Amount::ZERO,
@@ -227,27 +227,27 @@ mod tests {
 	fn test_tx_change_edge() {
 		// Check that we never add dust outputs
 		let mut tx = Transaction { version: Version::TWO, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
-		let orig_wtxid = tx.wtxid();
+		let orig_wtxid = tx.compute_wtxid();
 		let output_spk = ScriptBuf::new_p2pkh(&PubkeyHash::hash(&[0; 0]));
-		assert_eq!(output_spk.dust_value().to_sat(), 546);
+		assert_eq!(output_spk.minimal_non_dust().to_sat(), 546);
 		// base size = version size + varint[input count] + input size + varint[output count] + output size + lock time size
 		// total size = version size + marker + flag + varint[input count] + input size + varint[output count] + output size + lock time size
 		// weight = 3 * base size + total size = 3 * (4 + 1 + 0 + 1 + 0 + 4) + (4 + 1 + 1 + 1 + 0 + 1 + 0 + 4) = 3 * 10 + 12 = 42
 		assert_eq!(tx.weight().to_wu(), 42);
 		// 10 sats isn't enough to pay fee on a dummy transaction...
 		assert!(maybe_add_change_output(&mut tx, Amount::from_sat(10), 0, 250, output_spk.clone()).is_err());
-		assert_eq!(tx.wtxid(), orig_wtxid); // Failure doesn't change the transaction
+		assert_eq!(tx.compute_wtxid(), orig_wtxid); // Failure doesn't change the transaction
 		// but 11 (= ceil(42 * 250 / 1000)) is, just not enough to add a change output...
 		assert!(maybe_add_change_output(&mut tx, Amount::from_sat(11), 0, 250, output_spk.clone()).is_ok());
 		assert_eq!(tx.output.len(), 0);
-		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+		assert_eq!(tx.compute_wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
 		assert!(maybe_add_change_output(&mut tx, Amount::from_sat(549), 0, 250, output_spk.clone()).is_ok());
 		assert_eq!(tx.output.len(), 0);
-		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+		assert_eq!(tx.compute_wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
 		// 590 is also not enough
 		assert!(maybe_add_change_output(&mut tx, Amount::from_sat(590), 0, 250, output_spk.clone()).is_ok());
 		assert_eq!(tx.output.len(), 0);
-		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+		assert_eq!(tx.compute_wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
 		// at 591 we can afford the change output at the dust limit (546)
 		assert!(maybe_add_change_output(&mut tx, Amount::from_sat(591), 0, 250, output_spk.clone()).is_ok());
 		assert_eq!(tx.output.len(), 1);
@@ -256,7 +256,7 @@ mod tests {
 		assert_eq!(tx.weight().to_wu() / 4, 590-546); // New weight is exactly the fee we wanted.
 
 		tx.output.pop();
-		assert_eq!(tx.wtxid(), orig_wtxid); // The only change is the addition of one output.
+		assert_eq!(tx.compute_wtxid(), orig_wtxid); // The only change is the addition of one output.
 	}
 
 	#[test]
@@ -267,21 +267,21 @@ mod tests {
 		}], output: vec![TxOut {
 			script_pubkey: Builder::new().push_int(1).into_script(), value: Amount::from_sat(1000)
 		}] };
-		let orig_wtxid = tx.wtxid();
+		let orig_wtxid = tx.compute_wtxid();
 		let orig_weight = tx.weight().to_wu();
 		assert_eq!(orig_weight / 4, 61);
 
-		assert_eq!(Builder::new().push_int(2).into_script().dust_value().to_sat(), 474);
+		assert_eq!(Builder::new().push_int(2).into_script().minimal_non_dust().to_sat(), 474);
 
 		// Input value of the output value + fee - 1 should fail:
 		assert!(maybe_add_change_output(&mut tx, Amount::from_sat(1000 + 61 + 100 - 1), 400, 250, Builder::new().push_int(2).into_script()).is_err());
-		assert_eq!(tx.wtxid(), orig_wtxid); // Failure doesn't change the transaction
+		assert_eq!(tx.compute_wtxid(), orig_wtxid); // Failure doesn't change the transaction
 		// but one more input sat should succeed, without changing the transaction
 		assert!(maybe_add_change_output(&mut tx, Amount::from_sat(1000 + 61 + 100), 400, 250, Builder::new().push_int(2).into_script()).is_ok());
-		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+		assert_eq!(tx.compute_wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
 		// In order to get a change output, we need to add 474 plus the output's weight / 4 (10)...
 		assert!(maybe_add_change_output(&mut tx, Amount::from_sat(1000 + 61 + 100 + 474 + 9), 400, 250, Builder::new().push_int(2).into_script()).is_ok());
-		assert_eq!(tx.wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
+		assert_eq!(tx.compute_wtxid(), orig_wtxid); // If we don't add an output, we don't change the transaction
 
 		assert!(maybe_add_change_output(&mut tx, Amount::from_sat(1000 + 61 + 100 + 474 + 10), 400, 250, Builder::new().push_int(2).into_script()).is_ok());
 		assert_eq!(tx.output.len(), 2);
@@ -289,6 +289,6 @@ mod tests {
 		assert_eq!(tx.output[1].script_pubkey, Builder::new().push_int(2).into_script());
 		assert_eq!(tx.weight().to_wu() - orig_weight, 40); // Weight difference matches what we had to add above
 		tx.output.pop();
-		assert_eq!(tx.wtxid(), orig_wtxid); // The only change is the addition of one output.
+		assert_eq!(tx.compute_wtxid(), orig_wtxid); // The only change is the addition of one output.
 	}
 }

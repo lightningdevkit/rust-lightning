@@ -2141,7 +2141,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				} = &event.event {
 					if event.transaction.as_ref().map(|tx| tx.input.iter().any(|inp| {
 						if let Some(htlc_spend_txid) = htlc_spend_txid_opt {
-							tx.txid() == *htlc_spend_txid || inp.previous_output.txid == *htlc_spend_txid
+							tx.compute_txid() == *htlc_spend_txid || inp.previous_output.txid == *htlc_spend_txid
 						} else {
 							Some(inp.previous_output.txid) == confirmed_txid &&
 								inp.previous_output.vout == htlc_commitment_tx_output_idx
@@ -2590,7 +2590,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 macro_rules! fail_unbroadcast_htlcs {
 	($self: expr, $commitment_tx_type: expr, $commitment_txid_confirmed: expr, $commitment_tx_confirmed: expr,
 	 $commitment_tx_conf_height: expr, $commitment_tx_conf_hash: expr, $confirmed_htlcs_list: expr, $logger: expr) => { {
-		debug_assert_eq!($commitment_tx_confirmed.txid(), $commitment_txid_confirmed);
+		debug_assert_eq!($commitment_tx_confirmed.compute_txid(), $commitment_txid_confirmed);
 
 		macro_rules! check_htlc_fails {
 			($txid: expr, $commitment_tx: expr, $per_commitment_outpoints: expr) => {
@@ -3223,7 +3223,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					// introduced with v0.0.116. counterparty_node_id is guaranteed to be `Some`
 					// since v0.0.110.
 					let counterparty_node_id = self.counterparty_node_id.unwrap();
-					let commitment_txid = commitment_tx.txid();
+					let commitment_txid = commitment_tx.compute_txid();
 					debug_assert_eq!(self.current_holder_commitment_tx.txid, commitment_txid);
 					let pending_htlcs = self.current_holder_commitment_tx.non_dust_htlcs();
 					let commitment_tx_fee_satoshis = self.channel_value_satoshis -
@@ -3403,7 +3403,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut claimable_outpoints = Vec::new();
 		let mut to_counterparty_output_info = None;
 
-		let commitment_txid = tx.txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
+		let commitment_txid = tx.compute_txid(); //TODO: This is gonna be a performance bottleneck for watchtowers!
 		let per_commitment_option = self.counterparty_claimable_outpoints.get(&commitment_txid);
 
 		macro_rules! ignore_error {
@@ -3589,7 +3589,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		};
 		let per_commitment_point = PublicKey::from_secret_key(&self.onchain_tx_handler.secp_ctx, &per_commitment_key);
 
-		let htlc_txid = tx.txid();
+		let htlc_txid = tx.compute_txid();
 		let mut claimable_outpoints = vec![];
 		let mut outputs_to_watch = None;
 		// Previously, we would only claim HTLCs from revoked HTLC transactions if they had 1 input
@@ -3681,7 +3681,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Should not be used if check_spend_revoked_transaction succeeds.
 	/// Returns None unless the transaction is definitely one of our commitment transactions.
 	fn check_spend_holder_transaction<L: Deref>(&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &L) -> Option<(Vec<PackageTemplate>, TransactionOutputs)> where L::Target: Logger {
-		let commitment_txid = tx.txid();
+		let commitment_txid = tx.compute_txid();
 		let mut claim_requests = Vec::new();
 		let mut watch_outputs = Vec::new();
 
@@ -3786,7 +3786,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	) -> Vec<Transaction> where L::Target: Logger {
 		log_debug!(logger, "Getting signed copy of latest holder commitment transaction!");
 		let commitment_tx = self.onchain_tx_handler.get_fully_signed_copy_holder_tx(&self.funding_redeemscript);
-		let txid = commitment_tx.txid();
+		let txid = commitment_tx.compute_txid();
 		let mut holder_transactions = vec![commitment_tx];
 		// When anchor outputs are present, the HTLC transactions are only final once the commitment
 		// transaction confirms due to the CSV 1 encumberance.
@@ -3885,7 +3885,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut watch_outputs = Vec::new();
 		let mut claimable_outpoints = Vec::new();
 		'tx_iter: for tx in &txn_matched {
-			let txid = tx.txid();
+			let txid = tx.compute_txid();
 			log_trace!(logger, "Transaction {} confirmed in block {}", txid , block_hash);
 			// If a transaction has already been confirmed, ensure we don't bother processing it duplicatively.
 			if Some(txid) == self.funding_spend_confirmed {
@@ -4131,7 +4131,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// make sure the registered scriptpubkey at the expected index match
 			// the actual transaction output one. We failed this case before #653.
 			for tx in &txn_matched {
-				if let Some(outputs) = self.get_outputs_to_watch().get(&tx.txid()) {
+				if let Some(outputs) = self.get_outputs_to_watch().get(&tx.compute_txid()) {
 					for idx_and_script in outputs.iter() {
 						assert!((idx_and_script.0 as usize) < tx.output.len());
 						assert_eq!(tx.output[idx_and_script.0 as usize].script_pubkey, idx_and_script.1);
@@ -4206,7 +4206,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 			if matches {
-				matched_txn.insert(tx.txid());
+				matched_txn.insert(tx.compute_txid());
 			}
 			matches
 		}).map(|(_, tx)| *tx).collect()
@@ -4360,12 +4360,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					if ($holder_tx && revocation_sig_claim) ||
 							(outbound_htlc && !$source_avail && (accepted_preimage_claim || offered_preimage_claim)) {
 						log_error!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}!",
-							$tx_info, input.previous_output.txid, input.previous_output.vout, tx.txid(),
+							$tx_info, input.previous_output.txid, input.previous_output.vout, tx.compute_txid(),
 							if outbound_htlc { "outbound" } else { "inbound" }, &$htlc.payment_hash,
 							if revocation_sig_claim { "revocation sig" } else { "preimage claim after we'd passed the HTLC resolution back. We can likely claim the HTLC output with a revocation claim" });
 					} else {
 						log_info!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}",
-							$tx_info, input.previous_output.txid, input.previous_output.vout, tx.txid(),
+							$tx_info, input.previous_output.txid, input.previous_output.vout, tx.compute_txid(),
 							if outbound_htlc { "outbound" } else { "inbound" }, &$htlc.payment_hash,
 							if revocation_sig_claim { "revocation sig" } else if accepted_preimage_claim || offered_preimage_claim { "preimage" } else { "timeout" });
 					}
@@ -4412,7 +4412,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								log_claim!($tx_info, $holder_tx, htlc_output, false);
 								let outbound_htlc = $holder_tx == htlc_output.offered;
 								self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-									txid: tx.txid(), height, block_hash: Some(*block_hash), transaction: Some(tx.clone()),
+									txid: tx.compute_txid(), height, block_hash: Some(*block_hash), transaction: Some(tx.clone()),
 									event: OnchainEvent::HTLCSpendConfirmation {
 										commitment_tx_output_idx: input.previous_output.vout,
 										preimage: if accepted_preimage_claim || offered_preimage_claim {
@@ -4454,7 +4454,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					if !self.pending_monitor_events.iter().any(
 						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-							txid: tx.txid(),
+							txid: tx.compute_txid(),
 							height,
 							block_hash: Some(*block_hash),
 							transaction: Some(tx.clone()),
@@ -4477,7 +4477,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							upd.source == source
 						} else { false }) {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-							txid: tx.txid(),
+							txid: tx.compute_txid(),
 							transaction: Some(tx.clone()),
 							height,
 							block_hash: Some(*block_hash),
@@ -4505,7 +4505,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						}
 					});
 					let entry = OnchainEventEntry {
-						txid: tx.txid(),
+						txid: tx.compute_txid(),
 						transaction: Some(tx.clone()),
 						height,
 						block_hash: Some(*block_hash),
@@ -4527,7 +4527,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		for (i, outp) in tx.output.iter().enumerate() {
 			if outp.script_pubkey == self.destination_script {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
-					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
+					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 					output: outp.clone(),
 					channel_keys_id: Some(self.channel_keys_id),
 				});
@@ -4535,7 +4535,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
 				if broadcasted_holder_revokable_script.0 == outp.script_pubkey {
 					spendable_outputs.push(SpendableOutputDescriptor::DelayedPaymentOutput(DelayedPaymentOutputDescriptor {
-						outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
+						outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 						per_commitment_point: broadcasted_holder_revokable_script.1,
 						to_self_delay: self.on_holder_tx_csv,
 						output: outp.clone(),
@@ -4548,7 +4548,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 			if self.counterparty_payment_script == outp.script_pubkey {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticPaymentOutput(StaticPaymentOutputDescriptor {
-					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
+					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 					output: outp.clone(),
 					channel_keys_id: self.channel_keys_id,
 					channel_value_satoshis: self.channel_value_satoshis,
@@ -4557,7 +4557,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 			if self.shutdown_script.as_ref() == Some(&outp.script_pubkey) {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
-					outpoint: OutPoint { txid: tx.txid(), index: i as u16 },
+					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 					output: outp.clone(),
 					channel_keys_id: Some(self.channel_keys_id),
 				});
@@ -4573,7 +4573,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	) where L::Target: Logger {
 		for spendable_output in self.get_spendable_outputs(tx) {
 			let entry = OnchainEventEntry {
-				txid: tx.txid(),
+				txid: tx.compute_txid(),
 				transaction: Some(tx.clone()),
 				height,
 				block_hash: Some(*block_hash),
@@ -5066,7 +5066,7 @@ mod tests {
 		assert!(txn_broadcasted.len() >= 2);
 		let htlc_txn = txn_broadcasted.iter().filter(|tx| {
 			assert_eq!(tx.input.len(), 1);
-			tx.input[0].previous_output.txid == broadcast_tx.txid()
+			tx.input[0].previous_output.txid == broadcast_tx.compute_txid()
 		}).collect::<Vec<_>>();
 		assert_eq!(htlc_txn.len(), 2);
 		check_spends!(htlc_txn[0], broadcast_tx);

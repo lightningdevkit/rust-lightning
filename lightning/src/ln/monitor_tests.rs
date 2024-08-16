@@ -209,7 +209,7 @@ fn archive_fully_resolved_monitors() {
 	// Remove the corresponding outputs and transactions the chain source is
 	// watching. This is to make sure the `Drop` function assertions pass.
 	nodes.get_mut(0).unwrap().chain_source.remove_watched_txn_and_outputs(
-		OutPoint { txid: funding_tx.txid(), index: 0 },
+		OutPoint { txid: funding_tx.compute_txid(), index: 0 },
 		funding_tx.output[0].script_pubkey.clone()
 	);
 }
@@ -231,7 +231,7 @@ fn do_chanmon_claim_value_coop_close(anchors: bool) {
 
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
-	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let funding_outpoint = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
@@ -389,13 +389,13 @@ fn do_test_claim_value_force_close(anchors: bool, prev_commitment_tx: bool) {
 		],
 	};
 	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 1 }, coinbase_tx.output[1].value);
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
+		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 }, coinbase_tx.output[1].value);
 	}
 
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 1_000_000);
-	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let funding_outpoint = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	// This HTLC is immediately claimed, giving node B the preimage
@@ -789,14 +789,14 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 		],
 	};
 	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 1 }, coinbase_tx.output[1].value);
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
+		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 }, coinbase_tx.output[1].value);
 	}
 
 	// Create a single channel with two pending HTLCs from nodes[0] to nodes[1], one which nodes[1]
 	// knows the preimage for, one which it does not.
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
-	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let funding_outpoint = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 
 	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 10_000_000);
 	let htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
@@ -849,7 +849,7 @@ fn do_test_balances_on_local_commitment_htlcs(anchors: bool) {
 	if nodes[0].connect_style.borrow().updates_best_block_first() {
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
-		assert_eq!(txn[0].txid(), commitment_tx.txid());
+		assert_eq!(txn[0].compute_txid(), commitment_tx.compute_txid());
 	}
 
 	let htlc_balance_known_preimage = Balance::MaybeTimeoutClaimableHTLC {
@@ -1000,7 +1000,7 @@ fn test_no_preimage_inbound_htlc_balances() {
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
-	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let funding_outpoint = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 
 	// Send two HTLCs, one from A to B, and one from B to A.
 	let to_b_failed_payment_hash = route_payment(&nodes[0], &[&nodes[1]], 10_000_000).1;
@@ -1263,7 +1263,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
-	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let funding_outpoint = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	// We create five HTLCs for B to claim against A's revoked commitment transaction:
@@ -1368,7 +1368,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances()));
 
 	mine_transaction(&nodes[1], &as_revoked_txn[0]);
-	let mut claim_txn: Vec<_> = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().drain(..).filter(|tx| tx.input.iter().any(|inp| inp.previous_output.txid == as_revoked_txn[0].txid())).collect();
+	let mut claim_txn: Vec<_> = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().drain(..).filter(|tx| tx.input.iter().any(|inp| inp.previous_output.txid == as_revoked_txn[0].compute_txid())).collect();
 	// Currently the revoked commitment is claimed in four transactions as the HTLCs all expire
 	// quite soon.
 	assert_eq!(claim_txn.len(), 4);
@@ -1554,21 +1554,21 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		],
 	};
 	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 1 }, coinbase_tx.output[1].value);
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
+		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 }, coinbase_tx.output[1].value);
 	}
 
 	// Create some initial channels
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 12_000_000);
-	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let funding_outpoint = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	let payment_preimage = route_payment(&nodes[0], &[&nodes[1]], 3_000_100).0;
 	let failed_payment_hash = route_payment(&nodes[1], &[&nodes[0]], 1_000_000).1;
 	let revoked_local_txn = get_local_commitment_txn!(nodes[1], chan_id);
 	assert_eq!(revoked_local_txn[0].input.len(), 1);
-	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, funding_tx.txid());
+	assert_eq!(revoked_local_txn[0].input[0].previous_output.txid, funding_tx.compute_txid());
 	if anchors {
 		assert_eq!(revoked_local_txn[0].output[4].value.to_sat(), 11000); // to_self output
 	} else {
@@ -1866,11 +1866,11 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 		}],
 	};
-	nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+	nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
 
 	let (_, _, chan_id, funding_tx) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
-	let funding_outpoint = OutPoint { txid: funding_tx.txid(), index: 0 };
+	let funding_outpoint = OutPoint { txid: funding_tx.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint), chan_id);
 
 	// We create two HTLCs, one which we will give A the preimage to to generate an HTLC-Success
@@ -2183,19 +2183,19 @@ fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: boo
 		],
 	};
 	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 1 }, coinbase_tx.output[1].value);
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
+		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 1 }, coinbase_tx.output[1].value);
 	}
 
 	// Create a channel from A -> B
 	let (_, _, chan_ab_id, funding_tx_ab) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000 /* channel_value (sat) */, 0 /* push_msat */);
-	let funding_outpoint_ab = OutPoint { txid: funding_tx_ab.txid(), index: 0 };
+	let funding_outpoint_ab = OutPoint { txid: funding_tx_ab.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint_ab), chan_ab_id);
 	// Create a channel from B -> C
 	let (_, _, chan_bc_id, funding_tx_bc) =
 		create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000 /* channel_value (sat) */, 0 /* push_msat */);
-	let funding_outpoint_bc = OutPoint { txid: funding_tx_bc.txid(), index: 0 };
+	let funding_outpoint_bc = OutPoint { txid: funding_tx_bc.compute_txid(), index: 0 };
 	assert_eq!(ChannelId::v1_from_funding_outpoint(funding_outpoint_bc), chan_bc_id);
 
 	let (chan_feerate, channel_type_features) = if outbound_payment {
@@ -2274,7 +2274,7 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	if nodes[0].connect_style.borrow().updates_best_block_first() {
 		let txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
-		assert_eq!(txn[0].txid(), commitment_tx.txid());
+		assert_eq!(txn[0].compute_txid(), commitment_tx.compute_txid());
 	}
 
 	// Connect blocks until the HTLC's expiration is met, expecting a transaction broadcast.
@@ -2362,7 +2362,7 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 		}],
 	};
-	nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+	nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
 
 	// Set up a helper closure we'll use throughout our test. We should only expect retries without
 	// bumps if fees have not increased after a block has been connected (assuming the height timer
@@ -2444,8 +2444,8 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	// If we have a `ConnectStyle` that advertises the new block first without the transactions,
 	// we'll receive an extra bumped claim.
 	if nodes[0].connect_style.borrow().updates_best_block_first() {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[0].wallet_source.remove_utxo(bitcoin::OutPoint { txid: htlc_tx.txid(), vout: 1 });
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
+		nodes[0].wallet_source.remove_utxo(bitcoin::OutPoint { txid: htlc_tx.compute_txid(), vout: 1 });
 		check_htlc_retry(true, anchors);
 	}
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
@@ -2518,7 +2518,7 @@ fn test_yield_anchors_events() {
 					script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
 				}],
 			};
-			nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+			nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
 			nodes[0].bump_tx_handler.handle_event(&event);
 			let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
 			assert_eq!(txn.len(), 2);
@@ -2697,7 +2697,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 				script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 			}],
 		};
-		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, utxo_value);
+		nodes[1].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, utxo_value);
 		match event {
 			Event::BumpTransaction(event) => nodes[1].bump_tx_handler.handle_event(&event),
 			_ => panic!("Unexpected event"),
@@ -2705,7 +2705,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		let txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 2);
 		assert_eq!(txn[0].output.len(), 6); // 2 HTLC outputs + 1 to_self output + 1 to_remote output + 2 anchor outputs
-		if txn[0].input[0].previous_output.txid == chan_a.3.txid() {
+		if txn[0].input[0].previous_output.txid == chan_a.3.compute_txid() {
 			check_spends!(&txn[0], &chan_a.3);
 		} else {
 			check_spends!(&txn[0], &chan_b.3);
@@ -2730,7 +2730,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		let txn = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 		assert_eq!(txn.len(), 4);
 
-		let (revoked_htlc_claim_a, revoked_htlc_claim_b) = if txn[0].input[0].previous_output.txid == revoked_commitment_txs[0].txid() {
+		let (revoked_htlc_claim_a, revoked_htlc_claim_b) = if txn[0].input[0].previous_output.txid == revoked_commitment_txs[0].compute_txid() {
 			(if txn[0].input.len() == 2 { &txn[0] } else { &txn[1] }, if txn[2].input.len() == 2 { &txn[2] } else { &txn[3] })
 		} else {
 			(if txn[2].input.len() == 2 { &txn[2] } else { &txn[3] }, if txn[0].input.len() == 2 { &txn[0] } else { &txn[1] })
@@ -2778,7 +2778,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 			version: Version::TWO,
 			lock_time: LockTime::ZERO,
 			input: vec![TxIn { // Fee input
-				previous_output: bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 },
+				previous_output: bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 },
 				..Default::default()
 			}],
 			output: vec![TxOut { // Fee input change
@@ -2838,7 +2838,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 		let revoked_htlc_claims = txn.iter().filter(|tx|
 			tx.input.len() == 2 &&
 			tx.output.len() == 1 &&
-			tx.input[0].previous_output.txid == htlc_tx.txid()
+			tx.input[0].previous_output.txid == htlc_tx.compute_txid()
 		).collect::<Vec<_>>();
 		assert_eq!(revoked_htlc_claims.len(), 2);
 		for revoked_htlc_claim in revoked_htlc_claims {
@@ -2847,7 +2847,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 
 		let mut revoked_claim_transaction_map = new_hash_map();
 		for current_tx in txn.into_iter() {
-			revoked_claim_transaction_map.insert(current_tx.txid(), current_tx);
+			revoked_claim_transaction_map.insert(current_tx.compute_txid(), current_tx);
 		}
 		revoked_claim_transaction_map
 	};
@@ -3016,7 +3016,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 		],
 	};
 	if anchors {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
 	}
 
 	// Open a channel and route a payment. We'll let it timeout to claim it.
@@ -3084,8 +3084,8 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	{
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
-		assert_eq!(txn[0].txid(), htlc_timeout_tx.txid());
-		assert_ne!(txn[0].wtxid(), htlc_timeout_tx.wtxid());
+		assert_eq!(txn[0].compute_txid(), htlc_timeout_tx.compute_txid());
+		assert_ne!(txn[0].compute_wtxid(), htlc_timeout_tx.compute_wtxid());
 	}
 }
 

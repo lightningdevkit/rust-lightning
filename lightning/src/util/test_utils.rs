@@ -733,7 +733,7 @@ impl TestBroadcaster {
 	pub fn unique_txn_broadcast(&self) -> Vec<Transaction> {
 		let mut txn = self.txn_broadcasted.lock().unwrap().split_off(0);
 		let mut seen = new_hash_set();
-		txn.retain(|tx| seen.insert(tx.txid()));
+		txn.retain(|tx| seen.insert(tx.compute_txid()));
 		txn
 	}
 }

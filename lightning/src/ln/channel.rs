@@ -6714,7 +6714,7 @@ impl<SP: Deref> Channel<SP> where
 				// Check if the transaction is the expected funding transaction, and if it is,
 				// check that it pays the right amount to the right script.
 				if self.context.funding_tx_confirmation_height == 0 {
-					if tx.txid() == funding_txo.txid {
+					if tx.compute_txid() == funding_txo.txid {
 						let txo_idx = funding_txo.index as usize;
 						if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != self.context.get_funding_redeemscript().to_p2wsh() ||
 								tx.output[txo_idx].value.to_sat() != self.context.channel_value_satoshis {
@@ -6769,7 +6769,7 @@ impl<SP: Deref> Channel<SP> where
 				}
 				for inp in tx.input.iter() {
 					if inp.previous_output == funding_txo.into_bitcoin_outpoint() {
-						log_info!(logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.txid(), inp.previous_output.txid, inp.previous_output.vout, &self.context.channel_id());
+						log_info!(logger, "Detected channel-closing tx {} spending {}:{}, closing channel {}", tx.compute_txid(), inp.previous_output.txid, inp.previous_output.vout, &self.context.channel_id());
 						return Err(ClosureReason::CommitmentTxConfirmed);
 					}
 				}
@@ -9752,7 +9752,7 @@ mod tests {
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
-		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
+		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg.unwrap(), best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
@@ -9882,7 +9882,7 @@ mod tests {
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
-		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
+		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
 		let (mut node_b_chan, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg.unwrap(), best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
@@ -10071,7 +10071,7 @@ mod tests {
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: Amount::from_sat(10000000), script_pubkey: output_script.clone(),
 		}]};
-		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
+		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap();
 		let (_, funding_signed_msg, _) = node_b_chan.funding_created(&funding_created_msg.unwrap(), best_block, &&keys_provider, &&logger).map_err(|_| ()).unwrap();
 
@@ -10139,7 +10139,7 @@ mod tests {
 		let tx = Transaction { version: Version::ONE, lock_time: LockTime::ZERO, input: Vec::new(), output: vec![TxOut {
 			value: Amount::from_sat(10000000), script_pubkey: outbound_chan.context.get_funding_redeemscript(),
 		}]};
-		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
+		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
 		let funding_created = outbound_chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap().unwrap();
 		let mut chan = match inbound_chan.funding_created(&funding_created, best_block, &&keys_provider, &&logger) {
 			Ok((chan, _, _)) => chan,
@@ -11272,7 +11272,7 @@ mod tests {
 					value: Amount::from_sat(10000000), script_pubkey: Builder::new().into_script(),
 				},
 			]};
-		let funding_outpoint = OutPoint{ txid: tx.txid(), index: 0 };
+		let funding_outpoint = OutPoint{ txid: tx.compute_txid(), index: 0 };
 		let funding_created_msg = node_a_chan.get_funding_created(
 			tx.clone(), funding_outpoint, true, &&logger,
 		).map_err(|_| ()).unwrap();

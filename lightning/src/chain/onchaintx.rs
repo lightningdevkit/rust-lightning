@@ -514,7 +514,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 								log_info!(logger, "{} onchain {}", log_start, log_tx!(tx.0));
 								broadcaster.broadcast_transactions(&[&tx.0]);
 							} else {
-								log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.txid());
+								log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
 							}
 						},
 						OnchainClaim::Event(event) => {
@@ -535,7 +535,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		}
 	}
 
-	/// Returns true if we are currently tracking any pending claim requests that are not fully 
+	/// Returns true if we are currently tracking any pending claim requests that are not fully
 	/// confirmed yet.
 	pub(super) fn has_pending_claims(&self) -> bool
 	{
@@ -619,7 +619,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 			let predicted_weight = cached_request.package_weight(&self.destination_script);
 			if let Some((output_value, new_feerate)) = cached_request.compute_package_output(
-				predicted_weight, self.destination_script.dust_value().to_sat(),
+				predicted_weight, self.destination_script.minimal_non_dust().to_sat(),
 				feerate_strategy, fee_estimator, logger,
 			) {
 				assert!(new_feerate != 0);
@@ -647,7 +647,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				// Commitment inputs with anchors support are the only untractable inputs supported
 				// thus far that require external funding.
 				PackageSolvingData::HolderFundingOutput(output) => {
-					debug_assert_eq!(tx.0.txid(), self.holder_commitment.trust().txid(),
+					debug_assert_eq!(tx.0.compute_txid(), self.holder_commitment.trust().txid(),
 						"Holder commitment transaction mismatch");
 
 					let conf_target = ConfirmationTarget::OnChainSweep;
@@ -659,7 +659,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							compute_feerate_sat_per_1000_weight(fee_sat, tx.0.weight().to_wu());
 						if commitment_tx_feerate_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
 							log_debug!(logger, "Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW",
-								tx.0.txid(), commitment_tx_feerate_sat_per_1000_weight,
+								tx.0.compute_txid(), commitment_tx_feerate_sat_per_1000_weight,
 								package_target_feerate_sat_per_1000_weight);
 							return Some((new_timer, 0, OnchainClaim::Tx(tx.clone())));
 						}
@@ -811,9 +811,9 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							log_info!(logger, "Broadcasting onchain {}", log_tx!(tx.0));
 							broadcaster.broadcast_transactions(&[&tx.0]);
 						} else {
-							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.txid());
+							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", tx.0.compute_txid());
 						}
-						ClaimId(tx.0.txid().to_byte_array())
+						ClaimId(tx.0.compute_txid().to_byte_array())
 					},
 					OnchainClaim::Event(claim_event) => {
 						log_info!(logger, "Yielding onchain event to spend inputs {:?}", req.outpoints());
@@ -821,7 +821,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							ClaimEvent::BumpCommitment { ref commitment_tx, .. } =>
 								// For commitment claims, we can just use their txid as it should
 								// already be unique.
-								ClaimId(commitment_tx.txid().to_byte_array()),
+								ClaimId(commitment_tx.compute_txid().to_byte_array()),
 							ClaimEvent::BumpHTLC { ref htlcs, .. } => {
 								// For HTLC claims, commit to the entire set of HTLC outputs to
 								// claim, which will always be unique per request. Once a claim ID
@@ -900,7 +900,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 						macro_rules! clean_claim_request_after_safety_delay {
 							() => {
 								let entry = OnchainEventEntry {
-									txid: tx.txid(),
+									txid: tx.compute_txid(),
 									height: conf_height,
 									block_hash: Some(conf_hash),
 									event: OnchainEvent::Claim { claim_id: *claim_id }
@@ -953,7 +953,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			}
 			for package in claimed_outputs_material.drain(..) {
 				let entry = OnchainEventEntry {
-					txid: tx.txid(),
+					txid: tx.compute_txid(),
 					height: conf_height,
 					block_hash: Some(conf_hash),
 					event: OnchainEvent::ContentiousOutpoint { package },
@@ -1023,7 +1023,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							broadcaster.broadcast_transactions(&[&bump_tx.0]);
 						} else {
 							log_info!(logger, "Waiting for signature of RBF-bumped unsigned onchain transaction {}",
-								bump_tx.0.txid());
+								bump_tx.0.compute_txid());
 						}
 					},
 					OnchainClaim::Event(claim_event) => {
@@ -1110,7 +1110,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 							log_info!(logger, "Broadcasting onchain {}", log_tx!(bump_tx.0));
 							broadcaster.broadcast_transactions(&[&bump_tx.0]);
 						} else {
-							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", bump_tx.0.txid());
+							log_info!(logger, "Waiting for signature of unsigned onchain transaction {}", bump_tx.0.compute_txid());
 						}
 					},
 					OnchainClaim::Event(claim_event) => {

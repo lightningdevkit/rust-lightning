@@ -724,7 +724,7 @@ impl<'a, T: Writeable> Writeable for WithoutLength<&'a Vec<T>> {
 
 impl<T: MaybeReadable> Readable for WithoutLength<Vec<T>> {
 	#[inline]
-	fn read<R: Read>(mut reader: &mut R) -> Result<Self, DecodeError> {
+	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let mut values = Vec::new();
 		loop {
 			let mut track_read = ReadTrackingReader::new(reader);

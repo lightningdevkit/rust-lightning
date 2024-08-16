@@ -119,7 +119,7 @@ pub mod io_extras {
 		Ok(count)
 	}
 
-	pub fn read_to_end<D: Read>(mut d: &mut D) -> Result<alloc::vec::Vec<u8>, io::Error> {
+	pub fn read_to_end<D: Read>(d: &mut D) -> Result<alloc::vec::Vec<u8>, io::Error> {
 		let mut result = vec![];
 		let mut buf = [0u8; 64];
 		loop {

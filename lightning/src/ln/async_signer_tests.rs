@@ -734,7 +734,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 	if anchors {
 		*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
 		*nodes[1].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
-		closing_node.wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.txid(), vout: 0 }, coinbase_tx.output[0].value);
+		closing_node.wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
 	}
 
 	// Route an HTLC and set the signer as unavailable.
@@ -773,7 +773,7 @@ fn do_test_async_holder_signatures(anchors: bool, remote_commitment: bool) {
 			txn.remove(0)
 		} else {
 			assert_eq!(txn.len(), 2);
-			if txn[0].input[0].previous_output.txid == funding_tx.txid() {
+			if txn[0].input[0].previous_output.txid == funding_tx.compute_txid() {
 				check_spends!(txn[0], funding_tx);
 				check_spends!(txn[1], txn[0]);
 				txn.remove(0)

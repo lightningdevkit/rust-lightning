@@ -331,7 +331,7 @@ impl NegotiationContext {
 		}
 
 		let transaction = msg.prevtx.as_transaction();
-		let txid = transaction.txid();
+		let txid = transaction.compute_txid();
 
 		if let Some(tx_out) = transaction.output.get(msg.prevtx_out as usize) {
 			if !tx_out.script_pubkey.is_witness_program() {
@@ -415,7 +415,7 @@ impl NegotiationContext {
 			return Err(AbortReason::ReceivedTooManyTxAddOutputs);
 		}
 
-		if msg.sats < msg.script.dust_value().to_sat() {
+		if msg.sats < msg.script.minimal_non_dust().to_sat() {
 			// The receiving node:
 			// - MUST fail the negotiation if:
 			//		- the sats amount is less than the dust_limit
@@ -504,7 +504,7 @@ impl NegotiationContext {
 	fn sent_tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<(), AbortReason> {
 		let tx = msg.prevtx.as_transaction();
 		let txin = TxIn {
-			previous_output: OutPoint { txid: tx.txid(), vout: msg.prevtx_out },
+			previous_output: OutPoint { txid: tx.compute_txid(), vout: msg.prevtx_out },
 			sequence: Sequence(msg.sequence),
 			..Default::default()
 		};
@@ -1629,7 +1629,7 @@ mod tests {
 
 	fn generate_inputs(outputs: &[TestOutput]) -> Vec<(TxIn, TransactionU16LenLimited)> {
 		let tx = generate_tx(outputs);
-		let txid = tx.txid();
+		let txid = tx.compute_txid();
 		tx.output
 			.iter()
 			.enumerate()
@@ -1704,7 +1704,7 @@ mod tests {
 				&vec![TestOutput::P2WPKH(1_000_000); tx_output_count as usize],
 				(1337 + remaining).into(),
 			);
-			let txid = tx.txid();
+			let txid = tx.compute_txid();
 
 			let mut temp: Vec<(TxIn, TransactionU16LenLimited)> = tx
 				.output
@@ -1908,7 +1908,7 @@ mod tests {
 		let tx =
 			TransactionU16LenLimited::new(generate_tx(&[TestOutput::P2WPKH(1_000_000)])).unwrap();
 		let invalid_sequence_input = TxIn {
-			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
+			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
 			..Default::default()
 		};
 		do_test_interactive_tx_constructor(TestSession {
@@ -1922,7 +1922,7 @@ mod tests {
 			b_expected_remote_shared_output: Some((generate_p2wpkh_script_pubkey(), 0)),
 		});
 		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
+			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
@@ -1938,7 +1938,7 @@ mod tests {
 		});
 		// Non-initiator uses same prevout as initiator.
 		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
+			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
@@ -1953,7 +1953,7 @@ mod tests {
 			b_expected_remote_shared_output: Some((generate_funding_script_pubkey(), 95_000)),
 		});
 		let duplicate_input = TxIn {
-			previous_output: OutPoint { txid: tx.as_transaction().txid(), vout: 0 },
+			previous_output: OutPoint { txid: tx.as_transaction().compute_txid(), vout: 0 },
 			sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
 			..Default::default()
 		};
@@ -2005,7 +2005,7 @@ mod tests {
 			description: "Initiator sends an output below dust value",
 			inputs_a: vec![],
 			outputs_a: generate_funding_output(
-				generate_p2wsh_script_pubkey().dust_value().to_sat() - 1,
+				generate_p2wsh_script_pubkey().minimal_non_dust().to_sat() - 1,
 			),
 			inputs_b: vec![],
 			outputs_b: vec![],

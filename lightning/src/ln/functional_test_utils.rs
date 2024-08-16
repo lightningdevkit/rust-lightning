@@ -331,7 +331,7 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b
 		let wallet_script = node.wallet_source.get_change_script().unwrap();
 		for (idx, output) in tx.output.iter().enumerate() {
 			if output.script_pubkey == wallet_script {
-				let outpoint = bitcoin::OutPoint { txid: tx.txid(), vout: idx as u32 };
+				let outpoint = bitcoin::OutPoint { txid: tx.compute_txid(), vout: idx as u32 };
 				node.wallet_source.add_utxo(outpoint, output.value);
 			}
 		}
@@ -362,8 +362,8 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 			},
 			ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::TransactionsFirstReorgsOnlyTip => {
 				for tx in orig.0.txdata {
-					node.chain_monitor.chain_monitor.transaction_unconfirmed(&tx.txid());
-					node.node.transaction_unconfirmed(&tx.txid());
+					node.chain_monitor.chain_monitor.transaction_unconfirmed(&tx.compute_txid());
+					node.node.transaction_unconfirmed(&tx.compute_txid());
 				}
 			},
 			_ => {
@@ -1207,7 +1207,7 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 			let tx = Transaction { version: transaction::Version(chan_id as i32), lock_time: LockTime::ZERO, input, output: vec![TxOut {
 				value: Amount::from_sat(*channel_value_satoshis), script_pubkey: output_script.clone(),
 			}]};
-			let funding_outpoint = OutPoint { txid: tx.txid(), index: 0 };
+			let funding_outpoint = OutPoint { txid: tx.compute_txid(), index: 0 };
 			(*temporary_channel_id, tx, funding_outpoint)
 		},
 		_ => panic!("Unexpected event"),
@@ -1525,7 +1525,7 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, '
 
 pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(tx: &Transaction, get_output: F) {
 	for outp in tx.output.iter() {
-		assert!(outp.value >= outp.script_pubkey.dust_value(), "Spending tx output didn't meet dust limit");
+		assert!(outp.value >= outp.script_pubkey.minimal_non_dust(), "Spending tx output didn't meet dust limit");
 	}
 	let mut total_value_in = 0;
 	for input in tx.input.iter() {
@@ -1547,12 +1547,12 @@ macro_rules! check_spends {
 		{
 			$(
 			for outp in $spends_txn.output.iter() {
-				assert!(outp.value >= outp.script_pubkey.dust_value(), "Input tx output didn't meet dust limit");
+				assert!(outp.value >= outp.script_pubkey.minimal_non_dust(), "Input tx output didn't meet dust limit");
 			}
 			)*
 			let get_output = |out_point: &bitcoin::transaction::OutPoint| {
 				$(
-					if out_point.txid == $spends_txn.txid() {
+					if out_point.txid == $spends_txn.compute_txid() {
 						return $spends_txn.output.get(out_point.vout as usize).cloned()
 					}
 				)*
@@ -3369,12 +3369,12 @@ pub enum HTLCType { NONE, TIMEOUT, SUCCESS }
 pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::ChannelUpdate, msgs::ChannelUpdate, ChannelId, Transaction), commitment_tx: Option<Transaction>, has_htlc_tx: HTLCType) -> Vec<Transaction>  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
 	let mut txn_seen = new_hash_set();
-	node_txn.retain(|tx| txn_seen.insert(tx.txid()));
+	node_txn.retain(|tx| txn_seen.insert(tx.compute_txid()));
 	assert!(node_txn.len() >= if commitment_tx.is_some() { 0 } else { 1 } + if has_htlc_tx == HTLCType::NONE { 0 } else { 1 });
 
 	let mut res = Vec::with_capacity(2);
 	node_txn.retain(|tx| {
-		if tx.input.len() == 1 && tx.input[0].previous_output.txid == chan.3.txid() {
+		if tx.input.len() == 1 && tx.input[0].previous_output.txid == chan.3.compute_txid() {
 			check_spends!(tx, chan.3);
 			if commitment_tx.is_none() {
 				res.push(tx.clone());
@@ -3390,7 +3390,7 @@ pub fn test_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, chan: &(msgs::Cha
 
 	if has_htlc_tx != HTLCType::NONE {
 		node_txn.retain(|tx| {
-			if tx.input.len() == 1 && tx.input[0].previous_output.txid == res[0].txid() {
+			if tx.input.len() == 1 && tx.input[0].previous_output.txid == res[0].compute_txid() {
 				check_spends!(tx, res[0]);
 				if has_htlc_tx == HTLCType::TIMEOUT {
 					assert_ne!(tx.lock_time, LockTime::ZERO);
@@ -3419,7 +3419,7 @@ pub fn test_revoked_htlc_claim_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>
 	// for revoked htlc outputs
 	if node_txn.len() != 1 && node_txn.len() != 2 && node_txn.len() != 3 { assert!(false); }
 	node_txn.retain(|tx| {
-		if tx.input.len() == 1 && tx.input[0].previous_output.txid == revoked_tx.txid() {
+		if tx.input.len() == 1 && tx.input[0].previous_output.txid == revoked_tx.compute_txid() {
 			check_spends!(tx, revoked_tx);
 			false
 		} else { true }
@@ -3434,12 +3434,12 @@ pub fn test_revoked_htlc_claim_txn_broadcast<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>
 pub fn check_preimage_claim<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, prev_txn: &Vec<Transaction>) -> Vec<Transaction>  {
 	let mut node_txn = node.tx_broadcaster.txn_broadcasted.lock().unwrap();
 	let mut txn_seen = new_hash_set();
-	node_txn.retain(|tx| txn_seen.insert(tx.txid()));
+	node_txn.retain(|tx| txn_seen.insert(tx.compute_txid()));
 
 	let mut found_prev = false;
 	for prev_tx in prev_txn {
 		for tx in &*node_txn {
-			if tx.input[0].previous_output.txid == prev_tx.txid() {
+			if tx.input[0].previous_output.txid == prev_tx.compute_txid() {
 				check_spends!(tx, prev_tx);
 				let mut iter = tx.input[0].witness.iter();
 				iter.next().expect("expected 3 witness items");

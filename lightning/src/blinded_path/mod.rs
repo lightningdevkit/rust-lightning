@@ -280,7 +280,6 @@ impl Readable for BlindedPath {
 			0 => IntroductionNode::DirectedShortChannelId(Direction::NodeOne, Readable::read(r)?),
 			1 => IntroductionNode::DirectedShortChannelId(Direction::NodeTwo, Readable::read(r)?),
 			2|3 => {
-				use io::Read;
 				let mut bytes = [0; 33];
 				bytes[0] = first_byte;
 				r.read_exact(&mut bytes[1..])?;
