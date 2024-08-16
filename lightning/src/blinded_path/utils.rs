@@ -89,8 +89,8 @@ macro_rules! build_keys_helper {
 
 #[inline]
 pub(crate) fn construct_keys_callback<'a, T, I, F>(
-	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Option<Destination>,
-	session_priv: &SecretKey, mut callback: F
+	secp_ctx: &Secp256k1<T>, unblinded_path: I, destination: Destination, session_priv: &SecretKey,
+	mut callback: F,
 ) -> Result<(), secp256k1::Error>
 where
 	T: secp256k1::Signing + secp256k1::Verification,
@@ -102,17 +102,15 @@ where
 	for pk in unblinded_path {
 		build_keys_in_loop!(pk, false, None);
 	}
-	if let Some(dest) = destination {
-		match dest {
-			Destination::Node(pk) => {
-				build_keys!(pk, false, None);
-			},
-			Destination::BlindedPath(BlindedMessagePath(BlindedPath { blinded_hops, .. })) => {
-				for hop in blinded_hops {
-					build_keys_in_loop!(hop.blinded_node_id, true, Some(hop.encrypted_payload));
-				}
-			},
-		}
+	match destination {
+		Destination::Node(pk) => {
+			build_keys!(pk, false, None);
+		},
+		Destination::BlindedPath(BlindedMessagePath(BlindedPath { blinded_hops, .. })) => {
+			for hop in blinded_hops {
+				build_keys_in_loop!(hop.blinded_node_id, true, Some(hop.encrypted_payload));
+			}
+		},
 	}
 	Ok(())
 }
