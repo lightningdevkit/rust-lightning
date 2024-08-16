@@ -47,7 +47,7 @@ bech32 = { version = "0.9.1", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false, features = ["secp-recovery"] }
 
 hashbrown = { version = "0.13", optional = true, default-features = false }
-possiblyrandom = { version = "0.2", optional = true, default-features = false }
+possiblyrandom = { version = "0.2", path = "../possiblyrandom", optional = true, default-features = false }
 regex = { version = "1.5.6", optional = true }
 backtrace = { version = "0.3", optional = true }
 

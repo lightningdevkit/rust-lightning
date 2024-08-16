@@ -32,60 +32,49 @@ cargo test --verbose --color always
 cargo check --verbose --color always
 
 echo -e "\n\nBuilding and testing Block Sync Clients with features"
-pushd lightning-block-sync
-cargo test --verbose --color always --features rest-client
-cargo check --verbose --color always --features rest-client
-cargo test --verbose --color always --features rpc-client
-cargo check --verbose --color always --features rpc-client
-cargo test --verbose --color always --features rpc-client,rest-client
-cargo check --verbose --color always --features rpc-client,rest-client
-cargo test --verbose --color always --features rpc-client,rest-client,tokio
-cargo check --verbose --color always --features rpc-client,rest-client,tokio
-popd
+
+cargo test -p lightning-block-sync --verbose --color always --features rest-client
+cargo check -p lightning-block-sync --verbose --color always --features rest-client
+cargo test -p lightning-block-sync --verbose --color always --features rpc-client
+cargo check -p lightning-block-sync --verbose --color always --features rpc-client
+cargo test -p lightning-block-sync --verbose --color always --features rpc-client,rest-client
+cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client
+cargo test -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
+cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 
 if [[ "$HOST_PLATFORM" != *windows* ]]; then
-	pushd lightning-transaction-sync
 	echo -e "\n\nChecking Transaction Sync Clients with features."
-	cargo check --verbose --color always --features esplora-blocking
-	cargo check --verbose --color always --features esplora-async
-	cargo check --verbose --color always --features esplora-async-https
-	cargo check --verbose --color always --features electrum
+	cargo check -p lightning-transaction-sync --verbose --color always --features esplora-blocking
+	cargo check -p lightning-transaction-sync --verbose --color always --features esplora-async
+	cargo check -p lightning-transaction-sync --verbose --color always --features esplora-async-https
+	cargo check -p lightning-transaction-sync --verbose --color always --features electrum
 
 	if [ -z "$CI_ENV" ] && [[ -z "$BITCOIND_EXE" || -z "$ELECTRS_EXE" ]]; then
 		echo -e "\n\nSkipping testing Transaction Sync Clients due to BITCOIND_EXE or ELECTRS_EXE being unset."
-		cargo check --tests
+		cargo check -p lightning-transaction-sync --tests
 	else
 		echo -e "\n\nTesting Transaction Sync Clients with features."
-		cargo test --verbose --color always --features esplora-blocking
-		cargo test --verbose --color always --features esplora-async
-		cargo test --verbose --color always --features esplora-async-https
-		cargo test --verbose --color always --features electrum
+		cargo test -p lightning-transaction-sync --verbose --color always --features esplora-blocking
+		cargo test -p lightning-transaction-sync --verbose --color always --features esplora-async
+		cargo test -p lightning-transaction-sync --verbose --color always --features esplora-async-https
+		cargo test -p lightning-transaction-sync --verbose --color always --features electrum
 	fi
-	popd
 fi
 
 echo -e "\n\nTest futures builds"
-pushd lightning-background-processor
-cargo test --verbose --color always --features futures
-popd
+cargo test -p lightning-background-processor --verbose --color always --features futures
 
 echo -e "\n\nTest Custom Message Macros"
-pushd lightning-custom-message
-cargo test --verbose --color always
+cargo test -p lightning-custom-message --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
-popd
 
 echo -e "\n\nTest backtrace-debug builds"
-pushd lightning
-cargo test --verbose --color always --features backtrace
-popd
+cargo test -p lightning --verbose --color always --features backtrace
 
 echo -e "\n\nBuilding with all Log-Limiting features"
-pushd lightning
-grep '^max_level_' Cargo.toml | awk '{ print $1 }'| while read -r FEATURE; do
-	RUSTFLAGS="$RUSTFLAGS -A unused_variables -A unused_macros -A unused_imports -A dead_code" cargo check --verbose --color always --features "$FEATURE"
+grep '^max_level_' lightning/Cargo.toml | awk '{ print $1 }'| while read -r FEATURE; do
+	RUSTFLAGS="$RUSTFLAGS -A unused_variables -A unused_macros -A unused_imports -A dead_code" cargo check -p lightning --verbose --color always --features "$FEATURE"
 done
-popd
 
 echo -e "\n\nTesting no-std flags in various combinations"
 for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
@@ -101,14 +90,10 @@ done
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always
 
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
-pushd lightning
-cargo test --verbose --color always --no-default-features --features=std,_test_vectors
-popd
+cargo test -p lightning --verbose --color always --no-default-features --features=std,_test_vectors
 # This one only works for lightning-invoice
-pushd lightning-invoice
 # check that compile with no-std and serde works in lightning-invoice
-cargo test --verbose --color always --no-default-features --features no-std --features serde
-popd
+cargo test -p lightning-invoice --verbose --color always --no-default-features --features no-std --features serde
 
 echo -e "\n\nTesting no-std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
