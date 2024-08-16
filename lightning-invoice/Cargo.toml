@@ -15,9 +15,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = ["std"]
-no-std = []
-std = ["bech32/std"]
+std = []
 
 [dependencies]
 bech32 = { version = "0.9.1", default-features = false }

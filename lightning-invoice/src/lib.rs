@@ -22,9 +22,6 @@
 //!
 //! [`Bolt11Invoice::from_str`]: crate::Bolt11Invoice#impl-FromStr
 
-#[cfg(not(any(feature = "std", feature = "no-std")))]
-compile_error!("at least one of the `std` or `no-std` features must be enabled");
-
 extern crate bech32;
 extern crate lightning_types;
 extern crate alloc;

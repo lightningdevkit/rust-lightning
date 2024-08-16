@@ -31,7 +31,7 @@ unsafe_revoked_tx_signing = []
 # Override signing to not include randomness when generating signatures for test vectors.
 _test_vectors = []
 
-no-std = ["hashbrown", "possiblyrandom", "lightning-invoice/no-std", "libm"]
+no-std = ["hashbrown", "possiblyrandom", "libm"]
 std = ["lightning-invoice/std", "bech32/std"]
 
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases

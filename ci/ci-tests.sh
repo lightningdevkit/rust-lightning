@@ -77,14 +77,21 @@ grep '^max_level_' lightning/Cargo.toml | awk '{ print $1 }'| while read -r FEAT
 	RUSTFLAGS="$RUSTFLAGS -A unused_variables -A unused_macros -A unused_imports -A dead_code" cargo check -p lightning --verbose --color always --features "$FEATURE"
 done
 
+echo -e "\n\nTesting no-std builds"
+for DIR in lightning-invoice; do
+	cargo test -p $DIR --verbose --color always --no-default-features
+	# check if there is a conflict between no-std and the c_bindings cfg
+	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features
+done
+
 echo -e "\n\nTesting no-std flags in various combinations"
-for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
+for DIR in lightning lightning-rapid-gossip-sync; do
 	cargo test -p $DIR --verbose --color always --no-default-features --features no-std
 	# check if there is a conflict between no-std and the default std feature
 	cargo test -p $DIR --verbose --color always --features no-std
 done
 
-for DIR in lightning lightning-invoice lightning-rapid-gossip-sync; do
+for DIR in lightning lightning-rapid-gossip-sync; do
 	# check if there is a conflict between no-std and the c_bindings cfg
 	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
 done
@@ -94,7 +101,7 @@ RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always
 cargo test -p lightning --verbose --color always --no-default-features --features=std,_test_vectors
 # This one only works for lightning-invoice
 # check that compile with no-std and serde works in lightning-invoice
-cargo test -p lightning-invoice --verbose --color always --no-default-features --features no-std --features serde
+cargo test -p lightning-invoice --verbose --color always --no-default-features --features serde
 
 echo -e "\n\nTesting no-std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
