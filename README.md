@@ -181,9 +181,11 @@ event: ChannelPending
 New funding tx gets broadcasted (both sides)
 Waiting for confirmation
         transactions_confirmed() - Channel
+        mark the interactive tx session as complete
         message out: splice_locked
         ---
                                                   transactions_confirmed() - Channel
+                                                  mark the interactive tx session as complete
                                                   message out: splice_locked
                                                   ---
         message in: splice_locked

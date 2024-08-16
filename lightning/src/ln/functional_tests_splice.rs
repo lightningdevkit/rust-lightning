@@ -1210,11 +1210,12 @@ fn test_v2_splice_in() {
 	let _ = get_event_msg!(initiator_node, MessageSendEvent::SendClosingSigned, acceptor_node.node.get_our_node_id());
 }
 
-/// #SPLICING Builds on test_channel_open_v2_and_close()
-/// Splicing test, simple splice-in flow. Starts with opening a V2 channel first.
-/// The steps are mostly on ChannelManager level.
+/// #SPLICING
+/// Splicing & payment test: splicing after a payment, payment after splicing.
+/// Open a V2 channel, do a payment, perform a splice-in, do a payment,
+/// The steps are on ChannelManager level.
 #[test]
-fn test_v2_payment_splice_in_payment() {
+fn test_payment_splice_in_payment() {
 	// Set up a network of 2 nodes
 	let cfg = UserConfig {
 		channel_handshake_config: ChannelHandshakeConfig {

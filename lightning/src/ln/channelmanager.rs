@@ -944,8 +944,9 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 				#[cfg(any(dual_funding, splicing))]
 				ChannelPhase::UnfundedInboundV2(_) => false,
 				#[cfg(splicing)]
-				ChannelPhase::RenegotiatingFundingOutbound(chan) |
-				ChannelPhase::RenegotiatingFundingInbound(chan) => chan.is_outbound,
+				ChannelPhase::RenegotiatingFundingOutbound(_chan) => true,
+				#[cfg(splicing)]
+				ChannelPhase::RenegotiatingFundingInbound(_chan) => false,
 			}
 		)
 			&& self.monitor_update_blocked_actions.is_empty()
@@ -9348,7 +9349,7 @@ where
 
 		let post_chan = RenegotiatingChannel::new_spliced(
 			false,
-			prev_chan.context,
+			&prev_chan.context,
 			&self.signer_provider,
 			&msg.funding_pubkey,
 			our_funding_contribution,
@@ -9443,7 +9444,7 @@ where
 
 		let post_chan = RenegotiatingChannel::new_spliced(
 			true,
-			prev_chan.context,
+			&prev_chan.context,
 			&self.signer_provider,
 			&msg.funding_pubkey,
 			pending_splice.our_funding_contribution(),

@@ -110,6 +110,7 @@ enum FeeUpdateState {
 	Outbound,
 }
 
+#[derive(Clone)]
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
 	FailMalformed(([u8; 32], u16)),
@@ -144,6 +145,7 @@ impl_writeable_tlv_based_enum!(InboundHTLCResolution,
 	};
 );
 
+#[derive(Clone)]
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
@@ -264,6 +266,7 @@ impl_writeable_tlv_based_enum_upgradable!(InboundHTLCStateDetails,
 	(6, AwaitingRemoteRevokeToRemoveFail) => {};
 );
 
+#[derive(Clone)]
 struct InboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -990,7 +993,7 @@ pub(super) enum ChannelUpdateStatus {
 }
 
 /// We track when we sent an `AnnouncementSignatures` to our peer in a few states, described here.
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum AnnouncementSigsState {
 	/// We have not sent our peer an `AnnouncementSignatures` yet, or our peer disconnected since
 	/// we sent the last `AnnouncementSignatures`.
@@ -2380,7 +2383,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	///  less or equal (e.g. for +100 in the range of 0..100, for -100 in the range of -100..0).
 	#[cfg(splicing)]
 	fn new_for_splice<L: Deref>(
-		pre_splice_context: Self,
+		pre_splice_context: &Self,
 		is_outgoing: bool,
 		counterparty_funding_pubkey: &PublicKey,
 		our_funding_contribution: i64,
@@ -2389,17 +2392,15 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		logger: &L,
 	) -> Result<ChannelContext<SP>, ChannelError> where L::Target: Logger
 	{
-		let mut context = pre_splice_context;
-
-		if context.is_splice_pending() {
-			return Err(ChannelError::Warn(format!("Internal error: Channel is already splicing, channel_id {}", context.channel_id)));
+		if pre_splice_context.is_splice_pending() {
+			return Err(ChannelError::Warn(format!("Internal error: Channel is already splicing, channel_id {}", pre_splice_context.channel_id)));
 		}
 
-		let pre_channel_value = context.channel_value_satoshis;
+		let pre_channel_value = pre_splice_context.channel_value_satoshis;
 
 		// Save the current funding transaction
-		let pre_funding_transaction = context.funding_transaction_saved.clone();
-		let pre_funding_txo = context.get_funding_txo().clone();
+		let pre_funding_transaction = pre_splice_context.funding_transaction_saved.clone();
+		let pre_funding_txo = pre_splice_context.get_funding_txo().clone();
 
 		// Save relevant info from pre-splice state
 		let pending_splice_post = PendingSpliceInfoPost::new(
@@ -2410,59 +2411,181 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			pre_funding_txo,
 		);
 		let post_channel_value = pending_splice_post.post_channel_value();
-		context.pending_splice_post = Some(pending_splice_post);
 
-		// Update funding pubkeys
-		context.channel_transaction_parameters.holder_pubkeys.funding_pubkey = holder_signer.pubkeys().funding_pubkey;
-		if context.channel_transaction_parameters.counterparty_parameters.is_some() {
-			context.channel_transaction_parameters.counterparty_parameters.as_mut().unwrap().pubkeys.funding_pubkey = counterparty_funding_pubkey.clone();
-		}
-		// Update channel signer
-		context.holder_signer = ChannelSignerType::Ecdsa(holder_signer);
-
-		let old_to_self = context.value_to_self_msat;
+		// Compute our new balance
+		let old_to_self = pre_splice_context.value_to_self_msat;
 		let delta_in_value_to_self = our_funding_contribution * 1000;
 		if delta_in_value_to_self < 0 && delta_in_value_to_self.abs() as u64 > old_to_self {
 			// Change would make our balance negative
 			return Err(ChannelError::Close(format!("Cannot decrease channel value to requested amount, too low, {} {} {} {} {}", 
 				pre_channel_value, post_channel_value, our_funding_contribution, their_funding_contribution, old_to_self)));
 		}
-		// Perform the updates
-		context.channel_value_satoshis = post_channel_value;
-		if delta_in_value_to_self.abs() > 0 {
-			// Local balance changes
-			context.value_to_self_msat = (old_to_self as i64).saturating_add(delta_in_value_to_self) as u64;
+		let value_to_self_msat = (old_to_self as i64).saturating_add(delta_in_value_to_self) as u64;
+
+		let holder_signer_funding_pubkey = holder_signer.pubkeys().funding_pubkey;
+
+		// Copy context with some important updates
+		let mut context = Self {
+			user_id: pre_splice_context.user_id,
+			config: pre_splice_context.config,
+			prev_config: pre_splice_context.prev_config,
+			inbound_handshake_limits_override: pre_splice_context.inbound_handshake_limits_override,
+			channel_id: pre_splice_context.channel_id,
+			temporary_channel_id: pre_splice_context.temporary_channel_id,
+			// Reset state
+			channel_state: ChannelState::NegotiatingFunding(
+				if is_outgoing { NegotiatingFundingFlags::OUR_INIT_SENT } else { NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT }
+			),
+			announcement_sigs_state: pre_splice_context.announcement_sigs_state,
+			secp_ctx: Secp256k1::new(),
+			// New channel value
+			channel_value_satoshis: post_channel_value,
+			// Reset monitor update
+			latest_monitor_update_id: 0,
+			// Update channel signer
+			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+			shutdown_scriptpubkey: pre_splice_context.shutdown_scriptpubkey.clone(),
+			destination_script: pre_splice_context.destination_script.clone(),
+
+			// Note on commitment transaction numbers and commitment points:
+			// we could step 'back' here (i.e. increase number by one, set cur to prev), but that does not work,
+			// because latest commitment point would be lost.
+			// Instead, we take the previous values in relevant cases when splicing is pending.
+
+			cur_holder_commitment_transaction_number: pre_splice_context.cur_holder_commitment_transaction_number,
+			cur_counterparty_commitment_transaction_number: pre_splice_context.cur_counterparty_commitment_transaction_number,
+			// Update value to self
+			value_to_self_msat,
+
+			// Reset (non-cloneable)
+			pending_inbound_htlcs: pre_splice_context.pending_inbound_htlcs.clone(),
+			pending_outbound_htlcs: pre_splice_context.pending_outbound_htlcs.clone(),
+			holding_cell_htlc_updates: pre_splice_context.holding_cell_htlc_updates.clone(),
+			pending_update_fee: pre_splice_context.pending_update_fee,
+			holding_cell_update_fee: pre_splice_context.holding_cell_update_fee,
+			next_holder_htlc_id: pre_splice_context.next_holder_htlc_id,
+			next_counterparty_htlc_id: pre_splice_context.next_counterparty_htlc_id,
+			update_time_counter: pre_splice_context.update_time_counter,
+
+			resend_order: pre_splice_context.resend_order.clone(),
+
+			monitor_pending_channel_ready: pre_splice_context.monitor_pending_channel_ready,
+			monitor_pending_revoke_and_ack: pre_splice_context.monitor_pending_revoke_and_ack,
+			monitor_pending_commitment_signed: pre_splice_context.monitor_pending_commitment_signed,
+			monitor_pending_forwards: pre_splice_context.monitor_pending_forwards.clone(),
+			monitor_pending_failures: pre_splice_context.monitor_pending_failures.clone(),
+			monitor_pending_finalized_fulfills: pre_splice_context.monitor_pending_finalized_fulfills.clone(),
+			monitor_pending_update_adds: pre_splice_context.monitor_pending_update_adds.clone(),
+
+			signer_pending_commitment_update: pre_splice_context.signer_pending_commitment_update,
+			signer_pending_funding: pre_splice_context.signer_pending_funding,
+
+			// We'll add our counterparty's `funding_satoshis` to these max commitment output assertions
+			// when we receive `accept_channel2`.
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new((value_to_self_msat, post_channel_value.saturating_sub(value_to_self_msat))),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new((value_to_self_msat, post_channel_value.saturating_sub(value_to_self_msat))),
+
+			last_sent_closing_fee: pre_splice_context.last_sent_closing_fee,
+			// // // reset (non-cloneable)
+			pending_counterparty_closing_signed: pre_splice_context.pending_counterparty_closing_signed.clone(),
+			expecting_peer_commitment_signed: pre_splice_context.expecting_peer_commitment_signed,
+			closing_fee_limits: pre_splice_context.closing_fee_limits,
+			target_closing_feerate_sats_per_kw: pre_splice_context.target_closing_feerate_sats_per_kw,
+
+			funding_tx_confirmed_in: None,
+			funding_tx_confirmation_height: 0,
+			short_channel_id: None,
+			channel_creation_height: pre_splice_context.channel_creation_height,
+
+			feerate_per_kw: pre_splice_context.feerate_per_kw,
+			counterparty_dust_limit_satoshis: pre_splice_context.counterparty_dust_limit_satoshis,
+			holder_dust_limit_satoshis: pre_splice_context.holder_dust_limit_satoshis,
+			counterparty_max_htlc_value_in_flight_msat: pre_splice_context.counterparty_max_htlc_value_in_flight_msat,
+			// We'll adjust this to include our counterparty's `funding_satoshis` when we
+			// receive `accept_channel2`.
+			holder_max_htlc_value_in_flight_msat: pre_splice_context.holder_max_htlc_value_in_flight_msat,
+			counterparty_selected_channel_reserve_satoshis: pre_splice_context.counterparty_selected_channel_reserve_satoshis,
+			holder_selected_channel_reserve_satoshis: pre_splice_context.holder_selected_channel_reserve_satoshis,
+			counterparty_htlc_minimum_msat: pre_splice_context.counterparty_htlc_minimum_msat,
+			holder_htlc_minimum_msat: pre_splice_context.holder_htlc_minimum_msat,
+			counterparty_max_accepted_htlcs: pre_splice_context.counterparty_max_accepted_htlcs,
+			holder_max_accepted_htlcs: pre_splice_context.holder_max_accepted_htlcs,
+			minimum_depth: pre_splice_context.minimum_depth,
+
+			counterparty_forwarding_info: pre_splice_context.counterparty_forwarding_info.clone(),
+
+			channel_transaction_parameters: pre_splice_context.channel_transaction_parameters.clone(),
+
+			// Reset funding tx
+			funding_transaction: None,
+			#[cfg(splicing)]
+			funding_transaction_saved: None,
+			is_batch_funding: pre_splice_context.is_batch_funding,
+
+			counterparty_cur_commitment_point: pre_splice_context.counterparty_cur_commitment_point,
+			counterparty_prev_commitment_point: pre_splice_context.counterparty_prev_commitment_point,
+			counterparty_node_id: pre_splice_context.counterparty_node_id,
+
+			counterparty_shutdown_scriptpubkey: pre_splice_context.counterparty_shutdown_scriptpubkey.clone(),
+
+			commitment_secrets: pre_splice_context.commitment_secrets.clone(),
+
+			channel_update_status: pre_splice_context.channel_update_status,
+			closing_signed_in_flight: pre_splice_context.closing_signed_in_flight,
+
+			announcement_sigs: pre_splice_context.announcement_sigs,
+
+			#[cfg(any(test, fuzzing))]
+			next_local_commitment_tx_fee_info_cached: Mutex::new(None),
+			#[cfg(any(test, fuzzing))]
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(None),
+
+			workaround_lnd_bug_4006: pre_splice_context.workaround_lnd_bug_4006.clone(),
+			sent_message_awaiting_response: pre_splice_context.sent_message_awaiting_response,
+
+			latest_inbound_scid_alias: pre_splice_context.latest_inbound_scid_alias,
+			outbound_scid_alias: pre_splice_context.outbound_scid_alias,
+
+			// Clear these state flags, for sending `ChannelPending` and `ChannelReady` again
+			channel_pending_event_emitted: false,
+			channel_ready_event_emitted: false,
+
+			#[cfg(any(test, fuzzing))]
+			historical_inbound_htlc_fulfills: pre_splice_context.historical_inbound_htlc_fulfills.clone(),
+
+			channel_type: pre_splice_context.channel_type.clone(),
+			channel_keys_id: pre_splice_context.channel_keys_id,
+
+			// Reset (non-cloneable)
+			blocked_monitor_updates: Vec::new(),
+			local_initiated_shutdown: pre_splice_context.local_initiated_shutdown.clone(),
+
+			#[cfg(any(dual_funding, splicing))]
+			interactive_tx_constructor: None,
+			next_funding_txid: None,
+			#[cfg(splicing)]
+			pending_splice_pre: None,
+			#[cfg(splicing)]
+			pending_splice_post: Some(pending_splice_post),
+		};
+
+		// Update funding pubkeys
+		context.channel_transaction_parameters.holder_pubkeys.funding_pubkey = holder_signer_funding_pubkey;
+		if context.channel_transaction_parameters.counterparty_parameters.is_some() {
+			context.channel_transaction_parameters.counterparty_parameters.as_mut().unwrap().pubkeys.funding_pubkey = counterparty_funding_pubkey.clone();
 		}
 
 		// Reset funding tx
-		context.funding_transaction = None;
-		context.funding_transaction_saved = None;
 		context.channel_transaction_parameters.funding_outpoint = None;
-		context.funding_tx_confirmed_in = None;
-		context.funding_tx_confirmation_height = 0;
-		// Set state
-		context.channel_state = ChannelState::NegotiatingFunding(
-			if is_outgoing { NegotiatingFundingFlags::OUR_INIT_SENT } else { NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT }
-		);
-		// Reset monitor update
-		context.latest_monitor_update_id = 0;
-		// Clear these state flags, for sending `ChannelPending` and `ChannelReady` again
-		context.channel_pending_event_emitted = false;
-		context.channel_ready_event_emitted = false;
-
-		context.interactive_tx_constructor = None;
-		context.next_funding_txid = None;
-
-		// Note on commitment transaction numbers and commitment points:
-		// we could step 'back' here (i.e. increase number by one, set cur to prev), but that does not work,
-		// because latest commitment point would be lost.
-		// Instead, we take the previous values in relevant cases when splicing is pending.
 
 		log_debug!(logger, "Splicing channel context: value {} old {}, dir {}, value to self {}, funding keys local {} cp {}",
 			context.channel_value_satoshis, pre_channel_value,
 			if is_outgoing { "outgoing" } else { "incoming" },
 			context.value_to_self_msat,
-			context.channel_transaction_parameters.holder_pubkeys.funding_pubkey, counterparty_funding_pubkey);
+			context.channel_transaction_parameters.holder_pubkeys.funding_pubkey, counterparty_funding_pubkey
+		);
 
 		Ok(context)
 	}
@@ -8061,9 +8184,6 @@ impl<SP: Deref> Channel<SP> where
 			holder_signer.pubkeys().funding_pubkey
 		};
 
-		// TODO move from here, check
-		self.context.channel_state = ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
-
 		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
 		msgs::SpliceInit {
 			channel_id: self.context.channel_id,
@@ -9516,7 +9636,7 @@ impl<SP: Deref> RenegotiatingChannel<SP> where SP::Target: SignerProvider {
 	/// Create new channel for splice
 	pub fn new_spliced<L: Deref>(
 		is_outbound: bool,
-		pre_splice_context: ChannelContext<SP>,
+		pre_splice_context: &ChannelContext<SP>,
 		signer_provider: &SP,
 		counterparty_funding_pubkey: &PublicKey,
 		our_funding_contribution: i64,
