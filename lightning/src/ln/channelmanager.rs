@@ -10900,7 +10900,7 @@ where
 
 				match context {
 					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if signer::verify_payment_id(payment_id, hmac, nonce, expanded_key) {
+						if let Ok(()) = signer::verify_payment_id(payment_id, hmac, nonce, expanded_key) {
 							self.abandon_payment_with_reason(
 								payment_id, PaymentFailureReason::InvoiceRequestRejected,
 							);
