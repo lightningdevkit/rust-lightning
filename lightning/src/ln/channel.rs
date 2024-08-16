@@ -80,6 +80,7 @@ pub struct ChannelValueStat {
 
 pub struct AvailableBalances {
 	/// The amount that would go to us if we close the channel, ignoring any on-chain fees.
+	#[deprecated(since = "0.0.124", note = "use [`ChainMonitor::get_claimable_balances`] instead")]
 	pub balance_msat: u64,
 	/// Total amount available for our counterparty to send to us.
 	pub inbound_capacity_msat: u64,
@@ -3215,6 +3216,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			available_capacity_msat = 0;
 		}
 
+		#[allow(deprecated)] // TODO: Remove once balance_msat is removed.
 		AvailableBalances {
 			inbound_capacity_msat: cmp::max(context.channel_value_satoshis as i64 * 1000
 					- context.value_to_self_msat as i64
