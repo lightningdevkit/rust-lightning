@@ -78,20 +78,20 @@ grep '^max_level_' lightning/Cargo.toml | awk '{ print $1 }'| while read -r FEAT
 done
 
 echo -e "\n\nTesting no-std builds"
-for DIR in lightning-invoice; do
+for DIR in lightning-invoice lightning-rapid-gossip-sync; do
 	cargo test -p $DIR --verbose --color always --no-default-features
 	# check if there is a conflict between no-std and the c_bindings cfg
 	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features
 done
 
 echo -e "\n\nTesting no-std flags in various combinations"
-for DIR in lightning lightning-rapid-gossip-sync; do
+for DIR in lightning; do
 	cargo test -p $DIR --verbose --color always --no-default-features --features no-std
 	# check if there is a conflict between no-std and the default std feature
 	cargo test -p $DIR --verbose --color always --features no-std
 done
 
-for DIR in lightning lightning-rapid-gossip-sync; do
+for DIR in lightning; do
 	# check if there is a conflict between no-std and the c_bindings cfg
 	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
 done

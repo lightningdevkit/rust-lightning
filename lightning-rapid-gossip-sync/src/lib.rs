@@ -143,7 +143,7 @@ where
 	///
 	/// `sync_path`: Path to the file where the gossip update data is located
 	///
-	#[cfg(all(feature = "std", not(feature = "no-std")))]
+	#[cfg(feature = "std")]
 	pub fn sync_network_graph_with_file_path(
 		&self, sync_path: &str,
 	) -> Result<u32, GraphSyncError> {
@@ -191,7 +191,7 @@ where
 	}
 }
 
-#[cfg(all(feature = "std", not(feature = "no-std")))]
+#[cfg(feature = "std")]
 #[cfg(test)]
 mod tests {
 	use std::fs;
