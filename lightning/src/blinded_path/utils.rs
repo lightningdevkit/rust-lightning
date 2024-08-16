@@ -25,6 +25,8 @@ use crate::util::ser::{Readable, Writeable};
 
 use crate::io;
 
+use core::borrow::Borrow;
+
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -38,22 +40,23 @@ macro_rules! build_keys_helper {
 	let mut onion_packet_pubkey = msg_blinding_point.clone();
 
 	macro_rules! build_keys {
-		($pk: expr, $blinded: expr, $encrypted_payload: expr) => {{
-			let encrypted_data_ss = SharedSecret::new(&$pk, &msg_blinding_point_priv);
+		($hop: expr, $blinded: expr, $encrypted_payload: expr) => {{
+			let pk = *$hop.borrow();
+			let encrypted_data_ss = SharedSecret::new(&pk, &msg_blinding_point_priv);
 
-			let blinded_hop_pk = if $blinded { $pk } else {
+			let blinded_hop_pk = if $blinded { pk } else {
 				let hop_pk_blinding_factor = {
 					let mut hmac = HmacEngine::<Sha256>::new(b"blinded_node_id");
 					hmac.input(encrypted_data_ss.as_ref());
 					Hmac::from_engine(hmac).to_byte_array()
 				};
-				$pk.mul_tweak($secp_ctx, &Scalar::from_be_bytes(hop_pk_blinding_factor).unwrap())?
+				pk.mul_tweak($secp_ctx, &Scalar::from_be_bytes(hop_pk_blinding_factor).unwrap())?
 			};
 			let onion_packet_ss = SharedSecret::new(&blinded_hop_pk, &onion_packet_pubkey_priv);
 
 			let rho = onion_utils::gen_rho_from_shared_secret(encrypted_data_ss.as_ref());
-			let unblinded_pk_opt = if $blinded { None } else { Some($pk) };
-			$callback(blinded_hop_pk, onion_packet_ss, onion_packet_pubkey, rho, unblinded_pk_opt, $encrypted_payload);
+			let unblinded_hop_opt = if $blinded { None } else { Some($hop) };
+			$callback(blinded_hop_pk, onion_packet_ss, onion_packet_pubkey, rho, unblinded_hop_opt, $encrypted_payload);
 			(encrypted_data_ss, onion_packet_ss)
 		}}
 	}
