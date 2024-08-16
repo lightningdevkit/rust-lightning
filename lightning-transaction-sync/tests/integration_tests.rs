@@ -205,7 +205,7 @@ macro_rules! test_syncing {
 				None,
 			)
 			.unwrap();
-		$tx_sync.register_tx(&txid, &new_address.payload().script_pubkey());
+		$tx_sync.register_tx(&txid, &new_address.script_pubkey());
 
 		maybe_await!($tx_sync.sync(vec![&$confirmable])).unwrap();
 

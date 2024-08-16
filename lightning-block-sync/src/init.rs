@@ -59,7 +59,7 @@ where
 ///
 /// use lightning_block_sync::*;
 ///
-/// use std::io::Cursor;
+/// use lightning::io::Cursor;
 ///
 /// async fn init_sync<
 /// 	B: BlockSource,

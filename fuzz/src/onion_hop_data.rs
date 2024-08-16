@@ -17,7 +17,7 @@ use lightning::util::test_utils;
 pub fn onion_hop_data_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	use bitcoin::secp256k1::PublicKey;
 	use lightning::util::ser::ReadableArgs;
-	let mut r = ::std::io::Cursor::new(data);
+	let mut r = ::lightning::io::Cursor::new(data);
 	let node_signer = test_utils::TestNodeSigner::new(test_utils::privkey(42));
 	let _ = <lightning::ln::msgs::InboundOnionPayload as ReadableArgs<(
 		Option<PublicKey>,
@@ -30,7 +30,7 @@ pub extern "C" fn onion_hop_data_run(data: *const u8, datalen: usize) {
 	use bitcoin::secp256k1::PublicKey;
 	use lightning::util::ser::ReadableArgs;
 	let data = unsafe { std::slice::from_raw_parts(data, datalen) };
-	let mut r = ::std::io::Cursor::new(data);
+	let mut r = ::lightning::io::Cursor::new(data);
 	let node_signer = test_utils::TestNodeSigner::new(test_utils::privkey(42));
 	let _ = <lightning::ln::msgs::InboundOnionPayload as ReadableArgs<(
 		Option<PublicKey>,

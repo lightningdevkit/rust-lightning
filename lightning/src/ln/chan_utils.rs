@@ -766,7 +766,7 @@ pub fn build_htlc_input_witness(
 	let mut witness = Witness::new();
 	// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 	witness.push(vec![]);
-	witness.push_ecdsa_signature(&BitcoinSignature { sig: *remote_sig, hash_ty: remote_sighash_type });
+	witness.push_ecdsa_signature(&BitcoinSignature { signature: *remote_sig, sighash_type: remote_sighash_type });
 	witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(*local_sig));
 	if let Some(preimage) = preimage {
 		witness.push(preimage.0.to_vec());
@@ -1872,11 +1872,10 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
 	use crate::sign::{ChannelSigner, SignerProvider};
-	use bitcoin::{Network, Txid, ScriptBuf};
+	use bitcoin::{Network, Txid, ScriptBuf, CompressedPublicKey};
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
 	use crate::ln::types::PaymentHash;
-	use bitcoin::address::Payload;
 	use bitcoin::PublicKey as BitcoinPublicKey;
 	use crate::ln::features::ChannelTypeFeatures;
 
@@ -1949,7 +1948,7 @@ mod tests {
 		// Generate broadcaster and counterparty outputs
 		let tx = builder.build(1000, 2000);
 		assert_eq!(tx.built.transaction.output.len(), 2);
-		assert_eq!(tx.built.transaction.output[1].script_pubkey, Payload::p2wpkh(&BitcoinPublicKey::new(builder.counterparty_pubkeys.payment_point)).unwrap().script_pubkey());
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, bitcoin::address::Address::p2wpkh(&CompressedPublicKey(builder.counterparty_pubkeys.payment_point), Network::Testnet).script_pubkey());
 
 		// Generate broadcaster and counterparty outputs as well as two anchors
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();

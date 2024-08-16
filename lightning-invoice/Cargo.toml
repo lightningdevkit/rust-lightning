@@ -16,15 +16,15 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = ["std"]
-no-std = ["bitcoin/no-std"]
-std = ["bitcoin/std", "bech32/std"]
+no-std = []
+std = ["bech32/std"]
 
 [dependencies]
 bech32 = { version = "0.9.1", default-features = false }
 lightning-types = { version = "0.1", path = "../lightning-types", default-features = false }
-secp256k1 = { version = "0.28.0", default-features = false, features = ["recovery", "alloc"] }
+secp256k1 = { version = "0.29.0", default-features = false, features = ["recovery", "alloc"] }
 serde = { version = "1.0.118", optional = true }
-bitcoin = { version = "0.31.2", default-features = false }
+bitcoin = { version = "0.32.2", default-features = false }
 
 [dev-dependencies]
 serde_json = { version = "1"}

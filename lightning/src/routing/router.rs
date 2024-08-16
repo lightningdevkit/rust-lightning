@@ -8785,7 +8785,7 @@ mod tests {
 pub(crate) mod bench_utils {
 	use super::*;
 	use std::fs::File;
-
+	use std::io::Read;
 	use bitcoin::hashes::Hash;
 	use bitcoin::secp256k1::SecretKey;
 
@@ -8845,9 +8845,13 @@ pub(crate) mod bench_utils {
 	pub(crate) fn read_graph_scorer(logger: &TestLogger)
 	-> Result<(Arc<NetworkGraph<&TestLogger>>, ProbabilisticScorer<Arc<NetworkGraph<&TestLogger>>, &TestLogger>), &'static str> {
 		let (mut graph_file, mut scorer_file) = get_graph_scorer_file()?;
-		let graph = Arc::new(NetworkGraph::read(&mut graph_file, logger).unwrap());
+		let mut graph_buffer = Vec::new();
+		let mut scorer_buffer = Vec::new();
+		graph_file.read_to_end(&mut graph_buffer).unwrap();
+		scorer_file.read_to_end(&mut scorer_buffer).unwrap();
+		let graph = Arc::new(NetworkGraph::read(&mut &graph_buffer[..], logger).unwrap());
 		let scorer_args = (Default::default(), Arc::clone(&graph), logger);
-		let scorer = ProbabilisticScorer::read(&mut scorer_file, scorer_args).unwrap();
+		let scorer = ProbabilisticScorer::read(&mut &scorer_buffer[..], scorer_args).unwrap();
 		Ok((graph, scorer))
 	}
 

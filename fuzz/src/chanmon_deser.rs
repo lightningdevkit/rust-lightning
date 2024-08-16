@@ -10,11 +10,11 @@ use lightning::util::test_utils::OnlyReadsKeysInterface;
 
 use crate::utils::test_logger;
 
-use std::io::Cursor;
+use lightning::io::Cursor;
 
 struct VecWriter(Vec<u8>);
 impl Writer for VecWriter {
-	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::lightning::io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
 	}

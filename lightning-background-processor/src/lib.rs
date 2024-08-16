@@ -1326,7 +1326,7 @@ mod tests {
 				&& key == CHANNEL_MANAGER_PERSISTENCE_KEY
 			{
 				if let Some((error, message)) = self.manager_error {
-					return Err(std::io::Error::new(error, message));
+					return Err(std::io::Error::new(error, message).into());
 				}
 			}
 
@@ -1344,7 +1344,7 @@ mod tests {
 				};
 
 				if let Some((error, message)) = self.graph_error {
-					return Err(std::io::Error::new(error, message));
+					return Err(std::io::Error::new(error, message).into());
 				}
 			}
 
@@ -1353,7 +1353,7 @@ mod tests {
 				&& key == SCORER_PERSISTENCE_KEY
 			{
 				if let Some((error, message)) = self.scorer_error {
-					return Err(std::io::Error::new(error, message));
+					return Err(std::io::Error::new(error, message).into());
 				}
 			}
 
@@ -2002,7 +2002,7 @@ mod tests {
 		match bp_future.await {
 			Ok(_) => panic!("Expected error persisting manager"),
 			Err(e) => {
-				assert_eq!(e.kind(), std::io::ErrorKind::Other);
+				assert_eq!(e.kind(), lightning::io::ErrorKind::Other);
 				assert_eq!(e.get_ref().unwrap().to_string(), "test");
 			},
 		}

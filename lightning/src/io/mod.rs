@@ -1,9 +1,4 @@
-#[cfg(not(feature = "std"))]
-/// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.
-pub use core2::io::*;
-#[cfg(feature = "std")]
-/// Re-export of either `core2::io` or `std::io`, depending on the `std` feature flag.
-pub use std::io::*;
+pub use bitcoin::io::*;
 
 /// Emulation of std::io::Cursor
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

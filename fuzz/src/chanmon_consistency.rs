@@ -81,8 +81,8 @@ use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
+use lightning::io::Cursor;
 use std::cmp::{self, Ordering};
-use std::io::Cursor;
 use std::mem;
 use std::sync::atomic;
 use std::sync::{Arc, Mutex};
@@ -154,7 +154,7 @@ impl BroadcasterInterface for TestBroadcaster {
 
 pub struct VecWriter(pub Vec<u8>);
 impl Writer for VecWriter {
-	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::std::io::Error> {
+	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::lightning::io::Error> {
 		self.0.extend_from_slice(buf);
 		Ok(())
 	}
@@ -394,7 +394,7 @@ impl SignerProvider for KeyProvider {
 	}
 
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
-		let mut reader = std::io::Cursor::new(buffer);
+		let mut reader = lightning::io::Cursor::new(buffer);
 
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
 		let state = self.make_enforcement_state_cell(inner.commitment_seed);

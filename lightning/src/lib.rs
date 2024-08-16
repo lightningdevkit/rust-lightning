@@ -70,7 +70,6 @@ extern crate core;
 
 #[cfg(any(test, feature = "_test_utils"))] extern crate regex;
 
-#[cfg(not(feature = "std"))] extern crate core2;
 #[cfg(not(feature = "std"))] extern crate libm;
 
 #[cfg(ldk_bench)] extern crate criterion;
@@ -91,35 +90,15 @@ pub(crate) mod crypto;
 /// Extension of the bitcoin::io module
 pub mod io;
 
-#[cfg(not(feature = "std"))]
 #[doc(hidden)]
 /// IO utilities public only for use by in-crate macros. These should not be used externally
 ///
 /// This is not exported to bindings users as it is not intended for public consumption.
 pub mod io_extras {
-	use core2::io::{self, Read, Write};
-
-	/// A writer which will move data into the void.
-	pub struct Sink {
-		_priv: (),
-	}
+	use bitcoin::io::{self, Read, Write};
 
 	/// Creates an instance of a writer which will successfully consume all data.
-	pub const fn sink() -> Sink {
-		Sink { _priv: () }
-	}
-
-	impl core2::io::Write for Sink {
-		#[inline]
-		fn write(&mut self, buf: &[u8]) -> core2::io::Result<usize> {
-			Ok(buf.len())
-		}
-
-		#[inline]
-		fn flush(&mut self) -> core2::io::Result<()> {
-			Ok(())
-		}
-	}
+	pub use bitcoin::io::sink;
 
 	pub fn copy<R: ?Sized, W: ?Sized>(reader: &mut R, writer: &mut W) -> Result<u64, io::Error>
 		where
@@ -153,21 +132,6 @@ pub mod io_extras {
 		}
 		Ok(result)
 	}
-}
-
-#[cfg(feature = "std")]
-#[doc(hidden)]
-/// IO utilities public only for use by in-crate macros. These should not be used externally
-///
-/// This is not exported to bindings users as it is not intended for public consumption.
-mod io_extras {
-	pub fn read_to_end<D: ::std::io::Read>(mut d: D) -> Result<Vec<u8>, ::std::io::Error> {
-		let mut buf = Vec::new();
-		d.read_to_end(&mut buf)?;
-		Ok(buf)
-	}
-
-	pub use std::io::{copy, sink};
 }
 
 mod prelude {

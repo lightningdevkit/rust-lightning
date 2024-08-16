@@ -121,8 +121,8 @@ impl InputData {
 		Some(&self.data[old_pos..old_pos + len])
 	}
 }
-impl std::io::Read for &InputData {
-	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl lightning::io::Read for &InputData {
+	fn read(&mut self, buf: &mut [u8]) -> lightning::io::Result<usize> {
 		if let Some(sl) = self.get_slice(buf.len()) {
 			buf.copy_from_slice(sl);
 			Ok(buf.len())

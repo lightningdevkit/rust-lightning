@@ -24,18 +24,18 @@ async-interface = []
 
 [dependencies]
 lightning = { version = "0.0.123-beta", path = "../lightning", default-features = false, features = ["std"] }
-bitcoin = { version = "0.31.2", default-features = false }
+bitcoin = { version = "0.32.2", default-features = false }
 bdk-macros = "0.6"
 futures = { version = "0.3", optional = true }
-esplora-client = { version = "0.7", default-features = false, optional = true }
-electrum-client = { version = "0.19.0", optional = true }
+esplora-client = { version = "0.9", default-features = false, optional = true }
+electrum-client = { version = "0.21.0", optional = true }
 
 [dev-dependencies]
 lightning = { version = "0.0.123-beta", path = "../lightning", default-features = false, features = ["std", "_test_utils"] }
 tokio = { version = "1.35.0", features = ["full"] }
 
 [target.'cfg(not(target_os = "windows"))'.dev-dependencies]
-electrsd = { version = "0.27.3", default-features = false, features = ["legacy"] }
+electrsd = { version = "0.28.0", default-features = false, features = ["legacy"] }
 
 [lints]
 workspace = true

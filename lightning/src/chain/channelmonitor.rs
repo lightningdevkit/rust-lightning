@@ -30,9 +30,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash};
 
 use bitcoin::ecdsa::Signature as BitcoinSignature;
-use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
-use bitcoin::secp256k1::{SecretKey, PublicKey};
-use bitcoin::secp256k1;
+use bitcoin::secp256k1::{self, SecretKey, PublicKey, Secp256k1, ecdsa::Signature};
 
 use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::types::{PaymentHash, PaymentPreimage, ChannelId};
@@ -4235,7 +4233,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 								assert_eq!(&bitcoin::Address::p2wsh(&ScriptBuf::from(input.witness.last().unwrap().to_vec()), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
 							} else if _script_pubkey.is_p2wpkh() {
-								assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap(), bitcoin::Network::Bitcoin).unwrap().script_pubkey(), _script_pubkey);
+								assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::CompressedPublicKey(bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap().inner), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
 							} else { panic!(); }
 						}
 						return true;

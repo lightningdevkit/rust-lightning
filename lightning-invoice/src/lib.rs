@@ -39,7 +39,6 @@ use std::time::SystemTime;
 
 use bech32::{FromBase32, u5};
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash, WitnessProgram, WitnessVersion};
-use bitcoin::address::Payload;
 use bitcoin::hashes::{Hash, sha256};
 use lightning_types::features::Bolt11InvoiceFeatures;
 
@@ -1434,22 +1433,22 @@ impl Bolt11Invoice {
 	/// Returns a list of all fallback addresses as [`Address`]es
 	pub fn fallback_addresses(&self) -> Vec<Address> {
 		self.fallbacks().iter().filter_map(|fallback| {
-			let payload = match fallback {
+			let address = match fallback {
 				Fallback::SegWitProgram { version, program } => {
-					match WitnessProgram::new(*version, program.clone()) {
-						Ok(witness_program) => Payload::WitnessProgram(witness_program),
+					match WitnessProgram::new(*version, &program) {
+						Ok(witness_program) => Address::from_witness_program(witness_program, self.network()),
 						Err(_) => return None,
 					}
 				}
 				Fallback::PubKeyHash(pkh) => {
-					Payload::PubkeyHash(*pkh)
+					Address::p2pkh(*pkh, self.network())
 				}
 				Fallback::ScriptHash(sh) => {
-					Payload::ScriptHash(*sh)
+					Address::p2sh_from_hash(*sh, self.network())
 				}
 			};
 
-			Some(Address::new(self.network(), payload))
+			Some(address)
 		}).collect()
 	}
 

@@ -70,9 +70,6 @@ extern crate alloc;
 
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(feature = "std")]
-use std::fs::File;
-
 use lightning::io;
 use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::routing::gossip::NetworkGraph;
@@ -146,12 +143,16 @@ where
 	///
 	/// `sync_path`: Path to the file where the gossip update data is located
 	///
-	#[cfg(feature = "std")]
+	#[cfg(all(feature = "std", not(feature = "no-std")))]
 	pub fn sync_network_graph_with_file_path(
 		&self, sync_path: &str,
 	) -> Result<u32, GraphSyncError> {
-		let mut file = File::open(sync_path)?;
-		self.update_network_graph_from_byte_stream(&mut file)
+		let file = std::fs::File::open(sync_path).map_err(|e| {
+			let bitcoin_error: lightning::io::Error = e.into();
+			bitcoin_error
+		})?;
+		let mut buf_reader = std::io::BufReader::new(file);
+		self.update_network_graph_from_byte_stream(&mut buf_reader)
 	}
 
 	/// Update network graph from binary data.
@@ -190,7 +191,7 @@ where
 	}
 }
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(feature = "no-std")))]
 #[cfg(test)]
 mod tests {
 	use std::fs;

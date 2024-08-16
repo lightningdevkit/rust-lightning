@@ -1128,7 +1128,7 @@ mod tests {
 			Err(e) => {
 				assert_eq!(
 					e,
-					Bolt12ParseError::InvalidSignature(secp256k1::Error::InvalidSignature)
+					Bolt12ParseError::InvalidSignature(secp256k1::Error::IncorrectSignature)
 				);
 			},
 		}

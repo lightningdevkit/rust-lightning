@@ -146,7 +146,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 
 	macro_rules! decode_msg {
 		($MsgType: path, $len: expr) => {{
-			let mut reader = ::std::io::Cursor::new(get_slice!($len));
+			let mut reader = ::lightning::io::Cursor::new(get_slice!($len));
 			match <$MsgType>::read(&mut reader) {
 				Ok(msg) => {
 					assert_eq!(reader.position(), $len as u64);
