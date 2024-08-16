@@ -46,7 +46,7 @@ use crate::routing::gossip::NodeId;
 
 #[cfg(feature = "std")]
 use {
-	crate::util::time::tests::SinceEpoch,
+	crate::util::time::Instant as TestTime,
 	std::time::{SystemTime, Instant, Duration},
 };
 
@@ -2340,7 +2340,7 @@ fn do_automatic_retries(test: AutoRetry) {
 			pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
 			// Advance the time so the second attempt fails due to timeout.
-			SinceEpoch::advance(Duration::from_secs(61));
+			TestTime::advance(Duration::from_secs(61));
 
 			// Make sure we don't retry again.
 			nodes[0].node.process_pending_htlc_forwards();
