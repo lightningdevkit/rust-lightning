@@ -14,7 +14,6 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
-use crate::blinded_path::payment::advance_path_by_one;
 use crate::events::{self, PaymentFailureReason};
 use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel_state::ChannelDetails;
@@ -428,10 +427,10 @@ pub enum RetryableSendFailure {
 	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 	DuplicatePayment,
 	/// The [`RecipientOnionFields::payment_metadata`], [`RecipientOnionFields::custom_tlvs`], or
-	/// [`BlindedPath`]s provided are too large and caused us to exceed the maximum onion packet size
-	/// of 1300 bytes.
+	/// [`BlindedPaymentPath`]s provided are too large and caused us to exceed the maximum onion
+	/// packet size of 1300 bytes.
 	///
-	/// [`BlindedPath`]: crate::blinded_path::BlindedPath
+	/// [`BlindedPaymentPath`]: crate::blinded_path::payment::BlindedPaymentPath
 	OnionPacketSizeExceeded,
 }
 
@@ -835,17 +834,17 @@ impl OutboundPayments {
 		// Advance any blinded path where the introduction node is our node.
 		if let Ok(our_node_id) = node_signer.get_node_id(Recipient::Node) {
 			for (_, path) in payment_params.payee.blinded_route_hints_mut().iter_mut() {
-				let introduction_node_id = match path.introduction_node {
-					IntroductionNode::NodeId(pubkey) => pubkey,
+				let introduction_node_id = match path.introduction_node() {
+					IntroductionNode::NodeId(pubkey) => *pubkey,
 					IntroductionNode::DirectedShortChannelId(direction, scid) => {
-						match node_id_lookup.next_node_id(scid) {
+						match node_id_lookup.next_node_id(*scid) {
 							Some(next_node_id) => *direction.select_pubkey(&our_node_id, &next_node_id),
 							None => continue,
 						}
 					},
 				};
 				if introduction_node_id == our_node_id {
-					let _ = advance_path_by_one(path, node_signer, node_id_lookup, secp_ctx);
+					let _ = path.advance_path_by_one(node_signer, node_id_lookup, secp_ctx);
 				}
 			}
 		}

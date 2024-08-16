@@ -7,9 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Data structures and methods for constructing [`BlindedPath`]s to send a message over.
-//!
-//! [`BlindedPath`]: crate::blinded_path::BlindedPath
+//! Data structures and methods for constructing [`BlindedMessagePath`]s to send a message over.
 
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
@@ -18,20 +16,203 @@ use crate::prelude::*;
 
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NextMessageHop, NodeIdLookUp};
+use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, NodeIdLookUp};
 use crate::blinded_path::utils;
 use crate::io;
 use crate::io::Cursor;
 use crate::ln::channelmanager::PaymentId;
+use crate::ln::msgs::DecodeError;
 use crate::ln::{PaymentHash, onion_utils};
 use crate::offers::nonce::Nonce;
 use crate::onion_message::packet::ControlTlvs;
-use crate::sign::{NodeSigner, Recipient};
+use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
+use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
-use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Writeable, Writer};
+use crate::util::scid_utils;
+use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer};
 
 use core::mem;
 use core::ops::Deref;
+
+/// A blinded path to be used for sending or receiving a message, hiding the identity of the
+/// recipient.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct BlindedMessagePath(pub(super) BlindedPath);
+
+impl Writeable for BlindedMessagePath {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.0.write(w)
+	}
+}
+
+impl Readable for BlindedMessagePath {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		Ok(Self(BlindedPath::read(r)?))
+	}
+}
+
+impl BlindedMessagePath {
+	/// Create a one-hop blinded path for a message.
+	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+		recipient_node_id: PublicKey, context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>
+	) -> Result<Self, ()> where ES::Target: EntropySource {
+		Self::new(&[], recipient_node_id, context, entropy_source, secp_ctx)
+	}
+
+	/// Create a path for an onion message, to be forwarded along `node_pks`. The last node
+	/// pubkey in `node_pks` will be the destination node.
+	///
+	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
+	//  TODO: make all payloads the same size with padding + add dummy hops
+	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
+		intermediate_nodes: &[ForwardNode], recipient_node_id: PublicKey, context: MessageContext,
+		entropy_source: ES, secp_ctx: &Secp256k1<T>
+	) -> Result<Self, ()> where ES::Target: EntropySource {
+		let introduction_node = IntroductionNode::NodeId(
+			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id)
+		);
+		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
+		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
+
+		Ok(Self(BlindedPath {
+			introduction_node,
+			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
+			blinded_hops: blinded_hops(
+				secp_ctx, intermediate_nodes, recipient_node_id,
+				context, &blinding_secret,
+			).map_err(|_| ())?,
+		}))
+	}
+
+	/// Attempts to a use a compact representation for the [`IntroductionNode`] by using a directed
+	/// short channel id from a channel in `network_graph` leading to the introduction node.
+	///
+	/// While this may result in a smaller encoding, there is a trade off in that the path may
+	/// become invalid if the channel is closed or hasn't been propagated via gossip. Therefore,
+	/// calling this may not be suitable for long-lived blinded paths.
+	pub fn use_compact_introduction_node(&mut self, network_graph: &ReadOnlyNetworkGraph) {
+		if let IntroductionNode::NodeId(pubkey) = &self.0.introduction_node {
+			let node_id = NodeId::from_pubkey(pubkey);
+			if let Some(node_info) = network_graph.node(&node_id) {
+				if let Some((scid, channel_info)) = node_info
+					.channels
+						.iter()
+						.filter_map(|scid| network_graph.channel(*scid).map(|info| (*scid, info)))
+						.min_by_key(|(scid, _)| scid_utils::block_from_scid(*scid))
+				{
+					let direction = if node_id == channel_info.node_one {
+						Direction::NodeOne
+					} else {
+						debug_assert_eq!(node_id, channel_info.node_two);
+						Direction::NodeTwo
+					};
+					self.0.introduction_node =
+						IntroductionNode::DirectedShortChannelId(direction, scid);
+				}
+			}
+		}
+	}
+
+	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
+	/// it is found in the network graph).
+	pub fn public_introduction_node_id<'a>(
+		&self, network_graph: &'a ReadOnlyNetworkGraph
+	) -> Option<&'a NodeId> {
+		self.0.public_introduction_node_id(network_graph)
+	}
+
+	/// The [`IntroductionNode`] of the blinded path.
+	pub fn introduction_node(&self) -> &IntroductionNode {
+		&self.0.introduction_node
+	}
+
+	/// Used by the [`IntroductionNode`] to decrypt its [`encrypted_payload`] to forward the message.
+	///
+	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
+	pub fn blinding_point(&self) -> PublicKey {
+		self.0.blinding_point
+	}
+
+	/// The [`BlindedHop`]s within the blinded path.
+	pub fn blinded_hops(&self) -> &[BlindedHop] {
+		&self.0.blinded_hops
+	}
+
+	/// Advance the blinded onion message path by one hop, making the second hop into the new
+	/// introduction node.
+	///
+	/// Will only modify `self` when returning `Ok`.
+	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
+	) -> Result<(), ()>
+	where
+		NS::Target: NodeSigner,
+		NL::Target: NodeIdLookUp,
+		T: secp256k1::Signing + secp256k1::Verification,
+	{
+		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.0.blinding_point, None)?;
+		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
+		let encrypted_control_tlvs = &self.0.blinded_hops.get(0).ok_or(())?.encrypted_payload;
+		let mut s = Cursor::new(encrypted_control_tlvs);
+		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
+		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
+			Ok(ChaChaPolyReadAdapter {
+				readable: ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override })
+			}) => {
+				let next_node_id = match next_hop {
+					NextMessageHop::NodeId(pubkey) => pubkey,
+					NextMessageHop::ShortChannelId(scid) => match node_id_lookup.next_node_id(scid) {
+						Some(pubkey) => pubkey,
+						None => return Err(()),
+					},
+				};
+				let mut new_blinding_point = match next_blinding_override {
+					Some(blinding_point) => blinding_point,
+					None => {
+						onion_utils::next_hop_pubkey(secp_ctx, self.0.blinding_point,
+							control_tlvs_ss.as_ref()).map_err(|_| ())?
+					}
+				};
+				mem::swap(&mut self.0.blinding_point, &mut new_blinding_point);
+				self.0.introduction_node = IntroductionNode::NodeId(next_node_id);
+				self.0.blinded_hops.remove(0);
+				Ok(())
+			},
+			_ => Err(())
+		}
+	}
+
+	pub(crate) fn introduction_node_mut(&mut self) -> &mut IntroductionNode {
+		&mut self.0.introduction_node
+	}
+
+	#[cfg(test)]
+	pub fn from_raw(
+		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>
+	) -> Self {
+		Self(BlindedPath {
+			introduction_node: IntroductionNode::NodeId(introduction_node_id),
+			blinding_point,
+			blinded_hops,
+		})
+	}
+
+	#[cfg(test)]
+	pub fn clear_blinded_hops(&mut self) {
+		self.0.blinded_hops.clear()
+	}
+}
+
+/// The next hop to forward an onion message along its path.
+///
+/// Note that payment blinded paths always specify their next hop using an explicit node id.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub enum NextMessageHop {
+	/// The node id of the next hop.
+	NodeId(PublicKey),
+	/// The short channel id leading to the next hop.
+	ShortChannelId(u64),
+}
 
 /// An intermediate node, and possibly a short channel id leading to the next node.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -88,10 +269,10 @@ impl Writeable for ReceiveTlvs {
 	}
 }
 
-/// Additional data included by the recipient in a [`BlindedPath`].
+/// Additional data included by the recipient in a [`BlindedMessagePath`].
 ///
 /// This data is encrypted by the recipient and will be given to the corresponding message handler
-/// when handling a message sent over the [`BlindedPath`]. The recipient can use this data to
+/// when handling a message sent over the [`BlindedMessagePath`]. The recipient can use this data to
 /// authenticate the message or for further processing if needed.
 #[derive(Clone, Debug)]
 pub enum MessageContext {
@@ -110,7 +291,7 @@ pub enum MessageContext {
 /// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OffersContext {
-	/// Context used by a [`BlindedPath`] within an [`Offer`].
+	/// Context used by a [`BlindedMessagePath`] within an [`Offer`].
 	///
 	/// This variant is intended to be received when handling an [`InvoiceRequest`].
 	///
@@ -124,7 +305,7 @@ pub enum OffersContext {
 		/// [`Offer`]: crate::offers::offer::Offer
 		nonce: Nonce,
 	},
-	/// Context used by a [`BlindedPath`] within a [`Refund`] or as a reply path for an
+	/// Context used by a [`BlindedMessagePath`] within a [`Refund`] or as a reply path for an
 	/// [`InvoiceRequest`].
 	///
 	/// This variant is intended to be received when handling a [`Bolt12Invoice`] or an
@@ -155,7 +336,7 @@ pub enum OffersContext {
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
 		hmac: Option<Hmac<Sha256>>,
 	},
-	/// Context used by a [`BlindedPath`] as a reply path for a [`Bolt12Invoice`].
+	/// Context used by a [`BlindedMessagePath`] as a reply path for a [`Bolt12Invoice`].
 	///
 	/// This variant is intended to be received when handling an [`InvoiceError`].
 	///
@@ -208,46 +389,3 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
 }
 
-// Advance the blinded onion message path by one hop, so make the second hop into the new
-// introduction node.
-//
-// Will only modify `path` when returning `Ok`.
-pub(crate) fn advance_path_by_one<NS: Deref, NL: Deref, T>(
-	path: &mut BlindedPath, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
-) -> Result<(), ()>
-where
-	NS::Target: NodeSigner,
-	NL::Target: NodeIdLookUp,
-	T: secp256k1::Signing + secp256k1::Verification,
-{
-	let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &path.blinding_point, None)?;
-	let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
-	let encrypted_control_tlvs = &path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
-	let mut s = Cursor::new(encrypted_control_tlvs);
-	let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
-	match ChaChaPolyReadAdapter::read(&mut reader, rho) {
-		Ok(ChaChaPolyReadAdapter {
-			readable: ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override })
-		}) => {
-			let next_node_id = match next_hop {
-				NextMessageHop::NodeId(pubkey) => pubkey,
-				NextMessageHop::ShortChannelId(scid) => match node_id_lookup.next_node_id(scid) {
-					Some(pubkey) => pubkey,
-					None => return Err(()),
-				},
-			};
-			let mut new_blinding_point = match next_blinding_override {
-				Some(blinding_point) => blinding_point,
-				None => {
-					onion_utils::next_hop_pubkey(secp_ctx, path.blinding_point,
-						control_tlvs_ss.as_ref()).map_err(|_| ())?
-				}
-			};
-			mem::swap(&mut path.blinding_point, &mut new_blinding_point);
-			path.introduction_node = IntroductionNode::NodeId(next_node_id);
-			path.blinded_hops.remove(0);
-			Ok(())
-		},
-		_ => Err(())
-	}
-}

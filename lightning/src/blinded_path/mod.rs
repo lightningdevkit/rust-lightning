@@ -13,35 +13,20 @@ pub mod payment;
 pub mod message;
 pub(crate) mod utils;
 
-use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
-use message::MessageContext;
+use bitcoin::secp256k1::PublicKey;
 use core::ops::Deref;
 
 use crate::ln::msgs::DecodeError;
-use crate::offers::invoice::BlindedPayInfo;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
-use crate::sign::EntropySource;
 use crate::util::ser::{Readable, Writeable, Writer};
-use crate::util::scid_utils;
 
 use crate::io;
 use crate::prelude::*;
 
-/// The next hop to forward an onion message along its path.
-///
-/// Note that payment blinded paths always specify their next hop using an explicit node id.
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum NextMessageHop {
-	/// The node id of the next hop.
-	NodeId(PublicKey),
-	/// The short channel id leading to the next hop.
-	ShortChannelId(u64),
-}
-
 /// Onion messages and payments can be sent and received to blinded paths, which serve to hide the
 /// identity of the recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct BlindedPath {
+struct BlindedPath {
 	/// To send to a blinded path, the sender first finds a route to the unblinded
 	/// `introduction_node`, which can unblind its [`encrypted_payload`] to find out the onion
 	/// message or payment's next hop and forward it along.
@@ -57,7 +42,7 @@ pub struct BlindedPath {
 	pub blinded_hops: Vec<BlindedHop>,
 }
 
-/// The unblinded node in a [`BlindedPath`].
+/// The unblinded node in a blinded path.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum IntroductionNode {
 	/// The node id of the introduction node.
@@ -67,8 +52,8 @@ pub enum IntroductionNode {
 	DirectedShortChannelId(Direction, u64),
 }
 
-/// The side of a channel that is the [`IntroductionNode`] in a [`BlindedPath`]. [BOLT 7] defines
-/// which nodes is which in the [`ChannelAnnouncement`] message.
+/// The side of a channel that is the [`IntroductionNode`] in a blinded path. [BOLT 7] defines which
+/// nodes is which in the [`ChannelAnnouncement`] message.
 ///
 /// [BOLT 7]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_announcement-message
 /// [`ChannelAnnouncement`]: crate::ln::msgs::ChannelAnnouncement
@@ -113,96 +98,16 @@ impl Deref for EmptyNodeIdLookUp {
 /// and thus can be used to hide the identity of the recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct BlindedHop {
-	/// The blinded node id of this hop in a [`BlindedPath`].
+	/// The blinded node id of this hop in a blinded path.
 	pub blinded_node_id: PublicKey,
-	/// The encrypted payload intended for this hop in a [`BlindedPath`].
+	/// The encrypted payload intended for this hop in a blinded path.
 	// The node sending to this blinded path will later encode this payload into the onion packet for
 	// this hop.
 	pub encrypted_payload: Vec<u8>,
 }
 
 impl BlindedPath {
-	/// Create a one-hop blinded path for a message.
-	pub fn one_hop_for_message<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		recipient_node_id: PublicKey, context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> where ES::Target: EntropySource {
-		Self::new_for_message(&[], recipient_node_id, context, entropy_source, secp_ctx)
-	}
-
-	/// Create a blinded path for an onion message, to be forwarded along `node_pks`. The last node
-	/// pubkey in `node_pks` will be the destination node.
-	///
-	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
-	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_message<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[message::ForwardNode], recipient_node_id: PublicKey,
-		context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<Self, ()> where ES::Target: EntropySource {
-		let introduction_node = IntroductionNode::NodeId(
-			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id)
-		);
-		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
-		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-
-		Ok(BlindedPath {
-			introduction_node,
-			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops: message::blinded_hops(
-				secp_ctx, intermediate_nodes, recipient_node_id,
-				context, &blinding_secret,
-			).map_err(|_| ())?,
-		})
-	}
-
-	/// Create a one-hop blinded path for a payment.
-	pub fn one_hop_for_payment<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		payee_node_id: PublicKey, payee_tlvs: payment::ReceiveTlvs, min_final_cltv_expiry_delta: u16,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
-		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
-		// be in relation to a specific channel.
-		let htlc_maximum_msat = u64::max_value();
-		Self::new_for_payment(
-			&[], payee_node_id, payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta,
-			entropy_source, secp_ctx
-		)
-	}
-
-	/// Create a blinded path for a payment, to be forwarded along `intermediate_nodes`.
-	///
-	/// Errors if:
-	/// * a provided node id is invalid
-	/// * [`BlindedPayInfo`] calculation results in an integer overflow
-	/// * any unknown features are required in the provided [`ForwardTlvs`]
-	///
-	/// [`ForwardTlvs`]: crate::blinded_path::payment::ForwardTlvs
-	//  TODO: make all payloads the same size with padding + add dummy hops
-	pub fn new_for_payment<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[payment::ForwardNode], payee_node_id: PublicKey,
-		payee_tlvs: payment::ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
-		let introduction_node = IntroductionNode::NodeId(
-			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id)
-		);
-		let blinding_secret_bytes = entropy_source.get_secure_random_bytes();
-		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
-
-		let blinded_payinfo = payment::compute_payinfo(
-			intermediate_nodes, &payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
-		)?;
-		Ok((blinded_payinfo, BlindedPath {
-			introduction_node,
-			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops: payment::blinded_hops(
-				secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
-			).map_err(|_| ())?,
-		}))
-	}
-
-	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
-	/// it is found in the network graph).
-	pub fn public_introduction_node_id<'a>(
+	pub(super) fn public_introduction_node_id<'a>(
 		&self, network_graph: &'a ReadOnlyNetworkGraph
 	) -> Option<&'a NodeId> {
 		match &self.introduction_node {
@@ -218,35 +123,6 @@ impl BlindedPath {
 						Direction::NodeTwo => &c.node_two,
 					})
 			},
-		}
-	}
-
-	/// Attempts to a use a compact representation for the [`IntroductionNode`] by using a directed
-	/// short channel id from a channel in `network_graph` leading to the introduction node.
-	///
-	/// While this may result in a smaller encoding, there is a trade off in that the path may
-	/// become invalid if the channel is closed or hasn't been propagated via gossip. Therefore,
-	/// calling this may not be suitable for long-lived blinded paths.
-	pub fn use_compact_introduction_node(&mut self, network_graph: &ReadOnlyNetworkGraph) {
-		if let IntroductionNode::NodeId(pubkey) = &self.introduction_node {
-			let node_id = NodeId::from_pubkey(pubkey);
-			if let Some(node_info) = network_graph.node(&node_id) {
-				if let Some((scid, channel_info)) = node_info
-					.channels
-					.iter()
-					.filter_map(|scid| network_graph.channel(*scid).map(|info| (*scid, info)))
-					.min_by_key(|(scid, _)| scid_utils::block_from_scid(*scid))
-				{
-					let direction = if node_id == channel_info.node_one {
-						Direction::NodeOne
-					} else {
-						debug_assert_eq!(node_id, channel_info.node_two);
-						Direction::NodeTwo
-					};
-					self.introduction_node =
-						IntroductionNode::DirectedShortChannelId(direction, scid);
-				}
-			}
 		}
 	}
 }

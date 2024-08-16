@@ -107,7 +107,7 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 	///
 	/// This is not exported to bindings users as slices with non-reference types cannot be ABI
 	/// matched in another language.
-	pub fn payment_paths(&$self) -> &[(BlindedPayInfo, BlindedPath)] {
+	pub fn payment_paths(&$self) -> &[(BlindedPayInfo, BlindedPaymentPath)] {
 		$contents.payment_paths()
 	}
 

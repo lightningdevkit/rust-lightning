@@ -29,12 +29,12 @@
 //! use lightning::offers::parse::Bolt12ParseError;
 //! use lightning::util::ser::{Readable, Writeable};
 //!
-//! # use lightning::blinded_path::BlindedPath;
+//! # use lightning::blinded_path::message::BlindedMessagePath;
 //! # #[cfg(feature = "std")]
 //! # use std::time::SystemTime;
 //! #
-//! # fn create_blinded_path() -> BlindedPath { unimplemented!() }
-//! # fn create_another_blinded_path() -> BlindedPath { unimplemented!() }
+//! # fn create_blinded_path() -> BlindedMessagePath { unimplemented!() }
+//! # fn create_another_blinded_path() -> BlindedMessagePath { unimplemented!() }
 //! #
 //! # #[cfg(feature = "std")]
 //! # fn build() -> Result<(), Bolt12ParseError> {
@@ -85,7 +85,7 @@ use core::num::NonZeroU64;
 use core::str::FromStr;
 use core::time::Duration;
 use crate::io;
-use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::BlindedMessagePath;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
@@ -249,7 +249,7 @@ macro_rules! offer_derived_metadata_builder_methods { ($secp_context: ty) => {
 	/// Also, sets the metadata when [`OfferBuilder::build`] is called such that it can be used by
 	/// [`InvoiceRequest::verify_using_metadata`] to determine if the request was produced for the
 	/// offer given an [`ExpandedKey`]. However, if [`OfferBuilder::path`] is called, then the
-	/// metadata will not be set and must be included in each [`BlindedPath`] instead. In this case,
+	/// metadata will not be set and must be included in each [`BlindedMessagePath`] instead. In this case,
 	/// use [`InvoiceRequest::verify_using_recipient_data`].
 	///
 	/// [`InvoiceRequest::verify_using_metadata`]: crate::offers::invoice_request::InvoiceRequest::verify_using_metadata
@@ -346,7 +346,7 @@ macro_rules! offer_builder_methods { (
 	///
 	/// Successive calls to this method will add another blinded path. Caller is responsible for not
 	/// adding duplicate paths.
-	pub fn path($($self_mut)* $self: $self_type, path: BlindedPath) -> $return_type {
+	pub fn path($($self_mut)* $self: $self_type, path: BlindedMessagePath) -> $return_type {
 		$self.offer.paths.get_or_insert_with(Vec::new).push(path);
 		$return_value
 	}
@@ -540,7 +540,7 @@ for OfferBuilder<'a, DerivedMetadata, secp256k1::All> {
 /// Offers may be denominated in currency other than bitcoin but are ultimately paid using the
 /// latter.
 ///
-/// Through the use of [`BlindedPath`]s, offers provide recipient privacy.
+/// Through the use of [`BlindedMessagePath`]s, offers provide recipient privacy.
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
@@ -568,7 +568,7 @@ pub(super) struct OfferContents {
 	features: OfferFeatures,
 	absolute_expiry: Option<Duration>,
 	issuer: Option<String>,
-	paths: Option<Vec<BlindedPath>>,
+	paths: Option<Vec<BlindedMessagePath>>,
 	supported_quantity: Quantity,
 	signing_pubkey: Option<PublicKey>,
 }
@@ -622,7 +622,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 
 	/// Paths to the recipient originating from publicly reachable nodes. Blinded paths provide
 	/// recipient privacy by obfuscating its node id.
-	pub fn paths(&$self) -> &[$crate::blinded_path::BlindedPath] {
+	pub fn paths(&$self) -> &[$crate::blinded_path::message::BlindedMessagePath] {
 		$contents.paths()
 	}
 
@@ -854,7 +854,7 @@ impl OfferContents {
 		self.issuer.as_ref().map(|issuer| PrintableString(issuer.as_str()))
 	}
 
-	pub fn paths(&self) -> &[BlindedPath] {
+	pub fn paths(&self) -> &[BlindedMessagePath] {
 		self.paths.as_ref().map(|paths| paths.as_slice()).unwrap_or(&[])
 	}
 
@@ -1074,7 +1074,7 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef, OFFER_TYPES, {
 	(10, description: (String, WithoutLength)),
 	(12, features: (OfferFeatures, WithoutLength)),
 	(14, absolute_expiry: (u64, HighZeroBytesDroppedBigSize)),
-	(16, paths: (Vec<BlindedPath>, WithoutLength)),
+	(16, paths: (Vec<BlindedMessagePath>, WithoutLength)),
 	(18, issuer: (String, WithoutLength)),
 	(20, quantity_max: (u64, HighZeroBytesDroppedBigSize)),
 	(OFFER_NODE_ID_TYPE, node_id: PublicKey),
@@ -1177,7 +1177,8 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
-	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::blinded_path::BlindedHop;
+	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::ln::features::OfferFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -1360,14 +1361,13 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let blinded_path = BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		let blinded_path = BlindedMessagePath::from_raw(
+			pubkey(40), pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
-			],
-		};
+			]
+		);
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
@@ -1544,22 +1544,20 @@ mod tests {
 	#[test]
 	fn builds_offer_with_paths() {
 		let paths = vec![
-			BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			},
-			BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+				]
+			),
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-				],
-			},
+				]
+			),
 		];
 
 		let offer = OfferBuilder::new(pubkey(42))
@@ -1747,22 +1745,20 @@ mod tests {
 	#[test]
 	fn parses_offer_with_paths() {
 		let offer = OfferBuilder::new(pubkey(42))
-			.path(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+			.path(BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			})
-			.path(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
-					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
-					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-				],
-			})
+				]
+			))
+			.path(BlindedMessagePath::from_raw(
+					pubkey(40), pubkey(41),
+					vec![
+						BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
+						BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
+					]
+			))
 			.build()
 			.unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
@@ -1770,14 +1766,13 @@ mod tests {
 		}
 
 		let offer = OfferBuilder::new(pubkey(42))
-			.path(BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
-					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
-					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			})
+			.path(BlindedMessagePath::from_raw(
+					pubkey(40), pubkey(41),
+					vec![
+						BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+						BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+					]
+			))
 			.clear_signing_pubkey()
 			.build()
 			.unwrap();

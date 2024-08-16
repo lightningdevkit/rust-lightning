@@ -14,7 +14,7 @@
 //! then sends the invoice to the intended payer, who will then pay it.
 //!
 //! The payment recipient must include a [`PaymentHash`], so as to reveal the preimage upon payment
-//! receipt, and one or more [`BlindedPath`]s for the payer to use when sending the payment.
+//! receipt, and one or more [`BlindedPaymentPath`]s for the payer to use when sending the payment.
 //!
 //! ```
 //! extern crate bitcoin;
@@ -30,9 +30,9 @@
 //!
 //! # use lightning::ln::types::PaymentHash;
 //! # use lightning::offers::invoice::{BlindedPayInfo, ExplicitSigningPubkey, InvoiceBuilder};
-//! # use lightning::blinded_path::BlindedPath;
+//! # use lightning::blinded_path::payment::BlindedPaymentPath;
 //! #
-//! # fn create_payment_paths() -> Vec<(BlindedPayInfo, BlindedPath)> { unimplemented!() }
+//! # fn create_payment_paths() -> Vec<(BlindedPayInfo, BlindedPaymentPath)> { unimplemented!() }
 //! # fn create_payment_hash() -> PaymentHash { unimplemented!() }
 //! #
 //! # fn parse_invoice_request(bytes: Vec<u8>) -> Result<(), lightning::offers::parse::Bolt12ParseError> {
@@ -110,7 +110,8 @@ use bitcoin::address::{Address, Payload};
 use core::time::Duration;
 use core::hash::{Hash, Hasher};
 use crate::io;
-use crate::blinded_path::BlindedPath;
+use crate::blinded_path::message::BlindedMessagePath;
+use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
@@ -211,7 +212,7 @@ impl SigningPubkeyStrategy for DerivedSigningPubkey {}
 macro_rules! invoice_explicit_signing_pubkey_builder_methods { ($self: ident, $self_type: ty) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_offer(
-		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
+		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
 		created_at: Duration, payment_hash: PaymentHash, signing_pubkey: PublicKey
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = Self::amount_msats(invoice_request)?;
@@ -227,7 +228,7 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods { ($self: ident, $s
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_refund(
-		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
+		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, created_at: Duration,
 		payment_hash: PaymentHash, signing_pubkey: PublicKey
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = refund.amount_msats();
@@ -269,7 +270,7 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods { ($self: ident, $s
 macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $self_type: ty) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_offer_using_keys(
-		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
+		invoice_request: &'a InvoiceRequest, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
 		created_at: Duration, payment_hash: PaymentHash, keys: Keypair
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = Self::amount_msats(invoice_request)?;
@@ -286,7 +287,7 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_refund_using_keys(
-		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
+		refund: &'a Refund, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, created_at: Duration,
 		payment_hash: PaymentHash, keys: Keypair,
 	) -> Result<Self, Bolt12SemanticError> {
 		let amount_msats = refund.amount_msats();
@@ -355,7 +356,7 @@ macro_rules! invoice_builder_methods { (
 
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	fn fields(
-		payment_paths: Vec<(BlindedPayInfo, BlindedPath)>, created_at: Duration,
+		payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, created_at: Duration,
 		payment_hash: PaymentHash, amount_msats: u64, signing_pubkey: PublicKey
 	) -> InvoiceFields {
 		InvoiceFields {
@@ -602,7 +603,7 @@ enum InvoiceContents {
 /// Invoice-specific fields for an `invoice` message.
 #[derive(Clone, Debug, PartialEq)]
 struct InvoiceFields {
-	payment_paths: Vec<(BlindedPayInfo, BlindedPath)>,
+	payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
 	created_at: Duration,
 	relative_expiry: Option<Duration>,
 	payment_hash: PaymentHash,
@@ -698,7 +699,7 @@ macro_rules! invoice_accessors { ($self: ident, $contents: expr) => {
 	/// From [`Offer::paths`] or [`Refund::paths`].
 	///
 	/// [`Offer::paths`]: crate::offers::offer::Offer::paths
-	pub fn message_paths(&$self) -> &[BlindedPath] {
+	pub fn message_paths(&$self) -> &[BlindedMessagePath] {
 		$contents.message_paths()
 	}
 
@@ -797,7 +798,7 @@ impl Bolt12Invoice {
 	}
 
 	/// Verifies that the invoice was for a request or refund created using the given key by
-	/// checking a payment id and nonce included with the [`BlindedPath`] for which the invoice was
+	/// checking a payment id and nonce included with the [`BlindedMessagePath`] for which the invoice was
 	/// sent through.
 	pub fn verify_using_payer_data<T: secp256k1::Signing>(
 		&self, payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>
@@ -934,7 +935,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn message_paths(&self) -> &[BlindedPath] {
+	fn message_paths(&self) -> &[BlindedMessagePath] {
 		match self {
 			InvoiceContents::ForOffer { invoice_request, .. } => {
 				invoice_request.inner.offer.paths()
@@ -987,7 +988,7 @@ impl InvoiceContents {
 		}
 	}
 
-	fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPath)] {
+	fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPaymentPath)] {
 		&self.fields().payment_paths[..]
 	}
 
@@ -1192,7 +1193,7 @@ impl TryFrom<Vec<u8>> for Bolt12Invoice {
 }
 
 tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
-	(160, paths: (Vec<BlindedPath>, WithoutLength, Iterable<'a, BlindedPathIter<'a>, BlindedPath>)),
+	(160, paths: (Vec<BlindedPaymentPath>, WithoutLength, Iterable<'a, BlindedPathIter<'a>, BlindedPaymentPath>)),
 	(162, blindedpay: (Vec<BlindedPayInfo>, WithoutLength, Iterable<'a, BlindedPayInfoIter<'a>, BlindedPayInfo>)),
 	(164, created_at: (u64, HighZeroBytesDroppedBigSize)),
 	(166, relative_expiry: (u32, HighZeroBytesDroppedBigSize)),
@@ -1202,20 +1203,20 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef, 160..240, {
 	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
 	(176, node_id: PublicKey),
 	// Only present in `StaticInvoice`s.
-	(238, message_paths: (Vec<BlindedPath>, WithoutLength)),
+	(238, message_paths: (Vec<BlindedMessagePath>, WithoutLength)),
 });
 
 pub(super) type BlindedPathIter<'a> = core::iter::Map<
-	core::slice::Iter<'a, (BlindedPayInfo, BlindedPath)>,
-	for<'r> fn(&'r (BlindedPayInfo, BlindedPath)) -> &'r BlindedPath,
+	core::slice::Iter<'a, (BlindedPayInfo, BlindedPaymentPath)>,
+	for<'r> fn(&'r (BlindedPayInfo, BlindedPaymentPath)) -> &'r BlindedPaymentPath,
 >;
 
 pub(super) type BlindedPayInfoIter<'a> = core::iter::Map<
-	core::slice::Iter<'a, (BlindedPayInfo, BlindedPath)>,
-	for<'r> fn(&'r (BlindedPayInfo, BlindedPath)) -> &'r BlindedPayInfo,
+	core::slice::Iter<'a, (BlindedPayInfo, BlindedPaymentPath)>,
+	for<'r> fn(&'r (BlindedPayInfo, BlindedPaymentPath)) -> &'r BlindedPayInfo,
 >;
 
-/// Information needed to route a payment across a [`BlindedPath`].
+/// Information needed to route a payment across a [`BlindedPaymentPath`].
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct BlindedPayInfo {
 	/// Base fee charged (in millisatoshi) for the entire blinded path.
@@ -1387,8 +1388,8 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 }
 
 pub(super) fn construct_payment_paths(
-	blinded_payinfos: Option<Vec<BlindedPayInfo>>, blinded_paths: Option<Vec<BlindedPath>>
-) -> Result<Vec<(BlindedPayInfo, BlindedPath)>, Bolt12SemanticError> {
+	blinded_payinfos: Option<Vec<BlindedPayInfo>>, blinded_paths: Option<Vec<BlindedPaymentPath>>
+) -> Result<Vec<(BlindedPayInfo, BlindedPaymentPath)>, Bolt12SemanticError> {
 	match (blinded_payinfos, blinded_paths) {
 		(_, None) => Err(Bolt12SemanticError::MissingPaths),
 		(None, _) => Err(Bolt12SemanticError::InvalidPayInfo),
@@ -1414,7 +1415,7 @@ pub(super) fn check_invoice_signing_pubkey(
 		(None, Some(paths)) => {
 			if !paths
 				.iter()
-				.filter_map(|path| path.blinded_hops.last())
+				.filter_map(|path| path.blinded_hops().last())
 				.any(|last_hop| invoice_signing_pubkey == &last_hop.blinded_node_id)
 			{
 				return Err(Bolt12SemanticError::InvalidSigningPubkey);
@@ -1440,7 +1441,8 @@ mod tests {
 
 	use core::time::Duration;
 
-	use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+	use crate::blinded_path::BlindedHop;
+	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::ln::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
@@ -1789,14 +1791,13 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let blinded_path = BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		let blinded_path = BlindedMessagePath::from_raw(
+			pubkey(40), pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
-			],
-		};
+			]
+		);
 
 		#[cfg(c_bindings)]
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
@@ -1865,14 +1866,13 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let secp_ctx = Secp256k1::new();
 
-		let blinded_path = BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		let blinded_path = BlindedMessagePath::from_raw(
+			pubkey(40), pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: node_id, encrypted_payload: vec![0; 44] },
-			],
-		};
+			]
+		);
 
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.path(blinded_path)
@@ -2369,22 +2369,20 @@ mod tests {
 	#[test]
 	fn parses_invoice_with_node_id_from_blinded_path() {
 		let paths = vec![
-			BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-				],
-			},
-			BlindedPath {
-				introduction_node: IntroductionNode::NodeId(pubkey(40)),
-				blinding_point: pubkey(41),
-				blinded_hops: vec![
+				]
+			),
+			BlindedMessagePath::from_raw(
+				pubkey(40), pubkey(41),
+				vec![
 					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-				],
-			},
+				]
+			),
 		];
 
 		let blinded_node_id_sign = |message: &UnsignedBolt12Invoice| {
@@ -2522,14 +2520,13 @@ mod tests {
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 
-		let blinded_path = BlindedPath {
-			introduction_node: IntroductionNode::NodeId(pubkey(40)),
-			blinding_point: pubkey(41),
-			blinded_hops: vec![
+		let blinded_path = BlindedMessagePath::from_raw(
+			pubkey(40), pubkey(41),
+			vec![
 				BlindedHop { blinded_node_id: pubkey(42), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 44] },
-			],
-		};
+			]
+		);
 
 		let mut tlv_stream = invoice.as_tlv_stream();
 		let message_paths = vec![blinded_path];

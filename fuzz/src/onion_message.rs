@@ -5,8 +5,8 @@ use bitcoin::secp256k1::ecdsa::RecoverableSignature;
 use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1, SecretKey};
 
-use lightning::blinded_path::message::{MessageContext, OffersContext};
-use lightning::blinded_path::{BlindedPath, EmptyNodeIdLookUp};
+use lightning::blinded_path::message::{BlindedMessagePath, MessageContext, OffersContext};
+use lightning::blinded_path::EmptyNodeIdLookUp;
 use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::script::ShutdownScript;
@@ -98,7 +98,7 @@ impl MessageRouter for TestMessageRouter {
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>,
 		_secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedPath>, ()> {
+	) -> Result<Vec<BlindedMessagePath>, ()> {
 		unreachable!()
 	}
 }
