@@ -466,7 +466,10 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 		.chain(core::iter::once(payee_node_id));
 	let tlvs = intermediate_nodes.iter().map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
 		.chain(core::iter::once(BlindedPaymentTlvsRef::Receive(&payee_tlvs)));
-	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
+
+	let path = pks.zip(tlvs);
+
+	utils::construct_blinded_hops(secp_ctx, path, session_priv)
 }
 
 /// `None` if underflow occurs.

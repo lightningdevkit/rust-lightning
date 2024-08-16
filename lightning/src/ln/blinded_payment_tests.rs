@@ -1392,19 +1392,17 @@ fn route_blinding_spec_test_vector() {
 	let blinding_override = PublicKey::from_secret_key(&secp_ctx, &dave_eve_session_priv);
 	assert_eq!(blinding_override, pubkey_from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"));
 	// Can't use the public API here as the encrypted payloads contain unknown TLVs.
+	let path = [(dave_node_id, WithoutLength(&dave_unblinded_tlvs)), (eve_node_id, WithoutLength(&eve_unblinded_tlvs))];
 	let mut dave_eve_blinded_hops = blinded_path::utils::construct_blinded_hops(
-		&secp_ctx, [dave_node_id, eve_node_id].iter(),
-		&mut [WithoutLength(&dave_unblinded_tlvs), WithoutLength(&eve_unblinded_tlvs)].iter(),
-		&dave_eve_session_priv
+		&secp_ctx, path.into_iter(), &dave_eve_session_priv
 	).unwrap();
 
 	// Concatenate an additional Bob -> Carol blinded path to the Eve -> Dave blinded path.
 	let bob_carol_session_priv = secret_from_hex("0202020202020202020202020202020202020202020202020202020202020202");
 	let bob_blinding_point = PublicKey::from_secret_key(&secp_ctx, &bob_carol_session_priv);
+	let path = [(bob_node_id, WithoutLength(&bob_unblinded_tlvs)), (carol_node_id, WithoutLength(&carol_unblinded_tlvs))];
 	let bob_carol_blinded_hops = blinded_path::utils::construct_blinded_hops(
-		&secp_ctx, [bob_node_id, carol_node_id].iter(),
-		&mut [WithoutLength(&bob_unblinded_tlvs), WithoutLength(&carol_unblinded_tlvs)].iter(),
-		&bob_carol_session_priv
+		&secp_ctx, path.into_iter(), &bob_carol_session_priv
 	).unwrap();
 
 	let mut blinded_hops = bob_carol_blinded_hops;

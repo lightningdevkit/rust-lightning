@@ -118,13 +118,14 @@ where
 }
 
 #[inline]
-pub(super) fn construct_keys_callback_for_blinded_path<'a, T, I, F>(
+pub(super) fn construct_keys_callback_for_blinded_path<'a, T, I, F, H>(
 	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv: &SecretKey, mut callback: F,
 ) -> Result<(), secp256k1::Error>
 where
 	T: secp256k1::Signing + secp256k1::Verification,
-	I: Iterator<Item=PublicKey>,
-	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<PublicKey>, Option<Vec<u8>>),
+	H: Borrow<PublicKey>,
+	I: Iterator<Item=H>,
+	F: FnMut(PublicKey, SharedSecret, PublicKey, [u8; 32], Option<H>, Option<Vec<u8>>),
 {
 	build_keys_helper!(session_priv, secp_ctx, callback);
 
@@ -134,23 +135,32 @@ where
 	Ok(())
 }
 
-// Panics if `unblinded_tlvs` length is less than `unblinded_pks` length
-pub(crate) fn construct_blinded_hops<'a, T, I1, I2>(
-	secp_ctx: &Secp256k1<T>, unblinded_pks: I1, mut unblinded_tlvs: I2, session_priv: &SecretKey
+struct PublicKeyWithTlvs<W: Writeable> {
+	 pubkey: PublicKey,
+	 tlvs: W,
+}
+
+impl<W: Writeable> Borrow<PublicKey> for PublicKeyWithTlvs<W> {
+	fn borrow(&self) -> &PublicKey {
+		&self.pubkey
+	}
+}
+
+pub(crate) fn construct_blinded_hops<'a, T, I, W>(
+	secp_ctx: &Secp256k1<T>, unblinded_path: I, session_priv: &SecretKey,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error>
 where
 	T: secp256k1::Signing + secp256k1::Verification,
-	I1: Iterator<Item=PublicKey>,
-	I2: Iterator,
-	I2::Item: Writeable
+	I: Iterator<Item=(PublicKey, W)>,
+	W: Writeable
 {
-	let mut blinded_hops = Vec::with_capacity(unblinded_pks.size_hint().0);
+	let mut blinded_hops = Vec::with_capacity(unblinded_path.size_hint().0);
 	construct_keys_callback_for_blinded_path(
-		secp_ctx, unblinded_pks, session_priv,
-		|blinded_node_id, _, _, encrypted_payload_rho, _, _| {
+		secp_ctx, unblinded_path.map(|(pubkey, tlvs)| PublicKeyWithTlvs { pubkey, tlvs }), session_priv,
+		|blinded_node_id, _, _, encrypted_payload_rho, unblinded_hop_data, _| {
 			blinded_hops.push(BlindedHop {
 				blinded_node_id,
-				encrypted_payload: encrypt_payload(unblinded_tlvs.next().unwrap(), encrypted_payload_rho),
+				encrypted_payload: encrypt_payload(unblinded_hop_data.unwrap().tlvs, encrypted_payload_rho),
 			});
 		})?;
 	Ok(blinded_hops)
