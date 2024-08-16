@@ -111,7 +111,11 @@ impl<'a, R: Read> BufRead for BufReader<'a, R> {
 			self.is_consumed = count == 0;
 		}
 
-		Ok(&self.buf[..])
+		if self.is_consumed {
+			Ok(&[])
+		} else {
+			Ok(&self.buf[..])
+		}
 	}
 
 	#[inline]
