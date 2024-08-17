@@ -80,23 +80,26 @@ done
 echo -e "\n\nTesting no-std builds"
 for DIR in lightning-invoice lightning-rapid-gossip-sync; do
 	cargo test -p $DIR --verbose --color always --no-default-features
+done
+
+cargo test -p lightning --verbose --color always --no-default-features --features no-std
+# check if there is a conflict between no-std and the default std feature
+cargo test -p lightning --verbose --color always --features no-std
+
+echo -e "\n\nTesting c_bindings builds"
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always
+
+for DIR in lightning-invoice lightning-rapid-gossip-sync; do
 	# check if there is a conflict between no-std and the c_bindings cfg
 	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features
 done
 
-echo -e "\n\nTesting no-std flags in various combinations"
-for DIR in lightning; do
-	cargo test -p $DIR --verbose --color always --no-default-features --features no-std
-	# check if there is a conflict between no-std and the default std feature
-	cargo test -p $DIR --verbose --color always --features no-std
-done
+# Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
+# disable tests in `c_bindings` so we skip doctests entirely here.
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning-background-processor --verbose --color always --features futures --no-default-features --lib --bins --tests
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning --verbose --color always --no-default-features --features=no-std
 
-for DIR in lightning; do
-	# check if there is a conflict between no-std and the c_bindings cfg
-	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features --features=no-std
-done
-RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always
-
+echo -e "\n\nTesting other crate-specific builds"
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
 cargo test -p lightning --verbose --color always --no-default-features --features=std,_test_vectors
 # This one only works for lightning-invoice
