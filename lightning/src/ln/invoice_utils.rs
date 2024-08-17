@@ -824,7 +824,6 @@ mod test {
 	use crate::sign::PhantomKeysManager;
 	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 	use crate::ln::types::PaymentHash;
-	#[cfg(feature = "std")]
 	use crate::ln::types::PaymentPreimage;
 	use crate::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
@@ -1281,13 +1280,11 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_multi_node_receive() {
 		do_test_multi_node_receive(true);
 		do_test_multi_node_receive(false);
 	}
 
-	#[cfg(feature = "std")]
 	fn do_test_multi_node_receive(user_generated_pmt_hash: bool) {
 		use crate::events::{Event, EventsProvider};
 		use core::cell::RefCell;
@@ -1395,7 +1392,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_multi_node_hints_has_htlc_min_max_values() {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
@@ -1432,7 +1428,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_create_phantom_invoice_with_description_hash() {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -1462,7 +1457,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn create_phantom_invoice_with_custom_payment_hash_and_custom_min_final_cltv_delta() {
 		let chanmon_cfgs = create_chanmon_cfgs(3);
 		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -1489,7 +1483,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_multi_node_hints_includes_single_channels_to_participating_nodes() {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
@@ -1518,7 +1511,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_multi_node_hints_includes_one_channel_of_each_counterparty_nodes_per_participating_node() {
 		let mut chanmon_cfgs = create_chanmon_cfgs(4);
 		let seed_1 = [42u8; 32];
@@ -1549,7 +1541,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_multi_node_forwarding_info_not_assigned_channel_excluded_from_hints() {
 		let mut chanmon_cfgs = create_chanmon_cfgs(4);
 		let seed_1 = [42u8; 32];
@@ -1607,7 +1598,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_multi_node_with_only_public_channels_hints_includes_only_phantom_route() {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
@@ -1640,7 +1630,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_multi_node_with_mixed_public_and_private_channel_hints_includes_only_phantom_route() {
 		let mut chanmon_cfgs = create_chanmon_cfgs(4);
 		let seed_1 = [42u8; 32];
@@ -1674,7 +1663,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_multi_node_hints_has_only_lowest_inbound_channel_above_minimum() {
 		let mut chanmon_cfgs = create_chanmon_cfgs(3);
 		let seed_1 = [42u8; 32];
@@ -1705,7 +1693,6 @@ mod test {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn test_multi_node_channels_inbound_capacity_lower_than_invoice_amt_filtering() {
 		let mut chanmon_cfgs = create_chanmon_cfgs(4);
 		let seed_1 = [42u8; 32];
