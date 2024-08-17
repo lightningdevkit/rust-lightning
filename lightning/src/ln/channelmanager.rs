@@ -5568,9 +5568,9 @@ where
 	///
 	/// [timer tick]: Self::timer_tick_occurred
 	pub fn send_payment_for_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
+		&self, invoice: &Bolt12Invoice, context: Option<OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
-		match self.verify_bolt12_invoice(invoice, context) {
+		match self.verify_bolt12_invoice(invoice, context.as_ref()) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
 			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
 		}

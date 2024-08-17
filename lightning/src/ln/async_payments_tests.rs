@@ -996,7 +996,7 @@ fn ignore_duplicate_invoice() {
 	match sender.onion_messenger.peel_onion_message(&invoice_om) {
 		Ok(PeeledOnion::Offers(OffersMessage::Invoice(invoice), context, _)) => {
 			assert!(matches!(
-				sender.node.send_payment_for_bolt12_invoice(&invoice, context.as_ref()),
+				sender.node.send_payment_for_bolt12_invoice(&invoice, context),
 				Err(Bolt12PaymentError::DuplicateInvoice)
 			))
 		},
