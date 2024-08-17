@@ -30,7 +30,7 @@ max_level_trace = []
 unsafe_revoked_tx_signing = []
 
 no-std = ["hashbrown", "possiblyrandom", "libm"]
-std = ["lightning-invoice/std", "bech32/std"]
+std = []
 
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
 grind_signatures = []
