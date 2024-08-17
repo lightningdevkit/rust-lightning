@@ -47,8 +47,6 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicI32, Ordering};
 use core::{cmp, hash, fmt, mem};
 use core::ops::Deref;
 use core::convert::Infallible;
-#[cfg(feature = "std")]
-use std::error;
 #[cfg(not(c_bindings))]
 use {
 	crate::ln::channelmanager::{SimpleArcChannelManager, SimpleRefChannelManager},
@@ -494,13 +492,6 @@ impl fmt::Debug for PeerHandleError {
 impl fmt::Display for PeerHandleError {
 	fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		formatter.write_str("Peer Sent Invalid Data")
-	}
-}
-
-#[cfg(feature = "std")]
-impl error::Error for PeerHandleError {
-	fn description(&self) -> &str {
-		"Peer Sent Invalid Data"
 	}
 }
 
