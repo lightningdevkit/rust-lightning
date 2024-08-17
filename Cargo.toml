@@ -55,6 +55,7 @@ check-cfg = [
     "cfg(debug_assertions)",
     "cfg(c_bindings)",
     "cfg(ldk_bench)",
+    "cfg(ldk_test_vectors)",
     "cfg(taproot)",
     "cfg(async_signing)",
     "cfg(require_route_graph_test)",

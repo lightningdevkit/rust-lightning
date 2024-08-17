@@ -532,9 +532,9 @@ impl core::hash::Hash for HTLCSource {
 	}
 }
 impl HTLCSource {
-	#[cfg(all(feature = "_test_vectors", not(feature = "grind_signatures")))]
-	#[cfg(test)]
+	#[cfg(all(ldk_test_vectors, test))]
 	pub fn dummy() -> Self {
+		assert!(cfg!(not(feature = "grind_signatures")));
 		HTLCSource::OutboundRoute {
 			path: Path { hops: Vec::new(), blinded_tail: None },
 			session_priv: SecretKey::from_slice(&[1; 32]).unwrap(),
