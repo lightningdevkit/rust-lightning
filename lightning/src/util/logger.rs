@@ -294,8 +294,7 @@ mod tests {
 
 	#[test]
 	fn test_logging_macros() {
-		let mut logger = TestLogger::new();
-		logger.enable(Level::Gossip);
+		let logger = TestLogger::new();
 		let logger : Arc<dyn Logger> = Arc::new(logger);
 		let wrapper = WrapperLog::new(Arc::clone(&logger));
 		wrapper.call_macros();

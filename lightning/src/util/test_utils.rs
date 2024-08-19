@@ -43,7 +43,7 @@ use crate::routing::scoring::{ChannelUsage, ScoreUpdate, ScoreLookUp};
 use crate::sync::RwLock;
 use crate::util::config::UserConfig;
 use crate::util::test_channel_signer::{TestChannelSigner, EnforcementState};
-use crate::util::logger::{Logger, Level, Record};
+use crate::util::logger::{Logger, Record};
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 use crate::util::persist::KVStore;
 
@@ -1117,7 +1117,6 @@ impl events::MessageSendEventsProvider for TestRoutingMessageHandler {
 }
 
 pub struct TestLogger {
-	level: Level,
 	pub(crate) id: String,
 	pub lines: Mutex<HashMap<(&'static str, String), usize>>,
 	pub context: Mutex<HashMap<(&'static str, Option<PublicKey>, Option<ChannelId>), usize>>,
@@ -1129,14 +1128,10 @@ impl TestLogger {
 	}
 	pub fn with_id(id: String) -> TestLogger {
 		TestLogger {
-			level: Level::Trace,
 			id,
 			lines: Mutex::new(new_hash_map()),
 			context: Mutex::new(new_hash_map()),
 		}
-	}
-	pub fn enable(&mut self, level: Level) {
-		self.level = level;
 	}
 	pub fn assert_log(&self, module: &str, line: String, count: usize) {
 		let log_entries = self.lines.lock().unwrap();
@@ -1181,10 +1176,8 @@ impl Logger for TestLogger {
 	fn log(&self, record: Record) {
 		*self.lines.lock().unwrap().entry((record.module_path, format!("{}", record.args))).or_insert(0) += 1;
 		*self.context.lock().unwrap().entry((record.module_path, record.peer_id, record.channel_id)).or_insert(0) += 1;
-		if record.level >= self.level {
-			let pfx = format!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line);
-			println!("{:<55}{}", pfx, record.args);
-		}
+		let pfx = format!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line);
+		println!("{:<55}{}", pfx, record.args);
 	}
 }
 
