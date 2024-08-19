@@ -6,10 +6,6 @@
 ./lightning-invoice/src/tb.rs
 ./lightning-invoice/src/utils.rs
 ./lightning-invoice/tests/ser_de.rs
-./lightning-persister/src/fs_store.rs
-./lightning-persister/src/lib.rs
-./lightning-persister/src/test_utils.rs
-./lightning-persister/src/utils.rs
 ./lightning/src/blinded_path/message.rs
 ./lightning/src/blinded_path/mod.rs
 ./lightning/src/blinded_path/payment.rs
