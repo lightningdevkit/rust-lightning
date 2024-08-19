@@ -11,6 +11,10 @@
 //!
 //! See [`lightning_types::features`] for the list of features currently supported.
 //!
+//! Note that the use of types via this module is deprecated and will be removed in a future
+//! version. Instead, use feature objects via [`lightning::types::features`].
+//!
+//! [`lightning::types::features`]: crate::types::features
 //! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
 
 pub use lightning_types::features::Features;
