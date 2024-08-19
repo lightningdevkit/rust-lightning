@@ -24,6 +24,7 @@ use bitcoin::key::constants::SECRET_KEY_SIZE;
 use bitcoin::network::Network;
 
 use bitcoin::hashes::Hash;
+use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, Txid};
 
@@ -413,6 +414,22 @@ pub struct PaymentId(pub [u8; Self::LENGTH]);
 impl PaymentId {
 	/// Number of bytes in the id.
 	pub const LENGTH: usize = 32;
+
+	/// Constructs an HMAC to include in [`OffersContext::OutboundPayment`] for the payment id
+	/// along with the given [`Nonce`].
+	pub fn hmac_for_offer_payment(
+		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Hmac<Sha256> {
+		signer::hmac_for_payment_id(*self, nonce, expanded_key)
+	}
+
+	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
+	/// [`OffersContext::OutboundPayment`].
+	pub fn verify(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_payment_id(*self, hmac, nonce, expanded_key)
+	}
 }
 
 impl Writeable for PaymentId {
@@ -9024,7 +9041,7 @@ where
 		};
 		let invoice_request = builder.build_and_sign()?;
 
-		let hmac = signer::hmac_for_payment_id(payment_id, nonce, expanded_key);
+		let hmac = payment_id.hmac_for_offer_payment(nonce, expanded_key);
 		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) };
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
@@ -10900,7 +10917,7 @@ where
 
 				match context {
 					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if signer::verify_payment_id(payment_id, hmac, nonce, expanded_key) {
+						if let Ok(()) = payment_id.verify(hmac, nonce, expanded_key) {
 							self.abandon_payment_with_reason(
 								payment_id, PaymentFailureReason::InvoiceRequestRejected,
 							);

@@ -410,6 +410,6 @@ pub(crate) fn hmac_for_payment_id(
 
 pub(crate) fn verify_payment_id(
 	payment_id: PaymentId, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
-) -> bool {
-	hmac_for_payment_id(payment_id, nonce, expanded_key) == hmac
+) -> Result<(), ()> {
+	if hmac_for_payment_id(payment_id, nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
 }
