@@ -381,7 +381,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				let mut last_hops_unblinded = Vec::new();
 				last_hops!(last_hops_unblinded);
 				let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-				let last_hops: Vec<(BlindedPayInfo, BlindedPaymentPath)> = last_hops_unblinded
+				let last_hops: Vec<BlindedPaymentPath> = last_hops_unblinded
 					.into_iter()
 					.map(|hint| {
 						let hop = &hint.0[0];
@@ -401,9 +401,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								encrypted_payload: Vec::new(),
 							});
 						}
-						(
+						BlindedPaymentPath::from_raw(
+							hop.src_node_id,
+							dummy_pk,
+							blinded_hops,
 							payinfo,
-							BlindedPaymentPath::from_raw(hop.src_node_id, dummy_pk, blinded_hops),
 						)
 					})
 					.collect();

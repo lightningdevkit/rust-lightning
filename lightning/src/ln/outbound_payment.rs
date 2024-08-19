@@ -833,7 +833,7 @@ impl OutboundPayments {
 
 		// Advance any blinded path where the introduction node is our node.
 		if let Ok(our_node_id) = node_signer.get_node_id(Recipient::Node) {
-			for (_, path) in payment_params.payee.blinded_route_hints_mut().iter_mut() {
+			for path in payment_params.payee.blinded_route_hints_mut().iter_mut() {
 				let introduction_node_id = match path.introduction_node() {
 					IntroductionNode::NodeId(pubkey) => *pubkey,
 					IntroductionNode::DirectedShortChannelId(direction, scid) => {

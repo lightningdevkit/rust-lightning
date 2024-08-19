@@ -16,8 +16,8 @@ use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
-	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks, BlindedPayInfo,
-	FallbackAddress, InvoiceTlvStream, InvoiceTlvStreamRef,
+	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks, FallbackAddress,
+	InvoiceTlvStream, InvoiceTlvStreamRef,
 };
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
 use crate::offers::merkle::{
@@ -71,7 +71,7 @@ pub struct StaticInvoice {
 #[derive(Clone, Debug)]
 struct InvoiceContents {
 	offer: OfferContents,
-	payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
+	payment_paths: Vec<BlindedPaymentPath>,
 	created_at: Duration,
 	relative_expiry: Option<Duration>,
 	fallbacks: Option<Vec<FallbackAddress>>,
@@ -97,7 +97,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 	/// Unless [`StaticInvoiceBuilder::relative_expiry`] is set, the invoice will expire 24 hours
 	/// after `created_at`.
 	pub fn for_offer_using_derived_keys<T: secp256k1::Signing>(
-		offer: &'a Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
+		offer: &'a Offer, payment_paths: Vec<BlindedPaymentPath>,
 		message_paths: Vec<BlindedMessagePath>, created_at: Duration, expanded_key: &ExpandedKey,
 		nonce: Nonce, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, Bolt12SemanticError> {
@@ -326,7 +326,7 @@ impl InvoiceContents {
 	}
 
 	fn new(
-		offer: &Offer, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>,
+		offer: &Offer, payment_paths: Vec<BlindedPaymentPath>,
 		message_paths: Vec<BlindedMessagePath>, created_at: Duration, signing_pubkey: PublicKey,
 	) -> Self {
 		Self {
@@ -351,9 +351,9 @@ impl InvoiceContents {
 		};
 
 		let invoice = InvoiceTlvStreamRef {
-			paths: Some(Iterable(self.payment_paths.iter().map(|(_, path)| path))),
+			paths: Some(Iterable(self.payment_paths.iter().map(|path| path.inner_blinded_path()))),
 			message_paths: Some(self.message_paths.as_ref()),
-			blindedpay: Some(Iterable(self.payment_paths.iter().map(|(payinfo, _)| payinfo))),
+			blindedpay: Some(Iterable(self.payment_paths.iter().map(|path| &path.payinfo))),
 			created_at: Some(self.created_at.as_secs()),
 			relative_expiry: self.relative_expiry.map(|duration| duration.as_secs() as u32),
 			fallbacks: self.fallbacks.as_ref(),
@@ -407,7 +407,7 @@ impl InvoiceContents {
 		self.offer.supported_quantity()
 	}
 
-	fn payment_paths(&self) -> &[(BlindedPayInfo, BlindedPaymentPath)] {
+	fn payment_paths(&self) -> &[BlindedPaymentPath] {
 		&self.payment_paths[..]
 	}
 
@@ -720,8 +720,10 @@ mod tests {
 					node_id: Some(&offer_signing_pubkey),
 				},
 				InvoiceTlvStreamRef {
-					paths: Some(Iterable(payment_paths.iter().map(|(_, path)| path))),
-					blindedpay: Some(Iterable(payment_paths.iter().map(|(payinfo, _)| payinfo))),
+					paths: Some(Iterable(
+						payment_paths.iter().map(|path| path.inner_blinded_path())
+					)),
+					blindedpay: Some(Iterable(payment_paths.iter().map(|path| &path.payinfo))),
 					created_at: Some(now.as_secs()),
 					relative_expiry: None,
 					payment_hash: None,

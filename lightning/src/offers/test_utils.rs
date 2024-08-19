@@ -67,44 +67,39 @@ pub(super) fn privkey(byte: u8) -> SecretKey {
 	SecretKey::from_slice(&[byte; 32]).unwrap()
 }
 
-pub(crate) fn payment_paths() -> Vec<(BlindedPayInfo, BlindedPaymentPath)> {
-	let paths = vec![
+pub(crate) fn payment_paths() -> Vec<BlindedPaymentPath> {
+	vec![
 		BlindedPaymentPath::from_raw(
 			pubkey(40), pubkey(41),
 			vec![
 				BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
 				BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
-			]
+			],
+			BlindedPayInfo {
+				fee_base_msat: 1,
+				fee_proportional_millionths: 1_000,
+				cltv_expiry_delta: 42,
+				htlc_minimum_msat: 100,
+				htlc_maximum_msat: 1_000_000_000_000,
+				features: BlindedHopFeatures::empty(),
+			},
 		),
 		BlindedPaymentPath::from_raw(
 			pubkey(40), pubkey(41),
 			vec![
 				BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
 				BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
-			]
+			],
+			BlindedPayInfo {
+				fee_base_msat: 1,
+				fee_proportional_millionths: 1_000,
+				cltv_expiry_delta: 42,
+				htlc_minimum_msat: 100,
+				htlc_maximum_msat: 1_000_000_000_000,
+				features: BlindedHopFeatures::empty(),
+			},
 		),
-	];
-
-	let payinfo = vec![
-		BlindedPayInfo {
-			fee_base_msat: 1,
-			fee_proportional_millionths: 1_000,
-			cltv_expiry_delta: 42,
-			htlc_minimum_msat: 100,
-			htlc_maximum_msat: 1_000_000_000_000,
-			features: BlindedHopFeatures::empty(),
-		},
-		BlindedPayInfo {
-			fee_base_msat: 1,
-			fee_proportional_millionths: 1_000,
-			cltv_expiry_delta: 42,
-			htlc_minimum_msat: 100,
-			htlc_maximum_msat: 1_000_000_000_000,
-			features: BlindedHopFeatures::empty(),
-		},
-	];
-
-	payinfo.into_iter().zip(paths.into_iter()).collect()
+	]
 }
 
 pub(crate) fn payment_hash() -> PaymentHash {
