@@ -29,8 +29,8 @@
 //! use lightning::util::ser::Writeable;
 //!
 //! # use lightning::ln::types::PaymentHash;
-//! # use lightning::offers::invoice::{BlindedPayInfo, ExplicitSigningPubkey, InvoiceBuilder};
-//! # use lightning::blinded_path::payment::BlindedPaymentPath;
+//! # use lightning::offers::invoice::{ExplicitSigningPubkey, InvoiceBuilder};
+//! # use lightning::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 //! #
 //! # fn create_payment_paths() -> Vec<BlindedPaymentPath> { unimplemented!() }
 //! # fn create_payment_hash() -> PaymentHash { unimplemented!() }
@@ -112,10 +112,10 @@ use core::hash::{Hash, Hasher};
 use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::BlindedMessagePath;
-use crate::blinded_path::payment::BlindedPaymentPath;
+use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
-use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
+use crate::ln::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
@@ -1215,44 +1215,6 @@ pub(super) type BlindedPayInfoIter<'a> = core::iter::Map<
 	core::slice::Iter<'a, BlindedPaymentPath>,
 	for<'r> fn(&'r BlindedPaymentPath) -> &'r BlindedPayInfo,
 >;
-
-/// Information needed to route a payment across a [`BlindedPaymentPath`].
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
-pub struct BlindedPayInfo {
-	/// Base fee charged (in millisatoshi) for the entire blinded path.
-	pub fee_base_msat: u32,
-
-	/// Liquidity fee charged (in millionths of the amount transferred) for the entire blinded path
-	/// (i.e., 10,000 is 1%).
-	pub fee_proportional_millionths: u32,
-
-	/// Number of blocks subtracted from an incoming HTLC's `cltv_expiry` for the entire blinded
-	/// path.
-	pub cltv_expiry_delta: u16,
-
-	/// The minimum HTLC value (in millisatoshi) that is acceptable to all channel peers on the
-	/// blinded path from the introduction node to the recipient, accounting for any fees, i.e., as
-	/// seen by the recipient.
-	pub htlc_minimum_msat: u64,
-
-	/// The maximum HTLC value (in millisatoshi) that is acceptable to all channel peers on the
-	/// blinded path from the introduction node to the recipient, accounting for any fees, i.e., as
-	/// seen by the recipient.
-	pub htlc_maximum_msat: u64,
-
-	/// Features set in `encrypted_data_tlv` for the `encrypted_recipient_data` TLV record in an
-	/// onion payload.
-	pub features: BlindedHopFeatures,
-}
-
-impl_writeable!(BlindedPayInfo, {
-	fee_base_msat,
-	fee_proportional_millionths,
-	cltv_expiry_delta,
-	htlc_minimum_msat,
-	htlc_maximum_msat,
-	features
-});
 
 /// Wire representation for an on-chain fallback address.
 #[derive(Clone, Debug, PartialEq)]

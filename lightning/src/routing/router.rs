@@ -1282,7 +1282,7 @@ pub struct OneHopBlindedPathCandidate<'a> {
 	///
 	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	///
-	/// [`BlindedPayInfo`]: crate::offers::invoice::BlindedPayInfo
+	/// [`BlindedPayInfo`]: crate::blinded_path::payment::BlindedPayInfo
 	pub hint: &'a BlindedPaymentPath,
 	/// Index of the hint in the original list of blinded hints.
 	///
@@ -1334,7 +1334,7 @@ pub enum CandidateRouteHop<'a> {
 	/// This primarily exists to track that we need to included a blinded path at the end of our
 	/// [`Route`], even though it doesn't actually add an additional hop in the payment.
 	///
-	/// [`BlindedPayInfo`]: crate::offers::invoice::BlindedPayInfo
+	/// [`BlindedPayInfo`]: crate::blinded_path::payment::BlindedPayInfo
 	OneHopBlinded(OneHopBlindedPathCandidate<'a>),
 }
 
@@ -3553,7 +3553,7 @@ fn build_route_from_hops_internal<L: Deref>(
 #[cfg(test)]
 mod tests {
 	use crate::blinded_path::BlindedHop;
-	use crate::blinded_path::payment::BlindedPaymentPath;
+	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 	use crate::routing::gossip::{NetworkGraph, P2PGossipSync, NodeId, EffectiveCapacity};
 	use crate::routing::utxo::UtxoResult;
 	use crate::routing::router::{get_route, build_route_from_hops_internal, add_random_cltv_offset, default_node_features,
@@ -3567,7 +3567,6 @@ mod tests {
 	use crate::ln::features::{BlindedHopFeatures, ChannelFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError, UnsignedChannelUpdate, MAX_VALUE_MSAT};
 	use crate::ln::channelmanager;
-	use crate::offers::invoice::BlindedPayInfo;
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils as ln_test_utils;
 	use crate::crypto::chacha20::ChaCha20;

@@ -12,7 +12,7 @@ use bitcoin::constants::ChainHash;
 use bitcoin::script::Builder;
 use bitcoin::transaction::TxOut;
 
-use lightning::blinded_path::payment::BlindedPaymentPath;
+use lightning::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use lightning::blinded_path::BlindedHop;
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
@@ -20,7 +20,6 @@ use lightning::ln::channelmanager;
 use lightning::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use lightning::ln::msgs;
 use lightning::ln::types::ChannelId;
-use lightning::offers::invoice::BlindedPayInfo;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{
 	find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters,

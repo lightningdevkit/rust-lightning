@@ -12,7 +12,7 @@
 
 use bitcoin::secp256k1::{Secp256k1, PublicKey};
 use crate::blinded_path::BlindedHop;
-use crate::blinded_path::payment::{BlindedPaymentPath, PaymentConstraints, PaymentContext, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::events::{Event, MessageSendEventsProvider};
 use crate::ln::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
@@ -24,7 +24,6 @@ use crate::ln::msgs::OnionMessageHandler;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 use crate::ln::outbound_payment::{RecipientOnionFields, Retry, RetryableSendFailure};
-use crate::offers::invoice::BlindedPayInfo;
 use crate::prelude::*;
 use crate::routing::router::{DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, PaymentParameters, RouteParameters};
 use crate::util::errors::APIError;
