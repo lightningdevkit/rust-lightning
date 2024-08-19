@@ -759,8 +759,13 @@ pub struct TestChannelMessageHandler {
 	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
 	expected_recv_msgs: Mutex<Option<Vec<wire::Message<()>>>>,
 	connected_peers: Mutex<HashSet<PublicKey>>,
-	pub message_fetch_counter: AtomicUsize,
 	chain_hash: ChainHash,
+}
+
+impl TestChannelMessageHandler {
+	thread_local! {
+		pub static MESSAGE_FETCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+	}
 }
 
 impl TestChannelMessageHandler {
@@ -769,7 +774,6 @@ impl TestChannelMessageHandler {
 			pending_events: Mutex::new(Vec::new()),
 			expected_recv_msgs: Mutex::new(None),
 			connected_peers: Mutex::new(new_hash_set()),
-			message_fetch_counter: AtomicUsize::new(0),
 			chain_hash,
 		}
 	}
@@ -940,7 +944,7 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 
 impl events::MessageSendEventsProvider for TestChannelMessageHandler {
 	fn get_and_clear_pending_msg_events(&self) -> Vec<events::MessageSendEvent> {
-		self.message_fetch_counter.fetch_add(1, Ordering::AcqRel);
+		Self::MESSAGE_FETCH_COUNTER.with(|val| val.fetch_add(1, Ordering::AcqRel));
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let mut ret = Vec::new();
 		mem::swap(&mut ret, &mut *pending_events);
