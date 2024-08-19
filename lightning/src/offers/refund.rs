@@ -98,7 +98,6 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
@@ -533,7 +532,7 @@ macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $buil
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
 	pub fn respond_with(
-		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey,
 	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
@@ -566,7 +565,7 @@ macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $buil
 	///
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	pub fn respond_with_no_std(
-		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		signing_pubkey: PublicKey, created_at: Duration
 	) -> Result<$builder, Bolt12SemanticError> {
 		if $self.features().requires_unknown_bits() {
@@ -588,7 +587,7 @@ macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $build
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys<ES: Deref>(
-		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		expanded_key: &ExpandedKey, entropy_source: ES
 	) -> Result<$builder, Bolt12SemanticError>
 	where
@@ -612,7 +611,7 @@ macro_rules! respond_with_derived_signing_pubkey_methods { ($self: ident, $build
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn respond_using_derived_keys_no_std<ES: Deref>(
-		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, expanded_key: &ExpandedKey, entropy_source: ES
 	) -> Result<$builder, Bolt12SemanticError>
 	where

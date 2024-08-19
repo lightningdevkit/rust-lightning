@@ -12,7 +12,7 @@ use bitcoin::constants::ChainHash;
 use bitcoin::script::Builder;
 use bitcoin::transaction::TxOut;
 
-use lightning::blinded_path::payment::BlindedPaymentPath;
+use lightning::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use lightning::blinded_path::BlindedHop;
 use lightning::chain::transaction::OutPoint;
 use lightning::ln::channel_state::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
@@ -20,7 +20,6 @@ use lightning::ln::channelmanager;
 use lightning::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 use lightning::ln::msgs;
 use lightning::ln::types::ChannelId;
-use lightning::offers::invoice::BlindedPayInfo;
 use lightning::routing::gossip::{NetworkGraph, RoutingFees};
 use lightning::routing::router::{
 	find_route, PaymentParameters, RouteHint, RouteHintHop, RouteParameters,
@@ -381,7 +380,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 				let mut last_hops_unblinded = Vec::new();
 				last_hops!(last_hops_unblinded);
 				let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-				let last_hops: Vec<(BlindedPayInfo, BlindedPaymentPath)> = last_hops_unblinded
+				let last_hops: Vec<BlindedPaymentPath> = last_hops_unblinded
 					.into_iter()
 					.map(|hint| {
 						let hop = &hint.0[0];
@@ -401,9 +400,11 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 								encrypted_payload: Vec::new(),
 							});
 						}
-						(
+						BlindedPaymentPath::from_raw(
+							hop.src_node_id,
+							dummy_pk,
+							blinded_hops,
 							payinfo,
-							BlindedPaymentPath::from_raw(hop.src_node_id, dummy_pk, blinded_hops),
 						)
 					})
 					.collect();

@@ -805,6 +805,19 @@ impl<'a, I: Iterator<Item = &'a T> + Clone, T: 'a + PartialEq> PartialEq for Ite
 	}
 }
 
+#[derive(Debug)]
+pub(crate) struct IterableOwned<I: Iterator<Item = T> + Clone, T>(pub I);
+
+impl<I: Iterator<Item = T> + Clone, T: Writeable> Writeable for IterableOwned<I, T> {
+	#[inline]
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		for ref v in self.0.clone() {
+			v.write(writer)?;
+		}
+		Ok(())
+	}
+}
+
 macro_rules! impl_for_map {
 	($ty: ident, $keybound: ident, $constr: expr) => {
 		impl<K, V> Writeable for $ty<K, V>

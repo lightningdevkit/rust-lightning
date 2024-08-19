@@ -25,7 +25,7 @@ use crate::ln::onion_payment;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
-use crate::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
+use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::prelude::*;
 use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters};
@@ -39,7 +39,7 @@ fn blinded_payment_path(
 	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
 	node_ids: Vec<PublicKey>, channel_upds: &[&msgs::UnsignedChannelUpdate],
 	keys_manager: &test_utils::TestKeysInterface
-) -> (BlindedPayInfo, BlindedPaymentPath) {
+) -> BlindedPaymentPath {
 	let mut intermediate_nodes = Vec::new();
 	let mut intro_node_min_htlc_opt = Some(intro_node_min_htlc);
 	let mut intro_node_max_htlc_opt = Some(intro_node_max_htlc);
@@ -839,11 +839,12 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 				nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&high_htlc_minimum_upd],
 				&chanmon_cfgs[2].keys_manager);
 			if let Payee::Blinded { route_hints, .. } = high_htlc_min_params.payment_params.payee {
-				route_hints[0].1.clone()
+				route_hints[0].clone()
 			} else { panic!() }
 		};
 		if let Payee::Blinded { ref mut route_hints, .. } = route_params.payment_params.payee {
-			route_hints[0].1 = high_htlc_min_bp;
+			route_hints[0] = high_htlc_min_bp;
+			route_hints[0].payinfo.htlc_minimum_msat = amt_msat;
 		} else { panic!() }
 		find_route(&nodes[0], &route_params).unwrap()
 	} else {
@@ -1121,7 +1122,7 @@ fn min_htlc() {
 		nodes[2].node.get_our_node_id(), nodes[3].node.get_our_node_id()],
 		&[&chan_1_2.0.contents, &chan_2_3.0.contents], &chanmon_cfgs[3].keys_manager);
 	assert_eq!(min_htlc_msat,
-		route_params.payment_params.payee.blinded_route_hints()[0].0.htlc_minimum_msat);
+		route_params.payment_params.payee.blinded_route_hints()[0].payinfo.htlc_minimum_msat);
 
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
@@ -1133,7 +1134,7 @@ fn min_htlc() {
 		nodes[0].node.timer_tick_occurred();
 	}
 	if let Payee::Blinded { ref mut route_hints, .. } = route_params.payment_params.payee {
-		route_hints[0].0.htlc_minimum_msat -= 1;
+		route_hints[0].payinfo.htlc_minimum_msat -= 1;
 	} else { panic!() }
 	route_params.final_value_msat -= 1;
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();

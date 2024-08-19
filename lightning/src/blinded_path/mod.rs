@@ -26,7 +26,7 @@ use crate::prelude::*;
 /// Onion messages and payments can be sent and received to blinded paths, which serve to hide the
 /// identity of the recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-struct BlindedPath {
+pub(crate) struct BlindedPath {
 	/// To send to a blinded path, the sender first finds a route to the unblinded
 	/// `introduction_node`, which can unblind its [`encrypted_payload`] to find out the onion
 	/// message or payment's next hop and forward it along.

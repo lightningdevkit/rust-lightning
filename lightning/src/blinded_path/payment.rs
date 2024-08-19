@@ -21,7 +21,6 @@ use crate::ln::channel_state::CounterpartyForwardingInfo;
 use crate::ln::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
-use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::invoice_request::InvoiceRequestFields;
 use crate::offers::offer::OfferId;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
@@ -34,21 +33,51 @@ use core::ops::Deref;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+/// Information needed to route a payment across a [`BlindedPaymentPath`].
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+pub struct BlindedPayInfo {
+	/// Base fee charged (in millisatoshi) for the entire blinded path.
+	pub fee_base_msat: u32,
+
+	/// Liquidity fee charged (in millionths of the amount transferred) for the entire blinded path
+	/// (i.e., 10,000 is 1%).
+	pub fee_proportional_millionths: u32,
+
+	/// Number of blocks subtracted from an incoming HTLC's `cltv_expiry` for the entire blinded
+	/// path.
+	pub cltv_expiry_delta: u16,
+
+	/// The minimum HTLC value (in millisatoshi) that is acceptable to all channel peers on the
+	/// blinded path from the introduction node to the recipient, accounting for any fees, i.e., as
+	/// seen by the recipient.
+	pub htlc_minimum_msat: u64,
+
+	/// The maximum HTLC value (in millisatoshi) that is acceptable to all channel peers on the
+	/// blinded path from the introduction node to the recipient, accounting for any fees, i.e., as
+	/// seen by the recipient.
+	pub htlc_maximum_msat: u64,
+
+	/// Features set in `encrypted_data_tlv` for the `encrypted_recipient_data` TLV record in an
+	/// onion payload.
+	pub features: BlindedHopFeatures,
+}
+
+impl_writeable!(BlindedPayInfo, {
+	fee_base_msat,
+	fee_proportional_millionths,
+	cltv_expiry_delta,
+	htlc_minimum_msat,
+	htlc_maximum_msat,
+	features
+});
+
 /// A blinded path to be used for sending or receiving a payment, hiding the identity of the
 /// recipient.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct BlindedPaymentPath(pub(super) BlindedPath);
-
-impl Writeable for BlindedPaymentPath {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.0.write(w)
-	}
-}
-
-impl Readable for BlindedPaymentPath {
-	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		Ok(Self(BlindedPath::read(r)?))
-	}
+pub struct BlindedPaymentPath {
+	pub(super) inner_path: BlindedPath,
+	/// The [`BlindedPayInfo`] used to pay this blinded path.
+	pub payinfo: BlindedPayInfo,
 }
 
 impl BlindedPaymentPath {
@@ -56,7 +85,7 @@ impl BlindedPaymentPath {
 	pub fn one_hop<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		payee_node_id: PublicKey, payee_tlvs: ReceiveTlvs, min_final_cltv_expiry_delta: u16,
 		entropy_source: ES, secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
+	) -> Result<Self, ()> where ES::Target: EntropySource {
 		// This value is not considered in pathfinding for 1-hop blinded paths, because it's intended to
 		// be in relation to a specific channel.
 		let htlc_maximum_msat = u64::max_value();
@@ -77,7 +106,7 @@ impl BlindedPaymentPath {
 		intermediate_nodes: &[ForwardNode], payee_node_id: PublicKey, payee_tlvs: ReceiveTlvs,
 		htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16, entropy_source: ES,
 		secp_ctx: &Secp256k1<T>
-	) -> Result<(BlindedPayInfo, Self), ()> where ES::Target: EntropySource {
+	) -> Result<Self, ()> where ES::Target: EntropySource {
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id)
 		);
@@ -87,13 +116,16 @@ impl BlindedPaymentPath {
 		let blinded_payinfo = compute_payinfo(
 			intermediate_nodes, &payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
 		)?;
-		Ok((blinded_payinfo, Self(BlindedPath {
-			introduction_node,
-			blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
-			blinded_hops: blinded_hops(
-				secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
-			).map_err(|_| ())?,
-		})))
+		Ok(Self {
+			inner_path: BlindedPath {
+				introduction_node,
+				blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
+				blinded_hops: blinded_hops(
+					secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
+				).map_err(|_| ())?,
+			},
+			payinfo: blinded_payinfo
+		})
 	}
 
 	/// Returns the introduction [`NodeId`] of the blinded path, if it is publicly reachable (i.e.,
@@ -101,24 +133,24 @@ impl BlindedPaymentPath {
 	pub fn public_introduction_node_id<'a>(
 		&self, network_graph: &'a ReadOnlyNetworkGraph
 	) -> Option<&'a NodeId> {
-		self.0.public_introduction_node_id(network_graph)
+		self.inner_path.public_introduction_node_id(network_graph)
 	}
 
 	/// The [`IntroductionNode`] of the blinded path.
 	pub fn introduction_node(&self) -> &IntroductionNode {
-		&self.0.introduction_node
+		&self.inner_path.introduction_node
 	}
 
 	/// Used by the [`IntroductionNode`] to decrypt its [`encrypted_payload`] to forward the payment.
 	///
 	/// [`encrypted_payload`]: BlindedHop::encrypted_payload
 	pub fn blinding_point(&self) -> PublicKey {
-		self.0.blinding_point
+		self.inner_path.blinding_point
 	}
 
 	/// The [`BlindedHop`]s within the blinded path.
 	pub fn blinded_hops(&self) -> &[BlindedHop] {
-		&self.0.blinded_hops
+		&self.inner_path.blinded_hops
 	}
 
 	/// Advance the blinded onion payment path by one hop, making the second hop into the new
@@ -133,9 +165,9 @@ impl BlindedPaymentPath {
 		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
-		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.0.blinding_point, None)?;
+		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
-		let encrypted_control_tlvs = &self.0.blinded_hops.get(0).ok_or(())?.encrypted_payload;
+		let encrypted_control_tlvs = &self.inner_path.blinded_hops.get(0).ok_or(())?.encrypted_payload;
 		let mut s = Cursor::new(encrypted_control_tlvs);
 		let mut reader = FixedLengthReader::new(&mut s, encrypted_control_tlvs.len() as u64);
 		match ChaChaPolyReadAdapter::read(&mut reader, rho) {
@@ -147,31 +179,43 @@ impl BlindedPaymentPath {
 					None => return Err(()),
 				};
 				let mut new_blinding_point = onion_utils::next_hop_pubkey(
-					secp_ctx, self.0.blinding_point, control_tlvs_ss.as_ref()
+					secp_ctx, self.inner_path.blinding_point, control_tlvs_ss.as_ref()
 				).map_err(|_| ())?;
-				mem::swap(&mut self.0.blinding_point, &mut new_blinding_point);
-				self.0.introduction_node = IntroductionNode::NodeId(next_node_id);
-				self.0.blinded_hops.remove(0);
+				mem::swap(&mut self.inner_path.blinding_point, &mut new_blinding_point);
+				self.inner_path.introduction_node = IntroductionNode::NodeId(next_node_id);
+				self.inner_path.blinded_hops.remove(0);
 				Ok(())
 			},
 			_ => Err(())
 		}
 	}
 
+	pub(crate) fn inner_blinded_path(&self) -> &BlindedPath {
+		&self.inner_path
+	}
+
+	pub(crate) fn from_parts(inner_path: BlindedPath, payinfo: BlindedPayInfo) -> Self {
+		Self { inner_path, payinfo }
+	}
+
 	#[cfg(any(test, fuzzing))]
 	pub fn from_raw(
-		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>
+		introduction_node_id: PublicKey, blinding_point: PublicKey, blinded_hops: Vec<BlindedHop>,
+		payinfo: BlindedPayInfo
 	) -> Self {
-		Self(BlindedPath {
-			introduction_node: IntroductionNode::NodeId(introduction_node_id),
-			blinding_point,
-			blinded_hops,
-		})
+		Self {
+			inner_path: BlindedPath {
+				introduction_node: IntroductionNode::NodeId(introduction_node_id),
+				blinding_point,
+				blinded_hops,
+			},
+			payinfo
+		}
 	}
 
 	#[cfg(test)]
 	pub fn clear_blinded_hops(&mut self) {
-		self.0.blinded_hops.clear()
+		self.inner_path.blinded_hops.clear()
 	}
 }
 

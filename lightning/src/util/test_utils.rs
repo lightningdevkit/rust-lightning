@@ -33,7 +33,7 @@ use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
-use crate::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
+use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
@@ -119,7 +119,7 @@ pub struct TestRouter<'a> {
 	>,
 	pub network_graph: Arc<NetworkGraph<&'a TestLogger>>,
 	pub next_routes: Mutex<VecDeque<(RouteParameters, Option<Result<Route, LightningError>>)>>,
-	pub next_blinded_payment_paths: Mutex<Vec<(BlindedPayInfo, BlindedPaymentPath)>>,
+	pub next_blinded_payment_paths: Mutex<Vec<BlindedPaymentPath>>,
 	pub scorer: &'a RwLock<TestScorer>,
 }
 
@@ -148,7 +148,7 @@ impl<'a> TestRouter<'a> {
 		expected_routes.push_back((query, None));
 	}
 
-	pub fn expect_blinded_payment_paths(&self, mut paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>) {
+	pub fn expect_blinded_payment_paths(&self, mut paths: Vec<BlindedPaymentPath>) {
 		let mut expected_paths = self.next_blinded_payment_paths.lock().unwrap();
 		core::mem::swap(&mut *expected_paths, &mut paths);
 	}
@@ -246,7 +246,7 @@ impl<'a> Router for TestRouter<'a> {
 	>(
 		&self, recipient: PublicKey, first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs,
 		amount_msats: u64, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<(BlindedPayInfo, BlindedPaymentPath)>, ()> {
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
 		let mut expected_paths = self.next_blinded_payment_paths.lock().unwrap();
 		if expected_paths.is_empty() {
 			self.router.create_blinded_payment_paths(

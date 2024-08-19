@@ -337,8 +337,7 @@ pub(crate) fn set_max_path_length(
 		.payee
 		.blinded_route_hints()
 		.iter()
-		.map(|(_, path)| path)
-		.max_by_key(|path| path.serialized_length())
+		.max_by_key(|path| path.inner_blinded_path().serialized_length())
 		.map(|largest_path| BlindedTailHopIter {
 			hops: largest_path.blinded_hops().iter(),
 			blinding_point: largest_path.blinding_point(),

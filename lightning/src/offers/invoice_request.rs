@@ -69,7 +69,6 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
-use crate::offers::invoice::BlindedPayInfo;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
@@ -708,7 +707,7 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// [`Duration`]: core::time::Duration
 	#[cfg(feature = "std")]
 	pub fn respond_with(
-		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, payment_hash: PaymentHash
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
 	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -743,7 +742,7 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// [`Bolt12Invoice::created_at`]: crate::offers::invoice::Bolt12Invoice::created_at
 	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
 	pub fn respond_with_no_std(
-		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
 	) -> Result<$builder, Bolt12SemanticError> {
 		if $contents.invoice_request_features().requires_unknown_bits() {
@@ -761,7 +760,7 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	#[cfg(test)]
 	#[allow(dead_code)]
 	pub(super) fn respond_with_no_std_using_signing_pubkey(
-		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration, signing_pubkey: PublicKey
 	) -> Result<$builder, Bolt12SemanticError> {
 		debug_assert!($contents.contents.inner.offer.signing_pubkey().is_none());
@@ -881,7 +880,7 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys(
-		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, payment_hash: PaymentHash
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
 	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -898,7 +897,7 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn respond_using_derived_keys_no_std(
-		&$self, payment_paths: Vec<(BlindedPayInfo, BlindedPaymentPath)>, payment_hash: PaymentHash,
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
 		created_at: core::time::Duration
 	) -> Result<$builder, Bolt12SemanticError> {
 		if $self.inner.invoice_request_features().requires_unknown_bits() {
