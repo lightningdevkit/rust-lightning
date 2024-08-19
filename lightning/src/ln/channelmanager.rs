@@ -227,6 +227,10 @@ pub struct BlindedForward {
 	/// If needed, this determines how this HTLC should be failed backwards, based on whether we are
 	/// the introduction node.
 	pub failure: BlindedFailure,
+	/// Overrides the next hop's [`msgs::UpdateAddHTLC::blinding_point`]. Set if this HTLC is being
+	/// forwarded within a [`BlindedPaymentPath`] that was concatenated to another blinded path that
+	/// starts at the next hop.
+	pub next_blinding_override: Option<PublicKey>,
 }
 
 impl PendingHTLCRouting {
@@ -3845,7 +3849,7 @@ where
 		(onion_utils::Hop, [u8; 32], Option<Result<PublicKey, secp256k1::Error>>), HTLCFailureMsg
 	> {
 		let (next_hop, shared_secret, next_packet_details_opt) = decode_incoming_update_add_htlc_onion(
-			msg, &self.node_signer, &self.logger, &self.secp_ctx
+			msg, &*self.node_signer, &*self.logger, &self.secp_ctx
 		)?;
 
 		let next_packet_details = match next_packet_details_opt {
@@ -5062,7 +5066,7 @@ where
 			let mut htlc_fails = Vec::new();
 			for update_add_htlc in &update_add_htlcs {
 				let (next_hop, shared_secret, next_packet_details_opt) = match decode_incoming_update_add_htlc_onion(
-					&update_add_htlc, &self.node_signer, &self.logger, &self.secp_ctx
+					&update_add_htlc, &*self.node_signer, &*self.logger, &self.secp_ctx
 				) {
 					Ok(decoded_onion) => decoded_onion,
 					Err(htlc_fail) => {
@@ -5239,7 +5243,7 @@ where
 												let phantom_shared_secret = self.node_signer.ecdh(Recipient::PhantomNode, &onion_packet.public_key.unwrap(), None).unwrap().secret_bytes();
 												let next_hop = match onion_utils::decode_next_payment_hop(
 													phantom_shared_secret, &onion_packet.hop_data, onion_packet.hmac,
-													payment_hash, None, &self.node_signer
+													payment_hash, None, &*self.node_signer
 												) {
 													Ok(res) => res,
 													Err(onion_utils::OnionDecodeErr::Malformed { err_msg, err_code }) => {
@@ -5330,12 +5334,14 @@ where
 									blinded_failure: blinded.map(|b| b.failure),
 								});
 								let next_blinding_point = blinded.and_then(|b| {
-									let encrypted_tlvs_ss = self.node_signer.ecdh(
-										Recipient::Node, &b.inbound_blinding_point, None
-									).unwrap().secret_bytes();
-									onion_utils::next_hop_pubkey(
-										&self.secp_ctx, b.inbound_blinding_point, &encrypted_tlvs_ss
-									).ok()
+									b.next_blinding_override.or_else(|| {
+										let encrypted_tlvs_ss = self.node_signer.ecdh(
+											Recipient::Node, &b.inbound_blinding_point, None
+										).unwrap().secret_bytes();
+										onion_utils::next_hop_pubkey(
+											&self.secp_ctx, b.inbound_blinding_point, &encrypted_tlvs_ss
+										).ok()
+									})
 								});
 
 								// Forward the HTLC over the most appropriate channel with the corresponding peer,
@@ -11051,6 +11057,7 @@ impl_writeable_tlv_based!(PhantomRouteHints, {
 impl_writeable_tlv_based!(BlindedForward, {
 	(0, inbound_blinding_point, required),
 	(1, failure, (default_value, BlindedFailure::FromIntroductionNode)),
+	(3, next_blinding_override, option),
 });
 
 impl_writeable_tlv_based_enum!(PendingHTLCRouting,

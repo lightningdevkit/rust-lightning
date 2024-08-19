@@ -21,7 +21,7 @@ pub fn onion_hop_data_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 	let node_signer = test_utils::TestNodeSigner::new(test_utils::privkey(42));
 	let _ = <lightning::ln::msgs::InboundOnionPayload as ReadableArgs<(
 		Option<PublicKey>,
-		&&test_utils::TestNodeSigner,
+		&test_utils::TestNodeSigner,
 	)>>::read(&mut r, (None, &&node_signer));
 }
 
@@ -34,6 +34,6 @@ pub extern "C" fn onion_hop_data_run(data: *const u8, datalen: usize) {
 	let node_signer = test_utils::TestNodeSigner::new(test_utils::privkey(42));
 	let _ = <lightning::ln::msgs::InboundOnionPayload as ReadableArgs<(
 		Option<PublicKey>,
-		&&test_utils::TestNodeSigner,
+		&test_utils::TestNodeSigner,
 	)>>::read(&mut r, (None, &&node_signer));
 }

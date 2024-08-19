@@ -7,24 +7,33 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::hashes::hex::FromHex;
+use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
+use bitcoin::secp256k1::ecdh::SharedSecret;
+use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
+use crate::blinded_path;
 use crate::blinded_path::payment::{BlindedPaymentPath, ForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, ReceiveTlvs};
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentFailureReason};
-use crate::ln::types::PaymentSecret;
+use crate::ln::types::{ChannelId, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager;
-use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
-use crate::ln::features::BlindedHopFeatures;
+use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields};
+use crate::ln::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
-use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::msgs::{ChannelMessageHandler, UnsignedGossipMessage};
+use crate::ln::onion_payment;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
-use crate::offers::invoice::BlindedPayInfo;
+use crate::offers::invoice::{BlindedPayInfo, UnsignedBolt12Invoice};
+use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::prelude::*;
-use crate::routing::router::{Payee, PaymentParameters, RouteParameters};
+use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters};
+use crate::sign::{KeyMaterial, NodeSigner, Recipient};
 use crate::util::config::UserConfig;
+use crate::util::ser::WithoutLength;
 use crate::util::test_utils;
+use lightning_invoice::RawBolt11Invoice;
 
 fn blinded_payment_path(
 	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
@@ -49,6 +58,7 @@ fn blinded_payment_path(
 					htlc_minimum_msat: intro_node_min_htlc_opt.take()
 						.unwrap_or_else(|| channel_upds[idx - 1].htlc_minimum_msat),
 				},
+				next_blinding_override: None,
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: intro_node_max_htlc_opt.take()
@@ -1330,4 +1340,255 @@ fn custom_tlvs_to_blinded_path() {
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], payment_preimage)
 			.with_custom_tlvs(recipient_onion_fields.custom_tlvs.clone())
 	);
+}
+
+fn secret_from_hex(hex: &str) -> SecretKey {
+	SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
+}
+
+fn bytes_from_hex(hex: &str) -> Vec<u8> {
+	<Vec<u8>>::from_hex(hex).unwrap()
+}
+
+fn pubkey_from_hex(hex: &str) -> PublicKey {
+	PublicKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()).unwrap()
+}
+
+fn update_add_msg(
+	amount_msat: u64, cltv_expiry: u32, blinding_point: Option<PublicKey>,
+	onion_routing_packet: msgs::OnionPacket
+) -> msgs::UpdateAddHTLC {
+	msgs::UpdateAddHTLC {
+		channel_id: ChannelId::from_bytes([0; 32]),
+		htlc_id: 0,
+		amount_msat,
+		cltv_expiry,
+		payment_hash: PaymentHash([0; 32]),
+		onion_routing_packet,
+		skimmed_fee_msat: None,
+		blinding_point,
+	}
+}
+
+#[test]
+fn route_blinding_spec_test_vector() {
+	let mut secp_ctx = Secp256k1::new();
+	let bob_secret = secret_from_hex("4242424242424242424242424242424242424242424242424242424242424242");
+	let bob_node_id = PublicKey::from_secret_key(&secp_ctx, &bob_secret);
+	let bob_unblinded_tlvs = bytes_from_hex("011a0000000000000000000000000000000000000000000000000000020800000000000006c10a0800240000009627100c06000b69e505dc0e00fd023103123456");
+	let carol_secret = secret_from_hex("4343434343434343434343434343434343434343434343434343434343434343");
+	let carol_node_id = PublicKey::from_secret_key(&secp_ctx, &carol_secret);
+	let carol_unblinded_tlvs = bytes_from_hex("020800000000000004510821031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f0a0800300000006401f40c06000b69c105dc0e00");
+	let dave_secret = secret_from_hex("4444444444444444444444444444444444444444444444444444444444444444");
+	let dave_node_id = PublicKey::from_secret_key(&secp_ctx, &dave_secret);
+	let dave_unblinded_tlvs = bytes_from_hex("01230000000000000000000000000000000000000000000000000000000000000000000000020800000000000002310a060090000000fa0c06000b699105dc0e00");
+	let eve_secret = secret_from_hex("4545454545454545454545454545454545454545454545454545454545454545");
+	let eve_node_id = PublicKey::from_secret_key(&secp_ctx, &eve_secret);
+	let eve_unblinded_tlvs = bytes_from_hex("011a00000000000000000000000000000000000000000000000000000604deadbeef0c06000b690105dc0e0f020000000000000000000000000000fdffff0206c1");
+
+	// Eve creates a blinded path to herself through Dave:
+	let dave_eve_session_priv = secret_from_hex("0101010101010101010101010101010101010101010101010101010101010101");
+	let blinding_override = PublicKey::from_secret_key(&secp_ctx, &dave_eve_session_priv);
+	assert_eq!(blinding_override, pubkey_from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f"));
+	// Can't use the public API here as the encrypted payloads contain unknown TLVs.
+	let mut dave_eve_blinded_hops = blinded_path::utils::construct_blinded_hops(
+		&secp_ctx, [dave_node_id, eve_node_id].iter(),
+		&mut [WithoutLength(&dave_unblinded_tlvs), WithoutLength(&eve_unblinded_tlvs)].iter(),
+		&dave_eve_session_priv
+	).unwrap();
+
+	// Concatenate an additional Bob -> Carol blinded path to the Eve -> Dave blinded path.
+	let bob_carol_session_priv = secret_from_hex("0202020202020202020202020202020202020202020202020202020202020202");
+	let bob_blinding_point = PublicKey::from_secret_key(&secp_ctx, &bob_carol_session_priv);
+	let bob_carol_blinded_hops = blinded_path::utils::construct_blinded_hops(
+		&secp_ctx, [bob_node_id, carol_node_id].iter(),
+		&mut [WithoutLength(&bob_unblinded_tlvs), WithoutLength(&carol_unblinded_tlvs)].iter(),
+		&bob_carol_session_priv
+	).unwrap();
+
+	let mut blinded_hops = bob_carol_blinded_hops;
+	blinded_hops.append(&mut dave_eve_blinded_hops);
+	assert_eq!(
+		vec![
+			pubkey_from_hex("03da173ad2aee2f701f17e59fbd16cb708906d69838a5f088e8123fb36e89a2c25"),
+			pubkey_from_hex("02e466727716f044290abf91a14a6d90e87487da160c2a3cbd0d465d7a78eb83a7"),
+			pubkey_from_hex("036861b366f284f0a11738ffbf7eda46241a8977592878fe3175ae1d1e4754eccf"),
+			pubkey_from_hex("021982a48086cb8984427d3727fe35a03d396b234f0701f5249daa12e8105c8dae")
+		],
+		blinded_hops.iter().map(|bh| bh.blinded_node_id).collect::<Vec<PublicKey>>()
+	);
+	assert_eq!(
+		vec![
+			bytes_from_hex("cd4100ff9c09ed28102b210ac73aa12d63e90852cebc496c49f57c49982088b49f2e70b99287fdee0aa58aa39913ab405813b999f66783aa2fe637b3cda91ffc0913c30324e2c6ce327e045183e4bffecb"),
+			bytes_from_hex("cc0f16524fd7f8bb0b1d8d40ad71709ef140174c76faa574cac401bb8992fef76c4d004aa485dd599ed1cf2715f57ff62da5aaec5d7b10d59b04d8a9d77e472b9b3ecc2179334e411be22fa4c02b467c7e"),
+			bytes_from_hex("0fa0a72cff3b64a3d6e1e4903cf8c8b0a17144aeb249dcb86561adee1f679ee8db3e561d9c43815fd4bcebf6f58c546da0cd8a9bf5cebd0d554802f6c0255e28e4a27343f761fe518cd897463187991105"),
+			bytes_from_hex("da1a7e5f7881219884beae6ae68971de73bab4c3055d9865b1afb60724a2e4d3f0489ad884f7f3f77149209f0df51efd6b276294a02e3949c7254fbc8b5cab58212d9a78983e1cf86fe218b30c4ca8f6d8")
+		],
+		blinded_hops.iter().map(|bh| bh.encrypted_payload.clone()).collect::<Vec<Vec<u8>>>()
+	);
+
+	let mut amt_msat = 100_000;
+	let session_priv = secret_from_hex("0303030303030303030303030303030303030303030303030303030303030303");
+	let path = Path {
+		hops: vec![RouteHop {
+			pubkey: bob_node_id,
+			node_features: NodeFeatures::empty(),
+			short_channel_id: 42,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 100,
+			cltv_expiry_delta: 42,
+			maybe_announced_channel: false,
+		}],
+		blinded_tail: Some(BlindedTail {
+			hops: blinded_hops,
+			blinding_point: bob_blinding_point,
+			excess_final_cltv_expiry_delta: 0,
+			final_value_msat: amt_msat
+		}),
+	};
+	let cur_height = 747_000;
+	let (bob_onion, _, _) = onion_utils::create_payment_onion(&secp_ctx, &path, &session_priv, amt_msat, &RecipientOnionFields::spontaneous_empty(), cur_height, &PaymentHash([0; 32]), &None, [0; 32]).unwrap();
+
+	struct TestEcdhSigner {
+		node_secret: SecretKey,
+	}
+	impl NodeSigner for TestEcdhSigner {
+		fn ecdh(
+			&self, _recipient: Recipient, other_key: &PublicKey, tweak: Option<&Scalar>,
+		) -> Result<SharedSecret, ()> {
+			let mut node_secret = self.node_secret.clone();
+			if let Some(tweak) = tweak {
+				node_secret = self.node_secret.mul_tweak(tweak).map_err(|_| ())?;
+			}
+			Ok(SharedSecret::new(other_key, &node_secret))
+		}
+		fn get_inbound_payment_key_material(&self) -> KeyMaterial { unreachable!() }
+		fn get_node_id(&self, _recipient: Recipient) -> Result<PublicKey, ()> { unreachable!() }
+		fn sign_invoice(
+			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
+		) -> Result<RecoverableSignature, ()> { unreachable!() }
+		fn sign_bolt12_invoice_request(
+			&self, _invoice_request: &UnsignedInvoiceRequest,
+		) -> Result<schnorr::Signature, ()> { unreachable!() }
+		fn sign_bolt12_invoice(
+			&self, _invoice: &UnsignedBolt12Invoice,
+		) -> Result<schnorr::Signature, ()> { unreachable!() }
+		fn sign_gossip_message(&self, _msg: UnsignedGossipMessage) -> Result<Signature, ()> { unreachable!() }
+	}
+	let logger = test_utils::TestLogger::with_id("".to_owned());
+
+	let bob_update_add = update_add_msg(110_000, 747_500, None, bob_onion);
+	let bob_node_signer = TestEcdhSigner { node_secret: bob_secret };
+	// Can't use the public API here as we need to avoid the CLTV delta checks (test vector uses
+	// < MIN_CLTV_EXPIRY_DELTA).
+	let (bob_peeled_onion, _, next_packet_details_opt) =
+		match onion_payment::decode_incoming_update_add_htlc_onion(
+			&bob_update_add, &bob_node_signer, &logger, &secp_ctx
+		) {
+			Ok(res) => res,
+			_ => panic!("Unexpected error")
+		};
+	let (carol_packet_bytes, carol_hmac) = if let onion_utils::Hop::Forward {
+		next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
+		}, next_hop_hmac, new_packet_bytes
+	} = bob_peeled_onion {
+		assert_eq!(short_channel_id, 1729);
+		assert!(next_blinding_override.is_none());
+		assert_eq!(intro_node_blinding_point, Some(bob_blinding_point));
+		assert_eq!(payment_relay, PaymentRelay { cltv_expiry_delta: 36, fee_proportional_millionths: 150, fee_base_msat: 10_000 });
+		assert_eq!(features, BlindedHopFeatures::empty());
+		assert_eq!(payment_constraints, PaymentConstraints { max_cltv_expiry: 748_005, htlc_minimum_msat: 1500 });
+		(new_packet_bytes, next_hop_hmac)
+	} else { panic!() };
+
+	let carol_packet_details = next_packet_details_opt.unwrap();
+	let carol_onion = msgs::OnionPacket {
+		version: 0,
+		public_key: carol_packet_details.next_packet_pubkey,
+		hop_data: carol_packet_bytes,
+		hmac: carol_hmac,
+	};
+	let carol_update_add = update_add_msg(
+		carol_packet_details.outgoing_amt_msat, carol_packet_details.outgoing_cltv_value,
+		Some(pubkey_from_hex("034e09f450a80c3d252b258aba0a61215bf60dda3b0dc78ffb0736ea1259dfd8a0")),
+		carol_onion
+	);
+	let carol_node_signer = TestEcdhSigner { node_secret: carol_secret };
+	let (carol_peeled_onion, _, next_packet_details_opt) =
+		match onion_payment::decode_incoming_update_add_htlc_onion(
+			&carol_update_add, &carol_node_signer, &logger, &secp_ctx
+		) {
+			Ok(res) => res,
+			_ => panic!("Unexpected error")
+		};
+	let (dave_packet_bytes, dave_hmac) = if let onion_utils::Hop::Forward {
+		next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
+		}, next_hop_hmac, new_packet_bytes
+	} = carol_peeled_onion {
+		assert_eq!(short_channel_id, 1105);
+		assert_eq!(next_blinding_override, Some(pubkey_from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f")));
+		assert!(intro_node_blinding_point.is_none());
+		assert_eq!(payment_relay, PaymentRelay { cltv_expiry_delta: 48, fee_proportional_millionths: 100, fee_base_msat: 500 });
+		assert_eq!(features, BlindedHopFeatures::empty());
+		assert_eq!(payment_constraints, PaymentConstraints { max_cltv_expiry: 747_969, htlc_minimum_msat: 1500 });
+		(new_packet_bytes, next_hop_hmac)
+	} else { panic!() };
+
+	let dave_packet_details = next_packet_details_opt.unwrap();
+	let dave_onion = msgs::OnionPacket {
+		version: 0,
+		public_key: dave_packet_details.next_packet_pubkey,
+		hop_data: dave_packet_bytes,
+		hmac: dave_hmac,
+	};
+	let dave_update_add = update_add_msg(
+		dave_packet_details.outgoing_amt_msat, dave_packet_details.outgoing_cltv_value,
+		Some(pubkey_from_hex("031b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f")),
+		dave_onion
+	);
+	let dave_node_signer = TestEcdhSigner { node_secret: dave_secret };
+	let (dave_peeled_onion, _, next_packet_details_opt) =
+		match onion_payment::decode_incoming_update_add_htlc_onion(
+			&dave_update_add, &dave_node_signer, &logger, &secp_ctx
+		) {
+			Ok(res) => res,
+			_ => panic!("Unexpected error")
+		};
+	let (eve_packet_bytes, eve_hmac) = if let onion_utils::Hop::Forward {
+		next_hop_data: msgs::InboundOnionPayload::BlindedForward {
+			short_channel_id, payment_relay, payment_constraints, features, intro_node_blinding_point, next_blinding_override
+		}, next_hop_hmac, new_packet_bytes
+	} = dave_peeled_onion {
+		assert_eq!(short_channel_id, 561);
+		assert!(next_blinding_override.is_none());
+		assert!(intro_node_blinding_point.is_none());
+		assert_eq!(payment_relay, PaymentRelay { cltv_expiry_delta: 144, fee_proportional_millionths: 250, fee_base_msat: 0 });
+		assert_eq!(features, BlindedHopFeatures::empty());
+		assert_eq!(payment_constraints, PaymentConstraints { max_cltv_expiry: 747_921, htlc_minimum_msat: 1500 });
+		(new_packet_bytes, next_hop_hmac)
+	} else { panic!() };
+
+	let eve_packet_details = next_packet_details_opt.unwrap();
+	let eve_onion = msgs::OnionPacket {
+		version: 0,
+		public_key: eve_packet_details.next_packet_pubkey,
+		hop_data: eve_packet_bytes,
+		hmac: eve_hmac,
+	};
+	let eve_update_add = update_add_msg(
+		eve_packet_details.outgoing_amt_msat, eve_packet_details.outgoing_cltv_value,
+		Some(pubkey_from_hex("03e09038ee76e50f444b19abf0a555e8697e035f62937168b80adf0931b31ce52a")),
+		eve_onion
+	);
+	let eve_node_signer = TestEcdhSigner { node_secret: eve_secret };
+	// We can't decode the final payload because it contains a path_id and is missing some LDK
+	// specific fields.
+	match onion_payment::decode_incoming_update_add_htlc_onion(
+		&eve_update_add, &eve_node_signer, &logger, &secp_ctx
+	) {
+		Err(HTLCFailureMsg::Malformed(msg)) => assert_eq!(msg.failure_code, INVALID_ONION_BLINDING),
+		_ => panic!("Unexpected error")
+	}
 }

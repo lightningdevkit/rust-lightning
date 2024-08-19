@@ -109,7 +109,7 @@ where
 }
 
 // Panics if `unblinded_tlvs` length is less than `unblinded_pks` length
-pub(super) fn construct_blinded_hops<'a, T, I1, I2>(
+pub(crate) fn construct_blinded_hops<'a, T, I1, I2>(
 	secp_ctx: &Secp256k1<T>, unblinded_pks: I1, mut unblinded_tlvs: I2, session_priv: &SecretKey
 ) -> Result<Vec<BlindedHop>, secp256k1::Error>
 where
