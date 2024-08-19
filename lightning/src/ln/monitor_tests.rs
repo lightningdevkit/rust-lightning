@@ -2990,7 +2990,7 @@ fn test_anchors_monitor_fixes_counterparty_payment_script_on_reload() {
 	do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(true);
 }
 
-#[cfg(not(feature = "_test_vectors"))]
+#[cfg(not(ldk_test_vectors))]
 fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterparty_commitment: bool) {
 	// Tests that our monitor claims will always use fresh random signatures (ensuring a unique
 	// wtxid) to prevent certain classes of transaction replacement at the bitcoin P2P layer.
@@ -3089,7 +3089,7 @@ fn do_test_monitor_claims_with_random_signatures(anchors: bool, confirm_counterp
 	}
 }
 
-#[cfg(not(feature = "_test_vectors"))]
+#[cfg(not(ldk_test_vectors))]
 #[test]
 fn test_monitor_claims_with_random_signatures() {
 	do_test_monitor_claims_with_random_signatures(false, false);

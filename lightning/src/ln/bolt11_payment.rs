@@ -188,11 +188,12 @@ mod tests {
 
 		let secp_ctx = Secp256k1::new();
 		let node_secret = nodes[1].keys_manager.backing.get_node_secret_key();
+		let time = std::time::SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("test".into())
 			.payment_hash(Sha256::from_slice(&payment_hash.0).unwrap())
 			.payment_secret(payment_secret)
-			.current_timestamp()
+			.duration_since_epoch(time)
 			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(50_000)
 			.payment_metadata(payment_metadata.clone())

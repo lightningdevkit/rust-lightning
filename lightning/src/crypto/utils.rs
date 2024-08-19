@@ -75,9 +75,9 @@ pub fn sign_with_aux_rand<C: Signing, ES: Deref>(
 			break sig;
 		}
 	};
-	#[cfg(all(not(feature = "grind_signatures"), not(feature = "_test_vectors")))]
+	#[cfg(all(not(feature = "grind_signatures"), not(ldk_test_vectors)))]
 	let sig = ctx.sign_ecdsa_with_noncedata(msg, sk, &entropy_source.get_secure_random_bytes());
-	#[cfg(all(not(feature = "grind_signatures"), feature = "_test_vectors"))]
+	#[cfg(all(not(feature = "grind_signatures"), ldk_test_vectors))]
 	let sig = sign(ctx, msg, sk);
 	sig
 }

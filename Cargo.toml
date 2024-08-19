@@ -41,9 +41,6 @@ opt-level = 3
 lto = true
 panic = "abort"
 
-[patch.crates-io.possiblyrandom]
-path = "possiblyrandom"
-
 [workspace.lints.rust.unexpected_cfgs]
 level = "forbid"
 # When adding a new cfg attribute, ensure that it is added to this list.
@@ -58,6 +55,7 @@ check-cfg = [
     "cfg(debug_assertions)",
     "cfg(c_bindings)",
     "cfg(ldk_bench)",
+    "cfg(ldk_test_vectors)",
     "cfg(taproot)",
     "cfg(async_signing)",
     "cfg(require_route_graph_test)",

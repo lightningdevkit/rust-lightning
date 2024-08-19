@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["lightning/no-std", "lightning-invoice/no-std", "lightning-rapid-gossip-sync/no-std"]
+default = ["lightning/no-std"]
 
 [dependencies]
 lightning = { path = "../lightning", default-features = false }
@@ -15,6 +15,3 @@ lightning-background-processor = { path = "../lightning-background-processor", f
 # Obviously lightning-transaction-sync doesn't support no-std, but it should build
 # even if lightning is built with no-std.
 lightning-transaction-sync = { path = "../lightning-transaction-sync", optional = true }
-
-[patch.crates-io]
-possiblyrandom = { path = "../possiblyrandom" }

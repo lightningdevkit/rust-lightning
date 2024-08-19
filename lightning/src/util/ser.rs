@@ -66,6 +66,7 @@ impl<W: Write> Writer for W {
 	}
 }
 
+// TODO: Drop this entirely if rust-bitcoin releases a version bump with https://github.com/rust-bitcoin/rust-bitcoin/pull/3173
 /// Wrap buffering support for implementations of Read.
 /// A [`Read`]er which keeps an internal buffer to avoid hitting the underlying stream directly for
 /// every read, implementing [`BufRead`].
@@ -92,17 +93,21 @@ impl<'a, R: Read> BufReader<'a, R> {
 impl<'a, R: Read> Read for BufReader<'a, R> {
 	#[inline]
 	fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-		let input = self.fill_buf()?;
-		let count = cmp::min(input.len(), output.len());
-		output[..count].copy_from_slice(&input[..count]);
-		self.consume(count);
-		Ok(count)
+		if output.is_empty() { return Ok(0); }
+		let mut offset = 0;
+		if !self.is_consumed {
+			output[0] = self.buf[0];
+			self.is_consumed = true;
+			offset = 1;
+		}
+		self.inner.read(&mut output[offset..]).map(|len| len + offset)
 	}
 }
 
 impl<'a, R: Read> BufRead for BufReader<'a, R> {
 	#[inline]
 	fn fill_buf(&mut self) -> io::Result<&[u8]> {
+		debug_assert!(false, "rust-bitcoin doesn't actually use this");
 		if self.is_consumed {
 			let count = self.inner.read(&mut self.buf[..])?;
 			debug_assert!(count <= 1, "read gave us a garbage length");
@@ -111,11 +116,16 @@ impl<'a, R: Read> BufRead for BufReader<'a, R> {
 			self.is_consumed = count == 0;
 		}
 
-		Ok(&self.buf[..])
+		if self.is_consumed {
+			Ok(&[])
+		} else {
+			Ok(&self.buf[..])
+		}
 	}
 
 	#[inline]
 	fn consume(&mut self, amount: usize) {
+		debug_assert!(false, "rust-bitcoin doesn't actually use this");
 		if amount >= 1 {
 			debug_assert_eq!(amount, 1, "Can only consume one byte");
 			debug_assert!(!self.is_consumed, "Cannot consume more than had been read");

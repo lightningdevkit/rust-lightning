@@ -28,11 +28,9 @@ max_level_trace = []
 # Allow signing of local transactions that may have been revoked or will be revoked, for functional testing (e.g. justice tx handling).
 # This is unsafe to use in production because it may result in the counterparty publishing taking our funds.
 unsafe_revoked_tx_signing = []
-# Override signing to not include randomness when generating signatures for test vectors.
-_test_vectors = []
 
-no-std = ["hashbrown", "possiblyrandom", "lightning-invoice/no-std", "libm"]
-std = ["lightning-invoice/std", "bech32/std"]
+no-std = ["hashbrown", "possiblyrandom", "libm"]
+std = []
 
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
 grind_signatures = []
@@ -47,7 +45,7 @@ bech32 = { version = "0.9.1", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false, features = ["secp-recovery"] }
 
 hashbrown = { version = "0.13", optional = true, default-features = false }
-possiblyrandom = { version = "0.2", optional = true, default-features = false }
+possiblyrandom = { version = "0.2", path = "../possiblyrandom", optional = true, default-features = false }
 regex = { version = "1.5.6", optional = true }
 backtrace = { version = "0.3", optional = true }
 

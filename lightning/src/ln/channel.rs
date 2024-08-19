@@ -9659,8 +9659,9 @@ mod tests {
 		}
 	}
 
-	#[cfg(all(feature = "_test_vectors", not(feature = "grind_signatures")))]
+	#[cfg(ldk_test_vectors)]
 	fn public_from_secret_hex(secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, hex: &str) -> PublicKey {
+		assert!(cfg!(not(feature = "grind_signatures")));
 		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex(hex).unwrap()[..]).unwrap())
 	}
 
@@ -10237,9 +10238,11 @@ mod tests {
 		assert_eq!(decoded_chan.context.holding_cell_htlc_updates, holding_cell_htlc_updates);
 	}
 
-	#[cfg(all(feature = "_test_vectors", not(feature = "grind_signatures")))]
+	#[cfg(ldk_test_vectors)]
 	#[test]
 	fn outbound_commitment_test() {
+		assert!(cfg!(not(feature = "grind_signatures")));
+
 		use bitcoin::sighash;
 		use bitcoin::consensus::encode::serialize;
 		use bitcoin::sighash::EcdsaSighashType;
