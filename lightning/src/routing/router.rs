@@ -3570,7 +3570,7 @@ mod tests {
 	use crate::util::config::UserConfig;
 	use crate::util::test_utils as ln_test_utils;
 	use crate::crypto::chacha20::ChaCha20;
-	use crate::util::ser::{Readable, Writeable};
+	use crate::util::ser::{FixedLengthReader, Readable, ReadableArgs, Writeable};
 	#[cfg(c_bindings)]
 	use crate::util::ser::Writer;
 
@@ -7849,8 +7849,15 @@ mod tests {
 			features: BlindedHopFeatures::empty(),
 		};
 		let blinded_path = BlindedPaymentPath::from_raw(nodes[2], ln_test_utils::pubkey(42), blinded_hops, blinded_payinfo.clone());
+		let payment_params = PaymentParameters::blinded(vec![blinded_path.clone(), blinded_path.clone()]);
 
-		let payment_params = PaymentParameters::blinded(vec![blinded_path.clone()]);
+		// Make sure we can round-trip read and write blinded payment params.
+		let encoded_params = payment_params.encode();
+		let mut s = Cursor::new(&encoded_params);
+		let mut reader = FixedLengthReader::new(&mut s, encoded_params.len() as u64);
+		let decoded_params: PaymentParameters = ReadableArgs::read(&mut reader, 42).unwrap();
+		assert_eq!(payment_params, decoded_params);
+
 		let route_params = RouteParameters::from_payment_params_and_value(
 			payment_params, 1001);
 		let route = get_route(&our_id, &route_params, &network_graph, None, Arc::clone(&logger),
