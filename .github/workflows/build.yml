@@ -66,7 +66,7 @@ jobs:
             echo "ELECTRS_EXE=$( pwd )/bin/electrs-${{ runner.os }}-${{ runner.arch }}" >> "$GITHUB_ENV"
       - name: Run CI script
         shell: bash # Default on Winblows is powershell
-        run: CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
+        run: CI_ENV=1 CI_MINIMIZE_DISK_USAGE=1 ./ci/ci-tests.sh
 
   coverage:
     strategy:

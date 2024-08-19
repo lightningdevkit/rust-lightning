@@ -44,22 +44,24 @@ cargo check --verbose --color always --features rpc-client,rest-client,tokio
 popd
 
 if [[ "$HOST_PLATFORM" != *windows* ]]; then
-	if [ -z "$BITCOIND_EXE" ] || [ -z "$ELECTRS_EXE" ]; then
-		echo -e "\n\nSkipping testing Transaction Sync Clients due to BITCOIND_EXE or ELECTRS_EXE being unset."
-	else
-		echo -e "\n\nBuilding and testing Transaction Sync Clients with features"
-		pushd lightning-transaction-sync
+	pushd lightning-transaction-sync
+	echo -e "\n\nChecking Transaction Sync Clients with features."
+	cargo check --verbose --color always --features esplora-blocking
+	cargo check --verbose --color always --features esplora-async
+	cargo check --verbose --color always --features esplora-async-https
+	cargo check --verbose --color always --features electrum
 
+	if [ -z "$CI_ENV" ] && [[ -z "$BITCOIND_EXE" || -z "$ELECTRS_EXE" ]]; then
+		echo -e "\n\nSkipping testing Transaction Sync Clients due to BITCOIND_EXE or ELECTRS_EXE being unset."
+		cargo check --tests
+	else
+		echo -e "\n\nTesting Transaction Sync Clients with features."
 		cargo test --verbose --color always --features esplora-blocking
-		cargo check --verbose --color always --features esplora-blocking
 		cargo test --verbose --color always --features esplora-async
-		cargo check --verbose --color always --features esplora-async
 		cargo test --verbose --color always --features esplora-async-https
-		cargo check --verbose --color always --features esplora-async-https
 		cargo test --verbose --color always --features electrum
-		cargo check --verbose --color always --features electrum
-		popd
 	fi
+	popd
 fi
 
 echo -e "\n\nTest futures builds"
