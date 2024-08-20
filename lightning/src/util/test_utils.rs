@@ -130,7 +130,7 @@ impl<'a> TestRouter<'a> {
 	) -> Self {
 		let entropy_source = Arc::new(RandomBytes::new([42; 32]));
 		Self {
-			router: DefaultRouter::new(network_graph.clone(), logger, entropy_source, scorer, ()),
+			router: DefaultRouter::new(network_graph.clone(), logger, entropy_source, scorer, Default::default()),
 			network_graph,
 			next_routes: Mutex::new(VecDeque::new()),
 			next_blinded_payment_paths: Mutex::new(Vec::new()),
