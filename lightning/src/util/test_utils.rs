@@ -986,6 +986,7 @@ pub struct TestRoutingMessageHandler {
 	pub chan_anns_recvd: AtomicUsize,
 	pub pending_events: Mutex<Vec<events::MessageSendEvent>>,
 	pub request_full_sync: AtomicBool,
+	pub announcement_available_for_sync: AtomicBool,
 }
 
 impl TestRoutingMessageHandler {
@@ -995,27 +996,32 @@ impl TestRoutingMessageHandler {
 			chan_anns_recvd: AtomicUsize::new(0),
 			pending_events: Mutex::new(vec![]),
 			request_full_sync: AtomicBool::new(false),
+			announcement_available_for_sync: AtomicBool::new(false),
 		}
 	}
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	fn handle_node_announcement(&self, _their_node_id: Option<PublicKey>, _msg: &msgs::NodeAnnouncement) -> Result<bool, msgs::LightningError> {
-		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
+		Ok(true)
 	}
 	fn handle_channel_announcement(&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelAnnouncement) -> Result<bool, msgs::LightningError> {
 		self.chan_anns_recvd.fetch_add(1, Ordering::AcqRel);
-		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
+		Ok(true)
 	}
 	fn handle_channel_update(&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelUpdate) -> Result<bool, msgs::LightningError> {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
-		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
+		Ok(true)
 	}
 	fn get_next_channel_announcement(&self, starting_point: u64) -> Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)> {
-		let chan_upd_1 = get_dummy_channel_update(starting_point);
-		let chan_upd_2 = get_dummy_channel_update(starting_point);
-		let chan_ann = get_dummy_channel_announcement(starting_point);
+		if self.announcement_available_for_sync.load(Ordering::Acquire) {
+			let chan_upd_1 = get_dummy_channel_update(starting_point);
+			let chan_upd_2 = get_dummy_channel_update(starting_point);
+			let chan_ann = get_dummy_channel_announcement(starting_point);
 
-		Some((chan_ann, Some(chan_upd_1), Some(chan_upd_2)))
+			Some((chan_ann, Some(chan_upd_1), Some(chan_upd_2)))
+		} else {
+			None
+		}
 	}
 
 	fn get_next_node_announcement(&self, _starting_point: Option<&NodeId>) -> Option<msgs::NodeAnnouncement> {

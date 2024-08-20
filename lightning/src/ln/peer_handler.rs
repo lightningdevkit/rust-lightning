@@ -2729,20 +2729,21 @@ fn is_gossip_msg(type_id: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+	use super::*;
+
 	use crate::sign::{NodeSigner, Recipient};
 	use crate::events;
 	use crate::io;
 	use crate::ln::types::ChannelId;
 	use crate::ln::features::{InitFeatures, NodeFeatures};
 	use crate::ln::peer_channel_encryptor::PeerChannelEncryptor;
-	use crate::ln::peer_handler::{CustomMessageHandler, PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses, ErroringMessageHandler, MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER};
 	use crate::ln::{msgs, wire};
 	use crate::ln::msgs::{Init, LightningError, SocketAddress};
 	use crate::util::test_utils;
 
 	use bitcoin::Network;
 	use bitcoin::constants::ChainHash;
-	use bitcoin::secp256k1::{PublicKey, SecretKey};
+	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 
 	use crate::sync::{Arc, Mutex};
 	use core::convert::Infallible;
@@ -3200,6 +3201,8 @@ mod tests {
 		let cfgs = create_peermgr_cfgs(2);
 		cfgs[0].routing_handler.request_full_sync.store(true, Ordering::Release);
 		cfgs[1].routing_handler.request_full_sync.store(true, Ordering::Release);
+		cfgs[0].routing_handler.announcement_available_for_sync.store(true, Ordering::Release);
+		cfgs[1].routing_handler.announcement_available_for_sync.store(true, Ordering::Release);
 		let peers = create_network(2, &cfgs);
 
 		// By calling establish_connect, we trigger do_attempt_write_data between
@@ -3361,6 +3364,79 @@ mod tests {
 		// One more tick should enforce the pong timeout.
 		peer_b.timer_tick_occurred();
 		assert_eq!(peer_b.peers.read().unwrap().len(), 0);
+	}
+
+	#[test]
+	fn test_gossip_flood_pause() {
+		use crate::routing::test_utils::channel_announcement;
+		use lightning_types::features::ChannelFeatures;
+
+		// Simple test which connects two nodes to a PeerManager and checks that if we run out of
+		// socket buffer space we'll stop forwarding gossip but still push our own gossip.
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+		let (mut fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
+
+		macro_rules! drain_queues { () => {
+			loop {
+				peers[0].process_events();
+				peers[1].process_events();
+
+				let msg = fd_a.outbound_data.lock().unwrap().split_off(0);
+				if !msg.is_empty() {
+					assert_eq!(peers[1].read_event(&mut fd_b, &msg).unwrap(), false);
+					continue;
+				}
+				let msg = fd_b.outbound_data.lock().unwrap().split_off(0);
+				if !msg.is_empty() {
+					assert_eq!(peers[0].read_event(&mut fd_a, &msg).unwrap(), false);
+					continue;
+				}
+				break;
+			}
+		} }
+
+		// First, make sure all pending messages have been processed and queues drained.
+		drain_queues!();
+
+		let secp_ctx = Secp256k1::new();
+		let key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let msg = channel_announcement(&key, &key, ChannelFeatures::empty(), 42, &secp_ctx);
+		let msg_ev = MessageSendEvent::BroadcastChannelAnnouncement {
+			msg,
+			update_msg: None,
+		};
+
+		fd_a.hang_writes.store(true, Ordering::Relaxed);
+
+		// Now push an arbitrarily large number of messages and check that only
+		// `OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP` messages end up in the queue.
+		for _ in 0..OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP * 2 {
+			cfgs[0].routing_handler.pending_events.lock().unwrap().push(msg_ev.clone());
+			peers[0].process_events();
+		}
+
+		assert_eq!(peers[0].peers.read().unwrap().get(&fd_a).unwrap().lock().unwrap().gossip_broadcast_buffer.len(),
+			OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP);
+
+		// Check that if a broadcast message comes in from the channel handler (i.e. it is an
+		// announcement for our own channel), it gets queued anyway.
+		cfgs[0].chan_handler.pending_events.lock().unwrap().push(msg_ev);
+		peers[0].process_events();
+		assert_eq!(peers[0].peers.read().unwrap().get(&fd_a).unwrap().lock().unwrap().gossip_broadcast_buffer.len(),
+			OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP + 1);
+
+		// Finally, deliver all the messages and make sure we got the right count. Note that there
+		// was an extra message that had already moved from the broadcast queue to the encrypted
+		// message queue so we actually receive `OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP + 2` messages.
+		fd_a.hang_writes.store(false, Ordering::Relaxed);
+		cfgs[1].routing_handler.chan_anns_recvd.store(0, Ordering::Relaxed);
+		peers[0].write_buffer_space_avail(&mut fd_a).unwrap();
+
+		drain_queues!();
+		assert!(peers[0].peers.read().unwrap().get(&fd_a).unwrap().lock().unwrap().gossip_broadcast_buffer.is_empty());
+		assert_eq!(cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Relaxed),
+			OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP + 2);
 	}
 
 	#[test]
