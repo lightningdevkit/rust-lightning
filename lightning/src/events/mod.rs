@@ -1316,7 +1316,7 @@ pub enum Event {
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		channel_type: ChannelTypeFeatures,
 		/// True if this channel is (or will be) publicly-announced.
-		is_public: bool,
+		is_announced: bool,
 		/// Channel parameters given by the counterparty.
 		params: msgs::ChannelParameters,
 	},
