@@ -364,23 +364,23 @@ mod tests {
 		);
 	}
 
-        #[test]
-        fn compute_tagged_hash() {
-                let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-                        .amount_msats(1000)
-                        .build().unwrap()
-                        .request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-                        .payer_note("bar".into())
-                        .build().unwrap();
+	#[test]
+	fn compute_tagged_hash() {
+		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.build().unwrap()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.payer_note("bar".into())
+			.build().unwrap();
 
-                // Simply test that we can grab the tag and merkle root exposed by the accessor
-                // functions, then use them to succesfully compute a tagged hash.
-                let tagged_hash = unsigned_invoice_request.as_ref();
-                let expected_digest = unsigned_invoice_request.as_ref().as_digest();
-                let tag = sha256::Hash::hash(tagged_hash.tag().as_bytes());
-                let actual_digest = Message::from_digest(super::tagged_hash(tag, tagged_hash.merkle_root()).to_byte_array());
-                assert_eq!(*expected_digest, actual_digest);
-        }
+		// Simply test that we can grab the tag and merkle root exposed by the accessor
+		// functions, then use them to succesfully compute a tagged hash.
+		let tagged_hash = unsigned_invoice_request.as_ref();
+		let expected_digest = unsigned_invoice_request.as_ref().as_digest();
+		let tag = sha256::Hash::hash(tagged_hash.tag().as_bytes());
+		let actual_digest = Message::from_digest(super::tagged_hash(tag, tagged_hash.merkle_root()).to_byte_array());
+		assert_eq!(*expected_digest, actual_digest);
+	}
 
 	#[test]
 	fn skips_encoding_signature_tlv_records() {
