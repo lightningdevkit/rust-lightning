@@ -176,7 +176,9 @@ pub trait Persist<ChannelSigner: WriteableEcdsaChannelSigner> {
 	/// If an implementer chooses to persist the updates only, they need to make
 	/// sure that all the updates are applied to the `ChannelMonitors` *before*
 	/// the set of channel monitors is given to the `ChannelManager`
-	/// deserialization routine. See [`ChannelMonitor::update_monitor`] for
+	/// deserialization routine. If there are any gaps in the persisted [`ChannelMonitorUpdate`]s,
+	/// implementer can safely ignore [`ChannelMonitorUpdate`]s after the gap and load without them.
+	/// See [`ChannelMonitor::update_monitor`] for
 	/// applying a monitor update to a monitor. If full `ChannelMonitors` are
 	/// persisted, then there is no need to persist individual updates.
 	///
