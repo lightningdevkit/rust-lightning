@@ -2548,14 +2548,17 @@ pub const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 6
 pub enum RecentPaymentDetails {
 	/// When an invoice was requested and thus a payment has not yet been sent.
 	AwaitingInvoice {
-		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
-		/// a payment and ensure idempotency in LDK.
+		/// A user-provided identifier in [`ChannelManager::pay_for_offer`] used to uniquely identify a
+		/// payment and ensure idempotency in LDK.
 		payment_id: PaymentId,
 	},
 	/// When a payment is still being sent and awaiting successful delivery.
 	Pending {
-		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
-		/// a payment and ensure idempotency in LDK.
+		/// A user-provided identifier in [`send_payment`] or [`pay_for_offer`] used to uniquely
+		/// identify a payment and ensure idempotency in LDK.
+		///
+		/// [`send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`pay_for_offer`]: crate::ln::channelmanager::ChannelManager::pay_for_offer
 		payment_id: PaymentId,
 		/// Hash of the payment that is currently being sent but has yet to be fulfilled or
 		/// abandoned.
@@ -2568,8 +2571,11 @@ pub enum RecentPaymentDetails {
 	/// been resolved. Upon receiving [`Event::PaymentSent`], we delay for a few minutes before the
 	/// payment is removed from tracking.
 	Fulfilled {
-		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
-		/// a payment and ensure idempotency in LDK.
+		/// A user-provided identifier in [`send_payment`] or [`pay_for_offer`] used to uniquely
+		/// identify a payment and ensure idempotency in LDK.
+		///
+		/// [`send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`pay_for_offer`]: crate::ln::channelmanager::ChannelManager::pay_for_offer
 		payment_id: PaymentId,
 		/// Hash of the payment that was claimed. `None` for serializations of [`ChannelManager`]
 		/// made before LDK version 0.0.104.
@@ -2579,8 +2585,11 @@ pub enum RecentPaymentDetails {
 	/// abandoned via [`ChannelManager::abandon_payment`], it is marked as abandoned until all
 	/// pending HTLCs for this payment resolve and an [`Event::PaymentFailed`] is generated.
 	Abandoned {
-		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
-		/// a payment and ensure idempotency in LDK.
+		/// A user-provided identifier in [`send_payment`] or [`pay_for_offer`] used to uniquely
+		/// identify a payment and ensure idempotency in LDK.
+		///
+		/// [`send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`pay_for_offer`]: crate::ln::channelmanager::ChannelManager::pay_for_offer
 		payment_id: PaymentId,
 		/// Hash of the payment that we have given up trying to send.
 		payment_hash: PaymentHash,
