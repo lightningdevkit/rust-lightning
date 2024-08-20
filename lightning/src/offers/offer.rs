@@ -100,7 +100,7 @@ use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
 use {
-	crate::offers::invoice_request::{DerivedPayerSigningPubkey, InvoiceRequestBuilder},
+	crate::offers::invoice_request::InvoiceRequestBuilder,
 };
 #[cfg(c_bindings)]
 use {
@@ -767,7 +767,7 @@ macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $builder: t
 
 #[cfg(not(c_bindings))]
 impl Offer {
-	request_invoice_derived_signing_pubkey!(self, InvoiceRequestBuilder<'a, 'b, DerivedPayerSigningPubkey, T>);
+	request_invoice_derived_signing_pubkey!(self, InvoiceRequestBuilder<'a, 'b, T>);
 }
 
 #[cfg(c_bindings)]

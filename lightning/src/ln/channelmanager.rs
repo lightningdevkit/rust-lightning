@@ -66,7 +66,7 @@ use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, Retr
 use crate::ln::wire::Encode;
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{DerivedPayerSigningPubkey, InvoiceRequest, InvoiceRequestBuilder};
+use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
@@ -9611,7 +9611,7 @@ where
 		let secp_ctx = &self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let builder: InvoiceRequestBuilder<DerivedPayerSigningPubkey, secp256k1::All> = offer
+		let builder: InvoiceRequestBuilder<secp256k1::All> = offer
 			.request_invoice(expanded_key, nonce, secp_ctx, payment_id)?
 			.into();
 		let builder = builder.chain_hash(self.chain_hash)?;
