@@ -1,6 +1,6 @@
 [package]
 name = "lightning"
-version = "0.0.123-beta"
+version = "0.0.124-beta"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
@@ -38,8 +38,8 @@ grind_signatures = []
 default = ["std", "grind_signatures"]
 
 [dependencies]
-lightning-types = { version = "0.1", path = "../lightning-types", default-features = false }
-lightning-invoice = { version = "0.31.0-beta", path = "../lightning-invoice", default-features = false }
+lightning-types = { version = "0.1.0-beta", path = "../lightning-types", default-features = false }
+lightning-invoice = { version = "0.32.0-beta", path = "../lightning-invoice", default-features = false }
 
 bech32 = { version = "0.9.1", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false, features = ["secp-recovery"] }
@@ -53,7 +53,7 @@ libm = { version = "0.2", optional = true, default-features = false }
 
 [dev-dependencies]
 regex = "1.5.6"
-lightning-types = { version = "0.1", path = "../lightning-types", features = ["_test_utils"] }
+lightning-types = { version = "0.1.0-beta", path = "../lightning-types", features = ["_test_utils"] }
 
 [dev-dependencies.bitcoin]
 version = "0.32.2"
