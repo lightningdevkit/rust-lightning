@@ -1487,7 +1487,7 @@ impl BackgroundProcessor {
 		OS: 'static + Deref<Target = OutputSweeperSync<T, D, F, CF, K, L, O>> + Send,
 	>(
 		kv_store: K, event_handler: EH, chain_monitor: M, channel_manager: CM,
-		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
+		onion_messenger: OM, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
 		liquidity_manager: Option<LM>, sweeper: Option<OS>, logger: L, scorer: Option<S>,
 	) -> Self
 	where
@@ -1556,7 +1556,7 @@ impl BackgroundProcessor {
 			loop {
 				channel_manager.get_cm().process_pending_events(&event_handler);
 				chain_monitor.process_pending_events(&event_handler);
-				if let Some(om) = &onion_messenger {
+				if let Some(om) = Some(&onion_messenger) {
 					om.get_om().process_pending_events(&event_handler)
 				};
 
@@ -1581,7 +1581,7 @@ impl BackgroundProcessor {
 					log_trace!(logger, "Terminating background processor.");
 					break;
 				}
-				let sleeper = match (onion_messenger.as_ref(), liquidity_manager.as_ref()) {
+				let sleeper = match (Some(&onion_messenger), liquidity_manager.as_ref()) {
 					(Some(om), Some(lm)) => Sleeper::from_four_futures(
 						&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 						&chain_monitor.get_update_future(),
@@ -1708,7 +1708,7 @@ impl BackgroundProcessor {
 					last_sweeper_call = Instant::now();
 				}
 				if last_onion_message_handler_call.elapsed() > ONION_MESSAGE_HANDLER_TIMER {
-					if let Some(om) = &onion_messenger {
+					if let Some(om) = Some(&onion_messenger) {
 						log_trace!(logger, "Calling OnionMessageHandler's timer_tick_occurred");
 						om.get_om().timer_tick_occurred();
 					}
@@ -2619,7 +2619,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].p2p_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -2714,7 +2714,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -2758,7 +2758,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -2841,7 +2841,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].p2p_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -2872,7 +2872,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -2920,7 +2920,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -2984,7 +2984,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -3148,7 +3148,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -3179,7 +3179,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -3277,7 +3277,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].rapid_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -3489,7 +3489,7 @@ mod tests {
 			event_handler,
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			Some(Arc::clone(&nodes[0].messenger)),
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			Some(Arc::clone(&nodes[0].liquidity_manager)),
@@ -3596,7 +3596,7 @@ mod tests {
 			move |_: Event| Ok(()),
 			Arc::clone(&nodes[0].chain_monitor),
 			Arc::clone(&nodes[0].node),
-			crate::NO_ONION_MESSENGER,
+			Arc::clone(&nodes[0].messenger),
 			nodes[0].no_gossip_sync(),
 			Arc::clone(&nodes[0].peer_manager),
 			crate::NO_LIQUIDITY_MANAGER_SYNC,
