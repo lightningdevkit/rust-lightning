@@ -715,3 +715,93 @@ impl_writeable_tlv_based_enum!(ChannelShutdownState,
 	(6, NegotiatingClosingFee) => {},
 	(8, ShutdownComplete) => {},
 );
+
+#[cfg(test)]
+mod tests {
+	use bitcoin::{hashes::Hash as _, secp256k1::PublicKey};
+	use lightning_types::features::Features;
+	use types::payment::PaymentHash;
+
+	use crate::{
+		chain::transaction::OutPoint,
+		ln::{
+			channel_state::{
+				InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails,
+				OutboundHTLCStateDetails,
+			},
+			types::ChannelId,
+		},
+		util::{
+			config::ChannelConfig,
+			ser::{Readable, Writeable},
+		},
+	};
+
+	use super::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
+
+	#[test]
+	fn test_channel_details_serialization() {
+		#[allow(deprecated)]
+		let channel_details = ChannelDetails {
+			channel_id: ChannelId::new_zero(),
+			counterparty: ChannelCounterparty {
+				features: Features::empty(),
+				node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+				unspendable_punishment_reserve: 1983,
+				forwarding_info: None,
+				outbound_htlc_minimum_msat: None,
+				outbound_htlc_maximum_msat: None,
+			},
+			funding_txo: Some(OutPoint {
+				txid: bitcoin::Txid::from_slice(&[0; 32]).unwrap(),
+				index: 1,
+			}),
+			channel_type: None,
+			short_channel_id: None,
+			outbound_scid_alias: None,
+			inbound_scid_alias: None,
+			channel_value_satoshis: 50_100,
+			user_channel_id: (u64::MAX as u128) + 1, // Gets us into the high bytes
+			balance_msat: 23_100,
+			outbound_capacity_msat: 24_300,
+			next_outbound_htlc_limit_msat: 20_000,
+			next_outbound_htlc_minimum_msat: 132,
+			inbound_capacity_msat: 42,
+			unspendable_punishment_reserve: Some(8273),
+			confirmations_required: Some(5),
+			confirmations: Some(73),
+			force_close_spend_delay: Some(10),
+			is_outbound: true,
+			is_channel_ready: false,
+			is_usable: true,
+			is_public: false,
+			inbound_htlc_minimum_msat: Some(98),
+			inbound_htlc_maximum_msat: Some(983274),
+			config: Some(ChannelConfig::default()),
+			feerate_sat_per_1000_weight: Some(212),
+			channel_shutdown_state: Some(ChannelShutdownState::NotShuttingDown),
+			pending_inbound_htlcs: vec![InboundHTLCDetails {
+				htlc_id: 12,
+				amount_msat: 333,
+				cltv_expiry: 127,
+				payment_hash: PaymentHash([3; 32]),
+				state: Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+				is_dust: true,
+			}],
+			pending_outbound_htlcs: vec![OutboundHTLCDetails {
+				htlc_id: Some(81),
+				amount_msat: 5000,
+				cltv_expiry: 129,
+				payment_hash: PaymentHash([4; 32]),
+				state: Some(OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
+				skimmed_fee_msat: Some(42),
+				is_dust: false,
+			}],
+		};
+		let mut buffer = Vec::new();
+		channel_details.write(&mut buffer).unwrap();
+		let deser_channel_details = ChannelDetails::read(&mut buffer.as_slice()).unwrap();
+
+		assert_eq!(deser_channel_details, channel_details);
+	}
+}
