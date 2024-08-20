@@ -2746,7 +2746,7 @@ mod tests {
 
 	use crate::sync::{Arc, Mutex};
 	use core::convert::Infallible;
-	use core::sync::atomic::{AtomicBool, Ordering};
+	use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
@@ -2898,20 +2898,25 @@ mod tests {
 	}
 
 	fn establish_connection<'a>(peer_a: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>, peer_b: &PeerManager<FileDescriptor, &'a test_utils::TestChannelMessageHandler, &'a test_utils::TestRoutingMessageHandler, IgnoringMessageHandler, &'a test_utils::TestLogger, &'a TestCustomMessageHandler, &'a test_utils::TestNodeSigner>) -> (FileDescriptor, FileDescriptor) {
+		static FD_COUNTER: AtomicUsize = AtomicUsize::new(0);
+		let fd = FD_COUNTER.fetch_add(1, Ordering::Relaxed) as u16;
+
 		let id_a = peer_a.node_signer.get_node_id(Recipient::Node).unwrap();
 		let mut fd_a = FileDescriptor {
-			fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
+			fd, outbound_data: Arc::new(Mutex::new(Vec::new())),
 			disconnect: Arc::new(AtomicBool::new(false)),
 		};
 		let addr_a = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1000};
+
 		let id_b = peer_b.node_signer.get_node_id(Recipient::Node).unwrap();
 		let features_a = peer_a.init_features(id_b);
 		let features_b = peer_b.init_features(id_a);
 		let mut fd_b = FileDescriptor {
-			fd: 1, outbound_data: Arc::new(Mutex::new(Vec::new())),
+			fd, outbound_data: Arc::new(Mutex::new(Vec::new())),
 			disconnect: Arc::new(AtomicBool::new(false)),
 		};
 		let addr_b = SocketAddress::TcpIpV4{addr: [127, 0, 0, 1], port: 1001};
+
 		let initial_data = peer_b.new_outbound_connection(id_a, fd_b.clone(), Some(addr_a.clone())).unwrap();
 		peer_a.new_inbound_connection(fd_a.clone(), Some(addr_b.clone())).unwrap();
 		assert_eq!(peer_a.read_event(&mut fd_a, &initial_data).unwrap(), false);
