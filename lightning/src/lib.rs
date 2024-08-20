@@ -87,8 +87,8 @@ pub mod events;
 
 pub(crate) mod crypto;
 
-/// Extension of the bitcoin::io module
-pub mod io;
+/// Re-export the bitcoin-io crate.
+pub use bitcoin::io as io;
 
 #[doc(hidden)]
 /// IO utilities public only for use by in-crate macros. These should not be used externally

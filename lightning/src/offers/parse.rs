@@ -104,7 +104,7 @@ impl<T: CursorReadable> TryFrom<Vec<u8>> for ParsedMessage<T> {
 		let tlv_stream: T = CursorReadable::read(&mut cursor)?;
 
 		// Ensure that there are no more TLV records left to parse.
-		if cursor.position() < cursor.get_ref().len() as u64 {
+		if cursor.position() < cursor.inner().len() as u64 {
 			return Err(DecodeError::InvalidValue);
 		}
 

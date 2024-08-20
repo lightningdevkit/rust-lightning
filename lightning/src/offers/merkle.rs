@@ -260,19 +260,19 @@ impl<'a> Iterator for TlvStream<'a> {
 	type Item = TlvRecord<'a>;
 
 	fn next(&mut self) -> Option<Self::Item> {
-		if self.data.position() < self.data.get_ref().len() as u64 {
+		if self.data.position() < self.data.inner().len() as u64 {
 			let start = self.data.position();
 
 			let r#type = <BigSize as Readable>::read(&mut self.data).unwrap().0;
 			let offset = self.data.position();
-			let type_bytes = &self.data.get_ref()[start as usize..offset as usize];
+			let type_bytes = &self.data.inner()[start as usize..offset as usize];
 
 			let length = <BigSize as Readable>::read(&mut self.data).unwrap().0;
 			let offset = self.data.position();
 			let end = offset + length;
 
-			let _value = &self.data.get_ref()[offset as usize..end as usize];
-			let record_bytes = &self.data.get_ref()[start as usize..end as usize];
+			let _value = &self.data.inner()[offset as usize..end as usize];
+			let record_bytes = &self.data.inner()[start as usize..end as usize];
 
 			self.data.set_position(end);
 
