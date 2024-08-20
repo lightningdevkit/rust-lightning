@@ -394,8 +394,7 @@ where C::Target: chain::Filter,
 	/// claims which are awaiting confirmation.
 	///
 	/// Includes the balances from each [`ChannelMonitor`] *except* those included in
-	/// `ignored_channels`, allowing you to filter out balances from channels which are still open
-	/// (and whose balance should likely be pulled from the [`ChannelDetails`]).
+	/// `ignored_channels`.
 	///
 	/// See [`ChannelMonitor::get_claimable_balances`] for more details on the exact criteria for
 	/// inclusion in the return value.

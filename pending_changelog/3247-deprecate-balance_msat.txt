@@ -1,0 +1,1 @@
+* The `AvailableBalances::balance_msat` field has been deprecated in favor of `ChainMonitor::get_claimable_balances`. `AvailableBalances::balance_msat` will be removed in an upcoming release (#3247).
