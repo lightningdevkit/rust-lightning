@@ -9612,7 +9612,7 @@ where
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let builder: InvoiceRequestBuilder<DerivedPayerSigningPubkey, secp256k1::All> = offer
-			.request_invoice_deriving_signing_pubkey(expanded_key, nonce, secp_ctx, payment_id)?
+			.request_invoice(expanded_key, nonce, secp_ctx, payment_id)?
 			.into();
 		let builder = builder.chain_hash(self.chain_hash)?;
 

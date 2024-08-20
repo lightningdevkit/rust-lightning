@@ -100,11 +100,11 @@ use crate::util::string::PrintableString;
 
 #[cfg(not(c_bindings))]
 use {
-	crate::offers::invoice_request::{DerivedPayerSigningPubkey, ExplicitPayerSigningPubkey, InvoiceRequestBuilder},
+	crate::offers::invoice_request::{DerivedPayerSigningPubkey, InvoiceRequestBuilder},
 };
 #[cfg(c_bindings)]
 use {
-	crate::offers::invoice_request::{InvoiceRequestWithDerivedPayerSigningPubkeyBuilder, InvoiceRequestWithExplicitPayerSigningPubkeyBuilder},
+	crate::offers::invoice_request::InvoiceRequestWithDerivedPayerSigningPubkeyBuilder,
 };
 
 #[allow(unused_imports)]
@@ -729,23 +729,23 @@ impl Offer {
 }
 
 macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $builder: ty) => {
-	/// Similar to [`Offer::request_invoice`] except it:
+	/// Creates an [`InvoiceRequestBuilder`] for the offer, which
 	/// - derives the [`InvoiceRequest::payer_signing_pubkey`] such that a different key can be used
-	///   for each request,
-	/// - sets [`InvoiceRequest::payer_metadata`] when [`InvoiceRequestBuilder::build`] is called
-	///   such that it can be used by [`Bolt12Invoice::verify_using_metadata`] to determine if the
-	///   invoice was requested using a base [`ExpandedKey`] from which the payer id was derived,
-	///   and
+	///   for each request in order to protect the sender's privacy,
+	/// - sets [`InvoiceRequest::payer_metadata`] when [`InvoiceRequestBuilder::build_and_sign`] is
+	///   called such that it can be used by [`Bolt12Invoice::verify_using_metadata`] to determine
+	///   if the invoice was requested using a base [`ExpandedKey`] from which the payer id was
+	///   derived, and
 	/// - includes the [`PaymentId`] encrypted in [`InvoiceRequest::payer_metadata`] so that it can
 	///   be used when sending the payment for the requested invoice.
 	///
-	/// Useful to protect the sender's privacy.
+	/// Errors if the offer contains unknown required features.
 	///
 	/// [`InvoiceRequest::payer_signing_pubkey`]: crate::offers::invoice_request::InvoiceRequest::payer_signing_pubkey
 	/// [`InvoiceRequest::payer_metadata`]: crate::offers::invoice_request::InvoiceRequest::payer_metadata
 	/// [`Bolt12Invoice::verify_using_metadata`]: crate::offers::invoice::Bolt12Invoice::verify_using_metadata
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
-	pub fn request_invoice_deriving_signing_pubkey<
+	pub fn request_invoice<
 		'a, 'b,
 		#[cfg(not(c_bindings))]
 		T: secp256k1::Signing
@@ -765,59 +765,14 @@ macro_rules! request_invoice_derived_signing_pubkey { ($self: ident, $builder: t
 	}
 } }
 
-macro_rules! request_invoice_explicit_signing_pubkey { ($self: ident, $builder: ty) => {
-	/// Similar to [`Offer::request_invoice_deriving_signing_pubkey`] except uses `signing_pubkey`
-	/// for the [`InvoiceRequest::payer_signing_pubkey`] instead of deriving a different key for
-	/// each request.
-	///
-	/// Useful for recurring payments using the same `signing_pubkey` with different invoices.
-	///
-	/// [`InvoiceRequest::payer_signing_pubkey`]: crate::offers::invoice_request::InvoiceRequest::payer_signing_pubkey
-	pub fn request_invoice_deriving_metadata(
-		&$self, signing_pubkey: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
-		payment_id: PaymentId
-	) -> Result<$builder, Bolt12SemanticError> {
-		if $self.offer_features().requires_unknown_bits() {
-			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
-		}
-
-		Ok(<$builder>::deriving_metadata($self, signing_pubkey, expanded_key, nonce, payment_id))
-	}
-
-	/// Creates an [`InvoiceRequestBuilder`] for the offer with the given `metadata` and
-	/// `signing_pubkey`, which will be reflected in the `Bolt12Invoice` response.
-	///
-	/// The `metadata` is useful for including information about the derivation of `signing_pubkey`
-	/// such that invoice response handling can be stateless. Also serves as payer-provided entropy
-	/// while hashing in the signature calculation.
-	///
-	/// This should not leak any information such as by using a simple BIP-32 derivation path.
-	/// Otherwise, payments may be correlated.
-	///
-	/// Errors if the offer contains unknown required features.
-	///
-	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	pub fn request_invoice(
-		&$self, metadata: Vec<u8>, signing_pubkey: PublicKey
-	) -> Result<$builder, Bolt12SemanticError> {
-		if $self.offer_features().requires_unknown_bits() {
-			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
-		}
-
-		Ok(<$builder>::new($self, metadata, signing_pubkey))
-	}
-} }
-
 #[cfg(not(c_bindings))]
 impl Offer {
 	request_invoice_derived_signing_pubkey!(self, InvoiceRequestBuilder<'a, 'b, DerivedPayerSigningPubkey, T>);
-	request_invoice_explicit_signing_pubkey!(self, InvoiceRequestBuilder<ExplicitPayerSigningPubkey, secp256k1::SignOnly>);
 }
 
 #[cfg(c_bindings)]
 impl Offer {
 	request_invoice_derived_signing_pubkey!(self, InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>);
-	request_invoice_explicit_signing_pubkey!(self, InvoiceRequestWithExplicitPayerSigningPubkeyBuilder);
 }
 
 #[cfg(test)]
@@ -1267,6 +1222,7 @@ mod tests {
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::types::features::OfferFeatures;
+	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::nonce::Nonce;
@@ -1391,6 +1347,7 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
@@ -1401,18 +1358,18 @@ mod tests {
 		assert!(offer.metadata().is_some());
 		assert_eq!(offer.issuer_signing_pubkey(), Some(node_id));
 
-		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 		match invoice_request.verify_using_metadata(&expanded_key, &secp_ctx) {
 			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
 			Err(_) => panic!("unexpected error"),
 		}
 
 		// Fails verification when using the wrong method
-		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 		assert!(
 			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
 		);
@@ -1425,9 +1382,8 @@ mod tests {
 		tlv_stream.write(&mut encoded_offer).unwrap();
 
 		let invoice_request = Offer::try_from(encoded_offer).unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 		assert!(invoice_request.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered metadata
@@ -1439,9 +1395,8 @@ mod tests {
 		tlv_stream.write(&mut encoded_offer).unwrap();
 
 		let invoice_request = Offer::try_from(encoded_offer).unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 		assert!(invoice_request.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 	}
 
@@ -1452,6 +1407,7 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
 
 		let blinded_path = BlindedMessagePath::from_raw(
 			pubkey(40), pubkey(41),
@@ -1471,18 +1427,18 @@ mod tests {
 		assert!(offer.metadata().is_none());
 		assert_ne!(offer.issuer_signing_pubkey(), Some(node_id));
 
-		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 		match invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx) {
 			Ok(invoice_request) => assert_eq!(invoice_request.offer_id, offer.id()),
 			Err(_) => panic!("unexpected error"),
 		}
 
 		// Fails verification when using the wrong method
-		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 		assert!(invoice_request.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered offer field
@@ -1493,9 +1449,8 @@ mod tests {
 		tlv_stream.write(&mut encoded_offer).unwrap();
 
 		let invoice_request = Offer::try_from(encoded_offer).unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 		assert!(
 			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
 		);
@@ -1509,9 +1464,8 @@ mod tests {
 		tlv_stream.write(&mut encoded_offer).unwrap();
 
 		let invoice_request = Offer::try_from(encoded_offer).unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap();
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 		assert!(
 			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
 		);
@@ -1738,10 +1692,16 @@ mod tests {
 
 	#[test]
 	fn fails_requesting_invoice_with_unknown_required_features() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		match OfferBuilder::new(pubkey(42))
 			.features_unchecked(OfferFeatures::unknown())
 			.build().unwrap()
-			.request_invoice(vec![1; 32], pubkey(43))
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnknownRequiredFeatures),

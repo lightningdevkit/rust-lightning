@@ -301,10 +301,15 @@ mod tests {
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey};
 	use bitcoin::secp256k1::schnorr::Signature;
+	use crate::ln::channelmanager::PaymentId;
+	use crate::ln::inbound_payment::ExpandedKey;
+	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{Amount, OfferBuilder};
 	use crate::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
 	use crate::offers::parse::Bech32Encode;
-	use crate::offers::test_utils::{payer_pubkey, recipient_pubkey};
+	use crate::offers::signer::Metadata;
+	use crate::offers::test_utils::recipient_pubkey;
+	use crate::sign::KeyMaterial;
 	use crate::util::ser::Writeable;
 
 	#[test]
@@ -329,7 +334,11 @@ mod tests {
 
 	#[test]
 	fn calculates_merkle_root_hash_from_invoice_request() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("4141414141414141414141414141414141414141414141414141414141414141").unwrap()).unwrap();
 			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
@@ -344,7 +353,10 @@ mod tests {
 			.description("A Mathematical Treatise".into())
 			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 100 })
 			.build_unchecked()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
+			// Override the payer metadata and signing pubkey to match the test vectors
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.payer_metadata(Metadata::Bytes(vec![0; 8]))
+			.payer_signing_pubkey(payer_keys.public_key())
 			.build_unchecked()
 			.sign(|message: &UnsignedInvoiceRequest|
 				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
@@ -366,12 +378,17 @@ mod tests {
 
 	#[test]
 	fn compute_tagged_hash() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let nonce = Nonce([0u8; 16]);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.payer_note("bar".into())
-			.build().unwrap();
+			.build_unchecked();
 
 		// Simply test that we can grab the tag and merkle root exposed by the accessor
 		// functions, then use them to succesfully compute a tagged hash.
@@ -384,25 +401,21 @@ mod tests {
 
 	#[test]
 	fn skips_encoding_signature_tlv_records() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
 			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
-		};
-		let payer_keys = {
-			let secret_key = SecretKey::from_slice(&[42; 32]).unwrap();
-			Keypair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
-			.build_unchecked()
-			.sign(|message: &UnsignedInvoiceRequest|
-				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			)
-			.unwrap();
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 
 		let mut bytes_without_signature = Vec::new();
 		let tlv_stream_without_signatures = TlvStream::new(&invoice_request.bytes)
@@ -420,24 +433,21 @@ mod tests {
 
 	#[test]
 	fn iterates_over_tlv_stream_range() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let nonce = Nonce([0u8; 16]);
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let recipient_pubkey = {
 			let secret_key = SecretKey::from_slice(&[41; 32]).unwrap();
 			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
-		};
-		let payer_keys = {
-			let secret_key = SecretKey::from_slice(&[42; 32]).unwrap();
-			Keypair::from_secret_key(&secp_ctx, &secret_key)
 		};
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey)
 			.amount_msats(100)
 			.build_unchecked()
-			.request_invoice(vec![0; 8], payer_keys.public_key()).unwrap()
-			.build_unchecked()
-			.sign(|message: &UnsignedInvoiceRequest|
-				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &payer_keys))
-			)
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign()
 			.unwrap();
 
 		let tlv_stream = TlvStream::new(&invoice_request.bytes).range(0..1)
