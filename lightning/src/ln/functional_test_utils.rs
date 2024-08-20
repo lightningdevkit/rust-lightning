@@ -1492,7 +1492,7 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 		if chan.channel_id == as_channel_ready.channel_id {
 			assert!(!found_a);
 			found_a = true;
-			assert!(!chan.is_public);
+			assert!(!chan.is_announced);
 		}
 	}
 	assert!(found_a);
@@ -1502,7 +1502,7 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 		if chan.channel_id == as_channel_ready.channel_id {
 			assert!(!found_b);
 			found_b = true;
-			assert!(!chan.is_public);
+			assert!(!chan.is_announced);
 		}
 	}
 	assert!(found_b);

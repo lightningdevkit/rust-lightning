@@ -632,7 +632,7 @@ where
 			continue;
 		}
 
-		if channel.is_public {
+		if channel.is_announced {
 			if channel.confirmations.is_some() && channel.confirmations < Some(7) {
 				// If we have a public channel, but it doesn't have enough confirmations to (yet)
 				// be in the public network graph (and have gotten a chance to propagate), include
@@ -668,7 +668,7 @@ where
 				let current_max_capacity = entry.get().inbound_capacity_msat;
 				// If this channel is public and the previous channel is not, ensure we replace the
 				// previous channel to avoid announcing non-public channels.
-				let new_now_public = channel.is_public && !entry.get().is_public;
+				let new_now_public = channel.is_announced && !entry.get().is_announced;
 				// Decide whether we prefer the currently selected channel with the node to the new one,
 				// based on their inbound capacity.
 				let prefer_current = prefer_current_channel(min_inbound_capacity_msat, current_max_capacity,
@@ -676,7 +676,7 @@ where
 				// If the public-ness of the channel has not changed (in which case simply defer to
 				// `new_now_public), and this channel has more desirable inbound than the incumbent,
 				// prefer to include this channel.
-				let new_channel_preferable = channel.is_public == entry.get().is_public && !prefer_current;
+				let new_channel_preferable = channel.is_announced == entry.get().is_announced && !prefer_current;
 
 				if new_now_public || new_channel_preferable {
 					log_trace!(logger,
@@ -717,7 +717,7 @@ where
 				// If we have a public channel, but it doesn't have enough confirmations to (yet)
 				// be in the public network graph (and have gotten a chance to propagate), include
 				// route hints but only for public channels to protect private channel privacy.
-				channel.is_public
+				channel.is_announced
 			} else if online_min_capacity_channel_exists {
 				has_enough_capacity && channel.is_usable
 			} else if min_capacity_channel_exists && online_channel_exists {
@@ -738,7 +738,7 @@ where
 				log_trace!(logger, "Ignoring channel {} without enough capacity for invoice route hints",
 					&channel.channel_id);
 			} else {
-				debug_assert!(!channel.is_usable || (has_pub_unconf_chan && !channel.is_public));
+				debug_assert!(!channel.is_usable || (has_pub_unconf_chan && !channel.is_announced));
 				log_trace!(logger, "Ignoring channel {} with disconnected peer",
 					&channel.channel_id);
 			}

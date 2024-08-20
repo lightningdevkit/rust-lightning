@@ -448,7 +448,7 @@ pub struct ChannelDetails {
 	/// This is a strict superset of `is_channel_ready`.
 	pub is_usable: bool,
 	/// True if this channel is (or will be) publicly-announced.
-	pub is_public: bool,
+	pub is_announced: bool,
 	/// The smallest value HTLC (in msat) we will accept, for this channel. This field
 	/// is only `None` for `ChannelDetails` objects serialized prior to LDK 0.0.107
 	pub inbound_htlc_minimum_msat: Option<u64>,
@@ -552,7 +552,7 @@ impl ChannelDetails {
 			is_outbound: context.is_outbound(),
 			is_channel_ready: context.is_usable(),
 			is_usable: context.is_live(),
-			is_public: context.should_announce(),
+			is_announced: context.should_announce(),
 			inbound_htlc_minimum_msat: Some(context.get_holder_htlc_minimum_msat()),
 			inbound_htlc_maximum_msat: context.get_holder_htlc_maximum_msat(),
 			config: Some(context.config()),
@@ -594,7 +594,7 @@ impl Writeable for ChannelDetails {
 				(26, self.is_outbound, required),
 				(28, self.is_channel_ready, required),
 				(30, self.is_usable, required),
-				(32, self.is_public, required),
+				(32, self.is_announced, required),
 				(33, self.inbound_htlc_minimum_msat, option),
 				(35, self.inbound_htlc_maximum_msat, option),
 				(37, user_channel_id_high_opt, option),
@@ -635,7 +635,7 @@ impl Readable for ChannelDetails {
 			(26, is_outbound, required),
 			(28, is_channel_ready, required),
 			(30, is_usable, required),
-			(32, is_public, required),
+			(32, is_announced, required),
 			(33, inbound_htlc_minimum_msat, option),
 			(35, inbound_htlc_maximum_msat, option),
 			(37, user_channel_id_high_opt, option),
@@ -675,7 +675,7 @@ impl Readable for ChannelDetails {
 			is_outbound: is_outbound.0.unwrap(),
 			is_channel_ready: is_channel_ready.0.unwrap(),
 			is_usable: is_usable.0.unwrap(),
-			is_public: is_public.0.unwrap(),
+			is_announced: is_announced.0.unwrap(),
 			inbound_htlc_minimum_msat,
 			inbound_htlc_maximum_msat,
 			feerate_sat_per_1000_weight,
@@ -774,7 +774,7 @@ mod tests {
 			is_outbound: true,
 			is_channel_ready: false,
 			is_usable: true,
-			is_public: false,
+			is_announced: false,
 			inbound_htlc_minimum_msat: Some(98),
 			inbound_htlc_maximum_msat: Some(983274),
 			config: Some(ChannelConfig::default()),

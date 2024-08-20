@@ -1373,7 +1373,7 @@ impl<'a> CandidateRouteHop<'a> {
 	#[inline]
 	pub fn globally_unique_short_channel_id(&self) -> Option<u64> {
 		match self {
-			CandidateRouteHop::FirstHop(hop) => if hop.details.is_public { hop.details.short_channel_id } else { None },
+			CandidateRouteHop::FirstHop(hop) => if hop.details.is_announced { hop.details.short_channel_id } else { None },
 			CandidateRouteHop::PublicHop(hop) => Some(hop.short_channel_id),
 			CandidateRouteHop::PrivateHop(_) => None,
 			CandidateRouteHop::Blinded(_) => None,
@@ -3327,7 +3327,7 @@ where L::Target: Logger {
 				true
 			} else if let CandidateRouteHop::FirstHop(first_hop) = &hop.candidate {
 				// If this is a first hop we also know if it's announced.
-				first_hop.details.is_public
+				first_hop.details.is_announced
 			} else {
 				// If we sourced it any other way, we double-check the network graph to see if
 				// there are announced channels between the endpoints. If so, the hop might be
@@ -3619,7 +3619,7 @@ mod tests {
 			confirmations: None,
 			force_close_spend_delay: None,
 			is_outbound: true, is_channel_ready: true,
-			is_usable: true, is_public: true,
+			is_usable: true, is_announced: true,
 			inbound_htlc_minimum_msat: None,
 			inbound_htlc_maximum_msat: None,
 			config: None,
@@ -8809,7 +8809,7 @@ pub(crate) mod bench_utils {
 			is_outbound: true,
 			is_channel_ready: true,
 			is_usable: true,
-			is_public: true,
+			is_announced: true,
 			inbound_htlc_minimum_msat: None,
 			inbound_htlc_maximum_msat: None,
 			config: None,
