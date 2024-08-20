@@ -1,6 +1,6 @@
 [package]
 name = "lightning-background-processor"
-version = "0.0.123-beta"
+version = "0.0.124-beta"
 authors = ["Valentine Wallace <vwallace@protonmail.com>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning"
@@ -21,14 +21,14 @@ default = ["std"]
 
 [dependencies]
 bitcoin = { version = "0.32.2", default-features = false }
-lightning = { version = "0.0.123-beta", path = "../lightning", default-features = false }
-lightning-rapid-gossip-sync = { version = "0.0.123-beta", path = "../lightning-rapid-gossip-sync", default-features = false }
+lightning = { version = "0.0.124-beta", path = "../lightning", default-features = false }
+lightning-rapid-gossip-sync = { version = "0.0.124-beta", path = "../lightning-rapid-gossip-sync", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1.35", features = [ "macros", "rt", "rt-multi-thread", "sync", "time" ] }
-lightning = { version = "0.0.123-beta", path = "../lightning", features = ["_test_utils"] }
-lightning-invoice = { version = "0.31.0-beta", path = "../lightning-invoice" }
-lightning-persister = { version = "0.0.123-beta", path = "../lightning-persister" }
+lightning = { version = "0.0.124-beta", path = "../lightning", features = ["_test_utils"] }
+lightning-invoice = { version = "0.32.0-beta", path = "../lightning-invoice" }
+lightning-persister = { version = "0.0.124-beta", path = "../lightning-persister" }
 
 [lints]
 workspace = true
