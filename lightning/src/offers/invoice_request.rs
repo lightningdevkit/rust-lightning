@@ -49,8 +49,8 @@
 //! let payment_id = PaymentId([1; 32]);
 //! let mut buffer = Vec::new();
 //!
-//! # use lightning::offers::invoice_request::{DerivedPayerSigningPubkey, InvoiceRequestBuilder};
-//! # <InvoiceRequestBuilder<DerivedPayerSigningPubkey, _>>::from(
+//! # use lightning::offers::invoice_request::InvoiceRequestBuilder;
+//! # <InvoiceRequestBuilder<_>>::from(
 //! "lno1qcp4256ypq"
 //!     .parse::<Offer>()?
 //!     .request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)?
@@ -111,11 +111,10 @@ pub(super) const IV_BYTES: &[u8; IV_LEN] = b"LDK Invreq ~~~~~";
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 ///
 /// [module-level documentation]: self
-pub struct InvoiceRequestBuilder<'a, 'b, P: PayerSigningPubkeyStrategy, T: secp256k1::Signing> {
+pub struct InvoiceRequestBuilder<'a, 'b, T: secp256k1::Signing> {
 	offer: &'a Offer,
 	invoice_request: InvoiceRequestContentsWithoutPayerSigningPubkey,
 	payer_signing_pubkey: Option<PublicKey>,
-	payer_signing_pubkey_strategy: core::marker::PhantomData<P>,
 	secp_ctx: Option<&'b Secp256k1<T>>,
 }
 
@@ -129,21 +128,8 @@ pub struct InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b> {
 	offer: &'a Offer,
 	invoice_request: InvoiceRequestContentsWithoutPayerSigningPubkey,
 	payer_signing_pubkey: Option<PublicKey>,
-	payer_signing_pubkey_strategy: core::marker::PhantomData<DerivedPayerSigningPubkey>,
 	secp_ctx: Option<&'b Secp256k1<secp256k1::All>>,
 }
-
-/// Indicates how [`InvoiceRequest::payer_signing_pubkey`] will be set.
-///
-/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub trait PayerSigningPubkeyStrategy {}
-
-/// [`InvoiceRequest::payer_signing_pubkey`] will be derived.
-///
-/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-pub struct DerivedPayerSigningPubkey {}
-
-impl PayerSigningPubkeyStrategy for DerivedPayerSigningPubkey {}
 
 macro_rules! invoice_request_derived_payer_signing_pubkey_builder_methods { (
 	$self: ident, $self_type: ty, $secp_context: ty
@@ -160,7 +146,6 @@ macro_rules! invoice_request_derived_payer_signing_pubkey_builder_methods { (
 			offer,
 			invoice_request: Self::create_contents(offer, metadata),
 			payer_signing_pubkey: None,
-			payer_signing_pubkey_strategy: core::marker::PhantomData,
 			secp_ctx: Some(secp_ctx),
 		}
 	}
@@ -397,11 +382,8 @@ macro_rules! invoice_request_builder_test_methods { (
 	}
 } }
 
-impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, DerivedPayerSigningPubkey, T> {
+impl<'a, 'b, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, T> {
 	invoice_request_derived_payer_signing_pubkey_builder_methods!(self, Self, T);
-}
-
-impl<'a, 'b, P: PayerSigningPubkeyStrategy, T: secp256k1::Signing> InvoiceRequestBuilder<'a, 'b, P, T> {
 	invoice_request_builder_methods!(self, Self, Self, self, T, mut);
 
 	#[cfg(test)]
@@ -423,14 +405,14 @@ impl<'a, 'b> InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b> {
 
 #[cfg(c_bindings)]
 impl<'a, 'b> From<InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>>
-for InvoiceRequestBuilder<'a, 'b, DerivedPayerSigningPubkey, secp256k1::All> {
+for InvoiceRequestBuilder<'a, 'b, secp256k1::All> {
 	fn from(builder: InvoiceRequestWithDerivedPayerSigningPubkeyBuilder<'a, 'b>) -> Self {
 		let InvoiceRequestWithDerivedPayerSigningPubkeyBuilder {
-			offer, invoice_request, payer_signing_pubkey, payer_signing_pubkey_strategy, secp_ctx,
+			offer, invoice_request, payer_signing_pubkey, secp_ctx,
 		} = builder;
 
 		Self {
-			offer, invoice_request, payer_signing_pubkey, payer_signing_pubkey_strategy, secp_ctx,
+			offer, invoice_request, payer_signing_pubkey, secp_ctx,
 		}
 	}
 }
