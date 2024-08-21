@@ -34,7 +34,7 @@ use bitcoin::{secp256k1, Sequence};
 
 use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
-use crate::blinded_path::message::{BlindedMessagePath, ForwardNode};
+use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
@@ -9354,7 +9354,7 @@ where
 			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
 			.filter(|(_, peer)| peer.is_connected)
 			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
-			.map(|(node_id, peer)| ForwardNode {
+			.map(|(node_id, peer)| MessageForwardNode {
 				node_id: *node_id,
 				short_channel_id: peer.channel_by_id
 					.iter()

@@ -12,8 +12,8 @@
 use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
-use crate::blinded_path::message::{self, BlindedMessagePath, MessageContext};
-use crate::blinded_path::payment::{BlindedPaymentPath, ForwardTlvs, PaymentConstraints, PaymentRelay, ReceiveTlvs, self};
+use crate::blinded_path::message::{BlindedMessagePath, MessageContext, MessageForwardNode};
+use crate::blinded_path::payment::{BlindedPaymentPath, ForwardTlvs, PaymentConstraints, PaymentForwardNode, PaymentRelay, ReceiveTlvs};
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, RecipientOnionFields};
@@ -146,7 +146,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 					max_cltv_expiry: tlvs.payment_constraints.max_cltv_expiry + cltv_expiry_delta,
 					htlc_minimum_msat: details.inbound_htlc_minimum_msat.unwrap_or(0),
 				};
-				Some(payment::ForwardNode {
+				Some(PaymentForwardNode {
 					tlvs: ForwardTlvs {
 						short_channel_id,
 						payment_relay,
@@ -205,7 +205,7 @@ impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Siz
 	fn create_compact_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	> (
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<message::ForwardNode>, secp_ctx: &Secp256k1<T>,
+		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		DefaultMessageRouter::create_compact_blinded_paths(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
 	}

@@ -103,9 +103,9 @@ impl BlindedPaymentPath {
 	/// * any unknown features are required in the provided [`ForwardTlvs`]
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[ForwardNode], payee_node_id: PublicKey, payee_tlvs: ReceiveTlvs,
-		htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16, entropy_source: ES,
-		secp_ctx: &Secp256k1<T>
+		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
+		payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
+		entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, ()> where ES::Target: EntropySource {
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id)
@@ -221,7 +221,7 @@ impl BlindedPaymentPath {
 
 /// An intermediate node, its outbound channel, and relay parameters.
 #[derive(Clone, Debug)]
-pub struct ForwardNode {
+pub struct PaymentForwardNode {
 	/// The TLVs for this node's [`BlindedHop`], where the fee parameters contained within are also
 	/// used for [`BlindedPayInfo`] construction.
 	pub tlvs: ForwardTlvs,
@@ -459,8 +459,8 @@ impl Readable for BlindedPaymentTlvs {
 
 /// Construct blinded payment hops for the given `intermediate_nodes` and payee info.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[ForwardNode],
-	payee_node_id: PublicKey, payee_tlvs: ReceiveTlvs, session_priv: &SecretKey
+	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode],
+	payee_node_id: PublicKey, payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let pks = intermediate_nodes.iter().map(|node| &node.node_id)
 		.chain(core::iter::once(&payee_node_id));
@@ -491,8 +491,8 @@ pub(crate) fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &Payment
 }
 
 pub(super) fn compute_payinfo(
-	intermediate_nodes: &[ForwardNode], payee_tlvs: &ReceiveTlvs, payee_htlc_maximum_msat: u64,
-	min_final_cltv_expiry_delta: u16
+	intermediate_nodes: &[PaymentForwardNode], payee_tlvs: &ReceiveTlvs,
+	payee_htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
 ) -> Result<BlindedPayInfo, ()> {
 	let mut curr_base_fee: u64 = 0;
 	let mut curr_prop_mil: u64 = 0;
@@ -628,7 +628,7 @@ impl_writeable_tlv_based!(Bolt12RefundContext, {});
 #[cfg(test)]
 mod tests {
 	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::payment::{ForwardNode, ForwardTlvs, ReceiveTlvs, PaymentConstraints, PaymentContext, PaymentRelay};
+	use crate::blinded_path::payment::{PaymentForwardNode, ForwardTlvs, ReceiveTlvs, PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::ln::types::PaymentSecret;
 	use crate::ln::features::BlindedHopFeatures;
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
@@ -638,7 +638,7 @@ mod tests {
 		// Taken from the spec example for aggregating blinded payment info. See
 		// https://github.com/lightning/bolts/blob/master/proposals/route-blinding.md#blinded-payments
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![ForwardNode {
+		let intermediate_nodes = vec![PaymentForwardNode {
 			node_id: dummy_pk,
 			tlvs: ForwardTlvs {
 				short_channel_id: 0,
@@ -655,7 +655,7 @@ mod tests {
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value(),
-		}, ForwardNode {
+		}, PaymentForwardNode {
 			node_id: dummy_pk,
 			tlvs: ForwardTlvs {
 				short_channel_id: 0,
@@ -713,7 +713,7 @@ mod tests {
 		// If no hops charge fees, the htlc_minimum_msat should just be the maximum htlc_minimum_msat
 		// along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![ForwardNode {
+		let intermediate_nodes = vec![PaymentForwardNode {
 			node_id: dummy_pk,
 			tlvs: ForwardTlvs {
 				short_channel_id: 0,
@@ -730,7 +730,7 @@ mod tests {
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
-		}, ForwardNode {
+		}, PaymentForwardNode {
 			node_id: dummy_pk,
 			tlvs: ForwardTlvs {
 				short_channel_id: 0,
@@ -766,7 +766,7 @@ mod tests {
 		// Create a path with varying fees and htlc_mins, and make sure htlc_minimum_msat ends up as the
 		// max (htlc_min - following_fees) along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![ForwardNode {
+		let intermediate_nodes = vec![PaymentForwardNode {
 			node_id: dummy_pk,
 			tlvs: ForwardTlvs {
 				short_channel_id: 0,
@@ -783,7 +783,7 @@ mod tests {
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: u64::max_value()
-		}, ForwardNode {
+		}, PaymentForwardNode {
 			node_id: dummy_pk,
 			tlvs: ForwardTlvs {
 				short_channel_id: 0,
@@ -823,7 +823,7 @@ mod tests {
 		// Create a path with varying fees and `htlc_maximum_msat`s, and make sure the aggregated max
 		// htlc ends up as the min (htlc_max - following_fees) along the path.
 		let dummy_pk = PublicKey::from_slice(&[2; 33]).unwrap();
-		let intermediate_nodes = vec![ForwardNode {
+		let intermediate_nodes = vec![PaymentForwardNode {
 			node_id: dummy_pk,
 			tlvs: ForwardTlvs {
 				short_channel_id: 0,
@@ -840,7 +840,7 @@ mod tests {
 				features: BlindedHopFeatures::empty(),
 			},
 			htlc_maximum_msat: 5_000,
-		}, ForwardNode {
+		}, PaymentForwardNode {
 			node_id: dummy_pk,
 			tlvs: ForwardTlvs {
 				short_channel_id: 0,
