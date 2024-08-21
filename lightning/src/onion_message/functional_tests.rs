@@ -10,7 +10,7 @@
 //! Onion message testing and test utilities live here.
 
 use crate::blinded_path::EmptyNodeIdLookUp;
-use crate::blinded_path::message::{BlindedMessagePath, ForwardNode, MessageContext, OffersContext};
+use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode, MessageContext, OffersContext};
 use crate::events::{Event, EventsProvider};
 use crate::ln::features::{ChannelFeatures, InitFeatures};
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
@@ -382,7 +382,7 @@ fn two_unblinded_two_blinded() {
 	let test_msg = TestCustomMessage::Pong;
 
 	let secp_ctx = Secp256k1::new();
-	let intermediate_nodes = [ForwardNode { node_id: nodes[3].node_id, short_channel_id: None }];
+	let intermediate_nodes = [MessageForwardNode { node_id: nodes[3].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[4].node_id, context, &*nodes[4].entropy_source, &secp_ctx).unwrap();
 	let path = OnionMessagePath {
@@ -403,8 +403,8 @@ fn three_blinded_hops() {
 
 	let secp_ctx = Secp256k1::new();
 	let intermediate_nodes = [
-		ForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
-		ForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[3].node_id, context, &*nodes[3].entropy_source, &secp_ctx).unwrap();
@@ -544,8 +544,8 @@ fn we_are_intro_node() {
 
 	let secp_ctx = Secp256k1::new();
 	let intermediate_nodes = [
-		ForwardNode { node_id: nodes[0].node_id, short_channel_id: None },
-		ForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[0].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx).unwrap();
@@ -556,7 +556,7 @@ fn we_are_intro_node() {
 	pass_along_path(&nodes);
 
 	// Try with a two-hop blinded path where we are the introduction node.
-	let intermediate_nodes = [ForwardNode { node_id: nodes[0].node_id, short_channel_id: None }];
+	let intermediate_nodes = [MessageForwardNode { node_id: nodes[0].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[1].node_id, context, &*nodes[1].entropy_source, &secp_ctx).unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
@@ -573,7 +573,7 @@ fn invalid_blinded_path_error() {
 	let test_msg = TestCustomMessage::Pong;
 
 	let secp_ctx = Secp256k1::new();
-	let intermediate_nodes = [ForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
+	let intermediate_nodes = [MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let mut blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx).unwrap();
 	blinded_path.clear_blinded_hops();
@@ -595,8 +595,8 @@ fn reply_path() {
 		first_node_addresses: None,
 	};
 	let intermediate_nodes = [
-		ForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
-		ForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
 	let reply_path = BlindedMessagePath::new(&intermediate_nodes, nodes[0].node_id, context, &*nodes[0].entropy_source, &secp_ctx).unwrap();
@@ -610,15 +610,15 @@ fn reply_path() {
 
 	// Destination::BlindedPath
 	let intermediate_nodes = [
-		ForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
-		ForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[3].node_id, context, &*nodes[3].entropy_source, &secp_ctx).unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
 	let intermediate_nodes = [
-		ForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
-		ForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[2].node_id, short_channel_id: None },
+		MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None },
 	];
 	let context = MessageContext::Custom(Vec::new());
 	let reply_path = BlindedMessagePath::new(&intermediate_nodes, nodes[0].node_id, context, &*nodes[0].entropy_source, &secp_ctx).unwrap();
@@ -701,7 +701,7 @@ fn requests_peer_connection_for_buffered_messages() {
 	let secp_ctx = Secp256k1::new();
 	add_channel_to_graph(&nodes[0], &nodes[1], &secp_ctx, 42);
 
-	let intermediate_nodes = [ForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
+	let intermediate_nodes = [MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(
 		&intermediate_nodes, nodes[2].node_id, context, &*nodes[0].entropy_source, &secp_ctx
@@ -740,7 +740,7 @@ fn drops_buffered_messages_waiting_for_peer_connection() {
 	let secp_ctx = Secp256k1::new();
 	add_channel_to_graph(&nodes[0], &nodes[1], &secp_ctx, 42);
 
-	let intermediate_nodes = [ForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
+	let intermediate_nodes = [MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(
 		&intermediate_nodes, nodes[2].node_id, context, &*nodes[0].entropy_source, &secp_ctx
@@ -791,7 +791,7 @@ fn intercept_offline_peer_oms() {
 
 	let message = TestCustomMessage::Pong;
 	let secp_ctx = Secp256k1::new();
-	let intermediate_nodes = [ForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
+	let intermediate_nodes = [MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: None }];
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(
 		&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx

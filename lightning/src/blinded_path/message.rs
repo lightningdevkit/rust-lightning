@@ -65,8 +65,8 @@ impl BlindedMessagePath {
 	/// Errors if no hops are provided or if `node_pk`(s) are invalid.
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[ForwardNode], recipient_node_id: PublicKey, context: MessageContext,
-		entropy_source: ES, secp_ctx: &Secp256k1<T>
+		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
+		context: MessageContext, entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, ()> where ES::Target: EntropySource {
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id)
@@ -216,12 +216,12 @@ pub enum NextMessageHop {
 
 /// An intermediate node, and possibly a short channel id leading to the next node.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct ForwardNode {
+pub struct MessageForwardNode {
 	/// This node's pubkey.
 	pub node_id: PublicKey,
 	/// The channel between `node_id` and the next hop. If set, the constructed [`BlindedHop`]'s
-	/// `encrypted_payload` will use this instead of the next [`ForwardNode::node_id`] for a more
-	/// compact representation.
+	/// `encrypted_payload` will use this instead of the next [`MessageForwardNode::node_id`] for a
+	/// more compact representation.
 	pub short_channel_id: Option<u64>,
 }
 
@@ -371,8 +371,8 @@ impl_writeable_tlv_based_enum!(OffersContext,
 
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
-	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[ForwardNode], recipient_node_id: PublicKey,
-	context: MessageContext, session_priv: &SecretKey
+	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[MessageForwardNode],
+	recipient_node_id: PublicKey, context: MessageContext, session_priv: &SecretKey,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let pks = intermediate_nodes.iter().map(|node| &node.node_id)
 		.chain(core::iter::once(&recipient_node_id));

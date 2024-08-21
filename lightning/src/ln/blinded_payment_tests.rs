@@ -12,7 +12,7 @@ use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey, schnorr};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use crate::blinded_path;
-use crate::blinded_path::payment::{BlindedPaymentPath, ForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, ReceiveTlvs};
+use crate::blinded_path::payment::{BlindedPaymentPath, PaymentForwardNode, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentRelay, ReceiveTlvs};
 use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PaymentFailureReason};
 use crate::ln::types::{ChannelId, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager;
@@ -44,7 +44,7 @@ fn blinded_payment_path(
 	let mut intro_node_min_htlc_opt = Some(intro_node_min_htlc);
 	let mut intro_node_max_htlc_opt = Some(intro_node_max_htlc);
 	for (idx, (node_id, chan_upd)) in node_ids.iter().zip(channel_upds).enumerate() {
-		intermediate_nodes.push(ForwardNode {
+		intermediate_nodes.push(PaymentForwardNode {
 			node_id: *node_id,
 			tlvs: ForwardTlvs {
 				short_channel_id: chan_upd.short_channel_id,
