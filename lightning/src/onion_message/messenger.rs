@@ -428,38 +428,6 @@ pub enum MessageSendInstructions {
 	}
 }
 
-/// An [`OnionMessage`] for [`OnionMessenger`] to send.
-///
-/// These are obtained when released from [`OnionMessenger`]'s handlers after which they are
-/// enqueued for sending.
-#[cfg(not(c_bindings))]
-pub struct PendingOnionMessage<T: OnionMessageContents> {
-	/// The message contents to send in an [`OnionMessage`].
-	pub contents: T,
-
-	/// The destination of the message.
-	pub destination: Destination,
-
-	/// A reply path to include in the [`OnionMessage`] for a response.
-	pub reply_path: Option<BlindedMessagePath>,
-}
-
-#[cfg(c_bindings)]
-/// An [`OnionMessage`] for [`OnionMessenger`] to send.
-///
-/// These are obtained when released from [`OnionMessenger`]'s handlers after which they are
-/// enqueued for sending.
-pub type PendingOnionMessage<T> = (T, Destination, Option<BlindedMessagePath>);
-
-pub(crate) fn new_pending_onion_message<T: OnionMessageContents>(
-	contents: T, destination: Destination, reply_path: Option<BlindedMessagePath>
-) -> PendingOnionMessage<T> {
-	#[cfg(not(c_bindings))]
-	return PendingOnionMessage { contents, destination, reply_path };
-	#[cfg(c_bindings)]
-	return (contents, destination, reply_path);
-}
-
 /// A trait defining behavior for routing an [`OnionMessage`].
 pub trait MessageRouter {
 	/// Returns a route for sending an [`OnionMessage`] to the given [`Destination`].
