@@ -34,7 +34,7 @@ use crate::util::test_channel_signer::TestChannelSigner;
 #[cfg(test)]
 use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_utils;
-use crate::util::test_utils::{panicking, TestChainMonitor, TestScorer, TestKeysInterface};
+use crate::util::test_utils::{TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
 
 use bitcoin::amount::Amount;
@@ -194,28 +194,23 @@ impl ConnectStyle {
 	}
 
 	fn random_style() -> ConnectStyle {
-		#[cfg(feature = "std")] {
-			use core::hash::{BuildHasher, Hasher};
-			// Get a random value using the only std API to do so - the DefaultHasher
-			let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
-			let res = match rand_val % 9 {
-				0 => ConnectStyle::BestBlockFirst,
-				1 => ConnectStyle::BestBlockFirstSkippingBlocks,
-				2 => ConnectStyle::BestBlockFirstReorgsOnlyTip,
-				3 => ConnectStyle::TransactionsFirst,
-				4 => ConnectStyle::TransactionsFirstSkippingBlocks,
-				5 => ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks,
-				6 => ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks,
-				7 => ConnectStyle::TransactionsFirstReorgsOnlyTip,
-				8 => ConnectStyle::FullBlockViaListen,
-				_ => unreachable!(),
-			};
-			eprintln!("Using Block Connection Style: {:?}", res);
-			res
-		}
-		#[cfg(not(feature = "std"))] {
-			ConnectStyle::FullBlockViaListen
-		}
+		use core::hash::{BuildHasher, Hasher};
+		// Get a random value using the only std API to do so - the DefaultHasher
+		let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
+		let res = match rand_val % 9 {
+			0 => ConnectStyle::BestBlockFirst,
+			1 => ConnectStyle::BestBlockFirstSkippingBlocks,
+			2 => ConnectStyle::BestBlockFirstReorgsOnlyTip,
+			3 => ConnectStyle::TransactionsFirst,
+			4 => ConnectStyle::TransactionsFirstSkippingBlocks,
+			5 => ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks,
+			6 => ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks,
+			7 => ConnectStyle::TransactionsFirstReorgsOnlyTip,
+			8 => ConnectStyle::FullBlockViaListen,
+			_ => unreachable!(),
+		};
+		eprintln!("Using Block Connection Style: {:?}", res);
+		res
 	}
 }
 
@@ -270,9 +265,7 @@ fn do_connect_block_with_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b, '
 
 fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool) {
 	let height = node.best_block_info().1 + 1;
-	#[cfg(feature = "std")] {
-		eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
-	}
+	eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
 	// Update the block internally before handing it over to LDK, to ensure our assertions regarding
 	// transaction broadcast are correct.
 	node.blocks.lock().unwrap().push((block.clone(), height));
@@ -340,9 +333,7 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b
 
 pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32) {
 	call_claimable_balances(node);
-	#[cfg(feature = "std")] {
-		eprintln!("Disconnecting {} blocks using Block Connection Style: {:?}", count, *node.connect_style.borrow());
-	}
+	eprintln!("Disconnecting {} blocks using Block Connection Style: {:?}", count, *node.connect_style.borrow());
 	for i in 0..count {
 		let orig = node.blocks.lock().unwrap().pop().unwrap();
 		assert!(orig.1 > 0); // Cannot disconnect genesis
@@ -471,9 +462,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	}
 }
 
-#[cfg(feature = "std")]
 impl<'a, 'b, 'c> std::panic::UnwindSafe for Node<'a, 'b, 'c> {}
-#[cfg(feature = "std")]
 impl<'a, 'b, 'c> std::panic::RefUnwindSafe for Node<'a, 'b, 'c> {}
 impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 	pub fn best_block_hash(&self) -> BlockHash {
@@ -620,7 +609,7 @@ impl<'a, 'b: 'a, 'c: 'b> NodeHolder for Node<'a, 'b, 'c> {
 
 impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 	fn drop(&mut self) {
-		if !panicking() {
+		if !std::thread::panicking() {
 			// Check that we processed all pending events
 			let msg_events = self.node.get_and_clear_pending_msg_events();
 			if !msg_events.is_empty() {

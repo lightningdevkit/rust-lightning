@@ -91,18 +91,8 @@ mod tests {
 	use crate::routing::router::Payee;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use core::time::Duration;
 	use lightning_invoice::{Currency, InvoiceBuilder};
-	#[cfg(feature = "std")]
 	use std::time::SystemTime;
-
-	fn duration_since_epoch() -> Duration {
-		#[cfg(feature = "std")]
-		let duration_since_epoch = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
-		#[cfg(not(feature = "std"))]
-		let duration_since_epoch = Duration::from_secs(1234567);
-		duration_since_epoch
-	}
 
 	#[test]
 	fn invoice_test() {
@@ -111,11 +101,12 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let public_key = PublicKey::from_secret_key(&secp_ctx, &private_key);
 
+		let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("test".into())
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
-			.duration_since_epoch(duration_since_epoch())
+			.duration_since_epoch(timestamp)
 			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(128)
 			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
@@ -142,11 +133,12 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let public_key = PublicKey::from_secret_key(&secp_ctx, &private_key);
 
+		let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("test".into())
 			.payment_hash(payment_hash)
 			.payment_secret(PaymentSecret([0; 32]))
-			.duration_since_epoch(duration_since_epoch())
+			.duration_since_epoch(timestamp)
 			.min_final_cltv_expiry_delta(144)
 			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
 			.unwrap();
@@ -167,12 +159,12 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn payment_metadata_end_to_end() {
 		use crate::events::Event;
 		use crate::ln::channelmanager::{PaymentId, Retry};
 		use crate::ln::functional_test_utils::*;
 		use crate::ln::msgs::ChannelMessageHandler;
+
 		// Test that a payment metadata read from an invoice passed to `pay_invoice` makes it all
 		// the way out through the `PaymentClaimable` event.
 		let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -188,12 +180,12 @@ mod tests {
 
 		let secp_ctx = Secp256k1::new();
 		let node_secret = nodes[1].keys_manager.backing.get_node_secret_key();
-		let time = std::time::SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+		let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
 		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("test".into())
 			.payment_hash(Sha256::from_slice(&payment_hash.0).unwrap())
 			.payment_secret(payment_secret)
-			.duration_since_epoch(time)
+			.duration_since_epoch(timestamp)
 			.min_final_cltv_expiry_delta(144)
 			.amount_milli_satoshis(50_000)
 			.payment_metadata(payment_metadata.clone())

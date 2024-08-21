@@ -26,9 +26,8 @@ use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, PaymentParameters
 use crate::sign::{EntropySource, NodeSigner, Recipient};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
-use crate::util::time::Time;
-#[cfg(all(feature = "std", test))]
-use crate::util::time::tests::SinceEpoch;
+#[cfg(feature = "std")]
+use crate::util::time::Instant;
 use crate::util::ser::ReadableArgs;
 
 use core::fmt::{self, Display, Formatter};
@@ -319,12 +318,9 @@ impl Retry {
 			(Retry::Attempts(max_retry_count), PaymentAttempts { count, .. }) => {
 				max_retry_count > count
 			},
-			#[cfg(all(feature = "std", not(test)))]
+			#[cfg(feature = "std")]
 			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
-				*max_duration >= crate::util::time::MonotonicTime::now().duration_since(*first_attempted_at),
-			#[cfg(all(feature = "std", test))]
-			(Retry::Timeout(max_duration), PaymentAttempts { first_attempted_at, .. }) =>
-				*max_duration >= SinceEpoch::now().duration_since(*first_attempted_at),
+				*max_duration >= Instant::now().duration_since(*first_attempted_at),
 		}
 	}
 }
@@ -339,42 +335,28 @@ pub(super) fn has_expired(route_params: &RouteParameters) -> bool {
 	false
 }
 
-pub(crate) type PaymentAttempts = PaymentAttemptsUsingTime<ConfiguredTime>;
-
 /// Storing minimal payment attempts information required for determining if a outbound payment can
 /// be retried.
-pub(crate) struct PaymentAttemptsUsingTime<T: Time> {
+pub(crate) struct PaymentAttempts {
 	/// This count will be incremented only after the result of the attempt is known. When it's 0,
 	/// it means the result of the first attempt is not known yet.
 	pub(crate) count: u32,
 	/// This field is only used when retry is `Retry::Timeout` which is only build with feature std
 	#[cfg(feature = "std")]
-	first_attempted_at: T,
-	#[cfg(not(feature = "std"))]
-	phantom: core::marker::PhantomData<T>,
-
+	first_attempted_at: Instant,
 }
 
-#[cfg(not(feature = "std"))]
-type ConfiguredTime = crate::util::time::Eternity;
-#[cfg(all(feature = "std", not(test)))]
-type ConfiguredTime = crate::util::time::MonotonicTime;
-#[cfg(all(feature = "std", test))]
-type ConfiguredTime = SinceEpoch;
-
-impl<T: Time> PaymentAttemptsUsingTime<T> {
+impl PaymentAttempts {
 	pub(crate) fn new() -> Self {
-		PaymentAttemptsUsingTime {
+		PaymentAttempts {
 			count: 0,
 			#[cfg(feature = "std")]
-			first_attempted_at: T::now(),
-			#[cfg(not(feature = "std"))]
-			phantom: core::marker::PhantomData,
+			first_attempted_at: Instant::now(),
 		}
 	}
 }
 
-impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
+impl Display for PaymentAttempts {
 	fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
 		#[cfg(not(feature = "std"))]
 		return write!(f, "attempts: {}", self.count);
@@ -383,7 +365,7 @@ impl<T: Time> Display for PaymentAttemptsUsingTime<T> {
 			f,
 			"attempts: {}, duration: {}s",
 			self.count,
-			T::now().duration_since(self.first_attempted_at).as_secs()
+			Instant::now().duration_since(self.first_attempted_at).as_secs()
 		);
 	}
 }

@@ -7419,7 +7419,6 @@ mod tests {
 			(route.paths[1].hops[1].short_channel_id == 4 && route.paths[0].hops[1].short_channel_id == 13));
 	}
 
-	#[cfg(feature = "std")]
 	pub(super) fn random_init_seed() -> u64 {
 		// Because the default HashMap in std pulls OS randomness, we can use it as a (bad) RNG.
 		use core::hash::{BuildHasher, Hasher};
@@ -7429,7 +7428,6 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn generate_routes() {
 		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
@@ -7449,7 +7447,6 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn generate_routes_mpp() {
 		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
@@ -7469,7 +7466,6 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn generate_large_mpp_routes() {
 		use crate::routing::scoring::ProbabilisticScoringFeeParameters;
 
@@ -8696,7 +8692,7 @@ mod tests {
 	}
 }
 
-#[cfg(all(any(test, ldk_bench), feature = "std"))]
+#[cfg(any(test, ldk_bench))]
 pub(crate) mod bench_utils {
 	use super::*;
 	use std::fs::File;

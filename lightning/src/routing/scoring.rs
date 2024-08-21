@@ -49,11 +49,6 @@
 //! # }
 //! ```
 //!
-//! # Note
-//!
-//! Persisting when built with feature `no-std` and restoring without it, or vice versa, uses
-//! different types and thus is undefined.
-//!
 //! [`find_route`]: crate::routing::router::find_route
 
 use crate::ln::msgs::DecodeError;

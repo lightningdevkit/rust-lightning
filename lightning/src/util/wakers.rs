@@ -730,7 +730,6 @@ mod tests {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn multi_poll_stores_single_waker() {
 		// When a `Future` is `poll()`ed multiple times, only the last `Waker` should be called,
 		// but previously we'd store all `Waker`s until they're all woken at once. This tests a few

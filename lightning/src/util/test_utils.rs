@@ -75,8 +75,6 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
 use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
 
-#[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
 use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
 
@@ -286,10 +284,8 @@ impl<'a> MessageRouter for TestRouter<'a> {
 
 impl<'a> Drop for TestRouter<'a> {
 	fn drop(&mut self) {
-		#[cfg(feature = "std")] {
-			if std::thread::panicking() {
-				return;
-			}
+		if std::thread::panicking() {
+			return;
 		}
 		assert!(self.next_routes.lock().unwrap().is_empty());
 	}
@@ -797,12 +793,9 @@ impl TestChannelMessageHandler {
 
 impl Drop for TestChannelMessageHandler {
 	fn drop(&mut self) {
-		#[cfg(feature = "std")]
-		{
-			let l = self.expected_recv_msgs.lock().unwrap();
-			if !std::thread::panicking() {
-				assert!(l.is_none() || l.as_ref().unwrap().is_empty());
-			}
+		let l = self.expected_recv_msgs.lock().unwrap();
+		if !std::thread::panicking() {
+			assert!(l.is_none() || l.as_ref().unwrap().is_empty());
 		}
 	}
 }
@@ -1051,8 +1044,9 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 
 		#[allow(unused_mut, unused_assignments)]
 		let mut gossip_start_time = 0;
-		#[cfg(feature = "std")]
+		#[cfg(not(feature = "no-std"))]
 		{
+			use std::time::{SystemTime, UNIX_EPOCH};
 			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 			if self.request_full_sync.load(Ordering::Acquire) {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
@@ -1179,10 +1173,8 @@ impl Logger for TestLogger {
 		*self.lines.lock().unwrap().entry((record.module_path, format!("{}", record.args))).or_insert(0) += 1;
 		*self.context.lock().unwrap().entry((record.module_path, record.peer_id, record.channel_id)).or_insert(0) += 1;
 		if record.level >= self.level {
-			#[cfg(all(not(ldk_bench), feature = "std"))] {
-				let pfx = format!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line);
-				println!("{:<55}{}", pfx, record.args);
-			}
+			let pfx = format!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line);
+			println!("{:<55}{}", pfx, record.args);
 		}
 	}
 }
@@ -1380,17 +1372,9 @@ impl TestKeysInterface {
 	}
 }
 
-pub(crate) fn panicking() -> bool {
-	#[cfg(feature = "std")]
-	let panicking = ::std::thread::panicking();
-	#[cfg(not(feature = "std"))]
-	let panicking = false;
-	return panicking;
-}
-
 impl Drop for TestKeysInterface {
 	fn drop(&mut self) {
-		if panicking() {
+		if std::thread::panicking() {
 			return;
 		}
 
@@ -1463,7 +1447,7 @@ impl chain::Filter for TestChainSource {
 
 impl Drop for TestChainSource {
 	fn drop(&mut self) {
-		if panicking() {
+		if std::thread::panicking() {
 			return;
 		}
 	}
@@ -1530,10 +1514,8 @@ impl crate::routing::scoring::Score for TestScorer {}
 
 impl Drop for TestScorer {
 	fn drop(&mut self) {
-		#[cfg(feature = "std")] {
-			if std::thread::panicking() {
-				return;
-			}
+		if std::thread::panicking() {
+			return;
 		}
 
 		if let Some(scorer_expectations) = self.scorer_expectations.borrow().as_ref() {

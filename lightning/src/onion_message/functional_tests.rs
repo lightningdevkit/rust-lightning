@@ -64,10 +64,8 @@ struct MessengerNode {
 
 impl Drop for MessengerNode {
 	fn drop(&mut self) {
-		#[cfg(feature = "std")] {
-			if std::thread::panicking() {
-				return;
-			}
+		if std::thread::panicking() {
+			return;
 		}
 		assert!(release_events(self).is_empty());
 	}
@@ -163,10 +161,8 @@ impl TestCustomMessageHandler {
 
 impl Drop for TestCustomMessageHandler {
 	fn drop(&mut self) {
-		#[cfg(feature = "std")] {
-			if std::thread::panicking() {
-				return;
-			}
+		if std::thread::panicking() {
+			return;
 		}
 		assert!(self.expectations.lock().unwrap().is_empty());
 	}

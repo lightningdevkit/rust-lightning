@@ -309,7 +309,6 @@ where U::Target: UtxoLookup, L::Target: Logger
 {
 	network_graph: G,
 	utxo_lookup: RwLock<Option<U>>,
-	#[cfg(feature = "std")]
 	full_syncs_requested: AtomicUsize,
 	pending_events: Mutex<Vec<MessageSendEvent>>,
 	logger: L,
@@ -325,7 +324,6 @@ where U::Target: UtxoLookup, L::Target: Logger
 	pub fn new(network_graph: G, utxo_lookup: Option<U>, logger: L) -> Self {
 		P2PGossipSync {
 			network_graph,
-			#[cfg(feature = "std")]
 			full_syncs_requested: AtomicUsize::new(0),
 			utxo_lookup: RwLock::new(utxo_lookup),
 			pending_events: Mutex::new(vec![]),
@@ -348,10 +346,8 @@ where U::Target: UtxoLookup, L::Target: Logger
 		&self.network_graph
 	}
 
-	#[cfg(feature = "std")]
 	/// Returns true when a full routing table sync should be performed with a peer.
-	fn should_request_full_sync(&self, _node_id: &PublicKey) -> bool {
-		//TODO: Determine whether to request a full sync based on the network map.
+	fn should_request_full_sync(&self) -> bool {
 		const FULL_SYNCS_TO_REQUEST: usize = 5;
 		if self.full_syncs_requested.load(Ordering::Acquire) < FULL_SYNCS_TO_REQUEST {
 			self.full_syncs_requested.fetch_add(1, Ordering::AcqRel);
@@ -619,10 +615,12 @@ where U::Target: UtxoLookup, L::Target: Logger
 		// For no-std builds, we bury our head in the sand and do a full sync on each connection.
 		#[allow(unused_mut, unused_assignments)]
 		let mut gossip_start_time = 0;
+		#[allow(unused)]
+		let should_sync = self.should_request_full_sync();
 		#[cfg(feature = "std")]
 		{
 			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
-			if self.should_request_full_sync(&their_node_id) {
+			if should_sync {
 				gossip_start_time -= 60 * 60 * 24 * 7 * 2; // 2 weeks ago
 			} else {
 				gossip_start_time -= 60 * 60; // an hour ago
@@ -2452,18 +2450,16 @@ pub(crate) mod tests {
 	}
 
 	#[test]
-	#[cfg(feature = "std")]
 	fn request_full_sync_finite_times() {
 		let network_graph = create_network_graph();
-		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
-		let node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&<Vec<u8>>::from_hex("0202020202020202020202020202020202020202020202020202020202020202").unwrap()[..]).unwrap());
+		let (_, gossip_sync) = create_gossip_sync(&network_graph);
 
-		assert!(gossip_sync.should_request_full_sync(&node_id));
-		assert!(gossip_sync.should_request_full_sync(&node_id));
-		assert!(gossip_sync.should_request_full_sync(&node_id));
-		assert!(gossip_sync.should_request_full_sync(&node_id));
-		assert!(gossip_sync.should_request_full_sync(&node_id));
-		assert!(!gossip_sync.should_request_full_sync(&node_id));
+		assert!(gossip_sync.should_request_full_sync());
+		assert!(gossip_sync.should_request_full_sync());
+		assert!(gossip_sync.should_request_full_sync());
+		assert!(gossip_sync.should_request_full_sync());
+		assert!(gossip_sync.should_request_full_sync());
+		assert!(!gossip_sync.should_request_full_sync());
 	}
 
 	pub(crate) fn get_signed_node_announcement<F: Fn(&mut UnsignedNodeAnnouncement)>(f: F, node_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>) -> NodeAnnouncement {
