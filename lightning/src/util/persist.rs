@@ -157,10 +157,11 @@ pub trait KVStore {
 /// Trait that handles persisting a [`ChannelManager`], [`NetworkGraph`], and [`WriteableScore`] to disk.
 ///
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-pub trait Persister<'a, CM: Deref, L: Deref, S: WriteableScore<'a>>
+pub trait Persister<'a, CM: Deref, L: Deref, S: Deref>
 where
 	CM::Target: 'static + AChannelManager,
 	L::Target: 'static + Logger,
+	S::Target: WriteableScore<'a>,
 {
 	/// Persist the given ['ChannelManager'] to disk, returning an error if persistence failed.
 	///
@@ -175,10 +176,11 @@ where
 }
 
 
-impl<'a, A: KVStore + ?Sized, CM: Deref, L: Deref, S: WriteableScore<'a>> Persister<'a, CM, L, S> for A
+impl<'a, A: KVStore + ?Sized, CM: Deref, L: Deref, S: Deref> Persister<'a, CM, L, S> for A
 where
 	CM::Target: 'static + AChannelManager,
 	L::Target: 'static + Logger,
+	S::Target: WriteableScore<'a>,
 {
 	fn persist_manager(&self, channel_manager: &CM) -> Result<(), io::Error> {
 		self.write(CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,

@@ -764,7 +764,7 @@ where
 	F::Target: 'static + FeeEstimator,
 	L::Target: 'static + Logger,
 	P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-	PS::Target: 'static + Persister<'a, CM, L, SC>,
+	PS::Target: 'static + Persister<'a, CM, L, S>,
 	CM::Target: AChannelManager + Send + Sync,
 	OM::Target: AOnionMessenger + Send + Sync,
 	PM::Target: APeerManager + Send + Sync,
@@ -786,7 +786,7 @@ where
 				if let Some(duration_since_epoch) = fetch_time() {
 					if update_scorer(scorer, &event, duration_since_epoch) {
 						log_trace!(logger, "Persisting scorer after update");
-						if let Err(e) = persister.persist_scorer(&scorer) {
+						if let Err(e) = persister.persist_scorer(&*scorer) {
 							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
 							// We opt not to abort early on persistence failure here as persisting
 							// the scorer is non-critical and we still hope that it will have
@@ -935,7 +935,7 @@ impl BackgroundProcessor {
 		F::Target: 'static + FeeEstimator,
 		L::Target: 'static + Logger,
 		P::Target: 'static + Persist<<CM::Target as AChannelManager>::Signer>,
-		PS::Target: 'static + Persister<'a, CM, L, SC>,
+		PS::Target: 'static + Persister<'a, CM, L, S>,
 		CM::Target: AChannelManager + Send + Sync,
 		OM::Target: AOnionMessenger + Send + Sync,
 		PM::Target: APeerManager + Send + Sync,
