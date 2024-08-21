@@ -39,6 +39,10 @@ const STATIC_INVOICE_TLV_TYPE: u64 = 70;
 ///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
 pub trait OffersMessageHandler {
+	/// The message type for messages which are sent in response to [`Self::handle_message`] or
+	/// sent via [`Self::release_pending_messages`].
+	type ResponseType: OnionMessageContents;
+
 	/// Handles the given message by either responding with an [`Bolt12Invoice`], sending a payment,
 	/// or replying with an error.
 	///
@@ -47,14 +51,14 @@ pub trait OffersMessageHandler {
 	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
 	fn handle_message(
 		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
-	) -> ResponseInstruction<OffersMessage>;
+	) -> ResponseInstruction<Self::ResponseType>;
 
 	/// Releases any [`OffersMessage`]s that need to be sent.
 	///
 	/// Typically, this is used for messages initiating a payment flow rather than in response to
 	/// another message. The latter should use the return value of [`Self::handle_message`].
 	#[cfg(not(c_bindings))]
-	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> { vec![] }
+	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<Self::ResponseType>> { vec![] }
 
 	/// Releases any [`OffersMessage`]s that need to be sent.
 	///

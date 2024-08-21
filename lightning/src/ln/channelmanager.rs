@@ -10747,6 +10747,8 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
+	type ResponseType = OffersMessage;
+
 	fn handle_message(
 		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
 	) -> ResponseInstruction<OffersMessage> {
@@ -10954,9 +10956,11 @@ where
 	R::Target: Router,
 	L::Target: Logger,
 {
+	type ResponseType = AsyncPaymentsMessage;
+
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
+	) -> ResponseInstruction<AsyncPaymentsMessage> {
 		ResponseInstruction::NoResponse
 	}
 

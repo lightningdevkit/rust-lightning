@@ -29,7 +29,7 @@ use crate::util::ser::{VecWriter, Writeable, Writer};
 use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, MessageBuf, MSG_BUF_ALLOC_SIZE};
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
-use crate::onion_message::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
+use crate::onion_message::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
 use crate::onion_message::messenger::{CustomOnionMessageHandler, PendingOnionMessage, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
@@ -144,14 +144,16 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 }
 
 impl OffersMessageHandler for IgnoringMessageHandler {
+	type ResponseType = OffersMessage;
 	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
 }
 impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
+	type ResponseType = AsyncPaymentsMessage;
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
+	) -> ResponseInstruction<AsyncPaymentsMessage> {
 		ResponseInstruction::NoResponse
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}

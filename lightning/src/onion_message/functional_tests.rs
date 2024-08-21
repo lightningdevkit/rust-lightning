@@ -19,7 +19,7 @@ use crate::routing::test_utils::{add_channel, add_or_update_node};
 use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
-use super::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
+use super::async_payments::{AsyncPaymentsMessage, AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
 use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, PendingOnionMessage, Responder, ResponseInstruction, SendError, SendSuccess};
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
@@ -76,6 +76,7 @@ impl Drop for MessengerNode {
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
+	type ResponseType = OffersMessage;
 	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
 		ResponseInstruction::NoResponse
 	}
@@ -84,9 +85,10 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 struct TestAsyncPaymentsMessageHandler {}
 
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
+	type ResponseType = AsyncPaymentsMessage;
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
+	) -> ResponseInstruction<AsyncPaymentsMessage> {
 		ResponseInstruction::NoResponse
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}

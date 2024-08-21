@@ -26,11 +26,15 @@ const RELEASE_HELD_HTLC_TLV_TYPE: u64 = 74;
 ///
 /// [`OnionMessage`]: crate::ln::msgs::OnionMessage
 pub trait AsyncPaymentsMessageHandler {
+	/// The message type for messages which are sent in response to [`Self::held_htlc_available`]
+	/// or sent via [`Self::release_pending_messages`].
+	type ResponseType: OnionMessageContents;
+
 	/// Handle a [`HeldHtlcAvailable`] message. A [`ReleaseHeldHtlc`] should be returned to release
 	/// the held funds.
 	fn held_htlc_available(
 		&self, message: HeldHtlcAvailable, responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc>;
+	) -> ResponseInstruction<Self::ResponseType>;
 
 	/// Handle a [`ReleaseHeldHtlc`] message. If authentication of the message succeeds, an HTLC
 	/// should be released to the corresponding payee.
@@ -41,7 +45,7 @@ pub trait AsyncPaymentsMessageHandler {
 	/// Typically, this is used for messages initiating an async payment flow rather than in response
 	/// to another message.
 	#[cfg(not(c_bindings))]
-	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<AsyncPaymentsMessage>> {
+	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<Self::ResponseType>> {
 		vec![]
 	}
 
