@@ -47,7 +47,7 @@ pub trait OffersMessageHandler {
 	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
 	fn handle_message(
 		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
-	) -> ResponseInstruction<OffersMessage>;
+	) -> Option<(OffersMessage, ResponseInstruction)>;
 
 	/// Releases any [`OffersMessage`]s that need to be sent.
 	///

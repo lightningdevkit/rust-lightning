@@ -109,8 +109,8 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 	fn handle_message(
 		&self, _message: OffersMessage, _context: Option<OffersContext>,
 		_responder: Option<Responder>,
-	) -> ResponseInstruction<OffersMessage> {
-		ResponseInstruction::NoResponse
+	) -> Option<(OffersMessage, ResponseInstruction)> {
+		None
 	}
 }
 
@@ -119,13 +119,15 @@ struct TestAsyncPaymentsMessageHandler {}
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 	fn held_htlc_available(
 		&self, message: HeldHtlcAvailable, responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
 		let responder = match responder {
 			Some(resp) => resp,
-			None => return ResponseInstruction::NoResponse,
+			None => return None,
 		};
-		responder
-			.respond(ReleaseHeldHtlc { payment_release_secret: message.payment_release_secret })
+		Some((
+			ReleaseHeldHtlc { payment_release_secret: message.payment_release_secret },
+			responder.respond(),
+		))
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
@@ -158,10 +160,10 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	fn handle_custom_message(
 		&self, message: Self::CustomMessage, _context: Option<Vec<u8>>,
 		responder: Option<Responder>,
-	) -> ResponseInstruction<Self::CustomMessage> {
+	) -> Option<(Self::CustomMessage, ResponseInstruction)> {
 		match responder {
-			Some(responder) => responder.respond(message),
-			None => ResponseInstruction::NoResponse,
+			Some(responder) => Some((message, responder.respond())),
+			None => None,
 		}
 	}
 	fn read_custom_message<R: io::Read>(

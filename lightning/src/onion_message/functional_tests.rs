@@ -76,8 +76,8 @@ impl Drop for MessengerNode {
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
-		ResponseInstruction::NoResponse
+	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
+		None
 	}
 }
 
@@ -86,8 +86,8 @@ struct TestAsyncPaymentsMessageHandler {}
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
-		ResponseInstruction::NoResponse
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
+		None
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
@@ -174,7 +174,7 @@ impl Drop for TestCustomMessageHandler {
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
-	fn handle_custom_message(&self, msg: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
+	fn handle_custom_message(&self, msg: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>) -> Option<(Self::CustomMessage, ResponseInstruction)> {
 		let expectation = self.get_next_expectation();
 		assert_eq!(msg, expectation.expect);
 
@@ -190,10 +190,10 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 
 		match responder {
 			Some(responder) if expectation.include_reply_path => {
-				responder.respond_with_reply_path(response, MessageContext::Custom(context.unwrap_or_else(Vec::new)))
+				Some((response, responder.respond_with_reply_path(MessageContext::Custom(context.unwrap_or_else(Vec::new)))))
 			},
-			Some(responder) => responder.respond(response),
-			None => ResponseInstruction::NoResponse,
+			Some(responder) => Some((response, responder.respond())),
+			None => None
 		}
 	}
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, DecodeError> where Self: Sized {
@@ -444,8 +444,9 @@ fn async_response_over_one_blinded_hop() {
 	let response_instruction = nodes[0].custom_message_handler.handle_custom_message(message, None, responder);
 
 	// 6. Simulate Alice asynchronously responding back to Bob with a response.
+	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(
-		nodes[0].messenger.handle_onion_message_response(response_instruction),
+		nodes[0].messenger.handle_onion_message_response(msg, instructions),
 		Ok(Some(SendSuccess::Buffered)),
 	);
 
@@ -477,8 +478,9 @@ fn async_response_with_reply_path_succeeds() {
 	alice.custom_message_handler.expect_message_and_response(message.clone());
 	let response_instruction = alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
 
+	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(
-		alice.messenger.handle_onion_message_response(response_instruction),
+		alice.messenger.handle_onion_message_response(msg, instructions),
 		Ok(Some(SendSuccess::Buffered)),
 	);
 
@@ -516,8 +518,9 @@ fn async_response_with_reply_path_fails() {
 	alice.custom_message_handler.expect_message_and_response(message.clone());
 	let response_instruction = alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
 
+	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(
-		alice.messenger.handle_onion_message_response(response_instruction),
+		alice.messenger.handle_onion_message_response(msg, instructions),
 		Err(SendError::PathNotFound),
 	);
 }

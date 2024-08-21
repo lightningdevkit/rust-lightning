@@ -144,21 +144,21 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 }
 
 impl OffersMessageHandler for IgnoringMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
-		ResponseInstruction::NoResponse
+	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
+		None
 	}
 }
 impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
-		ResponseInstruction::NoResponse
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
+		None
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
-	fn handle_custom_message(&self, _message: Self::CustomMessage, _context: Option<Vec<u8>>, _responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
+	fn handle_custom_message(&self, _message: Self::CustomMessage, _context: Option<Vec<u8>>, _responder: Option<Responder>) -> Option<(Infallible, ResponseInstruction)> {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}

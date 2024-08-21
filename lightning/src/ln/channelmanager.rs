@@ -10749,7 +10749,7 @@ where
 {
 	fn handle_message(
 		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
-	) -> ResponseInstruction<OffersMessage> {
+	) -> Option<(OffersMessage, ResponseInstruction)> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
@@ -10757,13 +10757,13 @@ where
 			OffersMessage::InvoiceRequest(invoice_request) => {
 				let responder = match responder {
 					Some(responder) => responder,
-					None => return ResponseInstruction::NoResponse,
+					None => return None,
 				};
 
 				let nonce = match context {
 					None if invoice_request.metadata().is_some() => None,
 					Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
-					_ => return ResponseInstruction::NoResponse,
+					_ => return None,
 				};
 
 				let invoice_request = match nonce {
@@ -10771,11 +10771,11 @@ where
 						nonce, expanded_key, secp_ctx,
 					) {
 						Ok(invoice_request) => invoice_request,
-						Err(()) => return ResponseInstruction::NoResponse,
+						Err(()) => return None,
 					},
 					None => match invoice_request.verify_using_metadata(expanded_key, secp_ctx) {
 						Ok(invoice_request) => invoice_request,
-						Err(()) => return ResponseInstruction::NoResponse,
+						Err(()) => return None,
 					},
 				};
 
@@ -10783,7 +10783,7 @@ where
 					&invoice_request.inner
 				) {
 					Ok(amount_msats) => amount_msats,
-					Err(error) => return responder.respond(OffersMessage::InvoiceError(error.into())),
+					Err(error) => return Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
 				};
 
 				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
@@ -10793,7 +10793,7 @@ where
 					Ok((payment_hash, payment_secret)) => (payment_hash, payment_secret),
 					Err(()) => {
 						let error = Bolt12SemanticError::InvalidAmount;
-						return responder.respond(OffersMessage::InvoiceError(error.into()));
+						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
 					},
 				};
 
@@ -10807,7 +10807,7 @@ where
 					Ok(payment_paths) => payment_paths,
 					Err(()) => {
 						let error = Bolt12SemanticError::MissingPaths;
-						return responder.respond(OffersMessage::InvoiceError(error.into()));
+						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
 					},
 				};
 
@@ -10852,14 +10852,14 @@ where
 				};
 
 				match response {
-					Ok(invoice) => responder.respond(OffersMessage::Invoice(invoice)),
-					Err(error) => responder.respond(OffersMessage::InvoiceError(error.into())),
+					Ok(invoice) => Some((OffersMessage::Invoice(invoice), responder.respond())),
+					Err(error) => Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
 				let payment_id = match self.verify_bolt12_invoice(&invoice, context.as_ref()) {
 					Ok(payment_id) => payment_id,
-					Err(()) => return ResponseInstruction::NoResponse,
+					Err(()) => return None,
 				};
 
 				let logger = WithContext::from(
@@ -10871,7 +10871,7 @@ where
 						payment_id, invoice, context, responder,
 					};
 					self.pending_events.lock().unwrap().push_back((event, None));
-					return ResponseInstruction::NoResponse;
+					return None;
 				}
 
 				let error = match self.send_payment_for_verified_bolt12_invoice(
@@ -10890,14 +10890,14 @@ where
 					},
 					Err(Bolt12PaymentError::UnexpectedInvoice)
 						| Err(Bolt12PaymentError::DuplicateInvoice)
-						| Ok(()) => return ResponseInstruction::NoResponse,
+						| Ok(()) => return None,
 				};
 
 				match responder {
-					Some(responder) => responder.respond(OffersMessage::InvoiceError(error)),
+					Some(responder) => Some((OffersMessage::InvoiceError(error), responder.respond())),
 					None => {
 						log_trace!(logger, "No reply path to send error: {:?}", error);
-						ResponseInstruction::NoResponse
+						None
 					},
 				}
 			},
@@ -10905,11 +10905,11 @@ where
 			OffersMessage::StaticInvoice(_invoice) => {
 				match responder {
 					Some(responder) => {
-						responder.respond(OffersMessage::InvoiceError(
-								InvoiceError::from_string("Static invoices not yet supported".to_string())
-						))
+						return Some((OffersMessage::InvoiceError(
+							InvoiceError::from_string("Static invoices not yet supported".to_string())
+						), responder.respond()));
 					},
-					None => return ResponseInstruction::NoResponse,
+					None => return None,
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
@@ -10932,7 +10932,7 @@ where
 					_ => {},
 				}
 
-				ResponseInstruction::NoResponse
+				None
 			},
 		}
 	}
@@ -10956,8 +10956,8 @@ where
 {
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
-		ResponseInstruction::NoResponse
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
+		None
 	}
 
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
