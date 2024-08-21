@@ -384,6 +384,7 @@ impl Responder {
 }
 
 /// Instructions for how and where to send the response to an onion message.
+#[derive(Clone)]
 pub struct ResponseInstruction {
 	send_path: BlindedMessagePath,
 	context: Option<MessageContext>,
