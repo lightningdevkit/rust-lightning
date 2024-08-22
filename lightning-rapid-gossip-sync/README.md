@@ -122,23 +122,23 @@ broadcast on the network may be taken into account when calculating the delta.
 ## Performance
 
 Given the primary purpose of this utility is a faster graph sync, we thought it might be helpful to
-provide some examples of various delta sets. These examples were calculated as of May 19th  2022
+provide some examples of various delta sets. These examples were calculated as of August 2024
 with a network graph comprised of 80,000 channel announcements and 160,000 directed channel updates.
 
 | Full sync                   |        |
 |-----------------------------|--------|
-| Message Length              | 4.7 MB |
-| Gzipped Message Length      | 2.0 MB |
+| Message Length              | 3.3 MB |
+| Gzipped Message Length      | 1.5 MB |
 | Client-side Processing Time | 1.4 s  |
 
 | Week-old sync               |        |
 |-----------------------------|--------|
-| Message Length              | 2.7 MB |
-| Gzipped Message Length      | 862 kB |
+| Message Length              | 1.7 MB |
+| Gzipped Message Length      | 566 kB |
 | Client-side Processing Time | 907 ms |
 
-| Day-old sync                |         |
-|-----------------------------|---------|
-| Message Length              | 191 kB  |
-| Gzipped Message Length      | 92.8 kB |
-| Client-side Processing Time | 196 ms  |
+| Day-old sync                |        |
+|-----------------------------|--------|
+| Message Length              | 210 kB |
+| Gzipped Message Length      | 99 kB  |
+| Client-side Processing Time | 196 ms |
