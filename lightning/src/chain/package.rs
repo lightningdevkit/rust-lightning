@@ -473,7 +473,7 @@ impl Readable for HolderFundingOutput {
 			(0, funding_redeemscript, required),
 			(1, channel_type_features, option),
 			(2, _legacy_deserialization_prevention_marker, option),
-			(3, funding_amount, option)
+			(3, funding_amount, option),
 		});
 
 		verify_channel_type_features(&channel_type_features, None)?;
@@ -966,7 +966,7 @@ impl PackageTemplate {
 	/// value.
 	pub(crate) fn compute_package_output<F: Deref, L: Logger>(
 		&self, predicted_weight: u64, dust_limit_sats: u64, feerate_strategy: &FeerateStrategy,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+		conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Option<(u64, u64)>
 	where F::Target: FeeEstimator,
 	{
@@ -977,12 +977,12 @@ impl PackageTemplate {
 		if self.feerate_previous != 0 {
 			if let Some((new_fee, feerate)) = feerate_bump(
 				predicted_weight, input_amounts, self.feerate_previous, feerate_strategy,
-				fee_estimator, logger,
+				conf_target, fee_estimator, logger,
 			) {
 				return Some((cmp::max(input_amounts as i64 - new_fee as i64, dust_limit_sats as i64) as u64, feerate));
 			}
 		} else {
-			if let Some((new_fee, feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
+			if let Some((new_fee, feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, conf_target, fee_estimator, logger) {
 				return Some((cmp::max(input_amounts as i64 - new_fee as i64, dust_limit_sats as i64) as u64, feerate));
 			}
 		}
@@ -1102,19 +1102,20 @@ impl Readable for PackageTemplate {
 }
 
 /// Attempt to propose a bumping fee for a transaction from its spent output's values and predicted
-/// weight. We first try our [`OnChainSweep`] feerate, if it's not enough we try to sweep half of
-/// the input amounts.
+/// weight. We first try our estimator's feerate, if it's not enough we try to sweep half of the
+/// input amounts.
 ///
 /// If the proposed fee is less than the available spent output's values, we return the proposed
 /// fee and the corresponding updated feerate. If fee is under [`FEERATE_FLOOR_SATS_PER_KW`], we
 /// return nothing.
 ///
-/// [`OnChainSweep`]: crate::chain::chaininterface::ConfirmationTarget::OnChainSweep
 /// [`FEERATE_FLOOR_SATS_PER_KW`]: crate::chain::chaininterface::MIN_RELAY_FEE_SAT_PER_1000_WEIGHT
-fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(input_amounts: u64, predicted_weight: u64, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L) -> Option<(u64, u64)>
+fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(
+	input_amounts: u64, predicted_weight: u64, conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
+) -> Option<(u64, u64)>
 	where F::Target: FeeEstimator,
 {
-	let sweep_feerate = fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::OnChainSweep);
+	let sweep_feerate = fee_estimator.bounded_sat_per_1000_weight(conf_target);
 	let fee_rate = cmp::min(sweep_feerate, compute_feerate_sat_per_1000_weight(input_amounts / 2, predicted_weight));
 	let fee = fee_rate as u64 * (predicted_weight) / 1000;
 
@@ -1136,13 +1137,15 @@ fn compute_fee_from_spent_amounts<F: Deref, L: Logger>(input_amounts: u64, predi
 /// requirement.
 fn feerate_bump<F: Deref, L: Logger>(
 	predicted_weight: u64, input_amounts: u64, previous_feerate: u64, feerate_strategy: &FeerateStrategy,
-	fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
+	conf_target: ConfirmationTarget, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 ) -> Option<(u64, u64)>
 where
 	F::Target: FeeEstimator,
 {
 	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
-	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, fee_estimator, logger) {
+	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) = 
+		compute_fee_from_spent_amounts(input_amounts, predicted_weight, conf_target, fee_estimator, logger)
+	{
 		match feerate_strategy {
 			FeerateStrategy::RetryPrevious => {
 				let previous_fee = previous_feerate * predicted_weight / 1000;
