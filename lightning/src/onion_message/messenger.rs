@@ -830,15 +830,7 @@ pub trait CustomOnionMessageHandler {
 	///
 	/// Typically, this is used for messages initiating a message flow rather than in response to
 	/// another message. The latter should use the return value of [`Self::handle_custom_message`].
-	#[cfg(not(c_bindings))]
-	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>>;
-
-	/// Releases any [`Self::CustomMessage`]s that need to be sent.
-	///
-	/// Typically, this is used for messages initiating a message flow rather than in response to
-	/// another message. The latter should use the return value of [`Self::handle_custom_message`].
-	#[cfg(c_bindings)]
-	fn release_pending_custom_messages(&self) -> Vec<(Self::CustomMessage, Destination, Option<BlindedMessagePath>)>;
+	fn release_pending_custom_messages(&self) -> Vec<(Self::CustomMessage, MessageSendInstructions)>;
 }
 
 /// A processed incoming onion message, containing either a Forward (another onion message)
@@ -1188,6 +1180,33 @@ where
 		)
 	}
 
+	fn send_onion_message_internal<T: OnionMessageContents>(
+		&self, message: T, instructions: MessageSendInstructions, log_suffix: fmt::Arguments,
+	) -> Result<Option<SendSuccess>, SendError> {
+		let (destination, context) = match instructions {
+			MessageSendInstructions::WithReplyPath { destination, context } => (destination, Some(context)),
+			MessageSendInstructions::WithoutReplyPath { destination } => (destination, None),
+		};
+
+		let reply_path = if let Some(context) = context {
+			match self.create_blinded_path(context) {
+				Ok(reply_path) => Some(reply_path),
+				Err(err) => {
+					log_trace!(
+						self.logger,
+						"Failed to create reply path {}: {:?}",
+						log_suffix, err
+					);
+					return Err(err);
+				}
+			}
+		} else { None };
+
+		self.find_path_and_enqueue_onion_message(
+			message, destination, reply_path, log_suffix,
+		).map(|result| Some(result))
+	}
+
 	fn find_path_and_enqueue_onion_message<T: OnionMessageContents>(
 		&self, contents: T, destination: Destination, reply_path: Option<BlindedMessagePath>,
 		log_suffix: fmt::Arguments
@@ -1342,33 +1361,14 @@ where
 	pub fn handle_onion_message_response<T: OnionMessageContents>(
 		&self, response: T, instructions: ResponseInstruction,
 	) -> Result<Option<SendSuccess>, SendError> {
-		let (destination, context) = match instructions.into_instructions() {
-			MessageSendInstructions::WithReplyPath { destination, context } => (destination, Some(context)),
-			MessageSendInstructions::WithoutReplyPath { destination } => (destination, None),
-		};
-
 		let message_type = response.msg_type();
-		let reply_path = if let Some(context) = context {
-			match self.create_blinded_path(context) {
-				Ok(reply_path) => Some(reply_path),
-				Err(err) => {
-					log_trace!(
-						self.logger,
-						"Failed to create reply path when responding with {} to an onion message: {:?}",
-						message_type, err
-					);
-					return Err(err);
-				}
-			}
-		} else { None };
-
-		self.find_path_and_enqueue_onion_message(
-			response, destination, reply_path,
+		self.send_onion_message_internal(
+			response, instructions.into_instructions(),
 			format_args!(
 				"when responding with {} to an onion message",
 				message_type,
 			)
-		).map(|result| Some(result))
+		)
 	}
 
 	#[cfg(test)]
@@ -1748,13 +1748,9 @@ where
 		}
 
 		// Enqueue any initiating `CustomMessage`s to send.
-		for message in self.custom_handler.release_pending_custom_messages() {
-			#[cfg(not(c_bindings))]
-			let PendingOnionMessage { contents, destination, reply_path } = message;
-			#[cfg(c_bindings)]
-			let (contents, destination, reply_path) = message;
-			let _ = self.find_path_and_enqueue_onion_message(
-				contents, destination, reply_path, format_args!("when sending CustomMessage")
+		for (message, instructions) in self.custom_handler.release_pending_custom_messages() {
+			let _ = self.send_onion_message_internal(
+				message, instructions, format_args!("when sending CustomMessage")
 			);
 		}
 

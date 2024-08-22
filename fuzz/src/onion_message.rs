@@ -16,8 +16,8 @@ use lightning::onion_message::async_payments::{
 	AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc,
 };
 use lightning::onion_message::messenger::{
-	CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger,
-	PendingOnionMessage, Responder, ResponseInstruction,
+	CustomOnionMessageHandler, Destination, MessageRouter, MessageSendInstructions,
+	OnionMessagePath, OnionMessenger, Responder, ResponseInstruction,
 };
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::onion_message::packet::OnionMessageContents;
@@ -173,7 +173,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 		buffer.read_to_limit(&mut buf, u64::MAX)?;
 		return Ok(Some(TestCustomMessage {}));
 	}
-	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>> {
+	fn release_pending_custom_messages(&self) -> Vec<(TestCustomMessage, MessageSendInstructions)> {
 		vec![]
 	}
 }

@@ -30,7 +30,7 @@ use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, Mes
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
 use crate::onion_message::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
-use crate::onion_message::messenger::{CustomOnionMessageHandler, PendingOnionMessage, Responder, ResponseInstruction};
+use crate::onion_message::messenger::{CustomOnionMessageHandler, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::gossip::{NodeId, NodeAlias};
@@ -165,7 +165,7 @@ impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	fn read_custom_message<R: io::Read>(&self, _msg_type: u64, _buffer: &mut R) -> Result<Option<Infallible>, msgs::DecodeError> where Self: Sized {
 		Ok(None)
 	}
-	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Infallible>> {
+	fn release_pending_custom_messages(&self) -> Vec<(Infallible, MessageSendInstructions)> {
 		vec![]
 	}
 }

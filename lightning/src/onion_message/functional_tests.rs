@@ -20,7 +20,7 @@ use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
 use super::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
-use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, PendingOnionMessage, Responder, ResponseInstruction, SendError, SendSuccess};
+use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, Responder, ResponseInstruction, MessageSendInstructions, SendError, SendSuccess};
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
 
@@ -211,7 +211,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 			_ => Ok(None),
 		}
 	}
-	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>> {
+	fn release_pending_custom_messages(&self) -> Vec<(Self::CustomMessage, MessageSendInstructions)> {
 		vec![]
 	}
 }
