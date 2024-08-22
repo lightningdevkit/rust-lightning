@@ -342,8 +342,8 @@ impl OnionMessageRecipient {
 }
 
 
-/// The `Responder` struct creates an appropriate [`ResponseInstruction`]
-/// for responding to a message.
+/// The `Responder` struct creates an appropriate [`ResponseInstruction`] for responding to a
+/// message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Responder {
 	/// The path along which a response can be sent.
@@ -362,41 +362,59 @@ impl Responder {
 		}
 	}
 
-	/// Creates a [`ResponseInstruction::WithoutReplyPath`] for a given response.
+	/// Creates a [`ResponseInstruction`] for responding without including a reply path.
 	///
 	/// Use when the recipient doesn't need to send back a reply to us.
 	pub fn respond(self) -> ResponseInstruction {
-		ResponseInstruction::WithoutReplyPath {
+		ResponseInstruction {
 			send_path: self.reply_path,
+			context: None,
 		}
 	}
 
-	/// Creates a [`ResponseInstruction::WithReplyPath`] for a given response.
+	/// Creates a [`ResponseInstruction`] for responding including a reply path.
 	///
 	/// Use when the recipient needs to send back a reply to us.
 	pub fn respond_with_reply_path(self, context: MessageContext) -> ResponseInstruction {
-		ResponseInstruction::WithReplyPath {
+		ResponseInstruction {
 			send_path: self.reply_path,
-			context: context,
+			context: Some(context),
 		}
 	}
 }
 
-/// `ResponseInstruction` represents instructions for responding to received messages.
-pub enum ResponseInstruction {
-	/// Indicates that a response should be sent including a reply path for
-	/// the recipient to respond back.
+/// Instructions for how and where to send the response to an onion message.
+pub struct ResponseInstruction {
+	send_path: BlindedMessagePath,
+	context: Option<MessageContext>,
+}
+
+impl ResponseInstruction {
+	fn into_instructions(self) -> MessageSendInstructions {
+		let send_path = self.send_path;
+		match self.context {
+			Some(context) => MessageSendInstructions::WithReplyPath { send_path, context },
+			None => MessageSendInstructions::WithoutReplyPath { send_path },
+		}
+	}
+}
+
+/// Instructions for how and where to send a message.
+#[derive(Clone)]
+pub enum MessageSendInstructions {
+	/// Indicates that a message should be sent including a reply path for the recipient to
+	/// respond.
 	WithReplyPath {
-		/// The path over which we'll send our reply.
+		/// The destination where we need to send our message.
 		send_path: BlindedMessagePath,
 		/// The context to include in the reply path we'll give the recipient so they can respond
 		/// to us.
 		context: MessageContext,
 	},
-	/// Indicates that a response should be sent without including a reply path
-	/// for the recipient to respond back.
+	/// Indicates that a message should be sent without including a reply path, preventing the
+	/// recipient from responding.
 	WithoutReplyPath {
-		/// The path over which we'll send our reply.
+		/// The destination where we need to send our message.
 		send_path: BlindedMessagePath,
 	}
 }
@@ -1323,9 +1341,9 @@ where
 	pub fn handle_onion_message_response<T: OnionMessageContents>(
 		&self, response: T, instructions: ResponseInstruction,
 	) -> Result<Option<SendSuccess>, SendError> {
-		let (response_path, context) = match instructions {
-			ResponseInstruction::WithReplyPath { send_path, context } => (send_path, Some(context)),
-			ResponseInstruction::WithoutReplyPath { send_path } => (send_path, None),
+		let (response_path, context) = match instructions.into_instructions() {
+			MessageSendInstructions::WithReplyPath { send_path, context } => (send_path, Some(context)),
+			MessageSendInstructions::WithoutReplyPath { send_path } => (send_path, None),
 		};
 
 		let message_type = response.msg_type();
