@@ -49,6 +49,12 @@ pub trait BroadcasterInterface {
 /// estimation.
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum ConfirmationTarget {
+	/// The most aggressive (i.e. highest) feerate estimate available.
+	///
+	/// This is used to sanity-check our counterparty's feerates and should be as conservative as
+	/// possible to ensure that we don't confuse a peer using a very conservative estimator for one
+	/// trying to burn channel balance to dust.
+	MaximumFeeEstimate,
 	/// We have some funds available on chain which we need to spend prior to some expiry time at
 	/// which point our counterparty may be able to steal them. Generally we have in the high tens
 	/// to low hundreds of blocks to get our transaction on-chain, but we shouldn't risk too low a

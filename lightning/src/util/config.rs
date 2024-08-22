@@ -382,9 +382,9 @@ pub enum MaxDustHTLCExposure {
 	/// to this maximum the channel may be unable to send/receive HTLCs between the maximum dust
 	/// exposure and the new minimum value for HTLCs to be economically viable to claim.
 	FixedLimitMsat(u64),
-	/// This sets a multiplier on the [`ConfirmationTarget::OnChainSweep`] feerate (in sats/KW) to
-	/// determine the maximum allowed dust exposure. If this variant is used then the maximum dust
-	/// exposure in millisatoshis is calculated as:
+	/// This sets a multiplier on the [`ConfirmationTarget::MaximumFeeEstimate`] feerate (in
+	/// sats/KW) to determine the maximum allowed dust exposure. If this variant is used then the
+	/// maximum dust exposure in millisatoshis is calculated as:
 	/// `feerate_per_kw * value`. For example, with our default value
 	/// `FeeRateMultiplier(10_000)`:
 	///
@@ -407,7 +407,7 @@ pub enum MaxDustHTLCExposure {
 	/// by default this will be set to a [`Self::FixedLimitMsat`] of 5,000,000 msat.
 	///
 	/// [`FeeEstimator`]: crate::chain::chaininterface::FeeEstimator
-	/// [`ConfirmationTarget::OnChainSweep`]: crate::chain::chaininterface::ConfirmationTarget::OnChainSweep
+	/// [`ConfirmationTarget::MaximumFeeEstimate`]: crate::chain::chaininterface::ConfirmationTarget::MaximumFeeEstimate
 	FeeRateMultiplier(u64),
 }
 
@@ -514,12 +514,12 @@ pub struct ChannelConfig {
 	/// Note that when using [`MaxDustHTLCExposure::FeeRateMultiplier`] this maximum disagreement
 	/// will scale linearly with increases (or decreases) in the our feerate estimates. Further,
 	/// for anchor channels we expect our counterparty to use a relatively low feerate estimate
-	/// while we use [`ConfirmationTarget::OnChainSweep`] (which should be relatively high) and
-	/// feerate disagreement force-closures should only occur when theirs is higher than ours.
+	/// while we use [`ConfirmationTarget::MaximumFeeEstimate`] (which should be relatively high)
+	/// and feerate disagreement force-closures should only occur when theirs is higher than ours.
 	///
 	/// Default value: [`MaxDustHTLCExposure::FeeRateMultiplier`] with a multiplier of `10_000`
 	///
-	/// [`ConfirmationTarget::OnChainSweep`]: crate::chain::chaininterface::ConfirmationTarget::OnChainSweep
+	/// [`ConfirmationTarget::MaximumFeeEstimate`]: crate::chain::chaininterface::ConfirmationTarget::MaximumFeeEstimate
 	pub max_dust_htlc_exposure: MaxDustHTLCExposure,
 	/// The additional fee we're willing to pay to avoid waiting for the counterparty's
 	/// `to_self_delay` to reclaim funds.

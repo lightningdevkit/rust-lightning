@@ -97,7 +97,7 @@ impl FeeEstimator for FuzzEstimator {
 		// always return a HighPriority feerate here which is >= the maximum Normal feerate and a
 		// Background feerate which is <= the minimum Normal feerate.
 		match conf_target {
-			ConfirmationTarget::OnChainSweep => MAX_FEE,
+			ConfirmationTarget::MaximumFeeEstimate | ConfirmationTarget::OnChainSweep => MAX_FEE,
 			ConfirmationTarget::ChannelCloseMinimum
 			| ConfirmationTarget::AnchorChannelFee
 			| ConfirmationTarget::MinAllowedAnchorChannelRemoteFee
