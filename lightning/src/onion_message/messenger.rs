@@ -392,10 +392,10 @@ pub struct ResponseInstruction {
 
 impl ResponseInstruction {
 	fn into_instructions(self) -> MessageSendInstructions {
-		let send_path = self.send_path;
+		let destination = Destination::BlindedPath(self.send_path);
 		match self.context {
-			Some(context) => MessageSendInstructions::WithReplyPath { send_path, context },
-			None => MessageSendInstructions::WithoutReplyPath { send_path },
+			Some(context) => MessageSendInstructions::WithReplyPath { destination, context },
+			None => MessageSendInstructions::WithoutReplyPath { destination },
 		}
 	}
 }
@@ -407,7 +407,7 @@ pub enum MessageSendInstructions {
 	/// respond.
 	WithReplyPath {
 		/// The destination where we need to send our message.
-		send_path: BlindedMessagePath,
+		destination: Destination,
 		/// The context to include in the reply path we'll give the recipient so they can respond
 		/// to us.
 		context: MessageContext,
@@ -416,7 +416,7 @@ pub enum MessageSendInstructions {
 	/// recipient from responding.
 	WithoutReplyPath {
 		/// The destination where we need to send our message.
-		send_path: BlindedMessagePath,
+		destination: Destination,
 	}
 }
 
@@ -1342,9 +1342,9 @@ where
 	pub fn handle_onion_message_response<T: OnionMessageContents>(
 		&self, response: T, instructions: ResponseInstruction,
 	) -> Result<Option<SendSuccess>, SendError> {
-		let (response_path, context) = match instructions.into_instructions() {
-			MessageSendInstructions::WithReplyPath { send_path, context } => (send_path, Some(context)),
-			MessageSendInstructions::WithoutReplyPath { send_path } => (send_path, None),
+		let (destination, context) = match instructions.into_instructions() {
+			MessageSendInstructions::WithReplyPath { destination, context } => (destination, Some(context)),
+			MessageSendInstructions::WithoutReplyPath { destination } => (destination, None),
 		};
 
 		let message_type = response.msg_type();
@@ -1363,7 +1363,7 @@ where
 		} else { None };
 
 		self.find_path_and_enqueue_onion_message(
-			response, Destination::BlindedPath(response_path), reply_path,
+			response, destination, reply_path,
 			format_args!(
 				"when responding with {} to an onion message",
 				message_type,
