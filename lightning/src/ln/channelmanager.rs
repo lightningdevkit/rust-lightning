@@ -111,7 +111,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{Bolt12PaymentError, PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub(crate) use crate::ln::outbound_payment::{Bolt12PaymentError, PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:

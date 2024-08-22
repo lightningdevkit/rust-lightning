@@ -12,7 +12,7 @@
 use bitcoin::hashes::Hash;
 use lightning_invoice::Bolt11Invoice;
 
-use crate::ln::channelmanager::RecipientOnionFields;
+use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::PaymentHash;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 
@@ -161,7 +161,8 @@ mod tests {
 	#[test]
 	fn payment_metadata_end_to_end() {
 		use crate::events::Event;
-		use crate::ln::channelmanager::{PaymentId, Retry};
+		use crate::ln::channelmanager::PaymentId;
+		use crate::ln::outbound_payment::Retry;
 		use crate::ln::functional_test_utils::*;
 		use crate::ln::msgs::ChannelMessageHandler;
 
