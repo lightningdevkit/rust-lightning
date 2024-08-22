@@ -582,11 +582,25 @@ where
 			// match, but we still need to have at least one output in the transaction for it to be
 			// considered standard. We choose to go with an empty OP_RETURN as it is the cheapest
 			// way to include a dummy output.
-			log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
-			tx.output.push(TxOut {
-				value: Amount::ZERO,
-				script_pubkey: ScriptBuf::new_op_return(&[]),
-			});
+			if tx.input.len() <= 1 {
+				// Transactions have to be at least 65 bytes in non-witness data, which we can run
+				// under if we have too few witness inputs.
+				log_debug!(self.logger, "Including large OP_RETURN output since an output is needed and a change output was not provided and the transaction is small");
+				debug_assert!(!tx.input.is_empty());
+				tx.output.push(TxOut {
+					value: Amount::ZERO,
+					// Minimum transaction size is 60 bytes, so we need a 5-byte script to get a
+					// 65 byte transaction. We do that as OP_RETURN <3 0 bytes, plus 1 byte len>.
+					script_pubkey: ScriptBuf::new_op_return(&[0, 0, 0]),
+				});
+				debug_assert_eq!(tx.base_size(), 65);
+			} else {
+				log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
+				tx.output.push(TxOut {
+					value: Amount::ZERO,
+					script_pubkey: ScriptBuf::new_op_return(&[]),
+				});
+			}
 		}
 	}
 
