@@ -367,7 +367,7 @@ impl Responder {
 	/// Use when the recipient doesn't need to send back a reply to us.
 	pub fn respond(self) -> ResponseInstruction {
 		ResponseInstruction {
-			send_path: self.reply_path,
+			destination: Destination::BlindedPath(self.reply_path),
 			context: None,
 		}
 	}
@@ -377,7 +377,7 @@ impl Responder {
 	/// Use when the recipient needs to send back a reply to us.
 	pub fn respond_with_reply_path(self, context: MessageContext) -> ResponseInstruction {
 		ResponseInstruction {
-			send_path: self.reply_path,
+			destination: Destination::BlindedPath(self.reply_path),
 			context: Some(context),
 		}
 	}
@@ -386,17 +386,16 @@ impl Responder {
 /// Instructions for how and where to send the response to an onion message.
 #[derive(Clone)]
 pub struct ResponseInstruction {
-	send_path: BlindedMessagePath,
+	/// The destination in a response is always a [`Destination::BlindedPath`] but using a
+	/// [`Destination`] rather than an explicit [`BlindedMessagePath`] simplifies the logic in
+	/// [`OnionMessenger::send_onion_message_internal`] somewhat.
+	destination: Destination,
 	context: Option<MessageContext>,
 }
 
 impl ResponseInstruction {
 	fn into_instructions(self) -> MessageSendInstructions {
-		let destination = Destination::BlindedPath(self.send_path);
-		match self.context {
-			Some(context) => MessageSendInstructions::WithReplyPath { destination, context },
-			None => MessageSendInstructions::WithoutReplyPath { destination },
-		}
+		MessageSendInstructions::ForReply { instructions: self }
 	}
 }
 
@@ -425,7 +424,12 @@ pub enum MessageSendInstructions {
 	WithoutReplyPath {
 		/// The destination where we need to send our message.
 		destination: Destination,
-	}
+	},
+	/// Indicates that a message is being sent as a reply to a received message.
+	ForReply {
+		/// The instructions provided by the [`Responder`].
+		instructions: ResponseInstruction,
+	},
 }
 
 /// A trait defining behavior for routing an [`OnionMessage`].
@@ -1158,7 +1162,9 @@ where
 		let (destination, reply_path) = match instructions {
 			MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path } =>
 				(destination, Some(reply_path)),
-			MessageSendInstructions::WithReplyPath { destination, context } => {
+			MessageSendInstructions::WithReplyPath { destination, context }
+				|MessageSendInstructions::ForReply { instructions: ResponseInstruction { destination, context: Some(context) } } =>
+			{
 				match self.create_blinded_path(context) {
 					Ok(reply_path) => (destination, Some(reply_path)),
 					Err(err) => {
@@ -1171,7 +1177,8 @@ where
 					}
 				}
 			},
-			MessageSendInstructions::WithoutReplyPath { destination } =>
+			MessageSendInstructions::WithoutReplyPath { destination }
+				|MessageSendInstructions::ForReply { instructions: ResponseInstruction { destination, context: None } } =>
 				(destination, None),
 		};
 
