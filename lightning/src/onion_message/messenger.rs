@@ -403,6 +403,14 @@ impl ResponseInstruction {
 /// Instructions for how and where to send a message.
 #[derive(Clone)]
 pub enum MessageSendInstructions {
+	/// Indicates that a message should be sent including the provided reply path for the recipient
+	/// to respond.
+	WithSpecifiedReplyPath {
+		/// The destination where we need to send our message.
+		destination: Destination,
+		/// The reply path which should be included in the message.
+		reply_path: BlindedMessagePath,
+	},
 	/// Indicates that a message should be sent including a reply path for the recipient to
 	/// respond.
 	WithReplyPath {
@@ -1183,24 +1191,25 @@ where
 	fn send_onion_message_internal<T: OnionMessageContents>(
 		&self, message: T, instructions: MessageSendInstructions, log_suffix: fmt::Arguments,
 	) -> Result<Option<SendSuccess>, SendError> {
-		let (destination, context) = match instructions {
-			MessageSendInstructions::WithReplyPath { destination, context } => (destination, Some(context)),
-			MessageSendInstructions::WithoutReplyPath { destination } => (destination, None),
-		};
-
-		let reply_path = if let Some(context) = context {
-			match self.create_blinded_path(context) {
-				Ok(reply_path) => Some(reply_path),
-				Err(err) => {
-					log_trace!(
-						self.logger,
-						"Failed to create reply path {}: {:?}",
-						log_suffix, err
-					);
-					return Err(err);
+		let (destination, reply_path) = match instructions {
+			MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path } =>
+				(destination, Some(reply_path)),
+			MessageSendInstructions::WithReplyPath { destination, context } => {
+				match self.create_blinded_path(context) {
+					Ok(reply_path) => (destination, Some(reply_path)),
+					Err(err) => {
+						log_trace!(
+							self.logger,
+							"Failed to create reply path {}: {:?}",
+							log_suffix, err
+						);
+						return Err(err);
+					}
 				}
-			}
-		} else { None };
+			},
+			MessageSendInstructions::WithoutReplyPath { destination } =>
+				(destination, None),
+		};
 
 		self.find_path_and_enqueue_onion_message(
 			message, destination, reply_path, log_suffix,
@@ -1737,13 +1746,9 @@ where
 	// node, and then enqueue the message for sending to the first peer in the full path.
 	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<OnionMessage> {
 		// Enqueue any initiating `OffersMessage`s to send.
-		for message in self.offers_handler.release_pending_messages() {
-			#[cfg(not(c_bindings))]
-			let PendingOnionMessage { contents, destination, reply_path } = message;
-			#[cfg(c_bindings)]
-			let (contents, destination, reply_path) = message;
-			let _ = self.find_path_and_enqueue_onion_message(
-				contents, destination, reply_path, format_args!("when sending OffersMessage")
+		for (message, instructions) in self.offers_handler.release_pending_messages() {
+			let _ = self.send_onion_message_internal(
+				message, instructions, format_args!("when sending OffersMessage")
 			);
 		}
 

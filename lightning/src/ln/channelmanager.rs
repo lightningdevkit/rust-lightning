@@ -71,7 +71,7 @@ use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::signer;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
-use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
+use crate::onion_message::messenger::{Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -2277,9 +2277,9 @@ where
 	needs_persist_flag: AtomicBool,
 
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	pending_offers_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
+	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) pending_offers_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
+	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
@@ -9068,21 +9068,21 @@ where
 				.flat_map(|reply_path| offer.paths().iter().map(move |path| (path, reply_path)))
 				.take(OFFERS_MESSAGE_REQUEST_LIMIT)
 				.for_each(|(path, reply_path)| {
-					let message = new_pending_onion_message(
-						OffersMessage::InvoiceRequest(invoice_request.clone()),
-						Destination::BlindedPath(path.clone()),
-						Some(reply_path.clone()),
-					);
-					pending_offers_messages.push(message);
+					let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+						destination: Destination::BlindedPath(path.clone()),
+						reply_path: reply_path.clone(),
+					};
+					let message = OffersMessage::InvoiceRequest(invoice_request.clone());
+					pending_offers_messages.push((message, instructions));
 				});
 		} else if let Some(signing_pubkey) = offer.signing_pubkey() {
 			for reply_path in reply_paths {
-				let message = new_pending_onion_message(
-					OffersMessage::InvoiceRequest(invoice_request.clone()),
-					Destination::Node(signing_pubkey),
-					Some(reply_path),
-				);
-				pending_offers_messages.push(message);
+				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+					destination: Destination::Node(signing_pubkey),
+					reply_path,
+				};
+				let message = OffersMessage::InvoiceRequest(invoice_request.clone());
+				pending_offers_messages.push((message, instructions));
 			}
 		} else {
 			debug_assert!(false);
@@ -9162,12 +9162,12 @@ where
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 				if refund.paths().is_empty() {
 					for reply_path in reply_paths {
-						let message = new_pending_onion_message(
-							OffersMessage::Invoice(invoice.clone()),
-							Destination::Node(refund.payer_id()),
-							Some(reply_path),
-						);
-						pending_offers_messages.push(message);
+						let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+							destination: Destination::Node(refund.payer_id()),
+							reply_path,
+						};
+						let message = OffersMessage::Invoice(invoice.clone());
+						pending_offers_messages.push((message, instructions));
 					}
 				} else {
 					reply_paths
@@ -9175,12 +9175,12 @@ where
 						.flat_map(|reply_path| refund.paths().iter().map(move |path| (path, reply_path)))
 						.take(OFFERS_MESSAGE_REQUEST_LIMIT)
 						.for_each(|(path, reply_path)| {
-							let message = new_pending_onion_message(
-								OffersMessage::Invoice(invoice.clone()),
-								Destination::BlindedPath(path.clone()),
-								Some(reply_path.clone()),
-							);
-							pending_offers_messages.push(message);
+							let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+								destination: Destination::BlindedPath(path.clone()),
+								reply_path: reply_path.clone(),
+							};
+							let message = OffersMessage::Invoice(invoice.clone());
+							pending_offers_messages.push((message, instructions));
 						});
 				}
 
@@ -10937,7 +10937,7 @@ where
 		}
 	}
 
-	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> {
+	fn release_pending_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
 	}
 }
