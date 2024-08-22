@@ -34,7 +34,6 @@ use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
-use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, RoutingFees};
 use crate::routing::utxo::{UtxoLookup, UtxoLookupError, UtxoResult};
@@ -1216,12 +1215,6 @@ impl NodeSigner for TestNodeSigner {
 		unreachable!()
 	}
 
-	fn sign_bolt12_invoice_request(
-		&self, _invoice_request: &UnsignedInvoiceRequest
-	) -> Result<schnorr::Signature, ()> {
-		unreachable!()
-	}
-
 	fn sign_bolt12_invoice(
 		&self, _invoice: &UnsignedBolt12Invoice,
 	) -> Result<schnorr::Signature, ()> {
@@ -1267,12 +1260,6 @@ impl NodeSigner for TestKeysInterface {
 
 	fn sign_invoice(&self, invoice: &RawBolt11Invoice, recipient: Recipient) -> Result<RecoverableSignature, ()> {
 		self.backing.sign_invoice(invoice, recipient)
-	}
-
-	fn sign_bolt12_invoice_request(
-		&self, invoice_request: &UnsignedInvoiceRequest
-	) -> Result<schnorr::Signature, ()> {
-		self.backing.sign_bolt12_invoice_request(invoice_request)
 	}
 
 	fn sign_bolt12_invoice(
