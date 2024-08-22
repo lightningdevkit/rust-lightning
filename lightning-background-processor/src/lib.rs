@@ -2321,8 +2321,8 @@ mod tests {
 
 		begin_open_channel!(nodes[0], nodes[1], channel_value);
 		assert_eq!(
-			first_event_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE)),
-			second_event_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
+			first_event_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE)).unwrap(),
+			second_event_recv.recv_timeout(Duration::from_secs(EVENT_DEADLINE)).unwrap()
 		);
 
 		if !std::thread::panicking() {

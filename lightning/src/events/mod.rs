@@ -776,8 +776,9 @@ pub enum Event {
 	/// replies. Handlers should connect to the node otherwise any buffered messages may be lost.
 	///
 	/// # Failure Behavior and Persistence
-	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
+	/// This event won't be replayed after failures-to-handle
+	/// (i.e., the event handler returning `Err(ReplayEvent ())`), and also won't be persisted
+	/// across restarts.
 	///
 	/// [`OnionMessage`]: msgs::OnionMessage
 	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
