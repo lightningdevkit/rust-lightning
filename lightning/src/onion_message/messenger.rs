@@ -151,7 +151,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 /// # use lightning::blinded_path::message::{BlindedMessagePath, ForwardNode, MessageContext};
 /// # use lightning::sign::{EntropySource, KeysManager};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath, OnionMessenger};
+/// # use lightning::onion_message::messenger::{Destination, MessageRouter, MessageSendInstructions, OnionMessagePath, OnionMessenger};
 /// # use lightning::onion_message::packet::OnionMessageContents;
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
@@ -218,9 +218,9 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 /// }
 /// // Send a custom onion message to a node id.
 /// let destination = Destination::Node(destination_node_id);
-/// let reply_path = None;
+/// let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 /// # let message = YourCustomMessage {};
-/// onion_messenger.send_onion_message(message, destination, reply_path);
+/// onion_messenger.send_onion_message(message, instructions);
 ///
 /// // Create a blinded path to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
@@ -233,9 +233,9 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
-/// let reply_path = None;
+/// let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 /// # let message = YourCustomMessage {};
-/// onion_messenger.send_onion_message(message, destination, reply_path);
+/// onion_messenger.send_onion_message(message, instructions);
 /// ```
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
@@ -1145,20 +1145,16 @@ where
 		self.offers_handler = offers_handler;
 	}
 
-	/// Sends an [`OnionMessage`] with the given `contents` to `destination`.
-	///
-	/// See [`OnionMessenger`] for example usage.
+	/// Sends an [`OnionMessage`] based on its [`MessageSendInstructions`].
 	pub fn send_onion_message<T: OnionMessageContents>(
-		&self, contents: T, destination: Destination, reply_path: Option<BlindedMessagePath>
+		&self, contents: T, instructions: MessageSendInstructions,
 	) -> Result<SendSuccess, SendError> {
-		self.find_path_and_enqueue_onion_message(
-			contents, destination, reply_path, format_args!("")
-		)
+		self.send_onion_message_internal(contents, instructions, format_args!(""))
 	}
 
 	fn send_onion_message_internal<T: OnionMessageContents>(
-		&self, message: T, instructions: MessageSendInstructions, log_suffix: fmt::Arguments,
-	) -> Result<Option<SendSuccess>, SendError> {
+		&self, contents: T, instructions: MessageSendInstructions, log_suffix: fmt::Arguments,
+	) -> Result<SendSuccess, SendError> {
 		let (destination, reply_path) = match instructions {
 			MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path } =>
 				(destination, Some(reply_path)),
@@ -1179,15 +1175,6 @@ where
 				(destination, None),
 		};
 
-		self.find_path_and_enqueue_onion_message(
-			message, destination, reply_path, log_suffix,
-		).map(|result| Some(result))
-	}
-
-	fn find_path_and_enqueue_onion_message<T: OnionMessageContents>(
-		&self, contents: T, destination: Destination, reply_path: Option<BlindedMessagePath>,
-		log_suffix: fmt::Arguments
-	) -> Result<SendSuccess, SendError> {
 		let mut logger = WithContext::from(&self.logger, None, None, None);
 		let result = self.find_path(destination).and_then(|path| {
 			let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
@@ -1337,7 +1324,7 @@ where
 	/// ready for sending, that task can invoke this method to enqueue the response for delivery.
 	pub fn handle_onion_message_response<T: OnionMessageContents>(
 		&self, response: T, instructions: ResponseInstruction,
-	) -> Result<Option<SendSuccess>, SendError> {
+	) -> Result<SendSuccess, SendError> {
 		let message_type = response.msg_type();
 		self.send_onion_message_internal(
 			response, instructions.into_instructions(),
