@@ -64,6 +64,9 @@ mod de;
 mod ser;
 mod tb;
 
+#[cfg(test)]
+mod test_ser_de;
+
 #[allow(unused_imports)]
 mod prelude {
 	pub use alloc::{vec, vec::Vec, string::String};
