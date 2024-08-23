@@ -156,7 +156,7 @@ impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
-	fn handle_custom_message(&self, _message: Self::CustomMessage, _context: Option<Vec<u8>>, _responder: Option<Responder>) -> Option<(Infallible, ResponseInstruction)> {
+	fn handle_custom_message(&self, _message: Infallible, _context: Option<Vec<u8>>, _responder: Option<Responder>) -> Option<(Infallible, ResponseInstruction)> {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}
