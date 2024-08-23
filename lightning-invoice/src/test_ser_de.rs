@@ -1,7 +1,7 @@
 use crate::{
-	sha256, FromBase32, PayeePubKey, PaymentSecret, PositiveTimestamp, RawDataPart, Sha256,
+	sha256, Base32Len, FromBase32, PayeePubKey, PaymentSecret, PositiveTimestamp, RawDataPart,
+	Sha256, ToBase32,
 };
-use bech32::{Base32Len, ToBase32};
 
 use core::fmt::Debug;
 use std::str::FromStr;

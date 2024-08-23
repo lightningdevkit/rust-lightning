@@ -13,6 +13,7 @@ use bitcoin::secp256k1;
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::CursorReadable;
+use bech32::primitives::decode::CheckedHrpstringError;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -24,7 +25,8 @@ pub(super) use sealed::Bech32Encode;
 pub use sealed::Bech32Encode;
 
 mod sealed {
-	use bech32::{FromBase32, ToBase32};
+	use bech32::{EncodeError, Hrp, NoChecksum, encode_to_fmt};
+	use bech32::primitives::decode::CheckedHrpstring;
 	use core::fmt;
 	use super::Bolt12ParseError;
 
@@ -54,22 +56,23 @@ mod sealed {
 				None => Bech32String::Borrowed(s),
 			};
 
-			let (hrp, data) = bech32::decode_without_checksum(encoded.as_ref())?;
-
-			if hrp != Self::BECH32_HRP {
+			let parsed = CheckedHrpstring::new::<NoChecksum>(encoded.as_ref())?;
+			let hrp = parsed.hrp();
+			if hrp.to_string() != Self::BECH32_HRP {
 				return Err(Bolt12ParseError::InvalidBech32Hrp);
 			}
 
-			let data = Vec::<u8>::from_base32(&data)?;
+			let data = parsed.byte_iter().collect::<Vec<u8>>();
 			Self::try_from(data)
 		}
 
 		/// Formats the message using bech32-encoding.
 		fn fmt_bech32_str(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-			bech32::encode_without_checksum_to_fmt(f, Self::BECH32_HRP, self.as_ref().to_base32())
-				.expect("HRP is invalid").unwrap();
-
-			Ok(())
+			encode_to_fmt::<NoChecksum, _>(f, Hrp::parse(Self::BECH32_HRP).unwrap(), self.as_ref())
+				.map_err(|e| match e {
+					EncodeError::Fmt(e) => e,
+					_ => fmt::Error::default(),
+				})
 		}
 	}
 
@@ -123,7 +126,7 @@ pub enum Bolt12ParseError {
 	/// being parsed.
 	InvalidBech32Hrp,
 	/// The string could not be bech32 decoded.
-	Bech32(bech32::Error),
+	Bech32(CheckedHrpstringError),
 	/// The bech32 decoded string could not be decoded as the expected message type.
 	Decode(DecodeError),
 	/// The parsed message has invalid semantics.
@@ -195,8 +198,8 @@ pub enum Bolt12SemanticError {
 	MissingSignature,
 }
 
-impl From<bech32::Error> for Bolt12ParseError {
-	fn from(error: bech32::Error) -> Self {
+impl From<CheckedHrpstringError> for Bolt12ParseError {
+	fn from(error: CheckedHrpstringError) -> Self {
 		Self::Bech32(error)
 	}
 }
@@ -279,6 +282,7 @@ mod tests {
 	use super::Bolt12ParseError;
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::offer::Offer;
+	use bech32::primitives::decode::{CharError, CheckedHrpstringError, UncheckedHrpstringError};
 
 	#[test]
 	fn fails_parsing_bech32_encoded_offer_with_invalid_hrp() {
@@ -294,7 +298,7 @@ mod tests {
 		let encoded_offer = "lno1pqps7sjqpgtyzm3qv4uxzmtsd3jjqer9wd3hy6tsw35k7msjzfpy7nz5yqcnygrfdej82um5wf5k2uckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxo";
 		match encoded_offer.parse::<Offer>() {
 			Ok(_) => panic!("Valid offer: {}", encoded_offer),
-			Err(e) => assert_eq!(e, Bolt12ParseError::Bech32(bech32::Error::InvalidChar('o'))),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Bech32(CheckedHrpstringError::Parse(UncheckedHrpstringError::Char(CharError::InvalidChar('o'))))),
 		}
 	}
 

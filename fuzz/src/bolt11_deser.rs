@@ -8,10 +8,11 @@
 // licenses.
 
 use crate::utils::test_logger;
-use bech32::{u5, FromBase32, ToBase32};
+use bech32::Fe32;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use lightning_invoice::{
-	Bolt11Invoice, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField, TaggedField,
+	Bolt11Invoice, FromBase32, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField, TaggedField,
+	ToBase32,
 };
 use std::str::FromStr;
 
@@ -25,7 +26,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			Err(_) => return,
 		};
 		let bech32 =
-			data.iter().skip(hrp_len).map(|x| u5::try_from_u8(x % 32).unwrap()).collect::<Vec<_>>();
+			data.iter().skip(hrp_len).map(|x| Fe32::try_from(x % 32).unwrap()).collect::<Vec<_>>();
 		let invoice_data = match RawDataPart::from_base32(&bech32) {
 			Ok(invoice) => invoice,
 			Err(_) => return,

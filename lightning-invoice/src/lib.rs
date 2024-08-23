@@ -33,7 +33,8 @@ extern crate serde;
 #[cfg(feature = "std")]
 use std::time::SystemTime;
 
-use bech32::{FromBase32, u5};
+use bech32::Fe32;
+use bech32::primitives::decode::CheckedHrpstringError;
 use bitcoin::{Address, Network, PubkeyHash, ScriptHash, WitnessProgram, WitnessVersion};
 use bitcoin::hashes::{Hash, sha256};
 use lightning_types::features::Bolt11InvoiceFeatures;
@@ -76,12 +77,59 @@ mod prelude {
 
 use crate::prelude::*;
 
+/// Interface to write `Fe32`s into a sink
+pub trait WriteBase32 {
+	/// Write error
+	type Err: fmt::Debug;
+
+	/// Write a `Fe32` slice
+	fn write(&mut self, data: &Vec<Fe32>) -> Result<(), Self::Err> {
+		for b in data {
+			self.write_fe32(*b)?;
+		}
+		Ok(())
+	}
+
+	/// Write a single `Fe32`
+	fn write_fe32(&mut self, data: Fe32) -> Result<(), Self::Err>;
+}
+
+/// A trait for converting a value to a type `T` that represents a `Fe32` slice.
+pub trait ToBase32 {
+	/// Convert `Self` to base32 vector
+	fn to_base32(&self) -> Vec<Fe32> {
+		let mut vec = Vec::new();
+		self.write_base32(&mut vec).unwrap();
+		vec
+	}
+
+	/// Encode as base32 and write it to the supplied writer
+	/// Implementations shouldn't allocate.
+	fn write_base32<W: WriteBase32>(&self, writer: &mut W) -> Result<(), <W as WriteBase32>::Err>;
+}
+
+/// Interface to calculate the length of the base32 representation before actually serializing
+pub trait Base32Len: ToBase32 {
+	/// Calculate the base32 serialized length
+	fn base32_len(&self) -> usize;
+}
+
+/// Trait for paring/converting base32 slice. It is the reciprocal of `ToBase32`.
+pub trait FromBase32: Sized {
+	/// The associated error which can be returned from parsing (e.g. because of bad padding).
+	type Err;
+
+	/// Convert a base32 slice to `Self`.
+	fn from_base32(b32: &[Fe32]) -> Result<Self, Self::Err>;
+}
+
 /// Errors that indicate what is wrong with the invoice. They have some granularity for debug
 /// reasons, but should generally result in an "invalid BOLT11 invoice" message for the user.
 #[allow(missing_docs)]
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Bolt11ParseError {
-	Bech32Error(bech32::Error),
+	Bech32Error(CheckedHrpstringError),
+	GenericBech32Error,
 	ParseAmountError(ParseIntError),
 	MalformedSignature(bitcoin::secp256k1::Error),
 	BadPrefix,
@@ -404,12 +452,30 @@ impl From<Currency> for Network {
 /// Tagged field which may have an unknown tag
 ///
 /// This is not exported to bindings users as we don't currently support TaggedField
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub enum RawTaggedField {
 	/// Parsed tagged field with known tag
 	KnownSemantics(TaggedField),
 	/// tagged field which was not parsed due to an unknown tag or undefined field semantics
-	UnknownSemantics(Vec<u5>),
+	UnknownSemantics(Vec<Fe32>),
+}
+
+impl PartialOrd for RawTaggedField {
+	fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+/// Note: `Ord `cannot be simply derived because of `Fe32`.
+impl Ord for RawTaggedField {
+	fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+		match (self, other) {
+			(RawTaggedField::KnownSemantics(ref a), RawTaggedField::KnownSemantics(ref b)) => a.cmp(b),
+			(RawTaggedField::UnknownSemantics(ref a), RawTaggedField::UnknownSemantics(ref b)) => a.iter().map(|a| a.to_u8()).cmp(b.iter().map(|b| b.to_u8())),
+			(RawTaggedField::KnownSemantics(..), RawTaggedField::UnknownSemantics(..)) => core::cmp::Ordering::Less,
+			(RawTaggedField::UnknownSemantics(..), RawTaggedField::KnownSemantics(..)) => core::cmp::Ordering::Greater,
+		}
+	}
 }
 
 /// Tagged field with known tag
@@ -957,18 +1023,18 @@ macro_rules! find_all_extract {
 #[allow(missing_docs)]
 impl RawBolt11Invoice {
 	/// Hash the HRP as bytes and signatureless data part.
-	fn hash_from_parts(hrp_bytes: &[u8], data_without_signature: &[u5]) -> [u8; 32] {
+	fn hash_from_parts(hrp_bytes: &[u8], data_without_signature: &[Fe32]) -> [u8; 32] {
 		let mut preimage = Vec::<u8>::from(hrp_bytes);
 
 		let mut data_part = Vec::from(data_without_signature);
 		let overhang = (data_part.len() * 5) % 8;
 		if overhang > 0 {
 			// add padding if data does not end at a byte boundary
-			data_part.push(u5::try_from_u8(0).unwrap());
+			data_part.push(Fe32::try_from(0).unwrap());
 
-			// if overhang is in (1..3) we need to add u5(0) padding two times
+			// if overhang is in (1..3) we need to add Fe32(0) padding two times
 			if overhang < 3 {
-				data_part.push(u5::try_from_u8(0).unwrap());
+				data_part.push(Fe32::try_from(0).unwrap());
 			}
 		}
 
@@ -982,8 +1048,6 @@ impl RawBolt11Invoice {
 
 	/// Calculate the hash of the encoded `RawBolt11Invoice` which should be signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
-		use bech32::ToBase32;
-
 		RawBolt11Invoice::hash_from_parts(
 			self.hrp.to_string().as_bytes(),
 			&self.data.to_base32()
@@ -1493,7 +1557,7 @@ impl From<TaggedField> for RawTaggedField {
 
 impl TaggedField {
 	/// Numeric representation of the field's tag
-	pub fn tag(&self) -> u5 {
+	pub fn tag(&self) -> Fe32 {
 		let tag = match *self {
 			TaggedField::PaymentHash(_) => constants::TAG_PAYMENT_HASH,
 			TaggedField::Description(_) => constants::TAG_DESCRIPTION,
@@ -1508,7 +1572,7 @@ impl TaggedField {
 			TaggedField::Features(_) => constants::TAG_FEATURES,
 		};
 
-		u5::try_from_u8(tag).expect("all tags defined are <32")
+		Fe32::try_from(tag).expect("all tags defined are <32")
 	}
 }
 
@@ -2242,5 +2306,33 @@ mod test {
 		assert_eq!(invoice, deserialized_invoice);
 		assert_eq!(invoice_str, deserialized_invoice.to_string().as_str());
 		assert_eq!(invoice_str, serialized_invoice.as_str().trim_matches('\"'));
+	}
+
+	#[test]
+	fn raw_tagged_field_ordering() {
+		use crate::{Description, Fe32, RawTaggedField, TaggedField, Sha256, sha256, UntrustedString};
+
+		let field10 = RawTaggedField::KnownSemantics(
+			TaggedField::PaymentHash(Sha256(sha256::Hash::from_str(
+				"0001020304050607080900010203040506070809000102030405060708090102"
+			).unwrap()))
+		);
+		let field11 = RawTaggedField::KnownSemantics(
+			TaggedField::Description(Description(UntrustedString("Description".to_string())))
+		);
+		let field20 = RawTaggedField::UnknownSemantics(vec![Fe32::Q]);
+		let field21 = RawTaggedField::UnknownSemantics(vec![Fe32::R]);
+
+		assert!(field10 < field20);
+		assert!(field20 > field10);
+		assert_eq!(field10.cmp(&field20), std::cmp::Ordering::Less);
+		assert_eq!(field20.cmp(&field10), std::cmp::Ordering::Greater);
+		assert_eq!(field10.cmp(&field10), std::cmp::Ordering::Equal);
+		assert_eq!(field20.cmp(&field20), std::cmp::Ordering::Equal);
+		assert_eq!(field10.partial_cmp(&field20).unwrap(), std::cmp::Ordering::Less);
+		assert_eq!(field20.partial_cmp(&field10).unwrap(), std::cmp::Ordering::Greater);
+
+		assert_eq!(field10.partial_cmp(&field11).unwrap(), std::cmp::Ordering::Less);
+		assert_eq!(field20.partial_cmp(&field21).unwrap(), std::cmp::Ordering::Less);
 	}
 }
