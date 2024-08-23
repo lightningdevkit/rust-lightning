@@ -1697,7 +1697,7 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
 	}
 
 	assert!(nodes[0].node.list_recent_payments().is_empty());
@@ -1755,7 +1755,7 @@ fn fails_creating_refund_or_sending_invoice_without_connected_peers() {
 		10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
 	}
 
 	let mut args = ReconnectArgs::new(charlie, david);
@@ -1801,7 +1801,7 @@ fn fails_creating_invoice_request_for_unsupported_chain() {
 	let payment_id = PaymentId([1; 32]);
 	match bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12CreationError::InvalidSemantics(Bolt12SemanticError::UnsupportedChain)),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedChain),
 	}
 }
 
@@ -1860,7 +1860,7 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12CreationError::BlindedPathCreationFailed),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
 	}
 
 	assert!(nodes[0].node.list_recent_payments().is_empty());
@@ -1900,7 +1900,7 @@ fn fails_creating_invoice_request_with_duplicate_payment_id() {
 
 	match david.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12CreationError::DuplicatePaymentId),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
 	}
 
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
@@ -1928,7 +1928,7 @@ fn fails_creating_refund_with_duplicate_payment_id() {
 		10_000, absolute_expiry, payment_id, Retry::Attempts(0), None
 	) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12CreationError::DuplicatePaymentId),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::DuplicatePaymentId),
 	}
 
 	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
