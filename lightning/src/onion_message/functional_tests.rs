@@ -20,7 +20,7 @@ use crate::sign::{NodeSigner, Recipient};
 use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
 use crate::util::test_utils;
 use super::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
-use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, PendingOnionMessage, Responder, ResponseInstruction, SendError, SendSuccess};
+use super::messenger::{CustomOnionMessageHandler, DefaultMessageRouter, Destination, OnionMessagePath, OnionMessenger, Responder, ResponseInstruction, MessageSendInstructions, SendError, SendSuccess};
 use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
 
@@ -74,8 +74,8 @@ impl Drop for MessengerNode {
 struct TestOffersMessageHandler {}
 
 impl OffersMessageHandler for TestOffersMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
-		ResponseInstruction::NoResponse
+	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
+		None
 	}
 }
 
@@ -84,8 +84,8 @@ struct TestAsyncPaymentsMessageHandler {}
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
-		ResponseInstruction::NoResponse
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
+		None
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
@@ -170,7 +170,7 @@ impl Drop for TestCustomMessageHandler {
 
 impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	type CustomMessage = TestCustomMessage;
-	fn handle_custom_message(&self, msg: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
+	fn handle_custom_message(&self, msg: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>) -> Option<(Self::CustomMessage, ResponseInstruction)> {
 		let expectation = self.get_next_expectation();
 		assert_eq!(msg, expectation.expect);
 
@@ -186,10 +186,10 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 
 		match responder {
 			Some(responder) if expectation.include_reply_path => {
-				responder.respond_with_reply_path(response, MessageContext::Custom(context.unwrap_or_else(Vec::new)))
+				Some((response, responder.respond_with_reply_path(MessageContext::Custom(context.unwrap_or_else(Vec::new)))))
 			},
-			Some(responder) => responder.respond(response),
-			None => ResponseInstruction::NoResponse,
+			Some(responder) => Some((response, responder.respond())),
+			None => None
 		}
 	}
 	fn read_custom_message<R: io::Read>(&self, message_type: u64, buffer: &mut R) -> Result<Option<Self::CustomMessage>, DecodeError> where Self: Sized {
@@ -207,7 +207,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 			_ => Ok(None),
 		}
 	}
-	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>> {
+	fn release_pending_custom_messages(&self) -> Vec<(Self::CustomMessage, MessageSendInstructions)> {
 		vec![]
 	}
 }
@@ -341,7 +341,8 @@ fn one_unblinded_hop() {
 	let test_msg = TestCustomMessage::Pong;
 
 	let destination = Destination::Node(nodes[1].node_id);
-	nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap();
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Pong);
 	pass_along_path(&nodes);
 }
@@ -371,7 +372,8 @@ fn one_blinded_hop() {
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(&[], nodes[1].node_id, context, &*nodes[1].entropy_source, &secp_ctx).unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
-	nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap();
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Pong);
 	pass_along_path(&nodes);
 }
@@ -409,8 +411,9 @@ fn three_blinded_hops() {
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[3].node_id, context, &*nodes[3].entropy_source, &secp_ctx).unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
-	nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap();
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
 	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Pong);
 	pass_along_path(&nodes);
 }
@@ -440,9 +443,10 @@ fn async_response_over_one_blinded_hop() {
 	let response_instruction = nodes[0].custom_message_handler.handle_custom_message(message, None, responder);
 
 	// 6. Simulate Alice asynchronously responding back to Bob with a response.
+	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(
-		nodes[0].messenger.handle_onion_message_response(response_instruction),
-		Ok(Some(SendSuccess::Buffered)),
+		nodes[0].messenger.handle_onion_message_response(msg, instructions),
+		Ok(SendSuccess::Buffered),
 	);
 
 	bob.custom_message_handler.expect_message(TestCustomMessage::Pong);
@@ -473,9 +477,10 @@ fn async_response_with_reply_path_succeeds() {
 	alice.custom_message_handler.expect_message_and_response(message.clone());
 	let response_instruction = alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
 
+	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(
-		alice.messenger.handle_onion_message_response(response_instruction),
-		Ok(Some(SendSuccess::Buffered)),
+		alice.messenger.handle_onion_message_response(msg, instructions),
+		Ok(SendSuccess::Buffered),
 	);
 
 	// Set Bob's expectation and pass the Onion Message along the path.
@@ -512,8 +517,9 @@ fn async_response_with_reply_path_fails() {
 	alice.custom_message_handler.expect_message_and_response(message.clone());
 	let response_instruction = alice.custom_message_handler.handle_custom_message(message, None, Some(responder));
 
+	let (msg, instructions) = response_instruction.unwrap();
 	assert_eq!(
-		alice.messenger.handle_onion_message_response(response_instruction),
+		alice.messenger.handle_onion_message_response(msg, instructions),
 		Err(SendError::PathNotFound),
 	);
 }
@@ -550,8 +556,9 @@ fn we_are_intro_node() {
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx).unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
-	nodes[0].messenger.send_onion_message(test_msg.clone(), destination, None).unwrap();
+	nodes[0].messenger.send_onion_message(test_msg.clone(), instructions).unwrap();
 	nodes[2].custom_message_handler.expect_message(TestCustomMessage::Pong);
 	pass_along_path(&nodes);
 
@@ -560,7 +567,9 @@ fn we_are_intro_node() {
 	let context = MessageContext::Custom(Vec::new());
 	let blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[1].node_id, context, &*nodes[1].entropy_source, &secp_ctx).unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
-	nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap();
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
 	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Pong);
 	nodes.remove(2);
 	pass_along_path(&nodes);
@@ -578,7 +587,9 @@ fn invalid_blinded_path_error() {
 	let mut blinded_path = BlindedMessagePath::new(&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx).unwrap();
 	blinded_path.clear_blinded_hops();
 	let destination = Destination::BlindedPath(blinded_path);
-	let err = nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap_err();
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+
+	let err = nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap_err();
 	assert_eq!(err, SendError::TooFewBlindedHops);
 }
 
@@ -622,8 +633,9 @@ fn reply_path() {
 	];
 	let context = MessageContext::Custom(Vec::new());
 	let reply_path = BlindedMessagePath::new(&intermediate_nodes, nodes[0].node_id, context, &*nodes[0].entropy_source, &secp_ctx).unwrap();
+	let instructions = MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path };
 
-	nodes[0].messenger.send_onion_message(test_msg, destination, Some(reply_path)).unwrap();
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
 	nodes[3].custom_message_handler.expect_message(TestCustomMessage::Ping);
 	pass_along_path(&nodes);
 
@@ -655,7 +667,9 @@ fn invalid_custom_message_type() {
 
 	let test_msg = InvalidCustomMessage {};
 	let destination = Destination::Node(nodes[1].node_id);
-	let err = nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap_err();
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+
+	let err = nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap_err();
 	assert_eq!(err, SendError::InvalidMessage);
 }
 
@@ -664,10 +678,12 @@ fn peer_buffer_full() {
 	let nodes = create_nodes(2);
 	let test_msg = TestCustomMessage::Ping;
 	let destination = Destination::Node(nodes[1].node_id);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+
 	for _ in 0..188 { // Based on MAX_PER_PEER_BUFFER_SIZE in OnionMessenger
-		nodes[0].messenger.send_onion_message(test_msg.clone(), destination.clone(), None).unwrap();
+		nodes[0].messenger.send_onion_message(test_msg.clone(), instructions.clone()).unwrap();
 	}
-	let err = nodes[0].messenger.send_onion_message(test_msg, destination, None).unwrap_err();
+	let err = nodes[0].messenger.send_onion_message(test_msg, instructions.clone()).unwrap_err();
 	assert_eq!(err, SendError::BufferFull);
 }
 
@@ -707,9 +723,10 @@ fn requests_peer_connection_for_buffered_messages() {
 		&intermediate_nodes, nodes[2].node_id, context, &*nodes[0].entropy_source, &secp_ctx
 	).unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
 	// Buffer an onion message for a connected peer
-	nodes[0].messenger.send_onion_message(message.clone(), destination.clone(), None).unwrap();
+	nodes[0].messenger.send_onion_message(message.clone(), instructions.clone()).unwrap();
 	assert!(release_events(&nodes[0]).is_empty());
 	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_some());
 	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_none());
@@ -717,7 +734,7 @@ fn requests_peer_connection_for_buffered_messages() {
 	// Buffer an onion message for a disconnected peer
 	disconnect_peers(&nodes[0], &nodes[1]);
 	assert!(nodes[0].messenger.next_onion_message_for_peer(nodes[1].node_id).is_none());
-	nodes[0].messenger.send_onion_message(message, destination, None).unwrap();
+	nodes[0].messenger.send_onion_message(message, instructions).unwrap();
 
 	// Check that a ConnectionNeeded event for the peer is provided
 	let events = release_events(&nodes[0]);
@@ -746,10 +763,11 @@ fn drops_buffered_messages_waiting_for_peer_connection() {
 		&intermediate_nodes, nodes[2].node_id, context, &*nodes[0].entropy_source, &secp_ctx
 	).unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
 	// Buffer an onion message for a disconnected peer
 	disconnect_peers(&nodes[0], &nodes[1]);
-	nodes[0].messenger.send_onion_message(message, destination, None).unwrap();
+	nodes[0].messenger.send_onion_message(message, instructions).unwrap();
 
 	// Release the event so the timer can start ticking
 	let events = release_events(&nodes[0]);
@@ -797,10 +815,11 @@ fn intercept_offline_peer_oms() {
 		&intermediate_nodes, nodes[2].node_id, context, &*nodes[2].entropy_source, &secp_ctx
 	).unwrap();
 	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 
 	// Disconnect the peers to ensure we intercept the OM.
 	disconnect_peers(&nodes[1], &nodes[2]);
-	nodes[0].messenger.send_onion_message(message, destination, None).unwrap();
+	nodes[0].messenger.send_onion_message(message, instructions).unwrap();
 	let mut final_node_vec = nodes.split_off(2);
 	pass_along_path(&nodes);
 

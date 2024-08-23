@@ -16,8 +16,8 @@ use lightning::onion_message::async_payments::{
 	AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc,
 };
 use lightning::onion_message::messenger::{
-	CustomOnionMessageHandler, Destination, MessageRouter, OnionMessagePath, OnionMessenger,
-	PendingOnionMessage, Responder, ResponseInstruction,
+	CustomOnionMessageHandler, Destination, MessageRouter, MessageSendInstructions,
+	OnionMessagePath, OnionMessenger, Responder, ResponseInstruction,
 };
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::onion_message::packet::OnionMessageContents;
@@ -109,8 +109,8 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 	fn handle_message(
 		&self, _message: OffersMessage, _context: Option<OffersContext>,
 		_responder: Option<Responder>,
-	) -> ResponseInstruction<OffersMessage> {
-		ResponseInstruction::NoResponse
+	) -> Option<(OffersMessage, ResponseInstruction)> {
+		None
 	}
 }
 
@@ -119,13 +119,15 @@ struct TestAsyncPaymentsMessageHandler {}
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 	fn held_htlc_available(
 		&self, message: HeldHtlcAvailable, responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
 		let responder = match responder {
 			Some(resp) => resp,
-			None => return ResponseInstruction::NoResponse,
+			None => return None,
 		};
-		responder
-			.respond(ReleaseHeldHtlc { payment_release_secret: message.payment_release_secret })
+		Some((
+			ReleaseHeldHtlc { payment_release_secret: message.payment_release_secret },
+			responder.respond(),
+		))
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
@@ -158,10 +160,10 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 	fn handle_custom_message(
 		&self, message: Self::CustomMessage, _context: Option<Vec<u8>>,
 		responder: Option<Responder>,
-	) -> ResponseInstruction<Self::CustomMessage> {
+	) -> Option<(Self::CustomMessage, ResponseInstruction)> {
 		match responder {
-			Some(responder) => responder.respond(message),
-			None => ResponseInstruction::NoResponse,
+			Some(responder) => Some((message, responder.respond())),
+			None => None,
 		}
 	}
 	fn read_custom_message<R: io::Read>(
@@ -171,7 +173,7 @@ impl CustomOnionMessageHandler for TestCustomMessageHandler {
 		buffer.read_to_limit(&mut buf, u64::MAX)?;
 		return Ok(Some(TestCustomMessage {}));
 	}
-	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>> {
+	fn release_pending_custom_messages(&self) -> Vec<(TestCustomMessage, MessageSendInstructions)> {
 		vec![]
 	}
 }

@@ -151,7 +151,7 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 /// # use lightning::blinded_path::message::{BlindedMessagePath, MessageForwardNode, MessageContext};
 /// # use lightning::sign::{EntropySource, KeysManager};
 /// # use lightning::ln::peer_handler::IgnoringMessageHandler;
-/// # use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath, OnionMessenger};
+/// # use lightning::onion_message::messenger::{Destination, MessageRouter, MessageSendInstructions, OnionMessagePath, OnionMessenger};
 /// # use lightning::onion_message::packet::OnionMessageContents;
 /// # use lightning::util::logger::{Logger, Record};
 /// # use lightning::util::ser::{Writeable, Writer};
@@ -218,9 +218,9 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 /// }
 /// // Send a custom onion message to a node id.
 /// let destination = Destination::Node(destination_node_id);
-/// let reply_path = None;
+/// let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 /// # let message = YourCustomMessage {};
-/// onion_messenger.send_onion_message(message, destination, reply_path);
+/// onion_messenger.send_onion_message(message, instructions);
 ///
 /// // Create a blinded path to yourself, for someone to send an onion message to.
 /// # let your_node_id = hop_node_id1;
@@ -233,9 +233,9 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 ///
 /// // Send a custom onion message to a blinded path.
 /// let destination = Destination::BlindedPath(blinded_path);
-/// let reply_path = None;
+/// let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 /// # let message = YourCustomMessage {};
-/// onion_messenger.send_onion_message(message, destination, reply_path);
+/// onion_messenger.send_onion_message(message, instructions);
 /// ```
 ///
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
@@ -342,8 +342,8 @@ impl OnionMessageRecipient {
 }
 
 
-/// The `Responder` struct creates an appropriate [`ResponseInstruction`]
-/// for responding to a message.
+/// The `Responder` struct creates an appropriate [`ResponseInstruction`] for responding to a
+/// message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Responder {
 	/// The path along which a response can be sent.
@@ -362,75 +362,74 @@ impl Responder {
 		}
 	}
 
-	/// Creates a [`ResponseInstruction::WithoutReplyPath`] for a given response.
+	/// Creates a [`ResponseInstruction`] for responding without including a reply path.
 	///
 	/// Use when the recipient doesn't need to send back a reply to us.
-	pub fn respond<T: OnionMessageContents>(self, response: T) -> ResponseInstruction<T> {
-		ResponseInstruction::WithoutReplyPath(OnionMessageResponse {
-			message: response,
-			reply_path: self.reply_path,
-		})
+	pub fn respond(self) -> ResponseInstruction {
+		ResponseInstruction {
+			destination: Destination::BlindedPath(self.reply_path),
+			context: None,
+		}
 	}
 
-	/// Creates a [`ResponseInstruction::WithReplyPath`] for a given response.
+	/// Creates a [`ResponseInstruction`] for responding including a reply path.
 	///
 	/// Use when the recipient needs to send back a reply to us.
-	pub fn respond_with_reply_path<T: OnionMessageContents>(self, response: T, context: MessageContext) -> ResponseInstruction<T> {
-		ResponseInstruction::WithReplyPath(OnionMessageResponse {
-			message: response,
-			reply_path: self.reply_path,
-		}, context)
+	pub fn respond_with_reply_path(self, context: MessageContext) -> ResponseInstruction {
+		ResponseInstruction {
+			destination: Destination::BlindedPath(self.reply_path),
+			context: Some(context),
+		}
 	}
 }
 
-/// This struct contains the information needed to reply to a received message.
-pub struct OnionMessageResponse<T: OnionMessageContents> {
-	message: T,
-	reply_path: BlindedMessagePath,
+/// Instructions for how and where to send the response to an onion message.
+#[derive(Clone)]
+pub struct ResponseInstruction {
+	/// The destination in a response is always a [`Destination::BlindedPath`] but using a
+	/// [`Destination`] rather than an explicit [`BlindedMessagePath`] simplifies the logic in
+	/// [`OnionMessenger::send_onion_message_internal`] somewhat.
+	destination: Destination,
+	context: Option<MessageContext>,
 }
 
-/// `ResponseInstruction` represents instructions for responding to received messages.
-pub enum ResponseInstruction<T: OnionMessageContents> {
-	/// Indicates that a response should be sent including a reply path for
-	/// the recipient to respond back.
-	WithReplyPath(OnionMessageResponse<T>, MessageContext),
-	/// Indicates that a response should be sent without including a reply path
-	/// for the recipient to respond back.
-	WithoutReplyPath(OnionMessageResponse<T>),
-	/// Indicates that there's no response to send back.
-	NoResponse,
+impl ResponseInstruction {
+	fn into_instructions(self) -> MessageSendInstructions {
+		MessageSendInstructions::ForReply { instructions: self }
+	}
 }
 
-/// An [`OnionMessage`] for [`OnionMessenger`] to send.
-///
-/// These are obtained when released from [`OnionMessenger`]'s handlers after which they are
-/// enqueued for sending.
-#[cfg(not(c_bindings))]
-pub struct PendingOnionMessage<T: OnionMessageContents> {
-	/// The message contents to send in an [`OnionMessage`].
-	pub contents: T,
-
-	/// The destination of the message.
-	pub destination: Destination,
-
-	/// A reply path to include in the [`OnionMessage`] for a response.
-	pub reply_path: Option<BlindedMessagePath>,
-}
-
-#[cfg(c_bindings)]
-/// An [`OnionMessage`] for [`OnionMessenger`] to send.
-///
-/// These are obtained when released from [`OnionMessenger`]'s handlers after which they are
-/// enqueued for sending.
-pub type PendingOnionMessage<T> = (T, Destination, Option<BlindedMessagePath>);
-
-pub(crate) fn new_pending_onion_message<T: OnionMessageContents>(
-	contents: T, destination: Destination, reply_path: Option<BlindedMessagePath>
-) -> PendingOnionMessage<T> {
-	#[cfg(not(c_bindings))]
-	return PendingOnionMessage { contents, destination, reply_path };
-	#[cfg(c_bindings)]
-	return (contents, destination, reply_path);
+/// Instructions for how and where to send a message.
+#[derive(Clone)]
+pub enum MessageSendInstructions {
+	/// Indicates that a message should be sent including the provided reply path for the recipient
+	/// to respond.
+	WithSpecifiedReplyPath {
+		/// The destination where we need to send our message.
+		destination: Destination,
+		/// The reply path which should be included in the message.
+		reply_path: BlindedMessagePath,
+	},
+	/// Indicates that a message should be sent including a reply path for the recipient to
+	/// respond.
+	WithReplyPath {
+		/// The destination where we need to send our message.
+		destination: Destination,
+		/// The context to include in the reply path we'll give the recipient so they can respond
+		/// to us.
+		context: MessageContext,
+	},
+	/// Indicates that a message should be sent without including a reply path, preventing the
+	/// recipient from responding.
+	WithoutReplyPath {
+		/// The destination where we need to send our message.
+		destination: Destination,
+	},
+	/// Indicates that a message is being sent as a reply to a received message.
+	ForReply {
+		/// The instructions provided by the [`Responder`].
+		instructions: ResponseInstruction,
+	},
 }
 
 /// A trait defining behavior for routing an [`OnionMessage`].
@@ -799,7 +798,9 @@ pub trait CustomOnionMessageHandler {
 	/// Called with the custom message that was received, returning a response to send, if any.
 	///
 	/// The returned [`Self::CustomMessage`], if any, is enqueued to be sent by [`OnionMessenger`].
-	fn handle_custom_message(&self, message: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage>;
+	fn handle_custom_message(
+		&self, message: Self::CustomMessage, context: Option<Vec<u8>>, responder: Option<Responder>
+	) -> Option<(Self::CustomMessage, ResponseInstruction)>;
 
 	/// Read a custom message of type `message_type` from `buffer`, returning `Ok(None)` if the
 	/// message type is unknown.
@@ -809,15 +810,7 @@ pub trait CustomOnionMessageHandler {
 	///
 	/// Typically, this is used for messages initiating a message flow rather than in response to
 	/// another message. The latter should use the return value of [`Self::handle_custom_message`].
-	#[cfg(not(c_bindings))]
-	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Self::CustomMessage>>;
-
-	/// Releases any [`Self::CustomMessage`]s that need to be sent.
-	///
-	/// Typically, this is used for messages initiating a message flow rather than in response to
-	/// another message. The latter should use the return value of [`Self::handle_custom_message`].
-	#[cfg(c_bindings)]
-	fn release_pending_custom_messages(&self) -> Vec<(Self::CustomMessage, Destination, Option<BlindedMessagePath>)>;
+	fn release_pending_custom_messages(&self) -> Vec<(Self::CustomMessage, MessageSendInstructions)>;
 }
 
 /// A processed incoming onion message, containing either a Forward (another onion message)
@@ -1160,21 +1153,39 @@ where
 		self.offers_handler = offers_handler;
 	}
 
-	/// Sends an [`OnionMessage`] with the given `contents` to `destination`.
-	///
-	/// See [`OnionMessenger`] for example usage.
+	/// Sends an [`OnionMessage`] based on its [`MessageSendInstructions`].
 	pub fn send_onion_message<T: OnionMessageContents>(
-		&self, contents: T, destination: Destination, reply_path: Option<BlindedMessagePath>
+		&self, contents: T, instructions: MessageSendInstructions,
 	) -> Result<SendSuccess, SendError> {
-		self.find_path_and_enqueue_onion_message(
-			contents, destination, reply_path, format_args!("")
-		)
+		self.send_onion_message_internal(contents, instructions, format_args!(""))
 	}
 
-	fn find_path_and_enqueue_onion_message<T: OnionMessageContents>(
-		&self, contents: T, destination: Destination, reply_path: Option<BlindedMessagePath>,
-		log_suffix: fmt::Arguments
+	fn send_onion_message_internal<T: OnionMessageContents>(
+		&self, contents: T, instructions: MessageSendInstructions, log_suffix: fmt::Arguments,
 	) -> Result<SendSuccess, SendError> {
+		let (destination, reply_path) = match instructions {
+			MessageSendInstructions::WithSpecifiedReplyPath { destination, reply_path } =>
+				(destination, Some(reply_path)),
+			MessageSendInstructions::WithReplyPath { destination, context }
+				|MessageSendInstructions::ForReply { instructions: ResponseInstruction { destination, context: Some(context) } } =>
+			{
+				match self.create_blinded_path(context) {
+					Ok(reply_path) => (destination, Some(reply_path)),
+					Err(err) => {
+						log_trace!(
+							self.logger,
+							"Failed to create reply path {}: {:?}",
+							log_suffix, err
+						);
+						return Err(err);
+					}
+				}
+			},
+			MessageSendInstructions::WithoutReplyPath { destination }
+				|MessageSendInstructions::ForReply { instructions: ResponseInstruction { destination, context: None } } =>
+				(destination, None),
+		};
+
 		let mut logger = WithContext::from(&self.logger, None, None, None);
 		let result = self.find_path(destination).and_then(|path| {
 			let first_hop = path.intermediate_nodes.get(0).map(|p| *p);
@@ -1318,42 +1329,21 @@ where
 	/// enqueueing any response for sending.
 	///
 	/// This function is useful for asynchronous handling of [`OnionMessage`]s.
-	/// Handlers have the option to return [`ResponseInstruction::NoResponse`], indicating that
-	/// no immediate response should be sent. Then, they can transfer the associated [`Responder`]
-	/// to another task responsible for generating the response asynchronously. Subsequently, when
-	/// the response is prepared and ready for sending, that task can invoke this method to enqueue
-	/// the response for delivery.
+	/// Handlers have the option to return `None`, indicating that no immediate response should be
+	/// sent. Then, they can transfer the associated [`Responder`] to another task responsible for
+	/// generating the response asynchronously. Subsequently, when the response is prepared and
+	/// ready for sending, that task can invoke this method to enqueue the response for delivery.
 	pub fn handle_onion_message_response<T: OnionMessageContents>(
-		&self, response: ResponseInstruction<T>
-	) -> Result<Option<SendSuccess>, SendError> {
-		let (response, context) = match response {
-			ResponseInstruction::WithReplyPath(response, context) => (response, Some(context)),
-			ResponseInstruction::WithoutReplyPath(response) => (response, None),
-			ResponseInstruction::NoResponse => return Ok(None),
-		};
-
-		let message_type = response.message.msg_type();
-		let reply_path = if let Some(context) = context {
-			match self.create_blinded_path(context) {
-				Ok(reply_path) => Some(reply_path),
-				Err(err) => {
-					log_trace!(
-						self.logger,
-						"Failed to create reply path when responding with {} to an onion message: {:?}",
-						message_type, err
-					);
-					return Err(err);
-				}
-			}
-		} else { None };
-
-		self.find_path_and_enqueue_onion_message(
-			response.message, Destination::BlindedPath(response.reply_path), reply_path,
+		&self, response: T, instructions: ResponseInstruction,
+	) -> Result<SendSuccess, SendError> {
+		let message_type = response.msg_type();
+		self.send_onion_message_internal(
+			response, instructions.into_instructions(),
 			format_args!(
 				"when responding with {} to an onion message",
 				message_type,
 			)
-		).map(|result| Some(result))
+		)
 	}
 
 	#[cfg(test)]
@@ -1603,14 +1593,18 @@ where
 							}
 						};
 						let response_instructions = self.offers_handler.handle_message(msg, context, responder);
-						let _ = self.handle_onion_message_response(response_instructions);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
 					},
 					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::HeldHtlcAvailable(msg)) => {
 						let response_instructions = self.async_payments_handler.held_htlc_available(
 							msg, responder
 						);
-						let _ = self.handle_onion_message_response(response_instructions);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
 					},
 					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::ReleaseHeldHtlc(msg)) => {
@@ -1626,7 +1620,9 @@ where
 							}
 						};
 						let response_instructions = self.custom_handler.handle_custom_message(msg, context, responder);
-						let _ = self.handle_onion_message_response(response_instructions);
+						if let Some((msg, instructions)) = response_instructions {
+							let _ = self.handle_onion_message_response(msg, instructions);
+						}
 					},
 				}
 			},
@@ -1751,24 +1747,16 @@ where
 	// node, and then enqueue the message for sending to the first peer in the full path.
 	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<OnionMessage> {
 		// Enqueue any initiating `OffersMessage`s to send.
-		for message in self.offers_handler.release_pending_messages() {
-			#[cfg(not(c_bindings))]
-			let PendingOnionMessage { contents, destination, reply_path } = message;
-			#[cfg(c_bindings)]
-			let (contents, destination, reply_path) = message;
-			let _ = self.find_path_and_enqueue_onion_message(
-				contents, destination, reply_path, format_args!("when sending OffersMessage")
+		for (message, instructions) in self.offers_handler.release_pending_messages() {
+			let _ = self.send_onion_message_internal(
+				message, instructions, format_args!("when sending OffersMessage")
 			);
 		}
 
 		// Enqueue any initiating `CustomMessage`s to send.
-		for message in self.custom_handler.release_pending_custom_messages() {
-			#[cfg(not(c_bindings))]
-			let PendingOnionMessage { contents, destination, reply_path } = message;
-			#[cfg(c_bindings)]
-			let (contents, destination, reply_path) = message;
-			let _ = self.find_path_and_enqueue_onion_message(
-				contents, destination, reply_path, format_args!("when sending CustomMessage")
+		for (message, instructions) in self.custom_handler.release_pending_custom_messages() {
+			let _ = self.send_onion_message_internal(
+				message, instructions, format_args!("when sending CustomMessage")
 			);
 		}
 

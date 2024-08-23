@@ -71,7 +71,7 @@ use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::signer;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
-use crate::onion_message::messenger::{new_pending_onion_message, Destination, MessageRouter, PendingOnionMessage, Responder, ResponseInstruction};
+use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -2277,9 +2277,9 @@ where
 	needs_persist_flag: AtomicBool,
 
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	pending_offers_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
+	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) pending_offers_messages: Mutex<Vec<PendingOnionMessage<OffersMessage>>>,
+	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
@@ -9068,21 +9068,21 @@ where
 				.flat_map(|reply_path| offer.paths().iter().map(move |path| (path, reply_path)))
 				.take(OFFERS_MESSAGE_REQUEST_LIMIT)
 				.for_each(|(path, reply_path)| {
-					let message = new_pending_onion_message(
-						OffersMessage::InvoiceRequest(invoice_request.clone()),
-						Destination::BlindedPath(path.clone()),
-						Some(reply_path.clone()),
-					);
-					pending_offers_messages.push(message);
+					let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+						destination: Destination::BlindedPath(path.clone()),
+						reply_path: reply_path.clone(),
+					};
+					let message = OffersMessage::InvoiceRequest(invoice_request.clone());
+					pending_offers_messages.push((message, instructions));
 				});
 		} else if let Some(signing_pubkey) = offer.signing_pubkey() {
 			for reply_path in reply_paths {
-				let message = new_pending_onion_message(
-					OffersMessage::InvoiceRequest(invoice_request.clone()),
-					Destination::Node(signing_pubkey),
-					Some(reply_path),
-				);
-				pending_offers_messages.push(message);
+				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+					destination: Destination::Node(signing_pubkey),
+					reply_path,
+				};
+				let message = OffersMessage::InvoiceRequest(invoice_request.clone());
+				pending_offers_messages.push((message, instructions));
 			}
 		} else {
 			debug_assert!(false);
@@ -9162,12 +9162,12 @@ where
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 				if refund.paths().is_empty() {
 					for reply_path in reply_paths {
-						let message = new_pending_onion_message(
-							OffersMessage::Invoice(invoice.clone()),
-							Destination::Node(refund.payer_id()),
-							Some(reply_path),
-						);
-						pending_offers_messages.push(message);
+						let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+							destination: Destination::Node(refund.payer_id()),
+							reply_path,
+						};
+						let message = OffersMessage::Invoice(invoice.clone());
+						pending_offers_messages.push((message, instructions));
 					}
 				} else {
 					reply_paths
@@ -9175,12 +9175,12 @@ where
 						.flat_map(|reply_path| refund.paths().iter().map(move |path| (path, reply_path)))
 						.take(OFFERS_MESSAGE_REQUEST_LIMIT)
 						.for_each(|(path, reply_path)| {
-							let message = new_pending_onion_message(
-								OffersMessage::Invoice(invoice.clone()),
-								Destination::BlindedPath(path.clone()),
-								Some(reply_path.clone()),
-							);
-							pending_offers_messages.push(message);
+							let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+								destination: Destination::BlindedPath(path.clone()),
+								reply_path: reply_path.clone(),
+							};
+							let message = OffersMessage::Invoice(invoice.clone());
+							pending_offers_messages.push((message, instructions));
 						});
 				}
 
@@ -10749,7 +10749,7 @@ where
 {
 	fn handle_message(
 		&self, message: OffersMessage, context: Option<OffersContext>, responder: Option<Responder>,
-	) -> ResponseInstruction<OffersMessage> {
+	) -> Option<(OffersMessage, ResponseInstruction)> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
@@ -10757,13 +10757,13 @@ where
 			OffersMessage::InvoiceRequest(invoice_request) => {
 				let responder = match responder {
 					Some(responder) => responder,
-					None => return ResponseInstruction::NoResponse,
+					None => return None,
 				};
 
 				let nonce = match context {
 					None if invoice_request.metadata().is_some() => None,
 					Some(OffersContext::InvoiceRequest { nonce }) => Some(nonce),
-					_ => return ResponseInstruction::NoResponse,
+					_ => return None,
 				};
 
 				let invoice_request = match nonce {
@@ -10771,11 +10771,11 @@ where
 						nonce, expanded_key, secp_ctx,
 					) {
 						Ok(invoice_request) => invoice_request,
-						Err(()) => return ResponseInstruction::NoResponse,
+						Err(()) => return None,
 					},
 					None => match invoice_request.verify_using_metadata(expanded_key, secp_ctx) {
 						Ok(invoice_request) => invoice_request,
-						Err(()) => return ResponseInstruction::NoResponse,
+						Err(()) => return None,
 					},
 				};
 
@@ -10783,7 +10783,7 @@ where
 					&invoice_request.inner
 				) {
 					Ok(amount_msats) => amount_msats,
-					Err(error) => return responder.respond(OffersMessage::InvoiceError(error.into())),
+					Err(error) => return Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
 				};
 
 				let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
@@ -10793,7 +10793,7 @@ where
 					Ok((payment_hash, payment_secret)) => (payment_hash, payment_secret),
 					Err(()) => {
 						let error = Bolt12SemanticError::InvalidAmount;
-						return responder.respond(OffersMessage::InvoiceError(error.into()));
+						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
 					},
 				};
 
@@ -10807,7 +10807,7 @@ where
 					Ok(payment_paths) => payment_paths,
 					Err(()) => {
 						let error = Bolt12SemanticError::MissingPaths;
-						return responder.respond(OffersMessage::InvoiceError(error.into()));
+						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
 					},
 				};
 
@@ -10852,14 +10852,14 @@ where
 				};
 
 				match response {
-					Ok(invoice) => responder.respond(OffersMessage::Invoice(invoice)),
-					Err(error) => responder.respond(OffersMessage::InvoiceError(error.into())),
+					Ok(invoice) => Some((OffersMessage::Invoice(invoice), responder.respond())),
+					Err(error) => Some((OffersMessage::InvoiceError(error.into()), responder.respond())),
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
 				let payment_id = match self.verify_bolt12_invoice(&invoice, context.as_ref()) {
 					Ok(payment_id) => payment_id,
-					Err(()) => return ResponseInstruction::NoResponse,
+					Err(()) => return None,
 				};
 
 				let logger = WithContext::from(
@@ -10871,7 +10871,7 @@ where
 						payment_id, invoice, context, responder,
 					};
 					self.pending_events.lock().unwrap().push_back((event, None));
-					return ResponseInstruction::NoResponse;
+					return None;
 				}
 
 				let error = match self.send_payment_for_verified_bolt12_invoice(
@@ -10890,14 +10890,14 @@ where
 					},
 					Err(Bolt12PaymentError::UnexpectedInvoice)
 						| Err(Bolt12PaymentError::DuplicateInvoice)
-						| Ok(()) => return ResponseInstruction::NoResponse,
+						| Ok(()) => return None,
 				};
 
 				match responder {
-					Some(responder) => responder.respond(OffersMessage::InvoiceError(error)),
+					Some(responder) => Some((OffersMessage::InvoiceError(error), responder.respond())),
 					None => {
 						log_trace!(logger, "No reply path to send error: {:?}", error);
-						ResponseInstruction::NoResponse
+						None
 					},
 				}
 			},
@@ -10905,11 +10905,11 @@ where
 			OffersMessage::StaticInvoice(_invoice) => {
 				match responder {
 					Some(responder) => {
-						responder.respond(OffersMessage::InvoiceError(
-								InvoiceError::from_string("Static invoices not yet supported".to_string())
-						))
+						return Some((OffersMessage::InvoiceError(
+							InvoiceError::from_string("Static invoices not yet supported".to_string())
+						), responder.respond()));
 					},
-					None => return ResponseInstruction::NoResponse,
+					None => return None,
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
@@ -10932,12 +10932,12 @@ where
 					_ => {},
 				}
 
-				ResponseInstruction::NoResponse
+				None
 			},
 		}
 	}
 
-	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<OffersMessage>> {
+	fn release_pending_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_offers_messages.lock().unwrap())
 	}
 }
@@ -10956,13 +10956,13 @@ where
 {
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
-		ResponseInstruction::NoResponse
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
+		None
 	}
 
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 
-	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<AsyncPaymentsMessage>> {
+	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		Vec::new()
 	}
 }

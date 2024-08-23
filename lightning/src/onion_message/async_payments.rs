@@ -11,9 +11,7 @@
 
 use crate::io;
 use crate::ln::msgs::DecodeError;
-#[cfg(not(c_bindings))]
-use crate::onion_message::messenger::PendingOnionMessage;
-use crate::onion_message::messenger::{Responder, ResponseInstruction};
+use crate::onion_message::messenger::{MessageSendInstructions, Responder, ResponseInstruction};
 use crate::onion_message::packet::OnionMessageContents;
 use crate::prelude::*;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -30,7 +28,7 @@ pub trait AsyncPaymentsMessageHandler {
 	/// the held funds.
 	fn held_htlc_available(
 		&self, message: HeldHtlcAvailable, responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc>;
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)>;
 
 	/// Handle a [`ReleaseHeldHtlc`] message. If authentication of the message succeeds, an HTLC
 	/// should be released to the corresponding payee.
@@ -40,23 +38,7 @@ pub trait AsyncPaymentsMessageHandler {
 	///
 	/// Typically, this is used for messages initiating an async payment flow rather than in response
 	/// to another message.
-	#[cfg(not(c_bindings))]
-	fn release_pending_messages(&self) -> Vec<PendingOnionMessage<AsyncPaymentsMessage>> {
-		vec![]
-	}
-
-	/// Release any [`AsyncPaymentsMessage`]s that need to be sent.
-	///
-	/// Typically, this is used for messages initiating a payment flow rather than in response to
-	/// another message.
-	#[cfg(c_bindings)]
-	fn release_pending_messages(
-		&self,
-	) -> Vec<(
-		AsyncPaymentsMessage,
-		crate::onion_message::messenger::Destination,
-		Option<crate::blinded_path::message::BlindedMessagePath>,
-	)> {
+	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		vec![]
 	}
 }

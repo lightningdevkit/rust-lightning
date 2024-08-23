@@ -30,7 +30,7 @@ use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, Mes
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
 use crate::onion_message::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
-use crate::onion_message::messenger::{CustomOnionMessageHandler, PendingOnionMessage, Responder, ResponseInstruction};
+use crate::onion_message::messenger::{CustomOnionMessageHandler, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::gossip::{NodeId, NodeAlias};
@@ -142,28 +142,28 @@ impl OnionMessageHandler for IgnoringMessageHandler {
 }
 
 impl OffersMessageHandler for IgnoringMessageHandler {
-	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> ResponseInstruction<OffersMessage> {
-		ResponseInstruction::NoResponse
+	fn handle_message(&self, _message: OffersMessage, _context: Option<OffersContext>, _responder: Option<Responder>) -> Option<(OffersMessage, ResponseInstruction)> {
+		None
 	}
 }
 impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
 	fn held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
-	) -> ResponseInstruction<ReleaseHeldHtlc> {
-		ResponseInstruction::NoResponse
+	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
+		None
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
-	fn handle_custom_message(&self, _message: Self::CustomMessage, _context: Option<Vec<u8>>, _responder: Option<Responder>) -> ResponseInstruction<Self::CustomMessage> {
+	fn handle_custom_message(&self, _message: Self::CustomMessage, _context: Option<Vec<u8>>, _responder: Option<Responder>) -> Option<(Infallible, ResponseInstruction)> {
 		// Since we always return `None` in the read the handle method should never be called.
 		unreachable!();
 	}
 	fn read_custom_message<R: io::Read>(&self, _msg_type: u64, _buffer: &mut R) -> Result<Option<Infallible>, msgs::DecodeError> where Self: Sized {
 		Ok(None)
 	}
-	fn release_pending_custom_messages(&self) -> Vec<PendingOnionMessage<Infallible>> {
+	fn release_pending_custom_messages(&self) -> Vec<(Infallible, MessageSendInstructions)> {
 		vec![]
 	}
 }
