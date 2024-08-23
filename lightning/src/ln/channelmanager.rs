@@ -947,6 +947,8 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 				ChannelPhase::RenegotiatingFundingOutbound(_chan) => true,
 				#[cfg(splicing)]
 				ChannelPhase::RenegotiatingFundingInbound(_chan) => false,
+				#[cfg(splicing)]
+				ChannelPhase::RenegotiatingFundingPending(_) => true,
 			}
 		)
 			&& self.monitor_update_blocked_actions.is_empty()
@@ -2826,6 +2828,10 @@ macro_rules! convert_chan_phase_err {
 			#[cfg(splicing)]
 			ChannelPhase::RenegotiatingFundingOutbound(_chan) |
 			ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
+			#[cfg(splicing)]
+			ChannelPhase::RenegotiatingFundingPending((_, channel)) => {
+				convert_chan_phase_err!($self, $err, channel, $channel_id, FUNDED_CHANNEL)
+			},
 		}
 	};
 }
@@ -3929,7 +3935,8 @@ where
 					},
 					#[cfg(splicing)]
 					ChannelPhase::RenegotiatingFundingOutbound(_) |
-					ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
+					ChannelPhase::RenegotiatingFundingInbound(_) |
+					ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
 				}
 			} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
 				log_error!(logger, "Force-closing channel {}", &channel_id);
@@ -4416,6 +4423,7 @@ where
 							None => {},
 						}
 					},
+					// TODO(splicing): handle RenegotiatingFundingPending
 					_ => return Err(APIError::ChannelUnavailable{err: "Channel to first hop is unfunded".to_owned()}),
 				};
 			} else {
@@ -5098,7 +5106,8 @@ where
 		let peer_state = &mut *peer_state_lock;
 
 		match peer_state.channel_by_id.get_mut(channel_id) {
-			Some(ChannelPhase::Funded(chan)) => {
+			Some(ChannelPhase::Funded(chan)) |
+			Some(ChannelPhase::RenegotiatingFundingPending((_, chan))) => {
 				let tx_signatures_opt = chan.funding_transaction_signed(channel_id, witnesses)
 					.map_err(|_err| APIError::APIMisuseError {
 						err: format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)
@@ -6292,7 +6301,8 @@ where
 							},
 							#[cfg(splicing)]
 							ChannelPhase::RenegotiatingFundingOutbound(_) |
-							ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
+							ChannelPhase::RenegotiatingFundingInbound(_) |
+							ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
 						}
 					});
 
@@ -7623,7 +7633,8 @@ where
 				},
 				#[cfg(splicing)]
 				ChannelPhase::RenegotiatingFundingOutbound(_) |
-				ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
+				ChannelPhase::RenegotiatingFundingInbound(_) |
+				ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
 			}
 		}
 		num_unfunded_channels + peer.inbound_channel_request_by_id.len()
@@ -8239,38 +8250,38 @@ where
 				if let Some(signing_session) = signing_session_opt {
 					let funding_txid = signing_session.unsigned_tx.txid();
 					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
-					let res = match channel_phase {
+					let (res, pre_splice_chan) = match channel_phase {
 						ChannelPhase::UnfundedOutboundV2(chan) => {
-							chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger).map_err(
+							(chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger).map_err(
 								|(chan, err)| {
 									(ChannelPhase::UnfundedOutboundV2(chan), err)
 								}
-							)
+							), None)
 						},
 						ChannelPhase::UnfundedInboundV2(chan) => {
-							chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger).map_err(
+							(chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger).map_err(
 								|(chan, err)| {
 									(ChannelPhase::UnfundedInboundV2(chan), err)
 								}
-							)
+							), None)
 						},
 						#[cfg(splicing)]
 						ChannelPhase::RenegotiatingFundingInbound((pre_chan, post_chan)) => {
 							match post_chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger) {
-								Ok(r) => Ok(r),
-								Err((chan, err)) => Err((ChannelPhase::RenegotiatingFundingInbound((pre_chan, chan)), err)),
+								Ok(r) => (Ok(r), Some(pre_chan)),
+								Err((chan, err)) => (Err((ChannelPhase::RenegotiatingFundingInbound((pre_chan, chan)), err)), None),
 							}
 						},
 						#[cfg(splicing)]
 						ChannelPhase::RenegotiatingFundingOutbound((pre_chan, post_chan)) => {
 							match post_chan.funding_tx_constructed(counterparty_node_id, signing_session, &self.logger) {
-								Ok(r) => Ok(r),
-								Err((chan, err)) => Err((ChannelPhase::RenegotiatingFundingOutbound((pre_chan, chan)), err)),
+								Ok(r) => (Ok(r), Some(pre_chan)),
+								Err((chan, err)) => (Err((ChannelPhase::RenegotiatingFundingOutbound((pre_chan, chan)), err)), None),
 							}
 						},
-						_ => Err((channel_phase, ChannelError::Warn(
+						_ => (Err((channel_phase, ChannelError::Warn(
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
-							.into()))),
+							.into()))), None),
 					};
 					match res {
 						Ok((mut channel, commitment_signed, funding_ready_for_sig_event_opt)) => {
@@ -8290,7 +8301,11 @@ where
 								},
 							});
 							channel.set_next_funding_txid(&funding_txid);
-							peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::Funded(channel));
+							if let Some(pre_chan) = pre_splice_chan {
+								peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::RenegotiatingFundingPending((pre_chan, channel)));
+							} else {
+								peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::Funded(channel));
+							}
 						},
 						Err((channel_phase, _)) => {
 							peer_state.channel_by_id.insert(channel_id, channel_phase);
@@ -8323,7 +8338,8 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let channel_phase = chan_phase_entry.get_mut();
 				match channel_phase {
-					ChannelPhase::Funded(chan) => {
+					ChannelPhase::Funded(chan) |
+					ChannelPhase::RenegotiatingFundingPending((_, chan)) => {
 						let (tx_signatures_opt, funding_tx_opt) = try_chan_phase_entry!(self, chan.tx_signatures(&msg, &self.logger), chan_phase_entry);
 						chan.clear_next_funding_txid();
 						if let Some(tx_signatures) = tx_signatures_opt {
@@ -8442,41 +8458,73 @@ where
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
-					let logger = WithChannelContext::from(&self.logger, &chan.context);
-					let announcement_sigs_opt = try_chan_phase_entry!(self, chan.splice_locked(&msg, &self.node_signer,
-						self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_phase_entry);
-					if let Some(announcement_sigs) = announcement_sigs_opt {
-						log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
-						peer_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-							node_id: counterparty_node_id.clone(),
-							msg: announcement_sigs,
-						});
-					} else if chan.context.is_usable() {
-						// If we're sending an announcement_signatures, we'll send the (public)
-						// channel_update after sending a channel_announcement when we receive our
-						// counterparty's announcement_signatures. Thus, we only bother to send a
-						// channel_update here if the channel is not public, i.e. we're not sending an
-						// announcement_signatures.
-						log_trace!(logger, "Sending private initial channel_update for our counterparty on channel {}", chan.context.channel_id());
-						if let Ok(msg) = self.get_channel_update_for_unicast(chan) {
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+				match chan_phase_entry.get_mut() {
+					// Note: no need to cover Funded
+					ChannelPhase::RenegotiatingFundingPending((_, _chan)) => {},
+					_ => {
+						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+							"Got a splice_locked message for an unfunded channel!".into())), chan_phase_entry);
+					},
+				}
+			},
+			hash_map::Entry::Vacant(_) => {
+				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
+			}
+		}
+
+		// Remove
+		let phase = peer_state.channel_by_id.remove(&msg.channel_id);
+		let chan = match phase {
+			// Some(ChannelPhase::Funded(chan)) => chan,
+			Some(ChannelPhase::RenegotiatingFundingPending((_, chan))) => chan,
+			_ => {
+				return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal error TODO".into(), msg.channel_id));
+			},
+		};
+		// Re-add as Funded
+		peer_state.channel_by_id.insert(msg.channel_id, ChannelPhase::Funded(chan));
+
+		match peer_state.channel_by_id.entry(msg.channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase_entry) => {
+				match chan_phase_entry.get_mut() {
+					// Note: no need to cover RenegotiatingFundingPending
+					ChannelPhase::Funded(chan) => {
+						let logger = WithChannelContext::from(&self.logger, &chan.context);
+						let announcement_sigs_opt = try_chan_phase_entry!(self, chan.splice_locked(&msg, &self.node_signer,
+							self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_phase_entry);
+						if let Some(announcement_sigs) = announcement_sigs_opt {
+							log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
+							peer_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
 								node_id: counterparty_node_id.clone(),
-								msg,
+								msg: announcement_sigs,
 							});
+						} else if chan.context.is_usable() {
+							// If we're sending an announcement_signatures, we'll send the (public)
+							// channel_update after sending a channel_announcement when we receive our
+							// counterparty's announcement_signatures. Thus, we only bother to send a
+							// channel_update here if the channel is not public, i.e. we're not sending an
+							// announcement_signatures.
+							log_trace!(logger, "Sending private initial channel_update for our counterparty on channel {}", chan.context.channel_id());
+							if let Ok(msg) = self.get_channel_update_for_unicast(chan) {
+								peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+									node_id: counterparty_node_id.clone(),
+									msg,
+								});
+							}
 						}
-					}
 
-					{
-						let mut pending_events = self.pending_events.lock().unwrap();
-						// Pass the splice flag explicitly, as splice has jsut been completed by this time point
-						emit_channel_ready_event_with_splice!(pending_events, chan, true);
-					}
+						{
+							let mut pending_events = self.pending_events.lock().unwrap();
+							// Pass the splice flag explicitly, as splice has jsut been completed by this time point
+							emit_channel_ready_event_with_splice!(pending_events, chan, true);
+						}
 
-					Ok(())
-				} else {
-					try_chan_phase_entry!(self, Err(ChannelError::Close(
-						"Got a splice_locked message for an unfunded channel!".into())), chan_phase_entry)
+						Ok(())
+					},
+					_ => {
+						try_chan_phase_entry!(self, Err(ChannelError::Close(
+							"Got a splice_locked message for an unfunded channel!".into())), chan_phase_entry)
+					},
 				}
 			},
 			hash_map::Entry::Vacant(_) => {
@@ -8546,7 +8594,8 @@ where
 					},
 					#[cfg(splicing)]
 					ChannelPhase::RenegotiatingFundingOutbound(_) |
-					ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
+					ChannelPhase::RenegotiatingFundingInbound(_) |
+					ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -8694,6 +8743,7 @@ where
 					}
 					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info, &self.fee_estimator), chan_phase_entry);
 				} else {
+					// TODO(splicing): also handle RenegotiatingFundingPending
 					return try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
@@ -8854,6 +8904,40 @@ where
 							if let Some(monitor_update) = monitor_update_opt {
 								handle_new_monitor_update!(self, funding_txo.unwrap(), monitor_update, peer_state_lock,
 									peer_state, per_peer_state, chan);
+							}
+						}
+						Ok(())
+					},
+					#[cfg(splicing)]
+					ChannelPhase::RenegotiatingFundingPending((_pre_chan, post_chan)) => {
+						// TODO(splicing): handle on pre as well
+						let logger = WithChannelContext::from(&self.logger, &post_chan.context);
+						let post_funding_txo = post_chan.context.get_funding_txo().unwrap();
+
+						#[cfg(any(dual_funding, splicing))]
+						// TODO(splicing): For splice pending case expand this condition, depending if commitment was already received or not
+						let interactive_tx_signing_in_progress = post_chan.interactive_tx_signing_session.is_some();
+						#[cfg(not(any(dual_funding, splicing)))]
+						let interactive_tx_signing_in_progress = false;
+
+						if interactive_tx_signing_in_progress {
+							#[cfg(any(dual_funding, splicing))]
+							{
+								let monitor = try_chan_phase_entry!(self,
+									post_chan.commitment_signed_initial_v2(&msg, best_block, &self.signer_provider, &&logger), chan_phase_entry);
+								if let Ok(persist_status) = self.chain_monitor.watch_channel(post_funding_txo, monitor) {
+									if let Some(tx_signatures) = post_chan.interactive_tx_signing_session.as_mut().map(|session| session.received_commitment_signed(msg.clone())).flatten() {
+										// At this point we have received a commitment signed and we are watching the channel so
+										// we're good to send our tx_signatures if we're up first.
+										peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+											node_id: *counterparty_node_id,
+											msg: tx_signatures,
+										});
+									}
+									handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, post_chan, INITIAL_MONITOR);
+								} else {
+									try_chan_phase_entry!(self, Err(ChannelError::Close("Channel funding outpoint was a duplicate".to_owned())), chan_phase_entry)
+								}
 							}
 						}
 						Ok(())
@@ -9054,6 +9138,7 @@ where
 						}
 						htlcs_to_fail
 					} else {
+						// TODO(splicing): Handle RenegotiatingFundingPending
 						return try_chan_phase_entry!(self, Err(ChannelError::Close(
 							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_phase_entry);
 					}
@@ -10750,121 +10835,123 @@ where
 				let pending_msg_events = &mut peer_state.pending_msg_events;
 
 				peer_state.channel_by_id.retain(|_, phase| {
-					match phase {
+					let channel = match phase {
 						// Retain unfunded channels.
-						ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => true,
+						ChannelPhase::UnfundedOutboundV1(_) | ChannelPhase::UnfundedInboundV1(_) => { return true },
 						// TODO(dual_funding): Combine this match arm with above.
 						#[cfg(any(dual_funding, splicing))]
-						ChannelPhase::UnfundedOutboundV2(_) | ChannelPhase::UnfundedInboundV2(_) => true,
-						ChannelPhase::Funded(channel) => {
-							let res = f(channel);
-							if let Ok((channel_ready_opt, splice_locked_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
-								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
-									let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
-									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(failure_code, data),
-										HTLCDestination::NextHopChannel { node_id: Some(channel.context.get_counterparty_node_id()), channel_id: channel.context.channel_id() }));
-								}
-								let logger = WithChannelContext::from(&self.logger, &channel.context);
-								if let Some(channel_ready) = channel_ready_opt {
-									send_channel_ready!(self, pending_msg_events, channel, channel_ready);
-									if channel.context.is_usable() {
-										log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", channel.context.channel_id());
-										if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
-											pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
-												node_id: channel.context.get_counterparty_node_id(),
-												msg,
-											});
-										}
-									} else {
-										log_trace!(logger, "Sending channel_ready WITHOUT channel_update for {}", channel.context.channel_id());
-									}
-								}
-								#[cfg(not(splicing))]
-								debug_assert!(splice_locked_opt.is_none());
-								#[cfg(splicing)]
-								{
-									if let Some(splice_locked) = splice_locked_opt {
-										send_splice_locked!(self, pending_msg_events, channel, splice_locked);
-										if channel.context.is_usable() {
-											log_trace!(logger, "Sending splice_locked with private initial channel_update for our counterparty on channel {}", channel.context.channel_id());
-											if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
-												pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
-													node_id: channel.context.get_counterparty_node_id(),
-													msg,
-												});
-											}
-										} else {
-											log_trace!(logger, "Sending splice_locked WITHOUT channel_update for {}", channel.context.channel_id());
-										}
-									}
-								}
-
-								{
-									let mut pending_events = self.pending_events.lock().unwrap();
-									emit_channel_ready_event!(pending_events, channel);
-								}
-
-								if let Some(announcement_sigs) = announcement_sigs {
-									log_trace!(logger, "Sending announcement_signatures for channel {}", channel.context.channel_id());
-									pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-										node_id: channel.context.get_counterparty_node_id(),
-										msg: announcement_sigs,
-									});
-									if let Some(height) = height_opt {
-										if let Some(announcement) = channel.get_signed_channel_announcement(&self.node_signer, self.chain_hash, height, &self.default_configuration) {
-											pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
-												msg: announcement,
-												// Note that announcement_signatures fails if the channel cannot be announced,
-												// so get_channel_update_for_broadcast will never fail by the time we get here.
-												update_msg: Some(self.get_channel_update_for_broadcast(channel).unwrap()),
-											});
-										}
-									}
-								}
-								if channel.is_our_channel_ready() {
-									if let Some(real_scid) = channel.context.get_short_channel_id() {
-										// If we sent a 0conf channel_ready, and now have an SCID, we add it
-										// to the short_to_chan_info map here. Note that we check whether we
-										// can relay using the real SCID at relay-time (i.e.
-										// enforce option_scid_alias then), and if the funding tx is ever
-										// un-confirmed we force-close the channel, ensuring short_to_chan_info
-										// is always consistent.
-										let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
-										let scid_insert = short_to_chan_info.insert(real_scid, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
-										assert!(scid_insert.is_none() || scid_insert.unwrap() == (channel.context.get_counterparty_node_id(), channel.context.channel_id()),
-											"SCIDs should never collide - ensure you weren't behind by a full {} blocks when creating channels",
-											fake_scid::MAX_SCID_BLOCKS_FROM_NOW);
-									}
-								}
-							} else if let Err(reason) = res {
-								update_maps_on_chan_removal!(self, &channel.context);
-								// It looks like our counterparty went on-chain or funding transaction was
-								// reorged out of the main chain. Close the channel.
-								let reason_message = format!("{}", reason);
-								failed_channels.push(channel.context.force_shutdown(true, reason));
-								if let Ok(update) = self.get_channel_update_for_broadcast(&channel) {
-									let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
-									pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
-										msg: update
-									});
-								}
-								pending_msg_events.push(events::MessageSendEvent::HandleError {
-									node_id: channel.context.get_counterparty_node_id(),
-									action: msgs::ErrorAction::DisconnectPeer {
-										msg: Some(msgs::ErrorMessage {
-											channel_id: channel.context.channel_id(),
-											data: reason_message,
-										})
-									},
-								});
-								return false;
-							}
-							true
-						}
+						ChannelPhase::UnfundedOutboundV2(_) | ChannelPhase::UnfundedInboundV2(_) => { return true },
+						ChannelPhase::Funded(chan) => { chan }
 						#[cfg(splicing)]
 						ChannelPhase::RenegotiatingFundingOutbound(_) |
 						ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
+						// Both post and pre exist
+						#[cfg(splicing)]
+						ChannelPhase::RenegotiatingFundingPending((_, post_chan)) => { post_chan }
+					};
+					let res = f(channel);
+					if let Ok((channel_ready_opt, splice_locked_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
+						for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
+							let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
+							timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(failure_code, data),
+								HTLCDestination::NextHopChannel { node_id: Some(channel.context.get_counterparty_node_id()), channel_id: channel.context.channel_id() }));
+						}
+						let logger = WithChannelContext::from(&self.logger, &channel.context);
+						if let Some(channel_ready) = channel_ready_opt {
+							send_channel_ready!(self, pending_msg_events, channel, channel_ready);
+							if channel.context.is_usable() {
+								log_trace!(logger, "Sending channel_ready with private initial channel_update for our counterparty on channel {}", channel.context.channel_id());
+								if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+									pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+										node_id: channel.context.get_counterparty_node_id(),
+										msg,
+									});
+								}
+							} else {
+								log_trace!(logger, "Sending channel_ready WITHOUT channel_update for {}", channel.context.channel_id());
+							}
+						}
+						#[cfg(not(splicing))]
+						debug_assert!(splice_locked_opt.is_none());
+						#[cfg(splicing)]
+						{
+							if let Some(splice_locked) = splice_locked_opt {
+								send_splice_locked!(self, pending_msg_events, channel, splice_locked);
+								if channel.context.is_usable() {
+									log_trace!(logger, "Sending splice_locked with private initial channel_update for our counterparty on channel {}", channel.context.channel_id());
+									if let Ok(msg) = self.get_channel_update_for_unicast(channel) {
+										pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+											node_id: channel.context.get_counterparty_node_id(),
+											msg,
+										});
+									}
+								} else {
+									log_trace!(logger, "Sending splice_locked WITHOUT channel_update for {}", channel.context.channel_id());
+								}
+							}
+						}
+
+						{
+							let mut pending_events = self.pending_events.lock().unwrap();
+							emit_channel_ready_event!(pending_events, channel);
+						}
+
+						if let Some(announcement_sigs) = announcement_sigs {
+							log_trace!(logger, "Sending announcement_signatures for channel {}", channel.context.channel_id());
+							pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+								node_id: channel.context.get_counterparty_node_id(),
+								msg: announcement_sigs,
+							});
+							if let Some(height) = height_opt {
+								if let Some(announcement) = channel.get_signed_channel_announcement(&self.node_signer, self.chain_hash, height, &self.default_configuration) {
+									pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
+										msg: announcement,
+										// Note that announcement_signatures fails if the channel cannot be announced,
+										// so get_channel_update_for_broadcast will never fail by the time we get here.
+										update_msg: Some(self.get_channel_update_for_broadcast(channel).unwrap()),
+									});
+								}
+							}
+						}
+						if channel.is_our_channel_ready() {
+							if let Some(real_scid) = channel.context.get_short_channel_id() {
+								// If we sent a 0conf channel_ready, and now have an SCID, we add it
+								// to the short_to_chan_info map here. Note that we check whether we
+								// can relay using the real SCID at relay-time (i.e.
+								// enforce option_scid_alias then), and if the funding tx is ever
+								// un-confirmed we force-close the channel, ensuring short_to_chan_info
+								// is always consistent.
+								let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+								let scid_insert = short_to_chan_info.insert(real_scid, (channel.context.get_counterparty_node_id(), channel.context.channel_id()));
+								assert!(scid_insert.is_none() || scid_insert.unwrap() == (channel.context.get_counterparty_node_id(), channel.context.channel_id()),
+									"SCIDs should never collide - ensure you weren't behind by a full {} blocks when creating channels",
+									fake_scid::MAX_SCID_BLOCKS_FROM_NOW);
+							}
+						}
+					} else if let Err(reason) = res {
+						update_maps_on_chan_removal!(self, &channel.context);
+						// It looks like our counterparty went on-chain or funding transaction was
+						// reorged out of the main chain. Close the channel.
+						let reason_message = format!("{}", reason);
+						failed_channels.push(channel.context.force_shutdown(true, reason));
+						if let Ok(update) = self.get_channel_update_for_broadcast(&channel) {
+							let mut pending_broadcast_messages = self.pending_broadcast_messages.lock().unwrap();
+							pending_broadcast_messages.push(events::MessageSendEvent::BroadcastChannelUpdate {
+								msg: update
+							});
+						}
+						pending_msg_events.push(events::MessageSendEvent::HandleError {
+							node_id: channel.context.get_counterparty_node_id(),
+							action: msgs::ErrorAction::DisconnectPeer {
+								msg: Some(msgs::ErrorMessage {
+									channel_id: channel.context.channel_id(),
+									data: reason_message,
+								})
+							},
+						});
+						return false;
 					}
+					true
 				});
 			}
 		}
@@ -11291,7 +11378,8 @@ where
 						},
 						#[cfg(splicing)]
 						ChannelPhase::RenegotiatingFundingOutbound(_) |
-						ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
+						ChannelPhase::RenegotiatingFundingInbound(_) |
+						ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
 					};
 					// Clean up for removal.
 					update_maps_on_chan_removal!(self, &context);
@@ -11476,7 +11564,8 @@ where
 
 						#[cfg(splicing)]
 						ChannelPhase::RenegotiatingFundingOutbound(_) |
-						ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
+						ChannelPhase::RenegotiatingFundingInbound(_) |
+						ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
 					}
 				}
 			}
@@ -11588,7 +11677,8 @@ where
 					Some(ChannelPhase::UnfundedInboundV2(_)) => (),
 					#[cfg(splicing)]
 					Some(ChannelPhase::RenegotiatingFundingOutbound(_)) |
-					Some(ChannelPhase::RenegotiatingFundingInbound(_)) => todo!("splicing"),
+					Some(ChannelPhase::RenegotiatingFundingInbound(_)) |
+					Some(ChannelPhase::RenegotiatingFundingPending(_)) => todo!("splicing"),
 				}
 			}
 

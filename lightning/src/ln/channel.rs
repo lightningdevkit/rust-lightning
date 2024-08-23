@@ -322,7 +322,8 @@ impl_writeable_tlv_based!(InboundHTLCDetails, {
 	(8, is_dust, required),
 });
 
-#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 enum OutboundHTLCState {
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -447,7 +448,8 @@ impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	}
 }
 
-#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct OutboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -512,7 +514,8 @@ impl_writeable_tlv_based!(OutboundHTLCDetails, {
 });
 
 /// See AwaitingRemoteRevoke ChannelState for more info
-#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 enum HTLCUpdateAwaitingACK {
 	AddHTLC { // TODO: Time out if we're getting close to cltv_expiry
 		// always outbound
@@ -1218,13 +1221,20 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	/// Funding transaction negotiated (pending or locked)
 	Funded(Channel<SP>),
 	/// Renegotiating existing channel, outbound (initiated by us)
-	/// Contains already negotiated channel (pre-splice) and channel being negotiated (post-splice)
+	/// Contains already negotiated channel (funded, pre-splice) and
+	/// channel being negotiated (post-splice)
 	#[cfg(splicing)]
 	RenegotiatingFundingOutbound((Channel<SP>, RenegotiatingChannel<SP>)),
 	/// Renegotiating existing channel, inbound (initiated by the peer)
-	/// Contains already negotiated channel (pre-splice) and channel being negotiated (post-splice)
+	/// Contains already negotiated channel (funded, pre-splice) and
+	/// channel being negotiated (post-splice)
 	#[cfg(splicing)]
 	RenegotiatingFundingInbound((Channel<SP>, RenegotiatingChannel<SP>)),
+	/// Renegotiating existing channel, new channel is negotiated but still pending.
+	/// Contains the old channel (funded, pre-splice) and
+	/// and the new channel, that is negotiated but pending (funded, post-splice)
+	#[cfg(splicing)]
+	RenegotiatingFundingPending((Channel<SP>, Channel<SP>)),
 }
 
 impl<'a, SP: Deref> ChannelPhase<SP> where
@@ -1244,6 +1254,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::RenegotiatingFundingOutbound((_pre_chan, post_chan)) => &post_chan.context,
 			#[cfg(splicing)]
 			ChannelPhase::RenegotiatingFundingInbound((_pre_chan, post_chan)) => &post_chan.context,
+			// Both post and pre exist
+			#[cfg(splicing)]
+			ChannelPhase::RenegotiatingFundingPending((_pre_chan, post_chan)) => &post_chan.context,
 		}
 	}
 
@@ -1260,6 +1273,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::RenegotiatingFundingOutbound((ref mut _pre_chan, post_chan)) => &mut post_chan.context,
 			#[cfg(splicing)]
 			ChannelPhase::RenegotiatingFundingInbound((ref mut _pre_chan, post_chan)) => &mut post_chan.context,
+			// Both post and pre exist
+			#[cfg(splicing)]
+			ChannelPhase::RenegotiatingFundingPending((ref mut _pre_chan, post_chan)) => &mut post_chan.context,
 		}
 	}
 }
