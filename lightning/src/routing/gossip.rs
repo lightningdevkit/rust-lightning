@@ -1388,7 +1388,9 @@ pub enum NodeAnnouncementInfo {
 
 impl NodeAnnouncementInfo {
 	/// Protocol features the node announced support for
-	pub fn features(&self) -> &NodeFeatures {
+	pub fn features(&self) -> NodeFeatures { self.features_ref().clone() }
+
+	pub(crate) fn features_ref(&self) -> &NodeFeatures {
 		match self {
 			NodeAnnouncementInfo::Relayed(relayed) => &relayed.contents.features,
 			NodeAnnouncementInfo::Local(local) => &local.features,
@@ -1416,29 +1418,29 @@ impl NodeAnnouncementInfo {
 	/// Moniker assigned to the node.
 	///
 	/// May be invalid or malicious (eg control chars), should not be exposed to the user.
-	pub fn alias(&self) -> &NodeAlias {
+	pub fn alias(&self) -> NodeAlias {
 		match self {
 			NodeAnnouncementInfo::Relayed(relayed) => &relayed.contents.alias,
 			NodeAnnouncementInfo::Local(local) => &local.alias,
-		}
+		}.clone()
 	}
 
 	/// Internet-level addresses via which one can connect to the node
-	pub fn addresses(&self) -> &[SocketAddress] {
+	pub fn addresses(&self) -> Vec<SocketAddress> {
 		match self {
 			NodeAnnouncementInfo::Relayed(relayed) => &relayed.contents.addresses,
 			NodeAnnouncementInfo::Local(local) => &local.addresses,
-		}
+		}.to_vec()
 	}
 
 	/// An initial announcement of the node
 	///
 	/// Not stored if contains excess data to prevent DoS.
-	pub fn announcement_message(&self) -> Option<&NodeAnnouncement> {
+	pub fn announcement_message(&self) -> Option<NodeAnnouncement> {
 		match self {
 			NodeAnnouncementInfo::Relayed(announcement) => Some(announcement),
 			NodeAnnouncementInfo::Local(_) => None,
-		}
+		}.cloned()
 	}
 }
 

@@ -3167,7 +3167,7 @@ where L::Target: Logger {
 
 				if let Some(node) = network_nodes.get(&$node_id) {
 					let features = if let Some(node_info) = node.announcement_info.as_ref() {
-						&node_info.features()
+						node_info.features_ref()
 					} else {
 						&default_node_features
 					};
