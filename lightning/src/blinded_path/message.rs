@@ -142,13 +142,12 @@ impl BlindedMessagePath {
 	/// introduction node.
 	///
 	/// Will only modify `self` when returning `Ok`.
-	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+	pub fn advance_path_by_one<NS: Deref, NL: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
 	) -> Result<(), ()>
 	where
 		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
-		T: secp256k1::Signing + secp256k1::Verification,
 	{
 		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.0.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
