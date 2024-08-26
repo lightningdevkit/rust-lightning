@@ -9081,7 +9081,7 @@ where
 		let invoice_request = builder.build_and_sign()?;
 
 		let hmac = payment_id.hmac_for_offer_payment(nonce, expanded_key);
-		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) };
+		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac.to_byte_array()) };
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -10956,7 +10956,7 @@ where
 
 				match context {
 					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if let Ok(()) = payment_id.verify(hmac, nonce, expanded_key) {
+						if let Ok(()) = payment_id.verify(bitcoin::hashes::hmac::Hmac::from_byte_array(hmac), nonce, expanded_key) {
 							self.abandon_payment_with_reason(
 								payment_id, PaymentFailureReason::InvoiceRequestRejected,
 							);
