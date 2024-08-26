@@ -71,7 +71,7 @@ use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Amount, Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
@@ -1163,14 +1163,6 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		};
 		let offer = OfferContents::try_from(offer_tlv_stream)?;
 
-		match offer.amount() {
-			Some(Amount::Currency {..}) => return Err(Bolt12SemanticError::UnsupportedCurrency),
-			_ => {
-				offer.check_amount_msats_for_quantity(amount, quantity)?;
-				offer.check_quantity(quantity)?;
-			},
-		};
-
 		if !offer.supports_chain(chain.unwrap_or_else(|| offer.implied_chain())) {
 			return Err(Bolt12SemanticError::UnsupportedChain);
 		}
@@ -1178,6 +1170,9 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		if offer.amount().is_none() && amount.is_none() {
 			return Err(Bolt12SemanticError::MissingAmount);
 		}
+
+		offer.check_quantity(quantity)?;
+		offer.check_amount_msats_for_quantity(amount, quantity)?;
 
 		let features = features.unwrap_or_else(InvoiceRequestFeatures::empty);
 
@@ -2048,11 +2043,8 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice_request.write(&mut buffer).unwrap();
 
-		match InvoiceRequest::try_from(buffer) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnsupportedCurrency));
-			},
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
