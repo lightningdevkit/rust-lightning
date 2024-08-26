@@ -67,7 +67,7 @@ use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSign
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{DerivedPayerSigningPubkey, InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferBuilder};
+use crate::offers::offer::{Amount, Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::signer;
@@ -11134,6 +11134,13 @@ where
 					Some(responder) => responder,
 					None => return None,
 				};
+
+				if let Some(amount) = invoice_request.amount() {
+					if let Amount::Currency { .. } = amount {
+						let error = Bolt12SemanticError::UnsupportedCurrency;
+						return Some((OffersMessage::InvoiceError(error.into()), responder.respond()));
+					}
+				}
 
 				let nonce = match context {
 					None if invoice_request.metadata().is_some() => None,
