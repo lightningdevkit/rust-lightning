@@ -185,13 +185,12 @@ impl BlindedPaymentPath {
 	/// introduction node.
 	///
 	/// Will only modify `self` when returning `Ok`.
-	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+	pub fn advance_path_by_one<NS: Deref, NL: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>,
 	) -> Result<(), ()>
 	where
 		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
-		T: secp256k1::Signing + secp256k1::Verification,
 	{
 		match self.decrypt_intro_payload::<NS>(node_signer) {
 			Ok((
