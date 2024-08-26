@@ -334,7 +334,7 @@ pub enum OffersContext {
 		/// used with an [`InvoiceError`].
 		///
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		hmac: Option<Hmac<Sha256>>,
+		hmac: Option<[u8; 32]>,
 	},
 	/// Context used by a [`BlindedMessagePath`] as a reply path for a [`Bolt12Invoice`].
 	///
