@@ -659,7 +659,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 			// Check that if we serialize and then deserialize all our channel monitors we get the
 			// same set of outputs to watch for on chain as we have now. Note that if we write
 			// tests that fully close channels and remove the monitors at some point this may break.
-			let feeest = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
+			let feeest = test_utils::TestFeeEstimator::new(253);
 			let mut deserialized_monitors = Vec::new();
 			{
 				for (outpoint, _channel_id) in self.chain_monitor.chain_monitor.list_monitors() {
@@ -692,7 +692,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					entropy_source: self.keys_manager,
 					node_signer: self.keys_manager,
 					signer_provider: self.keys_manager,
-					fee_estimator: &test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) },
+					fee_estimator: &test_utils::TestFeeEstimator::new(253),
 					router: &test_utils::TestRouter::new(Arc::new(network_graph), &self.logger, &scorer),
 					chain_monitor: self.chain_monitor,
 					tx_broadcaster: &broadcaster,
@@ -3176,7 +3176,7 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
 	for i in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster::new(Network::Testnet);
-		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
+		let fee_estimator = test_utils::TestFeeEstimator::new(253);
 		let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
 		let persister = test_utils::TestPersister::new();

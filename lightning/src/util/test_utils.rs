@@ -99,10 +99,19 @@ impl Writer for TestVecWriter {
 
 pub struct TestFeeEstimator {
 	pub sat_per_kw: Mutex<u32>,
+	pub target_override: Mutex<HashMap<ConfirmationTarget, u32>>,
+}
+impl TestFeeEstimator {
+	pub fn new(sat_per_kw: u32) -> Self {
+		Self {
+			sat_per_kw: Mutex::new(sat_per_kw),
+			target_override: Mutex::new(new_hash_map()),
+		}
+	}
 }
 impl chaininterface::FeeEstimator for TestFeeEstimator {
-	fn get_est_sat_per_1000_weight(&self, _confirmation_target: ConfirmationTarget) -> u32 {
-		*self.sat_per_kw.lock().unwrap()
+	fn get_est_sat_per_1000_weight(&self, conf_target: ConfirmationTarget) -> u32 {
+		*self.target_override.lock().unwrap().get(&conf_target).unwrap_or(&*self.sat_per_kw.lock().unwrap())
 	}
 }
 

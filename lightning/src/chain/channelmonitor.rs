@@ -5016,7 +5016,7 @@ mod tests {
 	use crate::util::test_utils::{TestLogger, TestBroadcaster, TestFeeEstimator};
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::logger::Logger;
-	use crate::sync::{Arc, Mutex};
+	use crate::sync::Arc;
 	use crate::io;
 	use crate::ln::features::ChannelTypeFeatures;
 
@@ -5116,7 +5116,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let logger = Arc::new(TestLogger::new());
 		let broadcaster = Arc::new(TestBroadcaster::new(Network::Testnet));
-		let fee_estimator = TestFeeEstimator { sat_per_kw: Mutex::new(253) };
+		let fee_estimator = TestFeeEstimator::new(253);
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 

@@ -7247,7 +7247,7 @@ fn test_user_configurable_csv_delay() {
 	let logger = TestLogger::new();
 
 	// We test config.our_to_self > BREAKDOWN_TIMEOUT is enforced in OutboundV1Channel::new()
-	if let Err(error) = OutboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
+	if let Err(error) = OutboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator::new(253)),
 		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[1].node.init_features(), 1000000, 1000000, 0,
 		&low_our_to_self_config, 0, 42, None, &logger)
 	{
@@ -7261,7 +7261,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.common_fields.to_self_delay = 200;
-	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
+	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator::new(253)),
 		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
 		&low_our_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{
@@ -7296,7 +7296,7 @@ fn test_user_configurable_csv_delay() {
 	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 1000000, 1000000, 42, None, None).unwrap();
 	let mut open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 	open_channel.common_fields.to_self_delay = 200;
-	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) }),
+	if let Err(error) = InboundV1Channel::new(&LowerBoundedFeeEstimator::new(&test_utils::TestFeeEstimator::new(253)),
 		&nodes[0].keys_manager, &nodes[0].keys_manager, nodes[1].node.get_our_node_id(), &nodes[0].node.channel_type_features(), &nodes[1].node.init_features(), &open_channel, 0,
 		&high_their_to_self_config, 0, &nodes[0].logger, /*is_0conf=*/false)
 	{

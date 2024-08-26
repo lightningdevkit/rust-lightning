@@ -1107,7 +1107,7 @@ mod tests {
 	use std::collections::VecDeque;
 	use std::path::PathBuf;
 	use std::sync::mpsc::SyncSender;
-	use std::sync::{Arc, Mutex};
+	use std::sync::Arc;
 	use std::time::Duration;
 	use std::{env, fs};
 
@@ -1126,7 +1126,7 @@ mod tests {
 	#[cfg(c_bindings)]
 	type LockingWrapper<T> = lightning::routing::scoring::MultiThreadedLockableScore<T>;
 	#[cfg(not(c_bindings))]
-	type LockingWrapper<T> = Mutex<T>;
+	type LockingWrapper<T> = std::sync::Mutex<T>;
 
 	type ChannelManager = channelmanager::ChannelManager<
 		Arc<ChainMonitor>,
@@ -1532,8 +1532,7 @@ mod tests {
 		let mut nodes = Vec::new();
 		for i in 0..num_nodes {
 			let tx_broadcaster = Arc::new(test_utils::TestBroadcaster::new(network));
-			let fee_estimator =
-				Arc::new(test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) });
+			let fee_estimator = Arc::new(test_utils::TestFeeEstimator::new(253));
 			let logger = Arc::new(test_utils::TestLogger::with_id(format!("node {}", i)));
 			let genesis_block = genesis_block(network);
 			let network_graph = Arc::new(NetworkGraph::new(network, logger.clone()));
