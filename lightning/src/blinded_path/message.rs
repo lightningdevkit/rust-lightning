@@ -344,7 +344,7 @@ pub enum OffersContext {
 		/// used with an [`InvoiceError`].
 		///
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		hmac: Option<Hmac<Sha256>>,
+		hmac: Option<[u8; 32]>,
 	},
 	/// Context used by a [`BlindedMessagePath`] as a reply path for a [`Bolt12Invoice`].
 	///
@@ -369,7 +369,7 @@ pub enum OffersContext {
 		/// used to log the received [`InvoiceError`].
 		///
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		hmac: Hmac<Sha256>,
+		hmac: [u8; 32],
 	},
 }
 
@@ -400,7 +400,7 @@ pub enum AsyncPaymentsContext {
 		///
 		/// Prevents the recipient from being able to deanonymize us by creating a blinded path to us
 		/// containing the expected [`PaymentId`].
-		hmac: Hmac<Sha256>,
+		hmac: [u8; 32],
 	},
 }
 

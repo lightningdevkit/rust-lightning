@@ -456,11 +456,11 @@ pub trait Verification {
 	/// [`Nonce`].
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256>;
+	) -> [u8; 32];
 
 	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()>;
 }
 
@@ -469,15 +469,16 @@ impl Verification for PaymentHash {
 	/// along with the given [`Nonce`].
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_hash(*self, nonce, expanded_key)
+	) -> [u8; 32] {
+		signer::hmac_for_payment_hash(*self, nonce, expanded_key).to_byte_array()
 	}
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::InboundPayment`].
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
+		let hmac = bitcoin::hashes::hmac::Hmac::from_byte_array(hmac);
 		signer::verify_payment_hash(*self, hmac, nonce, expanded_key)
 	}
 }
@@ -485,13 +486,14 @@ impl Verification for PaymentHash {
 impl Verification for UnauthenticatedReceiveTlvs {
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_tlvs(self, nonce, expanded_key)
+	) -> [u8; 32] {
+		signer::hmac_for_payment_tlvs(self, nonce, expanded_key).to_byte_array()
 	}
 
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
+		let hmac = bitcoin::hashes::hmac::Hmac::from_byte_array(hmac);
 		signer::verify_payment_tlvs(self, hmac, nonce, expanded_key)
 	}
 }
@@ -512,16 +514,17 @@ impl PaymentId {
 	#[cfg(async_payments)]
 	pub fn hmac_for_async_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_async_payment_id(*self, nonce, expanded_key)
+	) -> [u8; 32] {
+		signer::hmac_for_async_payment_id(*self, nonce, expanded_key).to_byte_array()
 	}
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`AsyncPaymentsContext::OutboundPayment`].
 	#[cfg(async_payments)]
 	pub fn verify_for_async_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
+		let hmac = bitcoin::hashes::hmac::Hmac::from_byte_array(hmac);
 		signer::verify_async_payment_id(*self, hmac, nonce, expanded_key)
 	}
 }
@@ -531,15 +534,16 @@ impl Verification for PaymentId {
 	/// along with the given [`Nonce`].
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
-	) -> Hmac<Sha256> {
-		signer::hmac_for_offer_payment_id(*self, nonce, expanded_key)
+	) -> [u8; 32] {
+		signer::hmac_for_offer_payment_id(*self, nonce, expanded_key).to_byte_array()
 	}
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::OutboundPayment`].
 	fn verify_for_offer_payment(
-		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+		&self, hmac: [u8; 32], nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
+		let hmac = bitcoin::hashes::hmac::Hmac::from_byte_array(hmac);
 		signer::verify_offer_payment_id(*self, hmac, nonce, expanded_key)
 	}
 }

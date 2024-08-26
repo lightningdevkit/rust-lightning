@@ -264,7 +264,7 @@ pub struct ReceiveTlvs {
 	/// The TLVs for which the HMAC in `authentication` is derived.
 	pub(crate) tlvs: UnauthenticatedReceiveTlvs,
 	/// An HMAC of `tlvs` along with a nonce used to construct it.
-	pub(crate) authentication: (Hmac<Sha256>, Nonce),
+	pub(crate) authentication: ([u8; 32], Nonce),
 }
 
 impl ReceiveTlvs {
