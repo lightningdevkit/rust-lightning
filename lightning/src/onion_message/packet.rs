@@ -148,6 +148,16 @@ impl<T: OnionMessageContents> OnionMessageContents for ParsedOnionMessageContent
 			&ParsedOnionMessageContents::Custom(ref msg) => msg.tlv_type(),
 		}
 	}
+	#[cfg(c_bindings)]
+	fn msg_type(&self) -> String {
+		match self {
+			ParsedOnionMessageContents::Offers(ref msg) => msg.msg_type(),
+			#[cfg(async_payments)]
+			ParsedOnionMessageContents::AsyncPayments(ref msg) => msg.msg_type(),
+			ParsedOnionMessageContents::Custom(ref msg) => msg.msg_type(),
+		}
+	}
+	#[cfg(not(c_bindings))]
 	fn msg_type(&self) -> &'static str {
 		match self {
 			ParsedOnionMessageContents::Offers(ref msg) => msg.msg_type(),
@@ -174,6 +184,11 @@ pub trait OnionMessageContents: Writeable + core::fmt::Debug {
 	/// Returns the TLV type identifying the message contents. MUST be >= 64.
 	fn tlv_type(&self) -> u64;
 
+	#[cfg(c_bindings)]
+	/// Returns the message type
+	fn msg_type(&self) -> String;
+
+	#[cfg(not(c_bindings))]
 	/// Returns the message type
 	fn msg_type(&self) -> &'static str;
 }
