@@ -11,7 +11,7 @@
 //! properly with a signer implementation that asynchronously derives signatures.
 
 use std::collections::HashSet;
-
+use bitcoin::key::Secp256k1;
 use bitcoin::{Transaction, TxOut, TxIn, Amount};
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::transaction::Version;
@@ -20,9 +20,13 @@ use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
 use crate::chain::ChannelMonitorUpdateStatus;
 use crate::events::bump_transaction::WalletSource;
 use crate::events::{ClosureReason, Event, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::{functional_test_utils::*, msgs};
-use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::chan_utils::ClosingTransaction;
+use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields};
+use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::{functional_test_utils::*, msgs};
+use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::SignerProvider;
 use crate::util::test_channel_signer::SignerOp;
 use crate::util::logger::Logger;
 
@@ -846,4 +850,106 @@ fn test_async_holder_signatures_anchors() {
 #[test]
 fn test_async_holder_signatures_remote_commitment_anchors() {
 	do_test_async_holder_signatures(true, true);
+}
+
+#[test]
+fn test_closing_signed() {
+	do_test_closing_signed(false);
+	do_test_closing_signed(true);
+}
+
+fn do_test_closing_signed(extra_closing_signed: bool) {
+	// Based off of `expect_channel_shutdown_state`.
+	// Test that we can asynchronously sign closing transactions.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NotShuttingDown);
+
+	nodes[0].node.close_channel(&chan_1.2, &nodes[1].node.get_our_node_id()).unwrap();
+
+	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ShutdownInitiated);
+	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NotShuttingDown);
+
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
+
+	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ShutdownInitiated);
+	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
+
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
+	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown);
+
+	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
+	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert!(events.is_empty(), "Expected no events, got {:?}", events);
+	nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
+	nodes[0].node.signer_unblocked(None);
+
+	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
+	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
+
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert!(events.is_empty(), "Expected no events, got {:?}", events);
+	nodes[1].enable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
+	nodes[1].node.signer_unblocked(None);
+
+	let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
+
+	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
+	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert!(events.is_empty(), "Expected no events, got {:?}", events);
+	nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
+
+	if extra_closing_signed {
+		let node_1_closing_signed_2_bad = {
+			let mut node_1_closing_signed_2 = node_1_closing_signed.clone();
+			let holder_script = nodes[0].keys_manager.get_shutdown_scriptpubkey().unwrap();
+			let counterparty_script = nodes[1].keys_manager.get_shutdown_scriptpubkey().unwrap();
+			let funding_outpoint = bitcoin::OutPoint { txid: chan_1.3.txid(), vout: 0 };
+			let closing_tx_2 = ClosingTransaction::new(50000, 0, holder_script.into(),
+				counterparty_script.into(), funding_outpoint);
+
+			let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
+			let mut chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
+			let chan = chan_lock.channel_by_id.get_mut(&chan_1.2).map(|phase| phase.context_mut()).unwrap();
+
+			let signer = chan.get_mut_signer().as_mut_ecdsa().unwrap();
+			let signature = signer.sign_closing_transaction(&closing_tx_2, &Secp256k1::new()).unwrap();
+			node_1_closing_signed_2.signature = signature;
+			node_1_closing_signed_2
+		};
+		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed_2_bad);
+
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		match events[0] {
+			MessageSendEvent::HandleError {
+				action: msgs::ErrorAction::SendWarningMessage { .. }, ref node_id
+			} => {
+				assert_eq!(node_id, &nodes[1].node.get_our_node_id());
+			},
+			_ => panic!("Unexpected event: {:?}", events[0]),
+		};
+	}
+
+	nodes[0].node.signer_unblocked(None);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
+
+	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed.unwrap());
+	let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
+	assert!(node_1_closing_signed.is_none());
+
+	assert!(nodes[0].node.list_channels().is_empty());
+	assert!(nodes[1].node.list_channels().is_empty());
+	check_closed_event!(nodes[0], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
 }
