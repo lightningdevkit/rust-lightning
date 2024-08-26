@@ -1,6 +1,9 @@
 pub use bitcoin::io::*;
 
 /// Emulation of std::io::Cursor
+///
+/// This is not exported to bindings users as serialization is done via a bindings-specific
+/// pipeline.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Cursor<T> {
 	inner: T,
