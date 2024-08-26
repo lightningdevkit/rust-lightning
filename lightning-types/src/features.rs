@@ -703,6 +703,8 @@ impl InitFeatures {
 	#[doc(hidden)]
 	/// Converts `InitFeatures` to `Features<C>`. Only known `InitFeatures` relevant to context `C`
 	/// are included in the result.
+	///
+	/// This is not exported to bindings users as it shouldn't be used outside of LDK
 	pub fn to_context<C: sealed::Context>(&self) -> Features<C> {
 		self.to_context_internal()
 	}
@@ -712,6 +714,8 @@ impl Bolt11InvoiceFeatures {
 	#[doc(hidden)]
 	/// Converts `Bolt11InvoiceFeatures` to `Features<C>`. Only known `Bolt11InvoiceFeatures` relevant to
 	/// context `C` are included in the result.
+	///
+	/// This is not exported to bindings users as it shouldn't be used outside of LDK
 	pub fn to_context<C: sealed::Context>(&self) -> Features<C> {
 		self.to_context_internal()
 	}
@@ -737,6 +741,8 @@ impl Bolt12InvoiceFeatures {
 	#[doc(hidden)]
 	/// Converts [`Bolt12InvoiceFeatures`] to [`Features<C>`]. Only known [`Bolt12InvoiceFeatures`]
 	/// relevant to context `C` are included in the result.
+	///
+	/// This is not exported to bindings users as it shouldn't be used outside of LDK
 	pub fn to_context<C: sealed::Context>(&self) -> Features<C> {
 		self.to_context_internal()
 	}
@@ -744,8 +750,10 @@ impl Bolt12InvoiceFeatures {
 
 impl ChannelTypeFeatures {
 	#[doc(hidden)]
-	// Maps the relevant `InitFeatures` to `ChannelTypeFeatures`. Any unknown features to
-	// `ChannelTypeFeatures` are not included in the result.
+	/// Maps the relevant `InitFeatures` to `ChannelTypeFeatures`. Any unknown features to
+	/// `ChannelTypeFeatures` are not included in the result.
+	///
+	/// This is not exported to bindings users as it shouldn't be used outside of LDK
 	pub fn from_init(init: &InitFeatures) -> Self {
 		let mut ret = init.to_context_internal();
 		// ChannelTypeFeatures must only contain required bits, so we OR the required forms of all
