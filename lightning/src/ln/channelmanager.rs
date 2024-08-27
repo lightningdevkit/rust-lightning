@@ -3547,12 +3547,15 @@ where
 				channel_funding_txo: shutdown_res.channel_funding_txo,
 			}, None));
 
-			let funding_info = if is_manual_broadcast {
-				shutdown_res.channel_funding_txo.map(|outpoint| FundingInfo::OutPoint{ outpoint })
-			} else {
-				shutdown_res.unbroadcasted_funding_tx.map(|transaction| FundingInfo::Tx{ transaction })
-			};
-			if let Some(funding_info) = funding_info {
+			if let Some(transaction) = shutdown_res.unbroadcasted_funding_tx {
+				let funding_info = if is_manual_broadcast {
+					FundingInfo::OutPoint {
+						outpoint: shutdown_res.channel_funding_txo
+							.expect("We had an unbroadcasted funding tx, so should also have had a funding outpoint"),
+					}
+				} else {
+					FundingInfo::Tx{ transaction }
+				};
 				pending_events.push_back((events::Event::DiscardFunding {
 					channel_id: shutdown_res.channel_id, funding_info
 				}, None));
