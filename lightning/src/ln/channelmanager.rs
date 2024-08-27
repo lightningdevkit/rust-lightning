@@ -32,6 +32,7 @@ use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
+use crate::events::FundingInfo;
 use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
@@ -3509,6 +3510,7 @@ where
 			let _ = self.chain_monitor.update_channel(funding_txo, &monitor_update);
 		}
 		let mut shutdown_results = Vec::new();
+		let mut is_manual_broadcast = false;
 		if let Some(txid) = shutdown_res.unbroadcasted_batch_funding_txid {
 			let mut funding_batch_states = self.funding_batch_states.lock().unwrap();
 			let affected_channels = funding_batch_states.remove(&txid).into_iter().flatten();
@@ -3518,6 +3520,10 @@ where
 				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					if let Some(mut chan) = peer_state.channel_by_id.remove(&channel_id) {
+						// We override the previous value, so we could change from true -> false,
+						// but this is fine because if a channel has manual_broadcast set to false
+						// we should choose the safier condition.
+						is_manual_broadcast = chan.context().is_manual_broadcast();
 						update_maps_on_chan_removal!(self, &chan.context());
 						shutdown_results.push(chan.context_mut().force_shutdown(false, ClosureReason::FundingBatchClosure));
 					}
@@ -3541,9 +3547,14 @@ where
 				channel_funding_txo: shutdown_res.channel_funding_txo,
 			}, None));
 
-			if let Some(transaction) = shutdown_res.unbroadcasted_funding_tx {
+			let funding_info = if is_manual_broadcast {
+				shutdown_res.channel_funding_txo.map(|outpoint| FundingInfo::OutPoint{ outpoint })
+			} else {
+				shutdown_res.unbroadcasted_funding_tx.map(|transaction| FundingInfo::Tx{ transaction })
+			};
+			if let Some(funding_info) = funding_info {
 				pending_events.push_back((events::Event::DiscardFunding {
-					channel_id: shutdown_res.channel_id, transaction
+					channel_id: shutdown_res.channel_id, funding_info
 				}, None));
 			}
 		}

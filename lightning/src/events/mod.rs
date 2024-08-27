@@ -36,12 +36,10 @@ use crate::util::ser::{BigSize, FixedLengthReader, Writeable, Writer, MaybeReada
 use crate::util::string::UntrustedString;
 
 use bitcoin::{Transaction, OutPoint};
-use bitcoin::locktime::absolute::LockTime;
 use bitcoin::script::ScriptBuf;
 use bitcoin::hashes::Hash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::transaction::Version;
 use crate::io;
 use core::time::Duration;
 use core::ops::Deref;
@@ -49,6 +47,38 @@ use crate::sync::Arc;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
+
+/// `FundingInfo` holds information about a channel's funding transaction.
+///
+/// When LDK is set to manual propagation of the funding transaction
+/// (via [`ChannelManager::unsafe_manual_funding_transaction_generated`),
+/// LDK does not have the full transaction data. Instead, the `OutPoint`
+/// for the funding is provided here.
+///
+/// [`ChannelManager::unsafe_manual_funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::unsafe_manual_funding_transaction_generated
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum FundingInfo {
+	/// The full funding `Transaction`.
+	Tx {
+		/// The funding transaction
+		transaction: Transaction
+	},
+	/// The `OutPoint` of the funding.
+	OutPoint {
+		/// The outpoint of the funding
+		outpoint: transaction::OutPoint
+	},
+}
+
+impl_writeable_tlv_based_enum!(FundingInfo,
+	(0, Tx) => {
+		(0, transaction, required)
+	},
+	(1, OutPoint) => {
+		(1, outpoint, required)
+	}
+);
+
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
 /// spontaneous payment or a "conventional" lightning payment that's paying an invoice.
@@ -1258,7 +1288,7 @@ pub enum Event {
 		/// The channel_id of the channel which has been closed.
 		channel_id: ChannelId,
 		/// The full transaction received from the user
-		transaction: Transaction
+		funding_info: FundingInfo,
 	},
 	/// Indicates a request to open a new channel by a peer.
 	///
@@ -1542,11 +1572,18 @@ impl Writeable for Event {
 					(9, channel_funding_txo, option),
 				});
 			},
-			&Event::DiscardFunding { ref channel_id, ref transaction } => {
+			&Event::DiscardFunding { ref channel_id, ref funding_info } => {
 				11u8.write(writer)?;
+
+				let transaction = if let FundingInfo::Tx { transaction } = funding_info {
+					Some(transaction)
+				} else {
+					None
+				};
 				write_tlv_fields!(writer, {
 					(0, channel_id, required),
-					(2, transaction, required)
+					(2, transaction, option),
+					(4, funding_info, required),
 				})
 			},
 			&Event::PaymentPathSuccessful { ref payment_id, ref payment_hash, ref path } => {
@@ -1925,12 +1962,20 @@ impl MaybeReadable for Event {
 			11u8 => {
 				let mut f = || {
 					let mut channel_id = ChannelId::new_zero();
-					let mut transaction = Transaction{ version: Version::TWO, lock_time: LockTime::ZERO, input: Vec::new(), output: Vec::new() };
+					let mut transaction: Option<Transaction> = None;
+					let mut funding_info: Option<FundingInfo> = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
-						(2, transaction, required),
+						(2, transaction, option),
+						(4, funding_info, option),
 					});
-					Ok(Some(Event::DiscardFunding { channel_id, transaction } ))
+
+					let funding_info = if let Some(tx) = transaction {
+						FundingInfo::Tx { transaction: tx }
+					} else {
+						funding_info.ok_or(msgs::DecodeError::InvalidValue)?
+					};
+					Ok(Some(Event::DiscardFunding { channel_id, funding_info } ))
 				};
 				f()
 			},
