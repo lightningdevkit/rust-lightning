@@ -374,18 +374,20 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[MessageForwardNode],
 	recipient_node_id: PublicKey, context: MessageContext, session_priv: &SecretKey,
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
-	let pks = intermediate_nodes.iter().map(|node| &node.node_id)
-		.chain(core::iter::once(&recipient_node_id));
+	let pks = intermediate_nodes.iter().map(|node| node.node_id)
+		.chain(core::iter::once(recipient_node_id));
 	let tlvs = pks.clone()
 		.skip(1) // The first node's TLVs contains the next node's pubkey
 		.zip(intermediate_nodes.iter().map(|node| node.short_channel_id))
 		.map(|(pubkey, scid)| match scid {
 			Some(scid) => NextMessageHop::ShortChannelId(scid),
-			None => NextMessageHop::NodeId(*pubkey),
+			None => NextMessageHop::NodeId(pubkey),
 		})
 		.map(|next_hop| ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None }))
 		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs{ context: Some(context) })));
 
-	utils::construct_blinded_hops(secp_ctx, pks, tlvs, session_priv)
+	let path = pks.zip(tlvs);
+
+	utils::construct_blinded_hops(secp_ctx, path, session_priv)
 }
 
