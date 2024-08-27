@@ -2505,6 +2505,20 @@ fn test_yield_anchors_events() {
 		&LowerBoundedFeeEstimator::new(node_cfgs[1].fee_estimator), &nodes[1].logger
 	);
 
+	check_closed_broadcast(&nodes[0], 1, true);
+	let a_events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(a_events.len(), 3);
+	assert!(a_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
+	assert!(a_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
+	assert!(a_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
+
+	check_closed_broadcast(&nodes[1], 1, true);
+	let b_events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(b_events.len(), 3);
+	assert!(b_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
+	assert!(b_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
+	assert!(b_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
+
 	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(holder_events.len(), 1);
 	let (commitment_tx, anchor_tx) = match holder_events.pop().unwrap() {
@@ -2530,6 +2544,7 @@ fn test_yield_anchors_events() {
 		},
 		_ => panic!("Unexpected event"),
 	};
+	check_spends!(commitment_tx, funding_tx);
 
 	assert_eq!(commitment_tx.output[2].value.to_sat(), 1_000); // HTLC A -> B
 	assert_eq!(commitment_tx.output[3].value.to_sat(), 2_000); // HTLC B -> A
@@ -2587,6 +2602,7 @@ fn test_yield_anchors_events() {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+	expect_payment_failed!(nodes[0], payment_hash_1, false);
 
 	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32);
 
@@ -2599,11 +2615,6 @@ fn test_yield_anchors_events() {
 		}
 	}
 
-	// Clear the remaining events as they're not relevant to what we're testing.
-	nodes[0].node.get_and_clear_pending_events();
-	nodes[1].node.get_and_clear_pending_events();
-	nodes[0].node.get_and_clear_pending_msg_events();
-	nodes[1].node.get_and_clear_pending_msg_events();
 }
 
 #[test]
