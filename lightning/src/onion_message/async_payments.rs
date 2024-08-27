@@ -77,6 +77,11 @@ impl OnionMessageContents for ReleaseHeldHtlc {
 	fn tlv_type(&self) -> u64 {
 		RELEASE_HELD_HTLC_TLV_TYPE
 	}
+	#[cfg(c_bindings)]
+	fn msg_type(&self) -> String {
+		"Release Held HTLC".to_string()
+	}
+	#[cfg(not(c_bindings))]
 	fn msg_type(&self) -> &'static str {
 		"Release Held HTLC"
 	}
@@ -107,6 +112,14 @@ impl OnionMessageContents for AsyncPaymentsMessage {
 			Self::ReleaseHeldHtlc(msg) => msg.tlv_type(),
 		}
 	}
+	#[cfg(c_bindings)]
+	fn msg_type(&self) -> String {
+		match &self {
+			Self::HeldHtlcAvailable(_) => "Held HTLC Available".to_string(),
+			Self::ReleaseHeldHtlc(msg) => msg.msg_type(),
+		}
+	}
+	#[cfg(not(c_bindings))]
 	fn msg_type(&self) -> &'static str {
 		match &self {
 			Self::HeldHtlcAvailable(_) => "Held HTLC Available",

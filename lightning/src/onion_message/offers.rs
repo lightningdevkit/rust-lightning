@@ -99,6 +99,16 @@ impl OffersMessage {
 			_ => Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
+
+	fn get_msg_type(&self) -> &'static str {
+		match &self {
+			OffersMessage::InvoiceRequest(_) => "Invoice Request",
+			OffersMessage::Invoice(_) => "Invoice",
+			#[cfg(async_payments)]
+			OffersMessage::StaticInvoice(_) => "Static Invoice",
+			OffersMessage::InvoiceError(_) => "Invoice Error",
+		}
+	}
 }
 
 impl fmt::Debug for OffersMessage {
@@ -131,14 +141,13 @@ impl OnionMessageContents for OffersMessage {
 			OffersMessage::InvoiceError(_) => INVOICE_ERROR_TLV_TYPE,
 		}
 	}
+	#[cfg(c_bindings)]
+	fn msg_type(&self) -> String {
+		self.get_msg_type().to_string()
+	}
+	#[cfg(not(c_bindings))]
 	fn msg_type(&self) -> &'static str {
-		match &self {
-			OffersMessage::InvoiceRequest(_) => "Invoice Request",
-			OffersMessage::Invoice(_) => "Invoice",
-			#[cfg(async_payments)]
-			OffersMessage::StaticInvoice(_) => "Static Invoice",
-			OffersMessage::InvoiceError(_) => "Invoice Error",
-		}
+		self.get_msg_type()
 	}
 }
 

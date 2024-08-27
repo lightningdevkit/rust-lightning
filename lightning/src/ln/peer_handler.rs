@@ -170,6 +170,9 @@ impl CustomOnionMessageHandler for IgnoringMessageHandler {
 
 impl OnionMessageContents for Infallible {
 	fn tlv_type(&self) -> u64 { unreachable!(); }
+	#[cfg(c_bindings)]
+	fn msg_type(&self) -> String { unreachable!(); }
+	#[cfg(not(c_bindings))]
 	fn msg_type(&self) -> &'static str { unreachable!(); }
 }
 

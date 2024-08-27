@@ -87,7 +87,9 @@ cargo test -p lightning --verbose --color always --no-default-features --feature
 cargo test -p lightning --verbose --color always --features no-std
 
 echo -e "\n\nTesting c_bindings builds"
-RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always
+# Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
+# disable doctests in `c_bindings` so we skip doctests entirely here.
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always --lib --bins --tests
 
 for DIR in lightning-invoice lightning-rapid-gossip-sync; do
 	# check if there is a conflict between no-std and the c_bindings cfg
@@ -95,9 +97,9 @@ for DIR in lightning-invoice lightning-rapid-gossip-sync; do
 done
 
 # Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
-# disable tests in `c_bindings` so we skip doctests entirely here.
+# disable doctests in `c_bindings` so we skip doctests entirely here.
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning-background-processor --verbose --color always --features futures --no-default-features --lib --bins --tests
-RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning --verbose --color always --no-default-features --features=no-std
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning --verbose --color always --no-default-features --features=no-std --lib --bins --tests
 
 echo -e "\n\nTesting other crate-specific builds"
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values

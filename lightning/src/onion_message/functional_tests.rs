@@ -108,6 +108,11 @@ impl OnionMessageContents for TestCustomMessage {
 			TestCustomMessage::Pong => CUSTOM_PONG_MESSAGE_TYPE,
 		}
 	}
+	#[cfg(c_bindings)]
+	fn msg_type(&self) -> String {
+		"Custom Message".to_string()
+	}
+	#[cfg(not(c_bindings))]
 	fn msg_type(&self) -> &'static str {
 		"Custom Message"
 	}
@@ -656,6 +661,11 @@ fn invalid_custom_message_type() {
 			// Onion message contents must have a TLV >= 64.
 			63
 		}
+		#[cfg(c_bindings)]
+		fn msg_type(&self) -> String {
+			"Invalid Message".to_string()
+		}
+		#[cfg(not(c_bindings))]
 		fn msg_type(&self) -> &'static str {
 			"Invalid Message"
 		}
