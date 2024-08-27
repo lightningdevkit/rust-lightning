@@ -12,7 +12,7 @@
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SpendableOutputDescriptor};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance, BalanceSource};
 use crate::chain::transaction::OutPoint;
-use crate::chain::chaininterface::{LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
+use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination};
 use crate::ln::channel;
@@ -2458,8 +2458,7 @@ fn test_monitor_timer_based_claim() {
 	do_test_monitor_rebroadcast_pending_claims(true);
 }
 
-#[test]
-fn test_yield_anchors_events() {
+fn do_test_yield_anchors_events(have_htlcs: bool) {
 	// Tests that two parties supporting anchor outputs can open a channel, route payments over
 	// it, and finalize its resolution uncooperatively. Once the HTLCs are locked in, one side will
 	// force close once the HTLCs expire. The force close should stem from an event emitted by LDK,
@@ -2478,45 +2477,72 @@ fn test_yield_anchors_events() {
 	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes_with_value(
 		&nodes, 0, 1, 1_000_000, 500_000_000
 	);
-	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[1], &[&nodes[0]], 2_000_000);
+	let mut payment_preimage_1 = None;
+	let mut payment_hash_1 = None;
+	let mut payment_preimage_2 = None;
+	let mut payment_hash_2 = None;
+	if have_htlcs {
+		let (preimage_1, hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		let (preimage_2, hash_2, ..) = route_payment(&nodes[1], &[&nodes[0]], 2_000_000);
+		payment_preimage_1 = Some(preimage_1);
+		payment_hash_1 = Some(hash_1);
+		payment_preimage_2 = Some(preimage_2);
+		payment_hash_2 = Some(hash_2);
+	}
 
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
-	*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 2;
+	// Note that if we use the wrong target, we will immediately broadcast the commitment
+	// transaction as no bump is required.
+	if have_htlcs {
+		nodes[0].fee_estimator.target_override.lock().unwrap().insert(ConfirmationTarget::UrgentOnChainSweep, 500);
+	} else {
+		nodes[0].fee_estimator.target_override.lock().unwrap().insert(ConfirmationTarget::OutputSpendingFee, 500);
+	}
 
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
 	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+	if !have_htlcs {
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[0].node.get_our_node_id(), "".to_string()).unwrap();
+	}
 	{
 		let txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
 		check_spends!(txn[0], funding_tx);
 	}
 
-	get_monitor!(nodes[0], chan_id).provide_payment_preimage(
-		&payment_hash_2, &payment_preimage_2, &node_cfgs[0].tx_broadcaster,
-		&LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator), &nodes[0].logger
-	);
-	get_monitor!(nodes[1], chan_id).provide_payment_preimage(
-		&payment_hash_1, &payment_preimage_1, &node_cfgs[1].tx_broadcaster,
-		&LowerBoundedFeeEstimator::new(node_cfgs[1].fee_estimator), &nodes[1].logger
-	);
+	if have_htlcs {
+		get_monitor!(nodes[0], chan_id).provide_payment_preimage(
+			&payment_hash_2.unwrap(), &payment_preimage_2.unwrap(), &node_cfgs[0].tx_broadcaster,
+			&LowerBoundedFeeEstimator::new(node_cfgs[0].fee_estimator), &nodes[0].logger
+		);
+		get_monitor!(nodes[1], chan_id).provide_payment_preimage(
+			&payment_hash_1.unwrap(), &payment_preimage_1.unwrap(), &node_cfgs[1].tx_broadcaster,
+			&LowerBoundedFeeEstimator::new(node_cfgs[1].fee_estimator), &nodes[1].logger
+		);
+	} else {
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), "".to_string()).unwrap();
+	}
 
 	check_closed_broadcast(&nodes[0], 1, true);
 	let a_events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(a_events.len(), 3);
-	assert!(a_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
-	assert!(a_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
+	assert_eq!(a_events.len(), if have_htlcs { 3 } else { 1 });
+	if have_htlcs {
+		assert!(a_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
+		assert!(a_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
+	}
 	assert!(a_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
 
 	check_closed_broadcast(&nodes[1], 1, true);
 	let b_events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(b_events.len(), 3);
-	assert!(b_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
-	assert!(b_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
+	assert_eq!(b_events.len(), if have_htlcs { 3 } else { 1 });
+	if have_htlcs {
+		assert!(b_events.iter().any(|ev| matches!(ev, Event::PendingHTLCsForwardable { .. })));
+		assert!(b_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
+	}
 	assert!(b_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
 
 	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
@@ -2546,13 +2572,20 @@ fn test_yield_anchors_events() {
 	};
 	check_spends!(commitment_tx, funding_tx);
 
-	assert_eq!(commitment_tx.output[2].value.to_sat(), 1_000); // HTLC A -> B
-	assert_eq!(commitment_tx.output[3].value.to_sat(), 2_000); // HTLC B -> A
+	if have_htlcs {
+		assert_eq!(commitment_tx.output[2].value.to_sat(), 1_000); // HTLC A -> B
+		assert_eq!(commitment_tx.output[3].value.to_sat(), 2_000); // HTLC B -> A
+	}
 
 	mine_transactions(&nodes[0], &[&commitment_tx, &anchor_tx]);
 	check_added_monitors!(nodes[0], 1);
 	mine_transactions(&nodes[1], &[&commitment_tx, &anchor_tx]);
 	check_added_monitors!(nodes[1], 1);
+
+	if !have_htlcs {
+		// If we don't have any HTLCs, we're done, the rest of the test is about HTLC transactions
+		return;
+	}
 
 	{
 		let mut txn = nodes[1].tx_broadcaster.unique_txn_broadcast();
@@ -2568,8 +2601,8 @@ fn test_yield_anchors_events() {
 		assert_eq!(htlc_timeout_tx.input[0].previous_output.vout, 2);
 		check_spends!(htlc_timeout_tx, commitment_tx);
 
-		if let Some(commitment_tx) = txn.pop() {
-			check_spends!(commitment_tx, funding_tx);
+		if let Some(new_commitment_tx) = txn.pop() {
+			check_spends!(new_commitment_tx, funding_tx);
 		}
 	}
 
@@ -2602,7 +2635,7 @@ fn test_yield_anchors_events() {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
-	expect_payment_failed!(nodes[0], payment_hash_1, false);
+	expect_payment_failed!(nodes[0], payment_hash_1.unwrap(), false);
 
 	connect_blocks(&nodes[0], BREAKDOWN_TIMEOUT as u32);
 
@@ -2614,7 +2647,12 @@ fn test_yield_anchors_events() {
 			_ => panic!("Unexpected event"),
 		}
 	}
+}
 
+#[test]
+fn test_yield_anchors_events() {
+	do_test_yield_anchors_events(true);
+	do_test_yield_anchors_events(false);
 }
 
 #[test]
