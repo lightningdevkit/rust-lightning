@@ -3457,6 +3457,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Returns the transaction if there is a pending funding transaction that is yet to be
 	/// broadcast.
+	///
+	/// Note that if [`Self::is_manual_broadcast`] is true the transaction will be a dummy
+	/// transaction.
 	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
 		self.if_unbroadcasted_funding(|| self.funding_transaction.clone())
 	}
