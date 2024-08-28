@@ -2453,7 +2453,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	fn get_dust_exposure_limiting_feerate<F: Deref>(&self,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> u32 where F::Target: FeeEstimator {
-		fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::OnChainSweep)
+		fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::MaximumFeeEstimate)
 	}
 
 	pub fn get_max_dust_htlc_exposure_msat(&self, limiting_feerate_sat_per_kw: u32) -> u64 {

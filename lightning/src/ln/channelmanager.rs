@@ -14237,7 +14237,7 @@ pub mod bench {
 		let genesis_block = bitcoin::constants::genesis_block(network);
 
 		let tx_broadcaster = test_utils::TestBroadcaster::new(network);
-		let fee_estimator = test_utils::TestFeeEstimator { sat_per_kw: Mutex::new(253) };
+		let fee_estimator = test_utils::TestFeeEstimator::new(253);
 		let logger_a = test_utils::TestLogger::with_id("node a".to_owned());
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &logger_a, &scorer);
