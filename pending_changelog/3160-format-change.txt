@@ -1,4 +1,0 @@
-## Backwards Compatibility
- * `impl_writeable_tlv_based_enum[_upgradable]`'s writing of tuple variants has
-   changed format. Users of this macro who are reading/writing tuple variants
-   will need to perform a format-change to update their serialized data (#3160).

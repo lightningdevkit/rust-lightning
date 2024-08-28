@@ -1,3 +1,217 @@
+# 0.0.124 - Sep 3, 2024 - "Papercutting Feature Requests"
+
+## API Updates
+ * `rust-bitcoin` has been updated to 0.32. The new `bitcoin-io` crate is now
+   used for all IO traits, irrespective of the features set on LDK crates.
+   LDK crates no longer automatically force features on dependent crates where
+   possible, allowing different `std`/`no-std` settings between LDK and
+   rust-bitcoin crates (e.g. to disable `std` on LDK to ensure system time is
+   not accessed while using `bitcoin-io`'s `std` feature). (#3063, #3239, #3249).
+ * A new `lightning_types` crate was added which contains various top-level
+   types. Using types from `lightning::ln::features` or
+   `Payment{Hash,Preimage,Secret}` from `lightning::ln` or
+   `lightning::ln::types` is now deprecated. The new crate is re-exported as
+   `lightning::types` (#3234, #3253).
+ * `lightning` now depends on `lightning-invoice`, rather than the other way
+   around. The `lightning_invoice::payment` module has moved to
+   `lightning::ln::bolt11_payment` and `lightning_invoice::utils` to
+   `lightning::ln::invoice_utils` (#3234).
+ * Event handlers may now return errors, causing most events to be replayed
+   immediately without blocking the background processor. See documentation on
+   individual `Event`s for more information on replay (#2995).
+ * `ChannelDetails::balance_msat` is deprecated in favor of
+   `ChainMonitor::get_claimable_balances` and the `Balance`, which now contains
+   substantially more details and more accurately calculates a node-wide
+   balance when `Balance::claimable_amount_satoshis` are summed (#3212, #3247).
+ * `ConfirmationTarget` has two new variants - a `MaximumFeeEstimate` which can
+   help to avoid spurious force-closes by ensuring we always accept feerates up
+   to this value from peers as sane and a `UrgentOnChainSweep`, replacing
+   `OnChainSweep` and only being used when the on-chain sweep is urgent (#3268).
+ * All `ChannelMonitor`s are no longer persisted after each block connection,
+   instead spreading them out over a handful of blocks to reduce load spikes.
+   Note that this will increase the incidence of `ChannelMonitor`s that have
+   different best blocks on startup, requiring some additional chain replay
+   (but only on some `ChannelMonitor`s) on startup for `Listen` users (#2966).
+ * A new format for Rapid Gossip Sync data is now supported which contains
+   additional node metadata and is more extensible (#3098).
+ * `ChannelManager::send_payment_with_route` is now deprecated in favor of the
+   much easier to use `Channelmanager::send_payment`. Those who wish to manually
+   select the route such payments go over should do so by matching the
+   `payment_id` passed to `send_payment` in `Router::find_route_with_id` (#3224)
+ * `lightning-transaction-sync` now takes most `Confirm`s as a generic `Deref`.
+   You may need an explicit `as &(dyn Confirm)` to update existing code (#3101).
+ * HTLCs will now be forwarded over any channel with a peer, rather than only
+   the specific channel requested by the payment sender (#3127).
+ * `Event::PaymentFailed` is now used in place of `Event::InvoiceRequestFailed`,
+   holding an `Option` for the payment hash, which will be `None` when no
+   invoice has been received (#3192).
+ * `ChannelManager` now supports intercepting and manually paying
+   `Bolt12Invoice`s, see `UserConfig::manually_handle_bolt12_invoices` (#3078).
+ * `logger::Record`s now contain a `PaymentHash` (#2930).
+ * `ChainMonitor` no longer uses an opaque `MonitorUpdateId`, opting to reuse
+   the `ChannelMonitorUpdate::update_id` instead. Note that you no longer have
+   to call `ChainMonitor::channel_monitor_updated` for
+   `ChannelMonitorUpdateStatus::InProgress` updates to a monitor that were
+   started without a `ChannelMonitorUpdate` (#2957).
+ * `NodeAnnouncementInfo` is now an enum holding either a gossip message or
+   the important fields, reducing the memory usage of `NetworkGraph` (#3072).
+ * Onion message handlers now include a message context, which allows for
+   blinded path authentication (#3085, #3202).
+ * `ChannelManager` now supports funding with only a txid and output index, see
+   `ChannelManager::unsafe_manual_funding_transaction_generated` (#3024).
+ * BOLT 12 invoice requests now go out over, and accept responses over, multiple
+   paths (#3087).
+ * `OnionMessenger` now supports intercepting and re-forwarding onion messages
+   for peers that are offline at the time of receipt when constructed with
+   `new_with_offline_peer_interception` (#2973).
+ * Onion message handling trait methods now generally take a `Responder` which
+   can be used to create a `ResponseInstruction` to better control how responses
+   are sent. The `ResponseInstruction` can also be converted to
+   `MessageSendInstructions` which can be passed to `OnionMessenger`'s
+   `send_onion_message` to respond asynchronously (#2907, #2996, #3263).
+ * `OnionMessenger::process_pending_events_async` was added (#3060).
+ * Blinded paths used for BOLT 12 `Offer`/`Refund`s are now compact when they
+   expire relatively soon, making them somewhat smaller (#3011, #3080).
+ * `ChannelManager::force_close_*` now take a err msg to send to peers (#2889).
+ * `ChannelDetails::is_public` has been renamed to `is_announced` and
+   `ChannelHandshakeConfig::announced_channel` to `announce_for_forwarding` to
+   address various misconceptions about the purpose of announcement (#3257).
+ * `BlindedPath`s are now split into `BlindedMessagePath`s and
+   `BlindedPaymentPath`s and `advance_path_by_one` added to each (#3182).
+ * `BlindedPaymentPath` now includes the `BlindedPayInfo` (#3245).
+ * BOLT 12 `Offer`/`Refund` builders no longer require a description, instead
+   allowing it to be set on the builder itself (#3018).
+ * The `{Inbound,Outbound}HTLCState{,Details}` and `ChannelDetails` structs have
+   moved to the `ln::channel_state` module (#3089).
+ * `Event::OpenChannelRequest` now contains `params` and `is_announced` (#3019).
+ * Peers are no longer disconnected when we force-close a channel (#3088).
+ * BOLT12 `Offer` and `Refund` now implement `Readable` (#2965).
+ * `RecipientOnionFields` is now included in `Event::PaymentClaimed` (#3084).
+ * `ClosureReason::HolderForceClosed::broadcasted_latest_txn` was added (#3107).
+ * `EcdsaChannelSigner` no longer needs to be `Writeable` and the supertrait
+   `WriteableEcdsaChannelSigner` has been removed (#3059).
+ * `CustomMessageHandler::peer_{,dis}connected` were added (#3105).
+ * `lightning_invoice::Description::as_inner()` was added (#3203).
+ * Splice-related wire messages have been updated to the latest spec (#3129).
+
+## Bug Fixes
+ * `channel_update` messages are no longer extracted from failed payments and
+   applied to the network graph via `Event::PaymentPathFailed`, preventing a
+   node along the path from identifying the sender of a payment (#3083).
+ * In order to prevent senders from identifying the recipient of a BOLT 12 offer
+   that included a blinded path, cryptographic information from blinded paths
+   are now included in the invoice request verification (#3085, #3139, #3242).
+ * Routes are now length-limited based on the actual onion contents rather than
+   a fixed value. This ensures no routes are generated that are unpayable when
+   sending HTLCs with custom TLVs, blinded paths, or metadata (#3026, #3156).
+ * Unannounced LDK nodes (or ones without a network graph) will now include
+   unannounced peers as introduction points in blinded paths. This addresses
+   issues where test networks were not usable for BOLT 12 due to failures to
+   find paths over private channels to LDK nodes. It will also enable creating
+   BOLT 12 offers for nodes with no local network graph (#3132).
+ * If a channel partner fails to update the feerate on a channel for some time
+   and prevailing network feerates increase, LDK will now force-close
+   automatically to avoid being unable to claim our funds on-chain. In order to
+   reduce false-positives, it does so by comparing the channel's fee against the
+   minimum `ConfirmationTarget::MinAllowed{,Non}AnchorChannelRemoteFee` we've
+   seen over the past day (and do not force-close if we haven't been running for
+   a full day, #3037).
+ * `MonitorUpdatingPersister` did not read `ChannelMonitorUpdate`s when
+   archiving a `ChannelMonitor`, causing the archived `ChannelMonitor` to be
+   missing some updates. Those updates were not removed from the `KVStore` and
+   monitors being archived should have no pending updates as they were persisted
+   on each new block for some time before archiving (#3276).
+ * `CoinSelection`s selected for commitment transactions which did not contain a
+   change output no longer result in broadcasting a non-standard transaction nor
+   in under-paying the target feerate (#3285). Note that such a transaction
+   would fail to propagate and LDK would have continued to bump the fee until a
+   different `CoinSelection` is used which did contain a change output.
+ * `invoice_error`s from BOLT 12 recipients now fail payments (#3085, #3192).
+ * Fixed a bug which may lead to a missing `Event::ChannelClosed` and missing
+   `Error` messages for peers when a bogus funding transaction is provided for a
+   batch channel open (#3029).
+ * Fixed an overflow in `RawBolt11Invoice::amount_pico_btc()` reachable via
+   `Bolt11Invoice::amount_milli_satoshis()`, resulting in a debug panic or bogus
+   value for invoices with invalid values (#3032).
+ * In incredibly rare circumstances, when using the beta asynchronous
+   persistence, it is possible that the preimage for an MPP claim could fail to
+   be persisted in the `ChannelMonitor` for one or more MPP parts, resulting in
+   only some of the payment's value being claimed (#3120).
+ * A rare race was fixed which could lead to `ChannelMonitorUpdate`s appearing
+   after a full `ChannelMonitor` persistence that already contained the same
+   update. This could have caused a panic on startup for users of the
+   `MonitorUpdatingPersister` in rare cases after a crash (#3196).
+ * Background Processor is now woken from `ChainMonitor` when new blocks appear,
+   reducing the worst-case latency to see an `Event::SpendableOutputs` (#3033).
+ * `OnionMessenger::get_update_future` was added, allowing it to wake the
+   background processor to ensure `Event`s are processed quickly (#3194).
+ * `CoinSelection`s overpaying the target feerate by more than 1% no longer
+   leads to a debug assertion (#3285).
+
+## Backwards Compatibility
+ * BOLT 12 `Offer`s created in prior versions are still valid but are at risk of
+   deanonymization attacks allowing identification of the recipient node (#3139)
+ * BOLT 12 outbound payments in state `RecentPaymentDetails::AwaitingInvoice`
+   will eventually time out after upgrade to 0.0.124 as any received invoice
+   will be considered invalid (#3139).
+ * BOLT 12 `Refund`s created in prior version with non-empty `Refund::paths` are
+   considered invalid by `ChannelManager`. Any attempts to claim them will be
+   ignored. `Refund`s without blinded paths are unaffected (#3139).
+ * The format written by `impl_writeable_tlv_based_enum[_upgradable]` for tuple
+   variants has changed, only impacting LDK-external use of the macros (#3160).
+ * An `Event::PaymentFailed` without a payment hash will deserialize to a
+   payment hash of all-0s when downgrading (#3192).
+ * `Event::PaymentFailed` reasons may be mapped to similar reasons that were
+   available in previous versions on downgrade (#3192).
+
+## Performance Improvements
+ * Route-finding is 11-23% faster (#3103, #3104, #2803, #3188, on an Intel Xeon
+   Silver 4116 (Skylake)).
+ * `lightning-block-sync` now much better avoids lock contention during parallel
+   requests for block data, speeding up gossip sync from multiple peers (#3197).
+
+## Node Compatibility
+ * 0.0.123 contained a workaround for CLN v24.02 requiring the `gossip_queries`
+   feature for all peers. Since an updated CLN has now shipped which does not
+   require this, the workaround has been reverted (#3172).
+ * LDK now supports BOLT 12 Offers without an explicit signing public key,
+   allowing it to pay more compact offers generated by other nodes (#3017).
+ * LDK now supports BOLT 12 Offers without descriptions when no amount is
+   present (#3018).
+ * A bug was fixed which might have led to LDK spuriously rejecting
+   `channel_update`s that use as-yet-undefined flag bits (#3144).
+
+In total, this release features 312 files changed, 29853 insertions, 15480
+deletions in 549 commits since 0.0.123 from 26 authors, in alphabetical order:
+
+ * Alec Chen
+ * Arik Sosman
+ * Duncan Dean
+ * Elias Rohrer
+ * Filip Gospodinov
+ * G8XSU
+ * Gursharan Singh
+ * Harshit Verma
+ * Jeffrey Czyz
+ * Jiri Jakes
+ * John Cantrell
+ * Lalitmohansharma1
+ * Matt Corallo
+ * Matthew Rheaume
+ * Max Fang
+ * Mirebella
+ * Tobin C. Harding
+ * Valentine Wallace
+ * Vincenzo Palazzo
+ * Willem Van Lint
+ * benthecarman
+ * cooltexture
+ * esraa
+ * jbesraa
+ * optout
+ * shaavan
+
+
 # 0.0.123 - May 08, 2024 - "BOLT12 Dust Sweeping"
 
 ## API Updates
