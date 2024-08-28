@@ -264,6 +264,7 @@ jobs:
                 -A clippy::collapsible_if \
                 -A clippy::collapsible_match \
                 -A clippy::comparison_chain \
+                -A clippy::doc_lazy_continuation \
                 -A clippy::drain_collect \
                 -A clippy::drop_non_drop \
                 -A clippy::enum_variant_names \
