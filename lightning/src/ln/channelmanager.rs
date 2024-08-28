@@ -3510,7 +3510,6 @@ where
 			let _ = self.chain_monitor.update_channel(funding_txo, &monitor_update);
 		}
 		let mut shutdown_results = Vec::new();
-		let mut is_manual_broadcast = false;
 		if let Some(txid) = shutdown_res.unbroadcasted_batch_funding_txid {
 			let mut funding_batch_states = self.funding_batch_states.lock().unwrap();
 			let affected_channels = funding_batch_states.remove(&txid).into_iter().flatten();
@@ -3520,10 +3519,6 @@ where
 				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					if let Some(mut chan) = peer_state.channel_by_id.remove(&channel_id) {
-						// We override the previous value, so we could change from true -> false,
-						// but this is fine because if a channel has manual_broadcast set to false
-						// we should choose the safier condition.
-						is_manual_broadcast = chan.context().is_manual_broadcast();
 						update_maps_on_chan_removal!(self, &chan.context());
 						shutdown_results.push(chan.context_mut().force_shutdown(false, ClosureReason::FundingBatchClosure));
 					}
@@ -3548,7 +3543,7 @@ where
 			}, None));
 
 			if let Some(transaction) = shutdown_res.unbroadcasted_funding_tx {
-				let funding_info = if is_manual_broadcast {
+				let funding_info = if shutdown_res.is_manual_broadcast {
 					FundingInfo::OutPoint {
 						outpoint: shutdown_res.channel_funding_txo
 							.expect("We had an unbroadcasted funding tx, so should also have had a funding outpoint"),
