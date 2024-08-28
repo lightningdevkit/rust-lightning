@@ -762,7 +762,8 @@ where
 
 	fn archive_persisted_channel(&self, funding_txo: OutPoint) {
 		let monitor_name = MonitorName::from(funding_txo);
-		let monitor = match self.read_monitor(&monitor_name) {
+		let monitor_key = monitor_name.as_str().to_string();
+		let monitor = match self.read_channel_monitor_with_updates(monitor_key) {
 			Ok((_block_hash, monitor)) => monitor,
 			Err(_) => return
 		};
@@ -770,9 +771,9 @@ where
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 			monitor_name.as_str(),
-			&monitor.encode()
+			&monitor.encode(),
 		) {
-			Ok(()) => {},
+			Ok(()) => {}
 			Err(_e) => return,
 		};
 		let _ = self.kv_store.remove(
