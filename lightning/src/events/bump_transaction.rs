@@ -617,85 +617,104 @@ where
 		let mut anchor_utxo = anchor_descriptor.previous_utxo();
 		let commitment_tx_fee_sat = Amount::from_sat(commitment_tx_fee_sat);
 		anchor_utxo.value += commitment_tx_fee_sat;
-		let must_spend = vec![Input {
-			outpoint: anchor_descriptor.outpoint,
-			previous_utxo: anchor_utxo,
-			satisfaction_weight: commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
-		}];
-		#[cfg(debug_assertions)]
-		let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value).sum::<Amount>();
+		let starting_package_and_fixed_input_satisfaction_weight =
+			commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
+		let mut package_and_fixed_input_satisfaction_weight =
+			starting_package_and_fixed_input_satisfaction_weight;
 
-		log_debug!(self.logger, "Performing coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
-			package_target_feerate_sat_per_1000_weight);
-		let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
-			claim_id, must_spend, &[], package_target_feerate_sat_per_1000_weight,
-		)?;
+		loop {
+			let must_spend = vec![Input {
+				outpoint: anchor_descriptor.outpoint,
+				previous_utxo: anchor_utxo.clone(),
+				satisfaction_weight: package_and_fixed_input_satisfaction_weight,
+			}];
+			let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value).sum::<Amount>();
 
-		let mut anchor_tx = Transaction {
-			version: Version::TWO,
-			lock_time: LockTime::ZERO, // TODO: Use next best height.
-			input: vec![anchor_descriptor.unsigned_tx_input()],
-			output: vec![],
-		};
+			log_debug!(self.logger, "Performing coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
+				package_target_feerate_sat_per_1000_weight);
+			let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
+				claim_id, must_spend, &[], package_target_feerate_sat_per_1000_weight,
+			)?;
 
-		#[cfg(debug_assertions)]
-		let total_satisfaction_weight = ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT +
-			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>();
-		#[cfg(debug_assertions)]
-		let total_input_amount = must_spend_amount +
-			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
+			let mut anchor_tx = Transaction {
+				version: Version::TWO,
+				lock_time: LockTime::ZERO, // TODO: Use next best height.
+				input: vec![anchor_descriptor.unsigned_tx_input()],
+				output: vec![],
+			};
 
-		self.process_coin_selection(&mut anchor_tx, &coin_selection);
-		let anchor_txid = anchor_tx.compute_txid();
+			let total_satisfaction_weight = ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT +
+				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>();
+			let total_input_amount = must_spend_amount +
+				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
 
-		// construct psbt
-		let mut anchor_psbt = Psbt::from_unsigned_tx(anchor_tx).unwrap();
-		// add witness_utxo to anchor input
-		anchor_psbt.inputs[0].witness_utxo = Some(anchor_descriptor.previous_utxo());
-		// add witness_utxo to remaining inputs
-		for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
-			// add 1 to skip the anchor input
-			let index = idx + 1;
-			debug_assert_eq!(anchor_psbt.unsigned_tx.input[index].previous_output, utxo.outpoint);
-			if utxo.output.script_pubkey.is_witness_program() {
-				anchor_psbt.inputs[index].witness_utxo = Some(utxo.output);
+			self.process_coin_selection(&mut anchor_tx, &coin_selection);
+			let anchor_txid = anchor_tx.compute_txid();
+
+			// construct psbt
+			let mut anchor_psbt = Psbt::from_unsigned_tx(anchor_tx).unwrap();
+			// add witness_utxo to anchor input
+			anchor_psbt.inputs[0].witness_utxo = Some(anchor_descriptor.previous_utxo());
+			// add witness_utxo to remaining inputs
+			for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
+				// add 1 to skip the anchor input
+				let index = idx + 1;
+				debug_assert_eq!(anchor_psbt.unsigned_tx.input[index].previous_output, utxo.outpoint);
+				if utxo.output.script_pubkey.is_witness_program() {
+					anchor_psbt.inputs[index].witness_utxo = Some(utxo.output);
+				}
 			}
-		}
 
-		debug_assert_eq!(anchor_psbt.unsigned_tx.output.len(), 1);
-		#[cfg(debug_assertions)]
-		let unsigned_tx_weight = anchor_psbt.unsigned_tx.weight().to_wu() - (anchor_psbt.unsigned_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+			debug_assert_eq!(anchor_psbt.unsigned_tx.output.len(), 1);
+			let unsigned_tx_weight = anchor_psbt.unsigned_tx.weight().to_wu() - (anchor_psbt.unsigned_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
-		log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
-		anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
-
-		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
-		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
-		anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
-
-		#[cfg(debug_assertions)] {
-			let signed_tx_weight = anchor_tx.weight().to_wu();
-			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
-			// Our estimate should be within a 1% error margin of the actual weight and we should
-			// never underestimate.
-			assert!(expected_signed_tx_weight >= signed_tx_weight &&
-				expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
-
-			let expected_package_fee = Amount::from_sat(fee_for_weight(package_target_feerate_sat_per_1000_weight,
-				signed_tx_weight + commitment_tx.weight().to_wu()));
 			let package_fee = total_input_amount -
-				anchor_tx.output.iter().map(|output| output.value).sum();
-			// Our fee should be within a 5% error margin of the expected fee based on the
-			// feerate and transaction weight and we should never pay less than required.
-			let fee_error_margin = expected_package_fee * 5 / 100;
-			assert!(package_fee >= expected_package_fee &&
-				package_fee - fee_error_margin <= expected_package_fee);
-		}
+				anchor_psbt.unsigned_tx.output.iter().map(|output| output.value).sum();
+			let package_weight = unsigned_tx_weight + total_satisfaction_weight + commitment_tx.weight().to_wu();
+			if package_fee.to_sat() * 1000 / package_weight < package_target_feerate_sat_per_1000_weight.into() {
+				// On the first iteration of the loop, we may undershoot the target feerate because
+				// we had to add an OP_RETURN output in `process_coin_selection` which we didn't
+				// select sufficient coins for. Here we detect that case and go around again
+				// seeking additional weight.
+				if package_and_fixed_input_satisfaction_weight == starting_package_and_fixed_input_satisfaction_weight {
+					debug_assert!(anchor_psbt.unsigned_tx.output[0].script_pubkey.is_op_return(),
+						"Coin selection failed to select sufficient coins for its change output");
+					package_and_fixed_input_satisfaction_weight += anchor_psbt.unsigned_tx.output[0].weight().to_wu();
+					continue;
+				} else {
+					debug_assert!(false, "Coin selection failed to select sufficient coins");
+				}
+			}
 
-		log_info!(self.logger, "Broadcasting anchor transaction {} to bump channel close with txid {}",
-			anchor_txid, commitment_tx.compute_txid());
-		self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
-		Ok(())
+			log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
+			anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
+
+			let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
+			let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
+			anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
+
+			#[cfg(debug_assertions)] {
+				let signed_tx_weight = anchor_tx.weight().to_wu();
+				let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
+				// Our estimate should be within a 1% error margin of the actual weight and we should
+				// never underestimate.
+				assert!(expected_signed_tx_weight >= signed_tx_weight &&
+					expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
+
+				let expected_package_fee = Amount::from_sat(fee_for_weight(package_target_feerate_sat_per_1000_weight,
+					signed_tx_weight + commitment_tx.weight().to_wu()));
+				// Our fee should be within a 5% error margin of the expected fee based on the
+				// feerate and transaction weight and we should never pay less than required.
+				let fee_error_margin = expected_package_fee * 5 / 100;
+				assert!(package_fee >= expected_package_fee &&
+					package_fee - fee_error_margin <= expected_package_fee);
+			}
+
+			log_info!(self.logger, "Broadcasting anchor transaction {} to bump channel close with txid {}",
+				anchor_txid, commitment_tx.compute_txid());
+			self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
+			return Ok(());
+		}
 	}
 
 	/// Handles a [`BumpTransactionEvent::HTLCResolution`] event variant by producing a
