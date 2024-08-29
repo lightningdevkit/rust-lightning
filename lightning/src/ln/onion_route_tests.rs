@@ -328,7 +328,7 @@ fn test_onion_failure() {
 	// Channel::get_counterparty_htlc_minimum_msat().
 	let mut node_2_cfg: UserConfig = test_default_channel_config();
 	node_2_cfg.channel_handshake_config.our_htlc_minimum_msat = 2000;
-	node_2_cfg.channel_handshake_config.announced_channel = true;
+	node_2_cfg.channel_handshake_config.announce_for_forwarding = true;
 	node_2_cfg.channel_handshake_limits.force_announced_channel_preference = false;
 
 	// When this test was written, the default base fee floated based on the HTLC count.
@@ -754,13 +754,13 @@ fn test_overshoot_final_cltv() {
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
 }
 
-fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
+fn do_test_onion_failure_stale_channel_update(announce_for_forwarding: bool) {
 	// Create a network of three nodes and two channels connecting them. We'll be updating the
 	// HTLC relay policy of the second channel, causing forwarding failures at the first hop.
 	let mut config = UserConfig::default();
-	config.channel_handshake_config.announced_channel = announced_channel;
+	config.channel_handshake_config.announce_for_forwarding = announce_for_forwarding;
 	config.channel_handshake_limits.force_announced_channel_preference = false;
-	config.accept_forwards_to_priv_channels = !announced_channel;
+	config.accept_forwards_to_priv_channels = !announce_for_forwarding;
 	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
@@ -773,7 +773,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 	let other_channel = create_chan_between_nodes(
 		&nodes[0], &nodes[1],
 	);
-	let channel_to_update = if announced_channel {
+	let channel_to_update = if announce_for_forwarding {
 		let channel = create_announced_chan_between_nodes(
 			&nodes, 1, 2,
 		);
@@ -790,7 +790,7 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 
 	// A test payment should succeed as the ChannelConfig has not been changed yet.
 	const PAYMENT_AMT: u64 = 40000;
-	let (route, payment_hash, payment_preimage, payment_secret) = if announced_channel {
+	let (route, payment_hash, payment_preimage, payment_secret) = if announce_for_forwarding {
 		get_route_and_payment_hash!(nodes[0], nodes[2], PAYMENT_AMT)
 	} else {
 		let hop_hints = vec![RouteHint(vec![RouteHintHop {
@@ -833,12 +833,12 @@ fn do_test_onion_failure_stale_channel_update(announced_channel: bool) {
 		}
 		let new_update = match &events[0] {
 			MessageSendEvent::BroadcastChannelUpdate { msg } => {
-				assert!(announced_channel);
+				assert!(announce_for_forwarding);
 				msg.clone()
 			},
 			MessageSendEvent::SendChannelUpdate { node_id, msg } => {
 				assert_eq!(node_id, channel_to_update_counterparty);
-				assert!(!announced_channel);
+				assert!(!announce_for_forwarding);
 				msg.clone()
 			},
 			_ => panic!("expected Broadcast/SendChannelUpdate event"),
@@ -1505,7 +1505,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	receiver_config.channel_config.max_dust_htlc_exposure =
 		if multiplier_dust_limit { MaxDustHTLCExposure::FeeRateMultiplier(2) }
 		else { MaxDustHTLCExposure::FixedLimitMsat(max_dust_exposure) };
-	receiver_config.channel_handshake_config.announced_channel = true;
+	receiver_config.channel_handshake_config.announce_for_forwarding = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);

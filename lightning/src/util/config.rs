@@ -99,7 +99,7 @@ pub struct ChannelHandshakeConfig {
 	/// private channel without that option.
 	///
 	/// Ignored if the channel is negotiated to be announced, see
-	/// [`ChannelHandshakeConfig::announced_channel`] and
+	/// [`ChannelHandshakeConfig::announce_for_forwarding`] and
 	/// [`ChannelHandshakeLimits::force_announced_channel_preference`] for more.
 	///
 	/// Default value: `false` (This value is likely to change to `true` in the future.)
@@ -116,7 +116,7 @@ pub struct ChannelHandshakeConfig {
 	/// channels unless [`ChannelHandshakeLimits::force_announced_channel_preference`] is set.
 	///
 	/// Default value: `false`
-	pub announced_channel: bool,
+	pub announce_for_forwarding: bool,
 	/// When set, we commit to an upfront shutdown_pubkey at channel open. If our counterparty
 	/// supports it, they will then enforce the mutual-close output to us matches what we provided
 	/// at intialization, preventing us from closing to an alternate pubkey.
@@ -211,7 +211,7 @@ impl Default for ChannelHandshakeConfig {
 			our_htlc_minimum_msat: 1,
 			max_inbound_htlc_value_in_flight_percent_of_channel: 10,
 			negotiate_scid_privacy: false,
-			announced_channel: false,
+			announce_for_forwarding: false,
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
 			negotiate_anchors_zero_fee_htlc_tx: false,
@@ -232,7 +232,7 @@ impl Readable for ChannelHandshakeConfig {
 			our_htlc_minimum_msat: Readable::read(reader)?,
 			max_inbound_htlc_value_in_flight_percent_of_channel: Readable::read(reader)?,
 			negotiate_scid_privacy: Readable::read(reader)?,
-			announced_channel: Readable::read(reader)?,
+			announce_for_forwarding: Readable::read(reader)?,
 			commit_upfront_shutdown_pubkey: Readable::read(reader)?,
 			their_channel_reserve_proportional_millionths: Readable::read(reader)?,
 			negotiate_anchors_zero_fee_htlc_tx: Readable::read(reader)?,
@@ -312,10 +312,10 @@ pub struct ChannelHandshakeLimits {
 	/// Default value: `true`
 	pub trust_own_funding_0conf: bool,
 	/// Set to force an incoming channel to match our announced channel preference in
-	/// [`ChannelHandshakeConfig::announced_channel`].
+	/// [`ChannelHandshakeConfig::announce_for_forwarding`].
 	///
 	/// For a node which is not online reliably, this should be set to true and
-	/// [`ChannelHandshakeConfig::announced_channel`] set to false, ensuring that no announced (aka public)
+	/// [`ChannelHandshakeConfig::announce_for_forwarding`] set to false, ensuring that no announced (aka public)
 	/// channels will ever be opened.
 	///
 	/// Default value: `true`
@@ -693,14 +693,14 @@ impl From<ChannelConfig> for ChannelConfigUpdate {
 }
 
 /// Legacy version of [`ChannelConfig`] that stored the static
-/// [`ChannelHandshakeConfig::announced_channel`] and
+/// [`ChannelHandshakeConfig::announce_for_forwarding`] and
 /// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`] fields.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct LegacyChannelConfig {
 	pub(crate) options: ChannelConfig,
-	/// Deprecated but may still be read from. See [`ChannelHandshakeConfig::announced_channel`] to
+	/// Deprecated but may still be read from. See [`ChannelHandshakeConfig::announce_for_forwarding`] to
 	/// set this when opening/accepting a channel.
-	pub(crate) announced_channel: bool,
+	pub(crate) announce_for_forwarding: bool,
 	/// Deprecated but may still be read from. See
 	/// [`ChannelHandshakeConfig::commit_upfront_shutdown_pubkey`] to set this when
 	/// opening/accepting a channel.
@@ -711,7 +711,7 @@ impl Default for LegacyChannelConfig {
 	fn default() -> Self {
 		Self {
 			options: ChannelConfig::default(),
-			announced_channel: false,
+			announce_for_forwarding: false,
 			commit_upfront_shutdown_pubkey: true,
 		}
 	}
@@ -728,7 +728,7 @@ impl crate::util::ser::Writeable for LegacyChannelConfig {
 			(1, max_dust_htlc_exposure_msat_fixed_limit, required),
 			(2, self.options.cltv_expiry_delta, required),
 			(3, self.options.force_close_avoidance_max_fee_satoshis, (default_value, 1000)),
-			(4, self.announced_channel, required),
+			(4, self.announce_for_forwarding, required),
 			(5, self.options.max_dust_htlc_exposure, required),
 			(6, self.commit_upfront_shutdown_pubkey, required),
 			(8, self.options.forwarding_fee_base_msat, required),
@@ -743,7 +743,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 		let mut max_dust_htlc_exposure_msat_fixed_limit = None;
 		let mut cltv_expiry_delta = 0;
 		let mut force_close_avoidance_max_fee_satoshis = 1000;
-		let mut announced_channel = false;
+		let mut announce_for_forwarding = false;
 		let mut commit_upfront_shutdown_pubkey = false;
 		let mut forwarding_fee_base_msat = 0;
 		let mut max_dust_htlc_exposure_enum = None;
@@ -753,7 +753,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 			(1, max_dust_htlc_exposure_msat_fixed_limit, option),
 			(2, cltv_expiry_delta, required),
 			(3, force_close_avoidance_max_fee_satoshis, (default_value, 1000u64)),
-			(4, announced_channel, required),
+			(4, announce_for_forwarding, required),
 			(5, max_dust_htlc_exposure_enum, option),
 			(6, commit_upfront_shutdown_pubkey, required),
 			(8, forwarding_fee_base_msat, required),
@@ -771,7 +771,7 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 				forwarding_fee_base_msat,
 				accept_underpaying_htlcs: false,
 			},
-			announced_channel,
+			announce_for_forwarding,
 			commit_upfront_shutdown_pubkey,
 		})
 	}
@@ -794,7 +794,7 @@ pub struct UserConfig {
 	/// node which is not online reliably.
 	///
 	/// For nodes which are not online reliably, you should set all channels to *not* be announced
-	/// (using [`ChannelHandshakeConfig::announced_channel`] and
+	/// (using [`ChannelHandshakeConfig::announce_for_forwarding`] and
 	/// [`ChannelHandshakeLimits::force_announced_channel_preference`]) and set this to `false` to
 	/// ensure you are not exposed to any forwarding risk.
 	///

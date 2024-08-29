@@ -2475,11 +2475,11 @@ fn channel_monitor_network_test() {
 fn test_justice_tx_htlc_timeout() {
 	// Test justice txn built on revoked HTLC-Timeout tx, against both sides
 	let mut alice_config = test_default_channel_config();
-	alice_config.channel_handshake_config.announced_channel = true;
+	alice_config.channel_handshake_config.announce_for_forwarding = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
 	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
 	let mut bob_config = test_default_channel_config();
-	bob_config.channel_handshake_config.announced_channel = true;
+	bob_config.channel_handshake_config.announce_for_forwarding = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
 	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
 	let user_cfgs = [Some(alice_config), Some(bob_config)];
@@ -2538,11 +2538,11 @@ fn test_justice_tx_htlc_timeout() {
 fn test_justice_tx_htlc_success() {
 	// Test justice txn built on revoked HTLC-Success tx, against both sides
 	let mut alice_config = test_default_channel_config();
-	alice_config.channel_handshake_config.announced_channel = true;
+	alice_config.channel_handshake_config.announce_for_forwarding = true;
 	alice_config.channel_handshake_limits.force_announced_channel_preference = false;
 	alice_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 5;
 	let mut bob_config = test_default_channel_config();
-	bob_config.channel_handshake_config.announced_channel = true;
+	bob_config.channel_handshake_config.announce_for_forwarding = true;
 	bob_config.channel_handshake_limits.force_announced_channel_preference = false;
 	bob_config.channel_handshake_config.our_to_self_delay = 6 * 24 * 3;
 	let user_cfgs = [Some(alice_config), Some(bob_config)];
@@ -8017,16 +8017,16 @@ fn test_channel_update_has_correct_htlc_maximum_msat() {
 	// 2. MUST be set to less than or equal to the `max_htlc_value_in_flight_msat` received from the peer.
 
 	let mut config_30_percent = UserConfig::default();
-	config_30_percent.channel_handshake_config.announced_channel = true;
+	config_30_percent.channel_handshake_config.announce_for_forwarding = true;
 	config_30_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 30;
 	let mut config_50_percent = UserConfig::default();
-	config_50_percent.channel_handshake_config.announced_channel = true;
+	config_50_percent.channel_handshake_config.announce_for_forwarding = true;
 	config_50_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 50;
 	let mut config_95_percent = UserConfig::default();
-	config_95_percent.channel_handshake_config.announced_channel = true;
+	config_95_percent.channel_handshake_config.announce_for_forwarding = true;
 	config_95_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 95;
 	let mut config_100_percent = UserConfig::default();
-	config_100_percent.channel_handshake_config.announced_channel = true;
+	config_100_percent.channel_handshake_config.announce_for_forwarding = true;
 	config_100_percent.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
 
 	let chanmon_cfgs = create_chanmon_cfgs(4);

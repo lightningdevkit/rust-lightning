@@ -1159,7 +1159,7 @@ mod test {
 		// `msgs::ChannelUpdate` is never handled for the node(s). As the `msgs::ChannelUpdate`
 		// is never handled, the `channel.counterparty.forwarding_info` is never assigned.
 		let mut private_chan_cfg = UserConfig::default();
-		private_chan_cfg.channel_handshake_config.announced_channel = false;
+		private_chan_cfg.channel_handshake_config.announce_for_forwarding = false;
 		let temporary_channel_id = nodes[2].node.create_channel(nodes[0].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg)).unwrap();
 		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
 		nodes[0].node.handle_open_channel(&nodes[2].node.get_our_node_id(), &open_channel);
@@ -1568,7 +1568,7 @@ mod test {
 		// `msgs::ChannelUpdate` is never handled for the node(s). As the `msgs::ChannelUpdate`
 		// is never handled, the `channel.counterparty.forwarding_info` is never assigned.
 		let mut private_chan_cfg = UserConfig::default();
-		private_chan_cfg.channel_handshake_config.announced_channel = false;
+		private_chan_cfg.channel_handshake_config.announce_for_forwarding = false;
 		let temporary_channel_id = nodes[1].node.create_channel(nodes[3].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg)).unwrap();
 		let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[3].node.get_our_node_id());
 		nodes[3].node.handle_open_channel(&nodes[1].node.get_our_node_id(), &open_channel);
