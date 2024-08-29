@@ -695,7 +695,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 			let mut config = UserConfig::default();
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
-			config.channel_handshake_config.announced_channel = true;
+			config.channel_handshake_config.announce_for_forwarding = true;
 			if anchors {
 				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 				config.manually_accept_inbound_channels = true;
@@ -740,7 +740,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 			let mut config = UserConfig::default();
 			config.channel_config.forwarding_fee_proportional_millionths = 0;
-			config.channel_handshake_config.announced_channel = true;
+			config.channel_handshake_config.announce_for_forwarding = true;
 			if anchors {
 				config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 				config.manually_accept_inbound_channels = true;

@@ -2468,7 +2468,7 @@ fn do_test_yield_anchors_events(have_htlcs: bool) {
 	let mut chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut anchors_config = test_default_channel_config();
-	anchors_config.channel_handshake_config.announced_channel = true;
+	anchors_config.channel_handshake_config.announce_for_forwarding = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);
@@ -2669,7 +2669,7 @@ fn test_anchors_aggregated_revoked_htlc_tx() {
 	let bob_chain_monitor;
 
 	let mut anchors_config = test_default_channel_config();
-	anchors_config.channel_handshake_config.announced_channel = true;
+	anchors_config.channel_handshake_config.announce_for_forwarding = true;
 	anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	anchors_config.manually_accept_inbound_channels = true;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(anchors_config), Some(anchors_config)]);

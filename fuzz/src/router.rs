@@ -241,7 +241,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							is_outbound: true,
 							is_channel_ready: true,
 							is_usable: true,
-							is_public: true,
+							is_announced: true,
 							balance_msat: 0,
 							outbound_capacity_msat: capacity.saturating_mul(1000),
 							next_outbound_htlc_limit_msat: capacity.saturating_mul(1000),

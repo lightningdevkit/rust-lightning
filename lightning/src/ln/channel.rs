@@ -1523,7 +1523,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			SP::Target: SignerProvider,
 	{
 		let logger = WithContext::from(logger, Some(counterparty_node_id), Some(open_channel_fields.temporary_channel_id), None);
-		let announced_channel = if (open_channel_fields.channel_flags & 1) == 1 { true } else { false };
+		let announce_for_forwarding = if (open_channel_fields.channel_flags & 1) == 1 { true } else { false };
 
 		let channel_value_satoshis = our_funding_satoshis.saturating_add(open_channel_fields.funding_satoshis);
 
@@ -1597,7 +1597,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		// Convert things into internal flags and prep our state:
 
 		if config.channel_handshake_limits.force_announced_channel_preference {
-			if config.channel_handshake_config.announced_channel != announced_channel {
+			if config.channel_handshake_config.announce_for_forwarding != announce_for_forwarding {
 				return Err(ChannelError::close("Peer tried to open channel but their announcement preference is different from ours".to_owned()));
 			}
 		}
@@ -1697,7 +1697,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 			config: LegacyChannelConfig {
 				options: config.channel_config.clone(),
-				announced_channel,
+				announce_for_forwarding,
 				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
 			},
 
@@ -1931,7 +1931,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 			config: LegacyChannelConfig {
 				options: config.channel_config.clone(),
-				announced_channel: config.channel_handshake_config.announced_channel,
+				announce_for_forwarding: config.channel_handshake_config.announce_for_forwarding,
 				commit_upfront_shutdown_pubkey: config.channel_handshake_config.commit_upfront_shutdown_pubkey,
 			},
 
@@ -2078,7 +2078,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	}
 
 	pub fn should_announce(&self) -> bool {
-		self.config.announced_channel
+		self.config.announce_for_forwarding
 	}
 
 	pub fn is_outbound(&self) -> bool {
@@ -6969,7 +6969,7 @@ impl<SP: Deref> Channel<SP> where
 	fn get_channel_announcement<NS: Deref>(
 		&self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
 	) -> Result<msgs::UnsignedChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
-		if !self.context.config.announced_channel {
+		if !self.context.config.announce_for_forwarding {
 			return Err(ChannelError::Ignore("Channel is not available for public announcements".to_owned()));
 		}
 		if !self.context.is_usable() {
@@ -7827,7 +7827,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
 				htlc_basepoint: keys.htlc_basepoint.to_public_key(),
 				first_per_commitment_point,
-				channel_flags: if self.context.config.announced_channel {1} else {0},
+				channel_flags: if self.context.config.announce_for_forwarding {1} else {0},
 				shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
 					Some(script) => script.clone().into_inner(),
 					None => Builder::new().into_script(),
@@ -7992,8 +7992,8 @@ pub(super) fn channel_type_from_open_channel(
 		if channel_type.requires_unknown_bits_from(&our_supported_features) {
 			return Err(ChannelError::close("Channel Type contains unsupported features".to_owned()));
 		}
-		let announced_channel = if (common_fields.channel_flags & 1) == 1 { true } else { false };
-		if channel_type.requires_scid_privacy() && announced_channel {
+		let announce_for_forwarding = if (common_fields.channel_flags & 1) == 1 { true } else { false };
+		if channel_type.requires_scid_privacy() && announce_for_forwarding {
 			return Err(ChannelError::close("SCID Alias/Privacy Channel Type cannot be set on a public channel".to_owned()));
 		}
 		Ok(channel_type.clone())
@@ -8366,7 +8366,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				delayed_payment_basepoint: keys.delayed_payment_basepoint.to_public_key(),
 				htlc_basepoint: keys.htlc_basepoint.to_public_key(),
 				first_per_commitment_point,
-				channel_flags: if self.context.config.announced_channel {1} else {0},
+				channel_flags: if self.context.config.announce_for_forwarding {1} else {0},
 				shutdown_scriptpubkey: Some(match &self.context.shutdown_scriptpubkey {
 					Some(script) => script.clone().into_inner(),
 					None => Builder::new().into_script(),
@@ -8545,7 +8545,7 @@ fn get_initial_channel_type(config: &UserConfig, their_features: &InitFeatures) 
 	// available. If it's private, we first try `scid_privacy` as it provides better privacy
 	// with no other changes, and fall back to `only_static_remotekey`.
 	let mut ret = ChannelTypeFeatures::only_static_remote_key();
-	if !config.channel_handshake_config.announced_channel &&
+	if !config.channel_handshake_config.announce_for_forwarding &&
 		config.channel_handshake_config.negotiate_scid_privacy &&
 		their_features.supports_scid_privacy() {
 		ret.set_scid_privacy_required();
@@ -9017,7 +9017,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			// Read the old serialization of the ChannelConfig from version 0.0.98.
 			config.as_mut().unwrap().options.forwarding_fee_proportional_millionths = Readable::read(reader)?;
 			config.as_mut().unwrap().options.cltv_expiry_delta = Readable::read(reader)?;
-			config.as_mut().unwrap().announced_channel = Readable::read(reader)?;
+			config.as_mut().unwrap().announce_for_forwarding = Readable::read(reader)?;
 			config.as_mut().unwrap().commit_upfront_shutdown_pubkey = Readable::read(reader)?;
 		} else {
 			// Read the 8 bytes of backwards-compatibility ChannelConfig data.
@@ -10338,7 +10338,7 @@ mod tests {
 
 		let counterparty_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let mut config = UserConfig::default();
-		config.channel_handshake_config.announced_channel = false;
+		config.channel_handshake_config.announce_for_forwarding = false;
 		let mut chan = OutboundV1Channel::<&Keys>::new(&LowerBoundedFeeEstimator::new(&feeest), &&keys_provider, &&keys_provider, counterparty_node_id, &channelmanager::provided_init_features(&config), 10_000_000, 0, 42, &config, 0, 42, None, &*logger).unwrap(); // Nothing uses their network key in this test
 		chan.context.holder_dust_limit_satoshis = 546;
 		chan.context.counterparty_selected_channel_reserve_satoshis = Some(0); // Filled in in accept_channel
