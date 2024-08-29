@@ -4326,8 +4326,9 @@ where
 	) -> Result<(), Bolt12PaymentError> {
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
+			let features = self.bolt12_invoice_features();
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
-				invoice, payment_id, &*self.entropy_source, &self.pending_events
+				invoice, payment_id, features, &*self.entropy_source, &self.pending_events
 			);
 			let payment_release_secret = match outbound_pmts_res {
 				Ok(secret) => secret,
