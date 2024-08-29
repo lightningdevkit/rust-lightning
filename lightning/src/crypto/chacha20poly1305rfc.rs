@@ -59,7 +59,7 @@ mod real_chachapoly {
 
 		pub fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
 			assert!(input.len() == output.len());
-			assert!(self.finished == false);
+			assert!(!self.finished);
 			self.cipher.process(input, output);
 			self.data_len += input.len();
 			self.mac.input(output);
@@ -78,7 +78,7 @@ mod real_chachapoly {
 		// Encrypt `input_output` in-place. To finish and calculate the tag, use `finish_and_get_tag`
 		// below.
 		pub(in super::super) fn encrypt_in_place(&mut self, input_output: &mut [u8]) {
-			debug_assert!(self.finished == false);
+			debug_assert!(!self.finished);
 			self.cipher.process_in_place(input_output);
 			self.data_len += input_output.len();
 			self.mac.input(input_output);
@@ -87,7 +87,7 @@ mod real_chachapoly {
 		// If we were previously encrypting with `encrypt_in_place`, this method can be used to finish
 		// encrypting and calculate the tag.
 		pub(in super::super) fn finish_and_get_tag(&mut self, out_tag: &mut [u8]) {
-			debug_assert!(self.finished == false);
+			debug_assert!(!self.finished);
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.finished = true;
 			self.mac.input(&self.aad_len.to_le_bytes());
@@ -100,7 +100,7 @@ mod real_chachapoly {
 		/// this decryption is *variable time*.
 		pub fn variable_time_decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> Result<(), ()> {
 			assert!(input.len() == output.len());
-			assert!(self.finished == false);
+			assert!(!self.finished);
 
 			self.finished = true;
 
@@ -131,7 +131,7 @@ mod real_chachapoly {
 		///
 		/// Should never be `pub` because the public API should always enforce tag checking.
 		pub(in super::super) fn decrypt_in_place(&mut self, input_output: &mut [u8]) {
-			debug_assert!(self.finished == false);
+			debug_assert!(!self.finished);
 			self.mac.input(input_output);
 			self.data_len += input_output.len();
 			self.cipher.process_in_place(input_output);
@@ -140,7 +140,7 @@ mod real_chachapoly {
 		/// If we were previously decrypting with `just_decrypt_in_place`, this method must be used
 		/// to check the tag. Returns whether or not the tag is valid.
 		pub(in super::super) fn finish_and_check_tag(&mut self, tag: &[u8]) -> bool {
-			debug_assert!(self.finished == false);
+			debug_assert!(!self.finished);
 			self.finished = true;
 			ChaCha20Poly1305RFC::pad_mac_16(&mut self.mac, self.data_len);
 			self.mac.input(&self.aad_len.to_le_bytes());

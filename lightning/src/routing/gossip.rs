@@ -509,10 +509,10 @@ where U::Target: UtxoLookup, L::Target: Logger
 				let mut one_to_two_announcement: Option<msgs::ChannelUpdate> = None;
 				let mut two_to_one_announcement: Option<msgs::ChannelUpdate> = None;
 				if let Some(one_to_two) = chan.one_to_two.as_ref() {
-					one_to_two_announcement = one_to_two.last_update_message.clone();
+					one_to_two_announcement.clone_from(&one_to_two.last_update_message);
 				}
 				if let Some(two_to_one) = chan.two_to_one.as_ref() {
-					two_to_one_announcement = two_to_one.last_update_message.clone();
+					two_to_one_announcement.clone_from(&two_to_one.last_update_message);
 				}
 				return Some((chan_announcement, one_to_two_announcement, two_to_one_announcement));
 			} else {

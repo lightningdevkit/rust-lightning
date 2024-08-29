@@ -1048,7 +1048,7 @@ pub enum Quantity {
 }
 
 impl Quantity {
-	fn to_tlv_record(&self) -> Option<u64> {
+	fn to_tlv_record(self) -> Option<u64> {
 		match self {
 			Quantity::Bounded(n) => Some(n.get()),
 			Quantity::Unbounded => Some(0),

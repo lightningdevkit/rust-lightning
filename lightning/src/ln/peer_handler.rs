@@ -1431,7 +1431,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					let peer = &mut *peer_lock;
 					let mut msg_to_handle = None;
 					if peer_node_id.is_none() {
-						peer_node_id = peer.their_node_id.clone();
+						peer_node_id.clone_from(&peer.their_node_id);
 					}
 
 					assert!(peer.pending_read_buffer.len() > 0);

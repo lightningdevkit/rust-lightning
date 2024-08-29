@@ -5163,7 +5163,7 @@ where
 						failure_code: fail_malformed_htlc.failure_code,
 					},
 				};
-				self.forward_htlcs.lock().unwrap().entry(incoming_scid).or_insert(vec![]).push(failure);
+				self.forward_htlcs.lock().unwrap().entry(incoming_scid).or_default().push(failure);
 				self.pending_events.lock().unwrap().push_back((events::Event::HTLCHandlingFailed {
 					prev_channel_id: incoming_channel_id,
 					failed_next_destination: htlc_destination,
@@ -6768,7 +6768,7 @@ where
 
 				peer_state.actions_blocking_raa_monitor_updates
 					.entry(prev_hop.channel_id)
-					.or_insert_with(Vec::new)
+					.or_default()
 					.push(raa_blocker);
 			} else {
 				debug_assert!(false,

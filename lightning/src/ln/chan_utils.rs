@@ -221,13 +221,12 @@ pub fn build_commitment_secret(commitment_seed: &[u8; 32], idx: u64) -> [u8; 32]
 /// Build a closing transaction
 pub fn build_closing_transaction(to_holder_value_sat: Amount, to_counterparty_value_sat: Amount, to_holder_script: ScriptBuf, to_counterparty_script: ScriptBuf, funding_outpoint: OutPoint) -> Transaction {
 	let txins = {
-		let mut ins: Vec<TxIn> = Vec::new();
-		ins.push(TxIn {
+		let ins: Vec<TxIn> = vec![TxIn {
 			previous_output: funding_outpoint,
 			script_sig: ScriptBuf::new(),
 			sequence: Sequence::MAX,
 			witness: Witness::new(),
-		});
+		}];
 		ins
 	};
 
@@ -702,8 +701,7 @@ pub(crate) fn make_funding_redeemscript_from_slices(broadcaster_funding_key: &[u
 /// Panics if htlc.transaction_output_index.is_none() (as such HTLCs do not appear in the
 /// commitment transaction).
 pub fn build_htlc_transaction(commitment_txid: &Txid, feerate_per_kw: u32, contest_delay: u16, htlc: &HTLCOutputInCommitment, channel_type_features: &ChannelTypeFeatures, broadcaster_delayed_payment_key: &DelayedPaymentKey, revocation_key: &RevocationKey) -> Transaction {
-	let mut txins: Vec<TxIn> = Vec::new();
-	txins.push(build_htlc_input(commitment_txid, htlc, channel_type_features));
+	let txins= vec![build_htlc_input(commitment_txid, htlc, channel_type_features)];
 
 	let mut txouts: Vec<TxOut> = Vec::new();
 	txouts.push(build_htlc_output(
@@ -1590,14 +1588,13 @@ impl CommitmentTransaction {
 			commitment_transaction_number_obscure_factor ^ (INITIAL_COMMITMENT_NUMBER - commitment_number);
 
 		let txins = {
-			let mut ins: Vec<TxIn> = Vec::new();
-			ins.push(TxIn {
+			let ins: Vec<TxIn> = vec![TxIn {
 				previous_output: channel_parameters.funding_outpoint(),
 				script_sig: ScriptBuf::new(),
 				sequence: Sequence(((0x80 as u32) << 8 * 3)
 					| ((obscured_commitment_transaction_number >> 3 * 8) as u32)),
 				witness: Witness::new(),
-			});
+			}];
 			ins
 		};
 		(obscured_commitment_transaction_number, txins)

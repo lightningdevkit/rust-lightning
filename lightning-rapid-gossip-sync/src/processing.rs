@@ -176,7 +176,7 @@ where
 						.and_then(|node| node.announcement_info.as_ref())
 						.map(|info| {
 							synthetic_node_announcement.features = info.features().clone();
-							synthetic_node_announcement.rgb = info.rgb().clone();
+							synthetic_node_announcement.rgb.clone_from(&info.rgb());
 							synthetic_node_announcement.alias = info.alias().clone();
 							synthetic_node_announcement.addresses = info.addresses().to_vec();
 						});

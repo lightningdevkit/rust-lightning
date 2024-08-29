@@ -128,11 +128,11 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 		let start = match range.start_bound() {
 			Bound::Unbounded => 0,
 			Bound::Included(key) => self.keys.binary_search(key).unwrap_or_else(|index| index),
-			Bound::Excluded(key) => self.keys.binary_search(key).and_then(|index| Ok(index + 1)).unwrap_or_else(|index| index),
+			Bound::Excluded(key) => self.keys.binary_search(key).map(|index| index +1).unwrap_or_else(|index| index),
 		};
 		let end = match range.end_bound() {
 			Bound::Unbounded => self.keys.len(),
-			Bound::Included(key) => self.keys.binary_search(key).and_then(|index| Ok(index + 1)).unwrap_or_else(|index| index),
+			Bound::Included(key) => self.keys.binary_search(key).map(|index| index +1).unwrap_or_else(|index| index),
 			Bound::Excluded(key) => self.keys.binary_search(key).unwrap_or_else(|index| index),
 		};
 

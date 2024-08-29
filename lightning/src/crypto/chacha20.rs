@@ -176,7 +176,7 @@ mod real_chacha {
 		) {
 			let block = ChaCha20::get_single_block(key, nonce);
 			for i in 0..bytes.len() {
-				bytes[i] = block[i] ^ bytes[i];
+				bytes[i] ^= block[i];
 			}
 		}
 

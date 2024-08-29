@@ -610,7 +610,7 @@ impl ChannelState {
 		}
 	}
 
-	fn to_u32(&self) -> u32 {
+	fn to_u32(self) -> u32 {
 		match self {
 			ChannelState::NegotiatingFunding(flags) => flags.0,
 			ChannelState::FundingNegotiated => state_flags::FUNDING_NEGOTIATED,
@@ -9512,7 +9512,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				monitor_pending_forwards,
 				monitor_pending_failures,
 				monitor_pending_finalized_fulfills: monitor_pending_finalized_fulfills.unwrap(),
-				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or(Vec::new()),
+				monitor_pending_update_adds: monitor_pending_update_adds.unwrap_or_default(),
 
 				signer_pending_revoke_and_ack: false,
 				signer_pending_commitment_update: false,

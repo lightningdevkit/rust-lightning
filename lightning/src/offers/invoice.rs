@@ -1018,7 +1018,7 @@ impl InvoiceContents {
 		self.fields().fallbacks
 			.as_ref()
 			.map(|fallbacks| filter_fallbacks(self.chain(), fallbacks))
-			.unwrap_or_else(Vec::new)
+			.unwrap_or_default()
 	}
 
 	fn features(&self) -> &Bolt12InvoiceFeatures {
