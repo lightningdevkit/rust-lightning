@@ -4392,14 +4392,26 @@ where
 		&self, payment_id: PaymentId, payment_release_secret: [u8; 32]
 	) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.pending_outbound_payments
-			.send_payment_for_static_invoice(
+		let mut res = Ok(());
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			let outbound_pmts_res = self.pending_outbound_payments.send_payment_for_static_invoice(
 				payment_id, payment_release_secret, &self.router, self.list_usable_channels(),
 				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, &self,
 				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
 				|args| self.send_payment_along_path(args)
-			)
+			);
+			match outbound_pmts_res {
+				Err(Bolt12PaymentError::UnexpectedInvoice) | Err(Bolt12PaymentError::DuplicateInvoice) => {
+					res = outbound_pmts_res.map(|_| ());
+					NotifyOption::SkipPersistNoEvents
+				},
+				other_res => {
+					res = other_res;
+					NotifyOption::DoPersist
+				}
+			}
+		});
+		res
 	}
 
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
