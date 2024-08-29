@@ -911,7 +911,7 @@ impl<T: sealed::Context> Features<T> {
 	}
 
 	/// Returns the set of required features unknown by `other`, as their bit position.
-	pub fn required_unknown_bits_from(&self, other: &Self) -> Vec<usize> {
+	pub fn required_unknown_bits_from(&self, other: &Self) -> Vec<u64> {
 		let mut unknown_bits = Vec::new();
 
 		// Bitwise AND-ing with all even bits set except for known features will select required
@@ -921,7 +921,7 @@ impl<T: sealed::Context> Features<T> {
 			if byte & unknown_features != 0 {
 				for bit in (0..8).step_by(2) {
 					if ((byte & unknown_features) >> bit) & 1 == 1 {
-						unknown_bits.push(i * 8 + bit);
+						unknown_bits.push((i as u64) * 8 + bit);
 					}
 				}
 			}
