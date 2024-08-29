@@ -1765,6 +1765,14 @@ where
 			);
 		}
 
+		#[cfg(async_payments)] {
+			for (message, instructions) in self.async_payments_handler.release_pending_messages() {
+				let _ = self.send_onion_message_internal(
+					message, instructions, format_args!("when sending AsyncPaymentsMessage")
+				);
+			}
+		}
+
 		// Enqueue any initiating `CustomMessage`s to send.
 		for (message, instructions) in self.custom_handler.release_pending_custom_messages() {
 			let _ = self.send_onion_message_internal(

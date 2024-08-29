@@ -11106,7 +11106,7 @@ where
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 
 	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
-		Vec::new()
+		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
 	}
 }
 
