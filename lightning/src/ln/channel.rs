@@ -936,6 +936,7 @@ pub(crate) struct ShutdownResult {
 	pub(crate) user_channel_id: u128,
 	pub(crate) channel_capacity_satoshis: u64,
 	pub(crate) counterparty_node_id: PublicKey,
+	pub(crate) is_manual_broadcast: bool,
 	pub(crate) unbroadcasted_funding_tx: Option<Transaction>,
 	pub(crate) channel_funding_txo: Option<OutPoint>,
 }
@@ -3457,6 +3458,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Returns the transaction if there is a pending funding transaction that is yet to be
 	/// broadcast.
+	///
+	/// Note that if [`Self::is_manual_broadcast`] is true the transaction will be a dummy
+	/// transaction.
 	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
 		self.if_unbroadcasted_funding(|| self.funding_transaction.clone())
 	}
@@ -3537,6 +3541,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			channel_capacity_satoshis: self.channel_value_satoshis,
 			counterparty_node_id: self.counterparty_node_id,
 			unbroadcasted_funding_tx,
+			is_manual_broadcast: self.is_manual_broadcast,
 			channel_funding_txo: self.get_funding_txo(),
 		}
 	}
@@ -6240,6 +6245,7 @@ impl<SP: Deref> Channel<SP> where
 					channel_capacity_satoshis: self.context.channel_value_satoshis,
 					counterparty_node_id: self.context.counterparty_node_id,
 					unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
+					is_manual_broadcast: self.context.is_manual_broadcast,
 					channel_funding_txo: self.context.get_funding_txo(),
 				};
 				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
@@ -6272,6 +6278,7 @@ impl<SP: Deref> Channel<SP> where
 						channel_capacity_satoshis: self.context.channel_value_satoshis,
 						counterparty_node_id: self.context.counterparty_node_id,
 						unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
+						is_manual_broadcast: self.context.is_manual_broadcast,
 						channel_funding_txo: self.context.get_funding_txo(),
 					};
 					if closing_signed.is_some() {
