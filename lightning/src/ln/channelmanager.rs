@@ -71,6 +71,8 @@ use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::signer;
+#[cfg(async_payments)]
+use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
@@ -4316,6 +4318,61 @@ where
 				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
 				|args| self.send_payment_along_path(args)
 			)
+	}
+
+	#[cfg(async_payments)]
+	fn initiate_async_payment(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId
+	) -> Result<(), Bolt12PaymentError> {
+		let mut res = Ok(());
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
+				invoice, payment_id, &*self.entropy_source, &self.pending_events
+			);
+			let payment_release_secret = match outbound_pmts_res {
+				Ok(secret) => secret,
+				Err(Bolt12PaymentError::UnexpectedInvoice) | Err(Bolt12PaymentError::DuplicateInvoice) => {
+					res = outbound_pmts_res.map(|_| ());
+					return NotifyOption::SkipPersistNoEvents
+				},
+				Err(e) => {
+					res = Err(e);
+					return NotifyOption::DoPersist
+				}
+			};
+
+			let reply_paths = match self.create_blinded_paths(
+				MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment { payment_id })
+			) {
+				Ok(paths) => paths,
+				Err(()) => {
+					self.abandon_payment_with_reason(payment_id, PaymentFailureReason::RouteNotFound);
+					res = Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound));
+					return NotifyOption::DoPersist
+				}
+			};
+
+			let mut pending_async_payments_messages = self.pending_async_payments_messages.lock().unwrap();
+			const HTLC_AVAILABLE_LIMIT: usize = 10;
+			reply_paths
+				.iter()
+				.flat_map(|reply_path| invoice.message_paths().iter().map(move |invoice_path| (invoice_path, reply_path)))
+				.take(HTLC_AVAILABLE_LIMIT)
+				.for_each(|(invoice_path, reply_path)| {
+					let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+						destination: Destination::BlindedPath(invoice_path.clone()),
+						reply_path: reply_path.clone(),
+					};
+					let message = AsyncPaymentsMessage::HeldHtlcAvailable(
+						HeldHtlcAvailable { payment_release_secret }
+					);
+					pending_async_payments_messages.push((message, instructions));
+				});
+
+			NotifyOption::DoPersist
+		});
+
+		res
 	}
 
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
@@ -11040,14 +11097,39 @@ where
 				}
 			},
 			#[cfg(async_payments)]
-			OffersMessage::StaticInvoice(_invoice) => {
-				match responder {
-					Some(responder) => {
-						return Some((OffersMessage::InvoiceError(
-							InvoiceError::from_string("Static invoices not yet supported".to_string())
-						), responder.respond()));
+			OffersMessage::StaticInvoice(invoice) => {
+				let payment_id = match context {
+					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
+						if payment_id.verify(hmac, nonce, expanded_key).is_err() {
+							return None
+						}
+						payment_id
 					},
-					None => return None,
+					_ => return None
+				};
+				// TODO: DRY this with the above regular invoice error handling
+				let error = match self.initiate_async_payment(&invoice, payment_id) {
+					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
+						log_trace!(
+							self.logger, "Invoice requires unknown features: {:?}",
+							invoice.invoice_features()
+						);
+						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
+					},
+					Err(Bolt12PaymentError::SendingFailed(e)) => {
+						log_trace!(self.logger, "Failed paying invoice: {:?}", e);
+						InvoiceError::from_string(format!("{:?}", e))
+					},
+					Err(Bolt12PaymentError::UnexpectedInvoice)
+						| Err(Bolt12PaymentError::DuplicateInvoice)
+						| Ok(()) => return None,
+				};
+				match responder {
+					Some(responder) => Some((OffersMessage::InvoiceError(error), responder.respond())),
+					None => {
+						log_trace!(self.logger, "No reply path to send error: {:?}", error);
+						None
+					},
 				}
 			},
 			OffersMessage::InvoiceError(invoice_error) => {

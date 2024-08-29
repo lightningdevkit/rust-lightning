@@ -32,6 +32,12 @@ use crate::util::logger::Logger;
 use crate::util::time::Instant;
 use crate::util::ser::ReadableArgs;
 
+#[cfg(async_payments)]
+use {
+	crate::offers::invoice::{DerivedSigningPubkey, InvoiceBuilder},
+	crate::offers::static_invoice::StaticInvoice,
+};
+
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -926,6 +932,70 @@ impl OutboundPayments {
 			);
 		}
 		Ok(())
+	}
+
+	#[cfg(async_payments)]
+	pub(super) fn static_invoice_received<ES: Deref>(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId, entropy_source: ES,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>
+	) -> Result<[u8; 32], Bolt12PaymentError> where ES::Target: EntropySource {
+		macro_rules! abandon_with_entry {
+			($payment: expr, $reason: expr) => {
+				$payment.get_mut().mark_abandoned($reason);
+				if let PendingOutboundPayment::Abandoned { reason, .. } = $payment.get() {
+					if $payment.get().remaining_parts() == 0 {
+						pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
+							payment_id,
+							payment_hash: None,
+							reason: *reason,
+						}, None));
+						$payment.remove();
+					}
+				}
+			}
+		}
+
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(mut entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingInvoice {
+					retry_strategy, retryable_invoice_request, max_total_routing_fee_msat, ..
+				} => {
+					let invreq = &retryable_invoice_request
+						.as_ref()
+						.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
+						.invoice_request;
+					if !invoice.from_same_offer(invreq) {
+						return Err(Bolt12PaymentError::UnexpectedInvoice)
+					}
+					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq) {
+						Ok(amt) => amt,
+						Err(_) => {
+							// We check this during invoice request parsing, when constructing the invreq's
+							// contents from its TLV stream.
+							debug_assert!(false, "LDK requires an msat amount in either the invreq or the invreq's underlying offer");
+							abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
+							return Err(Bolt12PaymentError::UnknownRequiredFeatures)
+						}
+					};
+					let keysend_preimage = PaymentPreimage(entropy_source.get_secure_random_bytes());
+					let payment_hash = PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
+					let payment_release_secret = entropy_source.get_secure_random_bytes();
+					let pay_params = PaymentParameters::from_static_invoice(invoice);
+					let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
+					route_params.max_total_routing_fee_msat = *max_total_routing_fee_msat;
+					*entry.into_mut() = PendingOutboundPayment::StaticInvoiceReceived {
+						payment_hash,
+						keysend_preimage,
+						retry_strategy: *retry_strategy,
+						payment_release_secret,
+						route_params,
+					};
+					return Ok(payment_release_secret)
+				},
+				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
+			},
+			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+		};
 	}
 
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
