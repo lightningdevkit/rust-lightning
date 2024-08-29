@@ -937,7 +937,7 @@ impl OutboundPayments {
 	#[cfg(async_payments)]
 	pub(super) fn static_invoice_received<ES: Deref>(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
-		entropy_source: ES,
+		best_block_height: u32, entropy_source: ES,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>
 	) -> Result<[u8; 32], Bolt12PaymentError> where ES::Target: EntropySource {
 		macro_rules! abandon_with_entry {
@@ -988,6 +988,15 @@ impl OutboundPayments {
 					let pay_params = PaymentParameters::from_static_invoice(invoice);
 					let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
 					route_params.max_total_routing_fee_msat = *max_total_routing_fee_msat;
+
+					if let Err(()) = onion_utils::set_max_path_length(
+						&mut route_params, &RecipientOnionFields::spontaneous_empty(), Some(keysend_preimage),
+						best_block_height
+					) {
+						abandon_with_entry!(entry, PaymentFailureReason::RouteNotFound);
+						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))
+					}
+
 					*entry.into_mut() = PendingOutboundPayment::StaticInvoiceReceived {
 						payment_hash,
 						keysend_preimage,
