@@ -703,11 +703,9 @@ where
 
 				let expected_package_fee = Amount::from_sat(fee_for_weight(package_target_feerate_sat_per_1000_weight,
 					signed_tx_weight + commitment_tx.weight().to_wu()));
-				// Our fee should be within a 5% error margin of the expected fee based on the
-				// feerate and transaction weight and we should never pay less than required.
-				let fee_error_margin = expected_package_fee * 5 / 100;
-				assert!(package_fee >= expected_package_fee &&
-					package_fee - fee_error_margin <= expected_package_fee);
+				// Our feerate should always be at least what we were seeking. It may overshoot if
+				// the coin selector burned funds to an OP_RETURN without a change output.
+				assert!(package_fee >= expected_package_fee);
 			}
 
 			log_info!(self.logger, "Broadcasting anchor transaction {} to bump channel close with txid {}",
@@ -811,11 +809,9 @@ where
 			let expected_signed_tx_fee = fee_for_weight(target_feerate_sat_per_1000_weight, signed_tx_weight);
 			let signed_tx_fee = total_input_amount -
 				htlc_tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>();
-			// Our fee should be within a 5% error margin of the expected fee based on the
-			// feerate and transaction weight and we should never pay less than required.
-			let fee_error_margin = expected_signed_tx_fee * 5 / 100;
-			assert!(signed_tx_fee >= expected_signed_tx_fee &&
-				signed_tx_fee - fee_error_margin <= expected_signed_tx_fee);
+			// Our feerate should always be at least what we were seeking. It may overshoot if
+			// the coin selector burned funds to an OP_RETURN without a change output.
+			assert!(signed_tx_fee >= expected_signed_tx_fee);
 		}
 
 		log_info!(self.logger, "Broadcasting {}", log_tx!(htlc_tx));
