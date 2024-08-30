@@ -36,7 +36,7 @@ use crate::events::FundingInfo;
 use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
-use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
+use crate::blinded_path::payment::{AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -86,7 +86,6 @@ use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, Maybe
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 #[cfg(async_payments)] use {
-	crate::blinded_path::payment::AsyncBolt12OfferContext,
 	crate::offers::offer::Amount,
 	crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder},
 };
@@ -5875,7 +5874,7 @@ where
 								let blinded_failure = routing.blinded_failure();
 								let (
 									cltv_expiry, onion_payload, payment_data, payment_context, phantom_shared_secret,
-									mut onion_fields, has_recipient_created_payment_secret
+									mut onion_fields, has_recipient_created_payment_secret, invoice_request_opt
 								) = match routing {
 									PendingHTLCRouting::Receive {
 										payment_data, payment_metadata, payment_context,
@@ -5887,11 +5886,11 @@ where
 												payment_metadata, custom_tlvs };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
 											Some(payment_data), payment_context, phantom_shared_secret, onion_fields,
-											true)
+											true, None)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
 										payment_data, payment_preimage, payment_metadata, incoming_cltv_expiry,
-										custom_tlvs, invoice_request: _, payment_context: _, requires_blinded_error: _,
+										custom_tlvs, invoice_request, payment_context, requires_blinded_error: _,
 										has_recipient_created_payment_secret,
 									} => {
 										let onion_fields = RecipientOnionFields {
@@ -5900,7 +5899,8 @@ where
 											custom_tlvs,
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
-											payment_data, None, None, onion_fields, has_recipient_created_payment_secret)
+											payment_data, payment_context, None, onion_fields,
+											has_recipient_created_payment_secret, invoice_request)
 									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
@@ -6102,7 +6102,58 @@ where
 										check_total_value!(purpose);
 									},
 									OnionPayload::Spontaneous(preimage) => {
-										let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
+										let purpose = if let Some(PaymentContext::AsyncBolt12Offer(
+											AsyncBolt12OfferContext { offer_nonce, offer_id: _ }
+										)) = payment_context {
+											let payment_data = match payment_data {
+												Some(data) => data,
+												None => {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											};
+											let (payment_preimage_opt, min_final_cltv_expiry_delta) =
+												match inbound_payment::verify(
+													payment_hash, &payment_data,
+													self.highest_seen_timestamp.load(Ordering::Acquire) as u64,
+													&self.inbound_payment_key, &self.logger
+												) {
+													Ok(result) => result,
+													Err(()) => {
+														log_trace!(self.logger, "Failing new async payment HTLC with payment_hash {} as payment verification failed", &payment_hash);
+														fail_htlc!(claimable_htlc, payment_hash);
+													}
+												};
+											debug_assert!(payment_preimage_opt.is_none());
+											if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
+												let expected_min_expiry_height = (self.current_best_block().height + min_final_cltv_expiry_delta as u32) as u64;
+												if (cltv_expiry as u64) < expected_min_expiry_height {
+													log_trace!(self.logger, "Failing new async payment HTLC with payment_hash {} as its CLTV expiry was too soon (had {}, earliest expected {})", &payment_hash, cltv_expiry, expected_min_expiry_height);
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											}
+											let invreq_fields = match invoice_request_opt
+												.and_then(|invreq| invreq.verify_using_recipient_data(
+													offer_nonce, &self.inbound_payment_key, &self.secp_ctx
+												).ok())
+											{
+												Some(verified_invreq) => verified_invreq.fields(),
+												None => {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											};
+											match events::PaymentPurpose::from_parts(
+												Some(preimage), payment_data.payment_secret, payment_context,
+												Some(invreq_fields),
+											) {
+												Ok(purpose) => purpose,
+												Err(()) => {
+													fail_htlc!(claimable_htlc, payment_hash);
+												}
+											}
+										} else {
+											// TODO: handle when the context is set but unexpected
+											events::PaymentPurpose::SpontaneousPayment(preimage)
+										};
 										check_total_value!(purpose);
 									}
 								}
