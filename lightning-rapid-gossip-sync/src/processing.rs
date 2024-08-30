@@ -476,7 +476,6 @@ mod tests {
 	use lightning::ln::msgs::DecodeError;
 
 	use lightning::routing::gossip::{NetworkGraph, NodeId};
-	use lightning::util::logger::Level;
 	use lightning::util::test_utils::TestLogger;
 
 	use crate::processing::STALE_RGS_UPDATE_AGE_LIMIT_SECS;
@@ -534,8 +533,7 @@ mod tests {
 
 	#[test]
 	fn node_data_update_succeeds_with_v2() {
-		let mut logger = TestLogger::new();
-		logger.enable(Level::Gossip);
+		let logger = TestLogger::new();
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 
 		let example_input = vec![
@@ -597,8 +595,7 @@ mod tests {
 
 	#[test]
 	fn node_date_update_succeeds_without_channels() {
-		let mut logger = TestLogger::new();
-		logger.enable(Level::Gossip);
+		let logger = TestLogger::new();
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 
@@ -626,8 +623,7 @@ mod tests {
 
 	#[test]
 	fn update_ignores_v2_additional_data() {
-		let mut logger = TestLogger::new();
-		logger.enable(Level::Gossip);
+		let logger = TestLogger::new();
 		let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 		let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 
