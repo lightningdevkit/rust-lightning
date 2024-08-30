@@ -595,7 +595,6 @@ impl AsRef<TaggedHash> for UnsignedInvoiceRequest {
 /// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 /// [`Offer`]: crate::offers::offer::Offer
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
 pub struct InvoiceRequest {
 	pub(super) bytes: Vec<u8>,
 	pub(super) contents: InvoiceRequestContents,
@@ -1144,6 +1143,14 @@ impl TryFrom<Vec<u8>> for InvoiceRequest {
 		Ok(InvoiceRequest { bytes, contents, signature })
 	}
 }
+
+impl PartialEq for InvoiceRequest {
+	fn eq(&self, other: &Self) -> bool {
+		self.bytes.eq(&other.bytes)
+	}
+}
+
+impl Eq for InvoiceRequest {}
 
 impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 	type Error = Bolt12SemanticError;
