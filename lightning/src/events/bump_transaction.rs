@@ -851,3 +851,116 @@ where
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	use crate::io::Cursor;
+	use crate::ln::chan_utils::ChannelTransactionParameters;
+	use crate::util::ser::Readable;
+	use crate::util::test_utils::{TestBroadcaster, TestLogger};
+	use crate::sign::KeysManager;
+
+	use bitcoin::hashes::Hash;
+	use bitcoin::hex::FromHex;
+	use bitcoin::{Network, ScriptBuf, Transaction, Txid};
+
+	struct TestCoinSelectionSource {
+		// (commitment + anchor value, commitment + input weight, target feerate, result)
+		expected_selects: Mutex<Vec<(u64, u64, u32, CoinSelection)>>,
+	}
+	impl CoinSelectionSource for TestCoinSelectionSource {
+		fn select_confirmed_utxos(
+			&self,
+			_claim_id: ClaimId,
+			must_spend: Vec<Input>,
+			_must_pay_to: &[TxOut],
+			target_feerate_sat_per_1000_weight: u32
+		) -> Result<CoinSelection, ()> {
+			let mut expected_selects = self.expected_selects.lock().unwrap();
+			let (weight, value, feerate, res) = expected_selects.remove(0);
+			assert_eq!(must_spend.len(), 1);
+			assert_eq!(must_spend[0].satisfaction_weight, weight);
+			assert_eq!(must_spend[0].previous_utxo.value.to_sat(), value);
+			assert_eq!(target_feerate_sat_per_1000_weight, feerate);
+			Ok(res)
+		}
+		fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
+			let mut tx = psbt.unsigned_tx;
+			for input in tx.input.iter_mut() {
+				if input.previous_output.txid != Txid::from_byte_array([44; 32]) {
+					// Channel output, add a realistic size witness to make the assertions happy
+					input.witness = Witness::from_slice(&[vec![42; 162]]);
+				}
+			}
+			Ok(tx)
+		}
+	}
+
+	impl Drop for TestCoinSelectionSource {
+		fn drop(&mut self) {
+			assert!(self.expected_selects.lock().unwrap().is_empty());
+		}
+	}
+
+	#[test]
+	fn test_op_return_under_funds() {
+		// Test what happens if we have to select coins but the anchor output value itself suffices
+		// to pay the required fee.
+		//
+		// This tests a case that occurred on mainnet (with the below transaction) where the target
+		// feerate (of 868 sat/kW) was met by the anchor output's 330 sats alone. This caused the
+		// use of an OP_RETURN which created a transaction which, at the time, was less than 64
+		// bytes long (the current code generates a 65 byte transaction instead to meet
+		// standardness rule). It also tests the handling of selection failure where we selected
+		// coins which were insufficient once the OP_RETURN output was added, causing us to need to
+		// select coins again with additional weight.
+
+		// Tx 18032ad172a5f28fa6e16392d6cc57ea47895781434ce15d03766cc47a955fb9
+		let commitment_tx_bytes = Vec::<u8>::from_hex("02000000000101cc6b0a9dd84b52c07340fff6fab002fc37b4bdccfdce9f39c5ec8391a56b652907000000009b948b80044a01000000000000220020b4182433fdfdfbf894897c98f84d92cec815cee222755ffd000ae091c9dadc2d4a01000000000000220020f83f7dbf90e2de325b5bb6bab0ae370151278c6964739242b2e7ce0cb68a5d81cb4a02000000000022002024add256b3dccee772610caef82a601045ab6f98fd6d5df608cc756b891ccfe63ffa490000000000220020894bf32b37906a643625e87131897c3714c71b3ac9b161862c9aa6c8d468b4c70400473044022060abd347bff2cca0212b660e6addff792b3356bd4a1b5b26672dc2e694c3c5f002202b40b7e346b494a7b1d048b4ec33ba99c90a09ab48eb1df64ccdc768066c865c014730440220554d8361e04dc0ee178dcb23d2d23f53ec7a1ae4312a5be76bd9e83ab8981f3d0220501f23ffb18cb81ccea72d30252f88d5e69fd28ba4992803d03c00d06fa8899e0147522102817f6ce189ab7114f89e8d5df58cdbbaf272dc8e71b92982d47456a0b6a0ceee2102c9b4d2f24aca54f65e13f4c83e2a8d8e877e12d3c71a76e81f28a5cabc652aa352ae626c7620").unwrap();
+		let commitment_tx: Transaction = Readable::read(&mut Cursor::new(&commitment_tx_bytes)).unwrap();
+		let total_commitment_weight = commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
+		let commitment_and_anchor_fee = 930 + 330;
+		let op_return_weight = TxOut {
+			value: Amount::ZERO,
+			script_pubkey: ScriptBuf::new_op_return(&[0; 3]),
+		}.weight().to_wu();
+
+		let broadcaster = TestBroadcaster::new(Network::Testnet);
+		let source = TestCoinSelectionSource {
+			expected_selects: Mutex::new(vec![
+				(total_commitment_weight, commitment_and_anchor_fee, 868, CoinSelection { confirmed_utxos: Vec::new(), change_output: None }),
+				(total_commitment_weight + op_return_weight, commitment_and_anchor_fee, 868, CoinSelection {
+					confirmed_utxos: vec![Utxo {
+						outpoint: OutPoint { txid: Txid::from_byte_array([44; 32]), vout: 0 },
+						output: TxOut { value: Amount::from_sat(200), script_pubkey: ScriptBuf::new() },
+						satisfaction_weight: 5, // Just the script_sig and witness lengths
+					}],
+					change_output: None,
+				})
+			]),
+		};
+		let signer = KeysManager::new(&[42; 32], 42, 42);
+		let logger = TestLogger::new();
+		let handler = BumpTransactionEventHandler::new(&broadcaster, &source, &signer, &logger);
+
+		handler.handle_event(&BumpTransactionEvent::ChannelClose {
+			channel_id: ChannelId([42; 32]),
+			counterparty_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+			claim_id: ClaimId([42; 32]),
+			package_target_feerate_sat_per_1000_weight: 868,
+			commitment_tx_fee_satoshis: 930,
+			commitment_tx,
+			anchor_descriptor: AnchorDescriptor {
+				channel_derivation_parameters: ChannelDerivationParameters {
+					value_satoshis: 42_000_000,
+					keys_id: [42; 32],
+					transaction_parameters: ChannelTransactionParameters::test_dummy(),
+				},
+				outpoint: OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 },
+			},
+			pending_htlcs: Vec::new(),
+		});
+	}
+}
