@@ -1174,10 +1174,25 @@ impl TestLogger {
 
 impl Logger for TestLogger {
 	fn log(&self, record: Record) {
-		*self.lines.lock().unwrap().entry((record.module_path, format!("{}", record.args))).or_insert(0) += 1;
-		*self.context.lock().unwrap().entry((record.module_path, record.peer_id, record.channel_id)).or_insert(0) += 1;
-		let pfx = format!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line);
-		println!("{:<55}{}", pfx, record.args);
+		let s = format!("{:<55} {}",
+			format_args!("{} {} [{}:{}]", self.id, record.level.to_string(), record.module_path, record.line),
+			record.args
+		);
+		#[cfg(ldk_bench)] {
+			// When benchmarking, we don't actually want to print logs, but we do want to format
+			// them. To make sure LLVM doesn't skip the above entirely we push it through a
+			// volitile read. This may not be super fast, but it shouldn't be worse than anything a
+			// user actually does with a log
+			let s_bytes = s.as_bytes();
+			for i in 0..s.len() {
+				let _ = unsafe { core::ptr::read_volatile(&s_bytes[i]) };
+			}
+		}
+		#[cfg(not(ldk_bench))] {
+			*self.lines.lock().unwrap().entry((record.module_path, format!("{}", record.args))).or_insert(0) += 1;
+			*self.context.lock().unwrap().entry((record.module_path, record.peer_id, record.channel_id)).or_insert(0) += 1;
+			println!("{}", s);
+		}
 	}
 }
 
