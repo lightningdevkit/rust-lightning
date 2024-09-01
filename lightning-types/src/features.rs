@@ -88,7 +88,9 @@ use alloc::vec::Vec;
 use bech32::{u5, Base32Len, FromBase32, ToBase32, WriteBase32};
 
 mod sealed {
-	use super::*;
+	use super::Features;
+
+	use alloc::vec::Vec;
 
 	/// The context in which [`Features`] are applicable. Defines which features are known to the
 	/// implementation, though specification of them as required or optional is up to the code
