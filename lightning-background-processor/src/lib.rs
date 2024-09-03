@@ -925,7 +925,7 @@ impl BackgroundProcessor {
 		SC: for<'b> WriteableScore<'b>,
 	>(
 		persister: PS, event_handler: EH, chain_monitor: M, channel_manager: CM,
-		onion_messenger: Option<OM>, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
+		onion_messenger: OM, gossip_sync: GossipSync<PGS, RGS, G, UL, L>, peer_manager: PM,
 		logger: L, scorer: Option<S>,
 	) -> Self
 	where
@@ -962,34 +962,27 @@ impl BackgroundProcessor {
 				}
 				event_handler.handle_event(event)
 			};
+			let om_opt = Some(&*onion_messenger);
 			define_run_body!(
 				persister,
 				chain_monitor,
 				chain_monitor.process_pending_events(&event_handler),
 				channel_manager,
 				channel_manager.get_cm().process_pending_events(&event_handler),
-				onion_messenger,
-				if let Some(om) = &onion_messenger {
-					om.get_om().process_pending_events(&event_handler)
-				},
+				om_opt,
+				onion_messenger.get_om().process_pending_events(&event_handler),
 				peer_manager,
 				gossip_sync,
 				logger,
 				scorer,
 				stop_thread.load(Ordering::Acquire),
 				{
-					let sleeper = if let Some(om) = onion_messenger.as_ref() {
+					let sleeper =
 						Sleeper::from_three_futures(
 							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
 							&chain_monitor.get_update_future(),
-							&om.get_om().get_update_future(),
-						)
-					} else {
-						Sleeper::from_two_futures(
-							&channel_manager.get_cm().get_event_or_persistence_needed_future(),
-							&chain_monitor.get_update_future(),
-						)
-					};
+							&onion_messenger.get_om().get_update_future(),
+						);
 					sleeper.wait_timeout(Duration::from_millis(100));
 				},
 				|_| Instant::now(),
@@ -1141,8 +1134,6 @@ mod tests {
 				Arc<test_utils::TestLogger>,
 				Arc<KeysManager>,
 				Arc<LockingWrapper<TestScorer>>,
-				(),
-				TestScorer,
 			>,
 		>,
 		Arc<test_utils::TestLogger>,
@@ -1404,10 +1395,10 @@ mod tests {
 	}
 
 	impl ScoreLookUp for TestScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
 		fn channel_penalty_msat(
-			&self, _candidate: &CandidateRouteHop, _usage: ChannelUsage,
-			_score_params: &Self::ScoreParams,
+			&self, _candidate: &CandidateRouteHop, _usage: ChannelUsage, _score_params: &lightning::routing::scoring::ProbabilisticScoringFeeParameters
 		) -> u64 {
 			unimplemented!();
 		}

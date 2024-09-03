@@ -1,3 +1,5 @@
+//! Chain sync using the Esplora API
+
 use crate::common::{ConfirmedTx, FilterQueue, SyncState};
 use crate::error::{InternalError, TxSyncError};
 

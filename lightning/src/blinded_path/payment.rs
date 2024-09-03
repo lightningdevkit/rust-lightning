@@ -90,7 +90,7 @@ impl BlindedPaymentPath {
 		// be in relation to a specific channel.
 		let htlc_maximum_msat = u64::max_value();
 		Self::new(
-			&[], payee_node_id, payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta,
+			Vec::new(), payee_node_id, payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta,
 			entropy_source, secp_ctx
 		)
 	}
@@ -103,7 +103,7 @@ impl BlindedPaymentPath {
 	/// * any unknown features are required in the provided [`ForwardTlvs`]
 	//  TODO: make all payloads the same size with padding + add dummy hops
 	pub fn new<ES: Deref, T: secp256k1::Signing + secp256k1::Verification>(
-		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
+		intermediate_nodes: Vec<PaymentForwardNode>, payee_node_id: PublicKey,
 		payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
 		entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, ()> where ES::Target: EntropySource {
@@ -114,14 +114,14 @@ impl BlindedPaymentPath {
 		let blinding_secret = SecretKey::from_slice(&blinding_secret_bytes[..]).expect("RNG is busted");
 
 		let blinded_payinfo = compute_payinfo(
-			intermediate_nodes, &payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
+			&intermediate_nodes, &payee_tlvs, htlc_maximum_msat, min_final_cltv_expiry_delta
 		)?;
 		Ok(Self {
 			inner_path: BlindedPath {
 				introduction_node,
 				blinding_point: PublicKey::from_secret_key(secp_ctx, &blinding_secret),
 				blinded_hops: blinded_hops(
-					secp_ctx, intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
+					secp_ctx, &intermediate_nodes, payee_node_id, payee_tlvs, &blinding_secret
 				).map_err(|_| ())?,
 			},
 			payinfo: blinded_payinfo
@@ -157,13 +157,12 @@ impl BlindedPaymentPath {
 	/// introduction node.
 	///
 	/// Will only modify `self` when returning `Ok`.
-	pub fn advance_path_by_one<NS: Deref, NL: Deref, T>(
+	pub fn advance_path_by_one<NS: Deref, NL: Deref, T: secp256k1::Signing + secp256k1::Verification>(
 		&mut self, node_signer: &NS, node_id_lookup: &NL, secp_ctx: &Secp256k1<T>
 	) -> Result<(), ()>
 	where
 		NS::Target: NodeSigner,
 		NL::Target: NodeIdLookUp,
-		T: secp256k1::Signing + secp256k1::Verification,
 	{
 		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.inner_path.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());

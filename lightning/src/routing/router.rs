@@ -45,32 +45,32 @@ pub use lightning_types::routing::{RouteHint, RouteHintHop};
 ///
 /// Implements [`MessageRouter`] by delegating to [`DefaultMessageRouter`]. See those docs for
 /// privacy implications.
-pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
+pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for <'a> LockableScore<'a>,
 	ES::Target: EntropySource,
 {
 	network_graph: G,
 	logger: L,
 	entropy_source: ES,
 	scorer: S,
-	score_params: SP,
+	score_params: crate::routing::scoring::ProbabilisticScoringFeeParameters,
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> DefaultRouter<G, L, ES, S, SP, Sc> where
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref> DefaultRouter<G, L, ES, S> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for <'a> LockableScore<'a>,
 	ES::Target: EntropySource,
 {
 	/// Creates a new router.
-	pub fn new(network_graph: G, logger: L, entropy_source: ES, scorer: S, score_params: SP) -> Self {
+	pub fn new(network_graph: G, logger: L, entropy_source: ES, scorer: S, score_params: crate::routing::scoring::ProbabilisticScoringFeeParameters) -> Self {
 		Self { network_graph, logger, entropy_source, scorer, score_params }
 	}
 }
 
-impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> Router for DefaultRouter<G, L, ES, S, SP, Sc> where
+impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref> Router for DefaultRouter<G, L, ES, S> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for <'a> LockableScore<'a>,
 	ES::Target: EntropySource,
 {
 	fn find_route(
@@ -160,7 +160,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 			})
 			.map(|forward_node| {
 				BlindedPaymentPath::new(
-					&[forward_node], recipient, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
+					vec![forward_node], recipient, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA,
 					&*self.entropy_source, secp_ctx
 				)
 			})
@@ -172,7 +172,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
 					BlindedPaymentPath::new(
-						&[], recipient, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source,
+						Vec::new(), recipient, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &*self.entropy_source,
 						secp_ctx
 					).map(|path| vec![path])
 				} else {
@@ -183,9 +183,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 	}
 }
 
-impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> MessageRouter for DefaultRouter<G, L, ES, S, SP, Sc> where
+impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref> MessageRouter for DefaultRouter<G, L, ES, S> where
 	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
+	S::Target: for <'a> LockableScore<'a>,
 	ES::Target: EntropySource,
 {
 	fn find_path(
@@ -270,8 +270,9 @@ impl<'a, S: Deref> ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: Scor
 }
 
 impl<'a, S: Deref> ScoreLookUp for ScorerAccountingForInFlightHtlcs<'a, S> where S::Target: ScoreLookUp {
+	#[cfg(not(c_bindings))]
 	type ScoreParams = <S::Target as ScoreLookUp>::ScoreParams;
-	fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams) -> u64 {
+	fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters) -> u64 {
 		let target = match candidate.target() {
 			Some(target) => target,
 			None => return self.scorer.channel_penalty_msat(candidate, usage, score_params),
@@ -2079,7 +2080,7 @@ fn sort_first_hop_channels(
 pub fn find_route<L: Deref, GL: Deref, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters,
 	network_graph: &NetworkGraph<GL>, first_hops: Option<&[&ChannelDetails]>, logger: L,
-	scorer: &S, score_params: &S::ScoreParams, random_seed_bytes: &[u8; 32]
+	scorer: &S, score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters, random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
 where L::Target: Logger, GL::Target: Logger {
 	let graph_lock = network_graph.read_only();
@@ -2091,7 +2092,7 @@ where L::Target: Logger, GL::Target: Logger {
 
 pub(crate) fn get_route<L: Deref, S: ScoreLookUp>(
 	our_node_pubkey: &PublicKey, route_params: &RouteParameters, network_graph: &ReadOnlyNetworkGraph,
-	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S, score_params: &S::ScoreParams,
+	first_hops: Option<&[&ChannelDetails]>, logger: L, scorer: &S, score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters,
 	_random_seed_bytes: &[u8; 32]
 ) -> Result<Route, LightningError>
 where L::Target: Logger {
@@ -2716,7 +2717,7 @@ where L::Target: Logger {
 				}
 
 				let features = if let Some(node_info) = $node.announcement_info.as_ref() {
-					&node_info.features()
+					node_info.features_ref()
 				} else {
 					&default_node_features
 				};
@@ -3509,9 +3510,10 @@ fn build_route_from_hops_internal<L: Deref>(
 	}
 
 	impl ScoreLookUp for HopScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
 		fn channel_penalty_msat(&self, candidate: &CandidateRouteHop,
-			_usage: ChannelUsage, _score_params: &Self::ScoreParams) -> u64
+			_usage: ChannelUsage, _score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters) -> u64
 		{
 			let mut cur_id = self.our_node_id;
 			for i in 0..self.hop_ids.len() {
@@ -7010,8 +7012,9 @@ mod tests {
 		fn write<W: Writer>(&self, _w: &mut W) -> Result<(), crate::io::Error> { unimplemented!() }
 	}
 	impl ScoreLookUp for BadChannelScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
-		fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, _: ChannelUsage, _score_params:&Self::ScoreParams) -> u64 {
+		fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, _: ChannelUsage, _score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters) -> u64 {
 			if candidate.short_channel_id() == Some(self.short_channel_id) { u64::max_value()  } else { 0  }
 		}
 	}
@@ -7026,8 +7029,9 @@ mod tests {
 	}
 
 	impl ScoreLookUp for BadNodeScorer {
+		#[cfg(not(c_bindings))]
 		type ScoreParams = ();
-		fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, _: ChannelUsage, _score_params:&Self::ScoreParams) -> u64 {
+		fn channel_penalty_msat(&self, candidate: &CandidateRouteHop, _: ChannelUsage, _score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters) -> u64 {
 			if candidate.target() == Some(self.node_id) { u64::max_value() } else { 0 }
 		}
 	}
@@ -8817,7 +8821,7 @@ pub(crate) mod bench_utils {
 	}
 
 	pub(crate) fn generate_test_routes<S: ScoreLookUp + ScoreUpdate>(graph: &NetworkGraph<&TestLogger>, scorer: &mut S,
-		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, mut seed: u64,
+		score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters, features: Bolt11InvoiceFeatures, mut seed: u64,
 		starting_amount: u64, route_count: usize,
 	) -> Vec<(ChannelDetails, PaymentParameters, u64)> {
 		let payer = payer_pubkey();
@@ -8947,7 +8951,7 @@ pub mod benches {
 
 	fn generate_routes<S: ScoreLookUp + ScoreUpdate>(
 		bench: &mut Criterion, graph: &NetworkGraph<&TestLogger>, mut scorer: S,
-		score_params: &S::ScoreParams, features: Bolt11InvoiceFeatures, starting_amount: u64,
+		score_params: &crate::routing::scoring::ProbabilisticScoringFeeParameters, features: Bolt11InvoiceFeatures, starting_amount: u64,
 		bench_name: &'static str,
 	) {
 		// First, get 100 (source, destination) pairs for which route-getting actually succeeds...

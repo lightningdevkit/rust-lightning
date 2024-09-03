@@ -850,7 +850,7 @@ pub struct ChannelMonitor<Signer: EcdsaChannelSigner> {
 	pub(super) inner: Mutex<ChannelMonitorImpl<Signer>>,
 }
 
-impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> where Signer: Clone {
+impl<Signer: EcdsaChannelSigner> Clone for ChannelMonitor<Signer> {
 	fn clone(&self) -> Self {
 		let inner = self.inner.lock().unwrap().clone();
 		ChannelMonitor::from_impl(inner)
@@ -4659,8 +4659,8 @@ where
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 
-impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP)>
-		for (BlockHash, ChannelMonitor<SP::EcdsaSigner>) {
+impl<'a, 'b, ES: EntropySource, Signer: EcdsaChannelSigner, SP: SignerProvider<EcdsaSigner=Signer>> ReadableArgs<(&'a ES, &'b SP)>
+		for (BlockHash, ChannelMonitor<Signer>) {
 	fn read<R: io::Read>(reader: &mut R, args: (&'a ES, &'b SP)) -> Result<Self, DecodeError> {
 		macro_rules! unwrap_obj {
 			($key: expr) => {
