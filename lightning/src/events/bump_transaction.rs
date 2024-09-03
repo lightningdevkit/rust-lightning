@@ -582,11 +582,25 @@ where
 			// match, but we still need to have at least one output in the transaction for it to be
 			// considered standard. We choose to go with an empty OP_RETURN as it is the cheapest
 			// way to include a dummy output.
-			log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
-			tx.output.push(TxOut {
-				value: Amount::ZERO,
-				script_pubkey: ScriptBuf::new_op_return(&[]),
-			});
+			if tx.input.len() <= 1 {
+				// Transactions have to be at least 65 bytes in non-witness data, which we can run
+				// under if we have too few witness inputs.
+				log_debug!(self.logger, "Including large OP_RETURN output since an output is needed and a change output was not provided and the transaction is small");
+				debug_assert!(!tx.input.is_empty());
+				tx.output.push(TxOut {
+					value: Amount::ZERO,
+					// Minimum transaction size is 60 bytes, so we need a 5-byte script to get a
+					// 65 byte transaction. We do that as OP_RETURN <3 0 bytes, plus 1 byte len>.
+					script_pubkey: ScriptBuf::new_op_return(&[0, 0, 0]),
+				});
+				debug_assert_eq!(tx.base_size(), 65);
+			} else {
+				log_debug!(self.logger, "Including dummy OP_RETURN output since an output is needed and a change output was not provided");
+				tx.output.push(TxOut {
+					value: Amount::ZERO,
+					script_pubkey: ScriptBuf::new_op_return(&[]),
+				});
+			}
 		}
 	}
 
@@ -603,85 +617,102 @@ where
 		let mut anchor_utxo = anchor_descriptor.previous_utxo();
 		let commitment_tx_fee_sat = Amount::from_sat(commitment_tx_fee_sat);
 		anchor_utxo.value += commitment_tx_fee_sat;
-		let must_spend = vec![Input {
-			outpoint: anchor_descriptor.outpoint,
-			previous_utxo: anchor_utxo,
-			satisfaction_weight: commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT,
-		}];
-		#[cfg(debug_assertions)]
-		let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value).sum::<Amount>();
+		let starting_package_and_fixed_input_satisfaction_weight =
+			commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
+		let mut package_and_fixed_input_satisfaction_weight =
+			starting_package_and_fixed_input_satisfaction_weight;
 
-		log_debug!(self.logger, "Performing coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
-			package_target_feerate_sat_per_1000_weight);
-		let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
-			claim_id, must_spend, &[], package_target_feerate_sat_per_1000_weight,
-		)?;
+		loop {
+			let must_spend = vec![Input {
+				outpoint: anchor_descriptor.outpoint,
+				previous_utxo: anchor_utxo.clone(),
+				satisfaction_weight: package_and_fixed_input_satisfaction_weight,
+			}];
+			let must_spend_amount = must_spend.iter().map(|input| input.previous_utxo.value).sum::<Amount>();
 
-		let mut anchor_tx = Transaction {
-			version: Version::TWO,
-			lock_time: LockTime::ZERO, // TODO: Use next best height.
-			input: vec![anchor_descriptor.unsigned_tx_input()],
-			output: vec![],
-		};
+			log_debug!(self.logger, "Performing coin selection for commitment package (commitment and anchor transaction) targeting {} sat/kW",
+				package_target_feerate_sat_per_1000_weight);
+			let coin_selection: CoinSelection = self.utxo_source.select_confirmed_utxos(
+				claim_id, must_spend, &[], package_target_feerate_sat_per_1000_weight,
+			)?;
 
-		#[cfg(debug_assertions)]
-		let total_satisfaction_weight = ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT +
-			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>();
-		#[cfg(debug_assertions)]
-		let total_input_amount = must_spend_amount +
-			coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
+			let mut anchor_tx = Transaction {
+				version: Version::TWO,
+				lock_time: LockTime::ZERO, // TODO: Use next best height.
+				input: vec![anchor_descriptor.unsigned_tx_input()],
+				output: vec![],
+			};
 
-		self.process_coin_selection(&mut anchor_tx, &coin_selection);
-		let anchor_txid = anchor_tx.compute_txid();
+			let total_satisfaction_weight = ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT +
+				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.satisfaction_weight).sum::<u64>();
+			let total_input_amount = must_spend_amount +
+				coin_selection.confirmed_utxos.iter().map(|utxo| utxo.output.value).sum();
 
-		// construct psbt
-		let mut anchor_psbt = Psbt::from_unsigned_tx(anchor_tx).unwrap();
-		// add witness_utxo to anchor input
-		anchor_psbt.inputs[0].witness_utxo = Some(anchor_descriptor.previous_utxo());
-		// add witness_utxo to remaining inputs
-		for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
-			// add 1 to skip the anchor input
-			let index = idx + 1;
-			debug_assert_eq!(anchor_psbt.unsigned_tx.input[index].previous_output, utxo.outpoint);
-			if utxo.output.script_pubkey.is_witness_program() {
-				anchor_psbt.inputs[index].witness_utxo = Some(utxo.output);
+			self.process_coin_selection(&mut anchor_tx, &coin_selection);
+			let anchor_txid = anchor_tx.compute_txid();
+
+			// construct psbt
+			let mut anchor_psbt = Psbt::from_unsigned_tx(anchor_tx).unwrap();
+			// add witness_utxo to anchor input
+			anchor_psbt.inputs[0].witness_utxo = Some(anchor_descriptor.previous_utxo());
+			// add witness_utxo to remaining inputs
+			for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
+				// add 1 to skip the anchor input
+				let index = idx + 1;
+				debug_assert_eq!(anchor_psbt.unsigned_tx.input[index].previous_output, utxo.outpoint);
+				if utxo.output.script_pubkey.is_witness_program() {
+					anchor_psbt.inputs[index].witness_utxo = Some(utxo.output);
+				}
 			}
-		}
 
-		debug_assert_eq!(anchor_psbt.unsigned_tx.output.len(), 1);
-		#[cfg(debug_assertions)]
-		let unsigned_tx_weight = anchor_psbt.unsigned_tx.weight().to_wu() - (anchor_psbt.unsigned_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
+			debug_assert_eq!(anchor_psbt.unsigned_tx.output.len(), 1);
+			let unsigned_tx_weight = anchor_psbt.unsigned_tx.weight().to_wu() - (anchor_psbt.unsigned_tx.input.len() as u64 * EMPTY_SCRIPT_SIG_WEIGHT);
 
-		log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
-		anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
-
-		let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
-		let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
-		anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
-
-		#[cfg(debug_assertions)] {
-			let signed_tx_weight = anchor_tx.weight().to_wu();
-			let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
-			// Our estimate should be within a 1% error margin of the actual weight and we should
-			// never underestimate.
-			assert!(expected_signed_tx_weight >= signed_tx_weight &&
-				expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
-
-			let expected_package_fee = Amount::from_sat(fee_for_weight(package_target_feerate_sat_per_1000_weight,
-				signed_tx_weight + commitment_tx.weight().to_wu()));
 			let package_fee = total_input_amount -
-				anchor_tx.output.iter().map(|output| output.value).sum();
-			// Our fee should be within a 5% error margin of the expected fee based on the
-			// feerate and transaction weight and we should never pay less than required.
-			let fee_error_margin = expected_package_fee * 5 / 100;
-			assert!(package_fee >= expected_package_fee &&
-				package_fee - fee_error_margin <= expected_package_fee);
-		}
+				anchor_psbt.unsigned_tx.output.iter().map(|output| output.value).sum();
+			let package_weight = unsigned_tx_weight + 2 /* wit marker */ + total_satisfaction_weight + commitment_tx.weight().to_wu();
+			if package_fee.to_sat() * 1000 / package_weight < package_target_feerate_sat_per_1000_weight.into() {
+				// On the first iteration of the loop, we may undershoot the target feerate because
+				// we had to add an OP_RETURN output in `process_coin_selection` which we didn't
+				// select sufficient coins for. Here we detect that case and go around again
+				// seeking additional weight.
+				if package_and_fixed_input_satisfaction_weight == starting_package_and_fixed_input_satisfaction_weight {
+					debug_assert!(anchor_psbt.unsigned_tx.output[0].script_pubkey.is_op_return(),
+						"Coin selection failed to select sufficient coins for its change output");
+					package_and_fixed_input_satisfaction_weight += anchor_psbt.unsigned_tx.output[0].weight().to_wu();
+					continue;
+				} else {
+					debug_assert!(false, "Coin selection failed to select sufficient coins");
+				}
+			}
 
-		log_info!(self.logger, "Broadcasting anchor transaction {} to bump channel close with txid {}",
-			anchor_txid, commitment_tx.compute_txid());
-		self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
-		Ok(())
+			log_debug!(self.logger, "Signing anchor transaction {}", anchor_txid);
+			anchor_tx = self.utxo_source.sign_psbt(anchor_psbt)?;
+
+			let signer = anchor_descriptor.derive_channel_signer(&self.signer_provider);
+			let anchor_sig = signer.sign_holder_anchor_input(&anchor_tx, 0, &self.secp)?;
+			anchor_tx.input[0].witness = anchor_descriptor.tx_input_witness(&anchor_sig);
+
+			#[cfg(debug_assertions)] {
+				let signed_tx_weight = anchor_tx.weight().to_wu();
+				let expected_signed_tx_weight = unsigned_tx_weight + 2 /* wit marker */ + total_satisfaction_weight;
+				// Our estimate should be within a 1% error margin of the actual weight and we should
+				// never underestimate.
+				assert!(expected_signed_tx_weight >= signed_tx_weight &&
+					expected_signed_tx_weight - (expected_signed_tx_weight / 100) <= signed_tx_weight);
+
+				let expected_package_fee = Amount::from_sat(fee_for_weight(package_target_feerate_sat_per_1000_weight,
+					signed_tx_weight + commitment_tx.weight().to_wu()));
+				// Our feerate should always be at least what we were seeking. It may overshoot if
+				// the coin selector burned funds to an OP_RETURN without a change output.
+				assert!(package_fee >= expected_package_fee);
+			}
+
+			log_info!(self.logger, "Broadcasting anchor transaction {} to bump channel close with txid {}",
+				anchor_txid, commitment_tx.compute_txid());
+			self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
+			return Ok(());
+		}
 	}
 
 	/// Handles a [`BumpTransactionEvent::HTLCResolution`] event variant by producing a
@@ -778,11 +809,9 @@ where
 			let expected_signed_tx_fee = fee_for_weight(target_feerate_sat_per_1000_weight, signed_tx_weight);
 			let signed_tx_fee = total_input_amount -
 				htlc_tx.output.iter().map(|output| output.value.to_sat()).sum::<u64>();
-			// Our fee should be within a 5% error margin of the expected fee based on the
-			// feerate and transaction weight and we should never pay less than required.
-			let fee_error_margin = expected_signed_tx_fee * 5 / 100;
-			assert!(signed_tx_fee >= expected_signed_tx_fee &&
-				signed_tx_fee - fee_error_margin <= expected_signed_tx_fee);
+			// Our feerate should always be at least what we were seeking. It may overshoot if
+			// the coin selector burned funds to an OP_RETURN without a change output.
+			assert!(signed_tx_fee >= expected_signed_tx_fee);
 		}
 
 		log_info!(self.logger, "Broadcasting {}", log_tx!(htlc_tx));
@@ -820,5 +849,118 @@ where
 				}
 			}
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	use crate::io::Cursor;
+	use crate::ln::chan_utils::ChannelTransactionParameters;
+	use crate::util::ser::Readable;
+	use crate::util::test_utils::{TestBroadcaster, TestLogger};
+	use crate::sign::KeysManager;
+
+	use bitcoin::hashes::Hash;
+	use bitcoin::hex::FromHex;
+	use bitcoin::{Network, ScriptBuf, Transaction, Txid};
+
+	struct TestCoinSelectionSource {
+		// (commitment + anchor value, commitment + input weight, target feerate, result)
+		expected_selects: Mutex<Vec<(u64, u64, u32, CoinSelection)>>,
+	}
+	impl CoinSelectionSource for TestCoinSelectionSource {
+		fn select_confirmed_utxos(
+			&self,
+			_claim_id: ClaimId,
+			must_spend: Vec<Input>,
+			_must_pay_to: &[TxOut],
+			target_feerate_sat_per_1000_weight: u32
+		) -> Result<CoinSelection, ()> {
+			let mut expected_selects = self.expected_selects.lock().unwrap();
+			let (weight, value, feerate, res) = expected_selects.remove(0);
+			assert_eq!(must_spend.len(), 1);
+			assert_eq!(must_spend[0].satisfaction_weight, weight);
+			assert_eq!(must_spend[0].previous_utxo.value.to_sat(), value);
+			assert_eq!(target_feerate_sat_per_1000_weight, feerate);
+			Ok(res)
+		}
+		fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
+			let mut tx = psbt.unsigned_tx;
+			for input in tx.input.iter_mut() {
+				if input.previous_output.txid != Txid::from_byte_array([44; 32]) {
+					// Channel output, add a realistic size witness to make the assertions happy
+					input.witness = Witness::from_slice(&[vec![42; 162]]);
+				}
+			}
+			Ok(tx)
+		}
+	}
+
+	impl Drop for TestCoinSelectionSource {
+		fn drop(&mut self) {
+			assert!(self.expected_selects.lock().unwrap().is_empty());
+		}
+	}
+
+	#[test]
+	fn test_op_return_under_funds() {
+		// Test what happens if we have to select coins but the anchor output value itself suffices
+		// to pay the required fee.
+		//
+		// This tests a case that occurred on mainnet (with the below transaction) where the target
+		// feerate (of 868 sat/kW) was met by the anchor output's 330 sats alone. This caused the
+		// use of an OP_RETURN which created a transaction which, at the time, was less than 64
+		// bytes long (the current code generates a 65 byte transaction instead to meet
+		// standardness rule). It also tests the handling of selection failure where we selected
+		// coins which were insufficient once the OP_RETURN output was added, causing us to need to
+		// select coins again with additional weight.
+
+		// Tx 18032ad172a5f28fa6e16392d6cc57ea47895781434ce15d03766cc47a955fb9
+		let commitment_tx_bytes = Vec::<u8>::from_hex("02000000000101cc6b0a9dd84b52c07340fff6fab002fc37b4bdccfdce9f39c5ec8391a56b652907000000009b948b80044a01000000000000220020b4182433fdfdfbf894897c98f84d92cec815cee222755ffd000ae091c9dadc2d4a01000000000000220020f83f7dbf90e2de325b5bb6bab0ae370151278c6964739242b2e7ce0cb68a5d81cb4a02000000000022002024add256b3dccee772610caef82a601045ab6f98fd6d5df608cc756b891ccfe63ffa490000000000220020894bf32b37906a643625e87131897c3714c71b3ac9b161862c9aa6c8d468b4c70400473044022060abd347bff2cca0212b660e6addff792b3356bd4a1b5b26672dc2e694c3c5f002202b40b7e346b494a7b1d048b4ec33ba99c90a09ab48eb1df64ccdc768066c865c014730440220554d8361e04dc0ee178dcb23d2d23f53ec7a1ae4312a5be76bd9e83ab8981f3d0220501f23ffb18cb81ccea72d30252f88d5e69fd28ba4992803d03c00d06fa8899e0147522102817f6ce189ab7114f89e8d5df58cdbbaf272dc8e71b92982d47456a0b6a0ceee2102c9b4d2f24aca54f65e13f4c83e2a8d8e877e12d3c71a76e81f28a5cabc652aa352ae626c7620").unwrap();
+		let commitment_tx: Transaction = Readable::read(&mut Cursor::new(&commitment_tx_bytes)).unwrap();
+		let total_commitment_weight = commitment_tx.weight().to_wu() + ANCHOR_INPUT_WITNESS_WEIGHT + EMPTY_SCRIPT_SIG_WEIGHT;
+		let commitment_and_anchor_fee = 930 + 330;
+		let op_return_weight = TxOut {
+			value: Amount::ZERO,
+			script_pubkey: ScriptBuf::new_op_return(&[0; 3]),
+		}.weight().to_wu();
+
+		let broadcaster = TestBroadcaster::new(Network::Testnet);
+		let source = TestCoinSelectionSource {
+			expected_selects: Mutex::new(vec![
+				(total_commitment_weight, commitment_and_anchor_fee, 868, CoinSelection { confirmed_utxos: Vec::new(), change_output: None }),
+				(total_commitment_weight + op_return_weight, commitment_and_anchor_fee, 868, CoinSelection {
+					confirmed_utxos: vec![Utxo {
+						outpoint: OutPoint { txid: Txid::from_byte_array([44; 32]), vout: 0 },
+						output: TxOut { value: Amount::from_sat(200), script_pubkey: ScriptBuf::new() },
+						satisfaction_weight: 5, // Just the script_sig and witness lengths
+					}],
+					change_output: None,
+				})
+			]),
+		};
+		let signer = KeysManager::new(&[42; 32], 42, 42);
+		let logger = TestLogger::new();
+		let handler = BumpTransactionEventHandler::new(&broadcaster, &source, &signer, &logger);
+
+		handler.handle_event(&BumpTransactionEvent::ChannelClose {
+			channel_id: ChannelId([42; 32]),
+			counterparty_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+			claim_id: ClaimId([42; 32]),
+			package_target_feerate_sat_per_1000_weight: 868,
+			commitment_tx_fee_satoshis: 930,
+			commitment_tx,
+			anchor_descriptor: AnchorDescriptor {
+				channel_derivation_parameters: ChannelDerivationParameters {
+					value_satoshis: 42_000_000,
+					keys_id: [42; 32],
+					transaction_parameters: ChannelTransactionParameters::test_dummy(),
+				},
+				outpoint: OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 },
+			},
+			pending_htlcs: Vec::new(),
+		});
 	}
 }

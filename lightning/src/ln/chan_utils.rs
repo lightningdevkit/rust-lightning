@@ -68,7 +68,12 @@ pub(crate) const MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 136;
 pub const MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 143;
 
 /// The upper bound weight of an anchor input.
-pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 116;
+#[cfg(feature = "grind_signatures")]
+pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 114;
+/// The upper bound weight of an anchor input.
+#[cfg(not(feature = "grind_signatures"))]
+pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 115;
+
 /// The upper bound weight of an HTLC timeout input from a commitment transaction with anchor
 /// outputs.
 pub const HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 288;
@@ -920,6 +925,30 @@ impl ChannelTransactionParameters {
 		DirectedChannelTransactionParameters {
 			inner: self,
 			holder_is_broadcaster: false
+		}
+	}
+
+	#[cfg(test)]
+	pub fn test_dummy() -> Self {
+		let dummy_keys = ChannelPublicKeys {
+			funding_pubkey: PublicKey::from_slice(&[2; 33]).unwrap(),
+			revocation_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
+			payment_point: PublicKey::from_slice(&[2; 33]).unwrap(),
+			delayed_payment_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
+			htlc_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
+		};
+		Self {
+			holder_pubkeys: dummy_keys.clone(),
+			holder_selected_contest_delay: 42,
+			is_outbound_from_holder: true,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: dummy_keys,
+				selected_contest_delay: 42,
+			}),
+			funding_outpoint: Some(chain::transaction::OutPoint {
+				txid: Txid::from_byte_array([42; 32]), index: 0
+			}),
+			channel_type_features: ChannelTypeFeatures::empty(),
 		}
 	}
 }
