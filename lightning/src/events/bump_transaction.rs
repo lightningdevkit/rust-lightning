@@ -670,7 +670,7 @@ where
 
 			let package_fee = total_input_amount -
 				anchor_psbt.unsigned_tx.output.iter().map(|output| output.value).sum();
-			let package_weight = unsigned_tx_weight + total_satisfaction_weight + commitment_tx.weight().to_wu();
+			let package_weight = unsigned_tx_weight + 2 /* wit marker */ + total_satisfaction_weight + commitment_tx.weight().to_wu();
 			if package_fee.to_sat() * 1000 / package_weight < package_target_feerate_sat_per_1000_weight.into() {
 				// On the first iteration of the loop, we may undershoot the target feerate because
 				// we had to add an OP_RETURN output in `process_coin_selection` which we didn't
@@ -695,7 +695,7 @@ where
 
 			#[cfg(debug_assertions)] {
 				let signed_tx_weight = anchor_tx.weight().to_wu();
-				let expected_signed_tx_weight = unsigned_tx_weight + total_satisfaction_weight;
+				let expected_signed_tx_weight = unsigned_tx_weight + 2 /* wit marker */ + total_satisfaction_weight;
 				// Our estimate should be within a 1% error margin of the actual weight and we should
 				// never underestimate.
 				assert!(expected_signed_tx_weight >= signed_tx_weight &&

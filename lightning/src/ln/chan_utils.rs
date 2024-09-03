@@ -68,7 +68,12 @@ pub(crate) const MIN_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 136;
 pub const MAX_ACCEPTED_HTLC_SCRIPT_WEIGHT: usize = 143;
 
 /// The upper bound weight of an anchor input.
-pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 116;
+#[cfg(feature = "grind_signatures")]
+pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 114;
+/// The upper bound weight of an anchor input.
+#[cfg(not(feature = "grind_signatures"))]
+pub const ANCHOR_INPUT_WITNESS_WEIGHT: u64 = 115;
+
 /// The upper bound weight of an HTLC timeout input from a commitment transaction with anchor
 /// outputs.
 pub const HTLC_TIMEOUT_INPUT_ANCHOR_WITNESS_WEIGHT: u64 = 288;
