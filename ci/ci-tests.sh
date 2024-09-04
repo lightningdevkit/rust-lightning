@@ -30,11 +30,31 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 
 export RUST_BACKTRACE=1
 
-echo -e "\n\nBuilding and testing all workspace crates..."
-cargo test --verbose --color always
+echo -e "\n\nChecking the full workspace."
 cargo check --verbose --color always
 
-echo -e "\n\nBuilding and testing Block Sync Clients with features"
+WORKSPACE_MEMBERS=(
+	lightning
+	lightning-types
+	lightning-block-sync
+	lightning-invoice
+	lightning-net-tokio
+	lightning-persister
+	lightning-background-processor
+	lightning-rapid-gossip-sync
+	lightning-custom-message
+	lightning-transaction-sync
+	possiblyrandom
+)
+
+echo -e "\n\nChecking, testing, and building docs for all workspace members individually..."
+for DIR in "${WORKSPACE_MEMBERS[@]}"; do
+	cargo test -p "$DIR" --verbose --color always
+	cargo check -p "$DIR" --verbose --color always
+	cargo doc -p "$DIR" --document-private-items
+done
+
+echo -e "\n\nChecking and testing Block Sync Clients with features"
 
 cargo test -p lightning-block-sync --verbose --color always --features rest-client
 cargo check -p lightning-block-sync --verbose --color always --features rest-client
