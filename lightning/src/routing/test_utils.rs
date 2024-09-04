@@ -32,7 +32,8 @@ pub(crate) fn add_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_1_privkey: &SecretKey, node_2_privkey: &SecretKey, features: ChannelFeatures, short_channel_id: u64
 ) {
-	let node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
+	let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+	let node_id_1 = NodeId::from_pubkey(&node_1_pubkey);
 	let node_id_2 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_2_privkey));
 
 	let unsigned_announcement = UnsignedChannelAnnouncement {
@@ -54,7 +55,7 @@ pub(crate) fn add_channel(
 		bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_privkey),
 		contents: unsigned_announcement.clone(),
 	};
-	match gossip_sync.handle_channel_announcement(&valid_announcement) {
+	match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 		Ok(res) => assert!(res),
 		_ => panic!()
 	};
@@ -64,7 +65,8 @@ pub(crate) fn add_or_update_node(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, features: NodeFeatures, timestamp: u32
 ) {
-	let node_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_privkey));
+	let node_pubkey = PublicKey::from_secret_key(&secp_ctx, node_privkey);
+	let node_id = NodeId::from_pubkey(&node_pubkey);
 	let unsigned_announcement = UnsignedNodeAnnouncement {
 		features,
 		timestamp,
@@ -81,7 +83,7 @@ pub(crate) fn add_or_update_node(
 		contents: unsigned_announcement.clone()
 	};
 
-	match gossip_sync.handle_node_announcement(&valid_announcement) {
+	match gossip_sync.handle_node_announcement(Some(&node_pubkey), &valid_announcement) {
 		Ok(_) => (),
 		Err(_) => panic!()
 	};
@@ -91,13 +93,14 @@ pub(crate) fn update_channel(
 	gossip_sync: &P2PGossipSync<Arc<NetworkGraph<Arc<test_utils::TestLogger>>>, Arc<test_utils::TestChainSource>, Arc<test_utils::TestLogger>>,
 	secp_ctx: &Secp256k1<All>, node_privkey: &SecretKey, update: UnsignedChannelUpdate
 ) {
+	let node_pubkey = PublicKey::from_secret_key(&secp_ctx, node_privkey);
 	let msghash = hash_to_message!(&Sha256dHash::hash(&update.encode()[..])[..]);
 	let valid_channel_update = ChannelUpdate {
 		signature: secp_ctx.sign_ecdsa(&msghash, node_privkey),
 		contents: update.clone()
 	};
 
-	match gossip_sync.handle_channel_update(&valid_channel_update) {
+	match gossip_sync.handle_channel_update(Some(&node_pubkey), &valid_channel_update) {
 		Ok(res) => assert!(res),
 		Err(_) => panic!()
 	};

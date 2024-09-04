@@ -134,9 +134,10 @@ fn announce_node_address<'a, 'b, 'c>(
 		contents: announcement
 	};
 
-	node.gossip_sync.handle_node_announcement(&msg).unwrap();
+	let node_pubkey = node.node.get_our_node_id();
+	node.gossip_sync.handle_node_announcement(None, &msg).unwrap();
 	for peer in peers {
-		peer.gossip_sync.handle_node_announcement(&msg).unwrap();
+		peer.gossip_sync.handle_node_announcement(Some(&node_pubkey), &msg).unwrap();
 	}
 }
 

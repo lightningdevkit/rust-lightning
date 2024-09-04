@@ -1501,14 +1501,16 @@ pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(nodes: &
 
 pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, ann: &msgs::ChannelAnnouncement, upd_1: &msgs::ChannelUpdate, upd_2: &msgs::ChannelUpdate) {
 	for node in nodes {
-		assert!(node.gossip_sync.handle_channel_announcement(ann).unwrap());
-		node.gossip_sync.handle_channel_update(upd_1).unwrap();
-		node.gossip_sync.handle_channel_update(upd_2).unwrap();
+		let node_id_a = nodes[a].node.get_our_node_id();
+		let node_id_b = nodes[b].node.get_our_node_id();
+		assert!(node.gossip_sync.handle_channel_announcement(None, ann).unwrap());
+		node.gossip_sync.handle_channel_update(Some(&node_id_a), upd_1).unwrap();
+		node.gossip_sync.handle_channel_update(Some(&node_id_b), upd_2).unwrap();
 
 		// Note that channel_updates are also delivered to ChannelManagers to ensure we have
 		// forwarding info for local channels even if its not accepted in the network graph.
-		node.node.handle_channel_update(&nodes[a].node.get_our_node_id(), &upd_1);
-		node.node.handle_channel_update(&nodes[b].node.get_our_node_id(), &upd_2);
+		node.node.handle_channel_update(&node_id_a, &upd_1);
+		node.node.handle_channel_update(&node_id_b, &upd_2);
 	}
 }
 
@@ -3512,9 +3514,10 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(nodes: &Vec<Node<'a, '
 	if dummy_connected {
 		disconnect_dummy_node(&nodes[b]);
 	}
+	let node_id_a = nodes[a].node.get_our_node_id();
 	for node in nodes {
-		node.gossip_sync.handle_channel_update(&as_update).unwrap();
-		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
+		node.gossip_sync.handle_channel_update(Some(&node_id_a), &as_update).unwrap();
+		node.gossip_sync.handle_channel_update(Some(&node_id_a), &bs_update).unwrap();
 	}
 }
 
