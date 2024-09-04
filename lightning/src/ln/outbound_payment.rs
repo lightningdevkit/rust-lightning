@@ -829,7 +829,7 @@ impl OutboundPayments {
 				PendingOutboundPayment::AwaitingInvoice {
 					retry_strategy: retry, max_total_routing_fee_msat: max_total_fee, ..
 				} => {
-					retry_strategy = Some(*retry);
+					retry_strategy = *retry;
 					max_total_routing_fee_msat = *max_total_fee;
 					*entry.into_mut() = PendingOutboundPayment::InvoiceReceived {
 						payment_hash,
@@ -849,11 +849,41 @@ impl OutboundPayments {
 			return Err(Bolt12PaymentError::UnknownRequiredFeatures);
 		}
 
-		let mut payment_params = PaymentParameters::from_bolt12_invoice(&invoice);
+		let mut route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_bolt12_invoice(&invoice), invoice.amount_msats()
+		);
+		if let Some(max_fee_msat) = max_total_routing_fee_msat {
+			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
+		}
+		self.send_payment_for_bolt12_invoice_internal(
+			payment_id, payment_hash, route_params, retry_strategy, router, first_hops, inflight_htlcs,
+			entropy_source, node_signer, node_id_lookup, secp_ctx, best_block_height, logger,
+			pending_events, send_payment_along_path
+		)
+	}
 
+	fn send_payment_for_bolt12_invoice_internal<
+		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
+	>(
+		&self, payment_id: PaymentId, payment_hash: PaymentHash, mut route_params: RouteParameters,
+		retry_strategy: Retry, router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH,
+		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		send_payment_along_path: SP,
+	) -> Result<(), Bolt12PaymentError>
+	where
+		R::Target: Router,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		NL::Target: NodeIdLookUp,
+		L::Target: Logger,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
+	{
 		// Advance any blinded path where the introduction node is our node.
 		if let Ok(our_node_id) = node_signer.get_node_id(Recipient::Node) {
-			for path in payment_params.payee.blinded_route_hints_mut().iter_mut() {
+			for path in route_params.payment_params.payee.blinded_route_hints_mut().iter_mut() {
 				let introduction_node_id = match path.introduction_node() {
 					IntroductionNode::NodeId(pubkey) => *pubkey,
 					IntroductionNode::DirectedShortChannelId(direction, scid) => {
@@ -867,15 +897,6 @@ impl OutboundPayments {
 					let _ = path.advance_path_by_one(node_signer, node_id_lookup, secp_ctx);
 				}
 			}
-		}
-
-		let amount_msat = invoice.amount_msats();
-		let mut route_params = RouteParameters::from_payment_params_and_value(
-			payment_params, amount_msat
-		);
-
-		if let Some(max_fee_msat) = max_total_routing_fee_msat {
-			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
 		}
 
 		let recipient_onion = RecipientOnionFields {
@@ -902,8 +923,8 @@ impl OutboundPayments {
 
 		let payment_params = Some(route_params.payment_params.clone());
 		let (retryable_payment, onion_session_privs) = self.create_pending_payment(
-			payment_hash, recipient_onion.clone(), None, &route,
-			retry_strategy, payment_params, entropy_source, best_block_height
+			payment_hash, recipient_onion.clone(), None, &route, Some(retry_strategy), payment_params,
+			entropy_source, best_block_height
 		);
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
