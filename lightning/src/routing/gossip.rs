@@ -484,19 +484,19 @@ pub fn verify_channel_announcement<C: Verification>(msg: &ChannelAnnouncement, s
 impl<G: Deref<Target=NetworkGraph<L>>, U: Deref, L: Deref> RoutingMessageHandler for P2PGossipSync<G, U, L>
 where U::Target: UtxoLookup, L::Target: Logger
 {
-	fn handle_node_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
+	fn handle_node_announcement(&self, _their_node_id: Option<&PublicKey>, msg: &msgs::NodeAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.update_node_from_announcement(msg)?;
 		Ok(msg.contents.excess_data.len() <=  MAX_EXCESS_BYTES_FOR_RELAY &&
 		   msg.contents.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY &&
 		   msg.contents.excess_data.len() + msg.contents.excess_address_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
-	fn handle_channel_announcement(&self, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
+	fn handle_channel_announcement(&self, _their_node_id: Option<&PublicKey>, msg: &msgs::ChannelAnnouncement) -> Result<bool, LightningError> {
 		self.network_graph.update_channel_from_announcement(msg, &*self.utxo_lookup.read().unwrap())?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
 
-	fn handle_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
+	fn handle_channel_update(&self, _their_node_id: Option<&PublicKey>, msg: &msgs::ChannelUpdate) -> Result<bool, LightningError> {
 		self.network_graph.update_channel(msg)?;
 		Ok(msg.contents.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY)
 	}
@@ -2544,11 +2544,12 @@ pub(crate) mod tests {
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
 
 		let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
-		match gossip_sync.handle_node_announcement(&valid_announcement) {
+		match gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!("No existing channels for node_announcement", e.err)
 		};
@@ -2556,19 +2557,20 @@ pub(crate) mod tests {
 		{
 			// Announce a channel to add a corresponding node.
 			let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-			match gossip_sync.handle_channel_announcement(&valid_announcement) {
+			match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 				Ok(res) => assert!(res),
 				_ => panic!()
 			};
 		}
 
-		match gossip_sync.handle_node_announcement(&valid_announcement) {
+		match gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(res) => assert!(res),
 			Err(_) => panic!()
 		};
 
 		let fake_msghash = hash_to_message!(zero_hash.as_byte_array());
 		match gossip_sync.handle_node_announcement(
+			Some(&node_1_pubkey),
 			&NodeAnnouncement {
 				signature: secp_ctx.sign_ecdsa(&fake_msghash, node_1_privkey),
 				contents: valid_announcement.contents.clone()
@@ -2582,7 +2584,7 @@ pub(crate) mod tests {
 			unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		}, node_1_privkey, &secp_ctx);
 		// Return false because contains excess data.
-		match gossip_sync.handle_node_announcement(&announcement_with_data) {
+		match gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &announcement_with_data) {
 			Ok(res) => assert!(!res),
 			Err(_) => panic!()
 		};
@@ -2592,7 +2594,7 @@ pub(crate) mod tests {
 		let outdated_announcement = get_signed_node_announcement(|unsigned_announcement| {
 			unsigned_announcement.timestamp += 1000 - 10;
 		}, node_1_privkey, &secp_ctx);
-		match gossip_sync.handle_node_announcement(&outdated_announcement) {
+		match gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &outdated_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Update older than last processed update")
 		};
@@ -2604,6 +2606,7 @@ pub(crate) mod tests {
 		let logger = test_utils::TestLogger::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
 		let good_script = get_channel_script(&secp_ctx);
@@ -2612,7 +2615,7 @@ pub(crate) mod tests {
 		// Test if the UTXO lookups were not supported
 		let network_graph = NetworkGraph::new(Network::Testnet, &logger);
 		let mut gossip_sync = P2PGossipSync::new(&network_graph, None, &logger);
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
@@ -2626,7 +2629,7 @@ pub(crate) mod tests {
 
 		// If we receive announcement for the same channel (with UTXO lookups disabled),
 		// drop new one on the floor, since we can't see any changes.
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Already have non-chain-validated channel")
 		};
@@ -2640,7 +2643,7 @@ pub(crate) mod tests {
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.short_channel_id += 1;
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announced without corresponding UTXO entry")
 		};
@@ -2651,7 +2654,7 @@ pub(crate) mod tests {
 		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.short_channel_id += 2;
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
@@ -2667,7 +2670,7 @@ pub(crate) mod tests {
 		// chain, we simply ignore all new (duplicate) announcements.
 		*chain_source.utxo_ret.lock().unwrap() =
 			UtxoResult::Sync(Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script }));
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Already have chain-validated channel")
 		};
@@ -2684,7 +2687,7 @@ pub(crate) mod tests {
 			let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 				unsigned_announcement.short_channel_id += 3;
 			}, node_1_privkey, node_2_privkey, &secp_ctx);
-			match gossip_sync.handle_channel_announcement(&valid_announcement) {
+			match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 				Ok(_) => panic!(),
 				Err(e) => assert_eq!(e.err, "Channel with SCID 3 or one of its nodes was removed from our network graph recently")
 			}
@@ -2692,7 +2695,7 @@ pub(crate) mod tests {
 			gossip_sync.network_graph().remove_stale_channels_and_tracking_with_time(tracking_time + REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS);
 
 			// The above channel announcement should be handled as per normal now.
-			match gossip_sync.handle_channel_announcement(&valid_announcement) {
+			match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 				Ok(res) => assert!(res),
 				_ => panic!()
 			}
@@ -2703,20 +2706,20 @@ pub(crate) mod tests {
 			unsigned_announcement.short_channel_id += 4;
 			unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(res) => assert!(!res),
 			_ => panic!()
 		};
 
 		let mut invalid_sig_announcement = valid_announcement.clone();
 		invalid_sig_announcement.contents.excess_data = Vec::new();
-		match gossip_sync.handle_channel_announcement(&invalid_sig_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &invalid_sig_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature on channel_announcement message")
 		};
 
 		let channel_to_itself_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_1_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_announcement(&channel_to_itself_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &channel_to_itself_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announcement node had a channel with itself")
 		};
@@ -2726,7 +2729,7 @@ pub(crate) mod tests {
 		let incorrect_chain_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.chain_hash = ChainHash::using_genesis_block(Network::Bitcoin);
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_announcement(&incorrect_chain_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &incorrect_chain_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel announcement chain hash does not match genesis hash")
 		};
@@ -2741,6 +2744,7 @@ pub(crate) mod tests {
 		let gossip_sync = P2PGossipSync::new(&network_graph, Some(&chain_source), &logger);
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
 		let amount_sats = Amount::from_sat(1000_000);
@@ -2754,7 +2758,7 @@ pub(crate) mod tests {
 
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;
-			match gossip_sync.handle_channel_announcement(&valid_channel_announcement) {
+			match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_channel_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
@@ -2763,7 +2767,7 @@ pub(crate) mod tests {
 
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 		network_graph.verify_channel_update(&valid_channel_update).unwrap();
-		match gossip_sync.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update) {
 			Ok(res) => assert!(res),
 			_ => panic!(),
 		};
@@ -2783,7 +2787,7 @@ pub(crate) mod tests {
 			unsigned_channel_update.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		}, node_1_privkey, &secp_ctx);
 		// Return false because contains excess data
-		match gossip_sync.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update) {
 			Ok(res) => assert!(!res),
 			_ => panic!()
 		};
@@ -2792,7 +2796,7 @@ pub(crate) mod tests {
 			unsigned_channel_update.timestamp += 110;
 			unsigned_channel_update.short_channel_id += 1;
 		}, node_1_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Couldn't find channel for update")
 		};
@@ -2801,7 +2805,7 @@ pub(crate) mod tests {
 			unsigned_channel_update.htlc_maximum_msat = MAX_VALUE_MSAT + 1;
 			unsigned_channel_update.timestamp += 110;
 		}, node_1_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than maximum possible msats")
 		};
@@ -2810,7 +2814,7 @@ pub(crate) mod tests {
 			unsigned_channel_update.htlc_maximum_msat = amount_sats.to_sat() * 1000 + 1;
 			unsigned_channel_update.timestamp += 110;
 		}, node_1_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "htlc_maximum_msat is larger than channel capacity or capacity is bogus")
 		};
@@ -2820,7 +2824,7 @@ pub(crate) mod tests {
 		let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
 			unsigned_channel_update.timestamp += 100;
 		}, node_1_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_update(&valid_channel_update) {
+		match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Update had same timestamp as last processed update")
 		};
@@ -2831,7 +2835,7 @@ pub(crate) mod tests {
 		let zero_hash = Sha256dHash::hash(&[0; 32]);
 		let fake_msghash = hash_to_message!(zero_hash.as_byte_array());
 		invalid_sig_channel_update.signature = secp_ctx.sign_ecdsa(&fake_msghash, node_1_privkey);
-		match gossip_sync.handle_channel_update(&invalid_sig_channel_update) {
+		match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &invalid_sig_channel_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature on channel_update message")
 		};
@@ -2842,7 +2846,7 @@ pub(crate) mod tests {
 			unsigned_channel_update.chain_hash = ChainHash::using_genesis_block(Network::Bitcoin);
 		}, node_1_privkey, &secp_ctx);
 
-		match gossip_sync.handle_channel_update(&incorrect_chain_update) {
+		match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &incorrect_chain_update) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Channel update chain hash does not match genesis hash")
 		};
@@ -2953,6 +2957,7 @@ pub(crate) mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
 		let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
@@ -2963,11 +2968,11 @@ pub(crate) mod tests {
 
 		// Submit two channel updates for each channel direction (update.flags bit).
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
-		assert!(gossip_sync.handle_channel_update(&valid_channel_update).is_ok());
+		assert!(gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update).is_ok());
 		assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 
 		let valid_channel_update_2 = get_signed_channel_update(|update| {update.channel_flags |=1;}, node_2_privkey, &secp_ctx);
-		gossip_sync.handle_channel_update(&valid_channel_update_2).unwrap();
+		gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update_2).unwrap();
 		assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().two_to_one.is_some());
 
 		network_graph.remove_stale_channels_and_tracking_with_time(100 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
@@ -2999,7 +3004,7 @@ pub(crate) mod tests {
 			let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
 				unsigned_channel_update.timestamp = (announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS) as u32;
 			}, node_1_privkey, &secp_ctx);
-			assert!(gossip_sync.handle_channel_update(&valid_channel_update).is_ok());
+			assert!(gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update).is_ok());
 			assert!(network_graph.read_only().channels().get(&short_channel_id).unwrap().one_to_two.is_some());
 			network_graph.remove_stale_channels_and_tracking_with_time(announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS);
 			// Make sure removed channels are tracked.
@@ -3082,6 +3087,7 @@ pub(crate) mod tests {
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
 		// Channels were not announced yet.
@@ -3093,7 +3099,7 @@ pub(crate) mod tests {
 			// Announce a channel we will update
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
 			short_channel_id = valid_channel_announcement.contents.short_channel_id;
-			match gossip_sync.handle_channel_announcement(&valid_channel_announcement) {
+			match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_channel_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
@@ -3114,7 +3120,7 @@ pub(crate) mod tests {
 			let valid_channel_update = get_signed_channel_update(|unsigned_channel_update| {
 				unsigned_channel_update.timestamp = 101;
 			}, node_1_privkey, &secp_ctx);
-			match gossip_sync.handle_channel_update(&valid_channel_update) {
+			match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
@@ -3136,7 +3142,7 @@ pub(crate) mod tests {
 				unsigned_channel_update.timestamp = 102;
 				unsigned_channel_update.excess_data = [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec();
 			}, node_1_privkey, &secp_ctx);
-			match gossip_sync.handle_channel_update(&valid_channel_update) {
+			match gossip_sync.handle_channel_update(Some(&node_1_pubkey), &valid_channel_update) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
@@ -3162,6 +3168,7 @@ pub(crate) mod tests {
 		let network_graph = create_network_graph();
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
 
@@ -3172,7 +3179,7 @@ pub(crate) mod tests {
 		{
 			// Announce a channel to add 2 nodes
 			let valid_channel_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-			match gossip_sync.handle_channel_announcement(&valid_channel_announcement) {
+			match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_channel_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
@@ -3184,13 +3191,13 @@ pub(crate) mod tests {
 
 		{
 			let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
-			match gossip_sync.handle_node_announcement(&valid_announcement) {
+			match gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &valid_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
 
 			let valid_announcement = get_signed_node_announcement(|_| {}, node_2_privkey, &secp_ctx);
-			match gossip_sync.handle_node_announcement(&valid_announcement) {
+			match gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &valid_announcement) {
 				Ok(_) => (),
 				Err(_) => panic!()
 			};
@@ -3209,7 +3216,7 @@ pub(crate) mod tests {
 				unsigned_announcement.timestamp += 10;
 				unsigned_announcement.excess_data = [1; MAX_EXCESS_BYTES_FOR_RELAY + 1].to_vec();
 			}, node_2_privkey, &secp_ctx);
-			match gossip_sync.handle_node_announcement(&valid_announcement) {
+			match gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &valid_announcement) {
 				Ok(res) => assert!(!res),
 				Err(_) => panic!()
 			};
@@ -3225,17 +3232,18 @@ pub(crate) mod tests {
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
 		// Announce a channel to add a corresponding node.
 		let valid_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
+		match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(res) => assert!(res),
 			_ => panic!()
 		};
 
 		let valid_announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
-		match gossip_sync.handle_node_announcement(&valid_announcement) {
+		match gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &valid_announcement) {
 			Ok(_) => (),
 			Err(_) => panic!()
 		};
@@ -3313,6 +3321,7 @@ pub(crate) mod tests {
 
 		let chain_hash = ChainHash::using_genesis_block(Network::Testnet);
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
 
@@ -3333,7 +3342,7 @@ pub(crate) mod tests {
 			let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 				unsigned_announcement.short_channel_id = scid;
 			}, node_1_privkey, node_2_privkey, &secp_ctx);
-			match gossip_sync.handle_channel_announcement(&valid_announcement) {
+			match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
 				Ok(_) => (),
 				_ => panic!()
 			};
@@ -3791,11 +3800,12 @@ pub(crate) mod tests {
 		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 		let node_1_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
 
 		let announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-		gossip_sync.handle_channel_announcement(&announcement).unwrap();
+		gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &announcement).unwrap();
 
 		let tcp_ip_v4 = SocketAddress::TcpIpV4 {
 			addr: [255, 254, 253, 252],
@@ -3820,7 +3830,7 @@ pub(crate) mod tests {
 		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 
 		let announcement = get_signed_node_announcement(|_| {}, node_1_privkey, &secp_ctx);
-		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &announcement).unwrap();
 		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 
 		let announcement = get_signed_node_announcement(
@@ -3833,7 +3843,7 @@ pub(crate) mod tests {
 			},
 			node_1_privkey, &secp_ctx
 		);
-		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &announcement).unwrap();
 		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 
 		let announcement = get_signed_node_announcement(
@@ -3845,7 +3855,8 @@ pub(crate) mod tests {
 			},
 			node_1_privkey, &secp_ctx
 		);
-		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &announcement).unwrap();
+		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 
 		let announcement = get_signed_node_announcement(
@@ -3857,7 +3868,7 @@ pub(crate) mod tests {
 			},
 			node_1_privkey, &secp_ctx
 		);
-		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &announcement).unwrap();
 		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 
 		let announcement = get_signed_node_announcement(
@@ -3867,7 +3878,7 @@ pub(crate) mod tests {
 			},
 			node_1_privkey, &secp_ctx
 		);
-		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &announcement).unwrap();
 		assert!(network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 
 		let announcement = get_signed_node_announcement(
@@ -3877,7 +3888,7 @@ pub(crate) mod tests {
 			},
 			node_1_privkey, &secp_ctx
 		);
-		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &announcement).unwrap();
 		assert!(network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 
 		let announcement = get_signed_node_announcement(
@@ -3887,7 +3898,7 @@ pub(crate) mod tests {
 			},
 			node_1_privkey, &secp_ctx
 		);
-		gossip_sync.handle_node_announcement(&announcement).unwrap();
+		gossip_sync.handle_node_announcement(Some(&node_1_pubkey), &announcement).unwrap();
 		assert!(!network_graph.read_only().node(&node_1_id).unwrap().is_tor_only());
 	}
 }

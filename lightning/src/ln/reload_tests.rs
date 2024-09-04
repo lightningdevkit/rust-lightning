@@ -165,9 +165,10 @@ fn test_funding_peer_disconnect() {
 	};
 
 	// Provide the channel announcement and public updates to the network graph
-	nodes[0].gossip_sync.handle_channel_announcement(&chan_announcement).unwrap();
-	nodes[0].gossip_sync.handle_channel_update(&bs_update).unwrap();
-	nodes[0].gossip_sync.handle_channel_update(&as_update).unwrap();
+	let node_1_pubkey = nodes[1].node.get_our_node_id();
+	nodes[0].gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &chan_announcement).unwrap();
+	nodes[0].gossip_sync.handle_channel_update(Some(&node_1_pubkey), &bs_update).unwrap();
+	nodes[0].gossip_sync.handle_channel_update(Some(&node_1_pubkey), &as_update).unwrap();
 
 	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[1], 1000000);
 	let payment_preimage = send_along_route(&nodes[0], route, &[&nodes[1]], 1000000).0;
@@ -219,10 +220,11 @@ fn test_no_txn_manager_serialize_deserialize() {
 
 	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
-	for node in nodes.iter() {
-		assert!(node.gossip_sync.handle_channel_announcement(&announcement).unwrap());
-		node.gossip_sync.handle_channel_update(&as_update).unwrap();
-		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
+	for (i, node) in nodes.iter().enumerate() {
+		let counterparty_node_id = nodes[(i + 1) % 2].node.get_our_node_id();
+		assert!(node.gossip_sync.handle_channel_announcement(Some(&counterparty_node_id), &announcement).unwrap());
+		node.gossip_sync.handle_channel_update(Some(&counterparty_node_id), &as_update).unwrap();
+		node.gossip_sync.handle_channel_update(Some(&counterparty_node_id), &bs_update).unwrap();
 	}
 
 	send_payment(&nodes[0], &[&nodes[1]], 1000000);
@@ -309,10 +311,11 @@ fn test_manager_serialize_deserialize_events() {
 
 	let (channel_ready, _) = create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &tx);
 	let (announcement, as_update, bs_update) = create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &channel_ready);
-	for node in nodes.iter() {
-		assert!(node.gossip_sync.handle_channel_announcement(&announcement).unwrap());
-		node.gossip_sync.handle_channel_update(&as_update).unwrap();
-		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
+	for (i, node) in nodes.iter().enumerate() {
+		let counterparty_node_id = nodes[(i + 1) % 2].node.get_our_node_id();
+		assert!(node.gossip_sync.handle_channel_announcement(Some(&counterparty_node_id), &announcement).unwrap());
+		node.gossip_sync.handle_channel_update(Some(&counterparty_node_id), &as_update).unwrap();
+		node.gossip_sync.handle_channel_update(Some(&counterparty_node_id), &bs_update).unwrap();
 	}
 
 	send_payment(&nodes[0], &[&nodes[1]], 1000000);

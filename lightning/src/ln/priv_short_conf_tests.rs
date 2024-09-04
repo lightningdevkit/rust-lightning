@@ -207,10 +207,11 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	} else { panic!("Unexpected event"); };
 	assert_eq!(announcement, bs_announcement);
 
-	for node in nodes {
-		assert!(node.gossip_sync.handle_channel_announcement(&announcement).unwrap());
-		node.gossip_sync.handle_channel_update(&as_update).unwrap();
-		node.gossip_sync.handle_channel_update(&bs_update).unwrap();
+	for (i, node) in nodes.iter().enumerate() {
+		let counterparty_node_id = nodes[(i + 1) % 2].node.get_our_node_id();
+		assert!(node.gossip_sync.handle_channel_announcement(Some(&counterparty_node_id), &announcement).unwrap());
+		node.gossip_sync.handle_channel_update(Some(&counterparty_node_id), &as_update).unwrap();
+		node.gossip_sync.handle_channel_update(Some(&counterparty_node_id), &bs_update).unwrap();
 	}
 }
 #[test]

@@ -660,16 +660,18 @@ mod tests {
 	}
 	impl RoutingMessageHandler for MsgHandler {
 		fn handle_node_announcement(
-			&self, _msg: &NodeAnnouncement,
+			&self, _their_node_id: Option<&PublicKey>, _msg: &NodeAnnouncement,
 		) -> Result<bool, LightningError> {
 			Ok(false)
 		}
 		fn handle_channel_announcement(
-			&self, _msg: &ChannelAnnouncement,
+			&self, _their_node_id: Option<&PublicKey>, _msg: &ChannelAnnouncement,
 		) -> Result<bool, LightningError> {
 			Ok(false)
 		}
-		fn handle_channel_update(&self, _msg: &ChannelUpdate) -> Result<bool, LightningError> {
+		fn handle_channel_update(
+			&self, _their_node_id: Option<&PublicKey>, _msg: &ChannelUpdate,
+		) -> Result<bool, LightningError> {
 			Ok(false)
 		}
 		fn get_next_channel_announcement(

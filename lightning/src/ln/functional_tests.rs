@@ -2461,14 +2461,16 @@ fn channel_monitor_network_test() {
 		check_preimage_claim(&nodes[4], &node_txn);
 		(close_chan_update_1, close_chan_update_2)
 	};
-	nodes[3].gossip_sync.handle_channel_update(&close_chan_update_2).unwrap();
-	nodes[4].gossip_sync.handle_channel_update(&close_chan_update_1).unwrap();
+	let node_id_4 = nodes[4].node.get_our_node_id();
+	let node_id_3 = nodes[3].node.get_our_node_id();
+	nodes[3].gossip_sync.handle_channel_update(Some(&node_id_4), &close_chan_update_2).unwrap();
+	nodes[4].gossip_sync.handle_channel_update(Some(&node_id_3), &close_chan_update_1).unwrap();
 	assert_eq!(nodes[3].node.list_channels().len(), 0);
 	assert_eq!(nodes[4].node.list_channels().len(), 0);
 
 	assert_eq!(nodes[3].chain_monitor.chain_monitor.watch_channel(OutPoint { txid: chan_3.3.compute_txid(), index: 0 }, chan_3_mon),
 		Ok(ChannelMonitorUpdateStatus::Completed));
-	check_closed_event!(nodes[3], 1, ClosureReason::HTLCsTimedOut, [nodes[4].node.get_our_node_id()], 100000);
+	check_closed_event!(nodes[3], 1, ClosureReason::HTLCsTimedOut, [node_id_4], 100000);
 }
 
 #[test]
