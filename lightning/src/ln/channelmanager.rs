@@ -4378,6 +4378,21 @@ where
 		res
 	}
 
+	#[cfg(async_payments)]
+	fn send_payment_for_static_invoice(
+		&self, payment_id: PaymentId, payment_release_secret: [u8; 32]
+	) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.pending_outbound_payments
+			.send_payment_for_static_invoice(
+				payment_id, payment_release_secret, &self.router, self.list_usable_channels(),
+				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, &self,
+				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
+				|args| self.send_payment_along_path(args)
+			)
+	}
+
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
 	/// pending outbound payment with retries remaining, but wish to stop retrying the payment before
 	/// retries are exhausted.
@@ -11171,7 +11186,17 @@ where
 		None
 	}
 
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
+		#[cfg(async_payments)] {
+			let AsyncPaymentsContext::OutboundPayment { payment_id } = _context;
+			if let Err(e) = self.send_payment_for_static_invoice(payment_id, _message.payment_release_secret) {
+				log_trace!(
+					self.logger, "Failed to release held HTLC with payment id {} and release secret {:02x?}: {:?}",
+					payment_id, _message.payment_release_secret, e
+				);
+			}
+		}
+	}
 
 	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
