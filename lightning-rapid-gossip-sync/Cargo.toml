@@ -11,11 +11,13 @@ Utility to process gossip routing data from Rapid Gossip Sync Server.
 
 [features]
 default = ["std"]
-std = []
+std = ["bitcoin-io/std", "bitcoin_hashes/std"]
 
 [dependencies]
 lightning = { version = "0.0.124", path = "../lightning", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false }
+bitcoin_hashes = { version = "0.14.0", default-features = false }
+bitcoin-io = { version = "0.1.2", default-features = false }
 
 [target.'cfg(ldk_bench)'.dependencies]
 criterion = { version = "0.4", optional = true, default-features = false }
