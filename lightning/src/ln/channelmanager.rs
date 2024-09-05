@@ -7827,7 +7827,7 @@ where
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 						let (closing_signed, tx, shutdown_result) = try_chan_phase_entry!(self, chan.closing_signed(&self.fee_estimator, &msg, &&logger), chan_phase_entry);
-						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown() || chan.is_shutdown_pending_signature());
+						debug_assert_eq!(shutdown_result.is_some(), chan.is_shutdown());
 						if let Some(msg) = closing_signed {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendClosingSigned {
 								node_id: counterparty_node_id.clone(),
@@ -8650,7 +8650,7 @@ where
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		// Returns whether we should remove this channel as it's just been closed.
-		let unblock_chan = |phase: &mut ChannelPhase<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> bool {
+		let unblock_chan = |phase: &mut ChannelPhase<SP>, pending_msg_events: &mut Vec<MessageSendEvent>| -> Option<ShutdownResult> {
 			let node_id = phase.context().get_counterparty_node_id();
 			match phase {
 				ChannelPhase::Funded(chan) => {
@@ -8703,11 +8703,8 @@ where
 								msg: update
 							});
 						}
-
-						// We should return true to remove the channel if we just
-						// broadcasted the closing transaction.
-						true
-					} else { false }
+					}
+					msgs.shutdown_result
 				}
 				ChannelPhase::UnfundedOutboundV1(chan) => {
 					if let Some(msg) = chan.signer_maybe_unblocked(&self.logger) {
@@ -8716,12 +8713,13 @@ where
 							msg,
 						});
 					}
-					false
+					None
 				}
-				ChannelPhase::UnfundedInboundV1(_) => false,
+				ChannelPhase::UnfundedInboundV1(_) => None,
 			}
 		};
 
+		let mut shutdown_results = Vec::new();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let per_peer_state_iter = per_peer_state.iter().filter(|(cp_id, _)| {
 			if let Some((counterparty_node_id, _)) = channel_opt {
@@ -8732,15 +8730,22 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			peer_state.channel_by_id.retain(|_, chan| {
-				let should_remove = match channel_opt {
-					Some((_, channel_id)) if chan.context().channel_id() != channel_id => false,
+				let shutdown_result = match channel_opt {
+					Some((_, channel_id)) if chan.context().channel_id() != channel_id => None,
 					_ => unblock_chan(chan, &mut peer_state.pending_msg_events),
 				};
-				if should_remove {
+				if let Some(shutdown_result) = shutdown_result {
 					log_trace!(self.logger, "Removing channel after unblocking signer");
+					shutdown_results.push(shutdown_result);
+					false
+				} else {
+					true
 				}
-				!should_remove
 			});
+		}
+		drop(per_peer_state);
+		for shutdown_result in shutdown_results.drain(..) {
+			self.finish_close_channel(shutdown_result);
 		}
 	}
 
@@ -8770,8 +8775,8 @@ where
 											node_id: chan.context.get_counterparty_node_id(), msg,
 										});
 									}
+									debug_assert_eq!(shutdown_result_opt.is_some(), chan.is_shutdown());
 									if let Some(shutdown_result) = shutdown_result_opt {
-										debug_assert!(chan.is_shutdown() || chan.is_shutdown_pending_signature());
 										shutdown_results.push(shutdown_result);
 									}
 									if let Some(tx) = tx_opt {

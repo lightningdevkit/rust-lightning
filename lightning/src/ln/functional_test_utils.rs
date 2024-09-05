@@ -3295,7 +3295,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	nodes
 }
 
-fn connect_nodes<'a, 'b: 'a, 'c: 'b>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>) {
+pub fn connect_nodes<'a, 'b: 'a, 'c: 'b>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>) {
 	let node_id_a = node_a.node.get_our_node_id();
 	let node_id_b = node_b.node.get_our_node_id();
 
