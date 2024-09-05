@@ -420,7 +420,7 @@ pub trait Verification {
 	) -> Hmac<Sha256>;
 
 	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
-	fn verify(
+	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()>;
 }
@@ -436,7 +436,7 @@ impl Verification for PaymentHash {
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::InboundPayment`].
-	fn verify(
+	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
 		signer::verify_payment_hash(*self, hmac, nonce, expanded_key)
@@ -461,15 +461,15 @@ impl Verification for PaymentId {
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_id(*self, nonce, expanded_key)
+		signer::hmac_for_offer_payment_id(*self, nonce, expanded_key)
 	}
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::OutboundPayment`].
-	fn verify(
+	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
-		signer::verify_payment_id(*self, hmac, nonce, expanded_key)
+		signer::verify_offer_payment_id(*self, hmac, nonce, expanded_key)
 	}
 }
 
@@ -11144,7 +11144,7 @@ where
 			OffersMessage::StaticInvoice(invoice) => {
 				let payment_id = match context {
 					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if payment_id.verify(hmac, nonce, expanded_key).is_err() {
+						if payment_id.verify_for_offer_payment(hmac, nonce, expanded_key).is_err() {
 							return None
 						}
 						payment_id
@@ -11157,7 +11157,7 @@ where
 			OffersMessage::InvoiceError(invoice_error) => {
 				let payment_hash = match context {
 					Some(OffersContext::InboundPayment { payment_hash, nonce, hmac }) => {
-						match payment_hash.verify(hmac, nonce, expanded_key) {
+						match payment_hash.verify_for_offer_payment(hmac, nonce, expanded_key) {
 							Ok(_) => Some(payment_hash),
 							Err(_) => None,
 						}
@@ -11170,7 +11170,7 @@ where
 
 				match context {
 					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if let Ok(()) = payment_id.verify(hmac, nonce, expanded_key) {
+						if let Ok(()) = payment_id.verify_for_offer_payment(hmac, nonce, expanded_key) {
 							self.abandon_payment_with_reason(
 								payment_id, PaymentFailureReason::InvoiceRequestRejected,
 							);
