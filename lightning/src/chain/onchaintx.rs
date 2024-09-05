@@ -888,12 +888,12 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 						//... we need to verify equality between transaction outpoints and claim request
 						// outpoints to know if transaction is the original claim or a bumped one issued
 						// by us.
-						let mut are_sets_equal = true;
+						let mut is_claim_subset_of_tx = true;
 						let mut tx_inputs = tx.input.iter().map(|input| &input.previous_output).collect::<Vec<_>>();
 						tx_inputs.sort_unstable();
 						for request_input in request.outpoints() {
 							if tx_inputs.binary_search(&request_input).is_err() {
-								are_sets_equal = false;
+								is_claim_subset_of_tx = false;
 								break;
 							}
 						}
@@ -915,7 +915,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 						// If this is our transaction (or our counterparty spent all the outputs
 						// before we could anyway with same inputs order than us), wait for
 						// ANTI_REORG_DELAY and clean the RBF tracking map.
-						if are_sets_equal {
+						if is_claim_subset_of_tx {
 							clean_claim_request_after_safety_delay!();
 						} else { // If false, generate new claim request with update outpoint set
 							let mut at_least_one_drop = false;
