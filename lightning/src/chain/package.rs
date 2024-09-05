@@ -746,9 +746,6 @@ pub struct PackageTemplate {
 	// Cache of next height at which fee-bumping and rebroadcast will be attempted. In
 	// the future, we might abstract it to an observed mempool fluctuation.
 	height_timer: u32,
-	// Confirmation height of the claimed outputs set transaction. In case of reorg reaching
-	// it, we wipe out and forget the package.
-	height_original: u32,
 }
 
 impl PackageTemplate {
@@ -791,7 +788,6 @@ impl PackageTemplate {
 				let aggregable = self.aggregable;
 				let feerate_previous = self.feerate_previous;
 				let height_timer = self.height_timer;
-				let height_original = self.height_original;
 				self.inputs.retain(|outp| {
 					if *split_outp == outp.0 {
 						split_package = Some(PackageTemplate {
@@ -801,7 +797,6 @@ impl PackageTemplate {
 							aggregable,
 							feerate_previous,
 							height_timer,
-							height_original,
 						});
 						return false;
 					}
@@ -820,7 +815,6 @@ impl PackageTemplate {
 		}
 	}
 	pub(crate) fn merge_package(&mut self, mut merge_from: PackageTemplate) {
-		assert_eq!(self.height_original, merge_from.height_original);
 		if self.malleability == PackageMalleability::Untractable || merge_from.malleability == PackageMalleability::Untractable {
 			panic!("Merging template on untractable packages");
 		}
@@ -1035,7 +1029,7 @@ impl PackageTemplate {
 		}).is_some()
 	}
 
-	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, height_original: u32) -> Self {
+	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, first_bump: u32) -> Self {
 		let (malleability, aggregable) = PackageSolvingData::map_output_type_flags(&input_solving_data);
 		let inputs = vec![(BitcoinOutPoint { txid, vout }, input_solving_data)];
 		PackageTemplate {
@@ -1044,8 +1038,7 @@ impl PackageTemplate {
 			soonest_conf_deadline,
 			aggregable,
 			feerate_previous: 0,
-			height_timer: height_original,
-			height_original,
+			height_timer: first_bump,
 		}
 	}
 }
@@ -1060,7 +1053,8 @@ impl Writeable for PackageTemplate {
 		write_tlv_fields!(writer, {
 			(0, self.soonest_conf_deadline, required),
 			(2, self.feerate_previous, required),
-			(4, self.height_original, required),
+			// Prior to 0.1, the height at which the package's inputs were mined, but was always unused
+			(4, 0u32, required),
 			(6, self.height_timer, required)
 		});
 		Ok(())
@@ -1082,24 +1076,20 @@ impl Readable for PackageTemplate {
 		let mut soonest_conf_deadline = 0;
 		let mut feerate_previous = 0;
 		let mut height_timer = None;
-		let mut height_original = 0;
+		let mut _height_original: Option<u32> = None;
 		read_tlv_fields!(reader, {
 			(0, soonest_conf_deadline, required),
 			(2, feerate_previous, required),
-			(4, height_original, required),
+			(4, _height_original, option), // Written with a dummy value since 0.1
 			(6, height_timer, option),
 		});
-		if height_timer.is_none() {
-			height_timer = Some(height_original);
-		}
 		Ok(PackageTemplate {
 			inputs,
 			malleability,
 			soonest_conf_deadline,
 			aggregable,
 			feerate_previous,
-			height_timer: height_timer.unwrap(),
-			height_original,
+			height_timer: height_timer.unwrap_or(0),
 		})
 	}
 }
@@ -1376,7 +1366,6 @@ mod tests {
 			assert_eq!(split_package.aggregable, package_one.aggregable);
 			assert_eq!(split_package.feerate_previous, package_one.feerate_previous);
 			assert_eq!(split_package.height_timer, package_one.height_timer);
-			assert_eq!(split_package.height_original, package_one.height_original);
 		} else { panic!(); }
 		assert_eq!(package_one.outpoints().len(), 2);
 	}
