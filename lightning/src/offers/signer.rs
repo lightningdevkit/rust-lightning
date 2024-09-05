@@ -39,9 +39,12 @@ const WITH_ENCRYPTED_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[4; 16];
 
 // HMAC input for a `PaymentId`. The HMAC is used in `OffersContext::OutboundPayment`.
 const OFFER_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[5; 16];
+// HMAC input for a `PaymentId`. The HMAC is used in `AsyncPaymentsContext::OutboundPayment`.
+#[cfg(async_payments)]
+const ASYNC_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[6; 16];
 
 // HMAC input for a `PaymentHash`. The HMAC is used in `OffersContext::InboundPayment`.
-const PAYMENT_HASH_HMAC_INPUT: &[u8; 16] = &[6; 16];
+const PAYMENT_HASH_HMAC_INPUT: &[u8; 16] = &[7; 16];
 
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
@@ -402,14 +405,7 @@ fn hmac_for_message<'a>(
 pub(crate) fn hmac_for_offer_payment_id(
 	payment_id: PaymentId, nonce: Nonce, expanded_key: &ExpandedKey,
 ) -> Hmac<Sha256> {
-	const IV_BYTES: &[u8; IV_LEN] = b"LDK Payment ID ~";
-	let mut hmac = expanded_key.hmac_for_offer();
-	hmac.input(IV_BYTES);
-	hmac.input(&nonce.0);
-	hmac.input(OFFER_PAYMENT_ID_HMAC_INPUT);
-	hmac.input(&payment_id.0);
-
-	Hmac::from_engine(hmac)
+	hmac_for_payment_id(payment_id, nonce, OFFER_PAYMENT_ID_HMAC_INPUT, expanded_key)
 }
 
 pub(crate) fn verify_offer_payment_id(
@@ -435,4 +431,31 @@ pub(crate) fn verify_payment_hash(
 	payment_hash: PaymentHash, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
 ) -> Result<(), ()> {
 	if hmac_for_payment_hash(payment_hash, nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
+}
+
+#[cfg(async_payments)]
+pub(crate) fn hmac_for_async_payment_id(
+	payment_id: PaymentId, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	hmac_for_payment_id(payment_id, nonce, ASYNC_PAYMENT_ID_HMAC_INPUT, expanded_key)
+}
+
+#[cfg(async_payments)]
+pub(crate) fn verify_async_payment_id(
+	payment_id: PaymentId, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_async_payment_id(payment_id, nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
+}
+
+fn hmac_for_payment_id(
+	payment_id: PaymentId, nonce: Nonce, hmac_input: &[u8; 16], expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Payment ID ~";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(hmac_input);
+	hmac.input(&payment_id.0);
+
+	Hmac::from_engine(hmac)
 }

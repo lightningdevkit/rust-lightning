@@ -453,6 +453,24 @@ pub struct PaymentId(pub [u8; Self::LENGTH]);
 impl PaymentId {
 	/// Number of bytes in the id.
 	pub const LENGTH: usize = 32;
+
+	/// Constructs an HMAC to include in [`AsyncPaymentsContext::OutboundPayment`] for the payment id
+	/// along with the given [`Nonce`].
+	#[cfg(async_payments)]
+	pub fn hmac_for_async_payment(
+		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Hmac<Sha256> {
+		signer::hmac_for_async_payment_id(*self, nonce, expanded_key)
+	}
+
+	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
+	/// [`AsyncPaymentsContext::OutboundPayment`].
+	#[cfg(async_payments)]
+	pub fn verify_for_async_payment(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_async_payment_id(*self, hmac, nonce, expanded_key)
+	}
 }
 
 impl Verification for PaymentId {
@@ -4353,8 +4371,12 @@ where
 				}
 			};
 
+			let nonce = Nonce::from_entropy_source(&*self.entropy_source);
+			let hmac = payment_id.hmac_for_async_payment(nonce, &self.inbound_payment_key);
 			let reply_paths = match self.create_blinded_paths(
-				MessageContext::AsyncPayments(AsyncPaymentsContext::OutboundPayment { payment_id })
+				MessageContext::AsyncPayments(
+					AsyncPaymentsContext::OutboundPayment { payment_id, nonce, hmac }
+				)
 			) {
 				Ok(paths) => paths,
 				Err(()) => {
@@ -11209,7 +11231,8 @@ where
 
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
 		#[cfg(async_payments)] {
-			let AsyncPaymentsContext::OutboundPayment { payment_id } = _context;
+			let AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } = _context;
+			if payment_id.verify_for_async_payment(hmac, nonce, &self.inbound_payment_key).is_err() { return }
 			if let Err(e) = self.send_payment_for_static_invoice(payment_id, _message.payment_release_secret) {
 				log_trace!(
 					self.logger, "Failed to release held HTLC with payment id {} and release secret {:02x?}: {:?}",

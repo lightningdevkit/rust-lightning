@@ -383,7 +383,18 @@ pub enum AsyncPaymentsContext {
 		/// which of our pending outbound payments should be released to its often-offline payee.
 		///
 		/// [`Offer`]: crate::offers::offer::Offer
-		payment_id: PaymentId
+		payment_id: PaymentId,
+		/// A nonce used for authenticating that a [`ReleaseHeldHtlc`] message is valid for a preceding
+		/// [`HeldHtlcAvailable`] message.
+		///
+		/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+		/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+		nonce: Nonce,
+		/// Authentication code for the [`PaymentId`].
+		///
+		/// Prevents the recipient from being able to deanonymize us by creating a blinded path to us
+		/// containing the expected [`PaymentId`].
+		hmac: Hmac<Sha256>,
 	},
 }
 
@@ -412,6 +423,8 @@ impl_writeable_tlv_based_enum!(OffersContext,
 impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 	(0, OutboundPayment) => {
 		(0, payment_id, required),
+		(2, nonce, required),
+		(4, hmac, required),
 	},
 );
 
