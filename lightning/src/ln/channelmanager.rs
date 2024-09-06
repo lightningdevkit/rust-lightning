@@ -9226,8 +9226,10 @@ where
 				let builder: InvoiceBuilder<DerivedSigningPubkey> = builder.into();
 				let invoice = builder.allow_mpp().build_and_sign(secp_ctx)?;
 
+				let nonce = Nonce::from_entropy_source(entropy);
+				let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
 				let context = OffersContext::InboundPayment {
-					payment_hash: invoice.payment_hash(),
+					payment_hash: invoice.payment_hash(), nonce, hmac
 				};
 				let reply_paths = self.create_blinded_paths(context)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
@@ -10987,7 +10989,12 @@ where
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
 				let payment_hash = match context {
-					Some(OffersContext::InboundPayment { payment_hash }) => Some(payment_hash),
+					Some(OffersContext::InboundPayment { payment_hash, nonce, hmac }) => {
+						match payment_hash.verify(hmac, nonce, expanded_key) {
+							Ok(_) => Some(payment_hash),
+							Err(_) => None,
+						}
+					},
 					_ => None,
 				};
 
