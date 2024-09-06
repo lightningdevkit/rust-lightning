@@ -535,6 +535,15 @@ pub enum Bolt12PaymentError {
 	UnknownRequiredFeatures,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
+	#[cfg(async_payments)]
+	/// Failed to create a blinded path back to ourselves.
+	///
+	/// We attempted to initiate payment to a [`StaticInvoice`] but failed to create a reply path for
+	/// our [`HeldHtlcAvailable`] message.
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	BlindedPathCreationFailed,
 }
 
 /// Indicates that we failed to send a payment probe. Further errors may be surfaced later via

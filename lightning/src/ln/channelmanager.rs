@@ -4381,7 +4381,7 @@ where
 				Ok(paths) => paths,
 				Err(()) => {
 					self.abandon_payment_with_reason(payment_id, PaymentFailureReason::RouteNotFound);
-					res = Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound));
+					res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
 					return NotifyOption::DoPersist
 				}
 			};
@@ -11017,6 +11017,12 @@ where
 					Err(Bolt12PaymentError::SendingFailed(e)) => {
 						log_trace!($logger, "Failed paying invoice: {:?}", e);
 						InvoiceError::from_string(format!("{:?}", e))
+					},
+					#[cfg(async_payments)]
+					Err(Bolt12PaymentError::BlindedPathCreationFailed) => {
+						let err_msg = "Failed to create a blinded path back to ourselves";
+						log_trace!($logger, "{}", err_msg);
+						InvoiceError::from_string(err_msg.to_string())
 					},
 					Err(Bolt12PaymentError::UnexpectedInvoice)
 						| Err(Bolt12PaymentError::DuplicateInvoice)
