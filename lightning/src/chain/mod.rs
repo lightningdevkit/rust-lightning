@@ -305,15 +305,6 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)>;
-
-	/// Retrieves a list of channel IDs for [`StubChannelMonitor`] associated with a specific counterparty node ID.
-	///
-	/// This function searches through the collection of [`StubChannelMonitor`] and collects the channel IDs
-	/// of those monitors that have the specified counterparty node ID.
-	///
-	/// This is used by [`FundRecoverer`] to fetch all the [`ChannelId`] with a peer that needs recovery so that we can send them
-	/// `BogusChannelReestablish`.
-	fn get_stub_cids_with_counterparty(&self, counterparty_node_id: PublicKey) -> Vec<ChannelId>;
 }
 
 /// The `Filter` trait defines behavior for indicating chain activity of interest pertaining to

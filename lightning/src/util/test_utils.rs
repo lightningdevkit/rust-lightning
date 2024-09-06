@@ -423,10 +423,6 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	fn release_pending_monitor_events(&self) -> Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, Option<PublicKey>)> {
 		return self.chain_monitor.release_pending_monitor_events();
 	}
-
-	fn get_stub_cids_with_counterparty(&self, counterparty_node_id: PublicKey) -> Vec<ChannelId> {
-		return self.chain_monitor.get_stub_cids_with_counterparty(counterparty_node_id);
-	}
 }
 
 #[cfg(test)]

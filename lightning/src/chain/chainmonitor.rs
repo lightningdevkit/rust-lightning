@@ -165,8 +165,8 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	fn archive_persisted_channel(&self, channel_funding_outpoint: OutPoint);
 }
 
-struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
-	monitor: ChannelMonitor<ChannelSigner>,
+pub(crate) struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
+	pub(crate) monitor: ChannelMonitor<ChannelSigner>,
 	/// The full set of pending monitor updates for this Channel.
 	///
 	/// Note that this lock must be held from [`ChannelMonitor::update_monitor`] through to
@@ -181,7 +181,7 @@ struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
 	/// could cause users to have a full [`ChannelMonitor`] on disk as well as a
 	/// [`ChannelMonitorUpdate`] which was already applied. While this isn't an issue for the
 	/// LDK-provided update-based [`Persist`], it is somewhat surprising for users so we avoid it.
-	pending_monitor_updates: Mutex<Vec<u64>>,
+	pub(crate) pending_monitor_updates: Mutex<Vec<u64>>,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> MonitorHolder<ChannelSigner> {
@@ -195,8 +195,8 @@ impl<ChannelSigner: EcdsaChannelSigner> MonitorHolder<ChannelSigner> {
 /// Note that this holds a mutex in [`ChainMonitor`] and may block other events until it is
 /// released.
 pub struct LockedChannelMonitor<'a, ChannelSigner: EcdsaChannelSigner> {
-	lock: RwLockReadGuard<'a, HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
-	funding_txo: OutPoint,
+	pub(crate) lock: RwLockReadGuard<'a, HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
+	pub(crate) funding_txo: OutPoint,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, ChannelSigner> {
@@ -750,17 +750,6 @@ where C::Target: chain::Filter,
 	    L::Target: Logger,
 	    P::Target: Persist<ChannelSigner>,
 {
-	fn get_stub_cids_with_counterparty(&self, counterparty_node_id: PublicKey) -> Vec<ChannelId> {
-		let stub_monitors = self.stub_monitors.read().unwrap();
-		let mut stubs = vec![];
-		for (_, mon) in stub_monitors.iter() {
-			if mon.get_counterparty_node_id() == Some(counterparty_node_id) {
-				stubs.push(mon.channel_id());
-			}
-		}
-		stubs
-	}
-
 	fn watch_channel(&self, funding_outpoint: OutPoint, monitor: ChannelMonitor<ChannelSigner>) -> Result<ChannelMonitorUpdateStatus, ()> {
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 		let mut monitors = self.monitors.write().unwrap();
