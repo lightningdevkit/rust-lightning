@@ -30,6 +30,7 @@ use crate::types::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
 use crate::ln::msgs::DecodeError;
+use crate::chain::channelmonitor::CLTV_SHARED_CLAIM_BUFFER;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::transaction::MaybeSignedTransaction;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -759,6 +760,12 @@ pub struct PackageTemplate {
 }
 
 impl PackageTemplate {
+	pub(crate) fn can_merge_with(&self, other: &PackageTemplate, cur_height: u32) -> bool {
+		self.aggregable() && other.aggregable() &&
+		self.package_locktime(cur_height) == other.package_locktime(cur_height) &&
+		self.counterparty_spendable_height() > cur_height + CLTV_SHARED_CLAIM_BUFFER &&
+		other.counterparty_spendable_height() > cur_height + CLTV_SHARED_CLAIM_BUFFER
+	}
 	pub(crate) fn is_malleable(&self) -> bool {
 		self.malleability == PackageMalleability::Malleable
 	}

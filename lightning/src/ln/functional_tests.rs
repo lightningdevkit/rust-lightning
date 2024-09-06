@@ -7666,7 +7666,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		// Verify claim tx are spending revoked HTLC txn
 
 		// node_txn 0-2 each spend a separate revoked output from revoked_local_txn[0]
-		// Note that node_txn[0] and node_txn[1] are bogus - they double spend the revoked_htlc_txn
+		// Note that node_txn[1] and node_txn[2] are bogus - they double spend the revoked_htlc_txn
 		// which are included in the same block (they are broadcasted because we scan the
 		// transactions linearly and generate claims as we go, they likely should be removed in the
 		// future).
@@ -7683,8 +7683,8 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		assert_ne!(node_txn[0].input[0].previous_output, node_txn[2].input[0].previous_output);
 		assert_ne!(node_txn[1].input[0].previous_output, node_txn[2].input[0].previous_output);
 
-		assert_eq!(node_txn[0].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
-		assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
+		assert_eq!(node_txn[1].input[0].previous_output, revoked_htlc_txn[1].input[0].previous_output);
+		assert_eq!(node_txn[2].input[0].previous_output, revoked_htlc_txn[0].input[0].previous_output);
 
 		// node_txn[3] spends the revoked outputs from the revoked_htlc_txn (which only have one
 		// output, checked above).
@@ -7696,7 +7696,7 @@ fn test_bump_penalty_txn_on_revoked_htlcs() {
 		// Store both feerates for later comparison
 		let fee_1 = revoked_htlc_txn[0].output[0].value + revoked_htlc_txn[1].output[0].value - node_txn[3].output[0].value;
 		feerate_1 = fee_1 * 1000 / node_txn[3].weight().to_wu();
-		penalty_txn = vec![node_txn[2].clone()];
+		penalty_txn = vec![node_txn[0].clone()];
 		node_txn.clear();
 	}
 

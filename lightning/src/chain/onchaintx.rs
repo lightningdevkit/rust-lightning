@@ -31,7 +31,7 @@ use crate::types::payment::PaymentPreimage;
 use crate::ln::chan_utils::{self, ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction};
 use crate::chain::ClaimId;
 use crate::chain::chaininterface::{FeeEstimator, BroadcasterInterface, LowerBoundedFeeEstimator};
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, CLTV_SHARED_CLAIM_BUFFER};
+use crate::chain::channelmonitor::ANTI_REORG_DELAY;
 use crate::chain::package::{PackageSolvingData, PackageTemplate};
 use crate::chain::transaction::MaybeSignedTransaction;
 use crate::util::logger::Logger;
@@ -726,7 +726,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	/// does not need to equal the current blockchain tip height, which should be provided via
 	/// `cur_height`, however it must never be higher than `cur_height`.
 	pub(super) fn update_claims_view_from_requests<B: Deref, F: Deref, L: Logger>(
-		&mut self, requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
+		&mut self, mut requests: Vec<PackageTemplate>, conf_height: u32, cur_height: u32,
 		broadcaster: &B, conf_target: ConfirmationTarget,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L
 	) where
@@ -737,49 +737,63 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			log_debug!(logger, "Updating claims view at height {} with {} claim requests", cur_height, requests.len());
 		}
 
-		let mut preprocessed_requests = Vec::with_capacity(requests.len());
-		let mut aggregated_request = None;
-
-		// Try to aggregate outputs if their timelock expiration isn't imminent (package timelock
-		// <= CLTV_SHARED_CLAIM_BUFFER) and they don't require an immediate nLockTime (aggregable).
-		for req in requests {
-			// Don't claim a outpoint twice that would be bad for privacy and may uselessly lock a CPFP input for a while
-			if let Some(_) = self.claimable_outpoints.get(req.outpoints()[0]) {
-				log_info!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request", req.outpoints()[0].txid, req.outpoints()[0].vout);
+		// First drop any duplicate claims.
+		requests.retain(|req| {
+			debug_assert_eq!(
+				req.outpoints().len(),
+				1,
+				"Claims passed to `update_claims_view_from_requests` should not be aggregated"
+			);
+			let mut all_outpoints_claiming = true;
+			for outpoint in req.outpoints() {
+				if self.claimable_outpoints.get(outpoint).is_none() {
+					all_outpoints_claiming = false;
+				}
+			}
+			if all_outpoints_claiming {
+				log_info!(logger, "Ignoring second claim for outpoint {}:{}, already registered its claiming request",
+					req.outpoints()[0].txid, req.outpoints()[0].vout);
+				false
 			} else {
 				let timelocked_equivalent_package = self.locktimed_packages.iter().map(|v| v.1.iter()).flatten()
 					.find(|locked_package| locked_package.outpoints() == req.outpoints());
 				if let Some(package) = timelocked_equivalent_package {
 					log_info!(logger, "Ignoring second claim for outpoint {}:{}, we already have one which we're waiting on a timelock at {} for.",
 						req.outpoints()[0].txid, req.outpoints()[0].vout, package.package_locktime(cur_height));
-					continue;
-				}
-
-				let package_locktime = req.package_locktime(cur_height);
-				if package_locktime > cur_height + 1 {
-					log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", package_locktime, cur_height);
-					for outpoint in req.outpoints() {
-						log_info!(logger, "  Outpoint {}", outpoint);
-					}
-					self.locktimed_packages.entry(package_locktime).or_default().push(req);
-					continue;
-				}
-
-				log_trace!(logger, "Test if outpoint which our counterparty can spend at {} can be aggregated based on aggregation limit {}", req.counterparty_spendable_height(), cur_height + CLTV_SHARED_CLAIM_BUFFER);
-				if req.counterparty_spendable_height() <= cur_height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable() {
-					preprocessed_requests.push(req);
-				} else if aggregated_request.is_none() {
-					aggregated_request = Some(req);
+					false
 				} else {
-					aggregated_request.as_mut().unwrap().merge_package(req);
+					true
+				}
+			}
+		});
+
+		// Then try to maximally aggregate `requests`.
+		for i in (1..requests.len()).rev() {
+			for j in 0..i {
+				if requests[i].can_merge_with(&requests[j], cur_height) {
+					let merge = requests.remove(i);
+					requests[j].merge_package(merge);
+					break;
 				}
 			}
 		}
-		if let Some(req) = aggregated_request {
-			preprocessed_requests.push(req);
+
+		// Finally, split requests into timelocked ones and immediately-spendable ones.
+		let mut preprocessed_requests = Vec::with_capacity(requests.len());
+		for req in requests {
+			let package_locktime = req.package_locktime(cur_height);
+			if package_locktime > cur_height + 1 {
+				log_info!(logger, "Delaying claim of package until its timelock at {} (current height {}), the following outpoints are spent:", package_locktime, cur_height);
+				for outpoint in req.outpoints() {
+					log_info!(logger, "  Outpoint {}", outpoint);
+				}
+				self.locktimed_packages.entry(package_locktime).or_default().push(req);
+			} else {
+				preprocessed_requests.push(req);
+			}
 		}
 
-		// Claim everything up to and including `cur_height`
+		// Claim everything up to and including `cur_height`.
 		let remaining_locked_packages = self.locktimed_packages.split_off(&(cur_height + 1));
 		if !self.locktimed_packages.is_empty() {
 			log_debug!(logger,
