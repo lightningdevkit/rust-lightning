@@ -335,8 +335,7 @@ jobs:
                 -A clippy::unnecessary_to_owned \
                 -A clippy::unnecessary_unwrap \
                 -A clippy::unused_unit \
-                -A clippy::useless_conversion \
-                -A dependency_on_unit_never_type_fallback
+                -A clippy::useless_conversion
 
   rustfmt:
     runs-on: ubuntu-latest
