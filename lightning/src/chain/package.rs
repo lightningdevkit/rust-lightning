@@ -755,7 +755,11 @@ impl PackageTemplate {
 	pub(crate) fn is_malleable(&self) -> bool {
 		self.malleability == PackageMalleability::Malleable
 	}
-	pub(crate) fn timelock(&self) -> u32 {
+	/// The height at which our counterparty may be able to spend this output.
+	///
+	/// This is an important limit for aggregation as after this height our counterparty may be
+	/// able to pin transactions spending this output in the mempool.
+	pub(crate) fn counterparty_spendable_height(&self) -> u32 {
 		self.soonest_conf_deadline
 	}
 	pub(crate) fn aggregable(&self) -> bool {
