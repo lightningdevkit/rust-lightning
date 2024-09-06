@@ -1029,7 +1029,7 @@ impl PackageTemplate {
 		}).is_some()
 	}
 
-	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, first_bump: u32) -> Self {
+	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32) -> Self {
 		let (malleability, aggregable) = PackageSolvingData::map_output_type_flags(&input_solving_data);
 		let inputs = vec![(BitcoinOutPoint { txid, vout }, input_solving_data)];
 		PackageTemplate {
@@ -1038,7 +1038,7 @@ impl PackageTemplate {
 			soonest_conf_deadline,
 			aggregable,
 			feerate_previous: 0,
-			height_timer: first_bump,
+			height_timer: 0,
 		}
 	}
 }
@@ -1255,26 +1255,14 @@ mod tests {
 
 	#[test]
 	#[should_panic]
-	fn test_package_differing_heights() {
-		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
-		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx, false);
-
-		let mut package_one_hundred = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, 100);
-		let package_two_hundred = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, 200);
-		package_one_hundred.merge_package(package_two_hundred);
-	}
-
-	#[test]
-	#[should_panic]
 	fn test_package_untractable_merge_to() {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let htlc_outp = dumb_htlc_output!();
 
-		let mut untractable_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, 100);
-		let malleable_package = PackageTemplate::build_package(txid, 1, htlc_outp.clone(), 1000, 100);
+		let mut untractable_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000);
+		let malleable_package = PackageTemplate::build_package(txid, 1, htlc_outp.clone(), 1000);
 		untractable_package.merge_package(malleable_package);
 	}
 
@@ -1286,8 +1274,8 @@ mod tests {
 		let htlc_outp = dumb_htlc_output!();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
-		let mut malleable_package = PackageTemplate::build_package(txid, 0, htlc_outp.clone(), 1000, 100);
-		let untractable_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, 100);
+		let mut malleable_package = PackageTemplate::build_package(txid, 0, htlc_outp.clone(), 1000);
+		let untractable_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000);
 		malleable_package.merge_package(untractable_package);
 	}
 
@@ -1299,8 +1287,8 @@ mod tests {
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_counterparty_balance = dumb_revk_output!(secp_ctx, true);
 
-		let mut noaggregation_package = PackageTemplate::build_package(txid, 0, revk_outp_counterparty_balance.clone(), 1000, 100);
-		let aggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, 100);
+		let mut noaggregation_package = PackageTemplate::build_package(txid, 0, revk_outp_counterparty_balance.clone(), 1000);
+		let aggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000);
 		noaggregation_package.merge_package(aggregation_package);
 	}
 
@@ -1312,8 +1300,8 @@ mod tests {
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_counterparty_balance = dumb_revk_output!(secp_ctx, true);
 
-		let mut aggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, 100);
-		let noaggregation_package = PackageTemplate::build_package(txid, 1, revk_outp_counterparty_balance.clone(), 1000, 100);
+		let mut aggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000);
+		let noaggregation_package = PackageTemplate::build_package(txid, 1, revk_outp_counterparty_balance.clone(), 1000);
 		aggregation_package.merge_package(noaggregation_package);
 	}
 
@@ -1324,9 +1312,9 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
-		let mut empty_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, 100);
+		let mut empty_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000);
 		empty_package.inputs = vec![];
-		let package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, 100);
+		let package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000);
 		empty_package.merge_package(package);
 	}
 
@@ -1338,8 +1326,8 @@ mod tests {
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 0, ChannelTypeFeatures::only_static_remote_key());
 
-		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, 100);
-		let counterparty_package = PackageTemplate::build_package(txid, 1, counterparty_outp, 1000, 100);
+		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000);
+		let counterparty_package = PackageTemplate::build_package(txid, 1, counterparty_outp, 1000);
 		revoked_package.merge_package(counterparty_package);
 	}
 
@@ -1351,9 +1339,9 @@ mod tests {
 		let revk_outp_two = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_three = dumb_revk_output!(secp_ctx, false);
 
-		let mut package_one = PackageTemplate::build_package(txid, 0, revk_outp_one, 1000, 100);
-		let package_two = PackageTemplate::build_package(txid, 1, revk_outp_two, 1000, 100);
-		let package_three = PackageTemplate::build_package(txid, 2, revk_outp_three, 1000, 100);
+		let mut package_one = PackageTemplate::build_package(txid, 0, revk_outp_one, 1000);
+		let package_two = PackageTemplate::build_package(txid, 1, revk_outp_two, 1000);
+		let package_three = PackageTemplate::build_package(txid, 2, revk_outp_three, 1000);
 
 		package_one.merge_package(package_two);
 		package_one.merge_package(package_three);
@@ -1375,7 +1363,7 @@ mod tests {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let htlc_outp_one = dumb_htlc_output!();
 
-		let mut package_one = PackageTemplate::build_package(txid, 0, htlc_outp_one, 1000, 100);
+		let mut package_one = PackageTemplate::build_package(txid, 0, htlc_outp_one, 1000);
 		let ret_split = package_one.split_package(&BitcoinOutPoint { txid, vout: 0});
 		assert!(ret_split.is_none());
 	}
@@ -1386,8 +1374,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
-		let mut package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, 100);
-		assert_eq!(package.timer(), 100);
+		let mut package = PackageTemplate::build_package(txid, 0, revk_outp, 1000);
+		assert_eq!(package.timer(), 0);
 		package.set_timer(101);
 		assert_eq!(package.timer(), 101);
 	}
@@ -1398,7 +1386,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, ChannelTypeFeatures::only_static_remote_key());
 
-		let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
+		let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000);
 		assert_eq!(package.package_amount(), 1000);
 	}
 
@@ -1412,14 +1400,14 @@ mod tests {
 
 		{
 			let revk_outp = dumb_revk_output!(secp_ctx, false);
-			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, 100);
+			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0);
 			assert_eq!(package.package_weight(&ScriptBuf::new()),  weight_sans_output + WEIGHT_REVOKED_OUTPUT);
 		}
 
 		{
 			for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 				let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, channel_type_features.clone());
-				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
+				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000);
 				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_received_htlc(channel_type_features));
 			}
 		}
@@ -1427,7 +1415,7 @@ mod tests {
 		{
 			for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 				let counterparty_outp = dumb_counterparty_offered_output!(secp_ctx, 1_000_000, channel_type_features.clone());
-				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
+				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000);
 				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_offered_htlc(channel_type_features));
 			}
 		}
