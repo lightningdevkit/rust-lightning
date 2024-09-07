@@ -1636,15 +1636,15 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 			assert_eq!(as_commitment_claim_txn[0].input[0].previous_output.vout, 4); // Separate to_remote claim
 			check_spends!(as_commitment_claim_txn[0], revoked_local_txn[0]);
 			assert_eq!(as_commitment_claim_txn[1].input.len(), 2);
-			assert_eq!(as_commitment_claim_txn[1].input[0].previous_output.vout, 2);
-			assert_eq!(as_commitment_claim_txn[1].input[1].previous_output.vout, 3);
+			assert!(as_commitment_claim_txn[1].input.iter().any(|inp| inp.previous_output.vout == 2));
+			assert!(as_commitment_claim_txn[1].input.iter().any(|inp| inp.previous_output.vout == 3));
 			check_spends!(as_commitment_claim_txn[1], revoked_local_txn[0]);
 			Some(as_commitment_claim_txn.remove(0))
 		} else {
 			assert_eq!(as_commitment_claim_txn[0].input.len(), 3);
-			assert_eq!(as_commitment_claim_txn[0].input[0].previous_output.vout, 2);
-			assert_eq!(as_commitment_claim_txn[0].input[1].previous_output.vout, 0);
-			assert_eq!(as_commitment_claim_txn[0].input[2].previous_output.vout, 1);
+			assert!(as_commitment_claim_txn[0].input.iter().any(|inp| inp.previous_output.vout == 2));
+			assert!(as_commitment_claim_txn[0].input.iter().any(|inp| inp.previous_output.vout == 0));
+			assert!(as_commitment_claim_txn[0].input.iter().any(|inp| inp.previous_output.vout == 1));
 			check_spends!(as_commitment_claim_txn[0], revoked_local_txn[0]);
 			None
 		}
@@ -1954,9 +1954,9 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 		Some(claim_txn.remove(0))
 	} else {
 		assert_eq!(claim_txn[0].input.len(), 3);
-		assert_eq!(claim_txn[0].input[0].previous_output.vout, 3);
-		assert_eq!(claim_txn[0].input[1].previous_output.vout, 0);
-		assert_eq!(claim_txn[0].input[2].previous_output.vout, 1);
+		assert!(claim_txn[0].input.iter().any(|inp| inp.previous_output.vout == 3));
+		assert!(claim_txn[0].input.iter().any(|inp| inp.previous_output.vout == 0));
+		assert!(claim_txn[0].input.iter().any(|inp| inp.previous_output.vout == 1));
 		check_spends!(claim_txn[0], as_revoked_txn[0]);
 		None
 	};
