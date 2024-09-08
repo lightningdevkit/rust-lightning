@@ -2261,6 +2261,9 @@ where
 	/// keeping additional state.
 	probing_cookie_secret: [u8; 32],
 
+	/// When generating [`PaymentId`]s for inbound payments, we HMAC the HTLCs with this secret.
+	inbound_payment_id_secret: [u8; 32],
+
 	/// The highest block timestamp we've seen, which is usually a good guess at the current time.
 	/// Assuming most miners are generating blocks with reasonable timestamps, this shouldn't be
 	/// very far in the past, and can only ever be up to two hours in the future.
@@ -3152,6 +3155,7 @@ where
 			fake_scid_rand_bytes: entropy_source.get_secure_random_bytes(),
 
 			probing_cookie_secret: entropy_source.get_secure_random_bytes(),
+			inbound_payment_id_secret: entropy_source.get_secure_random_bytes(),
 
 			highest_seen_timestamp: AtomicUsize::new(current_timestamp as usize),
 
@@ -12381,6 +12385,7 @@ where
 		let mut events_override = None;
 		let mut in_flight_monitor_updates: Option<HashMap<(PublicKey, OutPoint), Vec<ChannelMonitorUpdate>>> = None;
 		let mut decode_update_add_htlcs: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> = None;
+		let mut inbound_payment_id_secret = None;
 		read_tlv_fields!(reader, {
 			(1, pending_outbound_payments_no_retry, option),
 			(2, pending_intercepted_htlcs, option),
@@ -12395,6 +12400,7 @@ where
 			(11, probing_cookie_secret, option),
 			(13, claimable_htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs, option),
+			(15, inbound_payment_id_secret, option),
 		});
 		let mut decode_update_add_htlcs = decode_update_add_htlcs.unwrap_or_else(|| new_hash_map());
 		if fake_scid_rand_bytes.is_none() {
@@ -12403,6 +12409,10 @@ where
 
 		if probing_cookie_secret.is_none() {
 			probing_cookie_secret = Some(args.entropy_source.get_secure_random_bytes());
+		}
+
+		if inbound_payment_id_secret.is_none() {
+			inbound_payment_id_secret = Some(args.entropy_source.get_secure_random_bytes());
 		}
 
 		if let Some(events) = events_override {
@@ -12930,6 +12940,7 @@ where
 			fake_scid_rand_bytes: fake_scid_rand_bytes.unwrap(),
 
 			probing_cookie_secret: probing_cookie_secret.unwrap(),
+			inbound_payment_id_secret: inbound_payment_id_secret.unwrap(),
 
 			our_network_pubkey,
 			secp_ctx,
