@@ -1720,6 +1720,15 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// RoutingMessageHandler implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	pub fn update_node_from_announcement(&self, msg: &msgs::NodeAnnouncement) -> Result<(), LightningError> {
+		// First check if we have the announcement already to avoid the CPU cost of validating a
+		// redundant announcement.
+		if let Some(node) = self.nodes.read().unwrap().get(&msg.contents.node_id) {
+			if let Some(node_info) = node.announcement_info.as_ref() {
+				if node_info.last_update()  == msg.contents.timestamp {
+					return Err(LightningError{err: "Update had the same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
+				}
+			}
+		}
 		verify_node_announcement(msg, &self.secp_ctx)?;
 		self.update_node_from_announcement_intern(&msg.contents, Some(&msg))
 	}
@@ -1788,6 +1797,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	where
 		U::Target: UtxoLookup,
 	{
+		self.pre_channel_announcement_validation_check(&msg.contents, utxo_lookup)?;
 		verify_channel_announcement(msg, &self.secp_ctx)?;
 		self.update_channel_from_unsigned_announcement_intern(&msg.contents, Some(msg), utxo_lookup)
 	}
@@ -1817,6 +1827,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	where
 		U::Target: UtxoLookup,
 	{
+		self.pre_channel_announcement_validation_check(&msg, utxo_lookup)?;
 		self.update_channel_from_unsigned_announcement_intern(msg, None, utxo_lookup)
 	}
 
@@ -1911,6 +1922,52 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 		Ok(())
 	}
 
+	/// If we already have all the information for a channel that we're gonna get, there's no
+	/// reason to redundantly process it.
+	///
+	/// In those cases, this will return an `Err` that we can return immediately. Otherwise it will
+	/// return an `Ok(())`.
+	fn pre_channel_announcement_validation_check<U: Deref>(
+		&self, msg: &msgs::UnsignedChannelAnnouncement, utxo_lookup: &Option<U>,
+	) -> Result<(), LightningError> where U::Target: UtxoLookup {
+		let channels = self.channels.read().unwrap();
+
+		if let Some(chan) = channels.get(&msg.short_channel_id) {
+			if chan.capacity_sats.is_some() {
+				// If we'd previously looked up the channel on-chain and checked the script
+				// against what appears on-chain, ignore the duplicate announcement.
+				//
+				// Because a reorg could replace one channel with another at the same SCID, if
+				// the channel appears to be different, we re-validate. This doesn't expose us
+				// to any more DoS risk than not, as a peer can always flood us with
+				// randomly-generated SCID values anyway.
+				//
+				// We use the Node IDs rather than the bitcoin_keys to check for "equivalence"
+				// as we didn't (necessarily) store the bitcoin keys, and we only really care
+				// if the peers on the channel changed anyway.
+				if msg.node_id_1 == chan.node_one && msg.node_id_2 == chan.node_two {
+					return Err(LightningError {
+						err: "Already have chain-validated channel".to_owned(),
+						action: ErrorAction::IgnoreDuplicateGossip
+					});
+				}
+			} else if utxo_lookup.is_none() {
+				// Similarly, if we can't check the chain right now anyway, ignore the
+				// duplicate announcement without bothering to take the channels write lock.
+				return Err(LightningError {
+					err: "Already have non-chain-validated channel".to_owned(),
+					action: ErrorAction::IgnoreDuplicateGossip
+				});
+			}
+		}
+
+		Ok(())
+	}
+
+	/// Update channel information from a received announcement.
+	///
+	/// Generally [`Self::pre_channel_announcement_validation_check`] should have been called
+	/// first.
 	fn update_channel_from_unsigned_announcement_intern<U: Deref>(
 		&self, msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>, utxo_lookup: &Option<U>
 	) -> Result<(), LightningError>
@@ -1926,39 +1983,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				err: "Channel announcement chain hash does not match genesis hash".to_owned(),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
 			});
-		}
-
-		{
-			let channels = self.channels.read().unwrap();
-
-			if let Some(chan) = channels.get(&msg.short_channel_id) {
-				if chan.capacity_sats.is_some() {
-					// If we'd previously looked up the channel on-chain and checked the script
-					// against what appears on-chain, ignore the duplicate announcement.
-					//
-					// Because a reorg could replace one channel with another at the same SCID, if
-					// the channel appears to be different, we re-validate. This doesn't expose us
-					// to any more DoS risk than not, as a peer can always flood us with
-					// randomly-generated SCID values anyway.
-					//
-					// We use the Node IDs rather than the bitcoin_keys to check for "equivalence"
-					// as we didn't (necessarily) store the bitcoin keys, and we only really care
-					// if the peers on the channel changed anyway.
-					if msg.node_id_1 == chan.node_one && msg.node_id_2 == chan.node_two {
-						return Err(LightningError {
-							err: "Already have chain-validated channel".to_owned(),
-							action: ErrorAction::IgnoreDuplicateGossip
-						});
-					}
-				} else if utxo_lookup.is_none() {
-					// Similarly, if we can't check the chain right now anyway, ignore the
-					// duplicate announcement without bothering to take the channels write lock.
-					return Err(LightningError {
-						err: "Already have non-chain-validated channel".to_owned(),
-						action: ErrorAction::IgnoreDuplicateGossip
-					});
-				}
-			}
 		}
 
 		{
@@ -2562,11 +2586,6 @@ pub(crate) mod tests {
 			};
 		}
 
-		match gossip_sync.handle_node_announcement(&valid_announcement) {
-			Ok(res) => assert!(res),
-			Err(_) => panic!()
-		};
-
 		let fake_msghash = hash_to_message!(zero_hash.as_byte_array());
 		match gossip_sync.handle_node_announcement(
 			&NodeAnnouncement {
@@ -2575,6 +2594,11 @@ pub(crate) mod tests {
 		}) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature on node_announcement message")
+		};
+
+		match gossip_sync.handle_node_announcement(&valid_announcement) {
+			Ok(res) => assert!(res),
+			Err(_) => panic!()
 		};
 
 		let announcement_with_data = get_signed_node_announcement(|unsigned_announcement| {
@@ -2698,21 +2722,22 @@ pub(crate) mod tests {
 			}
 		}
 
-		// Don't relay valid channels with excess data
-		let valid_announcement = get_signed_channel_announcement(|unsigned_announcement| {
+		let valid_excess_data_announcement = get_signed_channel_announcement(|unsigned_announcement| {
 			unsigned_announcement.short_channel_id += 4;
 			unsigned_announcement.excess_data.resize(MAX_EXCESS_BYTES_FOR_RELAY + 1, 0);
 		}, node_1_privkey, node_2_privkey, &secp_ctx);
-		match gossip_sync.handle_channel_announcement(&valid_announcement) {
-			Ok(res) => assert!(!res),
-			_ => panic!()
-		};
 
-		let mut invalid_sig_announcement = valid_announcement.clone();
+		let mut invalid_sig_announcement = valid_excess_data_announcement.clone();
 		invalid_sig_announcement.contents.excess_data = Vec::new();
 		match gossip_sync.handle_channel_announcement(&invalid_sig_announcement) {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Invalid signature on channel_announcement message")
+		};
+
+		// Don't relay valid channels with excess data
+		match gossip_sync.handle_channel_announcement(&valid_excess_data_announcement) {
+			Ok(res) => assert!(!res),
+			_ => panic!()
 		};
 
 		let channel_to_itself_announcement = get_signed_channel_announcement(|_| {}, node_1_privkey, node_1_privkey, &secp_ctx);
