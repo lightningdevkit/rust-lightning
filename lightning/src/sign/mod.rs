@@ -1853,6 +1853,9 @@ pub struct KeysManager {
 	channel_master_key: Xpriv,
 	channel_child_index: AtomicUsize,
 
+	#[cfg(test)]
+	pub(crate) entropy_source: RandomBytes,
+	#[cfg(not(test))]
 	entropy_source: RandomBytes,
 
 	seed: [u8; 32],
@@ -2309,6 +2312,9 @@ impl SignerProvider for KeysManager {
 /// Switching between this struct and [`KeysManager`] will invalidate any previously issued
 /// invoices and attempts to pay previous invoices will fail.
 pub struct PhantomKeysManager {
+	#[cfg(test)]
+	pub(crate) inner: KeysManager,
+	#[cfg(not(test))]
 	inner: KeysManager,
 	inbound_payment_key: KeyMaterial,
 	phantom_secret: SecretKey,
@@ -2486,6 +2492,13 @@ impl RandomBytes {
 	/// Creates a new instance using the given seed.
 	pub fn new(seed: [u8; 32]) -> Self {
 		Self { seed, index: AtomicCounter::new() }
+	}
+
+	#[cfg(test)]
+	/// Force the counter to a value to produce the same output again. Mostly useful in tests where
+	/// we need to maintain behavior with a previous version which didn't use as much RNG output.
+	pub(crate) fn set_counter(&self, count: u64) {
+		self.index.set_counter(count);
 	}
 }
 

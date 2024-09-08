@@ -1,32 +1,44 @@
-//! A simple atomic counter that uses AtomicUsize to give a u64 counter.
+//! A simple atomic counter that uses mutexes if the platform doesn't support atomic u64s.
 
-#[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
-compile_error!("We need at least 32-bit pointers for atomic counter (and to have enough memory to run LDK)");
+#[cfg(target_has_atomic = "64")]
+use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(target_has_atomic = "64"))]
+use crate::sync::Mutex;
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-#[derive(Debug)]
 pub(crate) struct AtomicCounter {
-	// Usize needs to be at least 32 bits to avoid overflowing both low and high. If usize is 64
-	// bits we will never realistically count into high:
-	counter_low: AtomicUsize,
-	counter_high: AtomicUsize,
+	#[cfg(target_has_atomic = "64")]
+	counter: AtomicU64,
+	#[cfg(not(target_has_atomic = "64"))]
+	counter: Mutex<u64>,
 }
 
 impl AtomicCounter {
 	pub(crate) fn new() -> Self {
 		Self {
-			counter_low: AtomicUsize::new(0),
-			counter_high: AtomicUsize::new(0),
+			#[cfg(target_has_atomic = "64")]
+			counter: AtomicU64::new(0),
+			#[cfg(not(target_has_atomic = "64"))]
+			counter: Mutex::new(0),
 		}
 	}
 	pub(crate) fn get_increment(&self) -> u64 {
-		let low = self.counter_low.fetch_add(1, Ordering::AcqRel) as u64;
-		let high = if low == 0 {
-			self.counter_high.fetch_add(1, Ordering::AcqRel) as u64
-		} else {
-			self.counter_high.load(Ordering::Acquire) as u64
-		};
-		(high << 32) | low
+		#[cfg(target_has_atomic = "64")] {
+			self.counter.fetch_add(1, Ordering::AcqRel)
+		}
+		#[cfg(not(target_has_atomic = "64"))] {
+			let mut mtx = self.counter.lock().unwrap();
+			*mtx += 1;
+			*mtx - 1
+		}
+	}
+	#[cfg(test)]
+	pub(crate) fn set_counter(&self, count: u64) {
+		#[cfg(target_has_atomic = "64")] {
+			self.counter.store(count, Ordering::Release);
+		}
+		#[cfg(not(target_has_atomic = "64"))] {
+			let mut mtx = self.counter.lock().unwrap();
+			*mtx  = count;
+		}
 	}
 }
