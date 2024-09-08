@@ -11,6 +11,9 @@ function PIN_RELEASE_DEPS {
 	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
 	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
 
+	# Starting with version 0.7.12, the `tokio-util` crate has an MSRV of rustc 1.70.0
+	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio-util --precise "0.7.11" --verbose
+
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
