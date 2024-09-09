@@ -854,11 +854,13 @@ fn test_async_holder_signatures_remote_commitment_anchors() {
 
 #[test]
 fn test_closing_signed() {
-	do_test_closing_signed(false);
-	do_test_closing_signed(true);
+	do_test_closing_signed(false, false);
+	do_test_closing_signed(true, false);
+	do_test_closing_signed(false, true);
+	do_test_closing_signed(true, true);
 }
 
-fn do_test_closing_signed(extra_closing_signed: bool) {
+fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	// Based off of `expect_channel_shutdown_state`.
 	// Test that we can asynchronously sign closing transactions.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -866,6 +868,9 @@ fn do_test_closing_signed(extra_closing_signed: bool) {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Avoid extra channel ready message upon reestablish later
+	send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NotShuttingDown);
 
@@ -914,7 +919,7 @@ fn do_test_closing_signed(extra_closing_signed: bool) {
 			let mut node_1_closing_signed_2 = node_1_closing_signed.clone();
 			let holder_script = nodes[0].keys_manager.get_shutdown_scriptpubkey().unwrap();
 			let counterparty_script = nodes[1].keys_manager.get_shutdown_scriptpubkey().unwrap();
-			let funding_outpoint = bitcoin::OutPoint { txid: chan_1.3.txid(), vout: 0 };
+			let funding_outpoint = bitcoin::OutPoint { txid: chan_1.3.compute_txid(), vout: 0 };
 			let closing_tx_2 = ClosingTransaction::new(50000, 0, holder_script.into(),
 				counterparty_script.into(), funding_outpoint);
 
@@ -941,9 +946,45 @@ fn do_test_closing_signed(extra_closing_signed: bool) {
 		};
 	}
 
+	if reconnect {
+		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+
+		*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 8;
+		*nodes[1].fee_estimator.sat_per_kw.lock().unwrap() *= 8;
+
+		connect_nodes(&nodes[0], &nodes[1]);
+		let node_0_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
+		let node_1_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
+		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_reestablish);
+		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_reestablish);
+
+		let node_0_msgs = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(node_0_msgs.len(), 2);
+		let node_0_2nd_shutdown = match node_0_msgs[0] {
+			MessageSendEvent::SendShutdown { ref msg, .. } => {
+				msg.clone()
+			},
+			_ => panic!(),
+		};
+		let node_0_2nd_closing_signed = match node_0_msgs[1] {
+			MessageSendEvent::SendClosingSigned { ref msg, .. } => {
+				msg.clone()
+			},
+			_ => panic!(),
+		};
+		let node_1_2nd_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
+
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_2nd_shutdown);
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown);
+		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed);
+		let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed);
+	}
+
 	nodes[0].node.signer_unblocked(None);
 	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-
 	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed.unwrap());
 	let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
 	assert!(node_1_closing_signed.is_none());
@@ -952,4 +993,5 @@ fn do_test_closing_signed(extra_closing_signed: bool) {
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_closed_event!(nodes[0], 1, ClosureReason::LocallyInitiatedCooperativeClosure, [nodes[1].node.get_our_node_id()], 100000);
 	check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyInitiatedCooperativeClosure, [nodes[0].node.get_our_node_id()], 100000);
+
 }

@@ -909,6 +909,7 @@ pub(super) struct SignerResumeUpdates {
 	pub order: RAACommitmentOrder,
 	pub closing_signed: Option<msgs::ClosingSigned>,
 	pub signed_closing_tx: Option<Transaction>,
+	pub shutdown_result: Option<ShutdownResult>,
 }
 
 /// The return value of `channel_reestablish`
@@ -5508,7 +5509,7 @@ impl<SP: Deref> Channel<SP> where
 			commitment_update = None;
 		}
 
-		let (closing_signed, signed_closing_tx) = if self.context.signer_pending_closing {
+		let (closing_signed, signed_closing_tx, shutdown_result) = if self.context.signer_pending_closing {
 			debug_assert!(self.context.last_sent_closing_fee.is_some());
 			if let Some((fee, skip_remote_output, fee_range, holder_sig)) = self.context.last_sent_closing_fee.clone() {
 				debug_assert!(holder_sig.is_none());
@@ -5524,19 +5525,21 @@ impl<SP: Deref> Channel<SP> where
 						&self.context.get_counterparty_pubkeys().funding_pubkey).is_ok());
 					Some(self.build_signed_closing_transaction(&closing_tx, &counterparty_sig, signature))
 				} else { None };
-				(closing_signed, signed_tx)
-			} else { (None, None) }
-		} else { (None, None) };
+				let shutdown_result = signed_tx.as_ref().map(|_| self.shutdown_result_coop_close());
+				(closing_signed, signed_tx, shutdown_result)
+			} else { (None, None, None) }
+		} else { (None, None, None) };
 
 		log_trace!(logger, "Signer unblocked with {} commitment_update, {} revoke_and_ack, with resend order {:?}, {} funding_signed, {} channel_ready,
-					{} closing_signed, and {} signed_closing_tx",
+				{} closing_signed, {} signed_closing_tx, and {} shutdown result",
 			if commitment_update.is_some() { "a" } else { "no" },
 			if revoke_and_ack.is_some() { "a" } else { "no" },
 			self.context.resend_order,
 			if funding_signed.is_some() { "a" } else { "no" },
 			if channel_ready.is_some() { "a" } else { "no" },
 			if closing_signed.is_some() { "a" } else { "no" },
-			if signed_closing_tx.is_some() { "a" } else { "no" });
+			if signed_closing_tx.is_some() { "a" } else { "no" },
+			if shutdown_result.is_some() { "a" } else { "no" });
 
 		SignerResumeUpdates {
 			commitment_update,
@@ -5546,6 +5549,7 @@ impl<SP: Deref> Channel<SP> where
 			order: self.context.resend_order.clone(),
 			closing_signed,
 			signed_closing_tx,
+			shutdown_result,
 		}
 	}
 
@@ -6170,6 +6174,27 @@ impl<SP: Deref> Channel<SP> where
 		})
 	}
 
+	fn shutdown_result_coop_close(&self) -> ShutdownResult {
+		let closure_reason = if self.initiated_shutdown() {
+			ClosureReason::LocallyInitiatedCooperativeClosure
+		} else {
+			ClosureReason::CounterpartyInitiatedCooperativeClosure
+		};
+		ShutdownResult {
+			closure_reason,
+			monitor_update: None,
+			dropped_outbound_htlcs: Vec::new(),
+			unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
+			channel_id: self.context.channel_id,
+			user_channel_id: self.context.user_id,
+			channel_capacity_satoshis: self.context.channel_value_satoshis,
+			counterparty_node_id: self.context.counterparty_node_id,
+			unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
+			is_manual_broadcast: self.context.is_manual_broadcast,
+			channel_funding_txo: self.context.get_funding_txo(),
+		}
+	}
+
 	pub fn closing_signed<F: Deref, L: Deref>(
 		&mut self, fee_estimator: &LowerBoundedFeeEstimator<F>, msg: &msgs::ClosingSigned, logger: &L)
 		-> Result<(Option<msgs::ClosingSigned>, Option<Transaction>, Option<ShutdownResult>), ChannelError>
@@ -6226,28 +6251,10 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 
-		let closure_reason = if self.initiated_shutdown() {
-			ClosureReason::LocallyInitiatedCooperativeClosure
-		} else {
-			ClosureReason::CounterpartyInitiatedCooperativeClosure
-		};
-
 		assert!(self.context.shutdown_scriptpubkey.is_some());
 		if let Some((last_fee, _, _, Some(sig))) = self.context.last_sent_closing_fee {
 			if last_fee == msg.fee_satoshis {
-				let shutdown_result = ShutdownResult {
-					closure_reason,
-					monitor_update: None,
-					dropped_outbound_htlcs: Vec::new(),
-					unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
-					channel_id: self.context.channel_id,
-					user_channel_id: self.context.user_id,
-					channel_capacity_satoshis: self.context.channel_value_satoshis,
-					counterparty_node_id: self.context.counterparty_node_id,
-					unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
-					is_manual_broadcast: self.context.is_manual_broadcast,
-					channel_funding_txo: self.context.get_funding_txo(),
-				};
+				let shutdown_result = self.shutdown_result_coop_close();
 				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete;
 				self.context.update_time_counter += 1;
@@ -6268,19 +6275,8 @@ impl<SP: Deref> Channel<SP> where
 
 				let closing_signed = self.get_closing_signed_msg(&closing_tx, skip_remote_output, used_fee, our_min_fee, our_max_fee, logger);
 				let (signed_tx, shutdown_result) = if $new_fee == msg.fee_satoshis {
-					let shutdown_result = ShutdownResult {
-						closure_reason,
-						monitor_update: None,
-						dropped_outbound_htlcs: Vec::new(),
-						unbroadcasted_batch_funding_txid: self.context.unbroadcasted_batch_funding_txid(),
-						channel_id: self.context.channel_id,
-						user_channel_id: self.context.user_id,
-						channel_capacity_satoshis: self.context.channel_value_satoshis,
-						counterparty_node_id: self.context.counterparty_node_id,
-						unbroadcasted_funding_tx: self.context.unbroadcasted_funding(),
-						is_manual_broadcast: self.context.is_manual_broadcast,
-						channel_funding_txo: self.context.get_funding_txo(),
-					};
+					let shutdown_result = closing_signed.as_ref()
+						.map(|_| self.shutdown_result_coop_close());
 					if closing_signed.is_some() {
 						self.context.channel_state = ChannelState::ShutdownComplete;
 					}
@@ -6288,7 +6284,7 @@ impl<SP: Deref> Channel<SP> where
 					self.context.last_received_closing_sig = Some(msg.signature.clone());
 					let tx = closing_signed.as_ref().map(|ClosingSigned { signature, .. }|
 						self.build_signed_closing_transaction(&closing_tx, &msg.signature, signature));
-					(tx, Some(shutdown_result))
+					(tx, shutdown_result)
 				} else {
 					(None, None)
 				};
