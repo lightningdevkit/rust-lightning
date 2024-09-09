@@ -1328,7 +1328,7 @@ mod tests {
 	impl EntropySource for TestEntropySource {
 		fn get_secure_random_bytes(&self) -> [u8; 32] {
 			let mut res = [0u8; 32];
-			let increment = self.0.get_increment();
+			let increment = self.0.next();
 			for (i, byte) in res.iter_mut().enumerate() {
 				// Rotate the increment value by 'i' bits to the right, to avoid clashes
 				// when `generate_local_serial_id` does a parity flip on consecutive calls for the

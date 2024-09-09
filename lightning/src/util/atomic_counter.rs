@@ -21,7 +21,7 @@ impl AtomicCounter {
 			counter: Mutex::new(0),
 		}
 	}
-	pub(crate) fn get_increment(&self) -> u64 {
+	pub(crate) fn next(&self) -> u64 {
 		#[cfg(target_has_atomic = "64")] {
 			self.counter.fetch_add(1, Ordering::AcqRel)
 		}

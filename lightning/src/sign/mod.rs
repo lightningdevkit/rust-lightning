@@ -2504,7 +2504,7 @@ impl RandomBytes {
 
 impl EntropySource for RandomBytes {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let index = self.index.get_increment();
+		let index = self.index.next();
 		let mut nonce = [0u8; 16];
 		nonce[..8].copy_from_slice(&index.to_be_bytes());
 		ChaCha20::get_single_block(&self.seed, &nonce)
