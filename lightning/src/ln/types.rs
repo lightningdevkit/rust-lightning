@@ -30,6 +30,7 @@ use bitcoin::hashes::{
 	HashEngine as _,
 	sha256::Hash as Sha256,
 };
+use core::borrow::Borrow;
 use core::fmt;
 use core::ops::Deref;
 
@@ -124,6 +125,12 @@ impl Readable for ChannelId {
 impl fmt::Display for ChannelId {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		crate::util::logger::DebugBytes(&self.0).fmt(f)
+	}
+}
+
+impl Borrow<[u8]> for ChannelId {
+	fn borrow(&self) -> &[u8] {
+		&self.0[..]
 	}
 }
 

@@ -7135,7 +7135,7 @@ where
 				chan
 			} else {
 				let update_actions = peer_state.monitor_update_blocked_actions
-					.remove(&channel_id).unwrap_or(Vec::new());
+					.remove(channel_id).unwrap_or(Vec::new());
 				mem::drop(peer_state_lock);
 				mem::drop(per_peer_state);
 				self.handle_monitor_update_completion_actions(update_actions);
