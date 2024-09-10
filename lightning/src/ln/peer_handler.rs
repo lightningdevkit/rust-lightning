@@ -1333,8 +1333,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		match self.do_read_event(peer_descriptor, data) {
 			Ok(res) => Ok(res),
 			Err(e) => {
-				log_trace!(self.logger, "Disconnecting peer due to a protocol error (usually a duplicate connection).");
-				self.disconnect_event_internal(peer_descriptor);
+				self.disconnect_event_internal(peer_descriptor, "of a protocol error");
 				Err(e)
 			}
 		}
@@ -2435,7 +2434,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	/// Indicates that the given socket descriptor's connection is now closed.
 	pub fn socket_disconnected(&self, descriptor: &Descriptor) {
-		self.disconnect_event_internal(descriptor);
+		self.disconnect_event_internal(descriptor, "the socket was disconnected");
 	}
 
 	fn do_disconnect(&self, mut descriptor: Descriptor, peer: &Peer, reason: &'static str) {
@@ -2455,7 +2454,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		descriptor.disconnect_socket();
 	}
 
-	fn disconnect_event_internal(&self, descriptor: &Descriptor) {
+	fn disconnect_event_internal(&self, descriptor: &Descriptor, reason: &'static str) {
 		let mut peers = self.peers.write().unwrap();
 		let peer_option = peers.remove(descriptor);
 		match peer_option {
@@ -2467,7 +2466,8 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			Some(peer_lock) => {
 				let peer = peer_lock.lock().unwrap();
 				if let Some((node_id, _)) = peer.their_node_id {
-					log_trace!(WithContext::from(&self.logger, Some(node_id), None, None), "Handling disconnection of peer {}", log_pubkey!(node_id));
+					let logger = WithContext::from(&self.logger, Some(node_id), None, None);
+					log_trace!(logger, "Handling disconnection of peer {} because {}", log_pubkey!(node_id), reason);
 					let removed = self.node_id_to_descriptor.lock().unwrap().remove(&node_id);
 					debug_assert!(removed.is_some(), "descriptor maps should be consistent");
 					if !peer.handshake_complete() { return; }
