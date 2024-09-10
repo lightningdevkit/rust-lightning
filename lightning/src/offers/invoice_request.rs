@@ -883,13 +883,13 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	#[cfg(feature = "std")]
 	pub fn respond_using_derived_keys(
-		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash
+		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash, custom_amount_msats: Option<u64>
 	) -> Result<$builder, Bolt12SemanticError> {
 		let created_at = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
 
-		$self.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at)
+		$self.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at, custom_amount_msats)
 	}
 
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
@@ -901,7 +901,7 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	pub fn respond_using_derived_keys_no_std(
 		&$self, payment_paths: Vec<BlindedPaymentPath>, payment_hash: PaymentHash,
-		created_at: core::time::Duration
+		created_at: core::time::Duration, custom_amount_msats: Option<u64>
 	) -> Result<$builder, Bolt12SemanticError> {
 		if $self.inner.invoice_request_features().requires_unknown_bits() {
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
@@ -918,7 +918,7 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 		}
 
 		<$builder>::for_offer_using_keys(
-			&$self.inner, payment_paths, created_at, payment_hash, keys
+			&$self.inner, payment_paths, created_at, payment_hash, keys, custom_amount_msats
 		)
 	}
 } }

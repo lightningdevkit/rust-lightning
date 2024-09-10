@@ -216,7 +216,7 @@ macro_rules! invoice_explicit_signing_pubkey_builder_methods { ($self: ident, $s
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<BlindedPaymentPath>,
 		created_at: Duration, payment_hash: PaymentHash, signing_pubkey: PublicKey
 	) -> Result<Self, Bolt12SemanticError> {
-		let amount_msats = Self::amount_msats(invoice_request)?;
+		let amount_msats = Self::amount_msats(invoice_request, None)?;
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
 			fields: Self::fields(
@@ -272,9 +272,9 @@ macro_rules! invoice_derived_signing_pubkey_builder_methods { ($self: ident, $se
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	pub(super) fn for_offer_using_keys(
 		invoice_request: &'a InvoiceRequest, payment_paths: Vec<BlindedPaymentPath>,
-		created_at: Duration, payment_hash: PaymentHash, keys: Keypair
+		created_at: Duration, payment_hash: PaymentHash, keys: Keypair, custom_amount_msats: Option<u64>
 	) -> Result<Self, Bolt12SemanticError> {
-		let amount_msats = Self::amount_msats(invoice_request)?;
+		let amount_msats = Self::amount_msats(invoice_request, custom_amount_msats)?;
 		let signing_pubkey = keys.public_key();
 		let contents = InvoiceContents::ForOffer {
 			invoice_request: invoice_request.contents.clone(),
@@ -340,18 +340,29 @@ macro_rules! invoice_builder_methods { (
 	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr, $type_param: ty $(, $self_mut: tt)?
 ) => {
 	pub(crate) fn amount_msats(
-		invoice_request: &InvoiceRequest
+		invoice_request: &InvoiceRequest, custom_amount_msats: Option<u64>
 	) -> Result<u64, Bolt12SemanticError> {
-		match invoice_request.amount_msats() {
-			Some(amount_msats) => Ok(amount_msats),
-			None => match invoice_request.contents.inner.offer.amount() {
-				Some(Amount::Bitcoin { amount_msats }) => {
-					amount_msats.checked_mul(invoice_request.quantity().unwrap_or(1))
-						.ok_or(Bolt12SemanticError::InvalidAmount)
-				},
-				Some(Amount::Currency { .. }) => Err(Bolt12SemanticError::UnsupportedCurrency),
-				None => Err(Bolt12SemanticError::MissingAmount),
-			},
+		if invoice_request.amount_msats().is_some() && custom_amount_msats.is_some() {
+			return Err(Bolt12SemanticError::UnexpectedAmount);
+		}
+
+		if let Some(amount_msats) = invoice_request.amount_msats() {
+			return Ok(amount_msats);
+		}
+
+		if let Some(custom_amount_msats) = custom_amount_msats {
+			return Ok(custom_amount_msats);
+		}
+
+		match invoice_request.contents.inner.offer.amount() {
+			Some(Amount::Bitcoin { amount_msats }) => {
+				let quantity = invoice_request.quantity().unwrap_or(1);
+				amount_msats
+					.checked_mul(quantity)
+					.ok_or(Bolt12SemanticError::InvalidAmount)
+			}
+			Some(Amount::Currency { .. }) => Err(Bolt12SemanticError::UnsupportedCurrency),
+			None => Err(Bolt12SemanticError::MissingAmount),
 		}
 	}
 
@@ -1820,7 +1831,7 @@ mod tests {
 
 		if let Err(e) = invoice_request.clone()
 			.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap()
-			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now()).unwrap()
+			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now(), None).unwrap()
 			.build_and_sign(&secp_ctx)
 		{
 			panic!("error building invoice: {:?}", e);
@@ -1841,7 +1852,7 @@ mod tests {
 
 		match invoice_request
 			.verify_using_metadata(&expanded_key, &secp_ctx).unwrap()
-			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now())
+			.respond_using_derived_keys_no_std(payment_paths(), payment_hash(), now(), None)
 		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidMetadata),

@@ -2223,7 +2223,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	let created_at = alice.node.duration_since_epoch();
 	let invoice = invoice_request
 		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap()
-		.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at).unwrap()
+		.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at, None).unwrap()
 		.features_unchecked(Bolt12InvoiceFeatures::unknown())
 		.build_and_sign(&secp_ctx).unwrap();
 
