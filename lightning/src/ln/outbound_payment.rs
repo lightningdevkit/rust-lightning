@@ -64,6 +64,9 @@ pub(crate) enum PendingOutboundPayment {
 		max_total_routing_fee_msat: Option<u64>,
 		retryable_invoice_request: Option<RetryableInvoiceRequest>
 	},
+	// This state will never be persisted to disk because we transition from `AwaitingInvoice` to
+	// `Retryable` atomically within the `ChannelManager::total_consistency_lock`. Useful to avoid
+	// holding the `OutboundPayments::pending_outbound_payments` lock during pathfinding.
 	InvoiceReceived {
 		payment_hash: PaymentHash,
 		retry_strategy: Retry,
@@ -71,6 +74,10 @@ pub(crate) enum PendingOutboundPayment {
 		// used anywhere.
 		max_total_routing_fee_msat: Option<u64>,
 	},
+	// This state applies when we are paying an often-offline recipient and another node on the
+	// network served us a static invoice on the recipient's behalf in response to our invoice
+	// request. As a result, once a payment gets in this state it will remain here until the recipient
+	// comes back online, which may take hours or even days.
 	StaticInvoiceReceived {
 		payment_hash: PaymentHash,
 		keysend_preimage: PaymentPreimage,
