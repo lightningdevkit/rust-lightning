@@ -409,6 +409,38 @@ impl From<&ClaimableHTLC> for events::ClaimedHTLC {
 	}
 }
 
+/// A trait defining behavior for creating and verifing the HMAC for authenticating a given data.
+pub trait Verification {
+	/// Constructs an HMAC to include in [`OffersContext`] for the data along with the given
+	/// [`Nonce`].
+	fn hmac_for_offer_payment(
+		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Hmac<Sha256>;
+
+	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
+	fn verify(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()>;
+}
+
+impl Verification for PaymentHash {
+	/// Constructs an HMAC to include in [`OffersContext::InboundPayment`] for the payment hash
+	/// along with the given [`Nonce`].
+	fn hmac_for_offer_payment(
+		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Hmac<Sha256> {
+		signer::hmac_for_payment_hash(*self, nonce, expanded_key)
+	}
+
+	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
+	/// [`OffersContext::InboundPayment`].
+	fn verify(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_payment_hash(*self, hmac, nonce, expanded_key)
+	}
+}
+
 /// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
 /// a payment and ensure idempotency in LDK.
 ///
@@ -419,10 +451,12 @@ pub struct PaymentId(pub [u8; Self::LENGTH]);
 impl PaymentId {
 	/// Number of bytes in the id.
 	pub const LENGTH: usize = 32;
+}
 
+impl Verification for PaymentId {
 	/// Constructs an HMAC to include in [`OffersContext::OutboundPayment`] for the payment id
 	/// along with the given [`Nonce`].
-	pub fn hmac_for_offer_payment(
+	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
 		signer::hmac_for_payment_id(*self, nonce, expanded_key)
@@ -430,7 +464,7 @@ impl PaymentId {
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::OutboundPayment`].
-	pub fn verify(
+	fn verify(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
 		signer::verify_payment_id(*self, hmac, nonce, expanded_key)
