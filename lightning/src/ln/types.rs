@@ -30,7 +30,8 @@ use bitcoin::hashes::{
 	HashEngine as _,
 	sha256::Hash as Sha256,
 };
-use core::fmt;
+use bitcoin::hex::display::impl_fmt_traits;
+use core::borrow::Borrow;
 use core::ops::Deref;
 
 /// A unique 32-byte identifier for a channel.
@@ -41,7 +42,7 @@ use core::ops::Deref;
 /// A _temporary_ ID is generated randomly.
 /// (Later revocation-point-based _v2_ is a possibility.)
 /// The variety (context) is not stored, it is relevant only at creation.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ChannelId(pub [u8; 32]);
 
 impl ChannelId {
@@ -121,9 +122,15 @@ impl Readable for ChannelId {
 	}
 }
 
-impl fmt::Display for ChannelId {
-	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		crate::util::logger::DebugBytes(&self.0).fmt(f)
+impl Borrow<[u8]> for ChannelId {
+	fn borrow(&self) -> &[u8] {
+		&self.0[..]
+	}
+}
+
+impl_fmt_traits! {
+	impl fmt_traits for ChannelId {
+		const LENGTH: usize = 32;
 	}
 }
 

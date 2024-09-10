@@ -14,9 +14,7 @@ use alloc::vec::Vec;
 use core::borrow::Borrow;
 
 use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _};
-
-// TODO: Once we switch to rust-bitcoin 0.32, import this as bitcoin::hex
-use hex_conservative::display::impl_fmt_traits;
+use bitcoin::hex::display::impl_fmt_traits;
 
 /// The payment hash is the hash of the [`PaymentPreimage`] which is the value used to lock funds
 /// in HTLCs while they transit the lightning network.
