@@ -824,7 +824,7 @@ pub enum Event {
 	/// Indicates a [`Bolt12Invoice`] in response to an [`InvoiceRequest`] or a [`Refund`] was
 	/// received.
 	///
-	/// This event will only be generated if [`UserConfig::manually_handle_bolt12_invoices`] is set.
+	/// This event will only be generated if [`UserConfig::manually_handle_bolt12_messages`] is set.
 	/// Use [`ChannelManager::send_payment_for_bolt12_invoice`] to pay the invoice or
 	/// [`ChannelManager::abandon_payment`] to abandon the associated payment. See those docs for
 	/// further details.
@@ -835,7 +835,7 @@ pub enum Event {
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Refund`]: crate::offers::refund::Refund
-	/// [`UserConfig::manually_handle_bolt12_invoices`]: crate::util::config::UserConfig::manually_handle_bolt12_invoices
+	/// [`UserConfig::manually_handle_bolt12_messages`]: crate::util::config::UserConfig::manually_handle_bolt12_messages
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	InvoiceReceived {

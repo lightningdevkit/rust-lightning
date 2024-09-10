@@ -11154,7 +11154,7 @@ where
 					&self.logger, None, None, Some(invoice.payment_hash()),
 				);
 
-				if self.default_configuration.manually_handle_bolt12_invoices {
+				if self.default_configuration.manually_handle_bolt12_messages {
 					let event = Event::InvoiceReceived {
 						payment_id, invoice, context, responder,
 					};
