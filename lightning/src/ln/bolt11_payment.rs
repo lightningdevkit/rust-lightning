@@ -199,7 +199,7 @@ mod tests {
 			.unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let send_event = SendEvent::from_node(&nodes[0]);
-		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
 		commitment_signed_dance!(nodes[1], nodes[0], &send_event.commitment_msg, false);
 
 		expect_pending_htlcs_forwardable!(nodes[1]);

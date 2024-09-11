@@ -61,23 +61,23 @@
 //! impl CustomMessageHandler for FooHandler {
 //!     // ...
 //! #     fn handle_custom_message(
-//! #         &self, _msg: Self::CustomMessage, _sender_node_id: &PublicKey
+//! #         &self, _msg: Self::CustomMessage, _sender_node_id: PublicKey
 //! #     ) -> Result<(), LightningError> {
 //! #         unimplemented!()
 //! #     }
 //! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
 //! #         unimplemented!()
 //! #     }
-//! #     fn peer_disconnected(&self, _their_node_id: &PublicKey) {
+//! #     fn peer_disconnected(&self, _their_node_id: PublicKey) {
 //! #         unimplemented!()
 //! #     }
-//! #     fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
+//! #     fn peer_connected(&self, _their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
 //! #         unimplemented!()
 //! #     }
 //! #     fn provided_node_features(&self) -> NodeFeatures {
 //! #         unimplemented!()
 //! #     }
-//! #     fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+//! #     fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
 //! #         unimplemented!()
 //! #     }
 //! }
@@ -113,23 +113,23 @@
 //! impl CustomMessageHandler for BarHandler {
 //!     // ...
 //! #     fn handle_custom_message(
-//! #         &self, _msg: Self::CustomMessage, _sender_node_id: &PublicKey
+//! #         &self, _msg: Self::CustomMessage, _sender_node_id: PublicKey
 //! #     ) -> Result<(), LightningError> {
 //! #         unimplemented!()
 //! #     }
 //! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
 //! #         unimplemented!()
 //! #     }
-//! #     fn peer_disconnected(&self, _their_node_id: &PublicKey) {
+//! #     fn peer_disconnected(&self, _their_node_id: PublicKey) {
 //! #         unimplemented!()
 //! #     }
-//! #     fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
+//! #     fn peer_connected(&self, _their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
 //! #         unimplemented!()
 //! #     }
 //! #     fn provided_node_features(&self) -> NodeFeatures {
 //! #         unimplemented!()
 //! #     }
-//! #     fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+//! #     fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
 //! #         unimplemented!()
 //! #     }
 //! }
@@ -165,23 +165,23 @@
 //! impl CustomMessageHandler for BazHandler {
 //!     // ...
 //! #     fn handle_custom_message(
-//! #         &self, _msg: Self::CustomMessage, _sender_node_id: &PublicKey
+//! #         &self, _msg: Self::CustomMessage, _sender_node_id: PublicKey
 //! #     ) -> Result<(), LightningError> {
 //! #         unimplemented!()
 //! #     }
 //! #     fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Self::CustomMessage)> {
 //! #         unimplemented!()
 //! #     }
-//! #     fn peer_disconnected(&self, _their_node_id: &PublicKey) {
+//! #     fn peer_disconnected(&self, _their_node_id: PublicKey) {
 //! #         unimplemented!()
 //! #     }
-//! #     fn peer_connected(&self, _their_node_id: &PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
+//! #     fn peer_connected(&self, _their_node_id: PublicKey, _msg: &Init, _inbound: bool) -> Result<(), ()> {
 //! #         unimplemented!()
 //! #     }
 //! #     fn provided_node_features(&self) -> NodeFeatures {
 //! #         unimplemented!()
 //! #     }
-//! #     fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+//! #     fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
 //! #         unimplemented!()
 //! #     }
 //! }
@@ -279,7 +279,7 @@ macro_rules! composite_custom_message_handler {
 
 		impl $crate::lightning::ln::peer_handler::CustomMessageHandler for $handler {
 			fn handle_custom_message(
-				&self, msg: Self::CustomMessage, sender_node_id: &$crate::bitcoin::secp256k1::PublicKey
+				&self, msg: Self::CustomMessage, sender_node_id: $crate::bitcoin::secp256k1::PublicKey
 			) -> Result<(), $crate::lightning::ln::msgs::LightningError> {
 				match msg {
 					$(
@@ -305,13 +305,13 @@ macro_rules! composite_custom_message_handler {
 					.collect()
 			}
 
-			fn peer_disconnected(&self, their_node_id: &$crate::bitcoin::secp256k1::PublicKey) {
+			fn peer_disconnected(&self, their_node_id: $crate::bitcoin::secp256k1::PublicKey) {
 				$(
 					self.$field.peer_disconnected(their_node_id);
 				)*
 			}
 
-			fn peer_connected(&self, their_node_id: &$crate::bitcoin::secp256k1::PublicKey, msg: &$crate::lightning::ln::msgs::Init, inbound: bool) -> Result<(), ()> {
+			fn peer_connected(&self, their_node_id: $crate::bitcoin::secp256k1::PublicKey, msg: &$crate::lightning::ln::msgs::Init, inbound: bool) -> Result<(), ()> {
 				let mut result = Ok(());
 				$(
 					if let Err(e) = self.$field.peer_connected(their_node_id, msg, inbound) {
@@ -329,7 +329,7 @@ macro_rules! composite_custom_message_handler {
 			}
 
 			fn provided_init_features(
-				&self, their_node_id: &$crate::bitcoin::secp256k1::PublicKey
+				&self, their_node_id: $crate::bitcoin::secp256k1::PublicKey
 			) -> $crate::lightning::ln::features::InitFeatures {
 				$crate::lightning::ln::features::InitFeatures::empty()
 					$(

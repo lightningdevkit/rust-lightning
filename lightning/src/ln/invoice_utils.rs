@@ -906,8 +906,8 @@ mod test {
 			assert_eq!(events.len(), 1);
 			SendEvent::from_event(events.remove(0))
 		};
-		nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
-		nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
+		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &payment_event.commitment_msg);
 		check_added_monitors(&nodes[1], 1);
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
@@ -1009,19 +1009,19 @@ mod test {
 		// yet announced.
 		let pub_channel_scid = mine_transaction(&nodes[0], &conf_tx);
 		let node_a_pub_channel_ready = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &node_a_pub_channel_ready);
+		nodes[1].node.handle_channel_ready(nodes[0].node.get_our_node_id(), &node_a_pub_channel_ready);
 
 		assert_eq!(mine_transaction(&nodes[1], &conf_tx), pub_channel_scid);
 		let events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		if let MessageSendEvent::SendChannelReady { msg, .. } = &events[0] {
-			nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), msg);
+			nodes[0].node.handle_channel_ready(nodes[1].node.get_our_node_id(), msg);
 		} else { panic!(); }
 		if let MessageSendEvent::SendChannelUpdate { msg, .. } = &events[1] {
-			nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), msg);
+			nodes[0].node.handle_channel_update(nodes[1].node.get_our_node_id(), msg);
 		} else { panic!(); }
 
-		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id()));
+		nodes[1].node.handle_channel_update(nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id()));
 
 		expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
 		expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -1094,13 +1094,13 @@ mod test {
 
 		// With only one sufficient-value peer connected we should only get its hint
 		scid_aliases.remove(&chan_b.0.short_channel_id_alias.unwrap());
-		nodes[0].node.peer_disconnected(&nodes[2].node.get_our_node_id());
+		nodes[0].node.peer_disconnected(nodes[2].node.get_our_node_id());
 		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases.clone());
 
 		// If we don't have any sufficient-value peers connected we should get all hints with
 		// sufficient value, even though there is a connected insufficient-value peer.
 		scid_aliases.insert(chan_b.0.short_channel_id_alias.unwrap());
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases);
 	}
 
@@ -1161,9 +1161,9 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announce_for_forwarding = false;
 		let temporary_channel_id = nodes[2].node.create_channel(nodes[0].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg)).unwrap();
 		let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_open_channel(&nodes[2].node.get_our_node_id(), &open_channel);
+		nodes[0].node.handle_open_channel(nodes[2].node.get_our_node_id(), &open_channel);
 		let accept_channel = get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, nodes[2].node.get_our_node_id());
-		nodes[2].node.handle_accept_channel(&nodes[0].node.get_our_node_id(), &accept_channel);
+		nodes[2].node.handle_accept_channel(nodes[0].node.get_our_node_id(), &accept_channel);
 
 		let tx = sign_funding_transaction(&nodes[2], &nodes[0], 1_000_000, temporary_channel_id);
 
@@ -1173,9 +1173,9 @@ mod test {
 		confirm_transaction_at(&nodes[0], &tx, conf_height);
 		connect_blocks(&nodes[0], CHAN_CONFIRM_DEPTH - 1);
 		let as_channel_ready = get_event_msg!(nodes[2], MessageSendEvent::SendChannelReady, nodes[0].node.get_our_node_id());
-		nodes[2].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[2].node.get_our_node_id()));
+		nodes[2].node.handle_channel_ready(nodes[0].node.get_our_node_id(), &get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[2].node.get_our_node_id()));
 		get_event_msg!(nodes[2], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_channel_ready(&nodes[2].node.get_our_node_id(), &as_channel_ready);
+		nodes[0].node.handle_channel_ready(nodes[2].node.get_our_node_id(), &as_channel_ready);
 		get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[2].node.get_our_node_id());
 		expect_channel_ready_event(&nodes[0], &nodes[2].node.get_our_node_id());
 		expect_channel_ready_event(&nodes[2], &nodes[0].node.get_our_node_id());
@@ -1197,8 +1197,8 @@ mod test {
 		let _chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001);
 
 		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001);
-		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_2_0.1);
-		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_2_0.0);
+		nodes[2].node.handle_channel_update(nodes[0].node.get_our_node_id(), &chan_2_0.1);
+		nodes[0].node.handle_channel_update(nodes[2].node.get_our_node_id(), &chan_2_0.0);
 
 		// Ensure that the invoice doesn't include any route hints for any of `nodes[0]` channels,
 		// even though all channels between `nodes[1]` and `nodes[0]` are private, as there is a
@@ -1213,12 +1213,12 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 		let chan_1_0 = create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 100000, 10001);
-		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan_1_0.0);
-		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_1_0.1);
+		nodes[0].node.handle_channel_update(nodes[1].node.get_our_node_id(), &chan_1_0.0);
+		nodes[1].node.handle_channel_update(nodes[0].node.get_our_node_id(), &chan_1_0.1);
 
 		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001);
-		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_2_0.1);
-		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_2_0.0);
+		nodes[2].node.handle_channel_update(nodes[0].node.get_our_node_id(), &chan_2_0.1);
+		nodes[0].node.handle_channel_update(nodes[2].node.get_our_node_id(), &chan_2_0.0);
 
 		// As all of `nodes[0]` channels are public, no channels should be included in the hints
 		match_invoice_routes(Some(5000), &nodes[0], HashSet::new());
@@ -1299,11 +1299,11 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
 		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 		let chan_0_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
-		nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &chan_0_1.1);
-		nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_0_1.0);
+		nodes[0].node.handle_channel_update(nodes[1].node.get_our_node_id(), &chan_0_1.1);
+		nodes[1].node.handle_channel_update(nodes[0].node.get_our_node_id(), &chan_0_1.0);
 		let chan_0_2 = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001);
-		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_0_2.1);
-		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_0_2.0);
+		nodes[0].node.handle_channel_update(nodes[2].node.get_our_node_id(), &chan_0_2.1);
+		nodes[2].node.handle_channel_update(nodes[0].node.get_our_node_id(), &chan_0_2.0);
 
 		let payment_amt = 10_000;
 		let route_hints = vec![
@@ -1364,7 +1364,7 @@ mod test {
 			};
 			(SendEvent::from_event(events.remove(0)), fwd_idx)
 		};
-		nodes[fwd_idx].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+		nodes[fwd_idx].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		commitment_signed_dance!(nodes[fwd_idx], nodes[0], &payment_event.commitment_msg, false, true);
 
 		// Note that we have to "forward pending HTLCs" twice before we see the PaymentClaimable as
@@ -1562,9 +1562,9 @@ mod test {
 		private_chan_cfg.channel_handshake_config.announce_for_forwarding = false;
 		let temporary_channel_id = nodes[1].node.create_channel(nodes[3].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None, Some(private_chan_cfg)).unwrap();
 		let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[3].node.get_our_node_id());
-		nodes[3].node.handle_open_channel(&nodes[1].node.get_our_node_id(), &open_channel);
+		nodes[3].node.handle_open_channel(nodes[1].node.get_our_node_id(), &open_channel);
 		let accept_channel = get_event_msg!(nodes[3], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_accept_channel(&nodes[3].node.get_our_node_id(), &accept_channel);
+		nodes[1].node.handle_accept_channel(nodes[3].node.get_our_node_id(), &accept_channel);
 
 		let tx = sign_funding_transaction(&nodes[1], &nodes[3], 1_000_000, temporary_channel_id);
 
@@ -1574,9 +1574,9 @@ mod test {
 		confirm_transaction_at(&nodes[3], &tx, conf_height);
 		connect_blocks(&nodes[3], CHAN_CONFIRM_DEPTH - 1);
 		let as_channel_ready = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, nodes[3].node.get_our_node_id());
-		nodes[1].node.handle_channel_ready(&nodes[3].node.get_our_node_id(), &get_event_msg!(nodes[3], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id()));
+		nodes[1].node.handle_channel_ready(nodes[3].node.get_our_node_id(), &get_event_msg!(nodes[3], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id()));
 		get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[3].node.get_our_node_id());
-		nodes[3].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &as_channel_ready);
+		nodes[3].node.handle_channel_ready(nodes[1].node.get_our_node_id(), &as_channel_ready);
 		get_event_msg!(nodes[3], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 		expect_channel_ready_event(&nodes[1], &nodes[3].node.get_our_node_id());
 		expect_channel_ready_event(&nodes[3], &nodes[1].node.get_our_node_id());
@@ -1612,8 +1612,8 @@ mod test {
 		let chan_0_1 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
 
 		let chan_2_0 = create_announced_chan_between_nodes_with_value(&nodes, 2, 0, 100000, 10001);
-		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_2_0.1);
-		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_2_0.0);
+		nodes[2].node.handle_channel_update(nodes[0].node.get_our_node_id(), &chan_2_0.1);
+		nodes[0].node.handle_channel_update(nodes[2].node.get_our_node_id(), &chan_2_0.0);
 
 		// Hints should include `chan_0_1` from as `nodes[1]` only have private channels, but not
 		// `chan_0_2` as `nodes[2]` only has public channels.
@@ -1642,8 +1642,8 @@ mod test {
 		let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
 
 		let chan_0_2 = create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100000, 10001);
-		nodes[0].node.handle_channel_update(&nodes[2].node.get_our_node_id(), &chan_0_2.1);
-		nodes[2].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &chan_0_2.0);
+		nodes[0].node.handle_channel_update(nodes[2].node.get_our_node_id(), &chan_0_2.1);
+		nodes[2].node.handle_channel_update(nodes[0].node.get_our_node_id(), &chan_0_2.0);
 		let _chan_1_2 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 10001);
 
 		let chan_0_3 = create_unannounced_chan_between_nodes_with_value(&nodes, 0, 3, 100000, 10001);

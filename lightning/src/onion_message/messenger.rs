@@ -1572,8 +1572,8 @@ where
 	APH::Target: AsyncPaymentsMessageHandler,
 	CMH::Target: CustomOnionMessageHandler,
 {
-	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage) {
-		let logger = WithContext::from(&self.logger, Some(*peer_node_id), None, None);
+	fn handle_onion_message(&self, peer_node_id: PublicKey, msg: &OnionMessage) {
+		let logger = WithContext::from(&self.logger, Some(peer_node_id), None, None);
 		match self.peel_onion_message(msg) {
 			Ok(PeeledOnion::Receive(message, context, reply_path)) => {
 				log_trace!(
@@ -1681,29 +1681,29 @@ where
 		}
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &msgs::Init, _inbound: bool) -> Result<(), ()> {
+	fn peer_connected(&self, their_node_id: PublicKey, init: &msgs::Init, _inbound: bool) -> Result<(), ()> {
 		if init.features.supports_onion_messages() {
 			self.message_recipients.lock().unwrap()
-				.entry(*their_node_id)
+				.entry(their_node_id)
 				.or_insert_with(|| OnionMessageRecipient::ConnectedPeer(VecDeque::new()))
 				.mark_connected();
 			if self.intercept_messages_for_offline_peers {
 				let mut pending_peer_connected_events =
 					self.pending_peer_connected_events.lock().unwrap();
 				pending_peer_connected_events.push(
-					Event::OnionMessagePeerConnected { peer_node_id: *their_node_id }
+					Event::OnionMessagePeerConnected { peer_node_id: their_node_id }
 				);
 				self.event_notifier.notify();
 			}
 		} else {
-			self.message_recipients.lock().unwrap().remove(their_node_id);
+			self.message_recipients.lock().unwrap().remove(&their_node_id);
 		}
 
 		Ok(())
 	}
 
-	fn peer_disconnected(&self, their_node_id: &PublicKey) {
-		match self.message_recipients.lock().unwrap().remove(their_node_id) {
+	fn peer_disconnected(&self, their_node_id: PublicKey) {
+		match self.message_recipients.lock().unwrap().remove(&their_node_id) {
 			Some(OnionMessageRecipient::ConnectedPeer(..)) => {},
 			Some(_) => debug_assert!(false),
 			None => {},
@@ -1736,7 +1736,7 @@ where
 		features
 	}
 
-	fn provided_init_features(&self, _their_node_id: &PublicKey) -> InitFeatures {
+	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
 		let mut features = InitFeatures::empty();
 		features.set_onion_messages_optional();
 		features

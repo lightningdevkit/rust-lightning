@@ -42,10 +42,10 @@ fn test_async_commitment_signature_for_funding_created() {
 
 	// nodes[0] --- open_channel --> nodes[1]
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_chan_msg);
+	nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_chan_msg);
 
 	// nodes[0] <-- accept_channel --- nodes[1]
-	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+	nodes[0].node.handle_accept_channel(nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
 
 	// nodes[0] --- funding_created --> nodes[1]
 	//
@@ -70,13 +70,13 @@ fn test_async_commitment_signature_for_funding_created() {
 	nodes[0].node.signer_unblocked(Some((nodes[1].node.get_our_node_id(), chan_id)));
 
 	let mut funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	nodes[1].node.handle_funding_created(nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors(&nodes[1], 1);
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	// nodes[0] <-- funding_signed --- nodes[1]
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	nodes[0].node.handle_funding_signed(nodes[1].node.get_our_node_id(), &funding_signed_msg);
 	check_added_monitors(&nodes[0], 1);
 	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 }
@@ -93,10 +93,10 @@ fn test_async_commitment_signature_for_funding_signed() {
 
 	// nodes[0] --- open_channel --> nodes[1]
 	let mut open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_chan_msg);
+	nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_chan_msg);
 
 	// nodes[0] <-- accept_channel --- nodes[1]
-	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
+	nodes[0].node.handle_accept_channel(nodes[1].node.get_our_node_id(), &get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id()));
 
 	// nodes[0] --- funding_created --> nodes[1]
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
@@ -108,7 +108,7 @@ fn test_async_commitment_signature_for_funding_signed() {
 	// Now let's make node[1]'s signer be unavailable while handling the `funding_created`. It should
 	// *not* broadcast a `funding_signed`...
 	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
-	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	nodes[1].node.handle_funding_created(nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors(&nodes[1], 1);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -127,7 +127,7 @@ fn test_async_commitment_signature_for_funding_signed() {
 
 	// nodes[0] <-- funding_signed --- nodes[1]
 	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed_msg);
+	nodes[0].node.handle_funding_signed(nodes[1].node.get_our_node_id(), &funding_signed_msg);
 	check_added_monitors(&nodes[0], 1);
 	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 }
@@ -168,14 +168,14 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(enabl
 	assert_eq!(payment_event.node_id, dst.node.get_our_node_id());
 	assert_eq!(payment_event.msgs.len(), 1);
 
-	dst.node.handle_update_add_htlc(&src.node.get_our_node_id(), &payment_event.msgs[0]);
+	dst.node.handle_update_add_htlc(src.node.get_our_node_id(), &payment_event.msgs[0]);
 
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::GetPerCommitmentPoint);
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::ReleaseCommitmentSecret);
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
+	dst.node.handle_commitment_signed(src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	let mut enabled_signer_ops = HashSet::new();
@@ -218,7 +218,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 	nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100000, 10001, 42, None, None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
-	nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), &open_channel);
+	nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_channel);
 
 	{
 		let events = nodes[1].node.get_and_clear_pending_events();
@@ -236,7 +236,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 	// nodes[0] <-- accept_channel --- nodes[1]
 	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
 	assert_eq!(accept_channel.common_fields.minimum_depth, 0, "Expected minimum depth of 0");
-	nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), &accept_channel);
+	nodes[0].node.handle_accept_channel(nodes[1].node.get_our_node_id(), &accept_channel);
 
 	// nodes[0] --- funding_created --> nodes[1]
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42);
@@ -248,7 +248,7 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 	// Now let's make node[1]'s signer be unavailable while handling the `funding_created`. It should
 	// *not* broadcast a `funding_signed`...
 	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &temporary_channel_id, SignerOp::SignCounterpartyCommitment);
-	nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+	nodes[1].node.handle_funding_created(nodes[0].node.get_our_node_id(), &funding_created_msg);
 	check_added_monitors(&nodes[1], 1);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -279,24 +279,24 @@ fn test_async_commitment_signature_for_funding_signed_0conf() {
 		(funding_signed, channel_ready)
 	};
 
-	nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
+	nodes[0].node.handle_funding_signed(nodes[1].node.get_our_node_id(), &funding_signed);
 	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
 	check_added_monitors(&nodes[0], 1);
 
 	let channel_ready_0 = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, nodes[1].node.get_our_node_id());
 
-	nodes[0].node.handle_channel_ready(&nodes[1].node.get_our_node_id(), &channel_ready_1);
+	nodes[0].node.handle_channel_ready(nodes[1].node.get_our_node_id(), &channel_ready_1);
 	expect_channel_ready_event(&nodes[0], &nodes[1].node.get_our_node_id());
 
-	nodes[1].node.handle_channel_ready(&nodes[0].node.get_our_node_id(), &channel_ready_0);
+	nodes[1].node.handle_channel_ready(nodes[0].node.get_our_node_id(), &channel_ready_0);
 	expect_channel_ready_event(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	let channel_update_0 = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, nodes[1].node.get_our_node_id());
 	let channel_update_1 = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, nodes[0].node.get_our_node_id());
 
-	nodes[0].node.handle_channel_update(&nodes[1].node.get_our_node_id(), &channel_update_1);
-	nodes[1].node.handle_channel_update(&nodes[0].node.get_our_node_id(), &channel_update_0);
+	nodes[0].node.handle_channel_update(nodes[1].node.get_our_node_id(), &channel_update_1);
+	nodes[1].node.handle_channel_update(nodes[0].node.get_our_node_id(), &channel_update_0);
 
 	assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
 	assert_eq!(nodes[1].node.list_usable_channels().len(), 1);
@@ -350,7 +350,7 @@ fn do_test_async_raa_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCas
 	assert_eq!(payment_event.node_id, dst.node.get_our_node_id());
 	assert_eq!(payment_event.msgs.len(), 1);
 
-	dst.node.handle_update_add_htlc(&src.node.get_our_node_id(), &payment_event.msgs[0]);
+	dst.node.handle_update_add_htlc(src.node.get_our_node_id(), &payment_event.msgs[0]);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		// Fail to persist the monitor update when handling the commitment_signed.
@@ -360,23 +360,23 @@ fn do_test_async_raa_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCas
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
-	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
+	dst.node.handle_commitment_signed(src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	let events = dst.node.get_and_clear_pending_msg_events();
 	assert!(events.is_empty(), "expected no message, got {}", events.len());
 
 	// Now disconnect and reconnect the peers.
-	src.node.peer_disconnected(&dst.node.get_our_node_id());
-	dst.node.peer_disconnected(&src.node.get_our_node_id());
+	src.node.peer_disconnected(dst.node.get_our_node_id());
+	dst.node.peer_disconnected(src.node.get_our_node_id());
 
 	// do reestablish stuff
-	src.node.peer_connected(&dst.node.get_our_node_id(), &msgs::Init {
+	src.node.peer_connected(dst.node.get_our_node_id(), &msgs::Init {
 		features: dst.node.init_features(), networks: None, remote_network_address: None
 	}, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(src, dst);
 	assert_eq!(reestablish_1.len(), 1);
-	dst.node.peer_connected(&src.node.get_our_node_id(), &msgs::Init {
+	dst.node.peer_connected(src.node.get_our_node_id(), &msgs::Init {
 		features: src.node.init_features(), networks: None, remote_network_address: None
 	}, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(dst, src);
@@ -387,7 +387,7 @@ fn do_test_async_raa_peer_disconnect(test_case: UnblockSignerAcrossDisconnectCas
 		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
 	}
 
-	dst.node.handle_channel_reestablish(&src.node.get_our_node_id(), &reestablish_1[0]);
+	dst.node.handle_channel_reestablish(src.node.get_our_node_id(), &reestablish_1[0]);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, block_raa_signer_op);
@@ -474,7 +474,7 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: UnblockSignerAc
 	assert_eq!(payment_event.node_id, dst.node.get_our_node_id());
 	assert_eq!(payment_event.msgs.len(), 1);
 
-	dst.node.handle_update_add_htlc(&src.node.get_our_node_id(), &payment_event.msgs[0]);
+	dst.node.handle_update_add_htlc(src.node.get_our_node_id(), &payment_event.msgs[0]);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		// Fail to persist the monitor update when handling the commitment_signed.
@@ -484,7 +484,7 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: UnblockSignerAc
 	// Mark dst's signer as unavailable and handle src's commitment_signed: while dst won't yet have a
 	// `commitment_signed` of its own to offer, it should publish a `revoke_and_ack`.
 	dst.disable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	dst.node.handle_commitment_signed(&src.node.get_our_node_id(), &payment_event.commitment_msg);
+	dst.node.handle_commitment_signed(src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
 	if test_case != UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
@@ -492,16 +492,16 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: UnblockSignerAc
 	}
 
 	// Now disconnect and reconnect the peers.
-	src.node.peer_disconnected(&dst.node.get_our_node_id());
-	dst.node.peer_disconnected(&src.node.get_our_node_id());
+	src.node.peer_disconnected(dst.node.get_our_node_id());
+	dst.node.peer_disconnected(src.node.get_our_node_id());
 
 	// do reestablish stuff
-	src.node.peer_connected(&dst.node.get_our_node_id(), &msgs::Init {
+	src.node.peer_connected(dst.node.get_our_node_id(), &msgs::Init {
 		features: dst.node.init_features(), networks: None, remote_network_address: None
 	}, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(src, dst);
 	assert_eq!(reestablish_1.len(), 1);
-	dst.node.peer_connected(&src.node.get_our_node_id(), &msgs::Init {
+	dst.node.peer_connected(src.node.get_our_node_id(), &msgs::Init {
 		features: src.node.init_features(), networks: None, remote_network_address: None
 	}, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(dst, src);
@@ -512,7 +512,7 @@ fn do_test_async_commitment_signature_peer_disconnect(test_case: UnblockSignerAc
 		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
 	}
 
-	dst.node.handle_channel_reestablish(&src.node.get_our_node_id(), &reestablish_1[0]);
+	dst.node.handle_channel_reestablish(src.node.get_our_node_id(), &reestablish_1[0]);
 
 	if test_case == UnblockSignerAcrossDisconnectCase::BeforeMonitorRestored {
 		dst.enable_channel_signer_op(&src.node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
@@ -595,12 +595,12 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	assert_eq!(events_2.len(), 1);
 	match events_2[0] {
 		MessageSendEvent::UpdateHTLCs { node_id: _, updates: msgs::CommitmentUpdate { ref update_fulfill_htlcs, ref commitment_signed, .. } } => {
-			nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &update_fulfill_htlcs[0]);
+			nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &update_fulfill_htlcs[0]);
 			expect_payment_sent(&nodes[0], payment_preimage_1, None, false, false);
 			if monitor_update_failure {
 				chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 			}
-			nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), commitment_signed);
+			nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), commitment_signed);
 			if monitor_update_failure {
 				assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 			} else {
@@ -614,15 +614,15 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 
 	// Disconnect and reconnect the peers so that nodes[0] will
 	// need to re-send the commitment update *and then* revoke_and_ack.
-	nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
-	nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
-	nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &msgs::Init {
+	nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &msgs::Init {
 		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
 	}, true).unwrap();
 	let reestablish_1 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert_eq!(reestablish_1.len(), 1);
-	nodes[1].node.peer_connected(&nodes[0].node.get_our_node_id(), &msgs::Init {
+	nodes[1].node.peer_connected(nodes[0].node.get_our_node_id(), &msgs::Init {
 		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
 	}, false).unwrap();
 	let reestablish_2 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
@@ -632,7 +632,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	// and then revoke_and_ack. With commitment_signed disabled, since
 	// our ordering is CS then RAA, we should make sure we don't send the RAA.
 	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_id, SignerOp::SignCounterpartyCommitment);
-	nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &reestablish_2[0]);
+	nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), &reestablish_2[0]);
 	let as_resp = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
 	assert!(as_resp.0.is_none());
 	assert!(as_resp.1.is_none());
@@ -657,7 +657,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	nodes[0].node.signer_unblocked(Some((nodes[1].node.get_our_node_id(), chan_id)));
 
 	let as_resp = handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
-	nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &reestablish_1[0]);
+	nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), &reestablish_1[0]);
 	let bs_resp = handle_chan_reestablish_msgs!(nodes[1], nodes[0]);
 
 	assert!(as_resp.0.is_none());
@@ -669,33 +669,33 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	assert!(as_resp.3 == RAACommitmentOrder::CommitmentFirst);
 
 	// Now that everything is restored, get the CS + RAA and handle them.
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &as_resp.2.as_ref().unwrap().update_add_htlcs[0]);
-	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_resp.2.as_ref().unwrap().commitment_signed);
-	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), as_resp.1.as_ref().unwrap());
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &as_resp.2.as_ref().unwrap().update_add_htlcs[0]);
+	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_resp.2.as_ref().unwrap().commitment_signed);
+	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), as_resp.1.as_ref().unwrap());
 	let (bs_revoke_and_ack, bs_second_commitment_signed) = get_revoke_commit_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	check_added_monitors!(nodes[1], 2);
 
 	// The rest of this is boilerplate for resolving the previous state.
 
-	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_revoke_and_ack);
+	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_revoke_and_ack);
 	let as_commitment_signed = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[0].node.handle_commitment_signed(&nodes[1].node.get_our_node_id(), &bs_second_commitment_signed);
+	nodes[0].node.handle_commitment_signed(nodes[1].node.get_our_node_id(), &bs_second_commitment_signed);
 	let as_revoke_and_ack = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 	check_added_monitors!(nodes[0], 1);
 
-	nodes[1].node.handle_commitment_signed(&nodes[0].node.get_our_node_id(), &as_commitment_signed.commitment_signed);
+	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &as_commitment_signed.commitment_signed);
 	let bs_second_revoke_and_ack = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
 	// No commitment_signed so get_event_msg's assert(len == 1) passes
 	check_added_monitors!(nodes[1], 1);
 
-	nodes[1].node.handle_revoke_and_ack(&nodes[0].node.get_our_node_id(), &as_revoke_and_ack);
+	nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_revoke_and_ack);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[1], 1);
 
-	nodes[0].node.handle_revoke_and_ack(&nodes[1].node.get_our_node_id(), &bs_second_revoke_and_ack);
+	nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_second_revoke_and_ack);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(nodes[0], 1);
 
@@ -880,14 +880,14 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NotShuttingDown);
 
 	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_shutdown);
+	nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_shutdown);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::ShutdownInitiated);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
 
 	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
-	nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_shutdown);
+	nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_shutdown);
 
 	expect_channel_shutdown_state!(nodes[0], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
 	expect_channel_shutdown_state!(nodes[1], chan_1.2, ChannelShutdownState::NegotiatingClosingFee);
@@ -899,7 +899,7 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 
 	let node_0_closing_signed = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, nodes[1].node.get_our_node_id());
 	nodes[1].disable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
-	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
+	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_closing_signed);
 
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert!(events.is_empty(), "Expected no events, got {:?}", events);
@@ -909,7 +909,7 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
 
 	nodes[0].disable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
-	nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed);
+	nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert!(events.is_empty(), "Expected no events, got {:?}", events);
 	nodes[0].enable_channel_signer_op(&nodes[1].node.get_our_node_id(), &chan_1.2, SignerOp::SignClosingTransaction);
@@ -932,7 +932,7 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 			node_1_closing_signed_2.signature = signature;
 			node_1_closing_signed_2
 		};
-		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed_2_bad);
+		nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed_2_bad);
 
 		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -947,8 +947,8 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	}
 
 	if reconnect {
-		nodes[0].node.peer_disconnected(&nodes[1].node.get_our_node_id());
-		nodes[1].node.peer_disconnected(&nodes[0].node.get_our_node_id());
+		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
 		*nodes[0].fee_estimator.sat_per_kw.lock().unwrap() *= 8;
 		*nodes[1].fee_estimator.sat_per_kw.lock().unwrap() *= 8;
@@ -956,8 +956,8 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 		connect_nodes(&nodes[0], &nodes[1]);
 		let node_0_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
 		let node_1_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
-		nodes[1].node.handle_channel_reestablish(&nodes[0].node.get_our_node_id(), &node_0_reestablish);
-		nodes[0].node.handle_channel_reestablish(&nodes[1].node.get_our_node_id(), &node_1_reestablish);
+		nodes[1].node.handle_channel_reestablish(nodes[0].node.get_our_node_id(), &node_0_reestablish);
+		nodes[0].node.handle_channel_reestablish(nodes[1].node.get_our_node_id(), &node_1_reestablish);
 
 		let node_0_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(node_0_msgs.len(), 2);
@@ -975,17 +975,17 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 		};
 		let node_1_2nd_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, nodes[0].node.get_our_node_id());
 
-		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &node_0_2nd_shutdown);
+		nodes[1].node.handle_shutdown(nodes[0].node.get_our_node_id(), &node_0_2nd_shutdown);
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-		nodes[0].node.handle_shutdown(&nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown);
-		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed);
+		nodes[0].node.handle_shutdown(nodes[1].node.get_our_node_id(), &node_1_2nd_shutdown);
+		nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed);
 		let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_closing_signed(&nodes[1].node.get_our_node_id(), &node_1_closing_signed);
+		nodes[0].node.handle_closing_signed(nodes[1].node.get_our_node_id(), &node_1_closing_signed);
 	}
 
 	nodes[0].node.signer_unblocked(None);
 	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast!(nodes[0].node, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed.unwrap());
+	nodes[1].node.handle_closing_signed(nodes[0].node.get_our_node_id(), &node_0_2nd_closing_signed.unwrap());
 	let (_, node_1_closing_signed) = get_closing_signed_broadcast!(nodes[1].node, nodes[0].node.get_our_node_id());
 	assert!(node_1_closing_signed.is_none());
 

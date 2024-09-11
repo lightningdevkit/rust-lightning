@@ -139,10 +139,10 @@ fn do_test_onchain_htlc_reorg(local_commitment: bool, claim: bool) {
 	let htlc_updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	if claim {
 		assert_eq!(htlc_updates.update_fulfill_htlcs.len(), 1);
-		nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &htlc_updates.update_fulfill_htlcs[0]);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), &htlc_updates.update_fulfill_htlcs[0]);
 	} else {
 		assert_eq!(htlc_updates.update_fail_htlcs.len(), 1);
-		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
+		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &htlc_updates.update_fail_htlcs[0]);
 	}
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_updates.commitment_signed, false, true);
 	if claim {
@@ -370,7 +370,7 @@ fn do_test_unconf_chan(reload_node: bool, reorg_after_reload: bool, use_funding_
 		// If we dropped the channel before reloading the node, nodes[1] was also dropped from
 		// nodes[0] storage, and hence not connected again on startup. We therefore need to
 		// reconnect to the node before attempting to create a new channel.
-		nodes[0].node.peer_connected(&nodes[1].node.get_our_node_id(), &Init {
+		nodes[0].node.peer_connected(nodes[1].node.get_our_node_id(), &Init {
 			features: nodes[1].node.init_features(), networks: None, remote_network_address: None
 		}, true).unwrap();
 	}
@@ -719,7 +719,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 
 	// Handle the fee update on the other side, but don't send the last RAA such that the previous
 	// commitment is still valid (unrevoked).
-	nodes[1].node().handle_update_fee(&nodes[0].node.get_our_node_id(), &update_fee);
+	nodes[1].node().handle_update_fee(nodes[0].node.get_our_node_id(), &update_fee);
 	let _last_revoke_and_ack = commitment_signed_dance!(nodes[1], nodes[0], commit_sig, false, true, false, true);
 	let error_message = "Channel force-closed";
 
@@ -800,7 +800,7 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 		check_added_monitors!(nodes[0], 1);
 
 		let fee_update = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_update_fee(&nodes[0].node.get_our_node_id(), &fee_update.update_fee.unwrap());
+		nodes[1].node.handle_update_fee(nodes[0].node.get_our_node_id(), &fee_update.update_fee.unwrap());
 		commitment_signed_dance!(nodes[1], nodes[0], fee_update.commitment_signed, false);
 
 		reload_node!(

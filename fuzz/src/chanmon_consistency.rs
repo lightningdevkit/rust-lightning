@@ -806,13 +806,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				networks: None,
 				remote_network_address: None,
 			};
-			$source.peer_connected(&$dest.get_our_node_id(), &init_dest, true).unwrap();
+			$source.peer_connected($dest.get_our_node_id(), &init_dest, true).unwrap();
 			let init_src = Init {
 				features: $source.init_features(),
 				networks: None,
 				remote_network_address: None,
 			};
-			$dest.peer_connected(&$source.get_our_node_id(), &init_src, false).unwrap();
+			$dest.peer_connected($source.get_our_node_id(), &init_src, false).unwrap();
 
 			$source.create_channel($dest.get_our_node_id(), 100_000, 42, 0, None, None).unwrap();
 			let open_channel = {
@@ -825,7 +825,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				}
 			};
 
-			$dest.handle_open_channel(&$source.get_our_node_id(), &open_channel);
+			$dest.handle_open_channel($source.get_our_node_id(), &open_channel);
 			let accept_channel = {
 				if anchors {
 					let events = $dest.get_and_clear_pending_events();
@@ -860,7 +860,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				}
 			};
 
-			$source.handle_accept_channel(&$dest.get_our_node_id(), &accept_channel);
+			$source.handle_accept_channel($dest.get_our_node_id(), &accept_channel);
 			let funding_output;
 			{
 				let mut events = $source.get_and_clear_pending_events();
@@ -904,7 +904,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					panic!("Wrong event type");
 				}
 			};
-			$dest.handle_funding_created(&$source.get_our_node_id(), &funding_created);
+			$dest.handle_funding_created($source.get_our_node_id(), &funding_created);
 
 			let funding_signed = {
 				let events = $dest.get_and_clear_pending_msg_events();
@@ -923,7 +923,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				panic!("Wrong event type");
 			}
 
-			$source.handle_funding_signed(&$dest.get_our_node_id(), &funding_signed);
+			$source.handle_funding_signed($dest.get_our_node_id(), &funding_signed);
 			let events = $source.get_and_clear_pending_events();
 			assert_eq!(events.len(), 1);
 			if let events::Event::ChannelPending { ref counterparty_node_id, .. } = events[0] {
@@ -963,7 +963,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					{
 						for node in $nodes.iter() {
 							if node.get_our_node_id() == *node_id {
-								node.handle_channel_ready(&$nodes[idx].get_our_node_id(), msg);
+								node.handle_channel_ready($nodes[idx].get_our_node_id(), msg);
 							}
 						}
 					} else {
@@ -1134,7 +1134,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 									for update_add in update_add_htlcs.iter() {
 										out.locked_write(format!("Delivering update_add_htlc to node {}.\n", idx).as_bytes());
 										if !$corrupt_forward {
-											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), update_add);
+											dest.handle_update_add_htlc(nodes[$node].get_our_node_id(), update_add);
 										} else {
 											// Corrupt the update_add_htlc message so that its HMAC
 											// check will fail and we generate a
@@ -1143,24 +1143,24 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 											let mut msg_ser = update_add.encode();
 											msg_ser[1000] ^= 0xff;
 											let new_msg = UpdateAddHTLC::read(&mut Cursor::new(&msg_ser)).unwrap();
-											dest.handle_update_add_htlc(&nodes[$node].get_our_node_id(), &new_msg);
+											dest.handle_update_add_htlc(nodes[$node].get_our_node_id(), &new_msg);
 										}
 									}
 									for update_fulfill in update_fulfill_htlcs.iter() {
 										out.locked_write(format!("Delivering update_fulfill_htlc to node {}.\n", idx).as_bytes());
-										dest.handle_update_fulfill_htlc(&nodes[$node].get_our_node_id(), update_fulfill);
+										dest.handle_update_fulfill_htlc(nodes[$node].get_our_node_id(), update_fulfill);
 									}
 									for update_fail in update_fail_htlcs.iter() {
 										out.locked_write(format!("Delivering update_fail_htlc to node {}.\n", idx).as_bytes());
-										dest.handle_update_fail_htlc(&nodes[$node].get_our_node_id(), update_fail);
+										dest.handle_update_fail_htlc(nodes[$node].get_our_node_id(), update_fail);
 									}
 									for update_fail_malformed in update_fail_malformed_htlcs.iter() {
 										out.locked_write(format!("Delivering update_fail_malformed_htlc to node {}.\n", idx).as_bytes());
-										dest.handle_update_fail_malformed_htlc(&nodes[$node].get_our_node_id(), update_fail_malformed);
+										dest.handle_update_fail_malformed_htlc(nodes[$node].get_our_node_id(), update_fail_malformed);
 									}
 									if let Some(msg) = update_fee {
 										out.locked_write(format!("Delivering update_fee to node {}.\n", idx).as_bytes());
-										dest.handle_update_fee(&nodes[$node].get_our_node_id(), &msg);
+										dest.handle_update_fee(nodes[$node].get_our_node_id(), &msg);
 									}
 									let processed_change = !update_add_htlcs.is_empty() || !update_fulfill_htlcs.is_empty() ||
 										!update_fail_htlcs.is_empty() || !update_fail_malformed_htlcs.is_empty();
@@ -1177,7 +1177,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 										break;
 									}
 									out.locked_write(format!("Delivering commitment_signed to node {}.\n", idx).as_bytes());
-									dest.handle_commitment_signed(&nodes[$node].get_our_node_id(), &commitment_signed);
+									dest.handle_commitment_signed(nodes[$node].get_our_node_id(), &commitment_signed);
 									break;
 								}
 							}
@@ -1186,7 +1186,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
 									out.locked_write(format!("Delivering revoke_and_ack to node {}.\n", idx).as_bytes());
-									dest.handle_revoke_and_ack(&nodes[$node].get_our_node_id(), msg);
+									dest.handle_revoke_and_ack(nodes[$node].get_our_node_id(), msg);
 								}
 							}
 						},
@@ -1194,7 +1194,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 							for (idx, dest) in nodes.iter().enumerate() {
 								if dest.get_our_node_id() == *node_id {
 									out.locked_write(format!("Delivering channel_reestablish to node {}.\n", idx).as_bytes());
-									dest.handle_channel_reestablish(&nodes[$node].get_our_node_id(), msg);
+									dest.handle_channel_reestablish(nodes[$node].get_our_node_id(), msg);
 								}
 							}
 						},
@@ -1453,16 +1453,16 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 			0x0c => {
 				if !chan_a_disconnected {
-					nodes[0].peer_disconnected(&nodes[1].get_our_node_id());
-					nodes[1].peer_disconnected(&nodes[0].get_our_node_id());
+					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
+					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
 					chan_a_disconnected = true;
 					drain_msg_events_on_disconnect!(0);
 				}
 			},
 			0x0d => {
 				if !chan_b_disconnected {
-					nodes[1].peer_disconnected(&nodes[2].get_our_node_id());
-					nodes[2].peer_disconnected(&nodes[1].get_our_node_id());
+					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
+					nodes[2].peer_disconnected(nodes[1].get_our_node_id());
 					chan_b_disconnected = true;
 					drain_msg_events_on_disconnect!(2);
 				}
@@ -1474,13 +1474,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						networks: None,
 						remote_network_address: None,
 					};
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &init_1, true).unwrap();
+					nodes[0].peer_connected(nodes[1].get_our_node_id(), &init_1, true).unwrap();
 					let init_0 = Init {
 						features: nodes[0].init_features(),
 						networks: None,
 						remote_network_address: None,
 					};
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &init_0, false).unwrap();
+					nodes[1].peer_connected(nodes[0].get_our_node_id(), &init_0, false).unwrap();
 					chan_a_disconnected = false;
 				}
 			},
@@ -1491,13 +1491,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						networks: None,
 						remote_network_address: None,
 					};
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &init_2, true).unwrap();
+					nodes[1].peer_connected(nodes[2].get_our_node_id(), &init_2, true).unwrap();
 					let init_1 = Init {
 						features: nodes[1].init_features(),
 						networks: None,
 						remote_network_address: None,
 					};
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &init_1, false).unwrap();
+					nodes[2].peer_connected(nodes[1].get_our_node_id(), &init_1, false).unwrap();
 					chan_b_disconnected = false;
 				}
 			},
@@ -1534,7 +1534,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 
 			0x2c => {
 				if !chan_a_disconnected {
-					nodes[1].peer_disconnected(&nodes[0].get_our_node_id());
+					nodes[1].peer_disconnected(nodes[0].get_our_node_id());
 					chan_a_disconnected = true;
 					push_excess_b_events!(
 						nodes[1].get_and_clear_pending_msg_events().drain(..),
@@ -1550,14 +1550,14 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 			0x2d => {
 				if !chan_a_disconnected {
-					nodes[0].peer_disconnected(&nodes[1].get_our_node_id());
+					nodes[0].peer_disconnected(nodes[1].get_our_node_id());
 					chan_a_disconnected = true;
 					nodes[0].get_and_clear_pending_msg_events();
 					ab_events.clear();
 					ba_events.clear();
 				}
 				if !chan_b_disconnected {
-					nodes[2].peer_disconnected(&nodes[1].get_our_node_id());
+					nodes[2].peer_disconnected(nodes[1].get_our_node_id());
 					chan_b_disconnected = true;
 					nodes[2].get_and_clear_pending_msg_events();
 					bc_events.clear();
@@ -1570,7 +1570,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 			},
 			0x2e => {
 				if !chan_b_disconnected {
-					nodes[1].peer_disconnected(&nodes[2].get_our_node_id());
+					nodes[1].peer_disconnected(nodes[2].get_our_node_id());
 					chan_b_disconnected = true;
 					push_excess_b_events!(
 						nodes[1].get_and_clear_pending_msg_events().drain(..),
@@ -1759,13 +1759,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						networks: None,
 						remote_network_address: None,
 					};
-					nodes[0].peer_connected(&nodes[1].get_our_node_id(), &init_1, true).unwrap();
+					nodes[0].peer_connected(nodes[1].get_our_node_id(), &init_1, true).unwrap();
 					let init_0 = Init {
 						features: nodes[0].init_features(),
 						networks: None,
 						remote_network_address: None,
 					};
-					nodes[1].peer_connected(&nodes[0].get_our_node_id(), &init_0, false).unwrap();
+					nodes[1].peer_connected(nodes[0].get_our_node_id(), &init_0, false).unwrap();
 					chan_a_disconnected = false;
 				}
 				if chan_b_disconnected {
@@ -1774,13 +1774,13 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 						networks: None,
 						remote_network_address: None,
 					};
-					nodes[1].peer_connected(&nodes[2].get_our_node_id(), &init_2, true).unwrap();
+					nodes[1].peer_connected(nodes[2].get_our_node_id(), &init_2, true).unwrap();
 					let init_1 = Init {
 						features: nodes[1].init_features(),
 						networks: None,
 						remote_network_address: None,
 					};
-					nodes[2].peer_connected(&nodes[1].get_our_node_id(), &init_1, false).unwrap();
+					nodes[2].peer_connected(nodes[1].get_our_node_id(), &init_1, false).unwrap();
 					chan_b_disconnected = false;
 				}
 

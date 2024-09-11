@@ -99,7 +99,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 		callback_node();
 	}
 	// 0 => 1 update_add & CS
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add_0);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add_0);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	let update_1_0 = match test_case {
@@ -126,7 +126,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 			}
 
 			// 1 => 2
-			nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_1);
+			nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &update_add_1);
 			commitment_signed_dance!(nodes[2], nodes[1], update_1.commitment_signed, false, true);
 
 			if test_case == 2 || test_case == 200 {
@@ -148,7 +148,7 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 			}
 
 			// 2 => 1
-			nodes[1].node.handle_update_fail_htlc(&nodes[2].node.get_our_node_id(), &fail_msg);
+			nodes[1].node.handle_update_fail_htlc(nodes[2].node.get_our_node_id(), &fail_msg);
 			commitment_signed_dance!(nodes[1], nodes[2], update_2_1.commitment_signed, true);
 
 			// backward fail on 1
@@ -165,9 +165,9 @@ fn run_onion_failure_test_with_fail_intercept<F1,F2,F3>(
 		if test_case == 100 {
 			callback_fail(&mut fail_msg);
 		}
-		nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+		nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	} else {
-		nodes[0].node.handle_update_fail_malformed_htlc(&nodes[1].node.get_our_node_id(), &update_1_0.update_fail_malformed_htlcs[0]);
+		nodes[0].node.handle_update_fail_malformed_htlc(nodes[1].node.get_our_node_id(), &update_1_0.update_fail_malformed_htlcs[0]);
 	};
 
 	commitment_signed_dance!(nodes[0], nodes[1], update_1_0.commitment_signed, false, true);
@@ -601,8 +601,8 @@ fn test_onion_failure() {
 	let short_channel_id = channels[1].0.contents.short_channel_id;
 	run_onion_failure_test("channel_disabled", 0, &nodes, &route, &payment_hash, &payment_secret, |_| {}, || {
 		// disconnect event to the channel between nodes[1] ~ nodes[2]
-		nodes[1].node.peer_disconnected(&nodes[2].node.get_our_node_id());
-		nodes[2].node.peer_disconnected(&nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(nodes[2].node.get_our_node_id());
+		nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
 	}, true, Some(UPDATE|7),
 	Some(NetworkUpdate::ChannelFailure { short_channel_id, is_permanent: false }),
 	Some(short_channel_id));
@@ -728,7 +728,7 @@ fn test_overshoot_final_cltv() {
 	check_added_monitors!(nodes[0], 1);
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let mut update_add_0 = update_0.update_add_htlcs[0].clone();
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add_0);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add_0);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -746,7 +746,7 @@ fn test_overshoot_final_cltv() {
 	check_added_monitors!(&nodes[1], 1);
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[2].node.get_our_node_id());
 	let mut update_add_1 = update_1.update_add_htlcs[0].clone();
-	nodes[2].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &update_add_1);
+	nodes[2].node.handle_update_add_htlc(nodes[1].node.get_our_node_id(), &update_add_1);
 	commitment_signed_dance!(nodes[2], nodes[1], update_1.commitment_signed, false, true);
 
 	expect_pending_htlcs_forwardable!(nodes[2]);
@@ -1018,7 +1018,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	let mut payment_event = SendEvent::from_event(events.pop().unwrap());
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 	commitment_signed_dance!(nodes[1], nodes[0], payment_event.commitment_msg, false);
 
 	expect_pending_htlcs_forwardable!(nodes[1]);
@@ -1042,7 +1042,7 @@ fn do_test_fail_htlc_backwards_with_reason(failure_code: FailureCode) {
 		_ => panic!("Unexpected event"),
 	};
 
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &update_fail_htlc);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &update_fail_htlc);
 	commitment_signed_dance!(nodes[0], nodes[1], commitment_signed, false, true);
 
 	let failure_data = match failure_code {
@@ -1139,7 +1139,7 @@ fn test_phantom_onion_hmac_failure() {
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
@@ -1167,7 +1167,7 @@ fn test_phantom_onion_hmac_failure() {
 	check_added_monitors!(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
@@ -1201,7 +1201,7 @@ fn test_phantom_invalid_onion_payload() {
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	// Modify the onion packet to have an invalid payment amount.
@@ -1243,7 +1243,7 @@ fn test_phantom_invalid_onion_payload() {
 	check_added_monitors!(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
@@ -1276,7 +1276,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	// Modify the payload so the phantom hop's HMAC is bogus.
@@ -1300,7 +1300,7 @@ fn test_phantom_final_incorrect_cltv_expiry() {
 	check_added_monitors!(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
@@ -1336,7 +1336,7 @@ fn test_phantom_failure_too_low_cltv() {
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
@@ -1347,7 +1347,7 @@ fn test_phantom_failure_too_low_cltv() {
 	check_added_monitors!(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
@@ -1387,13 +1387,13 @@ fn test_phantom_failure_modified_cltv() {
 	// Modify the route to have a too-low cltv.
 	update_add.cltv_expiry -= 10;
 
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
@@ -1427,13 +1427,13 @@ fn test_phantom_failure_expires_too_soon() {
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
 	connect_blocks(&nodes[1], CLTV_FAR_FAR_AWAY);
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
@@ -1465,7 +1465,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
@@ -1478,7 +1478,7 @@ fn test_phantom_failure_too_low_recv_amt() {
 	check_added_monitors!(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
@@ -1525,13 +1525,13 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	let update_1 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
@@ -1569,7 +1569,7 @@ fn test_phantom_failure_reject_payment() {
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
 	let mut update_add = update_0.update_add_htlcs[0].clone();
 
-	nodes[1].node.handle_update_add_htlc(&nodes[0].node.get_our_node_id(), &update_add);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &update_add);
 	commitment_signed_dance!(nodes[1], nodes[0], &update_0.commitment_signed, false, true);
 
 	expect_pending_htlcs_forwardable_ignore!(nodes[1]);
@@ -1585,7 +1585,7 @@ fn test_phantom_failure_reject_payment() {
 	check_added_monitors!(&nodes[1], 1);
 	assert!(update_1.update_fail_htlcs.len() == 1);
 	let fail_msg = update_1.update_fail_htlcs[0].clone();
-	nodes[0].node.handle_update_fail_htlc(&nodes[1].node.get_our_node_id(), &fail_msg);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &fail_msg);
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.

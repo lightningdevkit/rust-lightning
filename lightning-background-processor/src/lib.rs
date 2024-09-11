@@ -1648,7 +1648,7 @@ mod tests {
 				};
 				nodes[i]
 					.node
-					.peer_connected(&nodes[j].node.get_our_node_id(), &init_i, true)
+					.peer_connected(nodes[j].node.get_our_node_id(), &init_i, true)
 					.unwrap();
 				let init_j = Init {
 					features: nodes[i].node.init_features(),
@@ -1657,7 +1657,7 @@ mod tests {
 				};
 				nodes[j]
 					.node
-					.peer_connected(&nodes[i].node.get_our_node_id(), &init_j, false)
+					.peer_connected(nodes[i].node.get_our_node_id(), &init_j, false)
 					.unwrap();
 			}
 		}
@@ -1685,14 +1685,14 @@ mod tests {
 				MessageSendEvent::SendFundingCreated,
 				$node_b.node.get_our_node_id()
 			);
-			$node_b.node.handle_funding_created(&$node_a.node.get_our_node_id(), &msg_a);
+			$node_b.node.handle_funding_created($node_a.node.get_our_node_id(), &msg_a);
 			get_event!($node_b, Event::ChannelPending);
 			let msg_b = get_event_msg!(
 				$node_b,
 				MessageSendEvent::SendFundingSigned,
 				$node_a.node.get_our_node_id()
 			);
-			$node_a.node.handle_funding_signed(&$node_b.node.get_our_node_id(), &msg_b);
+			$node_a.node.handle_funding_signed($node_b.node.get_our_node_id(), &msg_b);
 			get_event!($node_a, Event::ChannelPending);
 			tx
 		}};
@@ -1709,13 +1709,13 @@ mod tests {
 				MessageSendEvent::SendOpenChannel,
 				$node_b.node.get_our_node_id()
 			);
-			$node_b.node.handle_open_channel(&$node_a.node.get_our_node_id(), &msg_a);
+			$node_b.node.handle_open_channel($node_a.node.get_our_node_id(), &msg_a);
 			let msg_b = get_event_msg!(
 				$node_b,
 				MessageSendEvent::SendAcceptChannel,
 				$node_a.node.get_our_node_id()
 			);
-			$node_a.node.handle_accept_channel(&$node_b.node.get_our_node_id(), &msg_b);
+			$node_a.node.handle_accept_channel($node_b.node.get_our_node_id(), &msg_b);
 		}};
 	}
 
@@ -2115,10 +2115,10 @@ mod tests {
 			.funding_transaction_generated(temporary_channel_id, node_1_id, funding_tx.clone())
 			.unwrap();
 		let msg_0 = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_1_id);
-		nodes[1].node.handle_funding_created(&node_0_id, &msg_0);
+		nodes[1].node.handle_funding_created(node_0_id, &msg_0);
 		get_event!(nodes[1], Event::ChannelPending);
 		let msg_1 = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, node_0_id);
-		nodes[0].node.handle_funding_signed(&node_1_id, &msg_1);
+		nodes[0].node.handle_funding_signed(node_1_id, &msg_1);
 		let _ = channel_pending_recv
 			.recv_timeout(Duration::from_secs(EVENT_DEADLINE))
 			.expect("ChannelPending not handled within deadline");
@@ -2128,10 +2128,10 @@ mod tests {
 		let as_funding = get_event_msg!(nodes[0], MessageSendEvent::SendChannelReady, node_1_id);
 		confirm_transaction(&mut nodes[1], &funding_tx);
 		let bs_funding = get_event_msg!(nodes[1], MessageSendEvent::SendChannelReady, node_0_id);
-		nodes[0].node.handle_channel_ready(&node_1_id, &bs_funding);
+		nodes[0].node.handle_channel_ready(node_1_id, &bs_funding);
 		let _as_channel_update =
 			get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_1_id);
-		nodes[1].node.handle_channel_ready(&node_0_id, &as_funding);
+		nodes[1].node.handle_channel_ready(node_0_id, &as_funding);
 		let _bs_channel_update =
 			get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_0_id);
 		let broadcast_funding =
