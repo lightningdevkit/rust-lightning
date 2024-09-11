@@ -4463,7 +4463,7 @@ where
 			) {
 				Ok(paths) => paths,
 				Err(()) => {
-					self.abandon_payment_with_reason(payment_id, PaymentFailureReason::RouteNotFound);
+					self.abandon_payment_with_reason(payment_id, PaymentFailureReason::BlindedPathCreationFailed);
 					res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
 					return NotifyOption::DoPersist
 				}

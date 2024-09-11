@@ -577,6 +577,12 @@ pub enum PaymentFailureReason {
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	InvoiceRequestRejected,
+	/// Failed to create a blinded path back to ourselves.
+	/// We attempted to initiate payment to a static invoice but failed to create a reply path for our
+	/// [`HeldHtlcAvailable`] message.
+	///
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	BlindedPathCreationFailed,
 }
 
 impl_writeable_tlv_based_enum_upgradable!(PaymentFailureReason,
@@ -587,6 +593,7 @@ impl_writeable_tlv_based_enum_upgradable!(PaymentFailureReason,
 	(4, RetriesExhausted) => {},
 	(5, InvoiceRequestRejected) => {},
 	(6, PaymentExpired) => {},
+	(7, BlindedPathCreationFailed) => {},
 	(8, RouteNotFound) => {},
 	(10, UnexpectedError) => {},
 );
@@ -1651,6 +1658,8 @@ impl Writeable for Event {
 						&Some(PaymentFailureReason::RetriesExhausted),
 					Some(PaymentFailureReason::InvoiceRequestRejected) =>
 						&Some(PaymentFailureReason::RecipientRejected),
+					Some(PaymentFailureReason::BlindedPathCreationFailed) =>
+						&Some(PaymentFailureReason::RouteNotFound)
 				};
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),
