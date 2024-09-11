@@ -14,6 +14,7 @@ use bitcoin::hashes::cmp::fixed_time_eq;
 use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey, self};
+use types::payment::PaymentHash;
 use core::fmt;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
@@ -38,6 +39,9 @@ const WITH_ENCRYPTED_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[4; 16];
 
 // HMAC input for a `PaymentId`. The HMAC is used in `OffersContext::OutboundPayment`.
 const PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[5; 16];
+
+// HMAC input for a `PaymentHash`. The HMAC is used in `OffersContext::InboundPayment`.
+const PAYMENT_HASH_HMAC_INPUT: &[u8; 16] = &[6; 16];
 
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
@@ -412,4 +416,23 @@ pub(crate) fn verify_payment_id(
 	payment_id: PaymentId, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
 ) -> Result<(), ()> {
 	if hmac_for_payment_id(payment_id, nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
+}
+
+pub(crate) fn hmac_for_payment_hash(
+	payment_hash: PaymentHash, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Payment Hash";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(PAYMENT_HASH_HMAC_INPUT);
+	hmac.input(&payment_hash.0);
+
+	Hmac::from_engine(hmac)
+}
+
+pub(crate) fn verify_payment_hash(
+	payment_hash: PaymentHash, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Result<(), ()> {
+	if hmac_for_payment_hash(payment_hash, nonce, expanded_key) == hmac { Ok(()) } else { Err(()) }
 }
