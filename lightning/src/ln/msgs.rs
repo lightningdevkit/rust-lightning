@@ -1491,101 +1491,101 @@ pub struct CommitmentUpdate {
 pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	// Channel init:
 	/// Handle an incoming `open_channel` message from the given peer.
-	fn handle_open_channel(&self, their_node_id: &PublicKey, msg: &OpenChannel);
+	fn handle_open_channel(&self, their_node_id: PublicKey, msg: &OpenChannel);
 	/// Handle an incoming `open_channel2` message from the given peer.
-	fn handle_open_channel_v2(&self, their_node_id: &PublicKey, msg: &OpenChannelV2);
+	fn handle_open_channel_v2(&self, their_node_id: PublicKey, msg: &OpenChannelV2);
 	/// Handle an incoming `accept_channel` message from the given peer.
-	fn handle_accept_channel(&self, their_node_id: &PublicKey, msg: &AcceptChannel);
+	fn handle_accept_channel(&self, their_node_id: PublicKey, msg: &AcceptChannel);
 	/// Handle an incoming `accept_channel2` message from the given peer.
-	fn handle_accept_channel_v2(&self, their_node_id: &PublicKey, msg: &AcceptChannelV2);
+	fn handle_accept_channel_v2(&self, their_node_id: PublicKey, msg: &AcceptChannelV2);
 	/// Handle an incoming `funding_created` message from the given peer.
-	fn handle_funding_created(&self, their_node_id: &PublicKey, msg: &FundingCreated);
+	fn handle_funding_created(&self, their_node_id: PublicKey, msg: &FundingCreated);
 	/// Handle an incoming `funding_signed` message from the given peer.
-	fn handle_funding_signed(&self, their_node_id: &PublicKey, msg: &FundingSigned);
+	fn handle_funding_signed(&self, their_node_id: PublicKey, msg: &FundingSigned);
 	/// Handle an incoming `channel_ready` message from the given peer.
-	fn handle_channel_ready(&self, their_node_id: &PublicKey, msg: &ChannelReady);
+	fn handle_channel_ready(&self, their_node_id: PublicKey, msg: &ChannelReady);
 
 	// Channel close:
 	/// Handle an incoming `shutdown` message from the given peer.
-	fn handle_shutdown(&self, their_node_id: &PublicKey, msg: &Shutdown);
+	fn handle_shutdown(&self, their_node_id: PublicKey, msg: &Shutdown);
 	/// Handle an incoming `closing_signed` message from the given peer.
-	fn handle_closing_signed(&self, their_node_id: &PublicKey, msg: &ClosingSigned);
+	fn handle_closing_signed(&self, their_node_id: PublicKey, msg: &ClosingSigned);
 
 	// Quiescence
 	/// Handle an incoming `stfu` message from the given peer.
-	fn handle_stfu(&self, their_node_id: &PublicKey, msg: &Stfu);
+	fn handle_stfu(&self, their_node_id: PublicKey, msg: &Stfu);
 
 	// Splicing
 	/// Handle an incoming `splice_init` message from the given peer.
 	#[cfg(splicing)]
-	fn handle_splice_init(&self, their_node_id: &PublicKey, msg: &SpliceInit);
+	fn handle_splice_init(&self, their_node_id: PublicKey, msg: &SpliceInit);
 	/// Handle an incoming `splice_ack` message from the given peer.
 	#[cfg(splicing)]
-	fn handle_splice_ack(&self, their_node_id: &PublicKey, msg: &SpliceAck);
+	fn handle_splice_ack(&self, their_node_id: PublicKey, msg: &SpliceAck);
 	/// Handle an incoming `splice_locked` message from the given peer.
 	#[cfg(splicing)]
-	fn handle_splice_locked(&self, their_node_id: &PublicKey, msg: &SpliceLocked);
+	fn handle_splice_locked(&self, their_node_id: PublicKey, msg: &SpliceLocked);
 
 	// Interactive channel construction
 	/// Handle an incoming `tx_add_input message` from the given peer.
-	fn handle_tx_add_input(&self, their_node_id: &PublicKey, msg: &TxAddInput);
+	fn handle_tx_add_input(&self, their_node_id: PublicKey, msg: &TxAddInput);
 	/// Handle an incoming `tx_add_output` message from the given peer.
-	fn handle_tx_add_output(&self, their_node_id: &PublicKey, msg: &TxAddOutput);
+	fn handle_tx_add_output(&self, their_node_id: PublicKey, msg: &TxAddOutput);
 	/// Handle an incoming `tx_remove_input` message from the given peer.
-	fn handle_tx_remove_input(&self, their_node_id: &PublicKey, msg: &TxRemoveInput);
+	fn handle_tx_remove_input(&self, their_node_id: PublicKey, msg: &TxRemoveInput);
 	/// Handle an incoming `tx_remove_output` message from the given peer.
-	fn handle_tx_remove_output(&self, their_node_id: &PublicKey, msg: &TxRemoveOutput);
+	fn handle_tx_remove_output(&self, their_node_id: PublicKey, msg: &TxRemoveOutput);
 	/// Handle an incoming `tx_complete message` from the given peer.
-	fn handle_tx_complete(&self, their_node_id: &PublicKey, msg: &TxComplete);
+	fn handle_tx_complete(&self, their_node_id: PublicKey, msg: &TxComplete);
 	/// Handle an incoming `tx_signatures` message from the given peer.
-	fn handle_tx_signatures(&self, their_node_id: &PublicKey, msg: &TxSignatures);
+	fn handle_tx_signatures(&self, their_node_id: PublicKey, msg: &TxSignatures);
 	/// Handle an incoming `tx_init_rbf` message from the given peer.
-	fn handle_tx_init_rbf(&self, their_node_id: &PublicKey, msg: &TxInitRbf);
+	fn handle_tx_init_rbf(&self, their_node_id: PublicKey, msg: &TxInitRbf);
 	/// Handle an incoming `tx_ack_rbf` message from the given peer.
-	fn handle_tx_ack_rbf(&self, their_node_id: &PublicKey, msg: &TxAckRbf);
+	fn handle_tx_ack_rbf(&self, their_node_id: PublicKey, msg: &TxAckRbf);
 	/// Handle an incoming `tx_abort message` from the given peer.
-	fn handle_tx_abort(&self, their_node_id: &PublicKey, msg: &TxAbort);
+	fn handle_tx_abort(&self, their_node_id: PublicKey, msg: &TxAbort);
 
 	// HTLC handling:
 	/// Handle an incoming `update_add_htlc` message from the given peer.
-	fn handle_update_add_htlc(&self, their_node_id: &PublicKey, msg: &UpdateAddHTLC);
+	fn handle_update_add_htlc(&self, their_node_id: PublicKey, msg: &UpdateAddHTLC);
 	/// Handle an incoming `update_fulfill_htlc` message from the given peer.
-	fn handle_update_fulfill_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFulfillHTLC);
+	fn handle_update_fulfill_htlc(&self, their_node_id: PublicKey, msg: &UpdateFulfillHTLC);
 	/// Handle an incoming `update_fail_htlc` message from the given peer.
-	fn handle_update_fail_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailHTLC);
+	fn handle_update_fail_htlc(&self, their_node_id: PublicKey, msg: &UpdateFailHTLC);
 	/// Handle an incoming `update_fail_malformed_htlc` message from the given peer.
-	fn handle_update_fail_malformed_htlc(&self, their_node_id: &PublicKey, msg: &UpdateFailMalformedHTLC);
+	fn handle_update_fail_malformed_htlc(&self, their_node_id: PublicKey, msg: &UpdateFailMalformedHTLC);
 	/// Handle an incoming `commitment_signed` message from the given peer.
-	fn handle_commitment_signed(&self, their_node_id: &PublicKey, msg: &CommitmentSigned);
+	fn handle_commitment_signed(&self, their_node_id: PublicKey, msg: &CommitmentSigned);
 	/// Handle an incoming `revoke_and_ack` message from the given peer.
-	fn handle_revoke_and_ack(&self, their_node_id: &PublicKey, msg: &RevokeAndACK);
+	fn handle_revoke_and_ack(&self, their_node_id: PublicKey, msg: &RevokeAndACK);
 
 	/// Handle an incoming `update_fee` message from the given peer.
-	fn handle_update_fee(&self, their_node_id: &PublicKey, msg: &UpdateFee);
+	fn handle_update_fee(&self, their_node_id: PublicKey, msg: &UpdateFee);
 
 	// Channel-to-announce:
 	/// Handle an incoming `announcement_signatures` message from the given peer.
-	fn handle_announcement_signatures(&self, their_node_id: &PublicKey, msg: &AnnouncementSignatures);
+	fn handle_announcement_signatures(&self, their_node_id: PublicKey, msg: &AnnouncementSignatures);
 
 	// Connection loss/reestablish:
 	/// Indicates a connection to the peer failed/an existing connection was lost.
-	fn peer_disconnected(&self, their_node_id: &PublicKey);
+	fn peer_disconnected(&self, their_node_id: PublicKey);
 
 	/// Handle a peer reconnecting, possibly generating `channel_reestablish` message(s).
 	///
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, msg: &Init, inbound: bool) -> Result<(), ()>;
+	fn peer_connected(&self, their_node_id: PublicKey, msg: &Init, inbound: bool) -> Result<(), ()>;
 	/// Handle an incoming `channel_reestablish` message from the given peer.
-	fn handle_channel_reestablish(&self, their_node_id: &PublicKey, msg: &ChannelReestablish);
+	fn handle_channel_reestablish(&self, their_node_id: PublicKey, msg: &ChannelReestablish);
 
 	/// Handle an incoming `channel_update` message from the given peer.
-	fn handle_channel_update(&self, their_node_id: &PublicKey, msg: &ChannelUpdate);
+	fn handle_channel_update(&self, their_node_id: PublicKey, msg: &ChannelUpdate);
 
 	// Error:
 	/// Handle an incoming `error` message from the given peer.
-	fn handle_error(&self, their_node_id: &PublicKey, msg: &ErrorMessage);
+	fn handle_error(&self, their_node_id: PublicKey, msg: &ErrorMessage);
 
 	// Handler information:
 	/// Gets the node feature flags which this handler itself supports. All available handlers are
@@ -1598,7 +1598,7 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	/// which are sent in our [`Init`] message.
 	///
 	/// Note that this method is called before [`Self::peer_connected`].
-	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
+	fn provided_init_features(&self, their_node_id: PublicKey) -> InitFeatures;
 
 	/// Gets the chain hashes for this `ChannelMessageHandler` indicating which chains it supports.
 	///
@@ -1619,17 +1619,17 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// `false` or returning an `Err` otherwise.
 	///
 	/// If `their_node_id` is `None`, the message was generated by our own local node.
-	fn handle_node_announcement(&self, their_node_id: Option<&PublicKey>, msg: &NodeAnnouncement) -> Result<bool, LightningError>;
+	fn handle_node_announcement(&self, their_node_id: Option<PublicKey>, msg: &NodeAnnouncement) -> Result<bool, LightningError>;
 	/// Handle a `channel_announcement` message, returning `true` if it should be forwarded on, `false`
 	/// or returning an `Err` otherwise.
 	///
 	/// If `their_node_id` is `None`, the message was generated by our own local node.
-	fn handle_channel_announcement(&self, their_node_id: Option<&PublicKey>, msg: &ChannelAnnouncement) -> Result<bool, LightningError>;
+	fn handle_channel_announcement(&self, their_node_id: Option<PublicKey>, msg: &ChannelAnnouncement) -> Result<bool, LightningError>;
 	/// Handle an incoming `channel_update` message, returning true if it should be forwarded on,
 	/// `false` or returning an `Err` otherwise.
 	///
 	/// If `their_node_id` is `None`, the message was generated by our own local node.
-	fn handle_channel_update(&self, their_node_id: Option<&PublicKey>, msg: &ChannelUpdate) -> Result<bool, LightningError>;
+	fn handle_channel_update(&self, their_node_id: Option<PublicKey>, msg: &ChannelUpdate) -> Result<bool, LightningError>;
 	/// Gets channel announcements and updates required to dump our routing table to a remote node,
 	/// starting at the `short_channel_id` indicated by `starting_point` and including announcements
 	/// for a single channel.
@@ -1646,22 +1646,22 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
+	fn peer_connected(&self, their_node_id: PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
 	/// Handles the reply of a query we initiated to learn about channels
 	/// for a given range of blocks. We can expect to receive one or more
 	/// replies to a single query.
-	fn handle_reply_channel_range(&self, their_node_id: &PublicKey, msg: ReplyChannelRange) -> Result<(), LightningError>;
+	fn handle_reply_channel_range(&self, their_node_id: PublicKey, msg: ReplyChannelRange) -> Result<(), LightningError>;
 	/// Handles the reply of a query we initiated asking for routing gossip
 	/// messages for a list of channels. We should receive this message when
 	/// a node has completed its best effort to send us the pertaining routing
 	/// gossip messages.
-	fn handle_reply_short_channel_ids_end(&self, their_node_id: &PublicKey, msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError>;
+	fn handle_reply_short_channel_ids_end(&self, their_node_id: PublicKey, msg: ReplyShortChannelIdsEnd) -> Result<(), LightningError>;
 	/// Handles when a peer asks us to send a list of `short_channel_id`s
 	/// for the requested range of blocks.
-	fn handle_query_channel_range(&self, their_node_id: &PublicKey, msg: QueryChannelRange) -> Result<(), LightningError>;
+	fn handle_query_channel_range(&self, their_node_id: PublicKey, msg: QueryChannelRange) -> Result<(), LightningError>;
 	/// Handles when a peer asks us to send routing gossip messages for a
 	/// list of `short_channel_id`s.
-	fn handle_query_short_channel_ids(&self, their_node_id: &PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
+	fn handle_query_short_channel_ids(&self, their_node_id: PublicKey, msg: QueryShortChannelIds) -> Result<(), LightningError>;
 
 	// Handler queueing status:
 	/// Indicates that there are a large number of [`ChannelAnnouncement`] (or other) messages
@@ -1680,13 +1680,13 @@ pub trait RoutingMessageHandler : MessageSendEventsProvider {
 	/// which are sent in our [`Init`] message.
 	///
 	/// Note that this method is called before [`Self::peer_connected`].
-	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
+	fn provided_init_features(&self, their_node_id: PublicKey) -> InitFeatures;
 }
 
 /// A handler for received [`OnionMessage`]s and for providing generated ones to send.
 pub trait OnionMessageHandler {
 	/// Handle an incoming `onion_message` message from the given peer.
-	fn handle_onion_message(&self, peer_node_id: &PublicKey, msg: &OnionMessage);
+	fn handle_onion_message(&self, peer_node_id: PublicKey, msg: &OnionMessage);
 
 	/// Returns the next pending onion message for the peer with the given node id.
 	fn next_onion_message_for_peer(&self, peer_node_id: PublicKey) -> Option<OnionMessage>;
@@ -1697,11 +1697,11 @@ pub trait OnionMessageHandler {
 	/// May return an `Err(())` if the features the peer supports are not sufficient to communicate
 	/// with us. Implementors should be somewhat conservative about doing so, however, as other
 	/// message handlers may still wish to communicate with this peer.
-	fn peer_connected(&self, their_node_id: &PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
+	fn peer_connected(&self, their_node_id: PublicKey, init: &Init, inbound: bool) -> Result<(), ()>;
 
 	/// Indicates a connection to the peer failed/an existing connection was lost. Allows handlers to
 	/// drop and refuse to forward onion messages to this peer.
-	fn peer_disconnected(&self, their_node_id: &PublicKey);
+	fn peer_disconnected(&self, their_node_id: PublicKey);
 
 	/// Performs actions that should happen roughly every ten seconds after startup. Allows handlers
 	/// to drop any buffered onion messages intended for prospective peers.
@@ -1718,7 +1718,7 @@ pub trait OnionMessageHandler {
 	/// which are sent in our [`Init`] message.
 	///
 	/// Note that this method is called before [`Self::peer_connected`].
-	fn provided_init_features(&self, their_node_id: &PublicKey) -> InitFeatures;
+	fn provided_init_features(&self, their_node_id: PublicKey) -> InitFeatures;
 }
 
 #[derive(Clone)]

@@ -55,7 +55,7 @@ pub(crate) fn add_channel(
 		bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_privkey),
 		contents: unsigned_announcement.clone(),
 	};
-	match gossip_sync.handle_channel_announcement(Some(&node_1_pubkey), &valid_announcement) {
+	match gossip_sync.handle_channel_announcement(Some(node_1_pubkey), &valid_announcement) {
 		Ok(res) => assert!(res),
 		_ => panic!()
 	};
@@ -83,7 +83,7 @@ pub(crate) fn add_or_update_node(
 		contents: unsigned_announcement.clone()
 	};
 
-	match gossip_sync.handle_node_announcement(Some(&node_pubkey), &valid_announcement) {
+	match gossip_sync.handle_node_announcement(Some(node_pubkey), &valid_announcement) {
 		Ok(_) => (),
 		Err(_) => panic!()
 	};
@@ -100,7 +100,7 @@ pub(crate) fn update_channel(
 		contents: update.clone()
 	};
 
-	match gossip_sync.handle_channel_update(Some(&node_pubkey), &valid_channel_update) {
+	match gossip_sync.handle_channel_update(Some(node_pubkey), &valid_channel_update) {
 		Ok(res) => assert!(res),
 		Err(_) => panic!()
 	};

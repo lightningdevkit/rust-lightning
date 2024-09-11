@@ -810,88 +810,88 @@ impl Drop for TestChannelMessageHandler {
 }
 
 impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
-	fn handle_open_channel(&self, _their_node_id: &PublicKey, msg: &msgs::OpenChannel) {
+	fn handle_open_channel(&self, _their_node_id: PublicKey, msg: &msgs::OpenChannel) {
 		self.received_msg(wire::Message::OpenChannel(msg.clone()));
 	}
-	fn handle_accept_channel(&self, _their_node_id: &PublicKey, msg: &msgs::AcceptChannel) {
+	fn handle_accept_channel(&self, _their_node_id: PublicKey, msg: &msgs::AcceptChannel) {
 		self.received_msg(wire::Message::AcceptChannel(msg.clone()));
 	}
-	fn handle_funding_created(&self, _their_node_id: &PublicKey, msg: &msgs::FundingCreated) {
+	fn handle_funding_created(&self, _their_node_id: PublicKey, msg: &msgs::FundingCreated) {
 		self.received_msg(wire::Message::FundingCreated(msg.clone()));
 	}
-	fn handle_funding_signed(&self, _their_node_id: &PublicKey, msg: &msgs::FundingSigned) {
+	fn handle_funding_signed(&self, _their_node_id: PublicKey, msg: &msgs::FundingSigned) {
 		self.received_msg(wire::Message::FundingSigned(msg.clone()));
 	}
-	fn handle_channel_ready(&self, _their_node_id: &PublicKey, msg: &msgs::ChannelReady) {
+	fn handle_channel_ready(&self, _their_node_id: PublicKey, msg: &msgs::ChannelReady) {
 		self.received_msg(wire::Message::ChannelReady(msg.clone()));
 	}
-	fn handle_shutdown(&self, _their_node_id: &PublicKey, msg: &msgs::Shutdown) {
+	fn handle_shutdown(&self, _their_node_id: PublicKey, msg: &msgs::Shutdown) {
 		self.received_msg(wire::Message::Shutdown(msg.clone()));
 	}
-	fn handle_closing_signed(&self, _their_node_id: &PublicKey, msg: &msgs::ClosingSigned) {
+	fn handle_closing_signed(&self, _their_node_id: PublicKey, msg: &msgs::ClosingSigned) {
 		self.received_msg(wire::Message::ClosingSigned(msg.clone()));
 	}
-	fn handle_stfu(&self, _their_node_id: &PublicKey, msg: &msgs::Stfu) {
+	fn handle_stfu(&self, _their_node_id: PublicKey, msg: &msgs::Stfu) {
 		self.received_msg(wire::Message::Stfu(msg.clone()));
 	}
 	#[cfg(splicing)]
-	fn handle_splice_init(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceInit) {
+	fn handle_splice_init(&self, _their_node_id: PublicKey, msg: &msgs::SpliceInit) {
 		self.received_msg(wire::Message::SpliceInit(msg.clone()));
 	}
 	#[cfg(splicing)]
-	fn handle_splice_ack(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceAck) {
+	fn handle_splice_ack(&self, _their_node_id: PublicKey, msg: &msgs::SpliceAck) {
 		self.received_msg(wire::Message::SpliceAck(msg.clone()));
 	}
 	#[cfg(splicing)]
-	fn handle_splice_locked(&self, _their_node_id: &PublicKey, msg: &msgs::SpliceLocked) {
+	fn handle_splice_locked(&self, _their_node_id: PublicKey, msg: &msgs::SpliceLocked) {
 		self.received_msg(wire::Message::SpliceLocked(msg.clone()));
 	}
-	fn handle_update_add_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateAddHTLC) {
+	fn handle_update_add_htlc(&self, _their_node_id: PublicKey, msg: &msgs::UpdateAddHTLC) {
 		self.received_msg(wire::Message::UpdateAddHTLC(msg.clone()));
 	}
-	fn handle_update_fulfill_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) {
+	fn handle_update_fulfill_htlc(&self, _their_node_id: PublicKey, msg: &msgs::UpdateFulfillHTLC) {
 		self.received_msg(wire::Message::UpdateFulfillHTLC(msg.clone()));
 	}
-	fn handle_update_fail_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) {
+	fn handle_update_fail_htlc(&self, _their_node_id: PublicKey, msg: &msgs::UpdateFailHTLC) {
 		self.received_msg(wire::Message::UpdateFailHTLC(msg.clone()));
 	}
-	fn handle_update_fail_malformed_htlc(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
+	fn handle_update_fail_malformed_htlc(&self, _their_node_id: PublicKey, msg: &msgs::UpdateFailMalformedHTLC) {
 		self.received_msg(wire::Message::UpdateFailMalformedHTLC(msg.clone()));
 	}
-	fn handle_commitment_signed(&self, _their_node_id: &PublicKey, msg: &msgs::CommitmentSigned) {
+	fn handle_commitment_signed(&self, _their_node_id: PublicKey, msg: &msgs::CommitmentSigned) {
 		self.received_msg(wire::Message::CommitmentSigned(msg.clone()));
 	}
-	fn handle_revoke_and_ack(&self, _their_node_id: &PublicKey, msg: &msgs::RevokeAndACK) {
+	fn handle_revoke_and_ack(&self, _their_node_id: PublicKey, msg: &msgs::RevokeAndACK) {
 		self.received_msg(wire::Message::RevokeAndACK(msg.clone()));
 	}
-	fn handle_update_fee(&self, _their_node_id: &PublicKey, msg: &msgs::UpdateFee) {
+	fn handle_update_fee(&self, _their_node_id: PublicKey, msg: &msgs::UpdateFee) {
 		self.received_msg(wire::Message::UpdateFee(msg.clone()));
 	}
-	fn handle_channel_update(&self, _their_node_id: &PublicKey, _msg: &msgs::ChannelUpdate) {
+	fn handle_channel_update(&self, _their_node_id: PublicKey, _msg: &msgs::ChannelUpdate) {
 		// Don't call `received_msg` here as `TestRoutingMessageHandler` generates these sometimes
 	}
-	fn handle_announcement_signatures(&self, _their_node_id: &PublicKey, msg: &msgs::AnnouncementSignatures) {
+	fn handle_announcement_signatures(&self, _their_node_id: PublicKey, msg: &msgs::AnnouncementSignatures) {
 		self.received_msg(wire::Message::AnnouncementSignatures(msg.clone()));
 	}
-	fn handle_channel_reestablish(&self, _their_node_id: &PublicKey, msg: &msgs::ChannelReestablish) {
+	fn handle_channel_reestablish(&self, _their_node_id: PublicKey, msg: &msgs::ChannelReestablish) {
 		self.received_msg(wire::Message::ChannelReestablish(msg.clone()));
 	}
-	fn peer_disconnected(&self, their_node_id: &PublicKey) {
-		assert!(self.connected_peers.lock().unwrap().remove(their_node_id));
+	fn peer_disconnected(&self, their_node_id: PublicKey) {
+		assert!(self.connected_peers.lock().unwrap().remove(&their_node_id));
 	}
-	fn peer_connected(&self, their_node_id: &PublicKey, _msg: &msgs::Init, _inbound: bool) -> Result<(), ()> {
+	fn peer_connected(&self, their_node_id: PublicKey, _msg: &msgs::Init, _inbound: bool) -> Result<(), ()> {
 		assert!(self.connected_peers.lock().unwrap().insert(their_node_id.clone()));
 		// Don't bother with `received_msg` for Init as its auto-generated and we don't want to
 		// bother re-generating the expected Init message in all tests.
 		Ok(())
 	}
-	fn handle_error(&self, _their_node_id: &PublicKey, msg: &msgs::ErrorMessage) {
+	fn handle_error(&self, _their_node_id: PublicKey, msg: &msgs::ErrorMessage) {
 		self.received_msg(wire::Message::Error(msg.clone()));
 	}
 	fn provided_node_features(&self) -> NodeFeatures {
 		channelmanager::provided_node_features(&UserConfig::default())
 	}
-	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
+	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
 		channelmanager::provided_init_features(&UserConfig::default())
 	}
 
@@ -899,47 +899,47 @@ impl msgs::ChannelMessageHandler for TestChannelMessageHandler {
 		Some(vec![self.chain_hash])
 	}
 
-	fn handle_open_channel_v2(&self, _their_node_id: &PublicKey, msg: &msgs::OpenChannelV2) {
+	fn handle_open_channel_v2(&self, _their_node_id: PublicKey, msg: &msgs::OpenChannelV2) {
 		self.received_msg(wire::Message::OpenChannelV2(msg.clone()));
 	}
 
-	fn handle_accept_channel_v2(&self, _their_node_id: &PublicKey, msg: &msgs::AcceptChannelV2) {
+	fn handle_accept_channel_v2(&self, _their_node_id: PublicKey, msg: &msgs::AcceptChannelV2) {
 		self.received_msg(wire::Message::AcceptChannelV2(msg.clone()));
 	}
 
-	fn handle_tx_add_input(&self, _their_node_id: &PublicKey, msg: &msgs::TxAddInput) {
+	fn handle_tx_add_input(&self, _their_node_id: PublicKey, msg: &msgs::TxAddInput) {
 		self.received_msg(wire::Message::TxAddInput(msg.clone()));
 	}
 
-	fn handle_tx_add_output(&self, _their_node_id: &PublicKey, msg: &msgs::TxAddOutput) {
+	fn handle_tx_add_output(&self, _their_node_id: PublicKey, msg: &msgs::TxAddOutput) {
 		self.received_msg(wire::Message::TxAddOutput(msg.clone()));
 	}
 
-	fn handle_tx_remove_input(&self, _their_node_id: &PublicKey, msg: &msgs::TxRemoveInput) {
+	fn handle_tx_remove_input(&self, _their_node_id: PublicKey, msg: &msgs::TxRemoveInput) {
 		self.received_msg(wire::Message::TxRemoveInput(msg.clone()));
 	}
 
-	fn handle_tx_remove_output(&self, _their_node_id: &PublicKey, msg: &msgs::TxRemoveOutput) {
+	fn handle_tx_remove_output(&self, _their_node_id: PublicKey, msg: &msgs::TxRemoveOutput) {
 		self.received_msg(wire::Message::TxRemoveOutput(msg.clone()));
 	}
 
-	fn handle_tx_complete(&self, _their_node_id: &PublicKey, msg: &msgs::TxComplete) {
+	fn handle_tx_complete(&self, _their_node_id: PublicKey, msg: &msgs::TxComplete) {
 		self.received_msg(wire::Message::TxComplete(msg.clone()));
 	}
 
-	fn handle_tx_signatures(&self, _their_node_id: &PublicKey, msg: &msgs::TxSignatures) {
+	fn handle_tx_signatures(&self, _their_node_id: PublicKey, msg: &msgs::TxSignatures) {
 		self.received_msg(wire::Message::TxSignatures(msg.clone()));
 	}
 
-	fn handle_tx_init_rbf(&self, _their_node_id: &PublicKey, msg: &msgs::TxInitRbf) {
+	fn handle_tx_init_rbf(&self, _their_node_id: PublicKey, msg: &msgs::TxInitRbf) {
 		self.received_msg(wire::Message::TxInitRbf(msg.clone()));
 	}
 
-	fn handle_tx_ack_rbf(&self, _their_node_id: &PublicKey, msg: &msgs::TxAckRbf) {
+	fn handle_tx_ack_rbf(&self, _their_node_id: PublicKey, msg: &msgs::TxAckRbf) {
 		self.received_msg(wire::Message::TxAckRbf(msg.clone()));
 	}
 
-	fn handle_tx_abort(&self, _their_node_id: &PublicKey, msg: &msgs::TxAbort) {
+	fn handle_tx_abort(&self, _their_node_id: PublicKey, msg: &msgs::TxAbort) {
 		self.received_msg(wire::Message::TxAbort(msg.clone()));
 	}
 }
@@ -1023,14 +1023,14 @@ impl TestRoutingMessageHandler {
 	}
 }
 impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
-	fn handle_node_announcement(&self, _their_node_id: Option<&PublicKey>, _msg: &msgs::NodeAnnouncement) -> Result<bool, msgs::LightningError> {
+	fn handle_node_announcement(&self, _their_node_id: Option<PublicKey>, _msg: &msgs::NodeAnnouncement) -> Result<bool, msgs::LightningError> {
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
-	fn handle_channel_announcement(&self, _their_node_id: Option<&PublicKey>, _msg: &msgs::ChannelAnnouncement) -> Result<bool, msgs::LightningError> {
+	fn handle_channel_announcement(&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelAnnouncement) -> Result<bool, msgs::LightningError> {
 		self.chan_anns_recvd.fetch_add(1, Ordering::AcqRel);
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
-	fn handle_channel_update(&self, _their_node_id: Option<&PublicKey>, _msg: &msgs::ChannelUpdate) -> Result<bool, msgs::LightningError> {
+	fn handle_channel_update(&self, _their_node_id: Option<PublicKey>, _msg: &msgs::ChannelUpdate) -> Result<bool, msgs::LightningError> {
 		self.chan_upds_recvd.fetch_add(1, Ordering::AcqRel);
 		Err(msgs::LightningError { err: "".to_owned(), action: msgs::ErrorAction::IgnoreError })
 	}
@@ -1046,7 +1046,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		None
 	}
 
-	fn peer_connected(&self, their_node_id: &PublicKey, init_msg: &msgs::Init, _inbound: bool) -> Result<(), ()> {
+	fn peer_connected(&self, their_node_id: PublicKey, init_msg: &msgs::Init, _inbound: bool) -> Result<(), ()> {
 		if !init_msg.features.supports_gossip_queries() {
 			return Ok(());
 		}
@@ -1076,19 +1076,19 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		Ok(())
 	}
 
-	fn handle_reply_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), msgs::LightningError> {
+	fn handle_reply_channel_range(&self, _their_node_id: PublicKey, _msg: msgs::ReplyChannelRange) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
 
-	fn handle_reply_short_channel_ids_end(&self, _their_node_id: &PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), msgs::LightningError> {
+	fn handle_reply_short_channel_ids_end(&self, _their_node_id: PublicKey, _msg: msgs::ReplyShortChannelIdsEnd) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
 
-	fn handle_query_channel_range(&self, _their_node_id: &PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), msgs::LightningError> {
+	fn handle_query_channel_range(&self, _their_node_id: PublicKey, _msg: msgs::QueryChannelRange) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
 
-	fn handle_query_short_channel_ids(&self, _their_node_id: &PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), msgs::LightningError> {
+	fn handle_query_short_channel_ids(&self, _their_node_id: PublicKey, _msg: msgs::QueryShortChannelIds) -> Result<(), msgs::LightningError> {
 		Ok(())
 	}
 
@@ -1098,7 +1098,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 		features
 	}
 
-	fn provided_init_features(&self, _their_init_features: &PublicKey) -> InitFeatures {
+	fn provided_init_features(&self, _their_init_features: PublicKey) -> InitFeatures {
 		let mut features = InitFeatures::empty();
 		features.set_gossip_queries_optional();
 		features
