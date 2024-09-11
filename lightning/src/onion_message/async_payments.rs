@@ -61,18 +61,11 @@ pub enum AsyncPaymentsMessage {
 /// accompanying this onion message should be used to send a [`ReleaseHeldHtlc`] response, which
 /// will cause the upstream HTLC to be released.
 #[derive(Clone, Debug)]
-pub struct HeldHtlcAvailable {
-	/// The secret that will be used by the recipient of this message to release the held HTLC.
-	pub payment_release_secret: [u8; 32],
-}
+pub struct HeldHtlcAvailable {}
 
 /// Releases the HTLC corresponding to an inbound [`HeldHtlcAvailable`] message.
 #[derive(Clone, Debug)]
-pub struct ReleaseHeldHtlc {
-	/// Used to release the HTLC held upstream if it matches the corresponding
-	/// [`HeldHtlcAvailable::payment_release_secret`].
-	pub payment_release_secret: [u8; 32],
-}
+pub struct ReleaseHeldHtlc {}
 
 impl OnionMessageContents for ReleaseHeldHtlc {
 	fn tlv_type(&self) -> u64 {
@@ -88,13 +81,9 @@ impl OnionMessageContents for ReleaseHeldHtlc {
 	}
 }
 
-impl_writeable_tlv_based!(HeldHtlcAvailable, {
-	(0, payment_release_secret, required),
-});
+impl_writeable_tlv_based!(HeldHtlcAvailable, {});
 
-impl_writeable_tlv_based!(ReleaseHeldHtlc, {
-	(0, payment_release_secret, required),
-});
+impl_writeable_tlv_based!(ReleaseHeldHtlc, {});
 
 impl AsyncPaymentsMessage {
 	/// Returns whether `tlv_type` corresponds to a TLV record for async payment messages.

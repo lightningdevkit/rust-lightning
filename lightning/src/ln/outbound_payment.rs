@@ -82,7 +82,6 @@ pub(crate) enum PendingOutboundPayment {
 		payment_hash: PaymentHash,
 		keysend_preimage: PaymentPreimage,
 		retry_strategy: Retry,
-		payment_release_secret: [u8; 32],
 		route_params: RouteParameters,
 	},
 	Retryable {
@@ -984,7 +983,7 @@ impl OutboundPayments {
 		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
 		best_block_height: u32, entropy_source: ES,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>
-	) -> Result<[u8; 32], Bolt12PaymentError> where ES::Target: EntropySource {
+	) -> Result<(), Bolt12PaymentError> where ES::Target: EntropySource {
 		macro_rules! abandon_with_entry {
 			($payment: expr, $reason: expr) => {
 				$payment.get_mut().mark_abandoned($reason);
@@ -1029,7 +1028,6 @@ impl OutboundPayments {
 					};
 					let keysend_preimage = PaymentPreimage(entropy_source.get_secure_random_bytes());
 					let payment_hash = PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
-					let payment_release_secret = entropy_source.get_secure_random_bytes();
 					let pay_params = PaymentParameters::from_static_invoice(invoice);
 					let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
 					route_params.max_total_routing_fee_msat = *max_total_routing_fee_msat;
@@ -1046,10 +1044,9 @@ impl OutboundPayments {
 						payment_hash,
 						keysend_preimage,
 						retry_strategy: *retry_strategy,
-						payment_release_secret,
 						route_params,
 					};
-					return Ok(payment_release_secret)
+					return Ok(())
 				},
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
@@ -1061,9 +1058,9 @@ impl OutboundPayments {
 	pub(super) fn send_payment_for_static_invoice<
 		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
 	>(
-		&self, payment_id: PaymentId, payment_release_secret: [u8; 32], router: &R,
-		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
-		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
+		&self, payment_id: PaymentId, router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH,
+		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		send_payment_along_path: SP,
 	) -> Result<(), Bolt12PaymentError>
@@ -1080,12 +1077,8 @@ impl OutboundPayments {
 			match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 				hash_map::Entry::Occupied(entry) => match entry.get() {
 					PendingOutboundPayment::StaticInvoiceReceived {
-						payment_hash, payment_release_secret: release_secret, route_params, retry_strategy,
-						keysend_preimage, ..
+						payment_hash, route_params, retry_strategy, keysend_preimage, ..
 					} => {
-						if payment_release_secret != *release_secret {
-							return Err(Bolt12PaymentError::UnexpectedInvoice)
-						}
 						(*payment_hash, *keysend_preimage, route_params.clone(), *retry_strategy)
 					},
 					_ => return Err(Bolt12PaymentError::DuplicateInvoice),
@@ -2196,8 +2189,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, payment_hash, required),
 		(2, keysend_preimage, required),
 		(4, retry_strategy, required),
-		(6, payment_release_secret, required),
-		(8, route_params, required),
+		(6, route_params, required),
 	},
 );
 
@@ -2785,7 +2777,6 @@ mod tests {
 			payment_hash,
 			keysend_preimage: PaymentPreimage([0; 32]),
 			retry_strategy: Retry::Attempts(0),
-			payment_release_secret: [0; 32],
 			route_params,
 		};
 		outbounds.insert(payment_id, outbound);
@@ -2832,7 +2823,6 @@ mod tests {
 			payment_hash,
 			keysend_preimage: PaymentPreimage([0; 32]),
 			retry_strategy: Retry::Attempts(0),
-			payment_release_secret: [0; 32],
 			route_params,
 		};
 		outbounds.insert(payment_id, outbound);

@@ -4359,8 +4359,8 @@ where
 				invoice, payment_id, features, best_block_height, &*self.entropy_source,
 				&self.pending_events
 			);
-			let payment_release_secret = match outbound_pmts_res {
-				Ok(secret) => secret,
+			match outbound_pmts_res {
+				Ok(()) => {},
 				Err(Bolt12PaymentError::UnexpectedInvoice) | Err(Bolt12PaymentError::DuplicateInvoice) => {
 					res = outbound_pmts_res.map(|_| ());
 					return NotifyOption::SkipPersistNoEvents
@@ -4397,9 +4397,7 @@ where
 						destination: Destination::BlindedPath(invoice_path.clone()),
 						reply_path: reply_path.clone(),
 					};
-					let message = AsyncPaymentsMessage::HeldHtlcAvailable(
-						HeldHtlcAvailable { payment_release_secret }
-					);
+					let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
 					pending_async_payments_messages.push((message, instructions));
 				});
 
@@ -4411,16 +4409,15 @@ where
 
 	#[cfg(async_payments)]
 	fn send_payment_for_static_invoice(
-		&self, payment_id: PaymentId, payment_release_secret: [u8; 32]
+		&self, payment_id: PaymentId
 	) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let mut res = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
 			let outbound_pmts_res = self.pending_outbound_payments.send_payment_for_static_invoice(
-				payment_id, payment_release_secret, &self.router, self.list_usable_channels(),
-				|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, &self,
-				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
-				|args| self.send_payment_along_path(args)
+				payment_id, &self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
+				&self.entropy_source, &self.node_signer, &self, &self.secp_ctx, best_block_height,
+				&self.logger, &self.pending_events, |args| self.send_payment_along_path(args)
 			);
 			match outbound_pmts_res {
 				Err(Bolt12PaymentError::UnexpectedInvoice) | Err(Bolt12PaymentError::DuplicateInvoice) => {
@@ -11239,10 +11236,9 @@ where
 		#[cfg(async_payments)] {
 			let AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } = _context;
 			if payment_id.verify_for_async_payment(hmac, nonce, &self.inbound_payment_key).is_err() { return }
-			if let Err(e) = self.send_payment_for_static_invoice(payment_id, _message.payment_release_secret) {
+			if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
 				log_trace!(
-					self.logger, "Failed to release held HTLC with payment id {} and release secret {:02x?}: {:?}",
-					payment_id, _message.payment_release_secret, e
+					self.logger, "Failed to release held HTLC with payment id {}: {:?}", payment_id, e
 				);
 			}
 		}

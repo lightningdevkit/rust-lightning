@@ -126,10 +126,7 @@ impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 			Some(resp) => resp,
 			None => return None,
 		};
-		Some((
-			ReleaseHeldHtlc { payment_release_secret: message.payment_release_secret },
-			responder.respond(),
-		))
+		Some((ReleaseHeldHtlc {}, responder.respond()))
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 }
