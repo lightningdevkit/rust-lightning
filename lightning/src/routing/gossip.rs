@@ -2294,62 +2294,65 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			}
 		};
 
-		let mut channels = self.channels.write().unwrap();
-		match channels.get_mut(&msg.short_channel_id) {
-			None => {
-				core::mem::drop(channels);
-				self.pending_checks.check_hold_pending_channel_update(msg, full_msg)?;
-				return Err(LightningError {
-					err: "Couldn't find channel for update".to_owned(),
-					action: ErrorAction::IgnoreAndLog(Level::Gossip),
-				});
-			},
-			Some(channel) => {
-				check_msg_sanity(channel)?;
-
-				macro_rules! get_new_channel_info {
-					() => { {
-						let last_update_message = if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
-							{ full_msg.cloned() } else { None };
-
-						let updated_channel_update_info = ChannelUpdateInfo {
-							enabled: chan_enabled,
-							last_update: msg.timestamp,
-							cltv_expiry_delta: msg.cltv_expiry_delta,
-							htlc_minimum_msat: msg.htlc_minimum_msat,
-							htlc_maximum_msat: msg.htlc_maximum_msat,
-							fees: RoutingFees {
-								base_msat: msg.fee_base_msat,
-								proportional_millionths: msg.fee_proportional_millionths,
-							},
-							last_update_message
-						};
-						Some(updated_channel_update_info)
-					} }
-				}
-
-				let msg_hash = hash_to_message!(&message_sha256d_hash(&msg)[..]);
-				if msg.channel_flags & 1 == 1 {
-					if let Some(sig) = sig {
-						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
+		let node_pubkey;
+		{
+			let channels = self.channels.read().unwrap();
+			match channels.get(&msg.short_channel_id) {
+				None => {
+					core::mem::drop(channels);
+					self.pending_checks.check_hold_pending_channel_update(msg, full_msg)?;
+					return Err(LightningError {
+						err: "Couldn't find channel for update".to_owned(),
+						action: ErrorAction::IgnoreAndLog(Level::Gossip),
+					});
+				},
+				Some(channel) => {
+					check_msg_sanity(channel)?;
+					let node_id = if msg.channel_flags & 1 == 1 {
+						channel.node_two.as_slice()
+					} else {
+						channel.node_one.as_slice()
+					};
+					node_pubkey = PublicKey::from_slice(node_id)
+						.map_err(|_| LightningError{
 							err: "Couldn't parse source node pubkey".to_owned(),
 							action: ErrorAction::IgnoreAndLog(Level::Debug)
-						})?, "channel_update");
-					}
-					if !only_verify {
-						channel.two_to_one = get_new_channel_info!();
-					}
-				} else {
-					if let Some(sig) = sig {
-						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_one.as_slice()).map_err(|_| LightningError{
-							err: "Couldn't parse destination node pubkey".to_owned(),
-							action: ErrorAction::IgnoreAndLog(Level::Debug)
-						})?, "channel_update");
-					}
-					if !only_verify {
-						channel.one_to_two = get_new_channel_info!();
-					}
-				}
+						})?;
+				},
+			}
+		}
+
+		let msg_hash = hash_to_message!(&message_sha256d_hash(&msg)[..]);
+		if let Some(sig) = sig {
+			secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &node_pubkey, "channel_update");
+		}
+
+		if only_verify { return Ok(()); }
+
+		let mut channels = self.channels.write().unwrap();
+		if let Some(channel) = channels.get_mut(&msg.short_channel_id) {
+			check_msg_sanity(channel)?;
+
+			let last_update_message = if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
+				{ full_msg.cloned() } else { None };
+
+			let new_channel_info = Some(ChannelUpdateInfo {
+				enabled: chan_enabled,
+				last_update: msg.timestamp,
+				cltv_expiry_delta: msg.cltv_expiry_delta,
+				htlc_minimum_msat: msg.htlc_minimum_msat,
+				htlc_maximum_msat: msg.htlc_maximum_msat,
+				fees: RoutingFees {
+					base_msat: msg.fee_base_msat,
+					proportional_millionths: msg.fee_proportional_millionths,
+				},
+				last_update_message
+			});
+
+			if msg.channel_flags & 1 == 1 {
+				channel.two_to_one = new_channel_info;
+			} else {
+				channel.one_to_two = new_channel_info;
 			}
 		}
 
