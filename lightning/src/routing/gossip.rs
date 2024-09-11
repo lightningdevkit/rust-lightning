@@ -2253,6 +2253,47 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			msg.timestamp
 		);
 
+		if msg.htlc_maximum_msat > MAX_VALUE_MSAT {
+			return Err(LightningError{err:
+				"htlc_maximum_msat is larger than maximum possible msats".to_owned(),
+				action: ErrorAction::IgnoreError});
+		}
+
+		let check_update_latest = |target: &Option<ChannelUpdateInfo>| -> Result<(), LightningError> {
+			if let Some(existing_chan_info) = target {
+				// The timestamp field is somewhat of a misnomer - the BOLTs use it to
+				// order updates to ensure you always have the latest one, only
+				// suggesting  that it be at least the current time. For
+				// channel_updates specifically, the BOLTs discuss the possibility of
+				// pruning based on the timestamp field being more than two weeks old,
+				// but only in the non-normative section.
+				if existing_chan_info.last_update > msg.timestamp {
+					return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
+				} else if existing_chan_info.last_update == msg.timestamp {
+					return Err(LightningError{err: "Update had same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
+				}
+			}
+			Ok(())
+		};
+
+		let check_msg_sanity = |channel: &ChannelInfo| -> Result<(), LightningError> {
+			if let Some(capacity_sats) = channel.capacity_sats {
+				// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
+				// Don't query UTXO set here to reduce DoS risks.
+				if capacity_sats > MAX_VALUE_MSAT / 1000 || msg.htlc_maximum_msat > capacity_sats * 1000 {
+					return Err(LightningError{err:
+						"htlc_maximum_msat is larger than channel capacity or capacity is bogus".to_owned(),
+						action: ErrorAction::IgnoreError});
+				}
+			}
+
+			if msg.channel_flags & 1 == 1 {
+				check_update_latest(&channel.two_to_one)
+			} else {
+				check_update_latest(&channel.one_to_two)
+			}
+		};
+
 		let mut channels = self.channels.write().unwrap();
 		match channels.get_mut(&msg.short_channel_id) {
 			None => {
@@ -2264,38 +2305,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 				});
 			},
 			Some(channel) => {
-				if msg.htlc_maximum_msat > MAX_VALUE_MSAT {
-					return Err(LightningError{err:
-						"htlc_maximum_msat is larger than maximum possible msats".to_owned(),
-						action: ErrorAction::IgnoreError});
-				}
-
-				if let Some(capacity_sats) = channel.capacity_sats {
-					// It's possible channel capacity is available now, although it wasn't available at announcement (so the field is None).
-					// Don't query UTXO set here to reduce DoS risks.
-					if capacity_sats > MAX_VALUE_MSAT / 1000 || msg.htlc_maximum_msat > capacity_sats * 1000 {
-						return Err(LightningError{err:
-							"htlc_maximum_msat is larger than channel capacity or capacity is bogus".to_owned(),
-							action: ErrorAction::IgnoreError});
-					}
-				}
-				macro_rules! check_update_latest {
-					($target: expr) => {
-						if let Some(existing_chan_info) = $target.as_ref() {
-							// The timestamp field is somewhat of a misnomer - the BOLTs use it to
-							// order updates to ensure you always have the latest one, only
-							// suggesting  that it be at least the current time. For
-							// channel_updates specifically, the BOLTs discuss the possibility of
-							// pruning based on the timestamp field being more than two weeks old,
-							// but only in the non-normative section.
-							if existing_chan_info.last_update > msg.timestamp {
-								return Err(LightningError{err: "Update older than last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
-							} else if existing_chan_info.last_update == msg.timestamp {
-								return Err(LightningError{err: "Update had same timestamp as last processed update".to_owned(), action: ErrorAction::IgnoreDuplicateGossip});
-							}
-						}
-					}
-				}
+				check_msg_sanity(channel)?;
 
 				macro_rules! get_new_channel_info {
 					() => { {
@@ -2320,7 +2330,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 
 				let msg_hash = hash_to_message!(&message_sha256d_hash(&msg)[..]);
 				if msg.channel_flags & 1 == 1 {
-					check_update_latest!(channel.two_to_one);
 					if let Some(sig) = sig {
 						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_two.as_slice()).map_err(|_| LightningError{
 							err: "Couldn't parse source node pubkey".to_owned(),
@@ -2331,7 +2340,6 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 						channel.two_to_one = get_new_channel_info!();
 					}
 				} else {
-					check_update_latest!(channel.one_to_two);
 					if let Some(sig) = sig {
 						secp_verify_sig!(self.secp_ctx, &msg_hash, &sig, &PublicKey::from_slice(channel.node_one.as_slice()).map_err(|_| LightningError{
 							err: "Couldn't parse destination node pubkey".to_owned(),
