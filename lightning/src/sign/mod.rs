@@ -1027,7 +1027,6 @@ pub trait ChangeDestinationSource {
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
 /// a secure external signer.
-#[derive(Debug)]
 pub struct InMemorySigner {
 	/// Holder secret key in the 2-of-2 multisig script of a channel. This key also backs the
 	/// holder's anchor output in a commitment transaction, if one is present.
@@ -2475,7 +2474,6 @@ impl PhantomKeysManager {
 }
 
 /// An implementation of [`EntropySource`] using ChaCha20.
-#[derive(Debug)]
 pub struct RandomBytes {
 	/// Seed from which all randomness produced is derived from.
 	seed: [u8; 32],
