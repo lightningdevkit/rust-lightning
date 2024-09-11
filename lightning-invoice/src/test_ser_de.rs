@@ -1,7 +1,7 @@
 use crate::{
 	sha256, FromBase32, PayeePubKey, PaymentSecret, PositiveTimestamp, RawDataPart, Sha256,
 };
-use bech32::{Base32Len, ToBase32};
+use bech32::{u5, Base32Len, ToBase32};
 
 use core::fmt::Debug;
 use std::str::FromStr;
@@ -14,11 +14,11 @@ where
 {
 	let serialized_32 = o.to_base32();
 	let serialized_str = serialized_32.iter().map(|f| f.to_char()).collect::<String>();
-	assert_eq!(serialized_str, expected_str);
+	assert_eq!(serialized_str, expected_str, "Mismatch for {:?}", o);
 
 	// deserialize back
 	let o2 = T::from_base32(&serialized_32).unwrap();
-	assert_eq!(o, o2);
+	assert_eq!(o, o2, "Mismatch for {}", serialized_str);
 }
 
 /// Test base32 encode and decode, and also length hint
@@ -27,7 +27,7 @@ where
 	T: ToBase32 + FromBase32 + Base32Len + Eq + Debug,
 	T::Err: Debug,
 {
-	assert_eq!(o.base32_len(), expected_str.len());
+	assert_eq!(o.base32_len(), expected_str.len(), "Mismatch for {} {:?}", expected_str, o);
 
 	ser_de_test(o, expected_str)
 }
@@ -67,8 +67,66 @@ fn positive_timestamp() {
 fn bolt11_invoice_features() {
 	use crate::Bolt11InvoiceFeatures;
 
-	let features = Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4, 5, 42, 100, 101]);
-	ser_de_test_len(features, "x2ep2q5zqxqsp");
+	// Test few values, lengths, and paddings
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4, 5, 42, 100, 101]),
+		"x2ep2q5zqxqsp",
+	);
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![]), "");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![0]), "");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1]), "p");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![31]), "l");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![100]), "ry");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![255]), "8l");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1]), "p");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2]), "sp");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3]), "xqsp");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4]), "zqxqsp");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4, 5]), "5zqxqsp");
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 254, 253, 252, 251]),
+		"l070mlhl",
+	);
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![100, 0]), "ry");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![100, 0, 0, 0]), "ry");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![0, 100]), "eqq");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![0, 0, 0, 100]), "pjqqqqq");
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 255, 255, 255, 255, 255, 255, 255, 255]),
+		"rllllllllllllll",
+	);
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 255, 255, 255, 255, 255, 255, 255, 254]),
+		"rl0llllllllllll",
+	);
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 255, 255, 255, 255, 255, 255, 255, 127]),
+		"pllllllllllllll",
+	);
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 255, 255, 255, 255, 255, 255, 255, 63]),
+		"llllllllllllll",
+	);
+
+	// To test skipping 0's in deserialization, we have to start with deserialization
+	assert_eq!(
+		Bolt11InvoiceFeatures::from_base32(
+			&vec![0, 0, 0, 0, 0, 3, 4]
+				.iter().copied().map(|f| u5::try_from_u8(f).unwrap()).collect::<Vec<_>>()[..]
+		)
+		.unwrap()
+		.le_flags(),
+		vec![100]
+	);
+	assert_eq!(
+		Bolt11InvoiceFeatures::from_base32(
+			&vec![3, 4]
+				.iter().copied().map(|f| u5::try_from_u8(f).unwrap()).collect::<Vec<_>>()[..]
+		)
+		.unwrap()
+		.le_flags(),
+		vec![100]
+	);
 }
 
 #[test]
