@@ -560,11 +560,15 @@ pub enum PaymentFailureReason {
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
 	/// [`InvoiceRequestExpired`]: Self::InvoiceRequestExpired
 	PaymentExpired,
-	/// We failed to find a route while retrying the payment.
+	/// We failed to find a route while sending or retrying the payment.
 	///
 	/// Note that this generally indicates that we've exhausted the available set of possible
 	/// routes - we tried the payment over a few routes but were not able to find any further
 	/// candidate routes beyond those.
+	///
+	/// Also used for [`BlindedPathCreationFailed`] when downgrading to versions prior to 0.0.124.
+	///
+	/// [`BlindedPathCreationFailed`]: Self::BlindedPathCreationFailed
 	RouteNotFound,
 	/// This error should generally never happen. This likely means that there is a problem with
 	/// your router.
