@@ -559,7 +559,7 @@ pub enum PaymentFailureReason {
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
 	/// [`InvoiceRequestExpired`]: Self::InvoiceRequestExpired
 	PaymentExpired,
-	/// We failed to find a route while retrying the payment.
+	/// We failed to find a route while sending or retrying the payment.
 	///
 	/// Note that this generally indicates that we've exhausted the available set of possible
 	/// routes - we tried the payment over a few routes but were not able to find any further
