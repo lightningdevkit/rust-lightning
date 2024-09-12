@@ -12,7 +12,7 @@ Still missing tons of error-handling. See GitHub issues for suggested projects i
 edition = "2021"
 
 [package.metadata.docs.rs]
-features = ["std"]
+features = ["std", "dnssec"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
@@ -30,6 +30,8 @@ max_level_trace = []
 unsafe_revoked_tx_signing = []
 
 std = []
+
+dnssec = ["dnssec-prover/validation"]
 
 # Generates low-r bitcoin signatures, which saves 1 byte in 50% of the cases
 grind_signatures = []

@@ -12,17 +12,42 @@
 //! It contains [`DNSResolverMessage`]s as well as a [`DNSResolverMessageHandler`] trait to handle
 //! such messages using an [`OnionMessenger`].
 //!
+//! With the `dnssec` feature enabled, it also contains `OMNameResolver`, which does all the work
+//! required to resolve BIP 353 [`HumanReadableName`]s using [bLIP 32] - sending onion messages to
+//! a DNS resolver, validating the proofs, and ultimately surfacing validated data back to the
+//! caller.
+//!
 //! [bLIP 32]: https://github.com/lightning/blips/blob/master/blip-0032.md
 //! [`OnionMessenger`]: super::messenger::OnionMessenger
+
+#[cfg(feature = "dnssec")]
+use core::str::FromStr;
+#[cfg(feature = "dnssec")]
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+#[cfg(feature = "dnssec")]
+use dnssec_prover::rr::RR;
+#[cfg(feature = "dnssec")]
+use dnssec_prover::ser::parse_rr_stream;
+#[cfg(feature = "dnssec")]
+use dnssec_prover::validation::verify_rr_stream;
 
 use dnssec_prover::rr::Name;
 
 use crate::blinded_path::message::DNSResolverContext;
 use crate::io;
+#[cfg(feature = "dnssec")]
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::DecodeError;
+#[cfg(feature = "dnssec")]
+use crate::offers::offer::Offer;
 use crate::onion_message::messenger::{MessageSendInstructions, Responder, ResponseInstruction};
 use crate::onion_message::packet::OnionMessageContents;
 use crate::prelude::*;
+#[cfg(feature = "dnssec")]
+use crate::sign::EntropySource;
+#[cfg(feature = "dnssec")]
+use crate::sync::Mutex;
 use crate::util::ser::{Hostname, Readable, ReadableArgs, Writeable, Writer};
 
 /// A handler for an [`OnionMessage`] containing a DNS(SEC) query or a DNSSEC proof
@@ -233,5 +258,192 @@ impl Readable for HumanReadableName {
 		};
 
 		HumanReadableName::new(user, domain).map_err(|()| DecodeError::InvalidValue)
+	}
+}
+
+#[cfg(feature = "dnssec")]
+struct PendingResolution {
+	start_height: u32,
+	context: DNSResolverContext,
+	name: HumanReadableName,
+	payment_id: PaymentId,
+}
+
+/// A stateful resolver which maps BIP 353 Human Readable Names to URIs and BOLT12 [`Offer`]s.
+///
+/// It does not directly implement [`DNSResolverMessageHandler`] but implements all the core logic
+/// which is required in a client which intends to.
+///
+/// It relies on being made aware of the passage of time with regular calls to
+/// [`Self::new_best_block`] in order to time out existing queries. Queries time out after two
+/// blocks.
+#[cfg(feature = "dnssec")]
+pub struct OMNameResolver {
+	pending_resolves: Mutex<HashMap<Name, Vec<PendingResolution>>>,
+	latest_block_time: AtomicUsize,
+	latest_block_height: AtomicUsize,
+}
+
+#[cfg(feature = "dnssec")]
+impl OMNameResolver {
+	/// Builds a new [`OMNameResolver`].
+	pub fn new(latest_block_time: u32, latest_block_height: u32) -> Self {
+		Self {
+			pending_resolves: Mutex::new(new_hash_map()),
+			latest_block_time: AtomicUsize::new(latest_block_time as usize),
+			latest_block_height: AtomicUsize::new(latest_block_height as usize),
+		}
+	}
+
+	/// Informs the [`OMNameResolver`] of the passage of time in the form of a new best Bitcoin
+	/// block.
+	///
+	/// This will call back to resolve some pending queries which have timed out.
+	pub fn new_best_block(&self, height: u32, time: u32) {
+		self.latest_block_time.store(time as usize, Ordering::Release);
+		self.latest_block_height.store(height as usize, Ordering::Release);
+		let mut resolves = self.pending_resolves.lock().unwrap();
+		resolves.retain(|_, queries| {
+			queries.retain(|query| query.start_height >= height - 1);
+			!queries.is_empty()
+		});
+	}
+
+	/// Begins the process of resolving a BIP 353 Human Readable Name.
+	///
+	/// Returns a [`DNSSECQuery`] onion message and a [`DNSResolverContext`] which should be sent
+	/// to a resolver (with the context used to generate the blinded response path) on success.
+	pub fn resolve_name<ES: EntropySource + ?Sized>(
+		&self, payment_id: PaymentId, name: HumanReadableName, entropy_source: &ES,
+	) -> Result<(DNSSECQuery, DNSResolverContext), ()> {
+		let dns_name =
+			Name::try_from(format!("{}.user._bitcoin-payment.{}.", name.user, name.domain));
+		debug_assert!(
+			dns_name.is_ok(),
+			"The HumanReadableName constructor shouldn't allow names which are too long"
+		);
+		let mut context = DNSResolverContext { nonce: [0; 16] };
+		context.nonce.copy_from_slice(&entropy_source.get_secure_random_bytes()[..16]);
+		if let Ok(dns_name) = dns_name {
+			let start_height = self.latest_block_height.load(Ordering::Acquire) as u32;
+			let mut pending_resolves = self.pending_resolves.lock().unwrap();
+			let context_ret = context.clone();
+			let resolution = PendingResolution { start_height, context, name, payment_id };
+			pending_resolves.entry(dns_name.clone()).or_insert_with(Vec::new).push(resolution);
+			Ok((DNSSECQuery(dns_name), context_ret))
+		} else {
+			Err(())
+		}
+	}
+
+	/// Handles a [`DNSSECProof`] message, attempting to verify it and match it against a pending
+	/// query.
+	///
+	/// If verification succeeds, the resulting bitcoin: URI is parsed to find a contained
+	/// [`Offer`].
+	///
+	/// Note that a single proof for a wildcard DNS entry may complete several requests for
+	/// different [`HumanReadableName`]s.
+	///
+	/// If an [`Offer`] is found, it, as well as the [`PaymentId`] and original `name` passed to
+	/// [`Self::resolve_name`] are returned.
+	pub fn handle_dnssec_proof_for_offer(
+		&self, msg: DNSSECProof, context: DNSResolverContext,
+	) -> Option<(Vec<(HumanReadableName, PaymentId)>, Offer)> {
+		let (completed_requests, uri) = self.handle_dnssec_proof_for_uri(msg, context)?;
+		if let Some((_onchain, params)) = uri.split_once("?") {
+			for param in params.split("&") {
+				let (k, v) = if let Some(split) = param.split_once("=") {
+					split
+				} else {
+					continue;
+				};
+				if k.eq_ignore_ascii_case("lno") {
+					if let Ok(offer) = Offer::from_str(v) {
+						return Some((completed_requests, offer));
+					}
+					return None;
+				}
+			}
+		}
+		None
+	}
+
+	/// Handles a [`DNSSECProof`] message, attempting to verify it and match it against any pending
+	/// queries.
+	///
+	/// If verification succeeds, all matching [`PaymentId`] and [`HumanReadableName`]s passed to
+	/// [`Self::resolve_name`], as well as the resolved bitcoin: URI are returned.
+	///
+	/// Note that a single proof for a wildcard DNS entry may complete several requests for
+	/// different [`HumanReadableName`]s.
+	///
+	/// This method is useful for those who handle bitcoin: URIs already, handling more than just
+	/// BOLT12 [`Offer`]s.
+	pub fn handle_dnssec_proof_for_uri(
+		&self, msg: DNSSECProof, context: DNSResolverContext,
+	) -> Option<(Vec<(HumanReadableName, PaymentId)>, String)> {
+		let DNSSECProof { name: answer_name, proof } = msg;
+		let mut pending_resolves = self.pending_resolves.lock().unwrap();
+		if let hash_map::Entry::Occupied(entry) = pending_resolves.entry(answer_name) {
+			if !entry.get().iter().any(|query| query.context == context) {
+				// If we don't have any pending queries with the context included in the blinded
+				// path (implying someone sent us this response not using the blinded path we gave
+				// when making the query), return immediately to avoid the extra time for the proof
+				// validation giving away that we were the node that made the query.
+				//
+				// If there was at least one query with the same context, we go ahead and complete
+				// all queries for the same name, as there's no point in waiting for another proof
+				// for the same name.
+				return None;
+			}
+			let parsed_rrs = parse_rr_stream(&proof);
+			let validated_rrs =
+				parsed_rrs.as_ref().and_then(|rrs| verify_rr_stream(rrs).map_err(|_| &()));
+			if let Ok(validated_rrs) = validated_rrs {
+				let block_time = self.latest_block_time.load(Ordering::Acquire) as u64;
+				// Block times may be up to two hours in the future and some time into the past
+				// (we assume no more than two hours, though the actual limits are rather
+				// complicated).
+				// Thus, we have to let the proof times be rather fuzzy.
+				if validated_rrs.valid_from > block_time + 60 * 2 {
+					return None;
+				}
+				if validated_rrs.expires < block_time - 60 * 2 {
+					return None;
+				}
+				let resolved_rrs = validated_rrs.resolve_name(&entry.key());
+				if resolved_rrs.is_empty() {
+					return None;
+				}
+
+				let (_, requests) = entry.remove_entry();
+
+				const URI_PREFIX: &str = "bitcoin:";
+				let mut candidate_records = resolved_rrs
+					.iter()
+					.filter_map(
+						|rr| if let RR::Txt(txt) = rr { Some(txt.data.as_vec()) } else { None },
+					)
+					.filter_map(
+						|data| if let Ok(s) = String::from_utf8(data) { Some(s) } else { None },
+					)
+					.filter(|data_string| data_string.len() > URI_PREFIX.len())
+					.filter(|data_string| {
+						data_string[..URI_PREFIX.len()].eq_ignore_ascii_case(URI_PREFIX)
+					});
+				// Check that there is exactly one TXT record that begins with
+				// bitcoin: as required by BIP 353 (and is valid UTF-8).
+				match (candidate_records.next(), candidate_records.next()) {
+					(Some(txt), None) => {
+						let completed_requests =
+							requests.into_iter().map(|r| (r.name, r.payment_id)).collect();
+						return Some((completed_requests, txt));
+					},
+					_ => {},
+				}
+			}
+		}
+		None
 	}
 }
