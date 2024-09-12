@@ -749,6 +749,14 @@ pub enum Event {
 		///
 		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
 		claim_deadline: Option<u32>,
+		/// A unique ID describing this payment (derived from the list of HTLCs in the payment).
+		///
+		/// Payers may pay for the same [`PaymentHash`] multiple times (though this is unsafe and
+		/// an intermediary node may steal the funds). Thus, in order to accurately track when
+		/// payments are received and claimed, you should use this identifier.
+		///
+		/// Only filled in for payments received on LDK versions 0.1 and higher.
+		payment_id: Option<PaymentId>,
 	},
 	/// Indicates a payment has been claimed and we've received money!
 	///
@@ -796,6 +804,14 @@ pub enum Event {
 		///
 		/// Payments received on LDK versions prior to 0.0.124 will have this field unset.
 		onion_fields: Option<RecipientOnionFields>,
+		/// A unique ID describing this payment (derived from the list of HTLCs in the payment).
+		///
+		/// Payers may pay for the same [`PaymentHash`] multiple times (though this is unsafe and
+		/// an intermediary node may steal the funds). Thus, in order to accurately track when
+		/// payments are received and claimed, you should use this identifier.
+		///
+		/// Only filled in for payments received on LDK versions 0.1 and higher.
+		payment_id: Option<PaymentId>,
 	},
 	/// Indicates that a peer connection with a node is needed in order to send an [`OnionMessage`].
 	///
@@ -1432,7 +1448,7 @@ impl Writeable for Event {
 			},
 			&Event::PaymentClaimable { ref payment_hash, ref amount_msat, counterparty_skimmed_fee_msat,
 				ref purpose, ref receiver_node_id, ref via_channel_id, ref via_user_channel_id,
-				ref claim_deadline, ref onion_fields
+				ref claim_deadline, ref onion_fields, ref payment_id,
 			} => {
 				1u8.write(writer)?;
 				let mut payment_secret = None;
@@ -1478,6 +1494,7 @@ impl Writeable for Event {
 					(9, onion_fields, option),
 					(10, skimmed_fee_opt, option),
 					(11, payment_context, option),
+					(13, payment_id, option),
 				});
 			},
 			&Event::PaymentSent { ref payment_id, ref payment_preimage, ref payment_hash, ref fee_paid_msat } => {
@@ -1634,7 +1651,10 @@ impl Writeable for Event {
 				// We never write the OpenChannelRequest events as, upon disconnection, peers
 				// drop any channels which have not yet exchanged funding_signed.
 			},
-			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose, ref receiver_node_id, ref htlcs, ref sender_intended_total_msat, ref onion_fields } => {
+			&Event::PaymentClaimed { ref payment_hash, ref amount_msat, ref purpose,
+				ref receiver_node_id, ref htlcs, ref sender_intended_total_msat, ref onion_fields,
+				ref payment_id,
+			} => {
 				19u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
@@ -1644,6 +1664,7 @@ impl Writeable for Event {
 					(5, *htlcs, optional_vec),
 					(7, sender_intended_total_msat, option),
 					(9, onion_fields, option),
+					(11, payment_id, option),
 				});
 			},
 			&Event::ProbeSuccessful { ref payment_id, ref payment_hash, ref path } => {
@@ -1767,6 +1788,7 @@ impl MaybeReadable for Event {
 					let mut via_user_channel_id = None;
 					let mut onion_fields = None;
 					let mut payment_context = None;
+					let mut payment_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
@@ -1780,6 +1802,7 @@ impl MaybeReadable for Event {
 						(9, onion_fields, option),
 						(10, counterparty_skimmed_fee_msat_opt, option),
 						(11, payment_context, option),
+						(13, payment_id, option),
 					});
 					let purpose = match payment_secret {
 						Some(secret) => PaymentPurpose::from_parts(payment_preimage, secret, payment_context),
@@ -1796,6 +1819,7 @@ impl MaybeReadable for Event {
 						via_user_channel_id,
 						claim_deadline,
 						onion_fields,
+						payment_id,
 					}))
 				};
 				f()
@@ -2037,6 +2061,7 @@ impl MaybeReadable for Event {
 					let mut htlcs: Option<Vec<ClaimedHTLC>> = Some(vec![]);
 					let mut sender_intended_total_msat: Option<u64> = None;
 					let mut onion_fields = None;
+					let mut payment_id = None;
 					read_tlv_fields!(reader, {
 						(0, payment_hash, required),
 						(1, receiver_node_id, option),
@@ -2045,6 +2070,7 @@ impl MaybeReadable for Event {
 						(5, htlcs, optional_vec),
 						(7, sender_intended_total_msat, option),
 						(9, onion_fields, option),
+						(11, payment_id, option),
 					});
 					Ok(Some(Event::PaymentClaimed {
 						receiver_node_id,
@@ -2054,6 +2080,7 @@ impl MaybeReadable for Event {
 						htlcs: htlcs.unwrap_or_default(),
 						sender_intended_total_msat,
 						onion_fields,
+						payment_id,
 					}))
 				};
 				f()

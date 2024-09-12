@@ -1729,8 +1729,7 @@ pub trait OnionMessageHandler {
 	fn provided_init_features(&self, their_node_id: PublicKey) -> InitFeatures;
 }
 
-#[derive(Clone)]
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Information communicated in the onion to the recipient for multi-part tracking and proof that
 /// the payment is associated with an invoice.
 pub struct FinalOnionHopData {

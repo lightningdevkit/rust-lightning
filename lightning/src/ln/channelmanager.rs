@@ -23,7 +23,7 @@ use bitcoin::constants::ChainHash;
 use bitcoin::key::constants::SECRET_KEY_SIZE;
 use bitcoin::network::Network;
 
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{BlockHash, Txid};
@@ -368,6 +368,7 @@ pub(crate) struct HTLCPreviousHopData {
 	counterparty_node_id: Option<PublicKey>,
 }
 
+#[derive(PartialEq, Eq)]
 enum OnionPayload {
 	/// Indicates this incoming onion payload is for the purpose of paying an invoice.
 	Invoice {
@@ -380,6 +381,7 @@ enum OnionPayload {
 }
 
 /// HTLCs that are to us and can be failed/claimed by the user
+#[derive(PartialEq, Eq)]
 struct ClaimableHTLC {
 	prev_hop: HTLCPreviousHopData,
 	cltv_expiry: u32,
@@ -408,6 +410,23 @@ impl From<&ClaimableHTLC> for events::ClaimedHTLC {
 			value_msat: val.value,
 			counterparty_skimmed_fee_msat: val.counterparty_skimmed_fee_msat.unwrap_or(0),
 		}
+	}
+}
+
+impl PartialOrd for ClaimableHTLC {
+	fn partial_cmp(&self, other: &ClaimableHTLC) -> Option<cmp::Ordering> {
+		Some(self.cmp(other))
+	}
+}
+impl Ord for ClaimableHTLC {
+	fn cmp(&self, other: &ClaimableHTLC) -> cmp::Ordering {
+		let res = (self.prev_hop.channel_id, self.prev_hop.htlc_id).cmp(
+			&(other.prev_hop.channel_id, other.prev_hop.htlc_id)
+		);
+		if res.is_eq() {
+			debug_assert!(self == other, "ClaimableHTLCs from the same source should be identical");
+		}
+		res
 	}
 }
 
@@ -488,6 +507,22 @@ impl Verification for PaymentId {
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
 		signer::verify_offer_payment_id(*self, hmac, nonce, expanded_key)
+	}
+}
+
+impl PaymentId {
+	fn for_inbound_from_htlcs<I: Iterator<Item=(ChannelId, u64)>>(key: &[u8; 32], htlcs: I) -> PaymentId {
+		let mut prev_pair = None;
+		let mut hasher = HmacEngine::new(key);
+		for (channel_id, htlc_id) in htlcs {
+			hasher.input(&channel_id.0);
+			hasher.input(&htlc_id.to_le_bytes());
+			if let Some(prev) = prev_pair {
+				debug_assert!(prev < (channel_id, htlc_id), "HTLCs should be sorted");
+			}
+			prev_pair = Some((channel_id, htlc_id));
+		}
+		PaymentId(Hmac::<Sha256>::from_engine(hasher).to_byte_array())
 	}
 }
 
@@ -764,6 +799,7 @@ struct ClaimingPayment {
 	htlcs: Vec<events::ClaimedHTLC>,
 	sender_intended_value: Option<u64>,
 	onion_fields: Option<RecipientOnionFields>,
+	payment_id: Option<PaymentId>,
 }
 impl_writeable_tlv_based!(ClaimingPayment, {
 	(0, amount_msat, required),
@@ -772,12 +808,22 @@ impl_writeable_tlv_based!(ClaimingPayment, {
 	(5, htlcs, optional_vec),
 	(7, sender_intended_value, option),
 	(9, onion_fields, option),
+	(11, payment_id, option),
 });
 
 struct ClaimablePayment {
 	purpose: events::PaymentPurpose,
 	onion_fields: Option<RecipientOnionFields>,
 	htlcs: Vec<ClaimableHTLC>,
+}
+
+impl ClaimablePayment {
+	fn inbound_payment_id(&self, secret: &[u8; 32]) -> PaymentId {
+		PaymentId::for_inbound_from_htlcs(
+			secret,
+			self.htlcs.iter().map(|htlc| (htlc.prev_hop.channel_id, htlc.prev_hop.htlc_id))
+		)
+	}
 }
 
 /// Represent the channel funding transaction type.
@@ -5749,10 +5795,9 @@ where
 										} else {
 											claimable_payment.onion_fields = Some(onion_fields);
 										}
-										let ref mut htlcs = &mut claimable_payment.htlcs;
 										let mut total_value = claimable_htlc.sender_intended_value;
 										let mut earliest_expiry = claimable_htlc.cltv_expiry;
-										for htlc in htlcs.iter() {
+										for htlc in claimable_payment.htlcs.iter() {
 											total_value += htlc.sender_intended_value;
 											earliest_expiry = cmp::min(earliest_expiry, htlc.cltv_expiry);
 											if htlc.total_msat != claimable_htlc.total_msat {
@@ -5774,13 +5819,18 @@ where
 											#[allow(unused_assignments)] {
 												committed_to_claimable = true;
 											}
-											htlcs.push(claimable_htlc);
-											let amount_msat = htlcs.iter().map(|htlc| htlc.value).sum();
-											htlcs.iter_mut().for_each(|htlc| htlc.total_value_received = Some(amount_msat));
-											let counterparty_skimmed_fee_msat = htlcs.iter()
+											claimable_payment.htlcs.push(claimable_htlc);
+											let amount_msat =
+												claimable_payment.htlcs.iter().map(|htlc| htlc.value).sum();
+											claimable_payment.htlcs.iter_mut()
+												.for_each(|htlc| htlc.total_value_received = Some(amount_msat));
+											let counterparty_skimmed_fee_msat = claimable_payment.htlcs.iter()
 												.map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0)).sum();
 											debug_assert!(total_value.saturating_sub(amount_msat) <=
 												counterparty_skimmed_fee_msat);
+											claimable_payment.htlcs.sort();
+											let payment_id =
+												claimable_payment.inbound_payment_id(&self.inbound_payment_id_secret);
 											new_events.push_back((events::Event::PaymentClaimable {
 												receiver_node_id: Some(receiver_node_id),
 												payment_hash,
@@ -5791,13 +5841,14 @@ where
 												via_user_channel_id: Some(prev_user_channel_id),
 												claim_deadline: Some(earliest_expiry - HTLC_FAIL_BACK_BUFFER),
 												onion_fields: claimable_payment.onion_fields.clone(),
+												payment_id: Some(payment_id),
 											}, None));
 											payment_claimable_generated = true;
 										} else {
 											// Nothing to do - we haven't reached the total
 											// payment value yet, wait until we receive more
 											// MPP parts.
-											htlcs.push(claimable_htlc);
+											claimable_payment.htlcs.push(claimable_htlc);
 											#[allow(unused_assignments)] {
 												committed_to_claimable = true;
 											}
@@ -6594,6 +6645,7 @@ where
 					}
 				}
 
+				let payment_id = payment.inbound_payment_id(&self.inbound_payment_id_secret);
 				let claiming_payment = claimable_payments.pending_claiming_payments
 					.entry(payment_hash)
 					.and_modify(|_| {
@@ -6611,6 +6663,7 @@ where
 							htlcs,
 							sender_intended_value,
 							onion_fields: payment.onion_fields,
+							payment_id: Some(payment_id),
 						}
 					});
 
@@ -7128,6 +7181,7 @@ where
 						htlcs,
 						sender_intended_value: sender_intended_total_msat,
 						onion_fields,
+						payment_id,
 					}) = payment {
 						self.pending_events.lock().unwrap().push_back((events::Event::PaymentClaimed {
 							payment_hash,
@@ -7137,6 +7191,7 @@ where
 							htlcs,
 							sender_intended_total_msat,
 							onion_fields,
+							payment_id,
 						}, None));
 					}
 				},
@@ -12863,6 +12918,7 @@ where
 							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &args.tx_broadcaster, &bounded_fee_estimator, &args.logger);
 						}
 					}
+					let payment_id = payment.inbound_payment_id(&inbound_payment_id_secret.unwrap());
 					pending_events_read.push_back((events::Event::PaymentClaimed {
 						receiver_node_id,
 						payment_hash,
@@ -12871,6 +12927,7 @@ where
 						htlcs: payment.htlcs.iter().map(events::ClaimedHTLC::from).collect(),
 						sender_intended_total_msat: payment.htlcs.first().map(|htlc| htlc.total_msat),
 						onion_fields: payment.onion_fields,
+						payment_id: Some(payment_id),
 					}, None));
 				}
 			}
