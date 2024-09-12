@@ -1027,7 +1027,6 @@ pub trait ChangeDestinationSource {
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
 /// a secure external signer.
-#[derive(Debug)]
 pub struct InMemorySigner {
 	/// Holder secret key in the 2-of-2 multisig script of a channel. This key also backs the
 	/// holder's anchor output in a commitment transaction, if one is present.
@@ -1854,6 +1853,9 @@ pub struct KeysManager {
 	channel_master_key: Xpriv,
 	channel_child_index: AtomicUsize,
 
+	#[cfg(test)]
+	pub(crate) entropy_source: RandomBytes,
+	#[cfg(not(test))]
 	entropy_source: RandomBytes,
 
 	seed: [u8; 32],
@@ -2310,6 +2312,9 @@ impl SignerProvider for KeysManager {
 /// Switching between this struct and [`KeysManager`] will invalidate any previously issued
 /// invoices and attempts to pay previous invoices will fail.
 pub struct PhantomKeysManager {
+	#[cfg(test)]
+	pub(crate) inner: KeysManager,
+	#[cfg(not(test))]
 	inner: KeysManager,
 	inbound_payment_key: KeyMaterial,
 	phantom_secret: SecretKey,
@@ -2475,7 +2480,6 @@ impl PhantomKeysManager {
 }
 
 /// An implementation of [`EntropySource`] using ChaCha20.
-#[derive(Debug)]
 pub struct RandomBytes {
 	/// Seed from which all randomness produced is derived from.
 	seed: [u8; 32],
@@ -2489,11 +2493,18 @@ impl RandomBytes {
 	pub fn new(seed: [u8; 32]) -> Self {
 		Self { seed, index: AtomicCounter::new() }
 	}
+
+	#[cfg(test)]
+	/// Force the counter to a value to produce the same output again. Mostly useful in tests where
+	/// we need to maintain behavior with a previous version which didn't use as much RNG output.
+	pub(crate) fn set_counter(&self, count: u64) {
+		self.index.set_counter(count);
+	}
 }
 
 impl EntropySource for RandomBytes {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
-		let index = self.index.get_increment();
+		let index = self.index.next();
 		let mut nonce = [0u8; 16];
 		nonce[..8].copy_from_slice(&index.to_be_bytes());
 		ChaCha20::get_single_block(&self.seed, &nonce)

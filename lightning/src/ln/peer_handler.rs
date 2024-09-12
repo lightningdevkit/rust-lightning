@@ -1055,7 +1055,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 
 	fn get_ephemeral_key(&self) -> SecretKey {
 		let mut ephemeral_hash = self.ephemeral_key_midstate.clone();
-		let counter = self.peer_counter.get_increment();
+		let counter = self.peer_counter.next();
 		ephemeral_hash.input(&counter.to_le_bytes());
 		SecretKey::from_slice(&Sha256::from_engine(ephemeral_hash).to_byte_array()).expect("You broke SHA-256!")
 	}
