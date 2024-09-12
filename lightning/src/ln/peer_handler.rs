@@ -1618,14 +1618,15 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 		let their_node_id = peer_lock.their_node_id.expect("We know the peer's public key by the time we receive messages").0;
 		let logger = WithContext::from(&self.logger, Some(their_node_id), None, None);
 
-		self.message_handler.chan_handler.message_received();
-		
-		let message = match self.do_handle_message_holding_peer_lock(peer_lock, message, their_node_id, &logger)? {
-			Some(processed_message) => processed_message,
-			None => return Ok(None),
-		};
+		let unprocessed_message = self.do_handle_message_holding_peer_lock(peer_lock, message, their_node_id, &logger)?;
 
-		self.do_handle_message_without_peer_lock(peer_mutex, message, their_node_id, &logger)
+		self.message_handler.chan_handler.message_received();
+
+		if let Some(message) = unprocessed_message {
+			self.do_handle_message_without_peer_lock(peer_mutex, message, their_node_id, &logger)
+		} else {
+			Ok(None)
+		}
 	}
 
 	// Conducts all message processing that requires us to hold the `peer_lock`.
