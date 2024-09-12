@@ -24,7 +24,6 @@ use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdat
 use crate::ln::wire::Encode;
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use crate::util::ser::Writeable;
-use crate::util::test_utils;
 
 use crate::prelude::*;
 

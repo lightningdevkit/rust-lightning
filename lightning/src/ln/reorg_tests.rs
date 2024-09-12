@@ -17,7 +17,6 @@ use crate::events::{Event, MessageSendEventsProvider, ClosureReason, HTLCDestina
 use crate::ln::msgs::{ChannelMessageHandler, Init};
 use crate::ln::types::ChannelId;
 use crate::sign::OutputSpender;
-use crate::util::test_utils;
 use crate::util::ser::Writeable;
 use crate::util::string::UntrustedString;
 
