@@ -79,9 +79,6 @@ pub struct ChannelValueStat {
 }
 
 pub struct AvailableBalances {
-	/// The amount that would go to us if we close the channel, ignoring any on-chain fees.
-	#[deprecated(since = "0.0.124", note = "use [`ChainMonitor::get_claimable_balances`] instead")]
-	pub balance_msat: u64,
 	/// Total amount available for our counterparty to send to us.
 	pub inbound_capacity_msat: u64,
 	/// Total amount available for us to send to our counterparty.
@@ -3090,14 +3087,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		let dust_exposure_limiting_feerate = self.get_dust_exposure_limiting_feerate(&fee_estimator);
 		let htlc_stats = context.get_pending_htlc_stats(None, dust_exposure_limiting_feerate);
 
-		let mut balance_msat = context.value_to_self_msat;
-		for ref htlc in context.pending_inbound_htlcs.iter() {
-			if let InboundHTLCState::LocalRemoved(InboundHTLCRemovalReason::Fulfill(_)) = htlc.state {
-				balance_msat += htlc.amount_msat;
-			}
-		}
-		balance_msat -= htlc_stats.pending_outbound_htlcs_value_msat;
-
 		let outbound_capacity_msat = context.value_to_self_msat
 				.saturating_sub(htlc_stats.pending_outbound_htlcs_value_msat)
 				.saturating_sub(
@@ -3239,7 +3228,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			outbound_capacity_msat,
 			next_outbound_htlc_limit_msat: available_capacity_msat,
 			next_outbound_htlc_minimum_msat,
-			balance_msat,
 		}
 	}
 
