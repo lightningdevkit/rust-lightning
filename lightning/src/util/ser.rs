@@ -50,8 +50,8 @@ use crate::util::string::UntrustedString;
 /// serialization buffer size
 pub const MAX_BUF_SIZE: usize = 64 * 1024;
 
-/// A simplified version of [`std::io::Write`] that exists largely for backwards compatibility.
-/// An impl is provided for any type that also impls [`std::io::Write`].
+/// A simplified version of `std::io::Write` that exists largely for backwards compatibility.
+/// An impl is provided for any type that also impls `std::io::Write`.
 ///
 /// This is not exported to bindings users as we only export serialization to/from byte arrays instead
 pub trait Writer {
@@ -173,7 +173,7 @@ impl Writer for LengthCalculatingWriter {
 	}
 }
 
-/// Essentially [`std::io::Take`] but a bit simpler and with a method to walk the underlying stream
+/// Essentially `std::io::Take` but a bit simpler and with a method to walk the underlying stream
 /// forward to ensure we always consume exactly the fixed length specified.
 ///
 /// This is not exported to bindings users as manual TLV building is not currently supported in bindings

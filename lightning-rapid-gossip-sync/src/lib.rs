@@ -35,8 +35,15 @@
 //! Note that the first ever rapid sync should use `0` for `last_sync_timestamp`.
 //!
 //! After the gossip data snapshot has been downloaded, one of the client's graph processing
-//! functions needs to be called. In this example, we process the update by reading its contents
-//! from disk, which we do by calling [`RapidGossipSync::update_network_graph`]:
+//! functions needs to be called.
+#![cfg_attr(
+	feature = "std",
+	doc = "In this example, we process the update by reading its contents from disk, which we do by calling [`RapidGossipSync::update_network_graph`]:"
+)]
+#![cfg_attr(
+	not(feature = "std"),
+	doc = "In this example, we process the update by reading its contents from disk, which we do by calling [`RapidGossipSync::update_network_graph_no_std`]:"
+)]
 //!
 //! ```
 //! use bitcoin::constants::genesis_block;
@@ -54,10 +61,17 @@
 //! let network_graph = NetworkGraph::new(Network::Bitcoin, &logger);
 //! let rapid_sync = RapidGossipSync::new(&network_graph, &logger);
 //! let snapshot_contents: &[u8] = &[0; 0];
-//! // In no-std you need to provide the current time in unix epoch seconds
-//! // otherwise you can use update_network_graph
-//! let current_time_unix = 0;
-//! let new_last_sync_timestamp_result = rapid_sync.update_network_graph_no_std(snapshot_contents, Some(current_time_unix));
+//! // In non-`std` environments you need to provide the current time in unix epoch seconds
+//! // otherwise you can use `update_network_graph`:
+#![cfg_attr(
+	feature = "std",
+	doc = "let new_last_sync_timestamp_result = rapid_sync.update_network_graph(snapshot_contents);"
+)]
+#![cfg_attr(not(feature = "std"), doc = "let current_time_unix = 0;")]
+#![cfg_attr(
+	not(feature = "std"),
+	doc = "let new_last_sync_timestamp_result = rapid_sync.update_network_graph_no_std(snapshot_contents, Some(current_time_unix));"
+)]
 //! ```
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]

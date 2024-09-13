@@ -543,12 +543,13 @@ pub enum PaymentFailureReason {
 	///
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	UserAbandoned,
-	/// We exhausted all of our retry attempts while trying to send the payment, or we
-	/// exhausted the [`Retry::Timeout`] if the user set one. If at any point a retry
-	/// attempt failed while being forwarded along the path, an [`Event::PaymentPathFailed`] will
+	#[cfg_attr(feature = "std", doc = "We exhausted all of our retry attempts while trying to send the payment, or we")]
+	#[cfg_attr(feature = "std", doc = "exhausted the [`Retry::Timeout`] if the user set one.")]
+	#[cfg_attr(not(feature = "std"), doc = "We exhausted all of our retry attempts while trying to send the payment.")]
+	/// If at any point a retry attempt failed while being forwarded along the path, an [`Event::PaymentPathFailed`] will
 	/// have come before this.
-	///
-	/// [`Retry::Timeout`]: crate::ln::channelmanager::Retry::Timeout
+	#[cfg_attr(feature = "std", doc = "")]
+	#[cfg_attr(feature = "std", doc = "[`Retry::Timeout`]: crate::ln::channelmanager::Retry::Timeout")]
 	RetriesExhausted,
 	/// The payment expired while retrying, based on the provided
 	/// [`PaymentParameters::expiry_time`].

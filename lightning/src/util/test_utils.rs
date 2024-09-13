@@ -1055,7 +1055,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 
 		#[allow(unused_mut, unused_assignments)]
 		let mut gossip_start_time = 0;
-		#[cfg(not(feature = "no-std"))]
+		#[cfg(feature = "std")]
 		{
 			use std::time::{SystemTime, UNIX_EPOCH};
 			gossip_start_time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();

@@ -135,7 +135,7 @@ pub enum Bolt12ParseError {
 /// Error when interpreting a TLV stream as a specific type.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Bolt12SemanticError {
-	/// The current [`std::time::SystemTime`] is past the offer or invoice's expiration.
+	/// The current system time is past the offer or invoice's expiration.
 	AlreadyExpired,
 	/// The provided chain hash does not correspond to a supported chain.
 	UnsupportedChain,

@@ -183,7 +183,7 @@ pub struct NetworkGraph<L: Deref> where L::Target: Logger {
 	//
 	// NOTE: In the following `removed_*` maps, we use seconds since UNIX epoch to track time instead
 	// of `std::time::Instant`s for a few reasons:
-	//   * We want it to be possible to do tracking in no-std environments where we can compare
+	//   * We want it to be possible to do tracking in non-`std` environments where we can compare
 	//     a provided current UNIX timestamp with the time at which we started tracking.
 	//   * In the future, if we decide to persist these maps, they will already be serializable.
 	//   * Although we lose out on the platform's monotonic clock, the system clock in a std
@@ -612,7 +612,7 @@ where U::Target: UtxoLookup, L::Target: Logger
 		// our peers and never receiving gossip from peers at all, we send all of our peers a
 		// `gossip_timestamp_filter`, with the filter time set either two weeks ago or an hour ago.
 		//
-		// For no-std builds, we bury our head in the sand and do a full sync on each connection.
+		// For non-`std` builds, we bury our head in the sand and do a full sync on each connection.
 		#[allow(unused_mut, unused_assignments)]
 		let mut gossip_start_time = 0;
 		#[allow(unused)]
@@ -934,7 +934,7 @@ pub struct ChannelInfo {
 	/// Not stored if contains excess data to prevent DoS.
 	pub announcement_message: Option<ChannelAnnouncement>,
 	/// The timestamp when we received the announcement, if we are running with feature = "std"
-	/// (which we can probably assume we are - no-std environments probably won't have a full
+	/// (which we can probably assume we are - non-`std` environments probably won't have a full
 	/// network graph in memory!).
 	announcement_received_time: u64,
 }
@@ -2105,7 +2105,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// in the map for a while so that these can be resynced from gossip in the future.
 	///
 	/// This method is only available with the `std` feature. See
-	/// [`NetworkGraph::remove_stale_channels_and_tracking_with_time`] for `no-std` use.
+	/// [`NetworkGraph::remove_stale_channels_and_tracking_with_time`] for non-`std` use.
 	pub fn remove_stale_channels_and_tracking(&self) {
 		let time = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs();
 		self.remove_stale_channels_and_tracking_with_time(time);
@@ -2121,9 +2121,9 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	///
 	/// This method will also cause us to stop tracking removed nodes and channels if they have been
 	/// in the map for a while so that these can be resynced from gossip in the future.
-	///
-	/// This function takes the current unix time as an argument. For users with the `std` feature
-	/// enabled, [`NetworkGraph::remove_stale_channels_and_tracking`] may be preferable.
+	#[cfg_attr(feature = "std", doc = "")]
+	#[cfg_attr(feature = "std", doc = "This function takes the current unix time as an argument. For users with the `std` feature")]
+	#[cfg_attr(feature = "std", doc = "enabled, [`NetworkGraph::remove_stale_channels_and_tracking`] may be preferable.")]
 	pub fn remove_stale_channels_and_tracking_with_time(&self, current_time_unix: u64) {
 		let mut channels = self.channels.write().unwrap();
 		// Time out if we haven't received an update in at least 14 days.
@@ -2169,7 +2169,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 			if let Some(time) = time {
 				current_time_unix.saturating_sub(*time) < REMOVED_ENTRIES_TRACKING_AGE_LIMIT_SECS
 			} else {
-				// NOTE: In the case of no-std, we won't have access to the current UNIX time at the time of removal,
+				// NOTE: In the case of non-`std`, we won't have access to the current UNIX time at the time of removal,
 				// so we'll just set the removal time here to the current UNIX time on the very next invocation
 				// of this function.
 				#[cfg(not(feature = "std"))]
@@ -2193,7 +2193,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// [`RoutingMessageHandler`] implementation to call it indirectly. This may be useful to accept
 	/// routing messages from a source using a protocol other than the lightning P2P protocol.
 	///
-	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
+	/// If not built with `std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
 	pub fn update_channel(&self, msg: &msgs::ChannelUpdate) -> Result<(), LightningError> {
 		self.update_channel_internal(&msg.contents, Some(&msg), Some(&msg.signature), false)
@@ -2203,7 +2203,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	/// of the channel without verifying the associated signatures. Because we aren't given the
 	/// associated signatures here we cannot relay the channel update to any of our peers.
 	///
-	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
+	/// If not built with `std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
 	pub fn update_channel_unsigned(&self, msg: &msgs::UnsignedChannelUpdate) -> Result<(), LightningError> {
 		self.update_channel_internal(msg, None, None, false)
@@ -2213,7 +2213,7 @@ impl<L: Deref> NetworkGraph<L> where L::Target: Logger {
 	///
 	/// This checks whether the update currently is applicable by [`Self::update_channel`].
 	///
-	/// If built with `no-std`, any updates with a timestamp more than two weeks in the past or
+	/// If not built with `std`, any updates with a timestamp more than two weeks in the past or
 	/// materially in the future will be rejected.
 	pub fn verify_channel_update(&self, msg: &msgs::ChannelUpdate) -> Result<(), LightningError> {
 		self.update_channel_internal(&msg.contents, Some(&msg), Some(&msg.signature), true)

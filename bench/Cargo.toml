@@ -8,9 +8,6 @@ edition = "2021"
 name = "bench"
 harness = false
 
-[features]
-hashbrown = ["lightning/hashbrown"]
-
 [dependencies]
 lightning = { path = "../lightning", features = ["_test_utils", "criterion"] }
 lightning-persister = { path = "../lightning-persister", features = ["criterion"] }

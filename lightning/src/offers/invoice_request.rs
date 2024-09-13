@@ -615,12 +615,11 @@ pub struct VerifiedInvoiceRequest {
 
 	/// Keys used for signing a [`Bolt12Invoice`] if they can be derived.
 	///
-	/// If `Some`, must call [`respond_using_derived_keys`] when responding. Otherwise, call
-	/// [`respond_with`].
-	///
+	#[cfg_attr(feature = "std", doc = "If `Some`, must call [`respond_using_derived_keys`] when responding. Otherwise, call [`respond_with`].")]
+	#[cfg_attr(feature = "std", doc = "")]
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	/// [`respond_using_derived_keys`]: Self::respond_using_derived_keys
-	/// [`respond_with`]: Self::respond_with
+	#[cfg_attr(feature = "std", doc = "[`respond_using_derived_keys`]: Self::respond_using_derived_keys")]
+	#[cfg_attr(feature = "std", doc = "[`respond_with`]: Self::respond_with")]
 	pub keys: Option<Keypair>,
 }
 
@@ -719,8 +718,8 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 	/// Creates an [`InvoiceBuilder`] for the request with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
-	/// `created_at`, which is used to set [`Bolt12Invoice::created_at`]. Useful for `no-std` builds
-	/// where [`std::time::SystemTime`] is not available.
+	/// `created_at`, which is used to set [`Bolt12Invoice::created_at`].
+	#[cfg_attr(feature = "std", doc = "Useful for non-`std` builds where [`std::time::SystemTime`] is not available.")]
 	///
 	/// The caller is expected to remember the preimage of `payment_hash` in order to claim a payment
 	/// for the invoice.

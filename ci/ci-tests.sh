@@ -33,6 +33,8 @@ export RUST_BACKTRACE=1
 echo -e "\n\nChecking the full workspace."
 cargo check --verbose --color always
 
+# When the workspace members change, make sure to update the list here as well
+# as in `Cargo.toml`.
 WORKSPACE_MEMBERS=(
 	lightning
 	lightning-types
@@ -100,14 +102,12 @@ grep '^max_level_' lightning/Cargo.toml | awk '{ print $1 }'| while read -r FEAT
 	RUSTFLAGS="$RUSTFLAGS -A unused_variables -A unused_macros -A unused_imports -A dead_code" cargo check -p lightning --verbose --color always --features "$FEATURE"
 done
 
-echo -e "\n\nTesting no-std builds"
+echo -e "\n\nTesting no_std builds"
 for DIR in lightning-invoice lightning-rapid-gossip-sync; do
 	cargo test -p $DIR --verbose --color always --no-default-features
 done
 
-cargo test -p lightning --verbose --color always --no-default-features --features no-std
-# check if there is a conflict between no-std and the default std feature
-cargo test -p lightning --verbose --color always --features no-std
+cargo test -p lightning --verbose --color always --no-default-features
 
 echo -e "\n\nTesting c_bindings builds"
 # Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
@@ -115,23 +115,23 @@ echo -e "\n\nTesting c_bindings builds"
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --verbose --color always --lib --bins --tests
 
 for DIR in lightning-invoice lightning-rapid-gossip-sync; do
-	# check if there is a conflict between no-std and the c_bindings cfg
+	# check if there is a conflict between no_std and the c_bindings cfg
 	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --verbose --color always --no-default-features
 done
 
 # Note that because `$RUSTFLAGS` is not passed through to doctest builds we cannot selectively
 # disable doctests in `c_bindings` so we skip doctests entirely here.
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning-background-processor --verbose --color always --features futures --no-default-features --lib --bins --tests
-RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning --verbose --color always --no-default-features --features=no-std --lib --bins --tests
+RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p lightning --verbose --color always --no-default-features --lib --bins --tests
 
 echo -e "\n\nTesting other crate-specific builds"
 # Note that outbound_commitment_test only runs in this mode because of hardcoded signature values
 RUSTFLAGS="$RUSTFLAGS --cfg=ldk_test_vectors" cargo test -p lightning --verbose --color always --no-default-features --features=std
 # This one only works for lightning-invoice
-# check that compile with no-std and serde works in lightning-invoice
+# check that compile with no_std and serde works in lightning-invoice
 cargo test -p lightning-invoice --verbose --color always --no-default-features --features serde
 
-echo -e "\n\nTesting no-std build on a downstream no-std crate"
+echo -e "\n\nTesting no_std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
 cargo check --verbose --color always --features lightning-transaction-sync

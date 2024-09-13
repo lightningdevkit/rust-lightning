@@ -16,7 +16,7 @@ macro_rules! invoice_builder_methods_common { (
 	#[doc = concat!("Sets the [`", stringify!($invoice_type), "::relative_expiry`]")]
 	#[doc = concat!("as seconds since [`", stringify!($invoice_type), "::created_at`].")]
 	#[doc = "Any expiry that has already passed is valid and can be checked for using"]
-	#[doc = concat!("[`", stringify!($invoice_type), "::is_expired`].")]
+	#[cfg_attr(feature = "std", doc = concat!("[`", stringify!($invoice_type), "::is_expired`]."))]
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn relative_expiry($($self_mut)* $self: $self_type, relative_expiry_secs: u32) -> $return_type {

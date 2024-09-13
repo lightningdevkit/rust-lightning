@@ -872,6 +872,7 @@ macro_rules! _init_and_read_tlv_stream {
 ///
 /// [`Readable`]: crate::util::ser::Readable
 /// [`Writeable`]: crate::util::ser::Writeable
+/// [`Vec`]: crate::prelude::Vec
 #[macro_export]
 macro_rules! impl_writeable_tlv_based {
 	($st: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {

@@ -61,9 +61,8 @@ use core::iter::Iterator;
 /// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
-///
-/// This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
-/// available and the current time is supplied by the caller.
+#[cfg_attr(feature = "std", doc = "")]
+#[cfg_attr(feature = "std", doc = "This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.")]
 pub fn create_phantom_invoice<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, description: String,
 	invoice_expiry_delta_secs: u32, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
@@ -117,9 +116,8 @@ where
 /// [`ChannelManager::create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
 /// [`ChannelManager::create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 /// [`PhantomRouteHints::channels`]: crate::ln::channelmanager::PhantomRouteHints::channels
-///
-/// This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
-/// available and the current time is supplied by the caller.
+#[cfg_attr(feature = "std", doc = "")]
+#[cfg_attr(feature = "std", doc = "This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.")]
 pub fn create_phantom_invoice_with_description_hash<ES: Deref, NS: Deref, L: Deref>(
 	amt_msat: Option<u64>, payment_hash: Option<PaymentHash>, invoice_expiry_delta_secs: u32,
 	description_hash: Sha256, phantom_route_hints: Vec<PhantomRouteHints>, entropy_source: ES,
@@ -399,9 +397,12 @@ where
 	)
 }
 
-/// See [`create_invoice_from_channelmanager_with_description_hash`]
-/// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
-/// available and the current time is supplied by the caller.
+/// Utility to construct an invoice. Generally, unless you want to do something like a custom
+/// `cltv_expiry`, this is what you should be using to create an invoice.
+#[cfg_attr(feature = "std", doc = "")]
+#[cfg_attr(feature = "std", doc = "See [`create_invoice_from_channelmanager_with_description_hash`] for more information.")]
+#[cfg_attr(feature = "std", doc = "")]
+#[cfg_attr(feature = "std", doc = "This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.")]
 pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
@@ -424,9 +425,12 @@ pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_sin
 	)
 }
 
-/// See [`create_invoice_from_channelmanager`]
-/// This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not
-/// available and the current time is supplied by the caller.
+/// Utility to construct an invoice. Generally, unless you want to do something like a custom
+/// `cltv_expiry`, this is what you should be using to create an invoice.
+#[cfg_attr(feature = "std", doc = "")]
+#[cfg_attr(feature = "std", doc = "See [`create_invoice_from_channelmanager`] for more information.")]
+#[cfg_attr(feature = "std", doc = "")]
+#[cfg_attr(feature = "std", doc = "This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.")]
 pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,

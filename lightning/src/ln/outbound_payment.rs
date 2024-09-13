@@ -438,8 +438,9 @@ impl_writeable_tlv_based_enum_legacy!(StaleExpiration,
 /// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RetryableSendFailure {
-	/// The provided [`PaymentParameters::expiry_time`] indicated that the payment has expired. Note
-	/// that this error is *not* caused by [`Retry::Timeout`].
+	/// The provided [`PaymentParameters::expiry_time`] indicated that the payment has expired.
+	#[cfg_attr(feature = "std", doc = "")]
+	#[cfg_attr(feature = "std", doc = "Note that this error is *not* caused by [`Retry::Timeout`].")]
 	///
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
 	PaymentExpired,
