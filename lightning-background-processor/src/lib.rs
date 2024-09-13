@@ -325,9 +325,17 @@ macro_rules! define_run_body {
 		let mut have_decayed_scorer = false;
 
 		loop {
+			log_trace!($logger, "Processing ChannelManager events...");
 			$process_channel_manager_events;
+			log_trace!($logger, "Done processing ChannelManager events.");
+
+			log_trace!($logger, "Processing ChainMonitor events...");
 			$process_chain_monitor_events;
+			log_trace!($logger, "Done processing ChainMonitor events.");
+
+			log_trace!($logger, "Processing OnionMessageHandler events...");
 			$process_onion_message_handler_events;
+			log_trace!($logger, "Done processing OnionMessageHandler events.");
 
 			// Note that the PeerManager::process_events may block on ChannelManager's locks,
 			// hence it comes last here. When the ChannelManager finishes whatever it's doing,
@@ -340,7 +348,9 @@ macro_rules! define_run_body {
 			// ChannelManager, we want to minimize methods blocking on a ChannelManager
 			// generally, and as a fallback place such blocking only immediately before
 			// persistence.
+			log_trace!($logger, "Processing PeerManager events...");
 			$peer_manager.as_ref().process_events();
+			log_trace!($logger, "Done processing PeerManager events.");
 
 			// Exit the loop if the background processor was requested to stop.
 			if $loop_exit_check {
