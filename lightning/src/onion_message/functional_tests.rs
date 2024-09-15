@@ -10,7 +10,7 @@
 //! Onion message testing and test utilities live here.
 
 use crate::blinded_path::EmptyNodeIdLookUp;
-use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode, MessageContext, OffersContext};
+use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, MessageForwardNode, MessageContext, OffersContext};
 use crate::events::{Event, EventsProvider};
 use crate::ln::features::{ChannelFeatures, InitFeatures};
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
@@ -87,7 +87,7 @@ impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
 		None
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 }
 
 #[derive(Clone, Debug, PartialEq)]

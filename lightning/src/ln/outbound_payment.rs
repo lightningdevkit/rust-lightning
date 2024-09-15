@@ -32,6 +32,12 @@ use crate::util::logger::Logger;
 use crate::util::time::Instant;
 use crate::util::ser::ReadableArgs;
 
+#[cfg(async_payments)]
+use {
+	crate::offers::invoice::{DerivedSigningPubkey, InvoiceBuilder},
+	crate::offers::static_invoice::StaticInvoice,
+};
+
 use core::fmt::{self, Display, Formatter};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -58,12 +64,25 @@ pub(crate) enum PendingOutboundPayment {
 		max_total_routing_fee_msat: Option<u64>,
 		retryable_invoice_request: Option<RetryableInvoiceRequest>
 	},
+	// This state will never be persisted to disk because we transition from `AwaitingInvoice` to
+	// `Retryable` atomically within the `ChannelManager::total_consistency_lock`. Useful to avoid
+	// holding the `OutboundPayments::pending_outbound_payments` lock during pathfinding.
 	InvoiceReceived {
 		payment_hash: PaymentHash,
 		retry_strategy: Retry,
 		// Note this field is currently just replicated from AwaitingInvoice but not actually
 		// used anywhere.
 		max_total_routing_fee_msat: Option<u64>,
+	},
+	// This state applies when we are paying an often-offline recipient and another node on the
+	// network served us a static invoice on the recipient's behalf in response to our invoice
+	// request. As a result, once a payment gets in this state it will remain here until the recipient
+	// comes back online, which may take hours or even days.
+	StaticInvoiceReceived {
+		payment_hash: PaymentHash,
+		keysend_preimage: PaymentPreimage,
+		retry_strategy: Retry,
+		route_params: RouteParameters,
 	},
 	Retryable {
 		retry_strategy: Option<Retry>,
@@ -182,6 +201,7 @@ impl PendingOutboundPayment {
 			PendingOutboundPayment::Legacy { .. } => None,
 			PendingOutboundPayment::AwaitingInvoice { .. } => None,
 			PendingOutboundPayment::InvoiceReceived { payment_hash, .. } => Some(*payment_hash),
+			PendingOutboundPayment::StaticInvoiceReceived { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::Retryable { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::Fulfilled { payment_hash, .. } => *payment_hash,
 			PendingOutboundPayment::Abandoned { payment_hash, .. } => Some(*payment_hash),
@@ -196,27 +216,34 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Fulfilled { session_privs, .. } |
 				PendingOutboundPayment::Abandoned { session_privs, .. } => session_privs,
 			PendingOutboundPayment::AwaitingInvoice { .. } |
-				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); return; },
+				PendingOutboundPayment::InvoiceReceived { .. } |
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); return; },
 		});
 		let payment_hash = self.payment_hash();
 		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0 };
 	}
 
 	fn mark_abandoned(&mut self, reason: PaymentFailureReason) {
-		if let PendingOutboundPayment::Retryable { session_privs, payment_hash, .. } = self {
-			let mut our_session_privs = new_hash_set();
-			core::mem::swap(&mut our_session_privs, session_privs);
-			*self = PendingOutboundPayment::Abandoned {
-				session_privs: our_session_privs,
-				payment_hash: *payment_hash,
-				reason: Some(reason)
-			};
-		} else if let PendingOutboundPayment::InvoiceReceived { payment_hash, .. } = self {
-			*self = PendingOutboundPayment::Abandoned {
-				session_privs: new_hash_set(),
-				payment_hash: *payment_hash,
-				reason: Some(reason)
-			};
+		let session_privs = match self {
+			PendingOutboundPayment::Retryable { session_privs, .. } => {
+				let mut our_session_privs = new_hash_set();
+				core::mem::swap(&mut our_session_privs, session_privs);
+				our_session_privs
+			},
+			_ => new_hash_set(),
+		};
+		match self {
+			Self::Retryable { payment_hash, .. } |
+				Self::InvoiceReceived { payment_hash, .. } |
+				Self::StaticInvoiceReceived { payment_hash, .. } =>
+			{
+				*self = Self::Abandoned {
+					session_privs,
+					payment_hash: *payment_hash,
+					reason: Some(reason),
+				};
+			},
+			_ => {}
 		}
 	}
 
@@ -230,7 +257,8 @@ impl PendingOutboundPayment {
 					session_privs.remove(session_priv)
 				},
 			PendingOutboundPayment::AwaitingInvoice { .. } |
-				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); false },
+				PendingOutboundPayment::InvoiceReceived { .. } |
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); false },
 		};
 		if remove_res {
 			if let PendingOutboundPayment::Retryable {
@@ -259,7 +287,8 @@ impl PendingOutboundPayment {
 					session_privs.insert(session_priv)
 				},
 			PendingOutboundPayment::AwaitingInvoice { .. } |
-				PendingOutboundPayment::InvoiceReceived { .. } => { debug_assert!(false); false },
+				PendingOutboundPayment::InvoiceReceived { .. } |
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); false },
 			PendingOutboundPayment::Fulfilled { .. } => false,
 			PendingOutboundPayment::Abandoned { .. } => false,
 		};
@@ -292,6 +321,7 @@ impl PendingOutboundPayment {
 				},
 			PendingOutboundPayment::AwaitingInvoice { .. } => 0,
 			PendingOutboundPayment::InvoiceReceived { .. } => 0,
+			PendingOutboundPayment::StaticInvoiceReceived { .. } => 0,
 		}
 	}
 }
@@ -511,6 +541,15 @@ pub enum Bolt12PaymentError {
 	UnknownRequiredFeatures,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
+	#[cfg(async_payments)]
+	/// Failed to create a blinded path back to ourselves.
+	///
+	/// We attempted to initiate payment to a [`StaticInvoice`] but failed to create a reply path for
+	/// our [`HeldHtlcAvailable`] message.
+	///
+	/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	BlindedPathCreationFailed,
 }
 
 /// Indicates that we failed to send a payment probe. Further errors may be surfaced later via
@@ -811,7 +850,7 @@ impl OutboundPayments {
 				PendingOutboundPayment::AwaitingInvoice {
 					retry_strategy: retry, max_total_routing_fee_msat: max_total_fee, ..
 				} => {
-					retry_strategy = Some(*retry);
+					retry_strategy = *retry;
 					max_total_routing_fee_msat = *max_total_fee;
 					*entry.into_mut() = PendingOutboundPayment::InvoiceReceived {
 						payment_hash,
@@ -831,11 +870,42 @@ impl OutboundPayments {
 			return Err(Bolt12PaymentError::UnknownRequiredFeatures);
 		}
 
-		let mut payment_params = PaymentParameters::from_bolt12_invoice(&invoice);
+		let mut route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_bolt12_invoice(&invoice), invoice.amount_msats()
+		);
+		if let Some(max_fee_msat) = max_total_routing_fee_msat {
+			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
+		}
+		self.send_payment_for_bolt12_invoice_internal(
+			payment_id, payment_hash, None, route_params, retry_strategy, router, first_hops,
+			inflight_htlcs, entropy_source, node_signer, node_id_lookup, secp_ctx, best_block_height,
+			logger, pending_events, send_payment_along_path
+		)
+	}
 
+	fn send_payment_for_bolt12_invoice_internal<
+		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
+	>(
+		&self, payment_id: PaymentId, payment_hash: PaymentHash,
+		keysend_preimage: Option<PaymentPreimage>, mut route_params: RouteParameters,
+		retry_strategy: Retry, router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH,
+		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		send_payment_along_path: SP,
+	) -> Result<(), Bolt12PaymentError>
+	where
+		R::Target: Router,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		NL::Target: NodeIdLookUp,
+		L::Target: Logger,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
+	{
 		// Advance any blinded path where the introduction node is our node.
 		if let Ok(our_node_id) = node_signer.get_node_id(Recipient::Node) {
-			for path in payment_params.payee.blinded_route_hints_mut().iter_mut() {
+			for path in route_params.payment_params.payee.blinded_route_hints_mut().iter_mut() {
 				let introduction_node_id = match path.introduction_node() {
 					IntroductionNode::NodeId(pubkey) => *pubkey,
 					IntroductionNode::DirectedShortChannelId(direction, scid) => {
@@ -849,15 +919,6 @@ impl OutboundPayments {
 					let _ = path.advance_path_by_one(node_signer, node_id_lookup, secp_ctx);
 				}
 			}
-		}
-
-		let amount_msat = invoice.amount_msats();
-		let mut route_params = RouteParameters::from_payment_params_and_value(
-			payment_params, amount_msat
-		);
-
-		if let Some(max_fee_msat) = max_total_routing_fee_msat {
-			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
 		}
 
 		let recipient_onion = RecipientOnionFields {
@@ -884,12 +945,13 @@ impl OutboundPayments {
 
 		let payment_params = Some(route_params.payment_params.clone());
 		let (retryable_payment, onion_session_privs) = self.create_pending_payment(
-			payment_hash, recipient_onion.clone(), None, &route,
-			retry_strategy, payment_params, entropy_source, best_block_height
+			payment_hash, recipient_onion.clone(), keysend_preimage, &route, Some(retry_strategy),
+			payment_params, entropy_source, best_block_height
 		);
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
-				PendingOutboundPayment::InvoiceReceived { .. } => {
+				PendingOutboundPayment::InvoiceReceived { .. }
+				| PendingOutboundPayment::StaticInvoiceReceived { .. } => {
 					*entry.into_mut() = retryable_payment;
 				},
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
@@ -898,7 +960,7 @@ impl OutboundPayments {
 		}
 
 		let result = self.pay_route_internal(
-			&route, payment_hash, &recipient_onion, None, payment_id,
+			&route, payment_hash, &recipient_onion, keysend_preimage, payment_id,
 			Some(route_params.final_value_msat), onion_session_privs, node_signer,
 			best_block_height, &send_payment_along_path
 		);
@@ -914,6 +976,121 @@ impl OutboundPayments {
 			);
 		}
 		Ok(())
+	}
+
+	#[cfg(async_payments)]
+	pub(super) fn static_invoice_received<ES: Deref>(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId, features: Bolt12InvoiceFeatures,
+		best_block_height: u32, entropy_source: ES,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>
+	) -> Result<(), Bolt12PaymentError> where ES::Target: EntropySource {
+		macro_rules! abandon_with_entry {
+			($payment: expr, $reason: expr) => {
+				$payment.get_mut().mark_abandoned($reason);
+				if let PendingOutboundPayment::Abandoned { reason, .. } = $payment.get() {
+					if $payment.get().remaining_parts() == 0 {
+						pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
+							payment_id,
+							payment_hash: None,
+							reason: *reason,
+						}, None));
+						$payment.remove();
+					}
+				}
+			}
+		}
+
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(mut entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingInvoice {
+					retry_strategy, retryable_invoice_request, max_total_routing_fee_msat, ..
+				} => {
+					let invreq = &retryable_invoice_request
+						.as_ref()
+						.ok_or(Bolt12PaymentError::UnexpectedInvoice)?
+						.invoice_request;
+					if !invoice.from_same_offer(invreq) {
+						return Err(Bolt12PaymentError::UnexpectedInvoice)
+					}
+					if invoice.invoice_features().requires_unknown_bits_from(&features) {
+						abandon_with_entry!(entry, PaymentFailureReason::UnknownRequiredFeatures);
+						return Err(Bolt12PaymentError::UnknownRequiredFeatures)
+					}
+					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq) {
+						Ok(amt) => amt,
+						Err(_) => {
+							// We check this during invoice request parsing, when constructing the invreq's
+							// contents from its TLV stream.
+							debug_assert!(false, "LDK requires an msat amount in either the invreq or the invreq's underlying offer");
+							abandon_with_entry!(entry, PaymentFailureReason::UnexpectedError);
+							return Err(Bolt12PaymentError::UnknownRequiredFeatures)
+						}
+					};
+					let keysend_preimage = PaymentPreimage(entropy_source.get_secure_random_bytes());
+					let payment_hash = PaymentHash(Sha256::hash(&keysend_preimage.0).to_byte_array());
+					let pay_params = PaymentParameters::from_static_invoice(invoice);
+					let mut route_params = RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
+					route_params.max_total_routing_fee_msat = *max_total_routing_fee_msat;
+
+					if let Err(()) = onion_utils::set_max_path_length(
+						&mut route_params, &RecipientOnionFields::spontaneous_empty(), Some(keysend_preimage),
+						best_block_height
+					) {
+						abandon_with_entry!(entry, PaymentFailureReason::RouteNotFound);
+						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))
+					}
+
+					*entry.into_mut() = PendingOutboundPayment::StaticInvoiceReceived {
+						payment_hash,
+						keysend_preimage,
+						retry_strategy: *retry_strategy,
+						route_params,
+					};
+					return Ok(())
+				},
+				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
+			},
+			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+		};
+	}
+
+	#[cfg(async_payments)]
+	pub(super) fn send_payment_for_static_invoice<
+		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
+	>(
+		&self, payment_id: PaymentId, router: &R, first_hops: Vec<ChannelDetails>, inflight_htlcs: IH,
+		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32, logger: &L,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		send_payment_along_path: SP,
+	) -> Result<(), Bolt12PaymentError>
+	where
+		R::Target: Router,
+		ES::Target: EntropySource,
+		NS::Target: NodeSigner,
+		NL::Target: NodeIdLookUp,
+		L::Target: Logger,
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
+	{
+		let (payment_hash, keysend_preimage, route_params, retry_strategy) =
+			match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+				hash_map::Entry::Occupied(entry) => match entry.get() {
+					PendingOutboundPayment::StaticInvoiceReceived {
+						payment_hash, route_params, retry_strategy, keysend_preimage, ..
+					} => {
+						(*payment_hash, *keysend_preimage, route_params.clone(), *retry_strategy)
+					},
+					_ => return Err(Bolt12PaymentError::DuplicateInvoice),
+				},
+				hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+			};
+
+		self.send_payment_for_bolt12_invoice_internal(
+			payment_id, payment_hash, Some(keysend_preimage), route_params, retry_strategy, router,
+			first_hops, inflight_htlcs, entropy_source, node_signer, node_id_lookup, secp_ctx,
+			best_block_height, logger, pending_events, send_payment_along_path
+		)
 	}
 
 	pub(super) fn check_retry_payments<R: Deref, ES: Deref, NS: Deref, SP, IH, FH, L: Deref>(
@@ -1191,6 +1368,11 @@ impl OutboundPayments {
 							return
 						},
 						PendingOutboundPayment::InvoiceReceived { .. } => {
+							log_error!(logger, "Payment already initiating");
+							debug_assert!(false);
+							return
+						},
+						PendingOutboundPayment::StaticInvoiceReceived { .. } => {
 							log_error!(logger, "Payment already initiating");
 							debug_assert!(false);
 							return
@@ -1725,6 +1907,22 @@ impl OutboundPayments {
 					true
 				}
 			},
+			PendingOutboundPayment::StaticInvoiceReceived { route_params, payment_hash, .. } => {
+				let is_stale =
+					route_params.payment_params.expiry_time.unwrap_or(u64::MAX) <
+					duration_since_epoch.as_secs();
+				if is_stale {
+					let fail_ev = events::Event::PaymentFailed {
+						payment_id: *payment_id,
+						payment_hash: Some(*payment_hash),
+						reason: Some(PaymentFailureReason::PaymentExpired)
+					};
+					pending_events.push_back((fail_ev, None));
+					false
+				} else {
+					true
+				}
+			},
 			_ => true,
 		});
 	}
@@ -1985,6 +2183,14 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(2, retry_strategy, required),
 		(4, max_total_routing_fee_msat, option),
 	},
+	// Added in 0.0.125. Prior versions will drop these outbounds on downgrade, which is safe because
+	// no HTLCs are in-flight.
+	(9, StaticInvoiceReceived) => {
+		(0, payment_hash, required),
+		(2, keysend_preimage, required),
+		(4, retry_strategy, required),
+		(6, route_params, required),
+	},
 );
 
 #[cfg(test)]
@@ -1996,11 +2202,11 @@ mod tests {
 
 	use crate::blinded_path::EmptyNodeIdLookUp;
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
-	use crate::ln::types::PaymentHash;
+	use crate::ln::types::{PaymentHash, PaymentPreimage};
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
-	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, Retry, RetryableSendFailure, StaleExpiration};
+	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, Retry, RetryableSendFailure, StaleExpiration};
 	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
 	use crate::offers::offer::OfferBuilder;
@@ -2549,5 +2755,90 @@ mod tests {
 		);
 		assert!(outbound_payments.has_pending_payments());
 		assert!(pending_events.lock().unwrap().is_empty());
+	}
+
+	#[test]
+	fn time_out_unreleased_async_payments() {
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new(new_hash_map());
+		let payment_id = PaymentId([0; 32]);
+		let absolute_expiry = 60;
+
+		let mut outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		let payment_params = PaymentParameters::from_node_id(test_utils::pubkey(42), 0)
+			.with_expiry_time(absolute_expiry);
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 0,
+			max_total_routing_fee_msat: None,
+		};
+		let payment_hash = PaymentHash([0; 32]);
+		let outbound = PendingOutboundPayment::StaticInvoiceReceived {
+			payment_hash,
+			keysend_preimage: PaymentPreimage([0; 32]),
+			retry_strategy: Retry::Attempts(0),
+			route_params,
+		};
+		outbounds.insert(payment_id, outbound);
+		core::mem::drop(outbounds);
+
+		// The payment will not be removed if it isn't expired yet.
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry), &pending_events);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 1);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 0);
+		core::mem::drop(outbounds);
+		core::mem::drop(events);
+
+		outbound_payments.remove_stale_payments(Duration::from_secs(absolute_expiry + 1), &pending_events);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 0);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 1);
+		assert_eq!(events[0], (Event::PaymentFailed {
+			payment_hash: Some(payment_hash),
+			payment_id,
+			reason: Some(PaymentFailureReason::PaymentExpired),
+		}, None));
+	}
+
+	#[test]
+	fn abandon_unreleased_async_payment() {
+		let pending_events = Mutex::new(VecDeque::new());
+		let outbound_payments = OutboundPayments::new(new_hash_map());
+		let payment_id = PaymentId([0; 32]);
+		let absolute_expiry = 60;
+
+		let mut outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		let payment_params = PaymentParameters::from_node_id(test_utils::pubkey(42), 0)
+			.with_expiry_time(absolute_expiry);
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 0,
+			max_total_routing_fee_msat: None,
+		};
+		let payment_hash = PaymentHash([0; 32]);
+		let outbound = PendingOutboundPayment::StaticInvoiceReceived {
+			payment_hash,
+			keysend_preimage: PaymentPreimage([0; 32]),
+			retry_strategy: Retry::Attempts(0),
+			route_params,
+		};
+		outbounds.insert(payment_id, outbound);
+		core::mem::drop(outbounds);
+
+		outbound_payments.abandon_payment(
+			payment_id, PaymentFailureReason::UserAbandoned, &pending_events
+		);
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		assert_eq!(outbounds.len(), 0);
+		let events = pending_events.lock().unwrap();
+		assert_eq!(events.len(), 1);
+		assert_eq!(events[0], (Event::PaymentFailed {
+			payment_hash: Some(payment_hash),
+			payment_id,
+			reason: Some(PaymentFailureReason::UserAbandoned),
+		}, None));
 	}
 }

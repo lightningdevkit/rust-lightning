@@ -979,6 +979,10 @@ where
 				(ParsedOnionMessageContents::Offers(_), Some(MessageContext::Offers(_))) => {
 					Ok(PeeledOnion::Receive(message, context, reply_path))
 				}
+				#[cfg(async_payments)]
+				(ParsedOnionMessageContents::AsyncPayments(_), Some(MessageContext::AsyncPayments(_))) => {
+					Ok(PeeledOnion::Receive(message, context, reply_path))
+				}
 				(ParsedOnionMessageContents::Custom(_), Some(MessageContext::Custom(_))) => {
 					Ok(PeeledOnion::Receive(message, context, reply_path))
 				}
@@ -1587,8 +1591,8 @@ where
 						let context = match context {
 							None => None,
 							Some(MessageContext::Offers(context)) => Some(context),
-							Some(MessageContext::Custom(_)) => {
-								debug_assert!(false, "Shouldn't have triggered this case.");
+							_ => {
+								debug_assert!(false, "Checked in peel_onion_message");
 								return
 							}
 						};
@@ -1608,14 +1612,22 @@ where
 					},
 					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::ReleaseHeldHtlc(msg)) => {
-						self.async_payments_handler.release_held_htlc(msg);
+						let context = match context {
+							Some(MessageContext::AsyncPayments(context)) => context,
+							Some(_) => {
+								debug_assert!(false, "Checked in peel_onion_message");
+								return
+							},
+							None => return,
+						};
+						self.async_payments_handler.release_held_htlc(msg, context);
 					},
 					ParsedOnionMessageContents::Custom(msg) => {
 						let context = match context {
 							None => None,
 							Some(MessageContext::Custom(data)) => Some(data),
-							Some(MessageContext::Offers(_)) => {
-								debug_assert!(false, "Shouldn't have triggered this case.");
+							_ => {
+								debug_assert!(false, "Checked in peel_onion_message");
 								return
 							}
 						};
@@ -1751,6 +1763,14 @@ where
 			let _ = self.send_onion_message_internal(
 				message, instructions, format_args!("when sending OffersMessage")
 			);
+		}
+
+		#[cfg(async_payments)] {
+			for (message, instructions) in self.async_payments_handler.release_pending_messages() {
+				let _ = self.send_onion_message_internal(
+					message, instructions, format_args!("when sending AsyncPaymentsMessage")
+				);
+			}
 		}
 
 		// Enqueue any initiating `CustomMessage`s to send.

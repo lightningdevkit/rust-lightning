@@ -280,6 +280,10 @@ pub enum MessageContext {
 	///
 	/// [`OffersMessage`]: crate::onion_message::offers::OffersMessage
 	Offers(OffersContext),
+	/// Context specific to an [`AsyncPaymentsMessage`].
+	///
+	/// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
+	AsyncPayments(AsyncPaymentsContext),
 	/// Context specific to a [`CustomOnionMessageHandler::CustomMessage`].
 	///
 	/// [`CustomOnionMessageHandler::CustomMessage`]: crate::onion_message::messenger::CustomOnionMessageHandler::CustomMessage
@@ -363,9 +367,41 @@ pub enum OffersContext {
 	},
 }
 
+/// Contains data specific to an [`AsyncPaymentsMessage`].
+///
+/// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
+#[derive(Clone, Debug)]
+pub enum AsyncPaymentsContext {
+	/// Context contained within the reply [`BlindedMessagePath`] we put in outbound
+	/// [`HeldHtlcAvailable`] messages, provided back to us in corresponding [`ReleaseHeldHtlc`]
+	/// messages.
+	///
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+	OutboundPayment {
+		/// ID used when payment to the originating [`Offer`] was initiated. Useful for us to identify
+		/// which of our pending outbound payments should be released to its often-offline payee.
+		///
+		/// [`Offer`]: crate::offers::offer::Offer
+		payment_id: PaymentId,
+		/// A nonce used for authenticating that a [`ReleaseHeldHtlc`] message is valid for a preceding
+		/// [`HeldHtlcAvailable`] message.
+		///
+		/// [`ReleaseHeldHtlc`]: crate::onion_message::async_payments::ReleaseHeldHtlc
+		/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+		nonce: Nonce,
+		/// Authentication code for the [`PaymentId`].
+		///
+		/// Prevents the recipient from being able to deanonymize us by creating a blinded path to us
+		/// containing the expected [`PaymentId`].
+		hmac: Hmac<Sha256>,
+	},
+}
+
 impl_writeable_tlv_based_enum!(MessageContext,
 	{0, Offers} => (),
 	{1, Custom} => (),
+	{2, AsyncPayments} => (),
 );
 
 impl_writeable_tlv_based_enum!(OffersContext,
@@ -381,6 +417,14 @@ impl_writeable_tlv_based_enum!(OffersContext,
 		(0, payment_hash, required),
 		(1, nonce, required),
 		(2, hmac, required)
+	},
+);
+
+impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
+	(0, OutboundPayment) => {
+		(0, payment_id, required),
+		(2, nonce, required),
+		(4, hmac, required),
 	},
 );
 

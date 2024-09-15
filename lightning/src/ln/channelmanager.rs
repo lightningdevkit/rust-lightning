@@ -33,7 +33,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence};
 
 use crate::events::FundingInfo;
-use crate::blinded_path::message::{MessageContext, OffersContext};
+use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, OffersContext};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs};
@@ -71,6 +71,8 @@ use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::signer;
+#[cfg(async_payments)]
+use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
@@ -418,7 +420,7 @@ pub trait Verification {
 	) -> Hmac<Sha256>;
 
 	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
-	fn verify(
+	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()>;
 }
@@ -434,7 +436,7 @@ impl Verification for PaymentHash {
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::InboundPayment`].
-	fn verify(
+	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
 		signer::verify_payment_hash(*self, hmac, nonce, expanded_key)
@@ -451,6 +453,24 @@ pub struct PaymentId(pub [u8; Self::LENGTH]);
 impl PaymentId {
 	/// Number of bytes in the id.
 	pub const LENGTH: usize = 32;
+
+	/// Constructs an HMAC to include in [`AsyncPaymentsContext::OutboundPayment`] for the payment id
+	/// along with the given [`Nonce`].
+	#[cfg(async_payments)]
+	pub fn hmac_for_async_payment(
+		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Hmac<Sha256> {
+		signer::hmac_for_async_payment_id(*self, nonce, expanded_key)
+	}
+
+	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
+	/// [`AsyncPaymentsContext::OutboundPayment`].
+	#[cfg(async_payments)]
+	pub fn verify_for_async_payment(
+		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
+	) -> Result<(), ()> {
+		signer::verify_async_payment_id(*self, hmac, nonce, expanded_key)
+	}
 }
 
 impl Verification for PaymentId {
@@ -459,15 +479,15 @@ impl Verification for PaymentId {
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
-		signer::hmac_for_payment_id(*self, nonce, expanded_key)
+		signer::hmac_for_offer_payment_id(*self, nonce, expanded_key)
 	}
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::OutboundPayment`].
-	fn verify(
+	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
-		signer::verify_payment_id(*self, hmac, nonce, expanded_key)
+		signer::verify_offer_payment_id(*self, hmac, nonce, expanded_key)
 	}
 }
 
@@ -2060,6 +2080,8 @@ where
 //
 // `pending_offers_messages`
 //
+// `pending_async_payments_messages`
+//
 // `total_consistency_lock`
 //  |
 //  |__`forward_htlcs`
@@ -2315,6 +2337,7 @@ where
 	pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) pending_offers_messages: Mutex<Vec<(OffersMessage, MessageSendInstructions)>>,
+	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 
 	/// Tracks the message events that are to be broadcasted when we are connected to some peer.
 	pending_broadcast_messages: Mutex<Vec<MessageSendEvent>>,
@@ -2543,14 +2566,17 @@ pub const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 6
 pub enum RecentPaymentDetails {
 	/// When an invoice was requested and thus a payment has not yet been sent.
 	AwaitingInvoice {
-		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
-		/// a payment and ensure idempotency in LDK.
+		/// A user-provided identifier in [`ChannelManager::pay_for_offer`] used to uniquely identify a
+		/// payment and ensure idempotency in LDK.
 		payment_id: PaymentId,
 	},
 	/// When a payment is still being sent and awaiting successful delivery.
 	Pending {
-		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
-		/// a payment and ensure idempotency in LDK.
+		/// A user-provided identifier in [`send_payment`] or [`pay_for_offer`] used to uniquely
+		/// identify a payment and ensure idempotency in LDK.
+		///
+		/// [`send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`pay_for_offer`]: crate::ln::channelmanager::ChannelManager::pay_for_offer
 		payment_id: PaymentId,
 		/// Hash of the payment that is currently being sent but has yet to be fulfilled or
 		/// abandoned.
@@ -2563,8 +2589,11 @@ pub enum RecentPaymentDetails {
 	/// been resolved. Upon receiving [`Event::PaymentSent`], we delay for a few minutes before the
 	/// payment is removed from tracking.
 	Fulfilled {
-		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
-		/// a payment and ensure idempotency in LDK.
+		/// A user-provided identifier in [`send_payment`] or [`pay_for_offer`] used to uniquely
+		/// identify a payment and ensure idempotency in LDK.
+		///
+		/// [`send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`pay_for_offer`]: crate::ln::channelmanager::ChannelManager::pay_for_offer
 		payment_id: PaymentId,
 		/// Hash of the payment that was claimed. `None` for serializations of [`ChannelManager`]
 		/// made before LDK version 0.0.104.
@@ -2574,8 +2603,11 @@ pub enum RecentPaymentDetails {
 	/// abandoned via [`ChannelManager::abandon_payment`], it is marked as abandoned until all
 	/// pending HTLCs for this payment resolve and an [`Event::PaymentFailed`] is generated.
 	Abandoned {
-		/// A user-provided identifier in [`ChannelManager::send_payment`] used to uniquely identify
-		/// a payment and ensure idempotency in LDK.
+		/// A user-provided identifier in [`send_payment`] or [`pay_for_offer`] used to uniquely
+		/// identify a payment and ensure idempotency in LDK.
+		///
+		/// [`send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
+		/// [`pay_for_offer`]: crate::ln::channelmanager::ChannelManager::pay_for_offer
 		payment_id: PaymentId,
 		/// Hash of the payment that we have given up trying to send.
 		payment_hash: PaymentHash,
@@ -3135,6 +3167,7 @@ where
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
 			pending_offers_messages: Mutex::new(Vec::new()),
+			pending_async_payments_messages: Mutex::new(Vec::new()),
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 
 			last_days_feerates: Mutex::new(VecDeque::new()),
@@ -3368,6 +3401,9 @@ where
 				},
 				// InvoiceReceived is an intermediate state and doesn't need to be exposed
 				PendingOutboundPayment::InvoiceReceived { .. } => {
+					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
+				},
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
 					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
 				},
 				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
@@ -4309,6 +4345,92 @@ where
 				&self.secp_ctx, best_block_height, &self.logger, &self.pending_events,
 				|args| self.send_payment_along_path(args)
 			)
+	}
+
+	#[cfg(async_payments)]
+	fn initiate_async_payment(
+		&self, invoice: &StaticInvoice, payment_id: PaymentId
+	) -> Result<(), Bolt12PaymentError> {
+		let mut res = Ok(());
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			let best_block_height = self.best_block.read().unwrap().height;
+			let features = self.bolt12_invoice_features();
+			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
+				invoice, payment_id, features, best_block_height, &*self.entropy_source,
+				&self.pending_events
+			);
+			match outbound_pmts_res {
+				Ok(()) => {},
+				Err(Bolt12PaymentError::UnexpectedInvoice) | Err(Bolt12PaymentError::DuplicateInvoice) => {
+					res = outbound_pmts_res.map(|_| ());
+					return NotifyOption::SkipPersistNoEvents
+				},
+				Err(e) => {
+					res = Err(e);
+					return NotifyOption::DoPersist
+				}
+			};
+
+			let nonce = Nonce::from_entropy_source(&*self.entropy_source);
+			let hmac = payment_id.hmac_for_async_payment(nonce, &self.inbound_payment_key);
+			let reply_paths = match self.create_blinded_paths(
+				MessageContext::AsyncPayments(
+					AsyncPaymentsContext::OutboundPayment { payment_id, nonce, hmac }
+				)
+			) {
+				Ok(paths) => paths,
+				Err(()) => {
+					self.abandon_payment_with_reason(payment_id, PaymentFailureReason::RouteNotFound);
+					res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
+					return NotifyOption::DoPersist
+				}
+			};
+
+			let mut pending_async_payments_messages = self.pending_async_payments_messages.lock().unwrap();
+			const HTLC_AVAILABLE_LIMIT: usize = 10;
+			reply_paths
+				.iter()
+				.flat_map(|reply_path| invoice.message_paths().iter().map(move |invoice_path| (invoice_path, reply_path)))
+				.take(HTLC_AVAILABLE_LIMIT)
+				.for_each(|(invoice_path, reply_path)| {
+					let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
+						destination: Destination::BlindedPath(invoice_path.clone()),
+						reply_path: reply_path.clone(),
+					};
+					let message = AsyncPaymentsMessage::HeldHtlcAvailable(HeldHtlcAvailable {});
+					pending_async_payments_messages.push((message, instructions));
+				});
+
+			NotifyOption::DoPersist
+		});
+
+		res
+	}
+
+	#[cfg(async_payments)]
+	fn send_payment_for_static_invoice(
+		&self, payment_id: PaymentId
+	) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		let mut res = Ok(());
+		PersistenceNotifierGuard::optionally_notify(self, || {
+			let outbound_pmts_res = self.pending_outbound_payments.send_payment_for_static_invoice(
+				payment_id, &self.router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
+				&self.entropy_source, &self.node_signer, &self, &self.secp_ctx, best_block_height,
+				&self.logger, &self.pending_events, |args| self.send_payment_along_path(args)
+			);
+			match outbound_pmts_res {
+				Err(Bolt12PaymentError::UnexpectedInvoice) | Err(Bolt12PaymentError::DuplicateInvoice) => {
+					res = outbound_pmts_res.map(|_| ());
+					NotifyOption::SkipPersistNoEvents
+				},
+				other_res => {
+					res = other_res;
+					NotifyOption::DoPersist
+				}
+			}
+		});
+		res
 	}
 
 	/// Signals that no further attempts for the given payment should occur. Useful if you have a
@@ -9124,7 +9246,9 @@ where
 		let invoice_request = builder.build_and_sign()?;
 
 		let hmac = payment_id.hmac_for_offer_payment(nonce, expanded_key);
-		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) };
+		let context = MessageContext::Offers(
+			OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }
+		);
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -9244,9 +9368,9 @@ where
 
 				let nonce = Nonce::from_entropy_source(entropy);
 				let hmac = payment_hash.hmac_for_offer_payment(nonce, expanded_key);
-				let context = OffersContext::InboundPayment {
+				let context = MessageContext::Offers(OffersContext::InboundPayment {
 					payment_hash: invoice.payment_hash(), nonce, hmac
-				};
+				});
 				let reply_paths = self.create_blinded_paths(context)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -9394,7 +9518,7 @@ where
 		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
 			self.create_compact_blinded_paths(context)
 		} else {
-			self.create_blinded_paths(context)
+			self.create_blinded_paths(MessageContext::Offers(context))
 		}
 	}
 
@@ -9415,7 +9539,7 @@ where
 	/// [`MessageRouter::create_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors.
-	fn create_blinded_paths(&self, context: OffersContext) -> Result<Vec<BlindedMessagePath>, ()> {
+	fn create_blinded_paths(&self, context: MessageContext) -> Result<Vec<BlindedMessagePath>, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
@@ -9428,7 +9552,7 @@ where
 			.collect::<Vec<_>>();
 
 		self.router
-			.create_blinded_paths(recipient, MessageContext::Offers(context), peers, secp_ctx)
+			.create_blinded_paths(recipient, context, peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
@@ -10832,11 +10956,11 @@ where
 		{
 			let RetryableInvoiceRequest { invoice_request, nonce } = retryable_invoice_request;
 			let hmac = payment_id.hmac_for_offer_payment(nonce, &self.inbound_payment_key);
-			let context = OffersContext::OutboundPayment {
+			let context = MessageContext::Offers(OffersContext::OutboundPayment {
 				payment_id,
 				nonce,
 				hmac: Some(hmac)
-			};
+			});
 			match self.create_blinded_paths(context) {
 				Ok(reply_paths) => match self.enqueue_invoice_request(invoice_request, reply_paths) {
 					Ok(_) => {}
@@ -10876,6 +11000,41 @@ where
 	) -> Option<(OffersMessage, ResponseInstruction)> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
+
+		macro_rules! handle_pay_invoice_res {
+			($res: expr, $invoice: expr, $logger: expr) => {{
+				let error = match $res {
+					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
+						log_trace!(
+							$logger, "Invoice requires unknown features: {:?}",
+							$invoice.invoice_features()
+						);
+						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
+					},
+					Err(Bolt12PaymentError::SendingFailed(e)) => {
+						log_trace!($logger, "Failed paying invoice: {:?}", e);
+						InvoiceError::from_string(format!("{:?}", e))
+					},
+					#[cfg(async_payments)]
+					Err(Bolt12PaymentError::BlindedPathCreationFailed) => {
+						let err_msg = "Failed to create a blinded path back to ourselves";
+						log_trace!($logger, "{}", err_msg);
+						InvoiceError::from_string(err_msg.to_string())
+					},
+					Err(Bolt12PaymentError::UnexpectedInvoice)
+						| Err(Bolt12PaymentError::DuplicateInvoice)
+						| Ok(()) => return None,
+				};
+
+				match responder {
+					Some(responder) => return Some((OffersMessage::InvoiceError(error), responder.respond())),
+					None => {
+						log_trace!($logger, "No reply path to send error: {:?}", error);
+						return None
+					},
+				}
+			}}
+		}
 
 		match message {
 			OffersMessage::InvoiceRequest(invoice_request) => {
@@ -11003,48 +11162,27 @@ where
 					return None;
 				}
 
-				let error = match self.send_payment_for_verified_bolt12_invoice(
-					&invoice, payment_id,
-				) {
-					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
-						log_trace!(
-							logger, "Invoice requires unknown features: {:?}",
-							invoice.invoice_features()
-						);
-						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
-					},
-					Err(Bolt12PaymentError::SendingFailed(e)) => {
-						log_trace!(logger, "Failed paying invoice: {:?}", e);
-						InvoiceError::from_string(format!("{:?}", e))
-					},
-					Err(Bolt12PaymentError::UnexpectedInvoice)
-						| Err(Bolt12PaymentError::DuplicateInvoice)
-						| Ok(()) => return None,
-				};
-
-				match responder {
-					Some(responder) => Some((OffersMessage::InvoiceError(error), responder.respond())),
-					None => {
-						log_trace!(logger, "No reply path to send error: {:?}", error);
-						None
-					},
-				}
+				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
+				handle_pay_invoice_res!(res, invoice, logger);
 			},
 			#[cfg(async_payments)]
-			OffersMessage::StaticInvoice(_invoice) => {
-				match responder {
-					Some(responder) => {
-						return Some((OffersMessage::InvoiceError(
-							InvoiceError::from_string("Static invoices not yet supported".to_string())
-						), responder.respond()));
+			OffersMessage::StaticInvoice(invoice) => {
+				let payment_id = match context {
+					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
+						if payment_id.verify_for_offer_payment(hmac, nonce, expanded_key).is_err() {
+							return None
+						}
+						payment_id
 					},
-					None => return None,
-				}
+					_ => return None
+				};
+				let res = self.initiate_async_payment(&invoice, payment_id);
+				handle_pay_invoice_res!(res, invoice, self.logger);
 			},
 			OffersMessage::InvoiceError(invoice_error) => {
 				let payment_hash = match context {
 					Some(OffersContext::InboundPayment { payment_hash, nonce, hmac }) => {
-						match payment_hash.verify(hmac, nonce, expanded_key) {
+						match payment_hash.verify_for_offer_payment(hmac, nonce, expanded_key) {
 							Ok(_) => Some(payment_hash),
 							Err(_) => None,
 						}
@@ -11057,7 +11195,7 @@ where
 
 				match context {
 					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if let Ok(()) = payment_id.verify(hmac, nonce, expanded_key) {
+						if let Ok(()) = payment_id.verify_for_offer_payment(hmac, nonce, expanded_key) {
 							self.abandon_payment_with_reason(
 								payment_id, PaymentFailureReason::InvoiceRequestRejected,
 							);
@@ -11094,10 +11232,20 @@ where
 		None
 	}
 
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc) {}
+	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
+		#[cfg(async_payments)] {
+			let AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } = _context;
+			if payment_id.verify_for_async_payment(hmac, nonce, &self.inbound_payment_key).is_err() { return }
+			if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
+				log_trace!(
+					self.logger, "Failed to release held HTLC with payment id {}: {:?}", payment_id, e
+				);
+			}
+		}
+	}
 
 	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
-		Vec::new()
+		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
 	}
 }
 
@@ -11718,6 +11866,7 @@ where
 				}
 				PendingOutboundPayment::AwaitingInvoice { .. } => {},
 				PendingOutboundPayment::InvoiceReceived { .. } => {},
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => {},
 				PendingOutboundPayment::Fulfilled { .. } => {},
 				PendingOutboundPayment::Abandoned { .. } => {},
 			}
@@ -12827,6 +12976,7 @@ where
 			funding_batch_states: Mutex::new(BTreeMap::new()),
 
 			pending_offers_messages: Mutex::new(Vec::new()),
+			pending_async_payments_messages: Mutex::new(Vec::new()),
 
 			pending_broadcast_messages: Mutex::new(Vec::new()),
 

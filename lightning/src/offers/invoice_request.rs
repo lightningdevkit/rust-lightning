@@ -840,6 +840,11 @@ impl InvoiceRequest {
 	invoice_request_accessors!(self, self.contents);
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(self, self, InvoiceBuilder<ExplicitSigningPubkey>);
 	invoice_request_verify_method!(self, Self);
+
+	#[cfg(async_payments)]
+	pub(super) fn bytes(&self) -> &Vec<u8> {
+		&self.bytes
+	}
 }
 
 #[cfg(c_bindings)]
