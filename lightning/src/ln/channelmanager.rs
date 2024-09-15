@@ -801,6 +801,7 @@ pub(super) enum RAACommitmentOrder {
 }
 
 /// Information about a payment which is currently being claimed.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ClaimingPayment {
 	amount_msat: u64,
 	payment_purpose: events::PaymentPurpose,
@@ -1072,11 +1073,35 @@ struct MPPClaimHTLCSource {
 	htlc_id: u64,
 }
 
+impl_writeable_tlv_based!(MPPClaimHTLCSource, {
+	(0, counterparty_node_id, required),
+	(2, funding_txo, required),
+	(4, channel_id, required),
+	(6, htlc_id, required),
+});
+
 #[derive(Debug)]
 pub(crate) struct PendingMPPClaim {
 	channels_without_preimage: Vec<MPPClaimHTLCSource>,
 	channels_with_preimage: Vec<MPPClaimHTLCSource>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+/// When we're claiming a(n MPP) payment, we want to store information about thay payment in the
+/// [`ChannelMonitor`] so that we can replay the claim without any information from the
+/// [`ChannelManager`] at all. This struct stores that information with enough to replay claims
+/// against all MPP parts as well as generate an [`Event::PaymentClaimed`].
+pub(crate) struct PaymentClaimDetails {
+	mpp_parts: Vec<MPPClaimHTLCSource>,
+	/// Use [`ClaimingPayment`] as a stable source of all the fields we need to generate the
+	/// [`Event::PaymentClaimed`].
+	claiming_payment: ClaimingPayment,
+}
+
+impl_writeable_tlv_based!(PaymentClaimDetails, {
+	(0, mpp_parts, required_vec),
+	(2, claiming_payment, required),
+});
 
 #[derive(Clone)]
 pub(crate) struct PendingMPPClaimPointer(Arc<Mutex<PendingMPPClaim>>);
@@ -6675,6 +6700,7 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
+		let claiming_payment;
 		let sources = {
 			let mut claimable_payments = self.claimable_payments.lock().unwrap();
 			if let Some(payment) = claimable_payments.claimable_payments.remove(&payment_hash) {
@@ -6689,7 +6715,7 @@ where
 				}
 
 				let payment_id = payment.inbound_payment_id(&self.inbound_payment_id_secret);
-				let claiming_payment = claimable_payments.pending_claiming_payments
+				claiming_payment = claimable_payments.pending_claiming_payments
 					.entry(payment_hash)
 					.and_modify(|_| {
 						debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
@@ -6708,7 +6734,7 @@ where
 							onion_fields: payment.onion_fields,
 							payment_id: Some(payment_id),
 						}
-					});
+					}).clone();
 
 				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = claiming_payment.onion_fields {
 					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
@@ -6772,26 +6798,27 @@ where
 			return;
 		}
 		if valid_mpp {
+			let mpp_parts: Vec<_> = sources.iter().filter_map(|htlc| {
+				if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
+					Some(MPPClaimHTLCSource {
+						counterparty_node_id: cp_id,
+						funding_txo: htlc.prev_hop.outpoint,
+						channel_id: htlc.prev_hop.channel_id,
+						htlc_id: htlc.prev_hop.htlc_id,
+					})
+				} else {
+					None
+				}
+			}).collect();
 			let pending_mpp_claim_ptr_opt = if sources.len() > 1 {
-				let channels_without_preimage = sources.iter().filter_map(|htlc| {
-					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
-						Some(MPPClaimHTLCSource {
-							counterparty_node_id: cp_id,
-							funding_txo: htlc.prev_hop.outpoint,
-							channel_id: htlc.prev_hop.channel_id,
-							htlc_id: htlc.prev_hop.htlc_id,
-						})
-					} else {
-						None
-					}
-				}).collect();
 				Some(Arc::new(Mutex::new(PendingMPPClaim {
-					channels_without_preimage,
+					channels_without_preimage: mpp_parts.clone(),
 					channels_with_preimage: Vec::new(),
 				})))
 			} else {
 				None
 			};
+			let payment_info = Some(PaymentClaimDetails { mpp_parts, claiming_payment });
 			for htlc in sources {
 				let this_mpp_claim = pending_mpp_claim_ptr_opt.as_ref().and_then(|pending_mpp_claim|
 					if let Some(cp_id) = htlc.prev_hop.counterparty_node_id {
@@ -6807,7 +6834,7 @@ where
 					}
 				});
 				self.claim_funds_from_hop(
-					htlc.prev_hop, payment_preimage,
+					htlc.prev_hop, payment_preimage, payment_info.clone(),
 					|_, definitely_duplicate| {
 						debug_assert!(!definitely_duplicate, "We shouldn't claim duplicatively from a payment");
 						(Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim: this_mpp_claim }), raa_blocker)
@@ -6837,7 +6864,7 @@ where
 		ComplFunc: FnOnce(Option<u64>, bool) -> (Option<MonitorUpdateCompletionAction>, Option<RAAMonitorUpdateBlockingAction>)
 	>(
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
-		completion_action: ComplFunc,
+		payment_info: Option<PaymentClaimDetails>, completion_action: ComplFunc,
 	) {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 
@@ -6871,7 +6898,8 @@ where
 					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
 						let counterparty_node_id = chan.context.get_counterparty_node_id();
 						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						let fulfill_res = chan.get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, &&logger);
+						let fulfill_res =
+							chan.get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, payment_info, &&logger);
 
 						match fulfill_res {
 							UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } => {
@@ -6959,6 +6987,7 @@ where
 			counterparty_node_id: None,
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage,
+				payment_info,
 			}],
 			channel_id: Some(prev_hop.channel_id),
 		};
@@ -7069,7 +7098,7 @@ where
 				let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
 				#[cfg(debug_assertions)]
 				let claiming_chan_funding_outpoint = hop_data.outpoint;
-				self.claim_funds_from_hop(hop_data, payment_preimage,
+				self.claim_funds_from_hop(hop_data, payment_preimage, None,
 					|htlc_claim_value_msat, definitely_duplicate| {
 						let chan_to_release =
 							if let Some(node_id) = next_channel_counterparty_node_id {
@@ -7105,7 +7134,7 @@ where
 											if *funding_txo == claiming_chan_funding_outpoint {
 												assert!(update.updates.iter().any(|upd|
 													if let ChannelMonitorUpdateStep::PaymentPreimage {
-														payment_preimage: update_preimage
+														payment_preimage: update_preimage, ..
 													} = upd {
 														payment_preimage == *update_preimage
 													} else { false }

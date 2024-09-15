@@ -38,7 +38,7 @@ use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
 use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
-use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
+use crate::ln::channelmanager::{HTLCSource, SentHTLCId, PaymentClaimDetails};
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
@@ -546,6 +546,9 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	},
 	PaymentPreimage {
 		payment_preimage: PaymentPreimage,
+		/// If this preimage was from an inbound payment claim, information about the claim should
+		/// be included here to enable claim replay on startup.
+		payment_info: Option<PaymentClaimDetails>,
 	},
 	CommitmentSecret {
 		idx: u64,
@@ -594,6 +597,7 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 	(2, PaymentPreimage) => {
 		(0, payment_preimage, required),
+		(1, payment_info, option),
 	},
 	(3, CommitmentSecret) => {
 		(0, idx, required),
@@ -1502,8 +1506,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	{
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, Some(*payment_hash));
+		// Note that we don't pass any MPP claim parts here. This is generally not okay but in this
+		// case is acceptable as we only call this method from `ChannelManager` deserialization in
+		// cases where we are replaying a claim started on a previous version of LDK.
 		inner.provide_payment_preimage(
-			payment_hash, payment_preimage, broadcaster, fee_estimator, &logger)
+			payment_hash, payment_preimage, &None, broadcaster, fee_estimator, &logger)
 	}
 
 	/// Updates a ChannelMonitor on the basis of some new information provided by the Channel
@@ -2930,12 +2937,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
 	fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(
-		&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage, broadcaster: &B,
+		&mut self, payment_hash: &PaymentHash, payment_preimage: &PaymentPreimage,
+		payment_info: &Option<PaymentClaimDetails>, broadcaster: &B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithChannelMonitor<L>)
 	where B::Target: BroadcasterInterface,
 		    F::Target: FeeEstimator,
 		    L::Target: Logger,
 	{
+		// TODO: Store payment_info (but do not override any existing values)
 		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
 
 		let confirmed_spend_txid = self.funding_spend_confirmed.or_else(|| {
@@ -3139,9 +3148,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					log_trace!(logger, "Updating ChannelMonitor with latest counterparty commitment transaction info");
 					self.provide_latest_counterparty_commitment_tx(*commitment_txid, htlc_outputs.clone(), *commitment_number, *their_per_commitment_point, logger)
 				},
-				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage } => {
+				ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage, payment_info } => {
 					log_trace!(logger, "Updating ChannelMonitor with payment preimage");
-					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()), &payment_preimage, broadcaster, &bounded_fee_estimator, logger)
+					self.provide_payment_preimage(&PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array()), &payment_preimage, payment_info, broadcaster, &bounded_fee_estimator, logger)
 				},
 				ChannelMonitorUpdateStep::CommitmentSecret { idx, secret } => {
 					log_trace!(logger, "Updating ChannelMonitor with commitment secret");
@@ -5097,8 +5106,12 @@ mod tests {
 		assert_eq!(replay_update.updates.len(), 1);
 		if let ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. } = replay_update.updates[0] {
 		} else { panic!(); }
-		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage: payment_preimage_1 });
-		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage { payment_preimage: payment_preimage_2 });
+		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage {
+			payment_preimage: payment_preimage_1, payment_info: None,
+		});
+		replay_update.updates.push(ChannelMonitorUpdateStep::PaymentPreimage {
+			payment_preimage: payment_preimage_2, payment_info: None,
+		});
 
 		let broadcaster = TestBroadcaster::with_blocks(Arc::clone(&nodes[1].blocks));
 		assert!(
