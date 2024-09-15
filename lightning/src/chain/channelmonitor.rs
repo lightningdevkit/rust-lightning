@@ -1501,7 +1501,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// This is used to provide payment preimage(s) out-of-band during startup without updating the
 	/// off-chain state with a new commitment transaction.
-	pub(crate) fn provide_payment_preimage<B: Deref, F: Deref, L: Deref>(
+	///
+	/// It is used only for legacy (created prior to LDK 0.1) pending payments on upgrade, and the
+	/// flow that uses it assumes that this [`ChannelMonitor`] is persisted prior to the
+	/// [`ChannelManager`] being persisted (as the state necessary to call this method again is
+	/// removed from the [`ChannelManager`] and thus a persistence inversion would imply we do not
+	/// get the preimage back into this [`ChannelMonitor`] on startup).
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	pub(crate) fn provide_payment_preimage_unsafe_legacy<B: Deref, F: Deref, L: Deref>(
 		&self,
 		payment_hash: &PaymentHash,
 		payment_preimage: &PaymentPreimage,
@@ -5279,7 +5287,9 @@ mod tests {
 			preimages_slice_to_htlc_outputs!(preimages[15..20]), 281474976710654, dummy_key, &logger);
 		for &(ref preimage, ref hash) in preimages.iter() {
 			let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
-			monitor.provide_payment_preimage(hash, preimage, &broadcaster, &bounded_fee_estimator, &logger);
+			monitor.provide_payment_preimage_unsafe_legacy(
+				hash, preimage, &broadcaster, &bounded_fee_estimator, &logger
+			);
 		}
 
 		// Now provide a secret, pruning preimages 10-15

@@ -674,7 +674,7 @@ fn test_htlc_preimage_claim_holder_commitment_after_counterparty_commitment_reor
 
 	// Provide the preimage now, such that we only claim from the holder commitment (since it's
 	// currently confirmed) and not the counterparty's.
-	get_monitor!(nodes[1], chan_id).provide_payment_preimage(
+	get_monitor!(nodes[1], chan_id).provide_payment_preimage_unsafe_legacy(
 		&payment_hash, &payment_preimage, &nodes[1].tx_broadcaster,
 		&LowerBoundedFeeEstimator(nodes[1].fee_estimator), &nodes[1].logger
 	);
@@ -749,7 +749,7 @@ fn test_htlc_preimage_claim_prev_counterparty_commitment_after_current_counterpa
 
 	// Provide the preimage now, such that we only claim from the previous commitment (since it's
 	// currently confirmed) and not the latest.
-	get_monitor!(nodes[1], chan_id).provide_payment_preimage(
+	get_monitor!(nodes[1], chan_id).provide_payment_preimage_unsafe_legacy(
 		&payment_hash, &payment_preimage, &nodes[1].tx_broadcaster,
 		&LowerBoundedFeeEstimator(nodes[1].fee_estimator), &nodes[1].logger
 	);

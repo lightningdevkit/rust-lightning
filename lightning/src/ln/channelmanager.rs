@@ -13284,11 +13284,28 @@ where
 								let peer_state = &mut *peer_state_lock;
 								if let Some(ChannelPhase::Funded(channel)) = peer_state.channel_by_id.get_mut(&previous_channel_id) {
 									let logger = WithChannelContext::from(&channel_manager.logger, &channel.context, Some(payment_hash));
-									channel.claim_htlc_while_disconnected_dropping_mon_update(claimable_htlc.prev_hop.htlc_id, payment_preimage, &&logger);
+									channel.claim_htlc_while_disconnected_dropping_mon_update_legacy(
+										claimable_htlc.prev_hop.htlc_id, payment_preimage, &&logger
+									);
 								}
 							}
 							if let Some(previous_hop_monitor) = args.channel_monitors.get(&claimable_htlc.prev_hop.outpoint) {
-								previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &channel_manager.tx_broadcaster, &channel_manager.fee_estimator, &channel_manager.logger);
+								// Note that this is unsafe as we no longer require the
+								// `ChannelMonitor`s to be re-persisted prior to this
+								// `ChannelManager` being persisted after we get started running.
+								// If this `ChannelManager` gets persisted first then we crash, we
+								// won't have the `claimable_payments` entry we need to re-enter
+								// this code block, causing us to not re-apply the preimage to this
+								// `ChannelMonitor`.
+								//
+								// We should never be here with modern payment claims, however, as
+								// they should always include the HTLC list. Instead, this is only
+								// for nodes during upgrade, and we explicitly require the old
+								// persistence semantics on upgrade in the release notes.
+								previous_hop_monitor.provide_payment_preimage_unsafe_legacy(
+									&payment_hash, &payment_preimage, &channel_manager.tx_broadcaster,
+									&channel_manager.fee_estimator, &channel_manager.logger
+								);
 							}
 						}
 						let mut pending_events = channel_manager.pending_events.lock().unwrap();

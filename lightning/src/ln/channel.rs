@@ -4027,12 +4027,14 @@ impl<SP: Deref> Channel<SP> where
 	/// Claims an HTLC while we're disconnected from a peer, dropping the [`ChannelMonitorUpdate`]
 	/// entirely.
 	///
+	/// This is only used for payments received prior to LDK 0.1.
+	///
 	/// The [`ChannelMonitor`] for this channel MUST be updated out-of-band with the preimage
 	/// provided (i.e. without calling [`crate::chain::Watch::update_channel`]).
 	///
 	/// The HTLC claim will end up in the holding cell (because the caller must ensure the peer is
 	/// disconnected).
-	pub fn claim_htlc_while_disconnected_dropping_mon_update<L: Deref>
+	pub fn claim_htlc_while_disconnected_dropping_mon_update_legacy<L: Deref>
 		(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage, logger: &L)
 	where L::Target: Logger {
 		// Assert that we'll add the HTLC claim to the holding cell in `get_update_fulfill_htlc`

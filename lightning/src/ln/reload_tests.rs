@@ -1041,8 +1041,10 @@ fn do_forwarded_payment_no_manager_persistence(use_cs_commitment: bool, claim_ht
 	check_added_monitors!(nodes[2], 1);
 
 	if claim_htlc {
-		get_monitor!(nodes[2], chan_id_2).provide_payment_preimage(&payment_hash, &payment_preimage,
-			&nodes[2].tx_broadcaster, &LowerBoundedFeeEstimator(nodes[2].fee_estimator), &nodes[2].logger);
+		get_monitor!(nodes[2], chan_id_2).provide_payment_preimage_unsafe_legacy(
+			&payment_hash, &payment_preimage, &nodes[2].tx_broadcaster,
+			&LowerBoundedFeeEstimator(nodes[2].fee_estimator), &nodes[2].logger
+		);
 	}
 	assert!(nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
 
