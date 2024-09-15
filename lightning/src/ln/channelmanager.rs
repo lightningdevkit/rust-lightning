@@ -6962,7 +6962,16 @@ where
 							UpdateFulfillCommitFetch::DuplicateClaim {} => {
 								let (action_opt, raa_blocker_opt) = completion_action(None, true);
 								if let Some(raa_blocker) = raa_blocker_opt {
-									debug_assert!(peer_state.actions_blocking_raa_monitor_updates.get(&chan_id).unwrap().contains(&raa_blocker));
+									// If we're making a claim during startup, its a replay of a
+									// payment claim from a `ChannelMonitor`. In some cases (MPP or
+									// if the HTLC was only recently removed) we make such claims
+									// after an HTLC has been removed from a channel entirely, and
+									// thus the RAA blocker has long since completed.
+									//
+									// In any other case, the RAA blocker must still be present and
+									// blocking RAAs.
+									debug_assert!(during_init ||
+										peer_state.actions_blocking_raa_monitor_updates.get(&chan_id).unwrap().contains(&raa_blocker));
 								}
 								let action = if let Some(action) = action_opt {
 									action
@@ -6974,38 +6983,41 @@ where
 
 								log_trace!(logger, "Completing monitor update completion action for channel {} as claim was redundant: {:?}",
 									chan_id, action);
-								let (node_id, _funding_outpoint, channel_id, blocker) =
 								if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
 									downstream_counterparty_node_id: node_id,
-									downstream_funding_outpoint: funding_outpoint,
+									downstream_funding_outpoint: _,
 									blocking_action: blocker, downstream_channel_id: channel_id,
 								} = action {
-									(node_id, funding_outpoint, channel_id, blocker)
+									if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
+										let mut peer_state = peer_state_mtx.lock().unwrap();
+										if let Some(blockers) = peer_state
+											.actions_blocking_raa_monitor_updates
+											.get_mut(&channel_id)
+										{
+											let mut found_blocker = false;
+											blockers.retain(|iter| {
+												// Note that we could actually be blocked, in
+												// which case we need to only remove the one
+												// blocker which was added duplicatively.
+												let first_blocker = !found_blocker;
+												if *iter == blocker { found_blocker = true; }
+												*iter != blocker || !first_blocker
+											});
+											debug_assert!(found_blocker);
+										}
+									} else {
+										debug_assert!(false);
+									}
+								} else if matches!(action, MonitorUpdateCompletionAction::PaymentClaimed { .. }) {
+									debug_assert!(during_init,
+										"Duplicate claims should always either be for forwarded payments(freeing another channel immediately) or during init (for claim replay)");
+									mem::drop(per_peer_state);
+									self.handle_monitor_update_completion_actions([action]);
 								} else {
 									debug_assert!(false,
-										"Duplicate claims should always free another channel immediately");
+										"Duplicate claims should always either be for forwarded payments(freeing another channel immediately) or during init (for claim replay)");
 									return;
 								};
-								if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
-									let mut peer_state = peer_state_mtx.lock().unwrap();
-									if let Some(blockers) = peer_state
-										.actions_blocking_raa_monitor_updates
-										.get_mut(&channel_id)
-									{
-										let mut found_blocker = false;
-										blockers.retain(|iter| {
-											// Note that we could actually be blocked, in
-											// which case we need to only remove the one
-											// blocker which was added duplicatively.
-											let first_blocker = !found_blocker;
-											if *iter == blocker { found_blocker = true; }
-											*iter != blocker || !first_blocker
-										});
-										debug_assert!(found_blocker);
-									}
-								} else {
-									debug_assert!(false);
-								}
 							}
 						}
 					}
