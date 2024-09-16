@@ -923,7 +923,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// preimages that are not included in any unrevoked local commitment transaction or unrevoked
 	/// remote commitment transactions are automatically removed when commitment transactions are
 	/// revoked.
-	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
+	payment_preimages: HashMap<PaymentHash, (PaymentPreimage, Vec<PaymentClaimDetails>)>,
 
 	// Note that `MonitorEvent`s MUST NOT be generated during update processing, only generated
 	// during chain data processing. This prevents a race in `ChainMonitor::update_channel` (and
@@ -1149,7 +1149,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 		writer.write_all(&byte_utils::be48_to_array(self.current_holder_commitment_number))?;
 
 		writer.write_all(&(self.payment_preimages.len() as u64).to_be_bytes())?;
-		for payment_preimage in self.payment_preimages.values() {
+		for (payment_preimage, _) in self.payment_preimages.values() {
 			writer.write_all(&payment_preimage.0[..])?;
 		}
 
@@ -1227,6 +1227,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(19, self.channel_id, required),
 			(21, self.balances_empty_height, option),
 			(23, self.holder_pays_commitment_tx_fee, option),
+			(25, self.payment_preimages, required),
 		});
 
 		Ok(())
@@ -2200,7 +2201,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					outbound_payment,
 				});
 			}
-		} else if let Some(payment_preimage) = self.payment_preimages.get(&htlc.payment_hash) {
+		} else if let Some((payment_preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) {
 			// Otherwise (the payment was inbound), only expose it as claimable if
 			// we know the preimage.
 			// Note that if there is a pending claim, but it did not use the
@@ -2421,7 +2422,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 							outbound_payment,
 						});
 					}
-				} else if us.payment_preimages.get(&htlc.payment_hash).is_some() {
+				} else if us.payment_preimages.contains_key(&htlc.payment_hash) {
 					inbound_claiming_htlc_rounded_msat += rounded_value_msat;
 					if htlc.transaction_output_index.is_some() {
 						claimable_inbound_htlc_value_sat += htlc.amount_msat / 1000;
@@ -2576,7 +2577,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		res
 	}
 
-	pub(crate) fn get_stored_preimages(&self) -> HashMap<PaymentHash, PaymentPreimage> {
+	pub(crate) fn get_stored_preimages(&self) -> HashMap<PaymentHash, (PaymentPreimage, Vec<PaymentClaimDetails>)> {
 		self.inner.lock().unwrap().payment_preimages.clone()
 	}
 }
@@ -2943,8 +2944,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		    F::Target: FeeEstimator,
 		    L::Target: Logger,
 	{
-		// TODO: Store payment_info (but do not override any existing values)
-		self.payment_preimages.insert(payment_hash.clone(), payment_preimage.clone());
+		self.payment_preimages.entry(payment_hash.clone())
+			.and_modify(|(_, payment_infos)| {
+				if let Some(payment_info) = payment_info {
+					if !payment_infos.contains(&payment_info) {
+						payment_infos.push(payment_info.clone());
+					}
+				}
+			})
+			.or_insert_with(|| {
+				(payment_preimage.clone(), payment_info.clone().into_iter().collect())
+			});
 
 		let confirmed_spend_txid = self.funding_spend_confirmed.or_else(|| {
 			self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
@@ -3592,7 +3602,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							return (claimable_outpoints, to_counterparty_output_info);
 						}
 				}
-				let preimage = if htlc.offered { if let Some(p) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
+				let preimage = if htlc.offered { if let Some((p, _)) = self.payment_preimages.get(&htlc.payment_hash) { Some(*p) } else { None } } else { None };
 				if preimage.is_some() || !htlc.offered {
 					let counterparty_htlc_outp = if htlc.offered {
 						PackageSolvingData::CounterpartyOfferedHTLCOutput(
@@ -3680,7 +3690,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					);
 					htlc_output
 				} else {
-					let payment_preimage = if let Some(preimage) = self.payment_preimages.get(&htlc.payment_hash) {
+					let payment_preimage = if let Some((preimage, _)) = self.payment_preimages.get(&htlc.payment_hash) {
 						preimage.clone()
 					} else {
 						// We can't build an HTLC-Success transaction without the preimage
@@ -3834,7 +3844,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		for htlc in self.current_holder_commitment_tx.htlc_outputs.iter() {
 			if let Some(vout) = htlc.0.transaction_output_index {
 				let preimage = if !htlc.0.offered {
-					if let Some(preimage) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(preimage.clone()) } else {
+					if let Some((preimage, _)) = self.payment_preimages.get(&htlc.0.payment_hash) { Some(preimage.clone()) } else {
 						// We can't build an HTLC-Success transaction without the preimage
 						continue;
 					}
@@ -4807,7 +4817,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		for _ in 0..payment_preimages_len {
 			let preimage: PaymentPreimage = Readable::read(reader)?;
 			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
-			if let Some(_) = payment_preimages.insert(hash, preimage) {
+			if let Some(_) = payment_preimages.insert(hash, (preimage, Vec::new())) {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -4890,6 +4900,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut balances_empty_height = None;
 		let mut channel_id = None;
 		let mut holder_pays_commitment_tx_fee = None;
+		let mut payment_preimages_with_info: Option<HashMap<_, _>> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -4903,7 +4914,24 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(19, channel_id, option),
 			(21, balances_empty_height, option),
 			(23, holder_pays_commitment_tx_fee, option),
+			(25, payment_preimages_with_info, option),
 		});
+		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
+			if payment_preimages_with_info.len() != payment_preimages.len() {
+				return Err(DecodeError::InvalidValue);
+			}
+			for (payment_hash, (payment_preimage, _)) in payment_preimages.iter() {
+				// Note that because `payment_preimages` is built back from preimages directly,
+				// checking that the two maps have the same hash -> preimage pairs also checks that
+				// the payment hashes in `payment_preimages_with_info`'s preimages match its
+				// hashes.
+				let new_preimage = payment_preimages_with_info.get(payment_hash).map(|(p, _)| p);
+				if new_preimage != Some(payment_preimage) {
+					return Err(DecodeError::InvalidValue);
+				}
+			}
+			payment_preimages = payment_preimages_with_info;
+		}
 
 		// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. If we have both
 		// events, we can remove the `HolderForceClosed` event and just keep the `HolderForceClosedWithInfo`.
