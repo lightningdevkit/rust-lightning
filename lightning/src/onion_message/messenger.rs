@@ -394,7 +394,7 @@ pub struct ResponseInstruction {
 }
 
 impl ResponseInstruction {
-	fn into_instructions(self) -> MessageSendInstructions {
+	pub(crate) fn into_instructions(self) -> MessageSendInstructions {
 		MessageSendInstructions::ForReply { instructions: self }
 	}
 }

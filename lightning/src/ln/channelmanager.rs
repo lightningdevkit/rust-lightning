@@ -4463,6 +4463,91 @@ where
 		}
 	}
 
+	/// Sends a response for a received [`InvoiceRequest`].
+	///
+	/// The received [`InvoiceRequest`] is first verified to ensure it was created for an
+	/// offer corresponding to the given expanded key. After authentication, the appropriate
+	/// builders are called to generate the response.
+	///
+	/// Response generation may result in errors in a few cases:
+	///
+	/// - If there are semantic issues with the received messages, a
+	/// [`Bolt12ResponseError::SemanticError`] is generated, for which a corresponding
+	/// [`InvoiceError`] is created.
+	///
+	/// - If verification of the received [`InvoiceRequest`] fails, a
+	/// [`Bolt12ResponseError::VerificationError`] is generated. In this case, no
+	/// [`InvoiceError`] is created to prevent probing attacks by potential attackers.
+	///
+	/// ## Custom Amount:
+	/// The received [`InvoiceRequest`] might not contain the corresponding amount.
+	/// In such cases, the user may provide their custom amount in millisatoshis (msats).
+	/// If the user chooses not to, the builder defaults to using the amount specified in the Offers.
+	///
+	/// However, if the received [`InvoiceRequest`] does contain an amount, a custom amount must
+	/// not be provided. Doing so will result in a [`Bolt12ResponseError::UnexpectedAmount`].
+	///
+	/// ## Currency:
+	/// The corresponding [`Offer`] for the received [`InvoiceRequest`] might be denominated
+	/// in [`Amount::Currency`].
+	/// If that is the case, the user must ensure the following:
+	///
+	/// - If the `InvoiceRequest` contains an amount (denominated in [`Amount::Bitcoin`]),
+	/// it should be checked that it appropriately pays for the amount and quantity specified
+	/// within the corresponding [`Offer`].
+	///
+	/// - If the `InvoiceRequest` does not contain an amount, an appropriate custom amount
+	/// should be provided to create the corresponding [`Bolt12Invoice`] for the response.
+	///
+	/// To retry, the user can reuse the same [`InvoiceRequest`] to generate the appropriate
+	/// response.
+	///
+	/// [`Amount::Bitcoin`]: crate::offers::offer::Amount::Bitcoin
+	/// [`Amount::Currency`]: crate::offers::offer::Amount::Currency
+	pub fn send_invoice_request_response(
+		&self, invoice_request: InvoiceRequest, context: Option<OffersContext>,
+		custom_amount_msat: Option<u64>, responder: Responder
+	) -> Result<(), Bolt12ResponseError> {
+		let result = self.get_response_for_invoice_request(invoice_request, context, custom_amount_msat);
+		let mut pending_offers_message = self.pending_offers_messages.lock().unwrap();
+
+		match result {
+			Ok((response, payment_hash)) => {
+				match response {
+					OffersMessage::Invoice(invoice) => {
+						let nonce = Nonce::from_entropy_source(&*self.entropy_source);
+						let hmac = payment_hash.hmac_for_offer_payment(nonce, &self.inbound_payment_key);
+						let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash: invoice.payment_hash(), nonce, hmac });
+						let instructions = responder.respond_with_reply_path(context).into_instructions();
+						let message = OffersMessage::Invoice(invoice);
+
+						pending_offers_message.push((message, instructions))
+					},
+					_ => {
+						let instructions = responder.respond().into_instructions();
+
+						pending_offers_message.push((response, instructions))
+					}
+				}
+			}
+			Err(error) => {
+				match error {
+					Bolt12ResponseError::SemanticError(error) => {
+						let invoice_error = InvoiceError::from(error);
+						let message = OffersMessage::InvoiceError(invoice_error);
+
+						let instructions = responder.respond().into_instructions();
+
+						pending_offers_message.push((message, instructions))
+					}
+					_ => return Err(error),
+				}
+			}
+		};
+
+		Ok(())
+	}
+
 	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId
