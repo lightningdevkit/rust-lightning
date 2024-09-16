@@ -2614,6 +2614,17 @@ pub enum RecentPaymentDetails {
 	},
 }
 
+/// Error during responding to Bolt12 Messages.
+pub enum Bolt12ResponseError {
+	/// Error from  BOLT 12 semantic checks.
+	SemanticError(Bolt12SemanticError),
+	/// Error from failed verification of received [`OffersMessage`]
+	VerificationError,
+	/// Error generated when custom amount is provided when [`InvoiceRequest`] already
+	/// contains amount.
+	UnexpectedAmount
+}
+
 /// Route hints used in constructing invoices for [phantom node payents].
 ///
 /// [phantom node payments]: crate::sign::PhantomKeysManager
