@@ -17,7 +17,6 @@
 ./lightning/src/chain/onchaintx.rs
 ./lightning/src/chain/package.rs
 ./lightning/src/chain/transaction.rs
-./lightning/src/crypto/chacha20poly1305rfc.rs
 ./lightning/src/crypto/mod.rs
 ./lightning/src/crypto/poly1305.rs
 ./lightning/src/crypto/streams.rs
