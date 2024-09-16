@@ -18,7 +18,6 @@
 ./lightning/src/chain/package.rs
 ./lightning/src/chain/transaction.rs
 ./lightning/src/crypto/mod.rs
-./lightning/src/crypto/poly1305.rs
 ./lightning/src/crypto/streams.rs
 ./lightning/src/crypto/utils.rs
 ./lightning/src/events/bump_transaction.rs
