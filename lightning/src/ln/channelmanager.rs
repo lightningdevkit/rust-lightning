@@ -12987,7 +12987,7 @@ where
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(args.fee_estimator);
 
 		for (_, monitor) in args.channel_monitors.iter() {
-			for (payment_hash, payment_preimage) in monitor.get_stored_preimages() {
+			for (payment_hash, (payment_preimage, _)) in monitor.get_stored_preimages() {
 				if let Some(payment) = claimable_payments.remove(&payment_hash) {
 					log_info!(args.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", &payment_hash);
 					let mut claimable_amt_msat = 0;
