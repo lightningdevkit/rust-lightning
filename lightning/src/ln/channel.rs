@@ -954,29 +954,27 @@ pub(crate) struct ShutdownResult {
 /// commitment points from our signer.
 #[derive(Debug, Copy, Clone)]
 enum HolderCommitmentPoint {
-	// TODO: add a variant for before our first commitment point is retrieved
 	/// We've advanced our commitment number and are waiting on the next commitment point.
-	/// Until the `get_per_commitment_point` signer method becomes async, this variant
-	/// will not be used.
+	///
+	/// We should retry advancing to `Available` via `try_resolve_pending` once our
+	/// signer is ready to provide the next commitment point.
 	PendingNext { transaction_number: u64, current: PublicKey },
-	/// Our current commitment point is ready, we've cached our next point,
-	/// and we are not pending a new one.
+	/// Our current commitment point is ready and we've cached our next point.
 	Available { transaction_number: u64, current: PublicKey, next: PublicKey },
 }
 
 impl HolderCommitmentPoint {
-	pub fn new<SP: Deref>(signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>) -> Self
+	pub fn new<SP: Deref>(signer: &ChannelSignerType<SP>, secp_ctx: &Secp256k1<secp256k1::All>) -> Option<Self>
 		where SP::Target: SignerProvider
 	{
-		HolderCommitmentPoint::Available {
-			transaction_number: INITIAL_COMMITMENT_NUMBER,
-			// TODO(async_signing): remove this expect with the Uninitialized variant
-			current: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx)
-				.expect("Signer must be able to provide initial commitment point"),
-			// TODO(async_signing): remove this expect with the Uninitialized variant
-			next: signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx)
-				.expect("Signer must be able to provide second commitment point"),
-		}
+		let current = signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER, secp_ctx).ok()?;
+		let next = signer.as_ref().get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, secp_ctx).ok();
+		let point = if let Some(next) = next {
+			HolderCommitmentPoint::Available { transaction_number: INITIAL_COMMITMENT_NUMBER, current, next }
+		} else {
+			HolderCommitmentPoint::PendingNext { transaction_number: INITIAL_COMMITMENT_NUMBER, current }
+		};
+		Some(point)
 	}
 
 	pub fn is_available(&self) -> bool {
@@ -1169,6 +1167,8 @@ pub(super) struct UnfundedChannelContext {
 	/// This is so that we don't keep channels around that haven't progressed to a funded state
 	/// in a timely manner.
 	unfunded_channel_age_ticks: usize,
+	/// Tracks the commitment number and commitment point before the channel is funded.
+	holder_commitment_point: Option<HolderCommitmentPoint>,
 }
 
 impl UnfundedChannelContext {
@@ -1179,6 +1179,11 @@ impl UnfundedChannelContext {
 	pub fn should_expire_unfunded_channel(&mut self) -> bool {
 		self.unfunded_channel_age_ticks += 1;
 		self.unfunded_channel_age_ticks >= UNFUNDED_CHANNEL_AGE_LIMIT_TICKS
+	}
+
+	fn transaction_number(&self) -> u64 {
+		self.holder_commitment_point.as_ref().map(|point| point.transaction_number())
+			.unwrap_or(INITIAL_COMMITMENT_NUMBER)
 	}
 }
 
@@ -1501,7 +1506,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// The `next_funding_txid` field allows peers to finalize the signing steps of an interactive
 	// transaction construction, or safely abort that transaction if it was not signed by one of the
 	// peers, who has thus already removed it from its state.
-	// 
+	//
 	// If we've sent `commtiment_signed` for an interactively constructed transaction
 	// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
 	// to the txid of that interactive transaction, else we MUST NOT set it.
@@ -2058,7 +2063,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let value_to_self_msat = our_funding_satoshis * 1000 + msg_push_msat;
 
 		let holder_signer = ChannelSignerType::Ecdsa(holder_signer);
-		let holder_commitment_point = HolderCommitmentPoint::new(&holder_signer, &secp_ctx);
+		// Unwrap here since it gets removed in the next commit
+		let holder_commitment_point = HolderCommitmentPoint::new(&holder_signer, &secp_ctx).unwrap();
 
 		// TODO(dual_funding): Checks for `funding_feerate_sat_per_1000_weight`?
 
@@ -2297,7 +2303,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		let temporary_channel_id = temporary_channel_id.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
 		let holder_signer = ChannelSignerType::Ecdsa(holder_signer);
-		let holder_commitment_point = HolderCommitmentPoint::new(&holder_signer, &secp_ctx);
+		// Unwrap here since it gets removed in the next commit
+		let holder_commitment_point = HolderCommitmentPoint::new(&holder_signer, &secp_ctx).unwrap();
 
 		Ok(Self {
 			user_id,
@@ -4206,6 +4213,7 @@ pub(super) struct DualFundingChannelContext {
 pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
+	holder_commitment_point: HolderCommitmentPoint,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -8267,28 +8275,31 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
 		let pubkeys = holder_signer.pubkeys().clone();
 
-		let chan = Self {
-			context: ChannelContext::new_for_outbound_channel(
-				fee_estimator,
-				entropy_source,
-				signer_provider,
-				counterparty_node_id,
-				their_features,
-				channel_value_satoshis,
-				push_msat,
-				user_id,
-				config,
-				current_chain_height,
-				outbound_scid_alias,
-				temporary_channel_id,
-				holder_selected_channel_reserve_satoshis,
-				channel_keys_id,
-				holder_signer,
-				pubkeys,
-				logger,
-			)?,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
+		let context = ChannelContext::new_for_outbound_channel(
+			fee_estimator,
+			entropy_source,
+			signer_provider,
+			counterparty_node_id,
+			their_features,
+			channel_value_satoshis,
+			push_msat,
+			user_id,
+			config,
+			current_chain_height,
+			outbound_scid_alias,
+			temporary_channel_id,
+			holder_selected_channel_reserve_satoshis,
+			channel_keys_id,
+			holder_signer,
+			pubkeys,
+			logger,
+		)?;
+		let unfunded_context = UnfundedChannelContext {
+			unfunded_channel_age_ticks: 0,
+			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
+
+		let chan = Self { context, unfunded_context };
 		Ok(chan)
 	}
 
@@ -8480,9 +8491,11 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		log_info!(logger, "Received funding_signed from peer for channel {}", &self.context.channel_id());
 
+		let holder_commitment_point = self.context.holder_commitment_point;
 		let mut channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: None,
+			holder_commitment_point,
 		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
@@ -8570,29 +8583,31 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			htlc_basepoint: HtlcBasepoint::from(msg.common_fields.htlc_basepoint)
 		};
 
-		let chan = Self {
-			context: ChannelContext::new_for_inbound_channel(
-				fee_estimator,
-				entropy_source,
-				signer_provider,
-				counterparty_node_id,
-				their_features,
-				user_id,
-				config,
-				current_chain_height,
-				&&logger,
-				is_0conf,
-				0,
+		let context = ChannelContext::new_for_inbound_channel(
+			fee_estimator,
+			entropy_source,
+			signer_provider,
+			counterparty_node_id,
+			their_features,
+			user_id,
+			config,
+			current_chain_height,
+			&&logger,
+			is_0conf,
+			0,
 
-				counterparty_pubkeys,
-				channel_type,
-				holder_selected_channel_reserve_satoshis,
-				msg.channel_reserve_satoshis,
-				msg.push_msat,
-				msg.common_fields.clone(),
-			)?,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			counterparty_pubkeys,
+			channel_type,
+			holder_selected_channel_reserve_satoshis,
+			msg.channel_reserve_satoshis,
+			msg.push_msat,
+			msg.common_fields.clone(),
+		)?;
+		let unfunded_context = UnfundedChannelContext {
+			unfunded_channel_age_ticks: 0,
+			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
 		};
+		let chan = Self { context, unfunded_context };
 		Ok(chan)
 	}
 
@@ -8705,9 +8720,11 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 
 		// Promote the channel to a full-fledged one now that we have updated the state and have a
 		// `ChannelMonitor`.
+		let holder_commitment_point = self.context.holder_commitment_point;
 		let mut channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: None,
+			holder_commitment_point,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
@@ -8754,27 +8771,32 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 					"Provided current chain height of {} doesn't make sense for a height-based timelock for the funding transaction",
 					current_chain_height) })?;
 
+		let context = ChannelContext::new_for_outbound_channel(
+			fee_estimator,
+			entropy_source,
+			signer_provider,
+			counterparty_node_id,
+			their_features,
+			funding_satoshis,
+			0,
+			user_id,
+			config,
+			current_chain_height,
+			outbound_scid_alias,
+			temporary_channel_id,
+			holder_selected_channel_reserve_satoshis,
+			channel_keys_id,
+			holder_signer,
+			pubkeys,
+			logger,
+		)?;
+		let unfunded_context = UnfundedChannelContext {
+			unfunded_channel_age_ticks: 0,
+			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
+		};
 		let chan = Self {
-			context: ChannelContext::new_for_outbound_channel(
-				fee_estimator,
-				entropy_source,
-				signer_provider,
-				counterparty_node_id,
-				their_features,
-				funding_satoshis,
-				0,
-				user_id,
-				config,
-				current_chain_height,
-				outbound_scid_alias,
-				temporary_channel_id,
-				holder_selected_channel_reserve_satoshis,
-				channel_keys_id,
-				holder_signer,
-				pubkeys,
-				logger,
-			)?,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			context,
+			unfunded_context,
 			dual_funding_context: DualFundingChannelContext {
 				our_funding_satoshis: funding_satoshis,
 				funding_tx_locktime,
@@ -8850,9 +8872,13 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
+		let holder_commitment_point = self.unfunded_context.holder_commitment_point.ok_or(ChannelError::close(
+			format!("Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
+			self.context.channel_id())))?;
 		let channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: Some(signing_session),
+			holder_commitment_point,
 		};
 
 		Ok(channel)
@@ -8963,11 +8989,15 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
 		)))?);
 
+		let unfunded_context = UnfundedChannelContext {
+			unfunded_channel_age_ticks: 0,
+			holder_commitment_point: HolderCommitmentPoint::new(&context.holder_signer, &context.secp_ctx),
+		};
 		Ok(Self {
 			context,
 			dual_funding_context,
 			interactive_tx_constructor,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			unfunded_context,
 		})
 	}
 
@@ -9044,9 +9074,13 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
+		let holder_commitment_point = self.unfunded_context.holder_commitment_point.ok_or(ChannelError::close(
+			format!("Expected to have holder commitment points available upon finishing interactive tx construction for channel {}",
+			self.context.channel_id())))?;
 		let channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: Some(signing_session),
+			holder_commitment_point,
 		};
 
 		Ok(channel)
@@ -10125,6 +10159,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				next_funding_txid,
 			},
 			interactive_tx_signing_session: None,
+			holder_commitment_point,
 		})
 	}
 }
