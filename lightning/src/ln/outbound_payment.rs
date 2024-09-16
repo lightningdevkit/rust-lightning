@@ -2121,6 +2121,41 @@ impl OutboundPayments {
 		self.awaiting_invoice.store(false, Ordering::Release);
 		invoice_requests
 	}
+
+	pub(super) fn insert_from_monitor_on_startup<L: Logger>(
+		&self, payment_id: PaymentId, payment_hash: PaymentHash, session_priv_bytes: [u8; 32],
+		path: &Path, best_block_height: u32, logger: L
+	) {
+		let path_amt = path.final_value_msat();
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(mut entry) => {
+				let newly_added = entry.get_mut().insert(session_priv_bytes, &path);
+				log_info!(logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
+					if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), payment_hash);
+			},
+			hash_map::Entry::Vacant(entry) => {
+				let path_fee = path.fee_msat();
+				entry.insert(PendingOutboundPayment::Retryable {
+					retry_strategy: None,
+					attempts: PaymentAttempts::new(),
+					payment_params: None,
+					session_privs: hash_set_from_iter([session_priv_bytes]),
+					payment_hash,
+					payment_secret: None, // only used for retries, and we'll never retry on startup
+					payment_metadata: None, // only used for retries, and we'll never retry on startup
+					keysend_preimage: None, // only used for retries, and we'll never retry on startup
+					custom_tlvs: Vec::new(), // only used for retries, and we'll never retry on startup
+					pending_amt_msat: path_amt,
+					pending_fee_msat: Some(path_fee),
+					total_msat: path_amt,
+					starting_block_height: best_block_height,
+					remaining_max_total_routing_fee_msat: None, // only used for retries, and we'll never retry on startup
+				});
+				log_info!(logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
+					path_amt, payment_hash,  log_bytes!(session_priv_bytes));
+			}
+		}
+	}
 }
 
 /// Returns whether a payment with the given [`PaymentHash`] and [`PaymentId`] is, in fact, a
