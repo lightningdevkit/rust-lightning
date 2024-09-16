@@ -899,6 +899,73 @@ struct ClaimablePayments {
 	pending_claiming_payments: HashMap<PaymentHash, ClaimingPayment>,
 }
 
+impl ClaimablePayments {
+	/// Moves a payment from [`Self::claimable_payments`] to [`Self::pending_claiming_payments`].
+	///
+	/// If `custom_tlvs_known` is false and custom even TLVs are set by the sender, the set of
+	/// pending HTLCs will be returned in the `Err` variant of this method. They MUST then be
+	/// failed by the caller as they will not be in either [`Self::claimable_payments`] or
+	/// [`Self::pending_claiming_payments`].
+	///
+	/// If `custom_tlvs_known` is true, and a matching payment is found, it will always be moved.
+	///
+	/// If no payment is found, `Err(Vec::new())` is returned.
+	fn begin_claiming_payment<L: Deref, S: Deref>(
+		&mut self, payment_hash: PaymentHash, node_signer: &S, logger: &L,
+		inbound_payment_id_secret: &[u8; 32], custom_tlvs_known: bool,
+	) -> Result<(Vec<ClaimableHTLC>, ClaimingPayment), Vec<ClaimableHTLC>>
+		where L::Target: Logger, S::Target: NodeSigner,
+	{
+		match self.claimable_payments.remove(&payment_hash) {
+			Some(payment) => {
+				let mut receiver_node_id = node_signer.get_node_id(Recipient::Node)
+					.expect("Failed to get node_id for node recipient");
+				for htlc in payment.htlcs.iter() {
+					if htlc.prev_hop.phantom_shared_secret.is_some() {
+						let phantom_pubkey = node_signer.get_node_id(Recipient::PhantomNode)
+							.expect("Failed to get node_id for phantom node recipient");
+						receiver_node_id = phantom_pubkey;
+						break;
+					}
+				}
+
+				if let Some(RecipientOnionFields { custom_tlvs, .. }) = &payment.onion_fields {
+					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
+						log_info!(logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
+							&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
+						return Err(payment.htlcs);
+					}
+				}
+
+				let payment_id = payment.inbound_payment_id(inbound_payment_id_secret);
+				let claiming_payment = self.pending_claiming_payments
+					.entry(payment_hash)
+					.and_modify(|_| {
+						debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
+						log_error!(logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
+							&payment_hash);
+					})
+					.or_insert_with(|| {
+						let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
+						let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
+						ClaimingPayment {
+							amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
+							payment_purpose: payment.purpose,
+							receiver_node_id,
+							htlcs,
+							sender_intended_value,
+							onion_fields: payment.onion_fields,
+							payment_id: Some(payment_id),
+						}
+					}).clone();
+
+				Ok((payment.htlcs, claiming_payment))
+			},
+			None => Err(Vec::new())
+		}
+	}
+}
+
 /// Events which we process internally but cannot be processed immediately at the generation site
 /// usually because we're running pre-full-init. They are handled immediately once we detect we are
 /// running normally, and specifically must be processed before any other non-background
@@ -6700,60 +6767,24 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let claiming_payment;
-		let sources = {
-			let mut claimable_payments = self.claimable_payments.lock().unwrap();
-			if let Some(payment) = claimable_payments.claimable_payments.remove(&payment_hash) {
-				let mut receiver_node_id = self.our_network_pubkey;
-				for htlc in payment.htlcs.iter() {
-					if htlc.prev_hop.phantom_shared_secret.is_some() {
-						let phantom_pubkey = self.node_signer.get_node_id(Recipient::PhantomNode)
-							.expect("Failed to get node_id for phantom node recipient");
-						receiver_node_id = phantom_pubkey;
-						break;
+		let (sources, claiming_payment) = {
+			let res = self.claimable_payments.lock().unwrap().begin_claiming_payment(
+				payment_hash, &self.node_signer, &self.logger, &self.inbound_payment_id_secret,
+				custom_tlvs_known,
+			);
+
+			match res {
+				Ok((htlcs, payment_info)) => (htlcs, payment_info),
+				Err(htlcs) => {
+					for htlc in htlcs {
+						let reason = self.get_htlc_fail_reason_from_failure_code(FailureCode::InvalidOnionPayload(None), &htlc);
+						let source = HTLCSource::PreviousHopData(htlc.prev_hop);
+						let receiver = HTLCDestination::FailedPayment { payment_hash };
+						self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 					}
+					return;
 				}
-
-				let payment_id = payment.inbound_payment_id(&self.inbound_payment_id_secret);
-				claiming_payment = claimable_payments.pending_claiming_payments
-					.entry(payment_hash)
-					.and_modify(|_| {
-						debug_assert!(false, "Shouldn't get a duplicate pending claim event ever");
-						log_error!(self.logger, "Got a duplicate pending claimable event on payment hash {}! Please report this bug",
-							&payment_hash);
-					})
-					.or_insert_with(|| {
-						let htlcs = payment.htlcs.iter().map(events::ClaimedHTLC::from).collect();
-						let sender_intended_value = payment.htlcs.first().map(|htlc| htlc.total_msat);
-						ClaimingPayment {
-							amount_msat: payment.htlcs.iter().map(|source| source.value).sum(),
-							payment_purpose: payment.purpose,
-							receiver_node_id,
-							htlcs,
-							sender_intended_value,
-							onion_fields: payment.onion_fields,
-							payment_id: Some(payment_id),
-						}
-					}).clone();
-
-				if let Some(RecipientOnionFields { ref custom_tlvs, .. }) = claiming_payment.onion_fields {
-					if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
-						log_info!(self.logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
-							&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
-						claimable_payments.pending_claiming_payments.remove(&payment_hash);
-						mem::drop(claimable_payments);
-						for htlc in payment.htlcs {
-							let reason = self.get_htlc_fail_reason_from_failure_code(FailureCode::InvalidOnionPayload(None), &htlc);
-							let source = HTLCSource::PreviousHopData(htlc.prev_hop);
-							let receiver = HTLCDestination::FailedPayment { payment_hash };
-							self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
-						}
-						return;
-					}
-				}
-
-				payment.htlcs
-			} else { return; }
+			}
 		};
 		debug_assert!(!sources.is_empty());
 
