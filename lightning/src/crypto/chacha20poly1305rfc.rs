@@ -13,8 +13,8 @@
 #[cfg(not(fuzzing))]
 mod real_chachapoly {
 	use super::super::chacha20::ChaCha20;
-	use super::super::poly1305::Poly1305;
 	use super::super::fixed_time_eq;
+	use super::super::poly1305::Poly1305;
 
 	#[derive(Clone, Copy)]
 	pub struct ChaCha20Poly1305RFC {
@@ -70,7 +70,9 @@ mod real_chachapoly {
 			self.mac.raw_result(out_tag);
 		}
 
-		pub fn encrypt_full_message_in_place(&mut self, input_output: &mut [u8], out_tag: &mut [u8]) {
+		pub fn encrypt_full_message_in_place(
+			&mut self, input_output: &mut [u8], out_tag: &mut [u8],
+		) {
 			self.encrypt_in_place(input_output);
 			self.finish_and_get_tag(out_tag);
 		}
@@ -98,7 +100,9 @@ mod real_chachapoly {
 		/// Decrypt the `input`, checking the given `tag` prior to writing the decrypted contents
 		/// into `output`. Note that, because `output` is not touched until the `tag` is checked,
 		/// this decryption is *variable time*.
-		pub fn variable_time_decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> Result<(), ()> {
+		pub fn variable_time_decrypt(
+			&mut self, input: &[u8], output: &mut [u8], tag: &[u8],
+		) -> Result<(), ()> {
 			assert!(input.len() == output.len());
 			assert!(!self.finished);
 
@@ -111,7 +115,7 @@ mod real_chachapoly {
 			self.mac.input(&self.aad_len.to_le_bytes());
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
 
-			let mut calc_tag =  [0u8; 16];
+			let mut calc_tag = [0u8; 16];
 			self.mac.raw_result(&mut calc_tag);
 			if fixed_time_eq(&calc_tag, tag) {
 				self.cipher.process(input, output);
@@ -121,9 +125,15 @@ mod real_chachapoly {
 			}
 		}
 
-		pub fn check_decrypt_in_place(&mut self, input_output: &mut [u8], tag: &[u8]) -> Result<(), ()> {
+		pub fn check_decrypt_in_place(
+			&mut self, input_output: &mut [u8], tag: &[u8],
+		) -> Result<(), ()> {
 			self.decrypt_in_place(input_output);
-			if self.finish_and_check_tag(tag) { Ok(()) } else { Err(()) }
+			if self.finish_and_check_tag(tag) {
+				Ok(())
+			} else {
+				Err(())
+			}
 		}
 
 		/// Decrypt in place, without checking the tag. Use `finish_and_check_tag` to check it
@@ -146,7 +156,7 @@ mod real_chachapoly {
 			self.mac.input(&self.aad_len.to_le_bytes());
 			self.mac.input(&(self.data_len as u64).to_le_bytes());
 
-			let mut calc_tag =  [0u8; 16];
+			let mut calc_tag = [0u8; 16];
 			self.mac.raw_result(&mut calc_tag);
 			if fixed_time_eq(&calc_tag, tag) {
 				true
@@ -177,10 +187,7 @@ mod fuzzy_chachapoly {
 			let mut tag = [0; 16];
 			tag.copy_from_slice(&key[0..16]);
 
-			ChaCha20Poly1305RFC {
-				tag,
-				finished: false,
-			}
+			ChaCha20Poly1305RFC { tag, finished: false }
 		}
 
 		pub fn encrypt(&mut self, input: &[u8], output: &mut [u8], out_tag: &mut [u8]) {
@@ -192,7 +199,9 @@ mod fuzzy_chachapoly {
 			self.finished = true;
 		}
 
-		pub fn encrypt_full_message_in_place(&mut self, input_output: &mut [u8], out_tag: &mut [u8]) {
+		pub fn encrypt_full_message_in_place(
+			&mut self, input_output: &mut [u8], out_tag: &mut [u8],
+		) {
 			self.encrypt_in_place(input_output);
 			self.finish_and_get_tag(out_tag);
 		}
@@ -207,19 +216,29 @@ mod fuzzy_chachapoly {
 			self.finished = true;
 		}
 
-		pub fn variable_time_decrypt(&mut self, input: &[u8], output: &mut [u8], tag: &[u8]) -> Result<(), ()> {
+		pub fn variable_time_decrypt(
+			&mut self, input: &[u8], output: &mut [u8], tag: &[u8],
+		) -> Result<(), ()> {
 			assert!(input.len() == output.len());
 			assert!(self.finished == false);
 
-			if tag[..] != self.tag[..] { return Err(()); }
+			if tag[..] != self.tag[..] {
+				return Err(());
+			}
 			output.copy_from_slice(input);
 			self.finished = true;
 			Ok(())
 		}
 
-		pub fn check_decrypt_in_place(&mut self, input_output: &mut [u8], tag: &[u8]) -> Result<(), ()> {
+		pub fn check_decrypt_in_place(
+			&mut self, input_output: &mut [u8], tag: &[u8],
+		) -> Result<(), ()> {
 			self.decrypt_in_place(input_output);
-			if self.finish_and_check_tag(tag) { Ok(()) } else { Err(()) }
+			if self.finish_and_check_tag(tag) {
+				Ok(())
+			} else {
+				Err(())
+			}
 		}
 
 		pub(in super::super) fn decrypt_in_place(&mut self, _input: &mut [u8]) {
@@ -227,7 +246,9 @@ mod fuzzy_chachapoly {
 		}
 
 		pub(in super::super) fn finish_and_check_tag(&mut self, tag: &[u8]) -> bool {
-			if tag[..] != self.tag[..] { return false; }
+			if tag[..] != self.tag[..] {
+				return false;
+			}
 			self.finished = true;
 			true
 		}
