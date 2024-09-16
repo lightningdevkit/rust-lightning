@@ -47,7 +47,7 @@ use crate::blinded_path::IntroductionNode;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::{MessageContext, OffersContext};
-use crate::events::{Event, MessageSendEventsProvider, PaymentFailureReason, PaymentPurpose};
+use crate::events::{ClosureReason, Event, MessageSendEventsProvider, PaymentFailureReason, PaymentPurpose};
 use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
 use crate::ln::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
@@ -64,6 +64,7 @@ use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::sign::{NodeSigner, Recipient};
+use crate::util::ser::Writeable;
 
 use crate::prelude::*;
 
@@ -2253,3 +2254,92 @@ fn fails_paying_invoice_with_unknown_required_features() {
 		_ => panic!("Expected Event::PaymentFailed with reason"),
 	}
 }
+
+#[test]
+fn no_double_pay_with_stale_channelmanager() {
+	// This tests the following bug:
+	// - An outbound payment is AwaitingInvoice
+	// - We receive an invoice and lock the HTLCs into the relevant ChannelMonitors
+	// - The monitors are successfully persisted, but the ChannelManager fails to persist, so the
+	//   payment remains AwaitingInvoice
+	// - We restart, causing the channels to close due to a stale ChannelManager
+	// - We receive a duplicate invoice, and attempt to pay it again due to the payment still being
+	//   AwaitingInvoice in the stale ChannelManager
+	// After the fix for this, we will notice that the payment is already locked into the monitors on
+	// startup and transition the incorrectly-AwaitingInvoice payment to Retryable, which prevents
+	// double-paying on duplicate invoice receipt.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let alice_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_id_0 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000).2;
+	let chan_id_1 = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000).2;
+
+	let alice_id = nodes[0].node.get_our_node_id();
+	let bob_id = nodes[1].node.get_our_node_id();
+
+	let amt_msat = nodes[0].node.list_usable_channels()[0].next_outbound_htlc_limit_msat + 1; // Force MPP
+	let offer = nodes[1].node
+		.create_offer_builder(None).unwrap()
+		.clear_paths()
+		.amount_msats(amt_msat)
+		.build().unwrap();
+	assert_eq!(offer.signing_pubkey(), Some(bob_id));
+	assert!(offer.paths().is_empty());
+
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None).unwrap();
+	expect_recent_payment!(nodes[0], RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let invreq_om = nodes[0].onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	nodes[1].onion_messenger.handle_onion_message(alice_id, &invreq_om);
+
+	// Save the manager while the payment is in state AwaitingInvoice so we can reload it later.
+	let alice_chan_manager_serialized = nodes[0].node.encode();
+
+	let invoice_om = nodes[1].onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	nodes[0].onion_messenger.handle_onion_message(bob_id, &invoice_om);
+	let payment_hash = extract_invoice(&nodes[0], &invoice_om).0.payment_hash();
+
+	let expected_route: &[&[&Node]] = &[&[&nodes[1]], &[&nodes[1]]];
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2);
+	check_added_monitors!(nodes[0], 2);
+
+	let ev = remove_first_msg_event_to_node(&bob_id, &mut events);
+	let args = PassAlongPathArgs::new(&nodes[0], expected_route[0], amt_msat, payment_hash, ev)
+		.without_clearing_recipient_events();
+	do_pass_along_path(args);
+
+	let ev = remove_first_msg_event_to_node(&bob_id, &mut events);
+	let args = PassAlongPathArgs::new(&nodes[0], expected_route[0], amt_msat, payment_hash, ev)
+		.without_clearing_recipient_events();
+	do_pass_along_path(args);
+
+	expect_recent_payment!(nodes[0], RecentPaymentDetails::Pending, payment_id);
+	match get_event!(nodes[1], Event::PaymentClaimable) {
+		Event::PaymentClaimable { .. } => {},
+		_ => panic!("No Event::PaymentClaimable"),
+	}
+
+	// Reload with the stale manager and check that receiving the invoice again won't result in a
+	// duplicate payment attempt.
+	let monitor_0 = get_monitor!(nodes[0], chan_id_0).encode();
+	let monitor_1 = get_monitor!(nodes[0], chan_id_1).encode();
+	reload_node!(nodes[0], &alice_chan_manager_serialized, &[&monitor_0, &monitor_1], persister, chain_monitor, alice_deserialized);
+	// The stale manager results in closing the channels.
+	check_closed_event!(nodes[0], 2, ClosureReason::OutdatedChannelManager, [bob_id, bob_id], 10_000_000);
+	check_added_monitors!(nodes[0], 2);
+
+	// Alice receives a duplicate invoice, but the payment should be transitioned to Retryable by now.
+	nodes[0].onion_messenger.handle_onion_message(bob_id, &invoice_om);
+	// Previously, Alice would've attempted to pay the invoice a 2nd time. In this test case, this 2nd
+	// attempt would have resulted in a PaymentFailed event here, since the only channels between
+	// Alice and Bob is closed. Since no 2nd attempt should be made, check that no events are
+	// generated in response to the duplicate invoice.
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+

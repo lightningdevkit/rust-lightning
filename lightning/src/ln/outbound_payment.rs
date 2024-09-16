@@ -2127,15 +2127,11 @@ impl OutboundPayments {
 		path: &Path, best_block_height: u32, logger: L
 	) {
 		let path_amt = path.final_value_msat();
-		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
-			hash_map::Entry::Occupied(mut entry) => {
-				let newly_added = entry.get_mut().insert(session_priv_bytes, &path);
-				log_info!(logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
-					if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), payment_hash);
-			},
-			hash_map::Entry::Vacant(entry) => {
-				let path_fee = path.fee_msat();
-				entry.insert(PendingOutboundPayment::Retryable {
+		let path_fee = path.fee_msat();
+
+		macro_rules! new_retryable {
+			() => {
+				PendingOutboundPayment::Retryable {
 					retry_strategy: None,
 					attempts: PaymentAttempts::new(),
 					payment_params: None,
@@ -2150,7 +2146,38 @@ impl OutboundPayments {
 					total_msat: path_amt,
 					starting_block_height: best_block_height,
 					remaining_max_total_routing_fee_msat: None, // only used for retries, and we'll never retry on startup
-				});
+				}
+			}
+		}
+
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(mut entry) => {
+				let newly_added = match entry.get() {
+					PendingOutboundPayment::AwaitingInvoice { .. } |
+						PendingOutboundPayment::InvoiceReceived { .. } |
+						PendingOutboundPayment::StaticInvoiceReceived { .. } =>
+					{
+						// If we've reached this point, it means we initiated a payment to a BOLT 12 invoice and
+						// locked the htlc(s) into the `ChannelMonitor`(s), but failed to persist the
+						// `ChannelManager` after transitioning from this state to `Retryable` prior to shutdown.
+						// Therefore, we need to move this payment to `Retryable` now to avoid double-paying if
+						// the recipient sends a duplicate invoice or release_held_htlc onion message.
+						*entry.get_mut() = new_retryable!();
+						true
+					},
+					PendingOutboundPayment::Legacy { .. } |
+						PendingOutboundPayment::Retryable { .. } |
+						PendingOutboundPayment::Fulfilled { .. } |
+						PendingOutboundPayment::Abandoned { .. } =>
+					{
+						entry.get_mut().insert(session_priv_bytes, &path)
+					}
+				};
+				log_info!(logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
+					if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), payment_hash);
+			},
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(new_retryable!());
 				log_info!(logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
 					path_amt, payment_hash,  log_bytes!(session_priv_bytes));
 			}
