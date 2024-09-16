@@ -878,7 +878,7 @@ impl Bolt12Invoice {
 				(&refund.payer.0, REFUND_IV_BYTES_WITH_METADATA)
 			},
 		};
-		self.contents.verify(TlvStream::new(&self.bytes), metadata, key, iv_bytes, secp_ctx)
+		self.contents.verify(&self.bytes, metadata, key, iv_bytes, secp_ctx)
 	}
 
 	/// Verifies that the invoice was for a request or refund created using the given key by
@@ -892,7 +892,8 @@ impl Bolt12Invoice {
 			InvoiceContents::ForOffer { .. } => INVOICE_REQUEST_IV_BYTES,
 			InvoiceContents::ForRefund { .. } => REFUND_IV_BYTES_WITHOUT_METADATA,
 		};
-		self.contents.verify(TlvStream::new(&self.bytes), &metadata, key, iv_bytes, secp_ctx)
+		self.contents
+			.verify(&self.bytes, &metadata, key, iv_bytes, secp_ctx)
 			.and_then(|extracted_payment_id| (payment_id == extracted_payment_id)
 				.then(|| payment_id)
 				.ok_or(())
@@ -1143,11 +1144,11 @@ impl InvoiceContents {
 	}
 
 	fn verify<T: secp256k1::Signing>(
-		&self, tlv_stream: TlvStream<'_>, metadata: &Metadata, key: &ExpandedKey,
-		iv_bytes: &[u8; IV_LEN], secp_ctx: &Secp256k1<T>
+		&self, bytes: &[u8], metadata: &Metadata, key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
+		secp_ctx: &Secp256k1<T>
 	) -> Result<PaymentId, ()> {
-		let offer_records = tlv_stream.clone().range(OFFER_TYPES);
-		let invreq_records = tlv_stream.range(INVOICE_REQUEST_TYPES).filter(|record| {
+		let offer_records = TlvStream::new(bytes).range(OFFER_TYPES);
+		let invreq_records = TlvStream::new(bytes).range(INVOICE_REQUEST_TYPES).filter(|record| {
 			match record.r#type {
 				PAYER_METADATA_TYPE => false, // Should be outside range
 				INVOICE_REQUEST_PAYER_ID_TYPE => !metadata.derives_payer_keys(),
