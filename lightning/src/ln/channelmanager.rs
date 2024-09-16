@@ -4548,6 +4548,18 @@ where
 		Ok(())
 	}
 
+	/// Signals that the received [`InvoiceRequest`] must be rejected, and the corresponding
+	/// [`InvoiceError`], must be sent back to the counterparty.
+	pub fn reject_invoice_request(&self, reason: Bolt12SemanticError, responder: Responder) {
+		let mut pending_offers_message = self.pending_offers_messages.lock().unwrap();
+		let error = InvoiceError::from(reason);
+
+		let instructions = responder.respond().into_instructions();
+		let message = OffersMessage::InvoiceError(error);
+
+		pending_offers_message.push((message, instructions))
+	}
+
 	#[cfg(async_payments)]
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId
