@@ -1,9 +1,11 @@
 use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 
-use crate::ln::msgs::DecodeError;
-use crate::util::ser::{FixedLengthReader, LengthRead, LengthReadableArgs, Readable, Writeable, Writer};
 use crate::io::{self, Read, Write};
+use crate::ln::msgs::DecodeError;
+use crate::util::ser::{
+	FixedLengthReader, LengthRead, LengthReadableArgs, Readable, Writeable, Writer,
+};
 
 pub(crate) struct ChaChaReader<'a, R: io::Read> {
 	pub chacha: &'a mut ChaCha20,
@@ -58,7 +60,9 @@ impl<T: Readable> LengthReadableArgs<[u8; 32]> for ChaChaPolyReadAdapter<T> {
 	// LengthRead must be used instead of std::io::Read because we need the total length to separate
 	// out the tag at the end.
 	fn read<R: LengthRead>(r: &mut R, secret: [u8; 32]) -> Result<Self, DecodeError> {
-		if r.total_bytes() < 16 { return Err(DecodeError::InvalidValue) }
+		if r.total_bytes() < 16 {
+			return Err(DecodeError::InvalidValue);
+		}
 
 		let mut chacha = ChaCha20Poly1305RFC::new(&secret, &[0; 12], &[]);
 		let decrypted_len = r.total_bytes() - 16;
@@ -70,13 +74,12 @@ impl<T: Readable> LengthReadableArgs<[u8; 32]> for ChaChaPolyReadAdapter<T> {
 		let mut tag = [0 as u8; 16];
 		r.read_exact(&mut tag)?;
 		if !chacha.finish_and_check_tag(&tag) {
-			return Err(DecodeError::InvalidValue)
+			return Err(DecodeError::InvalidValue);
 		}
 
 		Ok(Self { readable })
 	}
 }
-
 
 /// Enables simultaneously reading and decrypting a ChaCha20Poly1305RFC stream from a std::io::Read.
 struct ChaChaPolyReader<'a, R: Read> {
@@ -111,7 +114,9 @@ impl<'a, W: Writer> Writer for ChaChaPolyWriter<'a, W> {
 		let mut src_idx = 0;
 		while src_idx < src.len() {
 			let mut write_buffer = [0; 8192];
-			let bytes_written = (&mut write_buffer[..]).write(&src[src_idx..]).expect("In-memory writes can't fail");
+			let bytes_written = (&mut write_buffer[..])
+				.write(&src[src_idx..])
+				.expect("In-memory writes can't fail");
 			self.chacha.encrypt_in_place(&mut write_buffer[..bytes_written]);
 			self.write.write_all(&write_buffer[..bytes_written])?;
 			src_idx += bytes_written;
@@ -120,11 +125,10 @@ impl<'a, W: Writer> Writer for ChaChaPolyWriter<'a, W> {
 	}
 }
 
-
 #[cfg(test)]
 mod tests {
-	use crate::ln::msgs::DecodeError;
 	use super::{ChaChaPolyReadAdapter, ChaChaPolyWriteAdapter};
+	use crate::ln::msgs::DecodeError;
 	use crate::util::ser::{self, FixedLengthReader, LengthReadableArgs, Writeable};
 
 	// Used for for testing various lengths of serialization.
@@ -155,34 +159,26 @@ mod tests {
 
 				// Now deserialize the object back and make sure it matches the original.
 				let mut rd = FixedLengthReader::new(encrypted_writeable, writeable_len);
-				let read_adapter = <ChaChaPolyReadAdapter<TestWriteable>>::read(&mut rd, rho).unwrap();
+				let read_adapter =
+					<ChaChaPolyReadAdapter<TestWriteable>>::read(&mut rd, rho).unwrap();
 				assert_eq!($obj, read_adapter.readable);
 			};
 		}
 
 		// Try a big object that will require multiple write buffers.
-		let big_writeable = TestWriteable {
-			field1: vec![43],
-			field2: vec![44; 4192],
-			field3: vec![45; 4192 + 1],
-		};
+		let big_writeable =
+			TestWriteable { field1: vec![43], field2: vec![44; 4192], field3: vec![45; 4192 + 1] };
 		check_object_read_write!(big_writeable);
 
 		// Try a small object that fits into one write buffer.
-		let small_writeable = TestWriteable {
-			field1: vec![43],
-			field2: vec![44],
-			field3: vec![45],
-		};
+		let small_writeable =
+			TestWriteable { field1: vec![43], field2: vec![44], field3: vec![45] };
 		check_object_read_write!(small_writeable);
 	}
 
 	fn do_chacha_stream_adapters_ser_macros() -> Result<(), DecodeError> {
-		let writeable = TestWriteable {
-			field1: vec![43],
-			field2: vec![44; 4192],
-			field3: vec![45; 4192 + 1],
-		};
+		let writeable =
+			TestWriteable { field1: vec![43], field2: vec![44; 4192], field3: vec![45; 4192 + 1] };
 
 		// First, serialize the object into a TLV stream, encrypted with ChaCha20Poly1305.
 		let rho = [42; 32];
