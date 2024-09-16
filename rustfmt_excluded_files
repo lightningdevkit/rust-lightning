@@ -17,7 +17,6 @@
 ./lightning/src/chain/onchaintx.rs
 ./lightning/src/chain/package.rs
 ./lightning/src/chain/transaction.rs
-./lightning/src/crypto/mod.rs
 ./lightning/src/events/bump_transaction.rs
 ./lightning/src/events/mod.rs
 ./lightning/src/lib.rs
