@@ -90,7 +90,7 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-use crate::offers::merkle::{TaggedHash, TlvStream};
+use crate::offers::merkle::{TaggedHash, TlvRecord, TlvStream};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
@@ -128,7 +128,7 @@ impl OfferId {
 	}
 
 	fn from_valid_invreq_tlv_stream(bytes: &[u8]) -> Self {
-		let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES);
+		let tlv_stream = Offer::tlv_stream_iter(bytes);
 		let tagged_hash = TaggedHash::from_tlv_stream(Self::ID_TAG, tlv_stream);
 		Self(tagged_hash.to_bytes())
 	}
@@ -685,6 +685,12 @@ impl Offer {
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn expects_quantity(&self) -> bool {
 		self.contents.expects_quantity()
+	}
+
+	pub(super) fn tlv_stream_iter<'a>(
+		bytes: &'a [u8]
+	) -> impl core::iter::Iterator<Item = TlvRecord<'a>> {
+		TlvStream::new(bytes).range(OFFER_TYPES)
 	}
 
 	#[cfg(async_payments)]
