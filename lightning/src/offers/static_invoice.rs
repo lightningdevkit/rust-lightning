@@ -388,12 +388,10 @@ impl StaticInvoice {
 	}
 
 	pub(crate) fn from_same_offer(&self, invreq: &InvoiceRequest) -> bool {
-		let invoice_offer_tlv_stream = TlvStream::new(&self.bytes)
-			.range(OFFER_TYPES)
-			.map(|tlv_record| tlv_record.record_bytes);
-		let invreq_offer_tlv_stream = TlvStream::new(invreq.bytes())
-			.range(OFFER_TYPES)
-			.map(|tlv_record| tlv_record.record_bytes);
+		let invoice_offer_tlv_stream =
+			Offer::tlv_stream_iter(&self.bytes).map(|tlv_record| tlv_record.record_bytes);
+		let invreq_offer_tlv_stream =
+			Offer::tlv_stream_iter(invreq.bytes()).map(|tlv_record| tlv_record.record_bytes);
 		invoice_offer_tlv_stream.eq(invreq_offer_tlv_stream)
 	}
 }
