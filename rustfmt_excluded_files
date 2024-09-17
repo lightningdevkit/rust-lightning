@@ -73,7 +73,6 @@
 ./lightning/src/routing/test_utils.rs
 ./lightning/src/routing/utxo.rs
 ./lightning/src/sync/mod.rs
-./lightning/src/sync/test_lockorder_checks.rs
 ./lightning/src/util/atomic_counter.rs
 ./lightning/src/util/base32.rs
 ./lightning/src/util/byte_utils.rs
