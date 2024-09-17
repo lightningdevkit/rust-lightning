@@ -1675,8 +1675,11 @@ impl EcdsaChannelSigner for InMemorySigner {
 
 	/// #SPLICING
 	/// #SPLICE-SIG
-	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
-		let sighash = &sighash::SighashCache::new(splicing_tx).segwit_signature_hash(splice_prev_funding_input_index as usize, &redeem_script, splice_prev_funding_input_value, EcdsaSighashType::All).unwrap()[..];
+	fn sign_splicing_funding_input(&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, /*_redeem_script0: &Script, */secp_ctx: &Secp256k1<secp256k1::All>) -> Result<Signature, ()> {
+		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let counterparty_keys = self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR);
+		let funding_redeemscript = make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
+		let sighash = &sighash::SighashCache::new(splicing_tx).segwit_signature_hash(splice_prev_funding_input_index as usize, &funding_redeemscript, splice_prev_funding_input_value, EcdsaSighashType::All).unwrap()[..];
 		let msg = hash_to_message!(sighash);
 		let sig = sign(secp_ctx, &msg, &self.funding_key);
 		Ok(sig)

@@ -4286,11 +4286,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 	/// Create signature for the current funding tx input, used in the splicing case.
 	#[cfg(splicing)]
-	fn prev_funding_tx_create_holder_sig(&self, transaction: &Transaction, input_index: u16, input_value: u64, redeem_script: &ScriptBuf) -> Result<Signature, ChannelError> {
+	fn prev_funding_tx_create_holder_sig(&self, transaction: &Transaction, input_index: u16, input_value: u64/*, _redeem_script: &ScriptBuf*/) -> Result<Signature, ChannelError> {
 		// #SPLICE-SIG
 		match &self.holder_signer {
 			ChannelSignerType::Ecdsa(ecdsa) => {
-				ecdsa.sign_splicing_funding_input(transaction, input_index, input_value, &redeem_script, &self.secp_ctx)
+				ecdsa.sign_splicing_funding_input(transaction, input_index, input_value, /*&redeem_script, */&self.secp_ctx)
 					.map_err(|_e| ChannelError::Close("Failed to sign the previous funding input in the new splicing funding tx".to_owned()))
 			},
 			// TODO (taproot|arik)
@@ -4321,7 +4321,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		log_info!(logger, "Pubkeys used for redeem script: {} {} {}", &self.get_holder_pubkeys().funding_pubkey, &self.counterparty_funding_pubkey(), sig_order_ours_first);
 
 		let redeem_script = self.get_funding_redeemscript();
-		let holder_signature = self.prev_funding_tx_create_holder_sig(&transaction, prev_funding_input_index, pre_channel_value, &redeem_script)?;
+		let holder_signature = self.prev_funding_tx_create_holder_sig(&transaction, prev_funding_input_index, pre_channel_value)?; // , &redeem_script)?;
 		let mut holder_sig = holder_signature.serialize_der().to_vec();
 		holder_sig.push(EcdsaSighashType::All as u8);
 		// counterparty signature

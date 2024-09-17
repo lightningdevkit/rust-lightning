@@ -1,6 +1,5 @@
 //! Defines ECDSA-specific signer types.
 
-use bitcoin::Script;
 use bitcoin::blockdata::transaction::Transaction;
 
 use bitcoin::secp256k1;
@@ -215,7 +214,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// #SPLICING
 	/// Create a signature for a splicing funding transaction, for the input which is the previous funding tx.
 	fn sign_splicing_funding_input(
-		&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, redeem_script: &Script, secp_ctx: &Secp256k1<secp256k1::All>
+		&self, splicing_tx: &Transaction, splice_prev_funding_input_index: u16, splice_prev_funding_input_value: u64, /*redeem_script: &Script, */secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<Signature, ()>;
 }
 
