@@ -2287,7 +2287,7 @@ fn no_double_pay_with_stale_channelmanager() {
 		.clear_paths()
 		.amount_msats(amt_msat)
 		.build().unwrap();
-	assert_eq!(offer.signing_pubkey(), Some(bob_id));
+	assert_eq!(offer.issuer_signing_pubkey(), Some(bob_id));
 	assert!(offer.paths().is_empty());
 
 	let payment_id = PaymentId([1; 32]);
