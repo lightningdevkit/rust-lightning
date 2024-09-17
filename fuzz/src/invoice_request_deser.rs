@@ -85,7 +85,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: OfferId([42; 32]),
 		invoice_request: InvoiceRequestFields {
-			payer_id: invoice_request.payer_id(),
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: invoice_request.quantity(),
 			payer_note_truncated: invoice_request
 				.payer_note()

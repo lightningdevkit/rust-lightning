@@ -139,11 +139,6 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 	pub fn invoice_features(&$self) -> &Bolt12InvoiceFeatures {
 		$contents.features()
 	}
-
-	/// The public key corresponding to the key used to sign the invoice.
-	pub fn signing_pubkey(&$self) -> PublicKey {
-		$contents.signing_pubkey()
-	}
 } }
 
 pub(super) use invoice_accessors_common;

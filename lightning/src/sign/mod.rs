@@ -878,7 +878,7 @@ pub trait NodeSigner {
 	/// Implementors may check that the `invoice_request` is expected rather than blindly signing
 	/// the tagged hash. An `Ok` result should sign `invoice_request.tagged_hash().as_digest()` with
 	/// the node's signing key or an ephemeral key to preserve privacy, whichever is associated with
-	/// [`UnsignedInvoiceRequest::payer_id`].
+	/// [`UnsignedInvoiceRequest::payer_signing_pubkey`].
 	///
 	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
 	fn sign_bolt12_invoice_request(

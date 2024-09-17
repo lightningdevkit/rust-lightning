@@ -65,7 +65,7 @@ use crate::ln::outbound_payment::{OutboundPayments, PaymentAttempts, PendingOutb
 use crate::ln::wire::Encode;
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
-use crate::offers::invoice_request::{DerivedPayerId, InvoiceRequest, InvoiceRequestBuilder};
+use crate::offers::invoice_request::{DerivedPayerSigningPubkey, InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
@@ -9115,7 +9115,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		let builder = RefundBuilder::deriving_payer_id(
+		let builder = RefundBuilder::deriving_signing_pubkey(
 			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
 		)?
 			.chain_hash($self.chain_hash)
@@ -9197,7 +9197,7 @@ where
 	/// # Limitations
 	///
 	/// Requires a direct connection to an introduction node in [`Offer::paths`] or to
-	/// [`Offer::signing_pubkey`], if empty. A similar restriction applies to the responding
+	/// [`Offer::issuer_signing_pubkey`], if empty. A similar restriction applies to the responding
 	/// [`Bolt12Invoice::payment_paths`].
 	///
 	/// # Errors
@@ -9226,8 +9226,8 @@ where
 		let secp_ctx = &self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let builder: InvoiceRequestBuilder<DerivedPayerId, secp256k1::All> = offer
-			.request_invoice_deriving_payer_id(expanded_key, nonce, secp_ctx, payment_id)?
+		let builder: InvoiceRequestBuilder<DerivedPayerSigningPubkey, secp256k1::All> = offer
+			.request_invoice_deriving_signing_pubkey(expanded_key, nonce, secp_ctx, payment_id)?
 			.into();
 		let builder = builder.chain_hash(self.chain_hash)?;
 
@@ -9288,10 +9288,10 @@ where
 					let message = OffersMessage::InvoiceRequest(invoice_request.clone());
 					pending_offers_messages.push((message, instructions));
 				});
-		} else if let Some(signing_pubkey) = invoice_request.signing_pubkey() {
+		} else if let Some(node_id) = invoice_request.issuer_signing_pubkey() {
 			for reply_path in reply_paths {
 				let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-					destination: Destination::Node(signing_pubkey),
+					destination: Destination::Node(node_id),
 					reply_path,
 				};
 				let message = OffersMessage::InvoiceRequest(invoice_request.clone());
@@ -9299,7 +9299,7 @@ where
 			}
 		} else {
 			debug_assert!(false);
-			return Err(Bolt12SemanticError::MissingSigningPubkey);
+			return Err(Bolt12SemanticError::MissingIssuerSigningPubkey);
 		}
 
 		Ok(())
@@ -9315,9 +9315,9 @@ where
 	/// # Limitations
 	///
 	/// Requires a direct connection to an introduction node in [`Refund::paths`] or to
-	/// [`Refund::payer_id`], if empty. This request is best effort; an invoice will be sent to each
-	/// node meeting the aforementioned criteria, but there's no guarantee that they will be
-	/// received and no retries will be made.
+	/// [`Refund::payer_signing_pubkey`], if empty. This request is best effort; an invoice will be
+	/// sent to each node meeting the aforementioned criteria, but there's no guarantee that they
+	/// will be received and no retries will be made.
 	///
 	/// # Errors
 	///
@@ -9378,7 +9378,7 @@ where
 				if refund.paths().is_empty() {
 					for reply_path in reply_paths {
 						let instructions = MessageSendInstructions::WithSpecifiedReplyPath {
-							destination: Destination::Node(refund.payer_id()),
+							destination: Destination::Node(refund.payer_signing_pubkey()),
 							reply_path,
 						};
 						let message = OffersMessage::Invoice(invoice.clone());

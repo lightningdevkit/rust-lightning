@@ -20,11 +20,11 @@ use crate::prelude::*;
 
 /// A 128-bit number used only once.
 ///
-/// Needed when constructing [`Offer::metadata`] and deriving [`Offer::signing_pubkey`] from
+/// Needed when constructing [`Offer::metadata`] and deriving [`Offer::issuer_signing_pubkey`] from
 /// [`ExpandedKey`]. Must not be reused for any other derivation without first hashing.
 ///
 /// [`Offer::metadata`]: crate::offers::offer::Offer::metadata
-/// [`Offer::signing_pubkey`]: crate::offers::offer::Offer::signing_pubkey
+/// [`Offer::issuer_signing_pubkey`]: crate::offers::offer::Offer::issuer_signing_pubkey
 /// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Nonce(pub(crate) [u8; Self::LENGTH]);
