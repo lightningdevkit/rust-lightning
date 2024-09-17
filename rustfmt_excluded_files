@@ -72,7 +72,6 @@
 ./lightning/src/routing/scoring.rs
 ./lightning/src/routing/test_utils.rs
 ./lightning/src/routing/utxo.rs
-./lightning/src/sync/fairrwlock.rs
 ./lightning/src/sync/mod.rs
 ./lightning/src/sync/nostd_sync.rs
 ./lightning/src/sync/test_lockorder_checks.rs
