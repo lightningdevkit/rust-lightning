@@ -1144,8 +1144,8 @@ macro_rules! reload_node {
 	($node: expr, $new_config: expr, $chanman_encoded: expr, $monitors_encoded: expr, $persister: ident, $new_chain_monitor: ident, $new_channelmanager: ident) => {
 		let chanman_encoded = $chanman_encoded;
 
-		$persister = test_utils::TestPersister::new();
-		$new_chain_monitor = test_utils::TestChainMonitor::new(Some($node.chain_source), $node.tx_broadcaster.clone(), $node.logger, $node.fee_estimator, &$persister, &$node.keys_manager);
+		$persister = $crate::util::test_utils::TestPersister::new();
+		$new_chain_monitor = $crate::util::test_utils::TestChainMonitor::new(Some($node.chain_source), $node.tx_broadcaster.clone(), $node.logger, $node.fee_estimator, &$persister, &$node.keys_manager);
 		$node.chain_monitor = &$new_chain_monitor;
 
 		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);

@@ -23,7 +23,6 @@ use crate::ln::msgs::ChannelMessageHandler;
 use crate::crypto::utils::sign;
 use crate::util::ser::Writeable;
 use crate::util::scid_utils::block_from_scid;
-use crate::util::test_utils;
 
 use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
 use bitcoin::locktime::absolute::LockTime;
