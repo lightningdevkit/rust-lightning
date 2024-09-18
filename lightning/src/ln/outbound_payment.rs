@@ -951,20 +951,26 @@ impl OutboundPayments {
 			payment_hash, recipient_onion.clone(), keysend_preimage, &route, Some(retry_strategy),
 			payment_params, entropy_source, best_block_height
 		);
-		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
-			hash_map::Entry::Occupied(entry) => match entry.get() {
-				PendingOutboundPayment::InvoiceReceived { .. }
-				| PendingOutboundPayment::StaticInvoiceReceived { .. } => {
-					*entry.into_mut() = retryable_payment;
+		let mut invoice_request_opt = None;
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		match outbounds.entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.remove() {
+				PendingOutboundPayment::InvoiceReceived { .. } => {
+					outbounds.insert(payment_id, retryable_payment);
+				},
+				PendingOutboundPayment::StaticInvoiceReceived { invoice_request, .. } => {
+					invoice_request_opt = Some(invoice_request);
+					outbounds.insert(payment_id, retryable_payment);
 				},
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
 		}
+		core::mem::drop(outbounds);
 
 		let result = self.pay_route_internal(
-			&route, payment_hash, &recipient_onion, keysend_preimage, None, payment_id,
-			Some(route_params.final_value_msat), onion_session_privs, node_signer,
+			&route, payment_hash, &recipient_onion, keysend_preimage, invoice_request_opt.as_ref(),
+			payment_id, Some(route_params.final_value_msat), onion_session_privs, node_signer,
 			best_block_height, &send_payment_along_path
 		);
 		log_info!(
