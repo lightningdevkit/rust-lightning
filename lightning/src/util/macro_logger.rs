@@ -12,13 +12,13 @@ use crate::sign::SpendableOutputDescriptor;
 
 use bitcoin::transaction::Transaction;
 
-use crate::routing::router::Route;
 use crate::ln::chan_utils::HTLCClaim;
+use crate::routing::router::Route;
 
 macro_rules! log_iter {
 	($obj: expr) => {
 		$crate::util::logger::DebugIter($obj)
-	}
+	};
 }
 
 /// Logs a pubkey in hex format.
@@ -26,7 +26,7 @@ macro_rules! log_iter {
 macro_rules! log_pubkey {
 	($obj: expr) => {
 		$crate::util::logger::DebugPubKey(&$obj)
-	}
+	};
 }
 
 /// Logs a byte slice in hex format.
@@ -34,7 +34,7 @@ macro_rules! log_pubkey {
 macro_rules! log_bytes {
 	($obj: expr) => {
 		$crate::util::logger::DebugBytes(&$obj)
-	}
+	};
 }
 
 pub(crate) struct DebugFundingInfo<'a>(pub &'a ChannelId);
@@ -45,10 +45,8 @@ impl<'a> core::fmt::Display for DebugFundingInfo<'a> {
 }
 macro_rules! log_funding_info {
 	($key_storage: expr) => {
-		$crate::util::macro_logger::DebugFundingInfo(
-			&$key_storage.channel_id()
-		)
-	}
+		$crate::util::macro_logger::DebugFundingInfo(&$key_storage.channel_id())
+	};
 }
 
 pub(crate) struct DebugRoute<'a>(pub &'a Route);
@@ -57,7 +55,14 @@ impl<'a> core::fmt::Display for DebugRoute<'a> {
 		for (idx, p) in self.0.paths.iter().enumerate() {
 			writeln!(f, "path {}:", idx)?;
 			for h in p.hops.iter() {
-				writeln!(f, " node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}", log_pubkey!(h.pubkey), h.short_channel_id, h.fee_msat, h.cltv_expiry_delta)?;
+				writeln!(
+					f,
+					" node_id: {}, short_channel_id: {}, fee_msat: {}, cltv_expiry_delta: {}",
+					log_pubkey!(h.pubkey),
+					h.short_channel_id,
+					h.fee_msat,
+					h.cltv_expiry_delta
+				)?;
 			}
 			writeln!(f, " blinded_tail: {:?}", p.blinded_tail)?;
 		}
@@ -67,7 +72,7 @@ impl<'a> core::fmt::Display for DebugRoute<'a> {
 macro_rules! log_route {
 	($obj: expr) => {
 		$crate::util::macro_logger::DebugRoute(&$obj)
-	}
+	};
 }
 
 pub(crate) struct DebugTx<'a>(pub &'a Transaction);
@@ -76,14 +81,21 @@ impl<'a> core::fmt::Display for DebugTx<'a> {
 		if self.0.input.len() >= 1 && self.0.input.iter().any(|i| !i.witness.is_empty()) {
 			let first_input = &self.0.input[0];
 			let witness_script_len = first_input.witness.last().unwrap_or(&[]).len();
-			if self.0.input.len() == 1 && witness_script_len == 71 &&
-					(first_input.sequence.0 >> 8*3) as u8 == 0x80 {
+			if self.0.input.len() == 1
+				&& witness_script_len == 71
+				&& (first_input.sequence.0 >> 8 * 3) as u8 == 0x80
+			{
 				write!(f, "commitment tx ")?;
 			} else if self.0.input.len() == 1 && witness_script_len == 71 {
 				write!(f, "closing tx ")?;
-			} else if self.0.input.len() == 1 && HTLCClaim::from_witness(&first_input.witness) == Some(HTLCClaim::OfferedTimeout) {
+			} else if self.0.input.len() == 1
+				&& HTLCClaim::from_witness(&first_input.witness) == Some(HTLCClaim::OfferedTimeout)
+			{
 				write!(f, "HTLC-timeout tx ")?;
-			} else if self.0.input.len() == 1 && HTLCClaim::from_witness(&first_input.witness) == Some(HTLCClaim::AcceptedPreimage) {
+			} else if self.0.input.len() == 1
+				&& HTLCClaim::from_witness(&first_input.witness)
+					== Some(HTLCClaim::AcceptedPreimage)
+			{
 				write!(f, "HTLC-success tx ")?;
 			} else {
 				let mut num_preimage = 0;
@@ -92,15 +104,22 @@ impl<'a> core::fmt::Display for DebugTx<'a> {
 				for inp in &self.0.input {
 					let htlc_claim = HTLCClaim::from_witness(&inp.witness);
 					match htlc_claim {
-						Some(HTLCClaim::AcceptedPreimage)|Some(HTLCClaim::OfferedPreimage) => num_preimage += 1,
-						Some(HTLCClaim::AcceptedTimeout)|Some(HTLCClaim::OfferedTimeout) => num_timeout += 1,
+						Some(HTLCClaim::AcceptedPreimage) | Some(HTLCClaim::OfferedPreimage) => {
+							num_preimage += 1
+						},
+						Some(HTLCClaim::AcceptedTimeout) | Some(HTLCClaim::OfferedTimeout) => {
+							num_timeout += 1
+						},
 						Some(HTLCClaim::Revocation) => num_revoked += 1,
 						None => continue,
 					}
 				}
 				if num_preimage > 0 || num_timeout > 0 || num_revoked > 0 {
-					write!(f, "HTLC claim tx ({} preimage, {} timeout, {} revoked) ",
-						num_preimage, num_timeout, num_revoked)?;
+					write!(
+						f,
+						"HTLC claim tx ({} preimage, {} timeout, {} revoked) ",
+						num_preimage, num_timeout, num_revoked
+					)?;
 				}
 			}
 		} else {
@@ -115,7 +134,7 @@ impl<'a> core::fmt::Display for DebugTx<'a> {
 macro_rules! log_tx {
 	($obj: expr) => {
 		$crate::util::macro_logger::DebugTx(&$obj)
-	}
+	};
 }
 
 pub(crate) struct DebugSpendable<'a>(pub &'a SpendableOutputDescriptor);
@@ -124,13 +143,21 @@ impl<'a> core::fmt::Display for DebugSpendable<'a> {
 		match self.0 {
 			&SpendableOutputDescriptor::StaticOutput { ref outpoint, .. } => {
 				write!(f, "StaticOutput {}:{} marked for spending", outpoint.txid, outpoint.index)?;
-			}
+			},
 			&SpendableOutputDescriptor::DelayedPaymentOutput(ref descriptor) => {
-				write!(f, "DelayedPaymentOutput {}:{} marked for spending", descriptor.outpoint.txid, descriptor.outpoint.index)?;
-			}
+				write!(
+					f,
+					"DelayedPaymentOutput {}:{} marked for spending",
+					descriptor.outpoint.txid, descriptor.outpoint.index
+				)?;
+			},
 			&SpendableOutputDescriptor::StaticPaymentOutput(ref descriptor) => {
-				write!(f, "StaticPaymentOutput {}:{} marked for spending", descriptor.outpoint.txid, descriptor.outpoint.index)?;
-			}
+				write!(
+					f,
+					"StaticPaymentOutput {}:{} marked for spending",
+					descriptor.outpoint.txid, descriptor.outpoint.index
+				)?;
+			},
 		}
 		Ok(())
 	}
@@ -139,7 +166,7 @@ impl<'a> core::fmt::Display for DebugSpendable<'a> {
 macro_rules! log_spendable {
 	($obj: expr) => {
 		$crate::util::macro_logger::DebugSpendable(&$obj)
-	}
+	};
 }
 
 /// Create a new Record and log it. You probably don't want to use this macro directly,
