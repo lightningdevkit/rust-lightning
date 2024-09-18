@@ -3002,7 +3002,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// Assume that the broadcasted commitment transaction confirmed in the current best
 				// block. Even if not, its a reasonable metric for the bump criteria on the HTLC
 				// transactions.
-				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&holder_commitment_tx);
+				let (claim_reqs, _) = self.get_broadcasted_holder_claims(&holder_commitment_tx, self.best_block.height);
 				let conf_target = self.closure_conf_target();
 				self.onchain_tx_handler.update_claims_view_from_requests(claim_reqs, self.best_block.height, self.best_block.height, broadcaster, conf_target, fee_estimator, logger);
 			}
@@ -3041,7 +3041,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// assuming it gets confirmed in the next block. Sadly, we have code which considers
 			// "not yet confirmed" things as discardable, so we cannot do that here.
 			let (mut new_outpoints, _) = self.get_broadcasted_holder_claims(
-				&self.current_holder_commitment_tx,
+				&self.current_holder_commitment_tx, self.best_block.height,
 			);
 			let unsigned_commitment_tx = self.onchain_tx_handler.get_unsigned_holder_commitment_tx();
 			let new_outputs = self.get_broadcasted_holder_watch_outputs(
@@ -3666,7 +3666,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	// Returns (1) `PackageTemplate`s that can be given to the OnchainTxHandler, so that the handler can
 	// broadcast transactions claiming holder HTLC commitment outputs and (2) a holder revokable
 	// script so we can detect whether a holder transaction has been seen on-chain.
-	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx) -> (Vec<PackageTemplate>, Option<(ScriptBuf, PublicKey, RevocationKey)>) {
+	fn get_broadcasted_holder_claims(&self, holder_tx: &HolderSignedTx, _conf_height: u32) -> (Vec<PackageTemplate>, Option<(ScriptBuf, PublicKey, RevocationKey)>) {
 		let mut claim_requests = Vec::with_capacity(holder_tx.htlc_outputs.len());
 
 		let redeemscript = chan_utils::get_revokeable_redeemscript(&holder_tx.revocation_key, self.on_holder_tx_csv, &holder_tx.delayed_payment_key);
@@ -3737,7 +3737,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if self.current_holder_commitment_tx.txid == commitment_txid {
 			is_holder_tx = true;
 			log_info!(logger, "Got broadcast of latest holder commitment tx {}, searching for available HTLCs to claim", commitment_txid);
-			let res = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx);
+			let res = self.get_broadcasted_holder_claims(&self.current_holder_commitment_tx, height);
 			let mut to_watch = self.get_broadcasted_holder_watch_outputs(&self.current_holder_commitment_tx, tx);
 			append_onchain_update!(res, to_watch);
 			fail_unbroadcast_htlcs!(self, "latest holder", commitment_txid, tx, height,
@@ -3747,7 +3747,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if holder_tx.txid == commitment_txid {
 				is_holder_tx = true;
 				log_info!(logger, "Got broadcast of previous holder commitment tx {}, searching for available HTLCs to claim", commitment_txid);
-				let res = self.get_broadcasted_holder_claims(holder_tx);
+				let res = self.get_broadcasted_holder_claims(holder_tx, height);
 				let mut to_watch = self.get_broadcasted_holder_watch_outputs(holder_tx, tx);
 				append_onchain_update!(res, to_watch);
 				fail_unbroadcast_htlcs!(self, "previous holder", commitment_txid, tx, height, block_hash,
