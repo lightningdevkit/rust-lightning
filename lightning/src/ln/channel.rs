@@ -7784,7 +7784,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.unfunded_context.transaction_number() == INITIAL_COMMITMENT_NUMBER
 	}
 
-	pub fn get_open_channel<L: Deref>(&mut self, chain_hash: ChainHash, logger: &L) -> Option<msgs::OpenChannel>
+	pub fn get_open_channel<L: Deref>(&mut self, chain_hash: ChainHash, _logger: &L) -> Option<msgs::OpenChannel>
 	where L::Target: Logger
 	{
 		if !self.context.is_outbound() {
@@ -7806,7 +7806,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				panic!("Failed getting commitment point for open_channel message");
 			}
 			#[cfg(async_signing)] {
-				log_trace!(logger, "Unable to generate open_channel message, waiting for commitment point");
+				log_trace!(_logger, "Unable to generate open_channel message, waiting for commitment point");
 				self.signer_pending_open_channel = true;
 				return None;
 			}
