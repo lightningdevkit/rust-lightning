@@ -31,18 +31,12 @@ pub struct IndexedMap<K: Hash + Ord, V> {
 impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	/// Constructs a new, empty map
 	pub fn new() -> Self {
-		Self {
-			map: new_hash_map(),
-			keys: Vec::new(),
-		}
+		Self { map: new_hash_map(), keys: Vec::new() }
 	}
 
 	/// Constructs a new, empty map with the given capacity pre-allocated
 	pub fn with_capacity(capacity: usize) -> Self {
-		Self {
-			map: hash_map_with_capacity(capacity),
-			keys: Vec::with_capacity(capacity),
-		}
+		Self { map: hash_map_with_capacity(capacity), keys: Vec::with_capacity(capacity) }
 	}
 
 	#[inline(always)]
@@ -71,7 +65,8 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	pub fn remove(&mut self, key: &K) -> Option<V> {
 		let ret = self.map.remove(key);
 		if let Some(_) = ret {
-			let idx = self.keys.iter().position(|k| k == key).expect("map and keys must be consistent");
+			let idx =
+				self.keys.iter().position(|k| k == key).expect("map and keys must be consistent");
 			self.keys.remove(idx);
 		}
 		ret
@@ -91,18 +86,11 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
 		match self.map.entry(key.clone()) {
 			hash_map::Entry::Vacant(entry) => {
-				Entry::Vacant(VacantEntry {
-					underlying_entry: entry,
-					key,
-					keys: &mut self.keys,
-				})
+				Entry::Vacant(VacantEntry { underlying_entry: entry, key, keys: &mut self.keys })
 			},
 			hash_map::Entry::Occupied(entry) => {
-				Entry::Occupied(OccupiedEntry {
-					underlying_entry: entry,
-					keys: &mut self.keys,
-				})
-			}
+				Entry::Occupied(OccupiedEntry { underlying_entry: entry, keys: &mut self.keys })
+			},
 		}
 	}
 
@@ -128,18 +116,19 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 		let start = match range.start_bound() {
 			Bound::Unbounded => 0,
 			Bound::Included(key) => self.keys.binary_search(key).unwrap_or_else(|index| index),
-			Bound::Excluded(key) => self.keys.binary_search(key).map(|index| index +1).unwrap_or_else(|index| index),
+			Bound::Excluded(key) => {
+				self.keys.binary_search(key).map(|index| index + 1).unwrap_or_else(|index| index)
+			},
 		};
 		let end = match range.end_bound() {
 			Bound::Unbounded => self.keys.len(),
-			Bound::Included(key) => self.keys.binary_search(key).map(|index| index +1).unwrap_or_else(|index| index),
+			Bound::Included(key) => {
+				self.keys.binary_search(key).map(|index| index + 1).unwrap_or_else(|index| index)
+			},
 			Bound::Excluded(key) => self.keys.binary_search(key).unwrap_or_else(|index| index),
 		};
 
-		Range {
-			inner_range: self.keys[start..end].iter(),
-			map: &self.map,
-		}
+		Range { inner_range: self.keys[start..end].iter(), map: &self.map }
 	}
 
 	/// Returns the number of `key`/`value` pairs in the map
@@ -169,9 +158,9 @@ pub struct Range<'a, K: Hash + Ord, V> {
 impl<'a, K: Hash + Ord, V: 'a> Iterator for Range<'a, K, V> {
 	type Item = (&'a K, &'a V);
 	fn next(&mut self) -> Option<(&'a K, &'a V)> {
-		self.inner_range.next().map(|k| {
-			(k, self.map.get(k).expect("map and keys must be consistent"))
-		})
+		self.inner_range
+			.next()
+			.map(|k| (k, self.map.get(k).expect("map and keys must be consistent")))
 	}
 }
 
@@ -215,7 +204,8 @@ impl<'a, K: Hash + Ord, V> OccupiedEntry<'a, K, V> {
 	/// Remove the value at the position described by this entry.
 	pub fn remove_entry(self) -> (K, V) {
 		let res = self.underlying_entry.remove_entry();
-		let idx = self.keys.iter().position(|k| k == &res.0).expect("map and keys must be consistent");
+		let idx =
+			self.keys.iter().position(|k| k == &res.0).expect("map and keys must be consistent");
 		self.keys.remove(idx);
 		res
 	}
