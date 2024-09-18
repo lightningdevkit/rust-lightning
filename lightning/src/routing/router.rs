@@ -641,8 +641,9 @@ impl RouteParameters {
 		&mut self, recipient_onion: &RecipientOnionFields, is_keysend: bool, best_block_height: u32
 	) -> Result<(), ()> {
 		let keysend_preimage_opt = is_keysend.then(|| PaymentPreimage([42; 32]));
+		// TODO: no way to account for the invoice request here yet
 		onion_utils::set_max_path_length(
-			self, recipient_onion, keysend_preimage_opt, best_block_height
+			self, recipient_onion, keysend_preimage_opt, None, best_block_height
 		)
 	}
 }
