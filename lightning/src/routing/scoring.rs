@@ -749,7 +749,7 @@ pub struct ProbabilisticScoringDecayParameters {
 	///
 	/// # Note
 	///
-	/// When built with the `no-std` feature, time will never elapse. Therefore, the channel
+	/// When not built with the `std` feature, time will never elapse. Therefore, the channel
 	/// liquidity knowledge will never decay except when the bounds cross.
 	pub liquidity_offset_half_life: Duration,
 }

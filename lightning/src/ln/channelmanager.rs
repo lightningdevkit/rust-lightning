@@ -6042,7 +6042,7 @@ where
 	///  * Forgetting about stale outbound payments, either those that have already been fulfilled
 	///    or those awaiting an invoice that hasn't been delivered in the necessary amount of time.
 	///    The latter is determined using the system clock in `std` and the highest seen block time
-	///    minus two hours in `no-std`.
+	///    minus two hours in non-`std`.
 	///
 	/// Note that this may cause reentrancy through [`chain::Watch::update_channel`] calls or feerate
 	/// estimate fetches.
@@ -9064,7 +9064,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// See [Avoiding Duplicate Payments] for other requirements once the payment has been sent.
 	///
 	/// The builder will have the provided expiration set. Any changes to the expiration on the
-	/// returned builder will not be honored by [`ChannelManager`]. For `no-std`, the highest seen
+	/// returned builder will not be honored by [`ChannelManager`]. For non-`std`, the highest seen
 	/// block time minus two hours is used for the current time when determining if the refund has
 	/// expired.
 	///

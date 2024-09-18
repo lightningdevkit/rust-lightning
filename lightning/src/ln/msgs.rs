@@ -87,7 +87,7 @@ pub enum DecodeError {
 	ShortRead,
 	/// A length descriptor in the packet didn't describe the later data correctly.
 	BadLengthDescriptor,
-	/// Error from [`std::io`].
+	/// Error from [`crate::io`].
 	Io(io::ErrorKind),
 	/// The message included zlib-compressed values, which we don't support.
 	UnsupportedCompression,

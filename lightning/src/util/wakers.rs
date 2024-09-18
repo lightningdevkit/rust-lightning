@@ -97,11 +97,10 @@ macro_rules! define_callback { ($($bounds: path),*) => {
 /// A callback which is called when a [`Future`] completes.
 ///
 /// Note that this MUST NOT call back into LDK directly, it must instead schedule actions to be
-/// taken later. Rust users should use the [`std::future::Future`] implementation for [`Future`]
-/// instead.
-///
-/// Note that the [`std::future::Future`] implementation may only work for runtimes which schedule
-/// futures when they receive a wake, rather than immediately executing them.
+/// taken later.
+#[cfg_attr(feature = "std", doc = "Rust users should use the [`std::future::Future`] implementation for [`Future`] instead.")]
+#[cfg_attr(feature = "std", doc = "")]
+#[cfg_attr(feature = "std", doc = "Note that the [`std::future::Future`] implementation may only work for runtimes which schedule futures when they receive a wake, rather than immediately executing them.")]
 pub trait FutureCallback : $($bounds +)* {
 	/// The method which is called.
 	fn call(&self);

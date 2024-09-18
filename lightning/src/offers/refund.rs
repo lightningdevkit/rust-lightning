@@ -231,8 +231,8 @@ macro_rules! refund_builder_methods { (
 		$return_value
 	}
 
-	/// Sets the [`Refund::absolute_expiry`] as seconds since the Unix epoch. Any expiry that has
-	/// already passed is valid and can be checked for using [`Refund::is_expired`].
+	/// Sets the [`Refund::absolute_expiry`] as seconds since the Unix epoch.
+	#[cfg_attr(feature = "std", doc = "Any expiry that has already passed is valid and can be checked for using [`Refund::is_expired`].")]
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn absolute_expiry($($self_mut)* $self: $self_type, absolute_expiry: Duration) -> $return_type {
@@ -545,8 +545,8 @@ macro_rules! respond_with_explicit_signing_pubkey_methods { ($self: ident, $buil
 	/// Creates an [`InvoiceBuilder`] for the refund with the given required fields.
 	///
 	/// Unless [`InvoiceBuilder::relative_expiry`] is set, the invoice will expire two hours after
-	/// `created_at`, which is used to set [`Bolt12Invoice::created_at`]. Useful for `no-std` builds
-	/// where [`std::time::SystemTime`] is not available.
+	/// `created_at`, which is used to set [`Bolt12Invoice::created_at`].
+	#[cfg_attr(feature = "std", doc = "Useful for non-`std` builds where [`std::time::SystemTime`] is not available.")]
 	///
 	/// The caller is expected to remember the preimage of `payment_hash` in order to
 	/// claim a payment for the invoice.

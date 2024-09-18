@@ -316,8 +316,8 @@ macro_rules! offer_builder_methods { (
 		$return_value
 	}
 
-	/// Sets the [`Offer::absolute_expiry`] as seconds since the Unix epoch. Any expiry that has
-	/// already passed is valid and can be checked for using [`Offer::is_expired`].
+	/// Sets the [`Offer::absolute_expiry`] as seconds since the Unix epoch.
+	#[cfg_attr(feature = "std", doc = "Any expiry that has already passed is valid and can be checked for using [`Offer::is_expired`].")]
 	///
 	/// Successive calls to this method will override the previous setting.
 	pub fn absolute_expiry($($self_mut)* $self: $self_type, absolute_expiry: Duration) -> $return_type {

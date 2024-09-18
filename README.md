@@ -27,7 +27,7 @@ Crates
 -----------
 1. [lightning](./lightning)
   The core of the LDK library, implements the Lightning protocol, channel state machine,
-  and on-chain logic. Supports `no-std` and exposes only relatively low-level interfaces.
+  and on-chain logic. Supports `no_std` and exposes only relatively low-level interfaces.
 2. [lightning-background-processor](./lightning-background-processor)
   Utilities to perform required background tasks for Rust Lightning.
 3. [lightning-block-sync](./lightning-block-sync)

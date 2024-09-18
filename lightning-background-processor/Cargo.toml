@@ -15,12 +15,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 futures = [ ]
-std = []
+std = ["lightning/std", "bitcoin-io/std", "bitcoin_hashes/std"]
 
 default = ["std"]
 
 [dependencies]
 bitcoin = { version = "0.32.2", default-features = false }
+bitcoin_hashes = { version = "0.14.0", default-features = false }
+bitcoin-io = { version = "0.1.2", default-features = false }
 lightning = { version = "0.0.124", path = "../lightning", default-features = false }
 lightning-rapid-gossip-sync = { version = "0.0.124", path = "../lightning-rapid-gossip-sync", default-features = false }
 

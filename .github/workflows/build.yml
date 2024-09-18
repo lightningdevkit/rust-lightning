@@ -149,16 +149,11 @@ jobs:
         run: |
           cd lightning
           RUSTFLAGS="--cfg=require_route_graph_test" cargo test
-          RUSTFLAGS="--cfg=require_route_graph_test" cargo test --features hashbrown
           cd ..
       - name: Run benchmarks on Rust ${{ matrix.toolchain }}
         run: |
           cd bench
           RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench
-      - name: Run benchmarks with hashbrown on Rust ${{ matrix.toolchain }}
-        run: |
-          cd bench
-          RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench --features hashbrown
 
   check_commits:
     runs-on: ubuntu-latest
@@ -199,15 +194,15 @@ jobs:
       - name: Run cargo check for release build.
         run: |
           cargo check --release
-          cargo check --no-default-features --features=no-std --release
           cargo check --no-default-features --features=futures,std --release
           cargo doc --release
       - name: Run cargo check for Taproot build.
         run: |
           cargo check --release
-          cargo check --no-default-features --features=no-std --release
+          cargo check --no-default-features --release
           cargo check --no-default-features --features=futures,std --release
           cargo doc --release
+          cargo doc --no-default-features --release
         env:
           RUSTFLAGS: '--cfg=taproot'
           RUSTDOCFLAGS: '--cfg=taproot'

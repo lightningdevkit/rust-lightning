@@ -28,7 +28,6 @@
 //!
 //! * `std`
 //! * `grind_signatures`
-//! * `no-std ` - exposes write trait implementations from the `core2` crate (at least one of `no-std` or `std` are required)
 //! * Skip logging of messages at levels below the given log level:
 //!     * `max_level_off`
 //!     * `max_level_error`
@@ -52,9 +51,6 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
-
-#[cfg(not(any(feature = "std", feature = "no-std")))]
-compile_error!("at least one of the `std` or `no-std` features must be enabled");
 
 #[cfg(all(fuzzing, test))]
 compile_error!("Tests will always fail with cfg=fuzzing");

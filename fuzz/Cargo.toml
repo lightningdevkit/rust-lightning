@@ -18,7 +18,7 @@ libfuzzer_fuzz = ["libfuzzer-sys"]
 stdin_fuzz = []
 
 [dependencies]
-lightning = { path = "../lightning", features = ["regex", "hashbrown", "_test_utils"] }
+lightning = { path = "../lightning", features = ["regex", "_test_utils"] }
 lightning-invoice = { path = "../lightning-invoice" }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
 bech32 = "0.9.1"

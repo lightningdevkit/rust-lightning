@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 
+# When the workspace members change, make sure to update the list here as well
+# as in `ci/ci-tests.sh`.
 members = [
     "lightning",
     "lightning-types",
