@@ -33,10 +33,10 @@ pub enum Alphabet {
 	/// RFC4648 encoding.
 	RFC4648 {
 		/// Whether to use padding.
-		padding: bool
+		padding: bool,
 	},
 	/// Zbase32 encoding.
-	ZBase32
+	ZBase32,
 }
 
 impl Alphabet {
@@ -60,9 +60,7 @@ impl Alphabet {
 				}
 				ret
 			},
-			Self::ZBase32 => {
-				Self::encode_data(data, ZBASE_ALPHABET)
-			},
+			Self::ZBase32 => Self::encode_data(data, ZBASE_ALPHABET),
 		};
 		ret.truncate(output_length);
 
@@ -79,7 +77,9 @@ impl Alphabet {
 			Self::RFC4648 { padding } => {
 				let mut unpadded_data_length = data.len();
 				if *padding {
-					if data.len() % 8 != 0 { return Err(()); }
+					if data.len() % 8 != 0 {
+						return Err(());
+					}
 					data.iter().rev().take(6).for_each(|&c| {
 						if c == b'=' {
 							unpadded_data_length -= 1;
@@ -88,13 +88,14 @@ impl Alphabet {
 				}
 				(&data[..unpadded_data_length], RFC4648_INV_ALPHABET)
 			},
-			Self::ZBase32 => {
-				(data, ZBASE_INV_ALPHABET)
-			}
+			Self::ZBase32 => (data, ZBASE_INV_ALPHABET),
 		};
 		// If the string has more characters than are required to alphabet_encode the number of bytes
 		// decodable, treat the string as invalid.
-		match data.len() % 8 { 1|3|6 => return Err(()), _ => {} }
+		match data.len() % 8 {
+			1 | 3 | 6 => return Err(()),
+			_ => {},
+		}
 		Ok(Self::decode_data(data, alphabet)?)
 	}
 
@@ -175,9 +176,13 @@ mod tests {
 		("6n9hq", &[0xf0, 0xbf, 0xc7]),
 		("4t7ye", &[0xd4, 0x7a, 0x04]),
 		("6im5sdy", &[0xf5, 0x57, 0xbb, 0x0c]),
-		("ybndrfg8ejkmcpqxot1uwisza345h769", &[0x00, 0x44, 0x32, 0x14, 0xc7, 0x42, 0x54, 0xb6,
-		0x35, 0xcf, 0x84, 0x65, 0x3a, 0x56, 0xd7, 0xc6,
-		0x75, 0xbe, 0x77, 0xdf])
+		(
+			"ybndrfg8ejkmcpqxot1uwisza345h769",
+			&[
+				0x00, 0x44, 0x32, 0x14, 0xc7, 0x42, 0x54, 0xb6, 0x35, 0xcf, 0x84, 0x65, 0x3a, 0x56,
+				0xd7, 0xc6, 0x75, 0xbe, 0x77, 0xdf,
+			],
+		),
 	];
 
 	#[test]
@@ -242,7 +247,9 @@ mod tests {
 		}
 
 		for (input, encoded) in RFC4648_NON_PADDED_TEST_VECTORS {
-			let res = &Alphabet::RFC4648 { padding: false }.decode(std::str::from_utf8(encoded).unwrap()).unwrap();
+			let res = &Alphabet::RFC4648 { padding: false }
+				.decode(std::str::from_utf8(encoded).unwrap())
+				.unwrap();
 			assert_eq!(&res[..], &input[..]);
 		}
 	}
@@ -251,9 +258,8 @@ mod tests {
 	fn padding() {
 		let num_padding = [0, 6, 4, 3, 1];
 		for i in 1..6 {
-			let encoded = Alphabet::RFC4648 { padding: true }.encode(
-				(0..(i as u8)).collect::<Vec<u8>>().as_ref()
-			);
+			let encoded = Alphabet::RFC4648 { padding: true }
+				.encode((0..(i as u8)).collect::<Vec<u8>>().as_ref());
 			assert_eq!(encoded.len(), 8);
 			for j in 0..(num_padding[i % 5]) {
 				assert_eq!(encoded.as_bytes()[encoded.len() - j - 1], b'=');
