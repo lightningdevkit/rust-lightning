@@ -47,7 +47,7 @@ fn sigrec_decode(sig_rec: Vec<u8>) -> Result<RecoverableSignature, Error> {
 
 	match RecoveryId::from_i32(rid) {
 		Ok(x) => RecoverableSignature::from_compact(rsig, x),
-		Err(e) => Err(e)
+		Err(e) => Err(e),
 	}
 }
 
@@ -63,18 +63,18 @@ pub fn sign(msg: &[u8], sk: &SecretKey) -> String {
 }
 
 /// Recovers the PublicKey of the signer of the message given the message and the signature.
-pub fn recover_pk(msg: &[u8], sig: &str) ->  Result<PublicKey, Error> {
+pub fn recover_pk(msg: &[u8], sig: &str) -> Result<PublicKey, Error> {
 	let secp_ctx = Secp256k1::verification_only();
 	let msg_hash = sha256d::Hash::hash(&[LN_MESSAGE_PREFIX, msg].concat());
 
 	match base32::Alphabet::ZBase32.decode(&sig) {
-		Ok(sig_rec) => {
-			match sigrec_decode(sig_rec) {
-				Ok(sig) => secp_ctx.recover_ecdsa(&Message::from_digest(msg_hash.to_byte_array()), &sig),
-				Err(e) => Err(e)
-			}
+		Ok(sig_rec) => match sigrec_decode(sig_rec) {
+			Ok(sig) => {
+				secp_ctx.recover_ecdsa(&Message::from_digest(msg_hash.to_byte_array()), &sig)
+			},
+			Err(e) => Err(e),
 		},
-		Err(_) => Err(Error::InvalidSignature)
+		Err(_) => Err(Error::InvalidSignature),
 	}
 }
 
@@ -83,16 +83,16 @@ pub fn recover_pk(msg: &[u8], sig: &str) ->  Result<PublicKey, Error> {
 pub fn verify(msg: &[u8], sig: &str, pk: &PublicKey) -> bool {
 	match recover_pk(msg, sig) {
 		Ok(x) => x == *pk,
-		Err(_) => false
+		Err(_) => false,
 	}
 }
 
 #[cfg(test)]
 mod test {
-	use core::str::FromStr;
-	use crate::util::message_signing::{sign, recover_pk, verify};
+	use crate::util::message_signing::{recover_pk, sign, verify};
 	use bitcoin::secp256k1::constants::ONE;
-	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use core::str::FromStr;
 
 	#[test]
 	fn test_sign() {
@@ -148,4 +148,3 @@ mod test {
 		}
 	}
 }
-
