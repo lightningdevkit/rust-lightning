@@ -847,9 +847,9 @@ fn do_test_retries_own_commitment_broadcast_after_reorg(anchors: bool, revoked_c
 	{
 		let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
 		if nodes[0].connect_style.borrow().updates_best_block_first() {
-			// `commitment_a` and `htlc_timeout_a` are rebroadcast because the best block was
-			// updated prior to seeing `commitment_b`.
-			assert_eq!(txn.len(), if anchors { 2 } else { 3 });
+			// `commitment_a` is rebroadcast because the best block was updated prior to seeing
+			// `commitment_b`.
+			assert_eq!(txn.len(), 2);
 			check_spends!(txn.last().unwrap(), commitment_b);
 		} else {
 			assert_eq!(txn.len(), 1);

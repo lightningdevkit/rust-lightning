@@ -2811,7 +2811,7 @@ fn claim_htlc_outputs_single_tx() {
 
 		// Filter out any non justice transactions.
 		node_txn.retain(|tx| tx.input[0].previous_output.txid == revoked_local_txn[0].compute_txid());
-		assert!(node_txn.len() > 3);
+		assert!(node_txn.len() >= 3);
 
 		assert_eq!(node_txn[0].input.len(), 1);
 		assert_eq!(node_txn[1].input.len(), 1);
@@ -7805,7 +7805,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	assert_ne!(feerate_preimage, 0);
 
 	// After exhaustion of height timer, new bumped claim txn should have been broadcast, check it
-	connect_blocks(&nodes[1], 1);
+	connect_blocks(&nodes[1], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);

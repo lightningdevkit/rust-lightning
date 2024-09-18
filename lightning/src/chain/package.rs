@@ -28,6 +28,7 @@ use crate::ln::types::PaymentPreimage;
 use crate::ln::chan_utils::{self, TxCreationKeys, HTLCOutputInCommitment};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
+use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::transaction::MaybeSignedTransaction;
@@ -104,8 +105,13 @@ pub(crate) fn verify_channel_type_features(channel_type_features: &Option<Channe
 // number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
 pub(crate) const WEIGHT_REVOKED_OUTPUT: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 77;
 
+#[cfg(not(test))]
 /// Height delay at which transactions are fee-bumped/rebroadcasted with a low priority.
 const LOW_FREQUENCY_BUMP_INTERVAL: u32 = 15;
+#[cfg(test)]
+/// Height delay at which transactions are fee-bumped/rebroadcasted with a low priority.
+pub(crate) const LOW_FREQUENCY_BUMP_INTERVAL: u32 = 15;
+
 /// Height delay at which transactions are fee-bumped/rebroadcasted with a middle priority.
 const MIDDLE_FREQUENCY_BUMP_INTERVAL: u32 = 3;
 /// Height delay at which transactions are fee-bumped/rebroadcasted with a high priority.
@@ -945,18 +951,83 @@ impl PackageTemplate {
 			return None;
 		} else { panic!("API Error: Package must not be inputs empty"); }
 	}
-	/// In LN, output claimed are time-sensitive, which means we have to spend them before reaching some timelock expiration. At in-channel
-	/// output detection, we generate a first version of a claim tx and associate to it a height timer. A height timer is an absolute block
-	/// height that once reached we should generate a new bumped "version" of the claim tx to be sure that we safely claim outputs before
-	/// that our counterparty can do so. If timelock expires soon, height timer is going to be scaled down in consequence to increase
-	/// frequency of the bump and so increase our bets of success.
+	/// Gets the next height at which we should fee-bump this package, assuming we can do so and
+	/// the package is last fee-bumped at `current_height`.
+	///
+	/// As the deadline with which to get a claim confirmed approaches, the rate at which the timer
+	/// ticks increases.
 	pub(crate) fn get_height_timer(&self, current_height: u32) -> u32 {
-		if self.soonest_conf_deadline <= current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL {
-			return current_height + HIGH_FREQUENCY_BUMP_INTERVAL
-		} else if self.soonest_conf_deadline - current_height <= LOW_FREQUENCY_BUMP_INTERVAL {
-			return current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL
+		let mut height_timer = current_height + LOW_FREQUENCY_BUMP_INTERVAL;
+		let timer_for_target_conf = |target_conf| -> u32 {
+			if target_conf <= current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL {
+				current_height + HIGH_FREQUENCY_BUMP_INTERVAL
+			} else if target_conf <= current_height + LOW_FREQUENCY_BUMP_INTERVAL {
+				current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL
+			} else {
+				current_height + LOW_FREQUENCY_BUMP_INTERVAL
+			}
+		};
+		for (_, input) in self.inputs.iter() {
+			match input {
+				PackageSolvingData::RevokedOutput(_) => {
+					// Revoked Outputs will become spendable by our counterparty at the height
+					// where the CSV expires, which is also our `soonest_conf_deadline`.
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(self.soonest_conf_deadline),
+					);
+				},
+				PackageSolvingData::RevokedHTLCOutput(_) => {
+					// Revoked HTLC Outputs may be spendable by our counterparty right now, but
+					// after they spend them they still have to wait for an additional CSV delta
+					// before they can claim the full funds. Thus, we leave the timer at
+					// `LOW_FREQUENCY_BUMP_INTERVAL` until the HTLC output is spent, creating a
+					// `RevokedOutput`.
+				},
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(outp) => {
+					// Incoming HTLCs being claimed by preimage should be claimed by the time their
+					// CLTV unlocks.
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(outp.htlc.cltv_expiry),
+					);
+				},
+				PackageSolvingData::HolderHTLCOutput(outp) if outp.preimage.is_some() => {
+					// We have the same deadline here as for `CounterpartyOfferedHTLCOutput`. Note
+					// that `outp.cltv_expiry` is always 0 in this case, but
+					// `soonest_conf_deadline` holds the real HTLC expiry.
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(self.soonest_conf_deadline),
+					);
+				},
+				PackageSolvingData::CounterpartyReceivedHTLCOutput(outp) => {
+					// Outgoing HTLCs being claimed through their timeout should be claimed fast
+					// enough to allow us to claim before the CLTV lock expires on the inbound
+					// edge (assuming the HTLC was forwarded).
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(outp.htlc.cltv_expiry + MIN_CLTV_EXPIRY_DELTA as u32),
+					);
+				},
+				PackageSolvingData::HolderHTLCOutput(outp) => {
+					// We have the same deadline for holder timeout claims as for
+					// `CounterpartyReceivedHTLCOutput`
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(outp.cltv_expiry + MIN_CLTV_EXPIRY_DELTA as u32),
+					);
+				},
+				PackageSolvingData::HolderFundingOutput(_) => {
+					// We should apply a smart heuristic here based on the HTLCs in the commitment
+					// transaction, but we don't currently have that information available so
+					// instead we just bump once per block.
+					height_timer =
+						cmp::min(height_timer, current_height + HIGH_FREQUENCY_BUMP_INTERVAL);
+				},
+			}
 		}
-		current_height + LOW_FREQUENCY_BUMP_INTERVAL
+		height_timer
 	}
 
 	/// Returns value in satoshis to be included as package outgoing output amount and feerate
