@@ -8,10 +8,10 @@
 // licenses.
 
 use bitcoin::amount::Amount;
-use bitcoin::transaction::{Transaction, TxOut};
-use bitcoin::script::ScriptBuf;
-use bitcoin::consensus::Encodable;
 use bitcoin::consensus::encode::VarInt;
+use bitcoin::consensus::Encodable;
+use bitcoin::script::ScriptBuf;
+use bitcoin::transaction::{Transaction, TxOut};
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -19,12 +19,10 @@ use crate::prelude::*;
 use crate::io_extras::sink;
 use core::cmp::Ordering;
 
-pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
+pub fn sort_outputs<T, C: Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>, tie_breaker: C) {
 	outputs.sort_unstable_by(|a, b| {
 		a.0.value.cmp(&b.0.value).then_with(|| {
-			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..]).then_with(|| {
-				tie_breaker(&a.1, &b.1)
-			})
+			a.0.script_pubkey[..].cmp(&b.0.script_pubkey[..]).then_with(|| tie_breaker(&a.1, &b.1))
 		})
 	});
 }
@@ -34,22 +32,26 @@ pub fn sort_outputs<T, C : Fn(&T, &T) -> Ordering>(outputs: &mut Vec<(TxOut, T)>
 /// Assumes at least one input will have a witness (ie spends a segwit output).
 /// Returns an Err(()) if the requested feerate cannot be met.
 /// Returns the expected maximum weight of the fully signed transaction on success.
-pub(crate) fn maybe_add_change_output(tx: &mut Transaction, input_value: Amount, witness_max_weight: u64, feerate_sat_per_1000_weight: u32, change_destination_script: ScriptBuf) -> Result<u64, ()> {
-	if input_value > Amount::MAX_MONEY { return Err(()); }
+pub(crate) fn maybe_add_change_output(
+	tx: &mut Transaction, input_value: Amount, witness_max_weight: u64,
+	feerate_sat_per_1000_weight: u32, change_destination_script: ScriptBuf,
+) -> Result<u64, ()> {
+	if input_value > Amount::MAX_MONEY {
+		return Err(());
+	}
 
 	const WITNESS_FLAG_BYTES: u64 = 2;
 
 	let mut output_value = Amount::ZERO;
 	for output in tx.output.iter() {
 		output_value += output.value;
-		if output_value >= input_value { return Err(()); }
+		if output_value >= input_value {
+			return Err(());
+		}
 	}
 
 	let dust_value = change_destination_script.minimal_non_dust();
-	let mut change_output = TxOut {
-		script_pubkey: change_destination_script,
-		value: Amount::ZERO,
-	};
+	let mut change_output = TxOut { script_pubkey: change_destination_script, value: Amount::ZERO };
 	let change_len = change_output.consensus_encode(&mut sink()).unwrap();
 	let starting_weight = tx.weight().to_wu() + WITNESS_FLAG_BYTES + witness_max_weight as u64;
 	let starting_fees = (starting_weight as i64) * feerate_sat_per_1000_weight as i64 / 1000;
@@ -76,12 +78,12 @@ mod tests {
 	use super::*;
 
 	use bitcoin::amount::Amount;
-	use bitcoin::locktime::absolute::LockTime;
-	use bitcoin::transaction::{TxIn, OutPoint, Version};
-	use bitcoin::script::Builder;
 	use bitcoin::hash_types::Txid;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
+	use bitcoin::locktime::absolute::LockTime;
+	use bitcoin::script::Builder;
+	use bitcoin::transaction::{OutPoint, TxIn, Version};
 	use bitcoin::{PubkeyHash, Sequence, Witness};
 
 	use alloc::vec;
@@ -89,47 +91,45 @@ mod tests {
 	#[test]
 	fn sort_output_by_value() {
 		let txout1 = TxOut {
-			value:  Amount::from_sat(100),
-			script_pubkey: Builder::new().push_int(0).into_script()
+			value: Amount::from_sat(100),
+			script_pubkey: Builder::new().push_int(0).into_script(),
 		};
 		let txout1_ = txout1.clone();
 
 		let txout2 = TxOut {
 			value: Amount::from_sat(99),
-			script_pubkey: Builder::new().push_int(0).into_script()
+			script_pubkey: Builder::new().push_int(0).into_script(),
 		};
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+		sort_outputs(&mut outputs, |_, _| {
+			unreachable!();
+		});
 
-		assert_eq!(
-			&outputs,
-			&vec![(txout2_, "ignore"), (txout1_, "ignore")]
-			);
+		assert_eq!(&outputs, &vec![(txout2_, "ignore"), (txout1_, "ignore")]);
 	}
 
 	#[test]
 	fn sort_output_by_script_pubkey() {
 		let txout1 = TxOut {
-			value:  Amount::from_sat(100),
+			value: Amount::from_sat(100),
 			script_pubkey: Builder::new().push_int(3).into_script(),
 		};
 		let txout1_ = txout1.clone();
 
 		let txout2 = TxOut {
 			value: Amount::from_sat(100),
-			script_pubkey: Builder::new().push_int(1).push_int(2).into_script()
+			script_pubkey: Builder::new().push_int(1).push_int(2).into_script(),
 		};
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+		sort_outputs(&mut outputs, |_, _| {
+			unreachable!();
+		});
 
-		assert_eq!(
-			&outputs,
-			&vec![(txout2_, "ignore"), (txout1_, "ignore")]
-			);
+		assert_eq!(&outputs, &vec![(txout2_, "ignore"), (txout1_, "ignore")]);
 	}
 
 	#[test]
@@ -148,7 +148,9 @@ mod tests {
 		let txout2_ = txout2.clone();
 
 		let mut outputs = vec![(txout1, "ignore"), (txout2, "ignore")];
-		sort_outputs(&mut outputs, |_, _| { unreachable!(); });
+		sort_outputs(&mut outputs, |_, _| {
+			unreachable!();
+		});
 
 		assert_eq!(&outputs, &vec![(txout1_, "ignore"), (txout2_, "ignore")]);
 	}
@@ -156,8 +158,8 @@ mod tests {
 	#[test]
 	fn sort_output_tie_breaker_test() {
 		let txout1 = TxOut {
-			value:  Amount::from_sat(100),
-			script_pubkey: Builder::new().push_int(1).push_int(2).into_script()
+			value: Amount::from_sat(100),
+			script_pubkey: Builder::new().push_int(1).push_int(2).into_script(),
 		};
 		let txout1_ = txout1.clone();
 
@@ -165,12 +167,9 @@ mod tests {
 		let txout2_ = txout1.clone();
 
 		let mut outputs = vec![(txout1, 420), (txout2, 69)];
-		sort_outputs(&mut outputs, |a, b| { a.cmp(b) });
+		sort_outputs(&mut outputs, |a, b| a.cmp(b));
 
-		assert_eq!(
-			&outputs,
-			&vec![(txout2_, 69), (txout1_, 420)]
-		);
+		assert_eq!(&outputs, &vec![(txout2_, 69), (txout1_, 420)]);
 	}
 
 	fn script_from_hex(hex_str: &str) -> ScriptBuf {
@@ -276,7 +275,7 @@ mod tests {
 		assert_eq!(tx.output[0].value.to_sat(), 546);
 		assert_eq!(tx.output[0].script_pubkey, output_spk);
 		// New weight is exactly the fee we wanted.
-		assert_eq!(tx.weight().to_wu() / 4, 590-546);
+		assert_eq!(tx.weight().to_wu() / 4, 590 - 546);
 
 		tx.output.pop();
 		// The only change is the addition of one output.
