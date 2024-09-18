@@ -32,10 +32,18 @@ use crate::util::logger::Logger;
 
 #[test]
 fn test_open_channel() {
+	do_test_open_channel(false);
+	do_test_open_channel(true);
+}
+
+fn do_test_open_channel(zero_conf: bool) {
 	// Simulate acquiring the commitment point for `open_channel` and `accept_channel` asynchronously.
+	let mut manually_accept_config = test_default_channel_config();
+	manually_accept_config.manually_accept_inbound_channels = zero_conf;
+
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_accept_config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	// Open an outbound channel simulating an async signer.
@@ -59,7 +67,18 @@ fn test_open_channel() {
 	nodes[1].disable_next_channel_signer_op(SignerOp::GetPerCommitmentPoint);
 	nodes[1].node.handle_open_channel(nodes[0].node.get_our_node_id(), &open_chan_msg);
 
-	{
+	if zero_conf {
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1, "Expected one event, got {}", events.len());
+		match &events[0] {
+			Event::OpenChannelRequest { temporary_channel_id, .. } => {
+				nodes[1].node.accept_inbound_channel_from_trusted_peer_0conf(
+					temporary_channel_id, &nodes[0].node.get_our_node_id(), 0)
+					.expect("Unable to accept inbound zero-conf channel");
+			},
+			ev => panic!("Expected OpenChannelRequest, not {:?}", ev)
+		}
+	} else {
 		let msgs = nodes[1].node.get_and_clear_pending_msg_events();
 		assert!(msgs.is_empty(), "Expected no message events; got {:?}", msgs);
 	}
@@ -186,15 +205,18 @@ fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 	for op in signer_ops.iter() {
 		nodes[1].enable_channel_signer_op(&nodes[0].node.get_our_node_id(), &chan_id, *op);
 		nodes[1].node.signer_unblocked(Some((nodes[0].node.get_our_node_id(), chan_id)));
+		if *op == SignerOp::SignCounterpartyCommitment {
+			expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+			// nodes[0] <-- funding_signed --- nodes[1]
+			let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+			nodes[0].node.handle_funding_signed(nodes[1].node.get_our_node_id(), &funding_signed_msg);
+			check_added_monitors(&nodes[0], 1);
+			expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
+		} else {
+			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		}
 	}
-
-	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
-
-	// nodes[0] <-- funding_signed --- nodes[1]
-	let funding_signed_msg = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_funding_signed(nodes[1].node.get_our_node_id(), &funding_signed_msg);
-	check_added_monitors(&nodes[0], 1);
-	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
 }
 
 #[test]
@@ -243,7 +265,7 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(enabl
 	dst.node.handle_commitment_signed(src.node.get_our_node_id(), &payment_event.commitment_msg);
 	check_added_monitors(dst, 1);
 
-	let mut enabled_signer_ops = HashSet::new();
+	let mut enabled_signer_ops = new_hash_set();
 	log_trace!(dst.logger, "enable_signer_op_order={:?}", enable_signer_op_order);
 	for op in enable_signer_op_order {
 		enabled_signer_ops.insert(op);
