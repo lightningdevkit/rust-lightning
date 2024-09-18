@@ -12,7 +12,6 @@
 use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
-use crate::blinded_path::message::{BlindedMessagePath, MessageContext, MessageForwardNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, ForwardTlvs, PaymentConstraints, PaymentForwardNode, PaymentRelay, ReceiveTlvs};
 use crate::ln::{PaymentHash, PaymentPreimage};
 use crate::ln::channel_state::ChannelDetails;
@@ -23,7 +22,6 @@ use crate::ln::onion_utils;
 #[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
 use crate::offers::invoice::Bolt12Invoice;
-use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, OnionMessagePath};
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId};
 use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
 use crate::sign::EntropySource;
@@ -49,9 +47,6 @@ pub use lightning_types::routing::{RouteHint, RouteHintHop};
 /// it will create a one-hop path using the recipient as the introduction node if it is a announced
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
 /// payment, and thus an `Err` is returned.
-///
-/// Implements [`MessageRouter`] by delegating to [`DefaultMessageRouter`]. See those docs for
-/// privacy implications.
 pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
 	L::Target: Logger,
 	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
@@ -190,36 +185,8 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 	}
 }
 
-impl< G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> MessageRouter for DefaultRouter<G, L, ES, S, SP, Sc> where
-	L::Target: Logger,
-	S::Target: for <'a> LockableScore<'a, ScoreLookUp = Sc>,
-	ES::Target: EntropySource,
-{
-	fn find_path(
-		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
-	) -> Result<OnionMessagePath, ()> {
-		DefaultMessageRouter::<_, _, ES>::find_path(&self.network_graph, sender, peers, destination)
-	}
-
-	fn create_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	> (
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		DefaultMessageRouter::create_blinded_paths(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
-	}
-
-	fn create_compact_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	> (
-		&self, recipient: PublicKey, context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		DefaultMessageRouter::create_compact_blinded_paths(&self.network_graph, recipient, context, peers, &self.entropy_source, secp_ctx)
-	}
-}
-
 /// A trait defining behavior for routing a payment.
-pub trait Router: MessageRouter {
+pub trait Router {
 	/// Finds a [`Route`] for a payment between the given `payer` and a payee.
 	///
 	/// The `payee` and the payment's value are given in [`RouteParameters::payment_params`]

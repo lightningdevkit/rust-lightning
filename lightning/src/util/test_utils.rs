@@ -265,32 +265,6 @@ impl<'a> Router for TestRouter<'a> {
 	}
 }
 
-impl<'a> MessageRouter for TestRouter<'a> {
-	fn find_path(
-		&self, sender: PublicKey, peers: Vec<PublicKey>, destination: Destination
-	) -> Result<OnionMessagePath, ()> {
-		self.router.find_path(sender, peers, destination)
-	}
-
-	fn create_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	>(
-		&self, recipient: PublicKey, context: MessageContext,
-		peers: Vec<PublicKey>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		self.router.create_blinded_paths(recipient, context, peers, secp_ctx)
-	}
-
-	fn create_compact_blinded_paths<
-		T: secp256k1::Signing + secp256k1::Verification
-	>(
-		&self, recipient: PublicKey, context: MessageContext,
-		peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		self.router.create_compact_blinded_paths(recipient, context, peers, secp_ctx)
-	}
-}
-
 impl<'a> Drop for TestRouter<'a> {
 	fn drop(&mut self) {
 		if std::thread::panicking() {
