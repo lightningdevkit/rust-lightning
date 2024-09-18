@@ -27,13 +27,13 @@ const RELEASE_HELD_HTLC_TLV_TYPE: u64 = 74;
 pub trait AsyncPaymentsMessageHandler {
 	/// Handle a [`HeldHtlcAvailable`] message. A [`ReleaseHeldHtlc`] should be returned to release
 	/// the held funds.
-	fn held_htlc_available(
+	fn handle_held_htlc_available(
 		&self, message: HeldHtlcAvailable, responder: Option<Responder>,
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)>;
 
 	/// Handle a [`ReleaseHeldHtlc`] message. If authentication of the message succeeds, an HTLC
 	/// should be released to the corresponding payee.
-	fn release_held_htlc(&self, message: ReleaseHeldHtlc, context: AsyncPaymentsContext);
+	fn handle_release_held_htlc(&self, message: ReleaseHeldHtlc, context: AsyncPaymentsContext);
 
 	/// Release any [`AsyncPaymentsMessage`]s that need to be sent.
 	///

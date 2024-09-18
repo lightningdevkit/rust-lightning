@@ -121,7 +121,7 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 struct TestAsyncPaymentsMessageHandler {}
 
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
-	fn held_htlc_available(
+	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, responder: Option<Responder>,
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
 		let responder = match responder {
@@ -130,7 +130,7 @@ impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 		};
 		Some((ReleaseHeldHtlc {}, responder.respond()))
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
+	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 }
 
 #[derive(Debug)]

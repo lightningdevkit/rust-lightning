@@ -11327,13 +11327,13 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	fn held_htlc_available(
+	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
 		None
 	}
 
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
+	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
 		#[cfg(async_payments)] {
 			let AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } = _context;
 			if payment_id.verify_for_async_payment(hmac, nonce, &self.inbound_payment_key).is_err() { return }
