@@ -994,7 +994,7 @@ impl PackageTemplate {
 				},
 				PackageSolvingData::HolderHTLCOutput(outp) if outp.preimage.is_some() => {
 					// We have the same deadline here as for `CounterpartyOfferedHTLCOutput`. Note
-					// that `outp.htlc.cltv_expiry` is always 0 in this case, but
+					// that `outp.cltv_expiry` is always 0 in this case, but
 					// `soonest_conf_deadline` holds the real HTLC expiry.
 					height_timer = cmp::min(
 						height_timer,
