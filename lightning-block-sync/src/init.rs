@@ -49,10 +49,10 @@ where
 /// use lightning::chain::channelmonitor::ChannelMonitor;
 /// use lightning::chain::chaininterface::BroadcasterInterface;
 /// use lightning::chain::chaininterface::FeeEstimator;
-/// use lightning::sign;
-/// use lightning::sign::{EntropySource, NodeSigner, SignerProvider};
 /// use lightning::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
 /// use lightning::routing::router::Router;
+/// use lightning::sign;
+/// use lightning::sign::{EntropySource, NodeSigner, SignerProvider};
 /// use lightning::util::config::UserConfig;
 /// use lightning::util::logger::Logger;
 /// use lightning::util::ser::ReadableArgs;
