@@ -103,9 +103,11 @@ pub struct TestFeeEstimator {
 }
 impl TestFeeEstimator {
 	pub fn new(sat_per_kw: u32) -> Self {
+		let sat_per_kw = Mutex::new(sat_per_kw);
+		let target_override = Mutex::new(new_hash_map());
 		Self {
-			sat_per_kw: Mutex::new(sat_per_kw),
-			target_override: Mutex::new(new_hash_map()),
+			sat_per_kw,
+			target_override,
 		}
 	}
 }
@@ -136,11 +138,13 @@ impl<'a> TestRouter<'a> {
 		scorer: &'a RwLock<TestScorer>,
 	) -> Self {
 		let entropy_source = Arc::new(RandomBytes::new([42; 32]));
+		let next_routes = Mutex::new(VecDeque::new());
+		let next_blinded_payment_paths = Mutex::new(Vec::new());
 		Self {
 			router: DefaultRouter::new(network_graph.clone(), logger, entropy_source, scorer, Default::default()),
 			network_graph,
-			next_routes: Mutex::new(VecDeque::new()),
-			next_blinded_payment_paths: Mutex::new(Vec::new()),
+			next_routes,
+			next_blinded_payment_paths,
 			scorer,
 		}
 	}
@@ -351,14 +355,19 @@ pub struct TestChainMonitor<'a> {
 }
 impl<'a> TestChainMonitor<'a> {
 	pub fn new(chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn chaininterface::BroadcasterInterface, logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator, persister: &'a dyn chainmonitor::Persist<TestChannelSigner>, keys_manager: &'a TestKeysInterface) -> Self {
+		let added_monitors = Mutex::new(Vec::new());
+		let monitor_updates = Mutex::new(new_hash_map());
+		let latest_monitor_update_id = Mutex::new(new_hash_map());
+		let expect_channel_force_closed = Mutex::new(None);
+		let expect_monitor_round_trip_fail = Mutex::new(None);
 		Self {
-			added_monitors: Mutex::new(Vec::new()),
-			monitor_updates: Mutex::new(new_hash_map()),
-			latest_monitor_update_id: Mutex::new(new_hash_map()),
+			added_monitors,
+			monitor_updates,
+			latest_monitor_update_id,
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
 			keys_manager,
-			expect_channel_force_closed: Mutex::new(None),
-			expect_monitor_round_trip_fail: Mutex::new(None),
+			expect_channel_force_closed,
+			expect_monitor_round_trip_fail,
 		}
 	}
 
@@ -450,10 +459,12 @@ pub(crate) struct WatchtowerPersister {
 impl WatchtowerPersister {
 	#[cfg(test)]
 	pub(crate) fn new(destination_script: ScriptBuf) -> Self {
+		let unsigned_justice_tx_data = Mutex::new(new_hash_map());
+		let watchtower_state = Mutex::new(new_hash_map());
 		WatchtowerPersister {
 			persister: TestPersister::new(),
-			unsigned_justice_tx_data: Mutex::new(new_hash_map()),
-			watchtower_state: Mutex::new(new_hash_map()),
+			unsigned_justice_tx_data,
+			watchtower_state,
 			destination_script,
 		}
 	}
@@ -552,10 +563,13 @@ pub struct TestPersister {
 }
 impl TestPersister {
 	pub fn new() -> Self {
+		let update_rets = Mutex::new(VecDeque::new());
+		let offchain_monitor_updates = Mutex::new(new_hash_map());
+		let chain_sync_monitor_persistences = Mutex::new(VecDeque::new());
 		Self {
-			update_rets: Mutex::new(VecDeque::new()),
-			offchain_monitor_updates: Mutex::new(new_hash_map()),
-			chain_sync_monitor_persistences: Mutex::new(VecDeque::new())
+			update_rets,
+			offchain_monitor_updates,
+			chain_sync_monitor_persistences
 		}
 	}
 
@@ -694,14 +708,17 @@ pub struct TestBroadcaster {
 
 impl TestBroadcaster {
 	pub fn new(network: Network) -> Self {
+		let txn_broadcasted = Mutex::new(Vec::new());
+		let blocks = Arc::new(Mutex::new(vec![(genesis_block(network), 0)]));
 		Self {
-			txn_broadcasted: Mutex::new(Vec::new()),
-			blocks: Arc::new(Mutex::new(vec![(genesis_block(network), 0)])),
+			txn_broadcasted,
+			blocks,
 		}
 	}
 
 	pub fn with_blocks(blocks: Arc<Mutex<Vec<(Block, u32)>>>) -> Self {
-		Self { txn_broadcasted: Mutex::new(Vec::new()), blocks }
+		let txn_broadcasted = Mutex::new(Vec::new());
+		Self { txn_broadcasted, blocks }
 	}
 
 	pub fn txn_broadcast(&self) -> Vec<Transaction> {
@@ -749,10 +766,13 @@ impl TestChannelMessageHandler {
 
 impl TestChannelMessageHandler {
 	pub fn new(chain_hash: ChainHash) -> Self {
+		let pending_events = Mutex::new(Vec::new());
+		let expected_recv_msgs = Mutex::new(None);
+		let connected_peers = Mutex::new(new_hash_set());
 		TestChannelMessageHandler {
-			pending_events: Mutex::new(Vec::new()),
-			expected_recv_msgs: Mutex::new(None),
-			connected_peers: Mutex::new(new_hash_set()),
+			pending_events,
+			expected_recv_msgs,
+			connected_peers,
 			chain_hash,
 		}
 	}
@@ -991,10 +1011,11 @@ pub struct TestRoutingMessageHandler {
 
 impl TestRoutingMessageHandler {
 	pub fn new() -> Self {
+		let pending_events = Mutex::new(vec![]);
 		TestRoutingMessageHandler {
 			chan_upds_recvd: AtomicUsize::new(0),
 			chan_anns_recvd: AtomicUsize::new(0),
-			pending_events: Mutex::new(vec![]),
+			pending_events,
 			request_full_sync: AtomicBool::new(false),
 			announcement_available_for_sync: AtomicBool::new(false),
 		}
@@ -1109,10 +1130,12 @@ impl TestLogger {
 		Self::with_id("".to_owned())
 	}
 	pub fn with_id(id: String) -> TestLogger {
+		let lines = Mutex::new(new_hash_map());
+		let context = Mutex::new(new_hash_map());
 		TestLogger {
 			id,
-			lines: Mutex::new(new_hash_map()),
-			context: Mutex::new(new_hash_map()),
+			lines,
+			context,
 		}
 	}
 	pub fn assert_log(&self, module: &str, line: String, count: usize) {
@@ -1330,14 +1353,19 @@ impl SignerProvider for TestKeysInterface {
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
+		let override_random_bytes = Mutex::new(None);
+		let enforcement_states = Mutex::new(new_hash_map());
+		let expectations = Mutex::new(None);
+		let unavailable_signers_ops = Mutex::new(new_hash_map());
+		let next_signer_disabled_ops = Mutex::new(new_hash_set());
 		Self {
 			backing: sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
-			override_random_bytes: Mutex::new(None),
+			override_random_bytes,
 			disable_revocation_policy_check: false,
-			enforcement_states: Mutex::new(new_hash_map()),
-			expectations: Mutex::new(None),
-			unavailable_signers_ops: Mutex::new(new_hash_map()),
-			next_signer_disabled_ops: Mutex::new(new_hash_set()),
+			enforcement_states,
+			expectations,
+			unavailable_signers_ops,
+			next_signer_disabled_ops,
 		}
 	}
 
@@ -1403,12 +1431,15 @@ pub struct TestChainSource {
 impl TestChainSource {
 	pub fn new(network: Network) -> Self {
 		let script_pubkey = Builder::new().push_opcode(opcodes::OP_TRUE).into_script();
+		let utxo_ret = Mutex::new(UtxoResult::Sync(Ok(TxOut { value: Amount::MAX, script_pubkey })));
+		let watched_txn = Mutex::new(new_hash_set());
+		let watched_outputs = Mutex::new(new_hash_set());
 		Self {
 			chain_hash: ChainHash::using_genesis_block(network),
-			utxo_ret: Mutex::new(UtxoResult::Sync(Ok(TxOut { value: Amount::MAX, script_pubkey }))),
+			utxo_ret,
 			get_utxo_call_count: AtomicUsize::new(0),
-			watched_txn: Mutex::new(new_hash_set()),
-			watched_outputs: Mutex::new(new_hash_set()),
+			watched_txn,
+			watched_outputs,
 		}
 	}
 	pub fn remove_watched_txn_and_outputs(&self, outpoint: OutPoint, script_pubkey: ScriptBuf) {
