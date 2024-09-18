@@ -122,7 +122,7 @@ struct TestAsyncPaymentsMessageHandler {}
 
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
 	fn held_htlc_available(
-		&self, message: HeldHtlcAvailable, responder: Option<Responder>,
+		&self, _message: HeldHtlcAvailable, responder: Option<Responder>,
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
 		let responder = match responder {
 			Some(resp) => resp,
