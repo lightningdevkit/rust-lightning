@@ -65,5 +65,4 @@ lightning/src/routing/test_utils.rs
 lightning/src/routing/utxo.rs
 lightning/src/util/invoice.rs
 lightning/src/util/message_signing.rs
-lightning/src/util/mod.rs
 lightning/src/util/string.rs
