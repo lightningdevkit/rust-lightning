@@ -45,6 +45,11 @@ pub use lightning_types::routing::{RouteHint, RouteHintHop};
 ///
 /// # Privacy
 ///
+/// Creating [`BlindedPaymentPath`]s may affect privacy since, if a suitable path cannot be found,
+/// it will create a one-hop path using the recipient as the introduction node if it is a announced
+/// node. Otherwise, there is no way to find a path to the introduction node in order to send a
+/// payment, and thus an `Err` is returned.
+///
 /// Implements [`MessageRouter`] by delegating to [`DefaultMessageRouter`]. See those docs for
 /// privacy implications.
 pub struct DefaultRouter<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Sized, Sc: ScoreLookUp<ScoreParams = SP>> where
