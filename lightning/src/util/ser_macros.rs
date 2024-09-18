@@ -82,7 +82,7 @@ macro_rules! _encode_tlv {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! _check_encoded_tlv_order {
-	($last_type: expr, $type: expr, (static_value, $value: expr)) => { };
+	($last_type: expr, $type: expr, (static_value, $value: expr)) => {};
 	($last_type: expr, $type: expr, $fieldty: tt) => {
 		if let Some(t) = $last_type {
 			// Note that $type may be 0 making the following comparison always false
@@ -188,12 +188,13 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 	($len: expr, $type: expr, $field: expr, (default_value, $default: expr)) => {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required)
 	};
-	($len: expr, $type: expr, $field: expr, (static_value, $value: expr)) => {
-	};
+	($len: expr, $type: expr, $field: expr, (static_value, $value: expr)) => {};
 	($len: expr, $type: expr, $field: expr, required) => {
 		BigSize($type).write(&mut $len).expect("No in-memory data may fail to serialize");
 		let field_len = $field.serialized_length();
-		BigSize(field_len as u64).write(&mut $len).expect("No in-memory data may fail to serialize");
+		BigSize(field_len as u64)
+			.write(&mut $len)
+			.expect("No in-memory data may fail to serialize");
 		$len.0 += field_len;
 	};
 	($len: expr, $type: expr, $field: expr, required_vec) => {
@@ -202,9 +203,13 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 	};
 	($len: expr, $optional_type: expr, $optional_field: expr, option) => {
 		if let Some(ref field) = $optional_field {
-			BigSize($optional_type).write(&mut $len).expect("No in-memory data may fail to serialize");
+			BigSize($optional_type)
+				.write(&mut $len)
+				.expect("No in-memory data may fail to serialize");
 			let field_len = field.serialized_length();
-			BigSize(field_len as u64).write(&mut $len).expect("No in-memory data may fail to serialize");
+			BigSize(field_len as u64)
+				.write(&mut $len)
+				.expect("No in-memory data may fail to serialize");
 			$len.0 += field_len;
 		}
 	};
@@ -265,17 +270,18 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (default_value, $default: expr)) => {{
 		// Note that $type may be 0 making the second comparison always false
 		#[allow(unused_comparisons)]
-		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
+		let invalid_order =
+			($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
 		if invalid_order {
 			$field = $default.into();
 		}
 	}};
-	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (static_value, $value: expr)) => {
-	};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (static_value, $value: expr)) => {};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
 		// Note that $type may be 0 making the second comparison always false
 		#[allow(unused_comparisons)]
-		let invalid_order = ($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
+		let invalid_order =
+			($last_seen_type.is_none() || $last_seen_type.unwrap() < $type) && $typ.0 > $type;
 		if invalid_order {
 			return Err(DecodeError::InvalidValue);
 		}
@@ -461,8 +467,12 @@ macro_rules! _decode_tlv {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! _decode_tlv_stream_match_check {
-	($val: ident, $type: expr, (static_value, $value: expr)) => { false };
-	($val: ident, $type: expr, $fieldty: tt) => { $val == $type }
+	($val: ident, $type: expr, (static_value, $value: expr)) => {
+		false
+	};
+	($val: ident, $type: expr, $fieldty: tt) => {
+		$val == $type
+	};
 }
 
 /// Implements the TLVs deserialization part in a [`Readable`] implementation of a struct.
@@ -713,7 +723,7 @@ macro_rules! write_ver_prefix {
 	($stream: expr, $this_version: expr, $min_version_that_can_read_this: expr) => {
 		$stream.write_all(&[$this_version; 1])?;
 		$stream.write_all(&[$min_version_that_can_read_this; 1])?;
-	}
+	};
 }
 
 /// Writes out a suffix to an object as a length-prefixed TLV stream which contains potentially
@@ -737,14 +747,14 @@ macro_rules! write_tlv_fields {
 /// serialization logic for this object. This is compared against the
 /// `$min_version_that_can_read_this` added by [`write_ver_prefix`].
 macro_rules! read_ver_prefix {
-	($stream: expr, $this_version: expr) => { {
+	($stream: expr, $this_version: expr) => {{
 		let ver: u8 = Readable::read($stream)?;
 		let min_ver: u8 = Readable::read($stream)?;
 		if min_ver > $this_version {
 			return Err(DecodeError::UnknownVersion);
 		}
 		ver
-	} }
+	}};
 }
 
 /// Reads a suffix added by [`write_tlv_fields`].
@@ -1009,9 +1019,15 @@ macro_rules! tlv_stream {
 }
 
 macro_rules! tlv_record_type {
-	(($type:ty, $wrapper:ident)) => { $type };
-	(($type:ty, $wrapper:ident, $encoder:ty)) => { $type };
-	($type:ty) => { $type };
+	(($type:ty, $wrapper:ident)) => {
+		$type
+	};
+	(($type:ty, $wrapper:ident, $encoder:ty)) => {
+		$type
+	};
+	($type:ty) => {
+		$type
+	};
 }
 
 macro_rules! tlv_record_ref_type {
@@ -1327,7 +1343,9 @@ mod tests {
 
 	use crate::io::{self, Cursor};
 	use crate::ln::msgs::DecodeError;
-	use crate::util::ser::{MaybeReadable, Readable, Writeable, HighZeroBytesDroppedBigSize, VecWriter};
+	use crate::util::ser::{
+		HighZeroBytesDroppedBigSize, MaybeReadable, Readable, VecWriter, Writeable,
+	};
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::PublicKey;
 
@@ -1346,60 +1364,66 @@ mod tests {
 	#[test]
 	fn tlv_v_short_read() {
 		// We only expect a u32 for type 3 (which we are given), but the L says its 8 bytes.
-		let buf = <Vec<u8>>::from_hex(
-			concat!("0100", "0208deadbeef1badbeef", "0308deadbeef")
-		).unwrap();
+		let buf =
+			<Vec<u8>>::from_hex(concat!("0100", "0208deadbeef1badbeef", "0308deadbeef")).unwrap();
 		if let Err(DecodeError::ShortRead) = tlv_reader(&buf[..]) {
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
 	fn tlv_types_out_of_order() {
-		let buf = <Vec<u8>>::from_hex(concat!("0100", "0304deadbeef", "0208deadbeef1badbeef")).unwrap();
+		let buf =
+			<Vec<u8>>::from_hex(concat!("0100", "0304deadbeef", "0208deadbeef1badbeef")).unwrap();
 		if let Err(DecodeError::InvalidValue) = tlv_reader(&buf[..]) {
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 		// ...even if its some field we don't understand
-		let buf = <Vec<u8>>::from_hex(
-			concat!("0208deadbeef1badbeef", "0100", "0304deadbeef")
-		).unwrap();
+		let buf =
+			<Vec<u8>>::from_hex(concat!("0208deadbeef1badbeef", "0100", "0304deadbeef")).unwrap();
 		if let Err(DecodeError::InvalidValue) = tlv_reader(&buf[..]) {
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
 	fn tlv_req_type_missing_or_extra() {
 		// It's also bad if they included even fields we don't understand
-		let buf = <Vec<u8>>::from_hex(
-				concat!("0100", "0208deadbeef1badbeef", "0304deadbeef", "0600")
-				).unwrap();
+		let buf =
+			<Vec<u8>>::from_hex(concat!("0100", "0208deadbeef1badbeef", "0304deadbeef", "0600"))
+				.unwrap();
 		if let Err(DecodeError::UnknownRequiredFeature) = tlv_reader(&buf[..]) {
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 		// ... or if they're missing fields we need
-		let buf = <Vec<u8>>::from_hex(
-			concat!("0100", "0208deadbeef1badbeef")
-			).unwrap();
+		let buf = <Vec<u8>>::from_hex(concat!("0100", "0208deadbeef1badbeef")).unwrap();
 		if let Err(DecodeError::InvalidValue) = tlv_reader(&buf[..]) {
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 		// ... even if that field is even
-		let buf = <Vec<u8>>::from_hex(
-				concat!("0304deadbeef", "0500")
-				).unwrap();
+		let buf = <Vec<u8>>::from_hex(concat!("0304deadbeef", "0500")).unwrap();
 		if let Err(DecodeError::InvalidValue) = tlv_reader(&buf[..]) {
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 	}
 
 	#[test]
 	fn tlv_simple_good_cases() {
-		let buf = <Vec<u8>>::from_hex(
-			concat!("0208deadbeef1badbeef", "03041bad1dea")
-		).unwrap();
-		assert_eq!(tlv_reader(&buf[..]).unwrap(),
-			(0xdeadbeef1badbeef, 0x1bad1dea, None));
-		let buf = <Vec<u8>>::from_hex(
-			concat!("0208deadbeef1badbeef", "03041bad1dea", "040401020304")
-		).unwrap();
-		assert_eq!(tlv_reader(&buf[..]).unwrap(),
-			(0xdeadbeef1badbeef, 0x1bad1dea, Some(0x01020304)));
+		let buf = <Vec<u8>>::from_hex(concat!("0208deadbeef1badbeef", "03041bad1dea")).unwrap();
+		assert_eq!(tlv_reader(&buf[..]).unwrap(), (0xdeadbeef1badbeef, 0x1bad1dea, None));
+		let buf =
+			<Vec<u8>>::from_hex(concat!("0208deadbeef1badbeef", "03041bad1dea", "040401020304"))
+				.unwrap();
+		assert_eq!(
+			tlv_reader(&buf[..]).unwrap(),
+			(0xdeadbeef1badbeef, 0x1bad1dea, Some(0x01020304))
+		);
 	}
 
 	#[derive(Debug, PartialEq)]
@@ -1415,43 +1439,42 @@ mod tests {
 		let mut b = 0;
 		let mut c: Option<u32> = None;
 		decode_tlv_stream!(&mut s, {(2, a, upgradable_required), (3, b, upgradable_required), (4, c, upgradable_option)});
-		Ok(Some(TestUpgradable { a, b, c, }))
+		Ok(Some(TestUpgradable { a, b, c }))
 	}
 
 	#[test]
 	fn upgradable_tlv_simple_good_cases() {
-		let buf = <Vec<u8>>::from_hex(
-		concat!("0204deadbeef", "03041bad1dea", "0404deadbeef")
-	).unwrap();
-		assert_eq!(upgradable_tlv_reader(&buf[..]).unwrap(),
-		Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: Some(0xdeadbeef) }));
+		let buf =
+			<Vec<u8>>::from_hex(concat!("0204deadbeef", "03041bad1dea", "0404deadbeef")).unwrap();
+		assert_eq!(
+			upgradable_tlv_reader(&buf[..]).unwrap(),
+			Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: Some(0xdeadbeef) })
+		);
 
-		let buf = <Vec<u8>>::from_hex(
-			concat!("0204deadbeef", "03041bad1dea")
-		).unwrap();
-		assert_eq!(upgradable_tlv_reader(&buf[..]).unwrap(),
-		Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: None}));
+		let buf = <Vec<u8>>::from_hex(concat!("0204deadbeef", "03041bad1dea")).unwrap();
+		assert_eq!(
+			upgradable_tlv_reader(&buf[..]).unwrap(),
+			Some(TestUpgradable { a: 0xdeadbeef, b: 0x1bad1dea, c: None })
+		);
 	}
 
 	#[test]
 	fn missing_required_upgradable() {
-		let buf = <Vec<u8>>::from_hex(
-			concat!("0100", "0204deadbeef")
-		).unwrap();
+		let buf = <Vec<u8>>::from_hex(concat!("0100", "0204deadbeef")).unwrap();
 		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&buf[..]) {
-		} else { panic!(); }
-		let buf = <Vec<u8>>::from_hex(
-			concat!("0100", "03041bad1dea")
-		).unwrap();
+		} else {
+			panic!();
+		}
+		let buf = <Vec<u8>>::from_hex(concat!("0100", "03041bad1dea")).unwrap();
 		if let Err(DecodeError::InvalidValue) = upgradable_tlv_reader(&buf[..]) {
-		} else { panic!(); }
+		} else {
+			panic!();
+		}
 	}
 
 	/// A "V1" enum with only one variant
 	enum InnerEnumV1 {
-		StructVariantA {
-			field: u32,
-		},
+		StructVariantA { field: u32 },
 	}
 
 	impl_writeable_tlv_based_enum_upgradable!(InnerEnumV1,
@@ -1472,12 +1495,8 @@ mod tests {
 
 	/// An upgraded version of [`InnerEnumV1`] that added a second variant
 	enum InnerEnumV2 {
-		StructVariantA {
-			field: u32,
-		},
-		StructVariantB {
-			field2: u64,
-		}
+		StructVariantA { field: u32 },
+		StructVariantB { field2: u64 },
 	}
 
 	impl_writeable_tlv_based_enum_upgradable!(InnerEnumV2,
@@ -1506,7 +1525,8 @@ mod tests {
 		let serialized_bytes = OuterStructOptionalEnumV2 {
 			inner_enum: Some(InnerEnumV2::StructVariantB { field2: 64 }),
 			other_field: 0x1bad1dea,
-		}.encode();
+		}
+		.encode();
 		let mut s = Cursor::new(serialized_bytes);
 
 		let outer_struct: OuterStructOptionalEnumV1 = Readable::read(&mut s).unwrap();
@@ -1526,9 +1546,7 @@ mod tests {
 			read_tlv_fields!(reader, {
 				(0, inner_enum, upgradable_required),
 			});
-			Ok(Some(Self {
-				inner_enum: inner_enum.0.unwrap(),
-			}))
+			Ok(Some(Self { inner_enum: inner_enum.0.unwrap() }))
 		}
 	}
 
@@ -1551,7 +1569,6 @@ mod tests {
 		(2, other_field, required),
 	});
 
-
 	#[test]
 	fn upgradable_enum_required() {
 		// Test downgrading from an `OuterOuterStruct` (i.e. test downgrading an
@@ -1564,7 +1581,8 @@ mod tests {
 		let serialized_bytes = OuterOuterStruct {
 			outer_struct: Some(OuterStructRequiredEnum { inner_enum: dummy_inner_enum }),
 			other_field: 0x1bad1dea,
-		}.encode();
+		}
+		.encode();
 		let mut s = Cursor::new(serialized_bytes);
 
 		let outer_outer_struct: OuterOuterStruct = Readable::read(&mut s).unwrap();
@@ -1573,7 +1591,17 @@ mod tests {
 	}
 
 	// BOLT TLV test cases
-	fn tlv_reader_n1(s: &[u8]) -> Result<(Option<HighZeroBytesDroppedBigSize<u64>>, Option<u64>, Option<(PublicKey, u64, u64)>, Option<u16>), DecodeError> {
+	fn tlv_reader_n1(
+		s: &[u8],
+	) -> Result<
+		(
+			Option<HighZeroBytesDroppedBigSize<u64>>,
+			Option<u64>,
+			Option<(PublicKey, u64, u64)>,
+			Option<u16>,
+		),
+		DecodeError,
+	> {
 		let mut s = Cursor::new(s);
 		let mut tlv1: Option<HighZeroBytesDroppedBigSize<u64>> = None;
 		let mut tlv2: Option<u64> = None;
@@ -1587,9 +1615,13 @@ mod tests {
 	fn bolt_tlv_bogus_stream() {
 		macro_rules! do_test {
 			($stream: expr, $reason: ident) => {
-				if let Err(DecodeError::$reason) = tlv_reader_n1(&<Vec<u8>>::from_hex($stream).unwrap()[..]) {
-				} else { panic!(); }
-			}
+				if let Err(DecodeError::$reason) =
+					tlv_reader_n1(&<Vec<u8>>::from_hex($stream).unwrap()[..])
+				{
+				} else {
+					panic!();
+				}
+			};
 		}
 
 		// TLVs from the BOLT test cases which should not decode as either n1 or n2
@@ -1612,9 +1644,13 @@ mod tests {
 	fn bolt_tlv_bogus_n1_stream() {
 		macro_rules! do_test {
 			($stream: expr, $reason: ident) => {
-				if let Err(DecodeError::$reason) = tlv_reader_n1(&<Vec<u8>>::from_hex($stream).unwrap()[..]) {
-				} else { panic!(); }
-			}
+				if let Err(DecodeError::$reason) =
+					tlv_reader_n1(&<Vec<u8>>::from_hex($stream).unwrap()[..])
+				{
+				} else {
+					panic!();
+				}
+			};
 		}
 
 		// TLVs from the BOLT test cases which should not decode as n1
@@ -1629,7 +1665,14 @@ mod tests {
 		do_test!(concat!("01", "08", "0001000000000000"), InvalidValue);
 		do_test!(concat!("02", "07", "01010101010101"), ShortRead);
 		do_test!(concat!("02", "09", "010101010101010101"), InvalidValue);
-		do_test!(concat!("03", "21", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"), ShortRead);
+		do_test!(
+			concat!(
+				"03",
+				"21",
+				"023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb"
+			),
+			ShortRead
+		);
 		do_test!(concat!("03", "29", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb0000000000000001"), ShortRead);
 		do_test!(concat!("03", "30", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb000000000000000100000000000001"), ShortRead);
 		do_test!(concat!("03", "31", "043da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"), InvalidValue);
@@ -1640,7 +1683,10 @@ mod tests {
 		do_test!(concat!("00", "00"), UnknownRequiredFeature);
 
 		do_test!(concat!("02", "08", "0000000000000226", "01", "01", "2a"), InvalidValue);
-		do_test!(concat!("02", "08", "0000000000000231", "02", "08", "0000000000000451"), InvalidValue);
+		do_test!(
+			concat!("02", "08", "0000000000000231", "02", "08", "0000000000000451"),
+			InvalidValue
+		);
 		do_test!(concat!("1f", "00", "0f", "01", "2a"), InvalidValue);
 		do_test!(concat!("1f", "00", "1f", "01", "2a"), InvalidValue);
 
@@ -1652,13 +1698,17 @@ mod tests {
 	fn bolt_tlv_valid_n1_stream() {
 		macro_rules! do_test {
 			($stream: expr, $tlv1: expr, $tlv2: expr, $tlv3: expr, $tlv4: expr) => {
-				if let Ok((tlv1, tlv2, tlv3, tlv4)) = tlv_reader_n1(&<Vec<u8>>::from_hex($stream).unwrap()[..]) {
+				if let Ok((tlv1, tlv2, tlv3, tlv4)) =
+					tlv_reader_n1(&<Vec<u8>>::from_hex($stream).unwrap()[..])
+				{
 					assert_eq!(tlv1.map(|v| v.0), $tlv1);
 					assert_eq!(tlv2, $tlv2);
 					assert_eq!(tlv3, $tlv3);
 					assert_eq!(tlv4, $tlv4);
-				} else { panic!(); }
-			}
+				} else {
+					panic!();
+				}
+			};
 		}
 
 		do_test!(concat!(""), None, None, None, None);
@@ -1677,8 +1727,20 @@ mod tests {
 		do_test!(concat!("01", "05", "0100000000"), Some(4294967296), None, None, None);
 		do_test!(concat!("01", "06", "010000000000"), Some(1099511627776), None, None, None);
 		do_test!(concat!("01", "07", "01000000000000"), Some(281474976710656), None, None, None);
-		do_test!(concat!("01", "08", "0100000000000000"), Some(72057594037927936), None, None, None);
-		do_test!(concat!("02", "08", "0000000000000226"), None, Some((0 << 30) | (0 << 5) | (550 << 0)), None, None);
+		do_test!(
+			concat!("01", "08", "0100000000000000"),
+			Some(72057594037927936),
+			None,
+			None,
+			None
+		);
+		do_test!(
+			concat!("02", "08", "0000000000000226"),
+			None,
+			Some((0 << 30) | (0 << 5) | (550 << 0)),
+			None,
+			None
+		);
 		do_test!(concat!("03", "31", "023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb00000000000000010000000000000002"),
 			None, None, Some((
 				PublicKey::from_slice(&<Vec<u8>>::from_hex("023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb").unwrap()[..]).unwrap(), 1, 2)),
@@ -1694,7 +1756,7 @@ mod tests {
 		assert_eq!(stream.0, <Vec<u8>>::from_hex("03010101").unwrap());
 
 		stream.0.clear();
-		_encode_varint_length_prefixed_tlv!(&mut stream, {(1, Some(1u8), option)});
+		_encode_varint_length_prefixed_tlv!(&mut stream, { (1, Some(1u8), option) });
 		assert_eq!(stream.0, <Vec<u8>>::from_hex("03010101").unwrap());
 
 		stream.0.clear();
