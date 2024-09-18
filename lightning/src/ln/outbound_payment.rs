@@ -94,6 +94,7 @@ pub(crate) enum PendingOutboundPayment {
 		payment_secret: Option<PaymentSecret>,
 		payment_metadata: Option<Vec<u8>>,
 		keysend_preimage: Option<PaymentPreimage>,
+		invoice_request: Option<InvoiceRequest>,
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
 		pending_amt_msat: u64,
 		/// Used to track the fee paid. Present iff the payment was serialized on 0.0.103+.
@@ -948,20 +949,33 @@ impl OutboundPayments {
 		};
 
 		let payment_params = Some(route_params.payment_params.clone());
-		let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
-			payment_hash, recipient_onion.clone(), keysend_preimage, &route, Some(retry_strategy),
-			payment_params, entropy_source, best_block_height
-		);
-		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		let onion_session_privs = match outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
-				PendingOutboundPayment::InvoiceReceived { .. }
-				| PendingOutboundPayment::StaticInvoiceReceived { .. } => {
+				PendingOutboundPayment::InvoiceReceived { .. } => {
+					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
+						payment_hash, recipient_onion.clone(), keysend_preimage, None, &route,
+						Some(retry_strategy), payment_params, entropy_source, best_block_height
+					);
 					*entry.into_mut() = retryable_payment;
+					onion_session_privs
+				},
+				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
+					let invreq = if let PendingOutboundPayment::StaticInvoiceReceived { invoice_request, .. } = entry.remove() {
+						invoice_request
+					} else { unreachable!() };
+					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
+						payment_hash, recipient_onion.clone(), keysend_preimage, Some(invreq), &route,
+						Some(retry_strategy), payment_params, entropy_source, best_block_height
+					);
+					outbounds.insert(payment_id, retryable_payment);
+					onion_session_privs
 				},
 				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
 			},
 			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
-		}
+		};
+		core::mem::drop(outbounds);
 
 		let result = self.pay_route_internal(
 			&route, payment_hash, &recipient_onion, keysend_preimage, invoice_request, payment_id,
@@ -1324,14 +1338,14 @@ impl OutboundPayments {
 				}
 			}
 		}
-		let (total_msat, recipient_onion, keysend_preimage, onion_session_privs) = {
+		let (total_msat, recipient_onion, keysend_preimage, onion_session_privs, invoice_request) = {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			match outbounds.entry(payment_id) {
 				hash_map::Entry::Occupied(mut payment) => {
 					match payment.get() {
 						PendingOutboundPayment::Retryable {
 							total_msat, keysend_preimage, payment_secret, payment_metadata,
-							custom_tlvs, pending_amt_msat, ..
+							custom_tlvs, pending_amt_msat, invoice_request, ..
 						} => {
 							const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
 							let retry_amt_msat = route.get_total_amount();
@@ -1354,6 +1368,7 @@ impl OutboundPayments {
 								custom_tlvs: custom_tlvs.clone(),
 							};
 							let keysend_preimage = *keysend_preimage;
+							let invoice_request = invoice_request.clone();
 
 							let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 							for _ in 0..route.paths.len() {
@@ -1366,7 +1381,7 @@ impl OutboundPayments {
 
 							payment.get_mut().increment_attempts();
 
-							(total_msat, recipient_onion, keysend_preimage, onion_session_privs)
+							(total_msat, recipient_onion, keysend_preimage, onion_session_privs, invoice_request)
 						},
 						PendingOutboundPayment::Legacy { .. } => {
 							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
@@ -1404,8 +1419,8 @@ impl OutboundPayments {
 			}
 		};
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion, keysend_preimage,
-			None, payment_id, Some(total_msat), onion_session_privs, node_signer, best_block_height,
-			&send_payment_along_path);
+			invoice_request.as_ref(), payment_id, Some(total_msat), onion_session_privs, node_signer,
+			best_block_height, &send_payment_along_path);
 		log_info!(logger, "Result retrying payment id {}: {:?}", &payment_id, res);
 		if let Err(e) = res {
 			self.handle_pay_route_err(e, payment_id, payment_hash, route, route_params, router, first_hops, inflight_htlcs, entropy_source, node_signer, best_block_height, logger, pending_events, send_payment_along_path);
@@ -1557,7 +1572,7 @@ impl OutboundPayments {
 			hash_map::Entry::Occupied(_) => Err(PaymentSendFailure::DuplicatePayment),
 			hash_map::Entry::Vacant(entry) => {
 				let (payment, onion_session_privs) = Self::create_pending_payment(
-					payment_hash, recipient_onion, keysend_preimage, route, retry_strategy,
+					payment_hash, recipient_onion, keysend_preimage, None, route, retry_strategy,
 					payment_params, entropy_source, best_block_height
 				);
 				entry.insert(payment);
@@ -1568,8 +1583,9 @@ impl OutboundPayments {
 
 	fn create_pending_payment<ES: Deref>(
 		payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
-		keysend_preimage: Option<PaymentPreimage>, route: &Route, retry_strategy: Option<Retry>,
-		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32
+		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<InvoiceRequest>,
+		route: &Route, retry_strategy: Option<Retry>, payment_params: Option<PaymentParameters>,
+		entropy_source: &ES, best_block_height: u32
 	) -> (PendingOutboundPayment, Vec<[u8; 32]>)
 	where
 		ES::Target: EntropySource,
@@ -1590,6 +1606,7 @@ impl OutboundPayments {
 			payment_secret: recipient_onion.payment_secret,
 			payment_metadata: recipient_onion.payment_metadata,
 			keysend_preimage,
+			invoice_request,
 			custom_tlvs: recipient_onion.custom_tlvs,
 			starting_block_height: best_block_height,
 			total_msat: route.get_total_amount(),
@@ -2151,6 +2168,7 @@ impl OutboundPayments {
 					payment_secret: None, // only used for retries, and we'll never retry on startup
 					payment_metadata: None, // only used for retries, and we'll never retry on startup
 					keysend_preimage: None, // only used for retries, and we'll never retry on startup
+					invoice_request: None, // only used for retries, and we'll never retry on startup
 					custom_tlvs: Vec::new(), // only used for retries, and we'll never retry on startup
 					pending_amt_msat: path_amt,
 					pending_fee_msat: Some(path_fee),
@@ -2237,6 +2255,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(9, custom_tlvs, optional_vec),
 		(10, starting_block_height, required),
 		(11, remaining_max_total_routing_fee_msat, option),
+		(13, invoice_request, option),
 		(not_written, retry_strategy, (static_value, None)),
 		(not_written, attempts, (static_value, PaymentAttempts::new())),
 	},
