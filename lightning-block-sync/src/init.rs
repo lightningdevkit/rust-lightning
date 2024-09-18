@@ -50,6 +50,7 @@ where
 /// use lightning::chain::chaininterface::BroadcasterInterface;
 /// use lightning::chain::chaininterface::FeeEstimator;
 /// use lightning::ln::channelmanager::{ChannelManager, ChannelManagerReadArgs};
+/// use lightning::onion_message::messenger::MessageRouter;
 /// use lightning::routing::router::Router;
 /// use lightning::sign;
 /// use lightning::sign::{EntropySource, NodeSigner, SignerProvider};
@@ -69,6 +70,7 @@ where
 /// 	T: BroadcasterInterface,
 /// 	F: FeeEstimator,
 /// 	R: Router,
+/// 	MR: MessageRouter,
 /// 	L: Logger,
 /// 	C: chain::Filter,
 /// 	P: chainmonitor::Persist<SP::EcdsaSigner>,
@@ -82,6 +84,7 @@ where
 /// 	tx_broadcaster: &T,
 /// 	fee_estimator: &F,
 /// 	router: &R,
+/// 	message_router: &MR,
 /// 	logger: &L,
 /// 	persister: &P,
 /// ) {
@@ -101,11 +104,12 @@ where
 /// 			chain_monitor,
 /// 			tx_broadcaster,
 /// 			router,
+/// 			message_router,
 /// 			logger,
 /// 			config,
 /// 			vec![&mut monitor],
 /// 		);
-/// 		<(BlockHash, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P>, &T, &ES, &NS, &SP, &F, &R, &L>)>::read(
+/// 		<(BlockHash, ChannelManager<&ChainMonitor<SP::EcdsaSigner, &C, &T, &F, &L, &P>, &T, &ES, &NS, &SP, &F, &R, &MR, &L>)>::read(
 /// 			&mut Cursor::new(&serialized_manager), read_args).unwrap()
 /// 	};
 ///
