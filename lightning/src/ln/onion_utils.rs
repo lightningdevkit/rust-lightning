@@ -320,7 +320,8 @@ pub(crate) const MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY: u64 = 100_000_000;
 
 pub(crate) fn set_max_path_length(
 	route_params: &mut RouteParameters, recipient_onion: &RecipientOnionFields,
-	keysend_preimage: Option<PaymentPreimage>, best_block_height: u32,
+	keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
+	best_block_height: u32,
 ) -> Result<(), ()> {
 	const PAYLOAD_HMAC_LEN: usize = 32;
 	let unblinded_intermed_payload_len = msgs::OutboundOnionPayload::Forward {
@@ -367,7 +368,7 @@ pub(crate) fn set_max_path_length(
 		&recipient_onion,
 		best_block_height,
 		&keysend_preimage,
-		None,
+		invoice_request,
 		|_, payload| {
 			num_reserved_bytes = num_reserved_bytes
 				.saturating_add(payload.serialized_length())

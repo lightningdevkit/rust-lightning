@@ -932,8 +932,9 @@ impl OutboundPayments {
 			custom_tlvs: vec![],
 		};
 		let route = match self.find_initial_route(
-			payment_id, payment_hash, &recipient_onion, None, &mut route_params, router,
-			&first_hops, &inflight_htlcs, node_signer, best_block_height, logger,
+			payment_id, payment_hash, &recipient_onion, keysend_preimage, invoice_request,
+			&mut route_params, router, &first_hops, &inflight_htlcs, node_signer, best_block_height,
+			logger,
 		) {
 			Ok(route) => route,
 			Err(e) => {
@@ -1052,7 +1053,7 @@ impl OutboundPayments {
 
 					if let Err(()) = onion_utils::set_max_path_length(
 						&mut route_params, &RecipientOnionFields::spontaneous_empty(), Some(keysend_preimage),
-						best_block_height
+						Some(invreq), best_block_height
 					) {
 						abandon_with_entry!(entry, PaymentFailureReason::RouteNotFound);
 						return Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::OnionPacketSizeExceeded))
@@ -1182,8 +1183,8 @@ impl OutboundPayments {
 	}
 
 	fn find_initial_route<R: Deref, NS: Deref, IH, L: Deref>(
-		&self, payment_id: PaymentId, payment_hash: PaymentHash,
-		recipient_onion: &RecipientOnionFields, keysend_preimage: Option<PaymentPreimage>,
+		&self, payment_id: PaymentId, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,
+		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
 		route_params: &mut RouteParameters, router: &R, first_hops: &Vec<ChannelDetails>,
 		inflight_htlcs: &IH, node_signer: &NS, best_block_height: u32, logger: &L,
 	) -> Result<Route, RetryableSendFailure>
@@ -1202,7 +1203,7 @@ impl OutboundPayments {
 		}
 
 		onion_utils::set_max_path_length(
-			route_params, recipient_onion, keysend_preimage, best_block_height
+			route_params, recipient_onion, keysend_preimage, invoice_request, best_block_height
 		)
 			.map_err(|()| {
 				log_error!(logger, "Can't construct an onion packet without exceeding 1300-byte onion \
@@ -1250,7 +1251,7 @@ impl OutboundPayments {
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 		let route = self.find_initial_route(
-			payment_id, payment_hash, &recipient_onion, keysend_preimage, &mut route_params, router,
+			payment_id, payment_hash, &recipient_onion, keysend_preimage, None, &mut route_params, router,
 			&first_hops, &inflight_htlcs, node_signer, best_block_height, logger,
 		)?;
 
