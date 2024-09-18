@@ -8117,7 +8117,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// [`InboundV1Channel::accept_inbound_channel`] instead.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	fn generate_accept_channel_message<L: Deref>(&mut self, logger: &L) -> Option<msgs::AcceptChannel>
+	fn generate_accept_channel_message<L: Deref>(&mut self, _logger: &L) -> Option<msgs::AcceptChannel>
 	where L::Target: Logger
 	{
 		let first_per_commitment_point = if let Some(holder_commitment_point) = self.unfunded_context.holder_commitment_point {
@@ -8128,7 +8128,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 				panic!("Failed getting commitment point for accept_channel message");
 			}
 			#[cfg(async_signing)] {
-				log_trace!(logger, "Unable to generate accept_channel message, waiting for commitment point");
+				log_trace!(_logger, "Unable to generate accept_channel message, waiting for commitment point");
 				self.signer_pending_accept_channel = true;
 				return None;
 			}
