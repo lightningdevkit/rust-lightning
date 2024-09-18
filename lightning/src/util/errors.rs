@@ -24,7 +24,7 @@ pub enum APIError {
 	/// are documented, but generally indicates some precondition of a function was violated.
 	APIMisuseError {
 		/// A human-readable error message
-		err: String
+		err: String,
 	},
 	/// Due to a high feerate, we were unable to complete the request.
 	/// For example, this may be returned if the feerate implies we cannot open a channel at the
@@ -33,20 +33,20 @@ pub enum APIError {
 		/// A human-readable error message
 		err: String,
 		/// The feerate which was too high.
-		feerate: u32
+		feerate: u32,
 	},
 	/// A malformed Route was provided (eg overflowed value, node id mismatch, overly-looped route,
 	/// too-many-hops, etc).
 	InvalidRoute {
 		/// A human-readable error message
-		err: String
+		err: String,
 	},
 	/// We were unable to complete the request as the Channel required to do so is unable to
 	/// complete the request (or was not found). This can take many forms, including disconnected
 	/// peer, channel at capacity, channel shutting down, etc.
 	ChannelUnavailable {
 		/// A human-readable error message
-		err: String
+		err: String,
 	},
 	/// An attempt to call [`chain::Watch::watch_channel`]/[`chain::Watch::update_channel`]
 	/// returned a [`ChannelMonitorUpdateStatus::InProgress`] indicating the persistence of a
@@ -74,11 +74,15 @@ pub enum APIError {
 impl fmt::Debug for APIError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match *self {
-			APIError::APIMisuseError {ref err} => write!(f, "Misuse error: {}", err),
-			APIError::FeeRateTooHigh {ref err, ref feerate} => write!(f, "{} feerate: {}", err, feerate),
-			APIError::InvalidRoute {ref err} => write!(f, "Invalid route provided: {}", err),
-			APIError::ChannelUnavailable {ref err} => write!(f, "Channel unavailable: {}", err),
-			APIError::MonitorUpdateInProgress => f.write_str("Client indicated a channel monitor update is in progress but not yet complete"),
+			APIError::APIMisuseError { ref err } => write!(f, "Misuse error: {}", err),
+			APIError::FeeRateTooHigh { ref err, ref feerate } => {
+				write!(f, "{} feerate: {}", err, feerate)
+			},
+			APIError::InvalidRoute { ref err } => write!(f, "Invalid route provided: {}", err),
+			APIError::ChannelUnavailable { ref err } => write!(f, "Channel unavailable: {}", err),
+			APIError::MonitorUpdateInProgress => f.write_str(
+				"Client indicated a channel monitor update is in progress but not yet complete",
+			),
 			APIError::IncompatibleShutdownScript { ref script } => {
 				write!(f, "Provided a scriptpubkey format not accepted by peer: {}", script)
 			},
@@ -101,9 +105,9 @@ impl_writeable_tlv_based_enum_upgradable!(APIError,
 #[inline]
 pub(crate) fn get_onion_debug_field(error_code: u16) -> (&'static str, usize) {
 	match error_code & 0xff {
-		4|5|6 => ("sha256_of_onion", 32),
-		11|12 => ("htlc_msat", 8),
-		13|18 => ("cltv_expiry", 4),
+		4 | 5 | 6 => ("sha256_of_onion", 32),
+		11 | 12 => ("htlc_msat", 8),
+		13 | 18 => ("cltv_expiry", 4),
 		19 => ("incoming_htlc_msat", 8),
 		20 => ("flags", 2),
 		_ => ("", 0),
