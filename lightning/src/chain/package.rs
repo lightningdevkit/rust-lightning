@@ -731,10 +731,14 @@ pub struct PackageTemplate {
 	// Untractable packages have been counter-signed and thus imply that we can't aggregate
 	// them without breaking signatures. Fee-bumping strategy will also rely on CPFP.
 	malleability: PackageMalleability,
-	// Block height after which the earlier-output belonging to this package is mature for a
-	// competing claim by the counterparty. As our chain tip becomes nearer from the timelock,
-	// the fee-bumping frequency will increase. See `OnchainTxHandler::get_height_timer`.
-	soonest_conf_deadline: u32,
+	/// Block height at which our counterparty can potentially claim this output as well (assuming
+	/// they have the keys or information required to do so).
+	///
+	/// This is used primarily by external consumers to decide when an output becomes "pinnable"
+	/// because the counterparty can potentially spend it. It is also used internally by
+	/// [`Self::get_height_timer`] to identify when an output must be claimed by, depending on the
+	/// type of output.
+	counterparty_spendable_height: u32,
 	// Determines if this package can be aggregated.
 	// Timelocked outputs belonging to the same transaction might have differing
 	// satisfying heights. Picking up the later height among the output set would be a valid
@@ -763,7 +767,7 @@ impl PackageTemplate {
 	/// This is an important limit for aggregation as after this height our counterparty may be
 	/// able to pin transactions spending this output in the mempool.
 	pub(crate) fn counterparty_spendable_height(&self) -> u32 {
-		self.soonest_conf_deadline
+		self.counterparty_spendable_height
 	}
 	pub(crate) fn aggregable(&self) -> bool {
 		self.aggregable
@@ -790,7 +794,6 @@ impl PackageTemplate {
 		match self.malleability {
 			PackageMalleability::Malleable => {
 				let mut split_package = None;
-				let timelock = self.soonest_conf_deadline;
 				let aggregable = self.aggregable;
 				let feerate_previous = self.feerate_previous;
 				let height_timer = self.height_timer;
@@ -799,7 +802,7 @@ impl PackageTemplate {
 						split_package = Some(PackageTemplate {
 							inputs: vec![(outp.0, outp.1.clone())],
 							malleability: PackageMalleability::Malleable,
-							soonest_conf_deadline: timelock,
+							counterparty_spendable_height: self.counterparty_spendable_height,
 							aggregable,
 							feerate_previous,
 							height_timer,
@@ -836,8 +839,8 @@ impl PackageTemplate {
 			self.inputs.push((k, v));
 		}
 		//TODO: verify coverage and sanity?
-		if self.soonest_conf_deadline > merge_from.soonest_conf_deadline {
-			self.soonest_conf_deadline = merge_from.soonest_conf_deadline;
+		if self.counterparty_spendable_height > merge_from.counterparty_spendable_height {
+			self.counterparty_spendable_height = merge_from.counterparty_spendable_height;
 		}
 		if self.feerate_previous > merge_from.feerate_previous {
 			self.feerate_previous = merge_from.feerate_previous;
@@ -971,10 +974,10 @@ impl PackageTemplate {
 			match input {
 				PackageSolvingData::RevokedOutput(_) => {
 					// Revoked Outputs will become spendable by our counterparty at the height
-					// where the CSV expires, which is also our `soonest_conf_deadline`.
+					// where the CSV expires, which is also our `counterparty_spendable_height`.
 					height_timer = cmp::min(
 						height_timer,
-						timer_for_target_conf(self.soonest_conf_deadline),
+						timer_for_target_conf(self.counterparty_spendable_height),
 					);
 				},
 				PackageSolvingData::RevokedHTLCOutput(_) => {
@@ -995,10 +998,10 @@ impl PackageTemplate {
 				PackageSolvingData::HolderHTLCOutput(outp) if outp.preimage.is_some() => {
 					// We have the same deadline here as for `CounterpartyOfferedHTLCOutput`. Note
 					// that `outp.cltv_expiry` is always 0 in this case, but
-					// `soonest_conf_deadline` holds the real HTLC expiry.
+					// `counterparty_spendable_height` holds the real HTLC expiry.
 					height_timer = cmp::min(
 						height_timer,
-						timer_for_target_conf(self.soonest_conf_deadline),
+						timer_for_target_conf(self.counterparty_spendable_height),
 					);
 				},
 				PackageSolvingData::CounterpartyReceivedHTLCOutput(outp) => {
@@ -1100,13 +1103,13 @@ impl PackageTemplate {
 		}).is_some()
 	}
 
-	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32) -> Self {
+	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, counterparty_spendable_height: u32) -> Self {
 		let (malleability, aggregable) = PackageSolvingData::map_output_type_flags(&input_solving_data);
 		let inputs = vec![(BitcoinOutPoint { txid, vout }, input_solving_data)];
 		PackageTemplate {
 			inputs,
 			malleability,
-			soonest_conf_deadline,
+			counterparty_spendable_height,
 			aggregable,
 			feerate_previous: 0,
 			height_timer: 0,
@@ -1122,7 +1125,7 @@ impl Writeable for PackageTemplate {
 			rev_outp.write(writer)?;
 		}
 		write_tlv_fields!(writer, {
-			(0, self.soonest_conf_deadline, required),
+			(0, self.counterparty_spendable_height, required),
 			(2, self.feerate_previous, required),
 			// Prior to 0.1, the height at which the package's inputs were mined, but was always unused
 			(4, 0u32, required),
@@ -1144,12 +1147,12 @@ impl Readable for PackageTemplate {
 		let (malleability, aggregable) = if let Some((_, lead_input)) = inputs.first() {
 			PackageSolvingData::map_output_type_flags(&lead_input)
 		} else { return Err(DecodeError::InvalidValue); };
-		let mut soonest_conf_deadline = 0;
+		let mut counterparty_spendable_height = 0;
 		let mut feerate_previous = 0;
 		let mut height_timer = None;
 		let mut _height_original: Option<u32> = None;
 		read_tlv_fields!(reader, {
-			(0, soonest_conf_deadline, required),
+			(0, counterparty_spendable_height, required),
 			(2, feerate_previous, required),
 			(4, _height_original, option), // Written with a dummy value since 0.1
 			(6, height_timer, option),
@@ -1157,7 +1160,7 @@ impl Readable for PackageTemplate {
 		Ok(PackageTemplate {
 			inputs,
 			malleability,
-			soonest_conf_deadline,
+			counterparty_spendable_height,
 			aggregable,
 			feerate_previous,
 			height_timer: height_timer.unwrap_or(0),
@@ -1421,7 +1424,7 @@ mod tests {
 		if let Some(split_package) = package_one.split_package(&BitcoinOutPoint { txid, vout: 1 }) {
 			// Packages attributes should be identical
 			assert!(split_package.is_malleable());
-			assert_eq!(split_package.soonest_conf_deadline, package_one.soonest_conf_deadline);
+			assert_eq!(split_package.counterparty_spendable_height, package_one.counterparty_spendable_height);
 			assert_eq!(split_package.aggregable, package_one.aggregable);
 			assert_eq!(split_package.feerate_previous, package_one.feerate_previous);
 			assert_eq!(split_package.height_timer, package_one.height_timer);
