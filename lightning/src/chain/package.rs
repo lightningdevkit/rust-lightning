@@ -1015,7 +1015,7 @@ impl PackageTemplate {
 					// `CounterpartyReceivedHTLCOutput`
 					height_timer = cmp::min(
 						height_timer,
-						timer_for_target_conf(outp.cltv_expiry),
+						timer_for_target_conf(outp.cltv_expiry + MIN_CLTV_EXPIRY_DELTA as u32),
 					);
 				},
 				PackageSolvingData::HolderFundingOutput(_) => {
