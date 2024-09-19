@@ -1072,20 +1072,26 @@ mod tests {
 		// Force close because cooperative close doesn't result in any persisted
 		// updates.
 
-		let error_message = "Channel force-closed";
-		nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
+		let node_id_1 = nodes[1].node.get_our_node_id();
+		let chan_id = nodes[0].node.list_channels()[0].channel_id;
+		let err_msg = "Channel force-closed".to_string();
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &node_id_1, err_msg).unwrap();
 
-		check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[1].node.get_our_node_id()], 100000);
+		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		check_closed_event(&nodes[0], 1, reason, false, &[node_id_1], 100000);
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
 
 		let node_txn = nodes[0].tx_broadcaster.txn_broadcast();
 		assert_eq!(node_txn.len(), 1);
-
-		connect_block(&nodes[1], &create_dummy_block(nodes[0].best_block_hash(), 42, vec![node_txn[0].clone(), node_txn[0].clone()]));
+		let txn = vec![node_txn[0].clone(), node_txn[0].clone()];
+		let dummy_block = create_dummy_block(nodes[0].best_block_hash(), 42, txn);
+		connect_block(&nodes[1], &dummy_block);
 
 		check_closed_broadcast!(nodes[1], true);
-		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false, &[nodes[0].node.get_our_node_id()], 100000);
+		let reason = ClosureReason::CommitmentTxConfirmed;
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		check_closed_event(&nodes[1], 1, reason, false, &[node_id_0], 100000);
 		check_added_monitors!(nodes[1], 1);
 
 		// Make sure everything is persisted as expected after close.
@@ -1111,14 +1117,17 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
-		let error_message = "Channel force-closed";
-		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id(), error_message.to_string()).unwrap();
-		check_closed_event(&nodes[1], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[0].node.get_our_node_id()], 100000);
+		let err_msg = "Channel force-closed".to_string();
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &node_id_0, err_msg).unwrap();
+		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		check_closed_event(&nodes[1], 1, reason, false, &[node_id_0], 100000);
 		{
 			let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 			let cmu_map = nodes[1].chain_monitor.monitor_updates.lock().unwrap();
 			let cmu = &cmu_map.get(&added_monitors[0].1.channel_id()).unwrap()[0];
-			let test_txo = OutPoint { txid: Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap(), index: 0 };
+			let txid = Txid::from_str("8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be").unwrap();
+			let test_txo = OutPoint { txid, index: 0 };
 
 			let ro_persister = MonitorUpdatingPersister {
 				kv_store: &TestStore::new(true),
@@ -1232,9 +1241,12 @@ mod tests {
 			.is_err());
 
 		// Force close.
-		let error_message = "Channel force-closed";
-		nodes[0].node.force_close_broadcasting_latest_txn(&nodes[0].node.list_channels()[0].channel_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
-		check_closed_event(&nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, false, &[nodes[1].node.get_our_node_id()], 100000);
+		let chan_id = nodes[0].node.list_channels()[0].channel_id;
+		let node_id_1 = nodes[1].node.get_our_node_id();
+		let err_msg = "Channel force-closed".to_string();
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &node_id_1, err_msg).unwrap();
+		let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) };
+		check_closed_event(&nodes[0], 1, reason, false, &[node_id_1], 100000);
 		check_closed_broadcast!(nodes[0], true);
 		check_added_monitors!(nodes[0], 1);
 
