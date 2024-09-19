@@ -162,6 +162,13 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	///
 	/// Archiving the data in a backup location (rather than deleting it fully) is useful for
 	/// hedging against data loss in case of unexpected failure.
+	///
+	/// Note that if a crash occurs during the archiving process, a state may emerge where the
+	/// monitor is copied to the archive path but isn't removed yet. In that scenario, the monitor
+	/// would still end up being loaded on startup pending successful archival completion.
+	/// Additionally, this scenario might see the monitor being written to the archive path twice,
+	/// which is why this method must be idempotent and be able to handle monitors already existing
+	/// in the archive directory.
 	fn archive_persisted_channel(&self, channel_funding_outpoint: OutPoint);
 }
 
