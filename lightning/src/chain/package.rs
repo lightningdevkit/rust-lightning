@@ -656,25 +656,26 @@ impl PackageSolvingData {
 			_ => { panic!("API Error!"); }
 		}
 	}
-	fn absolute_tx_timelock(&self, current_height: u32) -> u32 {
-		// We use `current_height` as our default locktime to discourage fee sniping and because
-		// transactions with it always propagate.
-		let absolute_timelock = match self {
-			PackageSolvingData::RevokedOutput(_) => current_height,
-			PackageSolvingData::RevokedHTLCOutput(_) => current_height,
-			PackageSolvingData::CounterpartyOfferedHTLCOutput(_) => current_height,
-			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => cmp::max(outp.htlc.cltv_expiry, current_height),
-			// HTLC timeout/success transactions rely on a fixed timelock due to the counterparty's
-			// signature.
+	/// Some output types are locked with CHECKLOCKTIMEVERIFY and the spending transaction must
+	/// have a minimum locktime, which is returned here.
+	fn minimum_locktime(&self) -> Option<u32> {
+		match self {
+			PackageSolvingData::CounterpartyReceivedHTLCOutput(ref outp) => Some(outp.htlc.cltv_expiry),
+			_ => None,
+		}
+	}
+	/// Some output types are pre-signed in such a way that the spending transaction must have an
+	/// exact locktime. This returns that locktime for such outputs.
+	fn signed_locktime(&self) -> Option<u32> {
+		match self {
 			PackageSolvingData::HolderHTLCOutput(ref outp) => {
 				if outp.preimage.is_some() {
 					debug_assert_eq!(outp.cltv_expiry, 0);
 				}
-				outp.cltv_expiry
+				Some(outp.cltv_expiry)
 			},
-			PackageSolvingData::HolderFundingOutput(_) => current_height,
-		};
-		absolute_timelock
+			_ => None,
+		}
 	}
 
 	fn map_output_type_flags(&self) -> (PackageMalleability, bool) {
@@ -863,36 +864,23 @@ impl PackageTemplate {
 		}
 		amounts
 	}
-	pub(crate) fn package_locktime(&self, current_height: u32) -> u32 {
-		let locktime = self.inputs.iter().map(|(_, outp)| outp.absolute_tx_timelock(current_height))
-			.max().expect("There must always be at least one output to spend in a PackageTemplate");
-
-		// If we ever try to aggregate a `HolderHTLCOutput`s with another output type, we'll likely
-		// end up with an incorrect transaction locktime since the counterparty has included it in
-		// its HTLC signature. This should never happen unless we decide to aggregate outputs across
-		// different channel commitments.
-		#[cfg(debug_assertions)] {
-			if self.inputs.iter().any(|(_, outp)|
-				if let PackageSolvingData::HolderHTLCOutput(outp) = outp {
-					outp.preimage.is_some()
-				} else {
-					false
-				}
-			) {
-				debug_assert_eq!(locktime, 0);
-			};
-			for timeout_htlc_expiry in self.inputs.iter().filter_map(|(_, outp)|
-				if let PackageSolvingData::HolderHTLCOutput(outp) = outp {
-					if outp.preimage.is_none() {
-						Some(outp.cltv_expiry)
-					} else { None }
-				} else { None }
-			) {
-				debug_assert_eq!(locktime, timeout_htlc_expiry);
-			}
+	fn signed_locktime(&self) -> Option<u32> {
+		let signed_locktime = self.inputs.iter().find_map(|(_, outp)| outp.signed_locktime());
+		#[cfg(debug_assertions)]
+		for (_, outp) in &self.inputs {
+			debug_assert!(outp.signed_locktime().is_none() || outp.signed_locktime() == signed_locktime);
 		}
+		signed_locktime
+	}
+	pub(crate) fn package_locktime(&self, current_height: u32) -> u32 {
+		let minimum_locktime = self.inputs.iter().filter_map(|(_, outp)| outp.minimum_locktime()).max();
 
-		locktime
+		if let Some(signed_locktime) = self.signed_locktime() {
+			debug_assert!(minimum_locktime.is_none());
+			signed_locktime
+		} else {
+			core::cmp::max(current_height, minimum_locktime.unwrap_or(0))
+		}
 	}
 	pub(crate) fn package_weight(&self, destination_script: &Script) -> u64 {
 		let mut inputs_weight = 0;
@@ -1217,7 +1205,7 @@ where
 	F::Target: FeeEstimator,
 {
 	// If old feerate inferior to actual one given back by Fee Estimator, use it to compute new fee...
-	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) = 
+	let (new_fee, new_feerate) = if let Some((new_fee, new_feerate)) =
 		compute_fee_from_spent_amounts(input_amounts, predicted_weight, conf_target, fee_estimator, logger)
 	{
 		match feerate_strategy {
