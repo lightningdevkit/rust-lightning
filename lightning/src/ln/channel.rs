@@ -2517,7 +2517,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 			funding_tx_confirmed_in: None,
 			funding_tx_confirmation_height: 0,
-			short_channel_id: None,
+			short_channel_id: pre_splice_context.short_channel_id,
 			channel_creation_height: pre_splice_context.channel_creation_height,
 
 			feerate_per_kw: pre_splice_context.feerate_per_kw,
@@ -2592,11 +2592,11 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			pending_splice_post: Some(pending_splice_post),
 		};
 
-		// Update funding pubkeys
-		context.channel_transaction_parameters.holder_pubkeys.funding_pubkey = holder_signer_funding_pubkey;
-		if context.channel_transaction_parameters.counterparty_parameters.is_some() {
-			context.channel_transaction_parameters.counterparty_parameters.as_mut().unwrap().pubkeys.funding_pubkey = counterparty_funding_pubkey.clone();
-		}
+		// // Update funding pubkeys -- Not needed as funding pubkeys do not change
+		// context.channel_transaction_parameters.holder_pubkeys.funding_pubkey = holder_signer_funding_pubkey;
+		// if context.channel_transaction_parameters.counterparty_parameters.is_some() {
+		// 	context.channel_transaction_parameters.counterparty_parameters.as_mut().unwrap().pubkeys.funding_pubkey = counterparty_funding_pubkey.clone();
+		// }
 
 		// Reset funding tx
 		context.channel_transaction_parameters.funding_outpoint = None;
