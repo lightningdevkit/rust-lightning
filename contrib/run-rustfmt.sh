@@ -14,7 +14,7 @@ VERS=""
 
 # Run fmt
 TMP_FILE=$(mktemp)
-find . -name '*.rs' -type f |sort >"$TMP_FILE"
+git ls-files | grep '.rs$' | sort >"$TMP_FILE"
 for file in $(comm -23 "$TMP_FILE" rustfmt_excluded_files); do
 	echo "Formatting $file..."
 	rustfmt $VERS --edition 2021 "$file"
