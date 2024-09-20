@@ -823,17 +823,28 @@ pub enum Event {
 		addresses: Vec<msgs::SocketAddress>,
 	},
 
-	/// Event triggered when manual handling is enabled, and an invoice request is received.
+	/// Event triggered when manual handling is enabled and an invoice request is received.
+	///
+	/// Indicates that an [`InvoiceRequest`] for an [`Offer`] created by us has been received.
+	///
+	/// This event will only be generated if [`UserConfig::manually_handle_bolt12_messages`] is set.
+	/// Use [`ChannelManager::send_invoice_request_response`] to respond with an appropriate
+	/// response to the received invoice request. Use [`ChannelManager::reject_invoice_request`] to
+	/// reject the invoice request and respond with an [`InvoiceError`]. See the docs for further details.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`UserConfig::manually_handle_bolt12_messages`]: crate::util::config::UserConfig::manually_handle_bolt12_messages
+	/// [`ChannelManager::send_invoice_request_response`]: crate::ln::channelmanager::ChannelManager::send_invoice_request_response
+	/// [`ChannelManager::reject_invoice_request`]: crate::ln::channelmanager::ChannelManager::reject_invoice_request
+	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
 	InvoiceRequestReceived {
-		/// The invoice request to pay.
+		/// The received invoice request to respond to.
 		invoice_request: InvoiceRequest,
 		/// The context of the [`BlindedMessagePath`] used to send the invoice request.
 		///
 		/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 		context: Option<OffersContext>,
 		/// A responder for replying with an [`InvoiceError`] if needed.
-		///
-		/// `None` if the invoice wasn't sent with a reply path.
 		///
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
 		responder: Responder,
