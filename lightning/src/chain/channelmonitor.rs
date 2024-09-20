@@ -216,9 +216,16 @@ impl_writeable_tlv_based!(HTLCUpdate, {
 	(4, payment_preimage, option),
 });
 
-/// If an HTLC expires within this many blocks, don't try to claim it in a shared transaction,
-/// instead claiming it in its own individual transaction.
-pub(crate) const CLTV_SHARED_CLAIM_BUFFER: u32 = 12;
+/// If an output goes from claimable only by us to claimable by us or our counterparty within this
+/// many blocks, we consider it pinnable for the purposes of aggregating claims in a single
+/// transaction.
+pub(crate) const COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE: u32 = 12;
+
+/// When we go to force-close a channel because an HTLC is expiring, we should ensure that the
+/// HTLC(s) expiring are not considered pinnable, allowing us to aggregate them with other HTLC(s)
+/// expiring at the same time.
+const _: () = assert!(CLTV_CLAIM_BUFFER > COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE);
+
 /// If an HTLC expires within this many blocks, force-close the channel to broadcast the
 /// HTLC-Success transaction.
 /// In other words, this is an upper bound on how many blocks we think it can take us to get a

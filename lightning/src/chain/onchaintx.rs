@@ -772,7 +772,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			for j in 0..i {
 				if requests[i].can_merge_with(&requests[j], cur_height) {
 					let merge = requests.remove(i);
-					if let Err(rejected) = requests[j].merge_package(merge) {
+					if let Err(rejected) = requests[j].merge_package(merge, cur_height) {
 						debug_assert!(false, "Merging package should not be rejected after verifying can_merge_with.");
 						requests.insert(i, rejected);
 					} else {
@@ -1106,7 +1106,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 					OnchainEvent::ContentiousOutpoint { package } => {
 						if let Some(pending_claim) = self.claimable_outpoints.get(package.outpoints()[0]) {
 							if let Some(request) = self.pending_claim_requests.get_mut(&pending_claim.0) {
-								assert!(request.merge_package(package).is_ok());
+								assert!(request.merge_package(package, height).is_ok());
 								// Using a HashMap guarantee us than if we have multiple outpoints getting
 								// resurrected only one bump claim tx is going to be broadcast
 								bump_candidates.insert(pending_claim.clone(), request.clone());
