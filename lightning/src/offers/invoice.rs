@@ -342,7 +342,12 @@ macro_rules! invoice_builder_methods { (
 	pub(crate) fn amount_msats(
 		invoice_request: &InvoiceRequest, custom_amount_msats: Option<u64>
 	) -> Result<u64, Bolt12SemanticError> {
-		if invoice_request.amount_msats().is_some() && custom_amount_msats.is_some() {
+		let invoice_request_amount = invoice_request.amount_msats();
+		let offer_amount = invoice_request.contents.inner.offer.amount();
+
+		// custom_amount_msats should only be provided for the case when the offer is denominated
+		// in Currency (and not Bitcoin) and when Invoice Request doesn't contain an amount.
+		if (!matches!(offer_amount, Some(Amount::Currency { .. })) || invoice_request_amount.is_some()) && custom_amount_msats.is_some() {
 			return Err(Bolt12SemanticError::UnexpectedAmount);
 		}
 
