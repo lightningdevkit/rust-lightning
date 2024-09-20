@@ -831,18 +831,18 @@ impl PackageTemplate {
 			}
 		}
 	}
-	pub(crate) fn merge_package(&mut self, mut merge_from: PackageTemplate) {
+	pub(crate) fn merge_package(&mut self, mut merge_from: PackageTemplate) -> Result<(), PackageTemplate> {
 		if self.malleability == PackageMalleability::Untractable || merge_from.malleability == PackageMalleability::Untractable {
-			panic!("Merging template on untractable packages");
+			return Err(merge_from);
 		}
 		if !self.aggregable || !merge_from.aggregable {
-			panic!("Merging non aggregatable packages");
+			return Err(merge_from);
 		}
 		if let Some((_, lead_input)) = self.inputs.first() {
 			for (_, v) in merge_from.inputs.iter() {
-				if !lead_input.is_compatible(v) { panic!("Merging outputs from differing types !"); }
+				if !lead_input.is_compatible(v) { return Err(merge_from); }
 			}
-		} else { panic!("Merging template on an empty package"); }
+		} else { return Err(merge_from); }
 		for (k, v) in merge_from.inputs.drain(..) {
 			self.inputs.push((k, v));
 		}
@@ -854,6 +854,7 @@ impl PackageTemplate {
 			self.feerate_previous = merge_from.feerate_previous;
 		}
 		self.height_timer = cmp::min(self.height_timer, merge_from.height_timer);
+		Ok(())
 	}
 	/// Gets the amount of all outptus being spent by this package, only valid for malleable
 	/// packages.
@@ -1323,7 +1324,6 @@ mod tests {
 	}
 
 	#[test]
-	#[should_panic]
 	fn test_package_untractable_merge_to() {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
@@ -1332,11 +1332,10 @@ mod tests {
 
 		let mut untractable_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000);
 		let malleable_package = PackageTemplate::build_package(txid, 1, htlc_outp.clone(), 1000);
-		untractable_package.merge_package(malleable_package);
+		assert!(untractable_package.merge_package(malleable_package).is_err());
 	}
 
 	#[test]
-	#[should_panic]
 	fn test_package_untractable_merge_from() {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
@@ -1345,11 +1344,10 @@ mod tests {
 
 		let mut malleable_package = PackageTemplate::build_package(txid, 0, htlc_outp.clone(), 1000);
 		let untractable_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000);
-		malleable_package.merge_package(untractable_package);
+		assert!(malleable_package.merge_package(untractable_package).is_err());
 	}
 
 	#[test]
-	#[should_panic]
 	fn test_package_noaggregation_to() {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
@@ -1358,11 +1356,10 @@ mod tests {
 
 		let mut noaggregation_package = PackageTemplate::build_package(txid, 0, revk_outp_counterparty_balance.clone(), 1000);
 		let aggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000);
-		noaggregation_package.merge_package(aggregation_package);
+		assert!(noaggregation_package.merge_package(aggregation_package).is_err());
 	}
 
 	#[test]
-	#[should_panic]
 	fn test_package_noaggregation_from() {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
@@ -1371,11 +1368,10 @@ mod tests {
 
 		let mut aggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000);
 		let noaggregation_package = PackageTemplate::build_package(txid, 1, revk_outp_counterparty_balance.clone(), 1000);
-		aggregation_package.merge_package(noaggregation_package);
+		assert!(aggregation_package.merge_package(noaggregation_package).is_err());
 	}
 
 	#[test]
-	#[should_panic]
 	fn test_package_empty() {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
@@ -1384,11 +1380,10 @@ mod tests {
 		let mut empty_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000);
 		empty_package.inputs = vec![];
 		let package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000);
-		empty_package.merge_package(package);
+		assert!(empty_package.merge_package(package).is_err());
 	}
 
 	#[test]
-	#[should_panic]
 	fn test_package_differing_categories() {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
@@ -1397,7 +1392,7 @@ mod tests {
 
 		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000);
 		let counterparty_package = PackageTemplate::build_package(txid, 1, counterparty_outp, 1000);
-		revoked_package.merge_package(counterparty_package);
+		assert!(revoked_package.merge_package(counterparty_package).is_err());
 	}
 
 	#[test]
@@ -1412,8 +1407,8 @@ mod tests {
 		let package_two = PackageTemplate::build_package(txid, 1, revk_outp_two, 1000);
 		let package_three = PackageTemplate::build_package(txid, 2, revk_outp_three, 1000);
 
-		package_one.merge_package(package_two);
-		package_one.merge_package(package_three);
+		assert!(package_one.merge_package(package_two).is_ok());
+		assert!(package_one.merge_package(package_three).is_ok());
 		assert_eq!(package_one.outpoints().len(), 3);
 
 		if let Some(split_package) = package_one.split_package(&BitcoinOutPoint { txid, vout: 1 }) {
