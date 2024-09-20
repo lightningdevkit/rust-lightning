@@ -11038,14 +11038,6 @@ where
 
 		match message {
 			OffersMessage::InvoiceRequest(invoice_request) => {
-				if self.default_configuration.manually_handle_bolt12_messages {
-					let event = Event::InvoiceRequestReceived {
-						invoice_request, context, responder,
-					};
-					self.pending_events.lock().unwrap().push_back((event, None));
-					return None;
-				}
-
 				let responder = match responder {
 					Some(responder) => responder,
 					None => return None,
@@ -11069,6 +11061,15 @@ where
 						Err(()) => return None,
 					},
 				};
+
+				if self.default_configuration.manually_handle_bolt12_messages {
+					let event = Event::InvoiceRequestReceived {
+						invoice_request: invoice_request.inner, context, responder,
+					};
+					self.pending_events.lock().unwrap().push_back((event, None));
+					return None;
+				}
+
 
 				let amount_msats = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
 					&invoice_request.inner

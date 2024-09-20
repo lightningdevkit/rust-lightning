@@ -836,7 +836,7 @@ pub enum Event {
 		/// `None` if the invoice wasn't sent with a reply path.
 		///
 		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
-		responder: Option<Responder>,
+		responder: Responder,
 	},
 
 	/// Indicates a [`Bolt12Invoice`] in response to an [`InvoiceRequest`] or a [`Refund`] was
@@ -1764,7 +1764,7 @@ impl Writeable for Event {
 				write_tlv_fields!(writer, {
 					(0, invoice_request, required),
 					(2, context, option),
-					(4, responder, option),
+					(4, responder, required),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -2266,12 +2266,12 @@ impl MaybeReadable for Event {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(0, invoice_request, required),
 						(2, context, option),
-						(4, responder, option),
+						(4, responder, required),
 					});
 					Ok(Some(Event::InvoiceRequestReceived {
 						invoice_request: invoice_request.0.unwrap(),
 						context,
-						responder,
+						responder: responder.0.unwrap(),
 					}))
 				};
 				f()
