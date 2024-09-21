@@ -6928,11 +6928,12 @@ where
 		&self, prev_hop: HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, completion_action: ComplFunc,
 	) {
-		let counterparty_node_id =
+		let counterparty_node_id = prev_hop.counterparty_node_id.or_else(|| {
 			match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
 				Some((cp_id, _dup_chan_id)) => Some(cp_id.clone()),
 				None => None
-			};
+			}
+		});
 
 		let htlc_source = HTLCClaimSource {
 			counterparty_node_id,
