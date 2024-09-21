@@ -1,0 +1,26 @@
+[package]
+name = "lightning-macros"
+version = "0.1.0"
+authors = ["Elias Rohrer"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lightningdevkit/rust-lightning/"
+description = """
+Proc macros used by LDK
+"""
+edition = "2021"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lib]
+proc-macro = true
+
+[features]
+
+[dependencies]
+syn = { version = "2.0.77", default-features = false, features = ["parsing", "printing", "proc-macro", "full"] }
+proc-macro2 = { version = "1.0.86", default-features = false, features = ["proc-macro"] }
+quote = { version = "1.0", default-features = false, features = ["proc-macro"] }
+
+[lints]
+workspace = true
