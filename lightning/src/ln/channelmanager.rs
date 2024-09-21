@@ -6839,10 +6839,12 @@ where
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let chan_id = prev_hop.channel_id;
-			let counterparty_node_id_opt = match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
-				Some((cp_id, _dup_chan_id)) => Some(cp_id.clone()),
-				None => None
-			};
+			let counterparty_node_id_opt = prev_hop.counterparty_node_id.or_else(|| {
+				match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
+					Some((cp_id, _dup_chan_id)) => Some(cp_id.clone()),
+					None => None
+				}
+			});
 
 			let peer_state_opt = counterparty_node_id_opt.as_ref().map(
 				|counterparty_node_id| per_peer_state.get(counterparty_node_id)
