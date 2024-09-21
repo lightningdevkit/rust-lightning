@@ -13,6 +13,8 @@ use lightning::chain::{Confirm, Filter};
 use lightning::util::logger::Logger;
 use lightning::{log_debug, log_error, log_trace};
 
+use lightning_macros::{maybe_async, maybe_await};
+
 use bitcoin::{BlockHash, Script, Txid};
 
 #[cfg(not(feature = "async-interface"))]

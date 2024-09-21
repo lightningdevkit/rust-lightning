@@ -11,7 +11,8 @@ use lightning_transaction_sync::ElectrumSyncClient;
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 use lightning_transaction_sync::EsploraSyncClient;
 
-use bdk_macros::maybe_await;
+use lightning_macros::maybe_await;
+
 use bitcoin::block::Header;
 use bitcoin::constants::genesis_block;
 use bitcoin::network::Network;
