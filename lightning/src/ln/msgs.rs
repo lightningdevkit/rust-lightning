@@ -4770,6 +4770,28 @@ mod tests {
 	}
 
 	#[test]
+	fn encode_trampoline_blinded_path_payload() {
+		let trampoline_payload_eve = OutboundTrampolinePayload::BlindedReceive {
+			sender_intended_htlc_amt_msat: 150_000_000,
+			total_msat: 150_000_000,
+			cltv_expiry_height: 800_000,
+			encrypted_tlvs: &<Vec<u8>>::from_hex("bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c").unwrap(),
+			intro_node_blinding_point: None,
+			keysend_preimage: None,
+			custom_tlvs: &vec![],
+		};
+		let eve_payload = trampoline_payload_eve.encode().to_lower_hex_string();
+		assert_eq!(eve_payload, "e4020408f0d18004030c35000ad1bcd747394fbd4d99588da075a623316e15a576df5bc785cccc7cd6ec7b398acce6faf520175f9ec920f2ef261cdb83dc28cc3a0eeb970107b3306489bf771ef5b1213bca811d345285405861d08a655b6c237fa247a8b4491beee20c878a60e9816492026d8feb9dafa84585b253978db6a0aa2945df5ef445c61e801fb82f43d5f00716baf9fc9b3de50bc22950a36bda8fc27bfb1242e5860c7e687438d4133e058770361a19b6c271a2a07788d34dccc27e39b9829b061a4d960eac4a2c2b0f4de506c24f9af3868c0aff6dda27281c120408f0d180");
+
+		let trampoline_payload_dave = OutboundTrampolinePayload::BlindedForward {
+			encrypted_tlvs: &<Vec<u8>>::from_hex("0ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a").unwrap(),
+			intro_node_blinding_point: Some(PublicKey::from_slice(&<Vec<u8>>::from_hex("02988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e").unwrap()).unwrap()),
+		};
+		let dave_payload = trampoline_payload_dave.encode().to_lower_hex_string();
+		assert_eq!(dave_payload, "690a440ccf3c8a58deaa603f657ee2a5ed9d604eb5c8ca1e5f801989afa8f3ea6d789bbdde2c7e7a1ef9ca8c38d2c54760febad8446d3f273ddb537569ef56613846ccd3aba78a0c2102988face71e92c345a068f740191fd8e53be14f0bb957ef730d3c5f76087b960e")
+	}
+
+	#[test]
 	fn query_channel_range_end_blocknum() {
 		let tests: Vec<(u32, u32, u32)> = vec![
 			(10000, 1500, 11500),
