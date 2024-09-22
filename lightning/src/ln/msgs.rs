@@ -4706,7 +4706,7 @@ mod tests {
 		trampoline_features.set_basic_mpp_optional();
 		let introduction_node = PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()).unwrap();
 		let blinding_point = PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()).unwrap();
-		let trampoline_payload = OutboundTrampolinePayload::BlindedForward {
+		let trampoline_payload = OutboundTrampolinePayload::LegacyBlindedPathEntry {
 			amt_to_forward: 150_000_000,
 			outgoing_cltv_value: 800_000,
 			payment_paths: vec![
