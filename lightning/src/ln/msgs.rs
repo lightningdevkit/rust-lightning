@@ -1830,7 +1830,7 @@ mod fuzzy_internal_msgs {
 		}
 	}
 
-	pub(crate) enum OutboundTrampolinePayload {
+	pub(crate) enum OutboundTrampolinePayload<'a> {
 		#[allow(unused)]
 		Forward {
 			/// The value, in msat, of the payment after this hop's fee is deducted.
@@ -1851,6 +1851,21 @@ mod fuzzy_internal_msgs {
 			/// If applicable, features of the BOLT12 invoice being paid.
 			invoice_features: Option<Bolt12InvoiceFeatures>,
 		},
+		#[allow(unused)]
+		BlindedForward {
+			encrypted_tlvs: &'a Vec<u8>,
+			intro_node_blinding_point: Option<PublicKey>,
+		},
+		#[allow(unused)]
+		BlindedReceive {
+			sender_intended_htlc_amt_msat: u64,
+			total_msat: u64,
+			cltv_expiry_height: u32,
+			encrypted_tlvs: &'a Vec<u8>,
+			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
+			keysend_preimage: Option<PaymentPreimage>,
+			custom_tlvs: &'a Vec<(u64, Vec<u8>)>,
+		}
 	}
 
 	pub struct DecodedOnionErrorPacket {
@@ -2766,7 +2781,7 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 	}
 }
 
-impl Writeable for OutboundTrampolinePayload {
+impl<'a> Writeable for OutboundTrampolinePayload<'a> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		match self {
 			Self::Forward { amt_to_forward, outgoing_cltv_value, outgoing_node_id } => {
@@ -2795,6 +2810,22 @@ impl Writeable for OutboundTrampolinePayload {
 					(22, WithoutLength(blinded_path_serialization), required)
 				});
 			},
+			Self::BlindedForward { encrypted_tlvs, intro_node_blinding_point} => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(10, **encrypted_tlvs, required_vec),
+					(12, intro_node_blinding_point, option)
+				});
+			},
+			Self::BlindedReceive { sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs, intro_node_blinding_point, keysend_preimage, custom_tlvs } => {
+				_encode_varint_length_prefixed_tlv!(w, {
+					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),
+					(4, HighZeroBytesDroppedBigSize(*cltv_expiry_height), required),
+					(10, **encrypted_tlvs, required_vec),
+					(12, intro_node_blinding_point, option),
+					(18, HighZeroBytesDroppedBigSize(*total_msat), required),
+					(20, keysend_preimage, option)
+				}, custom_tlvs.iter());
+			}
 		}
 		Ok(())
 	}
