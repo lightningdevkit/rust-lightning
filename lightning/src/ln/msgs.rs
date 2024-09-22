@@ -3351,7 +3351,8 @@ mod tests {
 
 	#[cfg(feature = "std")]
 	use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
-	use crate::blinded_path::{BlindedPath, Direction, IntroductionNode};
+	use types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
+	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 	#[cfg(feature = "std")]
 	use crate::ln::msgs::SocketAddressParseError;
 
@@ -4701,21 +4702,32 @@ mod tests {
 
 	#[test]
 	fn encoding_outbound_trampoline_payload() {
-		let public_key = PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()).unwrap();
+		let mut trampoline_features = Bolt12InvoiceFeatures::empty();
+		trampoline_features.set_basic_mpp_optional();
+		let introduction_node = PublicKey::from_slice(&<Vec<u8>>::from_hex("032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e668680991").unwrap()).unwrap();
+		let blinding_point = PublicKey::from_slice(&<Vec<u8>>::from_hex("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619").unwrap()).unwrap();
 		let trampoline_payload = OutboundTrampolinePayload::BlindedForward {
-			amt_to_forward: 100000000,
-			outgoing_cltv_value: 800000,
+			amt_to_forward: 150_000_000,
+			outgoing_cltv_value: 800_000,
 			payment_paths: vec![
-				BlindedPath {
-					introduction_node: IntroductionNode::DirectedShortChannelId(Direction::NodeOne, 12),
-					blinding_point: public_key,
-					blinded_hops: vec![],
-				}
+				BlindedPaymentPath::from_raw(
+					introduction_node,
+					blinding_point,
+					vec![],
+					BlindedPayInfo{
+						fee_base_msat: 500,
+						fee_proportional_millionths: 1_000,
+						cltv_expiry_delta: 36,
+						htlc_minimum_msat: 1,
+						htlc_maximum_msat: 500_000_000,
+						features: BlindedHopFeatures::empty(),
+					}
+				)
 			],
-			invoice_features: None,
+			invoice_features: Some(trampoline_features),
 		};
 		let serialized_payload = trampoline_payload.encode().to_lower_hex_string();
-		assert_eq!(serialized_payload, "3c020405f5e10004030c3500fe000102362b00000000000000000c02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f28368661900");
+		assert_eq!(serialized_payload, "71020408f0d18004030c35001503020000165f032c0b7cf95324a07d05398b240174dc0c2be444d96b159aa6c7f7b1e66868099102eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f28368661900000001f4000003e800240000000000000001000000001dcd65000000");
 	}
 
 	#[test]
