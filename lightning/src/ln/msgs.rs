@@ -1842,7 +1842,7 @@ mod fuzzy_internal_msgs {
 		#[allow(unused)]
 		/// This is the last Trampoline hop, whereupon the Trampoline forward mechanism is exited,
 		/// and payment data is relayed using non-Trampoline blinded hops
-		BlindedForward {
+		LegacyBlindedPathEntry {
 			/// The value, in msat, of the payment after this hop's fee is deducted.
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
@@ -2776,7 +2776,7 @@ impl Writeable for OutboundTrampolinePayload {
 					(14, outgoing_node_id, required)
 				});
 			},
-			Self::BlindedForward { amt_to_forward, outgoing_cltv_value, payment_paths, invoice_features } => {
+			Self::LegacyBlindedPathEntry { amt_to_forward, outgoing_cltv_value, payment_paths, invoice_features } => {
 				let blinded_path_value: Vec<u8> = payment_paths.iter().flat_map(|p| {
 					p.inner_blinded_path().encode().into_iter().chain(p.payinfo.encode())
 				}).collect();
