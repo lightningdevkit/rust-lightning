@@ -1746,8 +1746,7 @@ pub struct FinalOnionHopData {
 
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
-	use crate::blinded_path::BlindedPath;
-	use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, PaymentRelay};
+	use crate::blinded_path::payment::{BlindedPaymentPath, PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::ln::types::{PaymentPreimage, PaymentSecret};
 	use crate::ln::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
@@ -1841,12 +1840,14 @@ mod fuzzy_internal_msgs {
 			outgoing_node_id: PublicKey,
 		},
 		#[allow(unused)]
+		/// This is the last Trampoline hop, whereupon the Trampoline forward mechanism is exited,
+		/// and payment data is relayed using non-Trampoline blinded hops
 		BlindedForward {
 			/// The value, in msat, of the payment after this hop's fee is deducted.
 			amt_to_forward: u64,
 			outgoing_cltv_value: u32,
 			/// List of blinded path options the last trampoline hop may choose to route through.
-			payment_paths: Vec<BlindedPath>,
+			payment_paths: Vec<BlindedPaymentPath>,
 			/// If applicable, features of the BOLT12 invoice being paid.
 			invoice_features: Option<Bolt12InvoiceFeatures>
 		},
@@ -2776,12 +2777,16 @@ impl Writeable for OutboundTrampolinePayload {
 				});
 			},
 			Self::BlindedForward { amt_to_forward, outgoing_cltv_value, payment_paths, invoice_features } => {
+				let blinded_path_value: Vec<u8> = payment_paths.iter().flat_map(|p| {
+					p.inner_blinded_path().encode().into_iter().chain(p.payinfo.encode()).collect::<Vec<u8>>()
+				}).collect();
+				let blinded_path_tlv = (22, blinded_path_value);
+
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
-					(66097, invoice_features, option),
-					(66102, *payment_paths, required_vec)
-				});
+					(21, invoice_features.as_ref().map(|m| WithoutLength(m)), option)
+				}, [&blinded_path_tlv]);
 			},
 		}
 		Ok(())
