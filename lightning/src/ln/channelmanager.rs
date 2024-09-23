@@ -948,7 +948,7 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 				#[cfg(splicing)]
 				ChannelPhase::RenegotiatingFundingInbound(_chan) => false,
 				#[cfg(splicing)]
-				ChannelPhase::RenegotiatingFundingPending(_) => true,
+				ChannelPhase::RenegotiatingV2(_) => true,
 			}
 		)
 			&& self.monitor_update_blocked_actions.is_empty()
@@ -2829,7 +2829,7 @@ macro_rules! convert_chan_phase_err {
 			ChannelPhase::RenegotiatingFundingOutbound(_chan) |
 			ChannelPhase::RenegotiatingFundingInbound(_chan) => todo!("splicing"),
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingPending((_, channel)) => {
+			ChannelPhase::RenegotiatingV2((_, channel)) => {
 				convert_chan_phase_err!($self, $err, channel, $channel_id, FUNDED_CHANNEL)
 			},
 		}
@@ -3936,7 +3936,7 @@ where
 					#[cfg(splicing)]
 					ChannelPhase::RenegotiatingFundingOutbound(_) |
 					ChannelPhase::RenegotiatingFundingInbound(_) |
-					ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
+					ChannelPhase::RenegotiatingV2(_) => todo!("splicing"),
 				}
 			} else if peer_state.inbound_channel_request_by_id.remove(channel_id).is_some() {
 				log_error!(logger, "Force-closing channel {}", &channel_id);
@@ -4423,7 +4423,7 @@ where
 							None => {},
 						}
 					},
-					// TODO(splicing): handle RenegotiatingFundingPending
+					// TODO(splicing): handle RenegotiatingV2
 					_ => return Err(APIError::ChannelUnavailable{err: "Channel to first hop is unfunded".to_owned()}),
 				};
 			} else {
@@ -5107,7 +5107,7 @@ where
 
 		match peer_state.channel_by_id.get_mut(channel_id) {
 			Some(ChannelPhase::Funded(chan)) |
-			Some(ChannelPhase::RenegotiatingFundingPending((_, chan))) => {
+			Some(ChannelPhase::RenegotiatingV2((_, chan))) => {
 				let tx_signatures_opt = chan.funding_transaction_signed(channel_id, witnesses)
 					.map_err(|_err| APIError::APIMisuseError {
 						err: format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)
@@ -6302,7 +6302,7 @@ where
 							#[cfg(splicing)]
 							ChannelPhase::RenegotiatingFundingOutbound(_) |
 							ChannelPhase::RenegotiatingFundingInbound(_) |
-							ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
+							ChannelPhase::RenegotiatingV2(_) => todo!("splicing"),
 						}
 					});
 
@@ -7634,7 +7634,7 @@ where
 				#[cfg(splicing)]
 				ChannelPhase::RenegotiatingFundingOutbound(_) |
 				ChannelPhase::RenegotiatingFundingInbound(_) |
-				ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
+				ChannelPhase::RenegotiatingV2(_) => todo!("splicing"),
 			}
 		}
 		num_unfunded_channels + peer.inbound_channel_request_by_id.len()
@@ -8302,7 +8302,7 @@ where
 							});
 							channel.set_next_funding_txid(&funding_txid);
 							if let Some(pre_chan) = pre_splice_chan {
-								peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::RenegotiatingFundingPending((pre_chan, channel)));
+								peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::RenegotiatingV2((pre_chan, channel)));
 							} else {
 								peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::Funded(channel));
 							}
@@ -8339,7 +8339,7 @@ where
 				let channel_phase = chan_phase_entry.get_mut();
 				match channel_phase {
 					ChannelPhase::Funded(chan) |
-					ChannelPhase::RenegotiatingFundingPending((_, chan)) => {
+					ChannelPhase::RenegotiatingV2((_, chan)) => {
 						let (tx_signatures_opt, funding_tx_opt) = try_chan_phase_entry!(self, chan.tx_signatures(&msg, &self.logger), chan_phase_entry);
 						chan.clear_next_funding_txid();
 						if let Some(tx_signatures) = tx_signatures_opt {
@@ -8460,7 +8460,7 @@ where
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				match chan_phase_entry.get_mut() {
 					// Note: no need to cover Funded
-					ChannelPhase::RenegotiatingFundingPending((_, _chan)) => {},
+					ChannelPhase::RenegotiatingV2((_, _chan)) => {},
 					_ => {
 						return try_chan_phase_entry!(self, Err(ChannelError::Close(
 							"Got a splice_locked message for an unfunded channel!".into())), chan_phase_entry);
@@ -8476,7 +8476,7 @@ where
 		let phase = peer_state.channel_by_id.remove(&msg.channel_id);
 		let chan = match phase {
 			// Some(ChannelPhase::Funded(chan)) => chan,
-			Some(ChannelPhase::RenegotiatingFundingPending((_, chan))) => chan,
+			Some(ChannelPhase::RenegotiatingV2((_, chan))) => chan,
 			_ => {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal error TODO".into(), msg.channel_id));
 			},
@@ -8487,7 +8487,7 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				match chan_phase_entry.get_mut() {
-					// Note: no need to cover RenegotiatingFundingPending
+					// Note: no need to cover RenegotiatingV2
 					ChannelPhase::Funded(chan) => {
 						let logger = WithChannelContext::from(&self.logger, &chan.context);
 						let announcement_sigs_opt = try_chan_phase_entry!(self, chan.splice_locked(&msg, &self.node_signer,
@@ -8595,7 +8595,7 @@ where
 					#[cfg(splicing)]
 					ChannelPhase::RenegotiatingFundingOutbound(_) |
 					ChannelPhase::RenegotiatingFundingInbound(_) |
-					ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
+					ChannelPhase::RenegotiatingV2(_) => todo!("splicing"),
 				}
 			} else {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
@@ -8743,7 +8743,7 @@ where
 					}
 					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info, &self.fee_estimator), chan_phase_entry);
 				} else {
-					// TODO(splicing): also handle RenegotiatingFundingPending
+					// TODO(splicing): also handle RenegotiatingV2
 					return try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
@@ -8909,7 +8909,7 @@ where
 						Ok(())
 					},
 					#[cfg(splicing)]
-					ChannelPhase::RenegotiatingFundingPending((_pre_chan, post_chan)) => {
+					ChannelPhase::RenegotiatingV2((_pre_chan, post_chan)) => {
 						// TODO(splicing): handle on pre as well
 						let logger = WithChannelContext::from(&self.logger, &post_chan.context);
 						let post_funding_txo = post_chan.context.get_funding_txo().unwrap();
@@ -9138,7 +9138,7 @@ where
 						}
 						htlcs_to_fail
 					} else {
-						// TODO(splicing): Handle RenegotiatingFundingPending
+						// TODO(splicing): Handle RenegotiatingV2
 						return try_chan_phase_entry!(self, Err(ChannelError::Close(
 							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_phase_entry);
 					}
@@ -10847,7 +10847,7 @@ where
 						ChannelPhase::RenegotiatingFundingInbound(_) => todo!("splicing"),
 						// Both post and pre exist
 						#[cfg(splicing)]
-						ChannelPhase::RenegotiatingFundingPending((_, post_chan)) => { post_chan }
+						ChannelPhase::RenegotiatingV2((_, post_chan)) => { post_chan }
 					};
 					let res = f(channel);
 					if let Ok((channel_ready_opt, splice_locked_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
@@ -11379,7 +11379,7 @@ where
 						#[cfg(splicing)]
 						ChannelPhase::RenegotiatingFundingOutbound(_) |
 						ChannelPhase::RenegotiatingFundingInbound(_) |
-						ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
+						ChannelPhase::RenegotiatingV2(_) => todo!("splicing"),
 					};
 					// Clean up for removal.
 					update_maps_on_chan_removal!(self, &context);
@@ -11565,7 +11565,7 @@ where
 						#[cfg(splicing)]
 						ChannelPhase::RenegotiatingFundingOutbound(_) |
 						ChannelPhase::RenegotiatingFundingInbound(_) |
-						ChannelPhase::RenegotiatingFundingPending(_) => todo!("splicing"),
+						ChannelPhase::RenegotiatingV2(_) => todo!("splicing"),
 					}
 				}
 			}
@@ -11678,7 +11678,7 @@ where
 					#[cfg(splicing)]
 					Some(ChannelPhase::RenegotiatingFundingOutbound(_)) |
 					Some(ChannelPhase::RenegotiatingFundingInbound(_)) |
-					Some(ChannelPhase::RenegotiatingFundingPending(_)) => todo!("splicing"),
+					Some(ChannelPhase::RenegotiatingV2(_)) => todo!("splicing"),
 				}
 			}
 
