@@ -58,11 +58,11 @@ use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::types::payment::PaymentPreimage;
-use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
+use crate::util::ser::{Readable, ReadableArgs, Writeable};
 use crate::util::transaction_utils;
 
 use crate::crypto::chacha20::ChaCha20;
-use crate::io::{self, Error};
+use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -1784,28 +1784,6 @@ impl TaprootChannelSigner for InMemorySigner {
 }
 
 const SERIALIZATION_VERSION: u8 = 1;
-
-const MIN_SERIALIZATION_VERSION: u8 = 1;
-
-impl Writeable for InMemorySigner {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), Error> {
-		write_ver_prefix!(writer, SERIALIZATION_VERSION, MIN_SERIALIZATION_VERSION);
-
-		self.funding_key.write(writer)?;
-		self.revocation_base_key.write(writer)?;
-		self.payment_key.write(writer)?;
-		self.delayed_payment_base_key.write(writer)?;
-		self.htlc_base_key.write(writer)?;
-		self.commitment_seed.write(writer)?;
-		self.channel_parameters.write(writer)?;
-		self.channel_value_satoshis.write(writer)?;
-		self.channel_keys_id.write(writer)?;
-
-		write_tlv_fields!(writer, {});
-
-		Ok(())
-	}
-}
 
 impl<ES: Deref> ReadableArgs<ES> for InMemorySigner
 where
