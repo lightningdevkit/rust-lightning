@@ -6743,7 +6743,7 @@ where
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(channel_id) {
 					hash_map::Entry::Occupied(chan_phase_entry) => {
-						if let Some(chan) = chan_phase_entry.get().funded_channel() {
+						if let Some(_chan) = chan_phase_entry.get().funded_channel() {
 							let failure_code = 0x1000|7;
 							let data = self.get_htlc_inbound_temp_fail_data(failure_code);
 							(failure_code, data)
