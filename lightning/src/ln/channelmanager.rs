@@ -50,9 +50,7 @@ use crate::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel::{Channel, ChannelPhase, ChannelContext, ChannelError, ChannelUpdateStatus, ShutdownResult, UnfundedChannelContext, UpdateFulfillCommitFetch, OutboundV1Channel, InboundV1Channel, WithChannelContext};
 pub use crate::ln::channel::{InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
 #[cfg(any(dual_funding, splicing))]
-use crate::ln::channel::{InboundV2Channel, OutboundV2Channel, InteractivelyFunded as _};
-#[cfg(splicing)]
-use crate::ln::channel::RenegotiatingChannel;
+use crate::ln::channel::{HasChannelContext, InboundV2Channel, OutboundV2Channel, InteractivelyFunded as _, V2Channel};
 #[cfg(splicing)]
 use crate::ln::channel_splice::{PendingSpliceInfoPre, SplicingChannelValues};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
@@ -9430,7 +9428,7 @@ where
 			}
 		};
 
-		let post_chan = RenegotiatingChannel::new_spliced(
+		let post_chan = V2Channel::new_spliced(
 			false,
 			&prev_chan.context,
 			&self.signer_provider,
@@ -9444,7 +9442,7 @@ where
 		).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.channel_id))?;
 
 		// Add the modified channel
-		let post_chan_id = post_chan.context.channel_id();
+		let post_chan_id = post_chan.context().channel_id();
 		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::RenegotiatingFundingInbound((prev_chan, post_chan)));
 
 		// Perform state changes
@@ -9453,10 +9451,10 @@ where
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let ChannelPhase::RenegotiatingFundingInbound((_pre_chan, post_chan)) = chan_entry.get_mut() {
 					// Apply start of splice change in the state 
-					post_chan.context.splice_start(false, &self.logger);
+					post_chan.context_mut().splice_start(false, &self.logger);
 
 					let new_msg = post_chan.get_splice_ack(our_funding_contribution)
-						.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, post_chan.context.channel_id()))?;
+						.map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, post_chan.context().channel_id()))?;
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
 						node_id: *counterparty_node_id,
 						msg: new_msg,
@@ -9525,7 +9523,7 @@ where
 			}
 		};
 
-		let post_chan = RenegotiatingChannel::new_spliced(
+		let post_chan = V2Channel::new_spliced(
 			true,
 			&prev_chan.context,
 			&self.signer_provider,
@@ -9539,7 +9537,7 @@ where
 		).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.channel_id))?;
 
 		// Add the modified channel
-		let post_chan_id = post_chan.context.channel_id();
+		let post_chan_id = post_chan.context().channel_id();
 		peer_state.channel_by_id.insert(post_chan_id, ChannelPhase::RenegotiatingFundingOutbound((prev_chan, post_chan)));
 
 		// Perform state changes
@@ -9548,7 +9546,7 @@ where
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let ChannelPhase::RenegotiatingFundingOutbound((_pre_chan, post_chan)) = chan_entry.get_mut() {
 					// Apply start of splice change in the state
-					post_chan.context.splice_start(true, &self.logger);
+					post_chan.context_mut().splice_start(true, &self.logger);
 
 					/* Note: SpliceAckedInputsContributionReady event is no longer used
 					// Prepare SpliceAckedInputsContributionReady event

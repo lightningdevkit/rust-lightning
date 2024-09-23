@@ -1209,6 +1209,15 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
 });
 
+/// An enum for a negotiating V2 channel
+/// Note: OutboundV2Channel and InboundV2Channel should be merged into one struct, with an `is_outbound` flag.
+/// This is the placeholder for it here.
+#[cfg(any(dual_funding, splicing))]
+pub(crate) enum V2Channel<SP: Deref> where SP::Target: SignerProvider {
+	UnfundedOutboundV2(OutboundV2Channel<SP>),
+	UnfundedInboundV2(InboundV2Channel<SP>),
+}
+
 /// The `ChannelPhase` enum describes the current phase in life of a lightning channel with each of
 /// its variants containing an appropriate channel struct.
 pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
@@ -1224,12 +1233,12 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	/// Contains already negotiated channel (funded, pre-splice) and
 	/// channel being negotiated (post-splice)
 	#[cfg(splicing)]
-	RenegotiatingFundingOutbound((Channel<SP>, RenegotiatingChannel<SP>)),
+	RenegotiatingFundingOutbound((Channel<SP>, V2Channel<SP>)),
 	/// Renegotiating existing channel, inbound (initiated by the peer)
 	/// Contains already negotiated channel (funded, pre-splice) and
 	/// channel being negotiated (post-splice)
 	#[cfg(splicing)]
-	RenegotiatingFundingInbound((Channel<SP>, RenegotiatingChannel<SP>)),
+	RenegotiatingFundingInbound((Channel<SP>, V2Channel<SP>)),
 	/// Renegotiating existing channel, new channel is negotiated but still pending.
 	/// Contains the old channel (funded, pre-splice) and
 	/// and the new channel, that is negotiated but pending (funded, post-splice)
@@ -1251,9 +1260,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingOutbound((_pre_chan, post_chan)) => &post_chan.context,
+			ChannelPhase::RenegotiatingFundingOutbound((_pre_chan, post_chan)) => post_chan.context(),
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingInbound((_pre_chan, post_chan)) => &post_chan.context,
+			ChannelPhase::RenegotiatingFundingInbound((_pre_chan, post_chan)) => post_chan.context(),
 			// Both post and pre exist
 			#[cfg(splicing)]
 			ChannelPhase::RenegotiatingV2((_pre_chan, post_chan)) => &post_chan.context,
@@ -1270,9 +1279,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingOutbound((ref mut _pre_chan, post_chan)) => &mut post_chan.context,
+			ChannelPhase::RenegotiatingFundingOutbound((ref mut _pre_chan, post_chan)) => post_chan.context_mut(),
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingInbound((ref mut _pre_chan, post_chan)) => &mut post_chan.context,
+			ChannelPhase::RenegotiatingFundingInbound((ref mut _pre_chan, post_chan)) => post_chan.context_mut(),
 			// Both post and pre exist
 			#[cfg(splicing)]
 			ChannelPhase::RenegotiatingV2((ref mut _pre_chan, post_chan)) => &mut post_chan.context,
@@ -1776,11 +1785,21 @@ impl<SP: Deref> HasChannelContext<SP> for InboundV2Channel<SP> where SP::Target:
     }
 }
 
-#[cfg(splicing)]
-impl<SP: Deref> HasChannelContext<SP> for RenegotiatingChannel<SP> where SP::Target: SignerProvider {
-	fn context(&self) -> &ChannelContext<SP> { &self.context }
+#[cfg(any(dual_funding, splicing))]
+impl<SP: Deref> HasChannelContext<SP> for V2Channel<SP> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP> {
+		match self {
+			Self::UnfundedOutboundV2(ch) => &ch.context,
+			Self::UnfundedInboundV2(ch) => &ch.context,
+		}
+	}
 
-	fn context_mut(&mut self) -> &mut ChannelContext<SP> { &mut self.context }
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		match self {
+			Self::UnfundedOutboundV2(ch) => &mut ch.context,
+			Self::UnfundedInboundV2(ch) => &mut ch.context,
+		}
+	}
 }
 
 #[cfg(any(dual_funding, splicing))]
@@ -1805,11 +1824,21 @@ impl<SP: Deref> HasDualFundingChannelContext for InboundV2Channel<SP> where SP::
     }
 }
 
-#[cfg(splicing)]
-impl<SP: Deref> HasDualFundingChannelContext for RenegotiatingChannel<SP> where SP::Target: SignerProvider {
-	fn dual_funding_context(&self) -> &DualFundingChannelContext { &self.dual_funding_context }
+#[cfg(any(dual_funding, splicing))]
+impl<SP: Deref> HasDualFundingChannelContext for V2Channel<SP> where SP::Target: SignerProvider {
+	fn dual_funding_context(&self) -> &DualFundingChannelContext {
+		match &self {
+			Self::UnfundedOutboundV2(ch) => &ch.dual_funding_context,
+			Self::UnfundedInboundV2(ch) => &ch.dual_funding_context,
+		}
+	}
 
-	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext { &mut self.dual_funding_context }
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
+		match self {
+			Self::UnfundedOutboundV2(ch) => &mut ch.dual_funding_context,
+			Self::UnfundedInboundV2(ch) => &mut ch.dual_funding_context,
+		}
+	}
 }
 
 #[cfg(any(dual_funding, splicing))]
@@ -1818,8 +1847,8 @@ impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Targ
 #[cfg(any(dual_funding, splicing))]
 impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {}
 
-#[cfg(splicing)]
-impl<SP: Deref> InteractivelyFunded<SP> for RenegotiatingChannel<SP> where SP::Target: SignerProvider {}
+#[cfg(any(dual_funding, splicing))]
+impl<SP: Deref> InteractivelyFunded<SP> for V2Channel<SP> where SP::Target: SignerProvider {}
 
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	fn new_for_inbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
@@ -9643,18 +9672,74 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	}
 }
 
-// An already funded channel with the funding being renegotiated, during splicing.
-#[cfg(splicing)]
-pub(super) struct RenegotiatingChannel<SP: Deref> where SP::Target: SignerProvider {
-	pub is_outbound: bool,
-	pub context: ChannelContext<SP>,
-	// unfunded_context no neeted, but maybe the pre-splice context TODO
-	pub dual_funding_context: DualFundingChannelContext,
-}
+#[cfg(any(dual_funding, splicing))]
+impl<SP: Deref> V2Channel<SP> where SP::Target: SignerProvider {
+	pub fn is_outbound(&self) -> bool {
+		match self {
+			Self::UnfundedOutboundV2(ch) => true,
+			Self::UnfundedInboundV2(ch) => false,
+		}
+	}
 
-#[cfg(splicing)]
-impl<SP: Deref> RenegotiatingChannel<SP> where SP::Target: SignerProvider {
+	pub fn begin_interactive_funding_tx_construction<ES: Deref>(&mut self, signer_provider: &SP,
+		entropy_source: &ES, holder_node_id: PublicKey,
+	) -> Result<Option<InteractiveTxMessageSend>, APIError>
+	where ES::Target: EntropySource
+	{
+		match self {
+			Self::UnfundedOutboundV2(ref mut ch) => {
+				ch.context.begin_interactive_funding_tx_construction(&ch.dual_funding_context,
+					signer_provider, entropy_source, holder_node_id, true)
+			},
+			Self::UnfundedInboundV2(ref mut ch) => {
+				ch.context.begin_interactive_funding_tx_construction(&ch.dual_funding_context,
+					signer_provider, entropy_source, holder_node_id, false)
+			},
+		}
+	}
+
+	pub fn funding_tx_constructed<L: Deref>(
+		mut self, counterparty_node_id: &PublicKey, mut signing_session: InteractiveTxSigningSession, logger: &L
+	) -> Result<(Channel<SP>, msgs::CommitmentSigned, Option<Event>), (Self, ChannelError)>
+	where
+		L::Target: Logger
+	{
+		match self {
+			Self::UnfundedOutboundV2(mut ch) => {
+				let (commitment_signed, funding_ready_for_sig_event) = match ch.internal_funding_tx_constructed(
+					counterparty_node_id, &mut signing_session, logger) {
+					Ok(res) => res,
+					Err(err) => return Err((Self::UnfundedOutboundV2(ch), err)),
+				};
+		
+				let channel = Channel {
+					context: ch.context,
+					dual_funding_channel_context: Some(ch.dual_funding_context),
+					interactive_tx_signing_session: Some(signing_session),
+				};
+		
+				Ok((channel, commitment_signed, funding_ready_for_sig_event))
+			},
+			Self::UnfundedInboundV2(mut ch) => {
+				let (commitment_signed, funding_ready_for_sig_event) = match ch.internal_funding_tx_constructed(
+					counterparty_node_id, &mut signing_session, logger) {
+					Ok(res) => res,
+					Err(err) => return Err((Self::UnfundedInboundV2(ch), err)),
+				};
+		
+				let channel = Channel {
+					context: ch.context,
+					dual_funding_channel_context: Some(ch.dual_funding_context),
+					interactive_tx_signing_session: Some(signing_session),
+				};
+		
+				Ok((channel, commitment_signed, funding_ready_for_sig_event))
+			},
+		}
+	}
+
 	/// Create new channel for splice
+	#[cfg(splicing)]
 	pub fn new_spliced<L: Deref>(
 		is_outbound: bool,
 		pre_splice_context: &ChannelContext<SP>,
@@ -9705,16 +9790,26 @@ impl<SP: Deref> RenegotiatingChannel<SP> where SP::Target: SignerProvider {
 			is_outbound,
 		)?;
 
-		let post_chan = Self {
-			is_outbound,
-			context,
-			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis,
-				their_funding_satoshis,
-				funding_tx_locktime,
-				funding_feerate_sat_per_1000_weight,
-				our_funding_inputs: funding_inputs,
-			}
+		let dual_funding_context = DualFundingChannelContext {
+			our_funding_satoshis,
+			their_funding_satoshis,
+			funding_tx_locktime,
+			funding_feerate_sat_per_1000_weight,
+			our_funding_inputs: funding_inputs,
+		};
+		let unfunded_context = UnfundedChannelContext { unfunded_channel_age_ticks: 0 };
+		let post_chan = if is_outbound {
+			Self::UnfundedOutboundV2(OutboundV2Channel {
+				context,
+				dual_funding_context,
+				unfunded_context,
+			})
+		} else {
+			Self::UnfundedInboundV2(InboundV2Channel {
+				context,
+				dual_funding_context,
+				unfunded_context,
+			})
 		};
 
 		Ok(post_chan)
@@ -9725,7 +9820,7 @@ impl<SP: Deref> RenegotiatingChannel<SP> where SP::Target: SignerProvider {
 	/// TODO move to ChannelContext
 	#[cfg(splicing)]
 	pub fn get_splice_ack(&mut self, our_funding_contribution_satoshis: i64) -> Result<msgs::SpliceAck, ChannelError> {
-		if self.is_outbound {
+		if self.is_outbound() {
 			panic!("Tried to accept a splice on an outound channel?");
 		}
 
@@ -9735,44 +9830,14 @@ impl<SP: Deref> RenegotiatingChannel<SP> where SP::Target: SignerProvider {
 		// self.context.channel_state = ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
 
 		// Note: at this point keys are already updated
-		let funding_pubkey = self.context.get_holder_pubkeys().funding_pubkey;
+		let funding_pubkey = self.context().get_holder_pubkeys().funding_pubkey;
 		// TODO how to handle channel capacity, orig is stored in Channel, has to be updated, in the interim there are two
 		Ok(msgs::SpliceAck {
-			channel_id: self.context.channel_id, // pending_splice.pre_channel_id.unwrap(), // TODO
+			channel_id: self.context().channel_id, // pending_splice.pre_channel_id.unwrap(), // TODO
 			funding_contribution_satoshis: our_funding_contribution_satoshis,
 			funding_pubkey,
 			require_confirmed_inputs: None,
 		})
-	}
-
-	pub fn begin_interactive_funding_tx_construction<ES: Deref>(&mut self, signer_provider: &SP,
-		entropy_source: &ES, holder_node_id: PublicKey,
-	) -> Result<Option<InteractiveTxMessageSend>, APIError>
-	where ES::Target: EntropySource
-	{
-		self.context.begin_interactive_funding_tx_construction(&self.dual_funding_context,
-			signer_provider, entropy_source, holder_node_id, self.is_outbound)
-	}
-
-	pub fn funding_tx_constructed<L: Deref>(
-		mut self, counterparty_node_id: &PublicKey, mut signing_session: InteractiveTxSigningSession, logger: &L
-	) -> Result<(Channel<SP>, msgs::CommitmentSigned, Option<Event>), (Self, ChannelError)>
-	where
-		L::Target: Logger
-	{
-		let (commitment_signed, funding_ready_for_sig_event) = match self.internal_funding_tx_constructed(
-			counterparty_node_id, &mut signing_session, logger) {
-			Ok(res) => res,
-			Err(err) => return Err((self, err)),
-		};
-
-		let channel = Channel {
-			context: self.context,
-			dual_funding_channel_context: Some(self.dual_funding_context),
-			interactive_tx_signing_session: Some(signing_session),
-		};
-
-		Ok((channel, commitment_signed, funding_ready_for_sig_event))
 	}
 }
 
