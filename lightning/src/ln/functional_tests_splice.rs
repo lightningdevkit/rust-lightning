@@ -78,8 +78,8 @@ fn get_funding_key(node: &Node, counterparty_node: &Node, channel_id: &ChannelId
 	let chan_lock = per_peer_state.get(&counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
 	let local_chan = chan_lock.channel_by_id.get(&channel_id).map(
 		|phase| match phase {
-			ChannelPhase::Funded(chan) |
-			ChannelPhase::RenegotiatingV2((_, chan)) => Some(chan),
+			ChannelPhase::Funded(chan) => Some(chan),
+			ChannelPhase::RenegotiatingV2((_, chans)) => Some(chans.channel()),
 			_ => None,
 		}
 	).flatten().unwrap();

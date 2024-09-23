@@ -1213,9 +1213,171 @@ impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
 /// Note: OutboundV2Channel and InboundV2Channel should be merged into one struct, with an `is_outbound` flag.
 /// This is the placeholder for it here.
 #[cfg(any(dual_funding, splicing))]
-pub(crate) enum V2Channel<SP: Deref> where SP::Target: SignerProvider {
+pub(super) enum V2Channel<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedOutboundV2(OutboundV2Channel<SP>),
 	UnfundedInboundV2(InboundV2Channel<SP>),
+}
+
+/// #SPLICING ChannelVariants
+/// Can hold:
+/// - one or more funded channel (confirmed or not), and
+/// - one optional negotiating channel, outbound or inbound
+/// Used is several phases:
+/// - Funded & confirmed V1 -- one channel
+/// - Funded & confirmed V2 -- one channel
+/// - Funded & pending V1 -- one channel
+/// - Funded & pending V2 no RBF -- one channel
+/// - Funded & pending V2 with some RBF -- several channels
+/// - Funded & pending V2 with some RBF, and one RBF negotiating
+///   -- several channels, one channel with negotiating context
+/// TODO: separate Funded(ChannelVariants) out into two different phases:
+/// - Confirmed(Channel) and
+/// - NegotiatingV2(ChannelVariants)
+// #[cfg(any(dual_funding, splicing))]
+pub(super) struct ChannelVariants<SP: Deref> where SP::Target: SignerProvider {
+	funded_channels: Vec<Channel<SP>>,
+	#[cfg(any(dual_funding, splicing))]
+	unfunded_channel: Option<V2Channel<SP>>,
+}
+
+// #[cfg(any(dual_funding, splicing))]
+impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
+	pub fn new(funded_channel: Channel<SP>) -> Self {
+		Self {
+			funded_channels: vec![funded_channel],
+			#[cfg(any(dual_funding, splicing))]
+			unfunded_channel: None,
+		}
+	}
+
+	/// Return the last funded (unconfirmed) channel
+	pub fn channel(&self) -> &Channel<SP> {
+		// self.debug(); // TODO remove
+		debug_assert!(self.funded_channels.len() > 0);
+		let n = self.funded_channels.len();
+		&self.funded_channels[n - 1]
+	}
+
+	/// Return the last funded (unconfirmed) channel
+	pub fn channel_mut(&mut self) -> &mut Channel<SP> {
+		self.debug(); // TODO remove
+		debug_assert!(self.funded_channels.len() > 0);
+		let n = self.funded_channels.len();
+		&mut self.funded_channels[n - 1]
+	}
+
+	/// Return all the funded channels
+	pub fn all_funded(&mut self) -> Vec<&mut Channel<SP>> {
+		self.funded_channels.iter_mut().collect::<Vec<_>>()
+	}
+
+	/// TODO remove
+	pub fn debug(&self) {
+	}
+
+	/// Add new funded, close any unfunded
+	pub fn add_funded(&mut self, funded_channel: Channel<SP>) {
+		self.funded_channels.push(funded_channel);
+
+		#[cfg(any(dual_funding, splicing))]
+		{
+			self.unfunded_channel = None;
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn set_new_pending_out(&mut self, variant_channel: OutboundV2Channel<SP>) {
+		debug_assert!(self.unfunded_channel.is_none());
+		self.unfunded_channel = Some(V2Channel::UnfundedOutboundV2(variant_channel));
+		self.debug(); // TODO remove
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn get_pending_out_mut(&mut self) -> Option<&mut OutboundV2Channel<SP>> {
+		match self.unfunded_channel {
+			None => None,
+			Some(ref mut ch) => {
+				match ch {
+					V2Channel::UnfundedOutboundV2(ref mut ch) => Some(ch),
+					_ => None,
+				}
+			},
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn take_pending_out(&mut self) -> Option<OutboundV2Channel<SP>> {
+		if self.get_pending_out_mut().is_none() { return None; }
+		let v = self.unfunded_channel.take();
+		match v {
+			None => panic!("None"),
+			Some(ch) => {
+				match ch {
+					V2Channel::UnfundedOutboundV2(ch) => Some(ch),
+					_ => panic!("Not out"),
+				}
+			},
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn set_new_pending_in(&mut self, variant_channel: InboundV2Channel<SP>) {
+		debug_assert!(self.unfunded_channel.is_none());
+		self.unfunded_channel = Some(V2Channel::UnfundedInboundV2(variant_channel));
+		self.debug(); // TODO remove
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn get_pending_in_mut(&mut self) -> Option<&mut InboundV2Channel<SP>> {
+		match self.unfunded_channel {
+			None => None,
+			Some(ref mut ch) => {
+				match ch {
+					V2Channel::UnfundedInboundV2(ref mut ch) => Some(ch),
+					_ => None,
+				}
+			},
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn take_pending_in(&mut self) -> Option<InboundV2Channel<SP>> {
+		if self.get_pending_in_mut().is_none() { return None; }
+		let v = self.unfunded_channel.take();
+		match v {
+			None => panic!("None"),
+			Some(ch) => {
+				match ch {
+					V2Channel::UnfundedInboundV2(ch) => Some(ch),
+					_ => panic!("Not in"),
+				}
+			},
+		}
+	}
+
+	/// Take the last funded (unconfirmed) channel
+	pub fn take_channel(&mut self) -> Channel<SP> {
+		// self.debug(); // TODO remove
+		debug_assert!(self.funded_channels.len() > 0);
+		let n = self.funded_channels.len();
+		self.funded_channels.remove(n - 1)
+	}
+
+	/// Keep only the one confirmed channel, drop the other variants
+	// This is to be relaced by going to Confirmed phase with one channel
+	pub fn keep_one_confirmed(&mut self, channel_index: usize) {
+		self.debug(); // TODO remove
+		if self.funded_channels.len() > 1 {
+			println!("QQQ ChannelVariants  keep_one_confirmed  collapsing {} to {}", self.funded_channels.len(), channel_index);
+			debug_assert!(channel_index < self.funded_channels.len());
+			self.funded_channels = vec![self.funded_channels.remove(channel_index)];
+			#[cfg(any(dual_funding, splicing))]
+			{
+				self.unfunded_channel = None;
+			}
+			self.debug(); // TODO remove
+		}
+	}
 }
 
 /// The `ChannelPhase` enum describes the current phase in life of a lightning channel with each of
@@ -1243,7 +1405,7 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	/// Contains the old channel (funded, pre-splice) and
 	/// and the new channel, that is negotiated but pending (funded, post-splice)
 	#[cfg(splicing)]
-	RenegotiatingV2((Channel<SP>, Channel<SP>)),
+	RenegotiatingV2((Channel<SP>, ChannelVariants<SP>)),
 }
 
 impl<'a, SP: Deref> ChannelPhase<SP> where
@@ -1265,7 +1427,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::RenegotiatingFundingInbound((_pre_chan, post_chan)) => post_chan.context(),
 			// Both post and pre exist
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingV2((_pre_chan, post_chan)) => &post_chan.context,
+			ChannelPhase::RenegotiatingV2((_pre_chan, post_chans)) => &post_chans.channel().context,
 		}
 	}
 
@@ -1284,7 +1446,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::RenegotiatingFundingInbound((ref mut _pre_chan, post_chan)) => post_chan.context_mut(),
 			// Both post and pre exist
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingV2((ref mut _pre_chan, post_chan)) => &mut post_chan.context,
+			ChannelPhase::RenegotiatingV2((ref mut _pre_chan, post_chans)) => &mut post_chans.channel_mut().context,
 		}
 	}
 }
@@ -2471,8 +2633,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 				pre_channel_value, post_channel_value, our_funding_contribution, their_funding_contribution, old_to_self)));
 		}
 		let value_to_self_msat = (old_to_self as i64).saturating_add(delta_in_value_to_self) as u64;
-
-		let holder_signer_funding_pubkey = holder_signer.pubkeys().funding_pubkey;
 
 		// Copy context with some important updates
 		let mut context = Self {
@@ -8722,7 +8882,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				holder_signer,
 				pubkeys,
 			)?,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
+			unfunded_context: UnfundedChannelContext::default(),
 		};
 		Ok(chan)
 	}
@@ -9094,7 +9254,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 				msg.push_msat,
 				msg.common_fields.clone(),
 			)?,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 }
+			unfunded_context: UnfundedChannelContext::default(),
 		};
 		Ok(chan)
 	}
@@ -9366,7 +9526,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				holder_signer,
 				pubkeys,
 			)?,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			unfunded_context: UnfundedChannelContext::default(),
 			dual_funding_context: DualFundingChannelContext {
 				our_funding_satoshis: funding_satoshis,
 				their_funding_satoshis: 0,
@@ -9559,7 +9719,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 
 		let chan = Self {
 			context,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			unfunded_context: UnfundedChannelContext::default(),
 			dual_funding_context: DualFundingChannelContext {
 				our_funding_satoshis: funding_satoshis,
 				their_funding_satoshis: msg.common_fields.funding_satoshis,
@@ -9676,8 +9836,8 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 impl<SP: Deref> V2Channel<SP> where SP::Target: SignerProvider {
 	pub fn is_outbound(&self) -> bool {
 		match self {
-			Self::UnfundedOutboundV2(ch) => true,
-			Self::UnfundedInboundV2(ch) => false,
+			Self::UnfundedOutboundV2(_ch) => true,
+			Self::UnfundedInboundV2(_ch) => false,
 		}
 	}
 
@@ -9699,7 +9859,7 @@ impl<SP: Deref> V2Channel<SP> where SP::Target: SignerProvider {
 	}
 
 	pub fn funding_tx_constructed<L: Deref>(
-		mut self, counterparty_node_id: &PublicKey, mut signing_session: InteractiveTxSigningSession, logger: &L
+		self, counterparty_node_id: &PublicKey, mut signing_session: InteractiveTxSigningSession, logger: &L
 	) -> Result<(Channel<SP>, msgs::CommitmentSigned, Option<Event>), (Self, ChannelError)>
 	where
 		L::Target: Logger
@@ -9797,7 +9957,7 @@ impl<SP: Deref> V2Channel<SP> where SP::Target: SignerProvider {
 			funding_feerate_sat_per_1000_weight,
 			our_funding_inputs: funding_inputs,
 		};
-		let unfunded_context = UnfundedChannelContext { unfunded_channel_age_ticks: 0 };
+		let unfunded_context = UnfundedChannelContext::default();
 		let post_chan = if is_outbound {
 			Self::UnfundedOutboundV2(OutboundV2Channel {
 				context,
