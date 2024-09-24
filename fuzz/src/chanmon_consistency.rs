@@ -503,6 +503,7 @@ type ChanMan<'a> = ChannelManager<
 	Arc<KeyProvider>,
 	Arc<FuzzEstimator>,
 	&'a FuzzRouter,
+	&'a FuzzRouter,
 	Arc<dyn Logger>,
 >;
 
@@ -709,6 +710,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 					monitor.clone(),
 					broadcast.clone(),
 					&router,
+					&router,
 					Arc::clone(&logger),
 					keys_manager.clone(),
 					keys_manager.clone(),
@@ -777,6 +779,7 @@ pub fn do_test<Out: Output>(data: &[u8], underlying_out: Out, anchors: bool) {
 				chain_monitor: chain_monitor.clone(),
 				tx_broadcaster: broadcast.clone(),
 				router: &router,
+				message_router: &router,
 				logger,
 				default_config: config,
 				channel_monitors: monitor_refs,

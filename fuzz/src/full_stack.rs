@@ -236,6 +236,7 @@ type ChannelMan<'a> = ChannelManager<
 	Arc<KeyProvider>,
 	Arc<FuzzEstimator>,
 	&'a FuzzRouter,
+	&'a FuzzRouter,
 	Arc<dyn Logger>,
 >;
 type PeerMan<'a> = PeerManager<
@@ -652,6 +653,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 		fee_est.clone(),
 		monitor.clone(),
 		broadcast.clone(),
+		&router,
 		&router,
 		Arc::clone(&logger),
 		keys_manager.clone(),

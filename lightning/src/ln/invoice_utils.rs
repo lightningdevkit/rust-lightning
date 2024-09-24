@@ -16,6 +16,7 @@ use crate::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{RouteHint, RouteHintHop, Router};
+use crate::onion_message::messenger::MessageRouter;
 use crate::util::logger::{Logger, Record};
 use bitcoin::secp256k1::PublicKey;
 use alloc::collections::{btree_map, BTreeMap};
@@ -329,8 +330,8 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 /// confirmations during routing.
 ///
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
-pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
+pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
 	min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
@@ -342,6 +343,7 @@ where
 	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
+	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	use std::time::SystemTime;
@@ -370,8 +372,8 @@ where
 /// confirmations during routing.
 ///
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
-pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
+pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
@@ -383,6 +385,7 @@ where
 	SP::Target: SignerProvider,
 	F::Target: FeeEstimator,
 	R::Target: Router,
+	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	use std::time::SystemTime;
@@ -403,20 +406,21 @@ where
 #[cfg_attr(feature = "std", doc = "See [`create_invoice_from_channelmanager_with_description_hash`] for more information.")]
 #[cfg_attr(feature = "std", doc = "")]
 #[cfg_attr(feature = "std", doc = "This can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.")]
-pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
+pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-		where
-			M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-			T::Target: BroadcasterInterface,
-			ES::Target: EntropySource,
-			NS::Target: NodeSigner,
-			SP::Target: SignerProvider,
-			F::Target: FeeEstimator,
-			R::Target: Router,
-			L::Target: Logger,
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
 		channelmanager, node_signer, logger, network, amt_msat,
@@ -431,20 +435,21 @@ pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_sin
 #[cfg_attr(feature = "std", doc = "See [`create_invoice_from_channelmanager`] for more information.")]
 #[cfg_attr(feature = "std", doc = "")]
 #[cfg_attr(feature = "std", doc = "This version can be used in a `no_std` environment, where [`std::time::SystemTime`] is not available and the current time is supplied by the caller.")]
-pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
+pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-		where
-			M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-			T::Target: BroadcasterInterface,
-			ES::Target: EntropySource,
-			NS::Target: NodeSigner,
-			SP::Target: SignerProvider,
-			F::Target: FeeEstimator,
-			R::Target: Router,
-			L::Target: Logger,
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
 {
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
 		channelmanager, node_signer, logger, network, amt_msat,
@@ -455,20 +460,21 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: 
 	)
 }
 
-fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
+fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: Bolt11InvoiceDescription,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-		where
-			M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-			T::Target: BroadcasterInterface,
-			ES::Target: EntropySource,
-			NS::Target: NodeSigner,
-			SP::Target: SignerProvider,
-			F::Target: FeeEstimator,
-			R::Target: Router,
-			L::Target: Logger,
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
 {
 	if min_final_cltv_expiry_delta.is_some() && min_final_cltv_expiry_delta.unwrap().saturating_add(3) < MIN_FINAL_CLTV_EXPIRY_DELTA {
 		return Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort));
@@ -488,20 +494,21 @@ fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Der
 /// This version allows for providing a custom [`PaymentHash`] for the invoice.
 /// This may be useful if you're building an on-chain swap or involving another protocol where
 /// the payment hash is also involved outside the scope of lightning.
-pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
+pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: String, duration_since_epoch: Duration,
 	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-	where
-		M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-		T::Target: BroadcasterInterface,
-		ES::Target: EntropySource,
-		NS::Target: NodeSigner,
-		SP::Target: SignerProvider,
-		F::Target: FeeEstimator,
-		R::Target: Router,
-		L::Target: Logger,
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
 {
 	let payment_secret = channelmanager
 		.create_inbound_payment_for_hash(payment_hash, amt_msat, invoice_expiry_delta_secs,
@@ -517,21 +524,22 @@ pub fn create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_
 	)
 }
 
-fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, L>, node_signer: NS, logger: L,
+fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
 	network: Currency, amt_msat: Option<u64>, description: Bolt11InvoiceDescription,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, payment_hash: PaymentHash,
 	payment_secret: PaymentSecret, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-	where
-		M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-		T::Target: BroadcasterInterface,
-		ES::Target: EntropySource,
-		NS::Target: NodeSigner,
-		SP::Target: SignerProvider,
-		F::Target: FeeEstimator,
-		R::Target: Router,
-		L::Target: Logger,
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
 {
 	let our_node_pubkey = channelmanager.get_our_node_id();
 	let channels = channelmanager.list_channels();
