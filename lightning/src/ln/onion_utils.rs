@@ -418,9 +418,9 @@ pub(super) fn construct_onion_packet(
 #[allow(unused)]
 pub(super) fn construct_trampoline_onion_packet(
 	payloads: Vec<msgs::OutboundTrampolinePayload>, onion_keys: Vec<OnionKeys>,
-	prng_seed: [u8; 32], associated_data: &PaymentHash,
+	prng_seed: [u8; 32], associated_data: &PaymentHash, length: Option<u16>,
 ) -> Result<msgs::TrampolineOnionPacket, ()> {
-	let packet_length: usize = payloads
+	let minimum_packet_length: usize = payloads
 		.iter()
 		.map(|p| {
 			let mut payload_len = LengthCalculatingWriter(0);
@@ -428,6 +428,17 @@ pub(super) fn construct_trampoline_onion_packet(
 			payload_len.0 + 32
 		})
 		.sum();
+
+	assert!(
+		minimum_packet_length < ONION_DATA_LEN,
+		"Trampoline onion packet must be smaller than outer onion"
+	);
+
+	let packet_length = length.unwrap_or(minimum_packet_length as u16) as usize;
+	assert!(
+		packet_length >= minimum_packet_length,
+		"Packet length cannot be smaller than the payloads require."
+	);
 
 	let mut packet_data = vec![0u8; packet_length];
 	let mut chacha = ChaCha20::new(&prng_seed, &[0; 8]);
