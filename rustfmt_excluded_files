@@ -67,7 +67,6 @@ lightning/src/onion_message/mod.rs
 lightning/src/onion_message/offers.rs
 lightning/src/onion_message/packet.rs
 lightning/src/routing/mod.rs
-lightning/src/routing/utxo.rs
 lightning/src/util/atomic_counter.rs
 lightning/src/util/base32.rs
 lightning/src/util/byte_utils.rs
