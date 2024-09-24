@@ -666,7 +666,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger>) {
 	// Adding new calls to `EntropySource::get_secure_random_bytes` during startup can change all the
 	// keys subsequently generated in this test. Rather than regenerating all the messages manually,
 	// it's easier to just increment the counter here so the keys don't change.
-	keys_manager.counter.fetch_sub(3, Ordering::AcqRel);
+	keys_manager.counter.fetch_sub(4, Ordering::AcqRel);
 	let network_graph = Arc::new(NetworkGraph::new(network, Arc::clone(&logger)));
 	let gossip_sync =
 		Arc::new(P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger)));
