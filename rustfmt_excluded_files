@@ -66,7 +66,6 @@ lightning/src/onion_message/messenger.rs
 lightning/src/onion_message/mod.rs
 lightning/src/onion_message/offers.rs
 lightning/src/onion_message/packet.rs
-lightning/src/routing/gossip.rs
 lightning/src/routing/mod.rs
 lightning/src/routing/router.rs
 lightning/src/routing/scoring.rs
