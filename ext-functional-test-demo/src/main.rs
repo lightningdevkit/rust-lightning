@@ -1,5 +1,5 @@
 fn main() {
-	println!("Hello, world!");
+	println!("{} tests were exported", lightning::get_xtests().len());
 }
 
 #[cfg(test)]
