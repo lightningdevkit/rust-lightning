@@ -1961,11 +1961,11 @@ impl KeysManager {
 
 	/// Derive an old [`EcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
 	pub fn derive_channel_keys(
-		&self, channel_value_satoshis: u64, params: &[u8; 32],
+		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
 	) -> InMemorySigner {
-		let chan_id = u64::from_be_bytes(params[0..8].try_into().unwrap());
+		let chan_id = u64::from_be_bytes(channel_keys_id[0..8].try_into().unwrap());
 		let mut unique_start = Sha256::engine();
-		unique_start.input(params);
+		unique_start.input(&channel_keys_id);
 		unique_start.input(&self.seed);
 
 		// We only seriously intend to rely on the channel_master_key for true secure
@@ -2015,7 +2015,7 @@ impl KeysManager {
 			htlc_base_key,
 			commitment_seed,
 			channel_value_satoshis,
-			params.clone(),
+			channel_keys_id,
 			prng_seed,
 		)
 	}
@@ -2048,7 +2048,7 @@ impl KeysManager {
 					{
 						let mut signer = self.derive_channel_keys(
 							descriptor.channel_value_satoshis,
-							&descriptor.channel_keys_id,
+							descriptor.channel_keys_id,
 						);
 						if let Some(channel_params) =
 							descriptor.channel_transaction_parameters.as_ref()
@@ -2073,7 +2073,7 @@ impl KeysManager {
 						keys_cache = Some((
 							self.derive_channel_keys(
 								descriptor.channel_value_satoshis,
-								&descriptor.channel_keys_id,
+								descriptor.channel_keys_id,
 							),
 							descriptor.channel_keys_id,
 						));
@@ -2273,7 +2273,7 @@ impl SignerProvider for KeysManager {
 	fn derive_channel_signer(
 		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
 	) -> Self::EcdsaSigner {
-		self.derive_channel_keys(channel_value_satoshis, &channel_keys_id)
+		self.derive_channel_keys(channel_value_satoshis, channel_keys_id)
 	}
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
@@ -2461,9 +2461,9 @@ impl PhantomKeysManager {
 
 	/// See [`KeysManager::derive_channel_keys`] for documentation on this method.
 	pub fn derive_channel_keys(
-		&self, channel_value_satoshis: u64, params: &[u8; 32],
+		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
 	) -> InMemorySigner {
-		self.inner.derive_channel_keys(channel_value_satoshis, params)
+		self.inner.derive_channel_keys(channel_value_satoshis, channel_keys_id)
 	}
 
 	/// Gets the "node_id" secret key used to sign gossip announcements, decode onion data, etc.
