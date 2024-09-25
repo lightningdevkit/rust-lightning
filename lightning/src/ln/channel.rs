@@ -1235,6 +1235,7 @@ pub(super) enum V2Channel<SP: Deref> where SP::Target: SignerProvider {
 /// - NegotiatingV2(ChannelVariants)
 // #[cfg(any(dual_funding, splicing))]
 pub(super) struct ChannelVariants<SP: Deref> where SP::Target: SignerProvider {
+	// TODO locking
 	funded_channels: Vec<Channel<SP>>,
 	#[cfg(any(dual_funding, splicing))]
 	unfunded_channel: Option<V2Channel<SP>>,
@@ -1250,24 +1251,68 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	/// Return the last funded (unconfirmed) channel
-	pub fn channel(&self) -> &Channel<SP> {
+	#[cfg(any(dual_funding, splicing))]
+	pub fn new_with_pending(pending_channel: V2Channel<SP>) -> Self {
+		Self {
+			funded_channels: Vec::new(),
+			#[cfg(any(dual_funding, splicing))]
+			unfunded_channel: Some(pending_channel),
+		}
+	}
+
+	/// Return the context of the last funded (unconfirmed) channel, if any, or
+	/// if none, the pending one
+	pub fn context(&self) -> &ChannelContext<SP> {
+		if self.funded_channels.len() > 0 {
+			&self.funded_channels[self.funded_channels.len() - 1].context
+		} else {
+			#[cfg(any(dual_funding, splicing))]
+			if let Some(unfunded) = &self.unfunded_channel {
+				return unfunded.context();
+			}
+			panic!("No channel in collection");
+		}
+	}
+
+	/// Return the mutable context of the last funded (unconfirmed) channel, if any, or
+	/// if none, the pending one
+	pub fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		if self.funded_channels.len() > 0 {
+			let n = self.funded_channels.len();
+			&mut self.funded_channels[n - 1].context
+		} else {
+			#[cfg(any(dual_funding, splicing))]
+			if let Some(ref mut unfunded) = &mut self.unfunded_channel {
+				return unfunded.context_mut();
+			}
+			panic!("No channel in collection");
+		}
+	}
+
+	/// Return the last funded (unconfirmed) channel, or if none, the pending one
+	pub fn get_funded_channel(&self) -> Option<&Channel<SP>> {
 		// self.debug(); // TODO remove
-		debug_assert!(self.funded_channels.len() > 0);
-		let n = self.funded_channels.len();
-		&self.funded_channels[n - 1]
+		if self.funded_channels.len() > 0 {
+			Some(&self.funded_channels[self.funded_channels.len() - 1])
+		} else {
+			None
+		}
 	}
 
 	/// Return the last funded (unconfirmed) channel
-	pub fn channel_mut(&mut self) -> &mut Channel<SP> {
+	pub fn funded_channel_mut(&mut self) -> Option<&mut Channel<SP>> {
 		self.debug(); // TODO remove
-		debug_assert!(self.funded_channels.len() > 0);
-		let n = self.funded_channels.len();
-		&mut self.funded_channels[n - 1]
+		if self.funded_channels.len() > 0 {
+			let n = self.funded_channels.len();
+			Some(&mut self.funded_channels[n - 1])
+		} else {
+			None
+		}
 	}
 
 	/// Return all the funded channels
 	pub fn all_funded(&mut self) -> Vec<&mut Channel<SP>> {
+		debug_assert!(false, "This is to be used in RBF, not yet implemented");
 		self.funded_channels.iter_mut().collect::<Vec<_>>()
 	}
 
@@ -1286,10 +1331,31 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	}
 
 	#[cfg(any(dual_funding, splicing))]
+	pub fn has_pending(&self) -> bool {
+		self.unfunded_channel.is_some()
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn get_pending(&self) -> Option<&V2Channel<SP>> {
+		self.unfunded_channel.as_ref()
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn get_pending_mut(&mut self) -> Option<&mut V2Channel<SP>> {
+		self.unfunded_channel.as_mut()
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn take_pending(&mut self) -> Option<V2Channel<SP>> {
+		self.unfunded_channel.take()
+	}
+
+	#[cfg(any(dual_funding, splicing))]
 	pub fn set_new_pending_out(&mut self, variant_channel: OutboundV2Channel<SP>) {
 		debug_assert!(self.unfunded_channel.is_none());
 		self.unfunded_channel = Some(V2Channel::UnfundedOutboundV2(variant_channel));
 		self.debug(); // TODO remove
+		panic!("This is to be used in RBF, not yet implemented");
 	}
 
 	#[cfg(any(dual_funding, splicing))]
@@ -1308,8 +1374,7 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	#[cfg(any(dual_funding, splicing))]
 	pub fn take_pending_out(&mut self) -> Option<OutboundV2Channel<SP>> {
 		if self.get_pending_out_mut().is_none() { return None; }
-		let v = self.unfunded_channel.take();
-		match v {
+		match self.unfunded_channel.take() {
 			None => panic!("None"),
 			Some(ch) => {
 				match ch {
@@ -1325,6 +1390,7 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 		debug_assert!(self.unfunded_channel.is_none());
 		self.unfunded_channel = Some(V2Channel::UnfundedInboundV2(variant_channel));
 		self.debug(); // TODO remove
+		panic!("This is to be used in RBF, not yet implemented");
 	}
 
 	#[cfg(any(dual_funding, splicing))]
@@ -1356,11 +1422,14 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	}
 
 	/// Take the last funded (unconfirmed) channel
-	pub fn take_channel(&mut self) -> Channel<SP> {
+	pub fn take_funded_channel(&mut self) -> Option<Channel<SP>> {
 		// self.debug(); // TODO remove
-		debug_assert!(self.funded_channels.len() > 0);
-		let n = self.funded_channels.len();
-		self.funded_channels.remove(n - 1)
+		if self.funded_channels.len() > 0 {
+			let n = self.funded_channels.len();
+			Some(self.funded_channels.remove(n - 1))
+		} else {
+			None
+		}
 	}
 
 	/// Keep only the one confirmed channel, drop the other variants
@@ -1368,7 +1437,6 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	pub fn keep_one_confirmed(&mut self, channel_index: usize) {
 		self.debug(); // TODO remove
 		if self.funded_channels.len() > 1 {
-			println!("QQQ ChannelVariants  keep_one_confirmed  collapsing {} to {}", self.funded_channels.len(), channel_index);
 			debug_assert!(channel_index < self.funded_channels.len());
 			self.funded_channels = vec![self.funded_channels.remove(channel_index)];
 			#[cfg(any(dual_funding, splicing))]
@@ -1376,6 +1444,140 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 				self.unfunded_channel = None;
 			}
 			self.debug(); // TODO remove
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
+		if let Some(pending) = self.get_pending_mut() {
+			Ok(pending.tx_add_input(msg))
+		} else {
+			// funded
+			Err(ChannelError::Warn(format!("Channel is already funded, not expecting tx_add_input")))
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn tx_add_output(&mut self, msg: &msgs::TxAddOutput) -> Result<InteractiveTxMessageSendResult, ChannelError> {
+		if let Some(pending) = self.get_pending_mut() {
+			Ok(pending.tx_add_output(msg))
+		} else {
+			// funded
+			Err(ChannelError::Warn(format!("Channel is already funded, not expecting tx_add_output")))
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn tx_complete(&mut self, msg: &msgs::TxComplete) -> Result<HandleTxCompleteResult, ChannelError> {
+		if let Some(pending) = self.get_pending_mut() {
+			Ok(pending.tx_complete(msg))
+		} else {
+			// funded
+			Err(ChannelError::Warn(format!("Channel is already funded, not expecting tx_complete")))
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn funding_tx_constructed<L: Deref>(
+		mut self, counterparty_node_id: &PublicKey, signing_session: InteractiveTxSigningSession, logger: &L
+	) -> Result<(Channel<SP>, msgs::CommitmentSigned, Option<Event>), (Self, ChannelError)>
+	where
+		L::Target: Logger
+	{
+		if let Some(pending) = self.take_pending() {
+			pending.funding_tx_constructed(counterparty_node_id, signing_session, logger)
+				.map_err(|(_ch, err)| (self, err))
+		} else {
+			Err((self, ChannelError::Close(format!("Channel is already funded, not expecting tx_constructed"))))
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn funding_transaction_signed(&mut self, channel_id: &ChannelId, witnesses: Vec<Witness>) -> Result<Option<msgs::TxSignatures>, ChannelError> {
+		if let Some(funded) = self.funded_channel_mut() {
+			funded.funding_transaction_signed(channel_id, witnesses)
+		} else {
+			Err(ChannelError::Close(format!("Channel with id {} is has no funded channel, not expecting funding signatures", channel_id)))
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn commitment_signed_initial_v2<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L)
+		-> Result<(&mut Channel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), ChannelError>
+		where L::Target: Logger
+	{
+		if let Some(post_chan) = self.funded_channel_mut() {
+			// TODO(splicing): handle on pre as well
+			// TODO(splicing): For splice pending case expand this condition, depending if commitment was already received or not
+			let interactive_tx_signing_in_progress = post_chan.interactive_tx_signing_session.is_some();
+			if interactive_tx_signing_in_progress {
+				let monitor = post_chan.commitment_signed_initial_v2(&msg, best_block, signer_provider, logger)?;
+				Ok((post_chan, monitor))
+			} else {
+				Err(ChannelError::Close("Got a commitment_signed message, but there is no transaction negotiation context!".into()))
+			}
+		} else {
+			Err(ChannelError::Close("Got a commitment_signed message, but there is no funded channel!".into()))
+		}
+	}
+
+	#[cfg(splicing)]
+	pub fn splice_init<ES: Deref, L: Deref>(
+		&mut self, our_funding_contribution_satoshis: i64,
+		signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey, logger: &L
+	)
+		-> Result<msgs::SpliceAck, ChannelError>
+		where ES::Target: EntropySource, L::Target: Logger
+	{
+		if let Some(post_chan) = self.get_pending_mut() {
+			if !post_chan.is_outbound() {
+				// Apply start of splice change in the state
+				post_chan.context_mut().splice_start(false, logger);
+				let splice_ack_msg = post_chan.get_splice_ack(our_funding_contribution_satoshis)?;
+				let _msg = post_chan.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id)
+					.map_err(|err| ChannelError::Warn(format!("Failed to start interactive transaction construction, {:?}", err)))?;
+				Ok(splice_ack_msg)
+			} else {
+				Err(ChannelError::Warn("Internal consistency error: splice_init but no inbound channel".into()))
+			}
+		} else {
+			Err(ChannelError::Warn("Internal consistency error: splice_init and no pending channel".into()))
+		}
+	}
+
+	#[cfg(splicing)]
+	pub fn splice_ack<ES: Deref, L: Deref>(
+		&mut self,
+		signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey, logger: &L
+	)
+		-> Result<Option<InteractiveTxMessageSend>, ChannelError>
+		where ES::Target: EntropySource, L::Target: Logger
+	{
+		if let Some(post_chan) = self.get_pending_mut() {
+			if post_chan.is_outbound() {
+				// Apply start of splice change in the state
+				post_chan.context_mut().splice_start(true, logger);
+
+				/* Note: SpliceAckedInputsContributionReady event is no longer used
+				// Prepare SpliceAckedInputsContributionReady event
+				let mut pending_events = self.pending_events.lock().unwrap();
+				pending_events.push_back((events::Event::SpliceAckedInputsContributionReady {
+					channel_id: post_chan_id,
+					counterparty_node_id: *counterparty_node_id,
+					pre_channel_value_satoshis: pre_channel_value,
+					post_channel_value_satoshis: post_channel_value,
+					holder_funding_satoshis: if post_channel_value < pre_channel_value { 0 } else { post_channel_value.saturating_sub(pre_channel_value) },
+					counterparty_funding_satoshis: 0,
+				} , None));
+				*/
+				let tx_msg_opt = post_chan.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id)
+					.map_err(|err| ChannelError::Warn(format!("V2 channel rejected due to sender error, {:?}", err)))?;
+				Ok(tx_msg_opt)
+			} else {
+				Err(ChannelError::Warn("Internal consistency error: splice_ack but no outbound channel".into()))
+			}
+		} else {
+			Err(ChannelError::Warn("Internal consistency error: splice_ack but no pending channel".into()))
 		}
 	}
 }
@@ -1391,19 +1593,11 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedInboundV2(InboundV2Channel<SP>),
 	/// Funding transaction negotiated (pending or locked)
 	Funded(Channel<SP>),
-	/// Renegotiating existing channel, outbound (initiated by us)
-	/// Contains already negotiated channel (funded, pre-splice) and
-	/// channel being negotiated (post-splice)
-	#[cfg(splicing)]
-	RenegotiatingFundingOutbound((Channel<SP>, V2Channel<SP>)),
-	/// Renegotiating existing channel, inbound (initiated by the peer)
-	/// Contains already negotiated channel (funded, pre-splice) and
-	/// channel being negotiated (post-splice)
-	#[cfg(splicing)]
-	RenegotiatingFundingInbound((Channel<SP>, V2Channel<SP>)),
-	/// Renegotiating existing channel, new channel is negotiated but still pending.
-	/// Contains the old channel (funded, pre-splice) and
-	/// and the new channel, that is negotiated but pending (funded, post-splice)
+	/// Renegotiating existing channel, for splicing
+	/// First channel is the already funded (and confirmed, pre-splice) channel.
+	/// The second collection can hold:
+	/// - the negotiated (funded) but unconfirmed post-splice channel
+	/// - the channel being negotiated (post-splice, inbound or outbound)
 	#[cfg(splicing)]
 	RenegotiatingV2((Channel<SP>, ChannelVariants<SP>)),
 }
@@ -1421,13 +1615,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedOutboundV2(chan) => &chan.context,
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
-			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingOutbound((_pre_chan, post_chan)) => post_chan.context(),
-			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingInbound((_pre_chan, post_chan)) => post_chan.context(),
 			// Both post and pre exist
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingV2((_pre_chan, post_chans)) => &post_chans.channel().context,
+			ChannelPhase::RenegotiatingV2((_pre_chan, post_chans)) => post_chans.context(),
 		}
 	}
 
@@ -1440,13 +1630,9 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedOutboundV2(ref mut chan) => &mut chan.context,
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
-			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingOutbound((ref mut _pre_chan, post_chan)) => post_chan.context_mut(),
-			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingFundingInbound((ref mut _pre_chan, post_chan)) => post_chan.context_mut(),
 			// Both post and pre exist
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingV2((ref mut _pre_chan, post_chans)) => &mut post_chans.channel_mut().context,
+			ChannelPhase::RenegotiatingV2((_pre_chan, ref mut post_chans)) => post_chans.context_mut(),
 		}
 	}
 }
@@ -1472,7 +1658,6 @@ impl UnfundedChannelContext {
 		self.unfunded_channel_age_ticks >= UNFUNDED_CHANNEL_AGE_LIMIT_TICKS
 	}
 
-	#[cfg(splicing)]
 	pub fn default() -> Self { Self { unfunded_channel_age_ticks: 0 } }
 }
 

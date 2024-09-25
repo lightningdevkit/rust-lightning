@@ -52,7 +52,7 @@ Client  LDK                                       Counterparty node (acceptor)
                                                   handle_splice_init() - ChannelManager
                                                   internal_splice_init() - ChannelManager
                                                   Do checks. Check if channel ID would change. Cycle back the channel to UnfundedInboundV2
-                                                  Channel phase to RenegotiatingFundingInbound
+                                                  Channel phase to RenegotiatingV2 (inbound pending)
                                                   splice_start() -- ChannelContext
                                                   Start the splice, update capacity, state to NegotiatingFunding, reset funding transaction
                                                   get_splice_ack() -- Channel
@@ -68,7 +68,7 @@ Client  LDK                                       Counterparty node (acceptor)
         handle_splice_ack() - ChannelManager
         internal_splice_ack() - ChannelManager
         Do checks, check against initial splice()
-        Channel phase to RenegotiatingFundingOutbound
+        Channel phase to RenegotiatingV2 (outbound pending)
         splice_start() -- ChannelContext
         Start the splice, update capacity, state to NegotiatingFunding, reset funding transaction
         //event: SpliceAckedInputsContributionReady
