@@ -1030,6 +1030,93 @@ impl PaymentParameters {
 	}
 }
 
+/// A struct for configuring parameters for routing the payment.
+#[derive(Clone, Copy)]
+pub struct RouteParametersConfig {
+	/// The maximum total fees, in millisatoshi, that may accrue during route finding.
+	///
+	/// This limit also applies to the total fees that may arise while retrying failed payment
+	/// paths.
+	///
+	/// Note that values below a few sats may result in some paths being spuriously ignored.
+	///
+	/// Defaults to 1% of the payment amount + 50 sats
+	pub max_total_routing_fee_msat: Option<u64>,
+
+	/// The maximum total CLTV delta we accept for the route.
+	/// Defaults to [`DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA`].
+	pub max_total_cltv_expiry_delta: u32,
+
+	/// The maximum number of paths that may be used by (MPP) payments.
+	/// Defaults to [`DEFAULT_MAX_PATH_COUNT`].
+	pub max_path_count: u8,
+
+	/// Selects the maximum share of a channel's total capacity which will be sent over a channel,
+	/// as a power of 1/2. A higher value prefers to send the payment using more MPP parts whereas
+	/// a lower value prefers to send larger MPP parts, potentially saturating channels and
+	/// increasing failure probability for those paths.
+	///
+	/// Note that this restriction will be relaxed during pathfinding after paths which meet this
+	/// restriction have been found. While paths which meet this criteria will be searched for, it
+	/// is ultimately up to the scorer to select them over other paths.
+	///
+	/// A value of 0 will allow payments up to and including a channel's total announced usable
+	/// capacity, a value of one will only use up to half its capacity, two 1/4, etc.
+	///
+	/// Default value: 2
+	pub max_channel_saturation_power_of_half: u8,
+}
+
+impl_writeable_tlv_based!(RouteParametersConfig, {
+	(1, max_total_routing_fee_msat, option),
+	(3, max_total_cltv_expiry_delta, required),
+	(5, max_path_count, required),
+	(7, max_channel_saturation_power_of_half, required),
+});
+
+impl RouteParametersConfig {
+	/// Set the maximum total fees, in millisatoshi, that may accrue during route finding.
+	///
+	/// This is not exported to bindings users since bindings don't support move semantics
+	pub fn with_max_total_routing_fee_msat(self, fee_msat: u64) -> Self {
+		Self { max_total_routing_fee_msat: Some(fee_msat), ..self }
+	}
+
+	/// Includes a limit for the total CLTV expiry delta which is considered during routing
+	///
+	/// This is not exported to bindings users since bindings don't support move semantics
+	pub fn with_max_total_cltv_expiry_delta(self, max_total_cltv_expiry_delta: u32) -> Self {
+		Self { max_total_cltv_expiry_delta, ..self }
+	}
+
+	/// Includes a limit for the maximum number of payment paths that may be used.
+	///
+	/// This is not exported to bindings users since bindings don't support move semantics
+	pub fn with_max_path_count(self, max_path_count: u8) -> Self {
+		Self { max_path_count, ..self }
+	}
+
+	/// Includes a limit for the maximum share of a channel's total capacity that can be sent over, as
+	/// a power of 1/2. See [`PaymentParameters::max_channel_saturation_power_of_half`].
+	///
+	/// This is not exported to bindings users since bindings don't support move semantics
+	pub fn with_max_channel_saturation_power_of_half(self, max_channel_saturation_power_of_half: u8) -> Self {
+		Self { max_channel_saturation_power_of_half, ..self }
+	}
+}
+
+impl Default for RouteParametersConfig {
+	/// Initates an new set of route parameter configs with default parameters.
+	fn default() -> Self {
+		Self {
+			max_total_routing_fee_msat: None,
+			max_total_cltv_expiry_delta: DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA,
+			max_path_count: DEFAULT_MAX_PATH_COUNT,
+			max_channel_saturation_power_of_half: DEFAULT_MAX_CHANNEL_SATURATION_POW_HALF,
+		}
+	}
+}
+
 /// The recipient of a payment, differing based on whether they've hidden their identity with route
 /// blinding.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
