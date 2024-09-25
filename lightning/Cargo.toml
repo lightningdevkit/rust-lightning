@@ -17,7 +17,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Internal test utilities exposed to other repo crates
-_test_utils = ["regex", "bitcoin/bitcoinconsensus", "ext-test-macro", "lightning-types/_test_utils"]
+_test_utils = ["regex", "bitcoin/bitcoinconsensus", "ext-test-macro", "lightning-types/_test_utils", "inventory"]
 # Unlog messages superior at targeted level.
 max_level_off = []
 max_level_error = []
@@ -51,6 +51,7 @@ backtrace = { version = "0.3", optional = true }
 libm = { version = "0.2", default-features = false }
 delegate = "0.12.0"
 ext-test-macro = { path = "../ext-test-macro", optional = true }
+inventory = { version = "0.3", optional = true  }
 
 [dev-dependencies]
 regex = "1.5.6"
