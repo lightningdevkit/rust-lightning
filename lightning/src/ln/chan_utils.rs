@@ -550,11 +550,11 @@ pub fn get_revokeable_redeemscript(revocation_key: &RevocationKey, contest_delay
 
 /// Returns the script for the counterparty's output on a holder's commitment transaction based on
 /// the channel type.
-pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_key: &PublicKey) -> ScriptBuf {
+pub fn get_counterparty_payment_script(channel_type_features: &ChannelTypeFeatures, payment_basepoint: &PublicKey) -> ScriptBuf {
 	if channel_type_features.supports_anchors_zero_fee_htlc_tx() {
-		get_to_countersignatory_with_anchors_redeemscript(payment_key).to_p2wsh()
+		get_to_countersignatory_with_anchors_redeemscript(payment_basepoint).to_p2wsh()
 	} else {
-		ScriptBuf::new_p2wpkh(&WPubkeyHash::hash(&payment_key.serialize()))
+		ScriptBuf::new_p2wpkh(&WPubkeyHash::hash(&payment_basepoint.serialize()))
 	}
 }
 
