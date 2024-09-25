@@ -425,10 +425,9 @@ pub(super) fn construct_trampoline_onion_packet(
 		.map(|p| {
 			let mut payload_len = LengthCalculatingWriter(0);
 			p.write(&mut payload_len).expect("Failed to calculate length");
-			payload_len.0.checked_add(32).expect("Excessive payload size")
+			payload_len.0.checked_add(32)
 		})
-		.try_fold(0usize, |a, b| a.checked_add(b))
-		.expect("Excessive onion length");
+		.try_fold(0usize, |a, b| b.map(|b| b.checked_add(a)));
 
 	assert!(
 		minimum_packet_length < ONION_DATA_LEN,
