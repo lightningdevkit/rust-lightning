@@ -281,6 +281,7 @@ jobs:
                 -A clippy::manual_filter \
                 -A clippy::manual_map \
                 -A clippy::manual_memcpy \
+                -A clippy::manual_inspect \
                 -A clippy::manual_range_contains \
                 -A clippy::manual_range_patterns \
                 -A clippy::manual_saturating_arithmetic \
@@ -334,7 +335,8 @@ jobs:
                 -A clippy::unnecessary_to_owned \
                 -A clippy::unnecessary_unwrap \
                 -A clippy::unused_unit \
-                -A clippy::useless_conversion
+                -A clippy::useless_conversion \
+                -A dependency_on_unit_never_type_fallback
 
   rustfmt:
     runs-on: ubuntu-latest
