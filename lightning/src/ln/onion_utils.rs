@@ -420,14 +420,15 @@ pub(super) fn construct_trampoline_onion_packet(
 	payloads: Vec<msgs::OutboundTrampolinePayload>, onion_keys: Vec<OnionKeys>,
 	prng_seed: [u8; 32], associated_data: &PaymentHash, length: Option<u16>,
 ) -> Result<msgs::TrampolineOnionPacket, ()> {
-	let minimum_packet_length: usize = payloads
+	let minimum_packet_length = payloads
 		.iter()
 		.map(|p| {
 			let mut payload_len = LengthCalculatingWriter(0);
 			p.write(&mut payload_len).expect("Failed to calculate length");
-			payload_len.0 + 32
+			payload_len.0.checked_add(32).expect("Excessive payload size")
 		})
-		.sum();
+		.try_fold(0usize, |a, b| a.checked_add(b))
+		.expect("Excessive onion length");
 
 	assert!(
 		minimum_packet_length < ONION_DATA_LEN,
