@@ -511,34 +511,14 @@ pub fn verify_channel_announcement<C: Verification>(
 	msg: &ChannelAnnouncement, secp_ctx: &Secp256k1<C>,
 ) -> Result<(), LightningError> {
 	let msg_hash = hash_to_message!(&message_sha256d_hash(&msg.contents)[..]);
-	secp_verify_sig!(
-		secp_ctx,
-		&msg_hash,
-		&msg.node_signature_1,
-		&get_pubkey_from_node_id!(msg.contents.node_id_1, "channel_announcement"),
-		"channel_announcement"
-	);
-	secp_verify_sig!(
-		secp_ctx,
-		&msg_hash,
-		&msg.node_signature_2,
-		&get_pubkey_from_node_id!(msg.contents.node_id_2, "channel_announcement"),
-		"channel_announcement"
-	);
-	secp_verify_sig!(
-		secp_ctx,
-		&msg_hash,
-		&msg.bitcoin_signature_1,
-		&get_pubkey_from_node_id!(msg.contents.bitcoin_key_1, "channel_announcement"),
-		"channel_announcement"
-	);
-	secp_verify_sig!(
-		secp_ctx,
-		&msg_hash,
-		&msg.bitcoin_signature_2,
-		&get_pubkey_from_node_id!(msg.contents.bitcoin_key_2, "channel_announcement"),
-		"channel_announcement"
-	);
+	let node_a = get_pubkey_from_node_id!(msg.contents.node_id_1, "channel_announcement");
+	secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_1, &node_a, "channel_announcement");
+	let node_b = get_pubkey_from_node_id!(msg.contents.node_id_2, "channel_announcement");
+	secp_verify_sig!(secp_ctx, &msg_hash, &msg.node_signature_2, &node_b, "channel_announcement");
+	let btc_a = get_pubkey_from_node_id!(msg.contents.bitcoin_key_1, "channel_announcement");
+	secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_1, &btc_a, "channel_announcement");
+	let btc_b = get_pubkey_from_node_id!(msg.contents.bitcoin_key_2, "channel_announcement");
+	secp_verify_sig!(secp_ctx, &msg_hash, &msg.bitcoin_signature_2, &btc_b, "channel_announcement");
 
 	Ok(())
 }
@@ -2962,16 +2942,11 @@ pub(crate) mod tests {
 			_ => panic!(),
 		};
 
-		{
-			match network_graph
-				.read_only()
-				.channels()
-				.get(&valid_announcement.contents.short_channel_id)
-			{
-				None => panic!(),
-				Some(_) => (),
-			};
-		}
+		let scid = valid_announcement.contents.short_channel_id;
+		match network_graph.read_only().channels().get(&scid) {
+			None => panic!(),
+			Some(_) => (),
+		};
 
 		// If we receive announcement for the same channel (with UTXO lookups disabled),
 		// drop new one on the floor, since we can't see any changes.
@@ -3015,16 +2990,11 @@ pub(crate) mod tests {
 			_ => panic!(),
 		};
 
-		{
-			match network_graph
-				.read_only()
-				.channels()
-				.get(&valid_announcement.contents.short_channel_id)
-			{
-				None => panic!(),
-				Some(_) => (),
-			};
-		}
+		let scid = valid_announcement.contents.short_channel_id;
+		match network_graph.read_only().channels().get(&scid) {
+			None => panic!(),
+			Some(_) => (),
+		};
 
 		// If we receive announcement for the same channel, once we've validated it against the
 		// chain, we simply ignore all new (duplicate) announcements.
@@ -3044,9 +3014,8 @@ pub(crate) mod tests {
 				.expect("Time must be > 1970")
 				.as_secs();
 			// Mark a node as permanently failed so it's tracked as removed.
-			gossip_sync
-				.network_graph()
-				.node_failed_permanent(&PublicKey::from_secret_key(&secp_ctx, node_1_privkey));
+			let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
+			gossip_sync.network_graph().node_failed_permanent(&node_1_pubkey);
 
 			// Return error and ignore valid channel announcement if one of the nodes has been tracked as removed.
 			let valid_announcement = get_signed_channel_announcement(
@@ -3291,47 +3260,36 @@ pub(crate) mod tests {
 
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let node_2_id = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
+		let node_2_pk = PublicKey::from_secret_key(&secp_ctx, node_2_privkey);
+		let node_2_id = NodeId::from_pubkey(&node_2_pk);
 
 		{
 			// There is no nodes in the table at the beginning.
 			assert_eq!(network_graph.read_only().nodes().len(), 0);
 		}
 
-		let short_channel_id;
+		let scid;
 		{
 			// Check that we can manually apply a channel update.
 			let valid_channel_announcement =
 				get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-			short_channel_id = valid_channel_announcement.contents.short_channel_id;
+			scid = valid_channel_announcement.contents.short_channel_id;
 			let chain_source: Option<&test_utils::TestChainSource> = None;
 			assert!(network_graph
 				.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
 				.is_ok());
-			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
+			assert!(network_graph.read_only().channels().get(&scid).is_some());
 
 			let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 
-			assert!(network_graph
-				.read_only()
-				.channels()
-				.get(&short_channel_id)
-				.unwrap()
-				.one_to_two
-				.is_none());
+			assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_none());
 			network_graph.update_channel(&valid_channel_update).unwrap();
-			assert!(network_graph
-				.read_only()
-				.channels()
-				.get(&short_channel_id)
-				.unwrap()
-				.one_to_two
-				.is_some());
+			assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_some());
 		}
 
 		// Non-permanent failure doesn't touch the channel at all
 		{
-			match network_graph.read_only().channels().get(&short_channel_id) {
+			match network_graph.read_only().channels().get(&scid) {
 				None => panic!(),
 				Some(channel_info) => {
 					assert!(channel_info.one_to_two.as_ref().unwrap().enabled);
@@ -3339,11 +3297,11 @@ pub(crate) mod tests {
 			};
 
 			network_graph.handle_network_update(&NetworkUpdate::ChannelFailure {
-				short_channel_id,
+				short_channel_id: scid,
 				is_permanent: false,
 			});
 
-			match network_graph.read_only().channels().get(&short_channel_id) {
+			match network_graph.read_only().channels().get(&scid) {
 				None => panic!(),
 				Some(channel_info) => {
 					assert!(channel_info.one_to_two.as_ref().unwrap().enabled);
@@ -3353,7 +3311,7 @@ pub(crate) mod tests {
 
 		// Permanent closing deletes a channel
 		network_graph.handle_network_update(&NetworkUpdate::ChannelFailure {
-			short_channel_id,
+			short_channel_id: scid,
 			is_permanent: true,
 		});
 
@@ -3377,20 +3335,16 @@ pub(crate) mod tests {
 
 			// Non-permanent node failure does not delete any nodes or channels
 			network_graph.handle_network_update(&NetworkUpdate::NodeFailure {
-				node_id: node_2_id,
+				node_id: node_2_pk,
 				is_permanent: false,
 			});
 
 			assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
-			assert!(network_graph
-				.read_only()
-				.nodes()
-				.get(&NodeId::from_pubkey(&node_2_id))
-				.is_some());
+			assert!(network_graph.read_only().nodes().get(&node_2_id).is_some());
 
 			// Permanent node failure deletes node and its channels
 			network_graph.handle_network_update(&NetworkUpdate::NodeFailure {
-				node_id: node_2_id,
+				node_id: node_2_pk,
 				is_permanent: true,
 			});
 
@@ -3415,25 +3369,19 @@ pub(crate) mod tests {
 
 		let valid_channel_announcement =
 			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-		let short_channel_id = valid_channel_announcement.contents.short_channel_id;
+		let scid = valid_channel_announcement.contents.short_channel_id;
 		let chain_source: Option<&test_utils::TestChainSource> = None;
 		assert!(network_graph
 			.update_channel_from_announcement(&valid_channel_announcement, &chain_source)
 			.is_ok());
-		assert!(network_graph.read_only().channels().get(&short_channel_id).is_some());
+		assert!(network_graph.read_only().channels().get(&scid).is_some());
 
 		// Submit two channel updates for each channel direction (update.flags bit).
 		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
 		assert!(gossip_sync
 			.handle_channel_update(Some(node_1_pubkey), &valid_channel_update)
 			.is_ok());
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&short_channel_id)
-			.unwrap()
-			.one_to_two
-			.is_some());
+		assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_some());
 
 		let valid_channel_update_2 = get_signed_channel_update(
 			|update| {
@@ -3443,13 +3391,7 @@ pub(crate) mod tests {
 			&secp_ctx,
 		);
 		gossip_sync.handle_channel_update(Some(node_1_pubkey), &valid_channel_update_2).unwrap();
-		assert!(network_graph
-			.read_only()
-			.channels()
-			.get(&short_channel_id)
-			.unwrap()
-			.two_to_one
-			.is_some());
+		assert!(network_graph.read_only().channels().get(&scid).unwrap().two_to_one.is_some());
 
 		network_graph.remove_stale_channels_and_tracking_with_time(
 			100 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS,
@@ -3480,13 +3422,7 @@ pub(crate) mod tests {
 			// Note that the directional channel information will have been removed already..
 			// We want to check that this will work even if *one* of the channel updates is recent,
 			// so we should add it with a recent timestamp.
-			assert!(network_graph
-				.read_only()
-				.channels()
-				.get(&short_channel_id)
-				.unwrap()
-				.one_to_two
-				.is_none());
+			assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_none());
 			use std::time::{SystemTime, UNIX_EPOCH};
 			let announcement_time = SystemTime::now()
 				.duration_since(UNIX_EPOCH)
@@ -3503,13 +3439,7 @@ pub(crate) mod tests {
 			assert!(gossip_sync
 				.handle_channel_update(Some(node_1_pubkey), &valid_channel_update)
 				.is_ok());
-			assert!(network_graph
-				.read_only()
-				.channels()
-				.get(&short_channel_id)
-				.unwrap()
-				.one_to_two
-				.is_some());
+			assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_some());
 			network_graph.remove_stale_channels_and_tracking_with_time(
 				announcement_time + 1 + STALE_CHANNEL_UPDATE_AGE_LIMIT_SECS,
 			);
@@ -3548,7 +3478,7 @@ pub(crate) mod tests {
 
 			// Mark the channel as permanently failed. This will also remove the two nodes
 			// and all of the entries will be tracked as removed.
-			network_graph.channel_failed_permanent_with_time(short_channel_id, Some(tracking_time));
+			network_graph.channel_failed_permanent_with_time(scid, Some(tracking_time));
 
 			// Should not remove from tracking if insufficient time has passed
 			network_graph.remove_stale_channels_and_tracking_with_time(
@@ -3597,7 +3527,7 @@ pub(crate) mod tests {
 
 			// Mark the channel as permanently failed. This will also remove the two nodes
 			// and all of the entries will be tracked as removed.
-			network_graph.channel_failed_permanent(short_channel_id);
+			network_graph.channel_failed_permanent(scid);
 
 			// The first time we call the following, the channel will have a removal time assigned.
 			network_graph.remove_stale_channels_and_tracking_with_time(removal_time);
