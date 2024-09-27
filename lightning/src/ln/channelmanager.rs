@@ -1238,6 +1238,7 @@ pub(super) const FEERATE_TRACKING_BLOCKS: usize = 144;
 ///
 /// Note that this struct will be removed entirely soon, in favor of storing no inbound payment data
 /// and instead encoding it in the payment secret.
+#[derive(Debug)]
 struct PendingInboundPayment {
 	/// The payment secret that the sender must use for us to accept this payment
 	payment_secret: PaymentSecret,
@@ -2166,25 +2167,23 @@ where
 //  |
 //  |__`per_peer_state`
 //      |
-//      |__`pending_inbound_payments`
-//          |
-//          |__`claimable_payments`
-//          |
-//          |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
-//              |
-//              |__`peer_state`
-//                  |
-//                  |__`outpoint_to_peer`
-//                  |
-//                  |__`short_to_chan_info`
-//                  |
-//                  |__`outbound_scid_aliases`
-//                  |
-//                  |__`best_block`
-//                  |
-//                  |__`pending_events`
-//                      |
-//                      |__`pending_background_events`
+//      |__`claimable_payments`
+//      |
+//      |__`pending_outbound_payments` // This field's struct contains a map of pending outbounds
+//         |
+//         |__`peer_state`
+//            |
+//            |__`outpoint_to_peer`
+//            |
+//            |__`short_to_chan_info`
+//            |
+//            |__`outbound_scid_aliases`
+//            |
+//            |__`best_block`
+//            |
+//            |__`pending_events`
+//               |
+//               |__`pending_background_events`
 //
 pub struct ChannelManager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
 where
@@ -2213,14 +2212,6 @@ where
 	#[cfg(not(test))]
 	best_block: RwLock<BestBlock>,
 	secp_ctx: Secp256k1<secp256k1::All>,
-
-	/// Storage for PaymentSecrets and any requirements on future inbound payments before we will
-	/// expose them to users via a PaymentClaimable event. HTLCs which do not meet the requirements
-	/// here are failed when we process them as pending-forwardable-HTLCs, and entries are removed
-	/// after we generate a PaymentClaimable upon receipt of all MPP parts or when they time out.
-	///
-	/// See `ChannelManager` struct-level documentation for lock order requirements.
-	pending_inbound_payments: Mutex<HashMap<PaymentHash, PendingInboundPayment>>,
 
 	/// The session_priv bytes and retry metadata of outbound payments which are pending resolution.
 	/// The authoritative state of these HTLCs resides either within Channels or ChannelMonitors
@@ -3217,7 +3208,6 @@ where
 			best_block: RwLock::new(params.best_block),
 
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
-			pending_inbound_payments: Mutex::new(new_hash_map()),
 			pending_outbound_payments: OutboundPayments::new(new_hash_map()),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
@@ -5896,66 +5886,36 @@ where
 								// that we are the ultimate recipient of the given payment hash.
 								// Further, we must not expose whether we have any other HTLCs
 								// associated with the same payment_hash pending or not.
-								let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
-								match payment_secrets.entry(payment_hash) {
-									hash_map::Entry::Vacant(_) => {
-										match claimable_htlc.onion_payload {
-											OnionPayload::Invoice { .. } => {
-												let payment_data = payment_data.unwrap();
-												let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
-													Ok(result) => result,
-													Err(()) => {
-														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", &payment_hash);
-														fail_htlc!(claimable_htlc, payment_hash);
-													}
-												};
-												if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
-													let expected_min_expiry_height = (self.current_best_block().height + min_final_cltv_expiry_delta as u32) as u64;
-													if (cltv_expiry as u64) < expected_min_expiry_height {
-														log_trace!(self.logger, "Failing new HTLC with payment_hash {} as its CLTV expiry was too soon (had {}, earliest expected {})",
-															&payment_hash, cltv_expiry, expected_min_expiry_height);
-														fail_htlc!(claimable_htlc, payment_hash);
-													}
-												}
-												let purpose = events::PaymentPurpose::from_parts(
-													payment_preimage,
-													payment_data.payment_secret,
-													payment_context,
-												);
-												check_total_value!(purpose);
-											},
-											OnionPayload::Spontaneous(preimage) => {
-												let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
-												check_total_value!(purpose);
-											}
-										}
-									},
-									hash_map::Entry::Occupied(inbound_payment) => {
-										if let OnionPayload::Spontaneous(_) = claimable_htlc.onion_payload {
-											log_trace!(self.logger, "Failing new keysend HTLC with payment_hash {} because we already have an inbound payment with the same payment hash", &payment_hash);
-											fail_htlc!(claimable_htlc, payment_hash);
-										}
+								match claimable_htlc.onion_payload {
+									OnionPayload::Invoice { .. } => {
 										let payment_data = payment_data.unwrap();
-										if inbound_payment.get().payment_secret != payment_data.payment_secret {
-											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our expected payment secret.", &payment_hash);
-											fail_htlc!(claimable_htlc, payment_hash);
-										} else if inbound_payment.get().min_value_msat.is_some() && payment_data.total_msat < inbound_payment.get().min_value_msat.unwrap() {
-											log_trace!(self.logger, "Failing new HTLC with payment_hash {} as it didn't match our minimum value (had {}, needed {}).",
-												&payment_hash, payment_data.total_msat, inbound_payment.get().min_value_msat.unwrap());
-											fail_htlc!(claimable_htlc, payment_hash);
-										} else {
-											let purpose = events::PaymentPurpose::from_parts(
-												inbound_payment.get().payment_preimage,
-												payment_data.payment_secret,
-												payment_context,
-											);
-											let payment_claimable_generated = check_total_value!(purpose);
-											if payment_claimable_generated {
-												inbound_payment.remove_entry();
+										let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
+											Ok(result) => result,
+											Err(()) => {
+												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as payment verification failed", &payment_hash);
+												fail_htlc!(claimable_htlc, payment_hash);
+											}
+										};
+										if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
+											let expected_min_expiry_height = (self.current_best_block().height + min_final_cltv_expiry_delta as u32) as u64;
+											if (cltv_expiry as u64) < expected_min_expiry_height {
+												log_trace!(self.logger, "Failing new HTLC with payment_hash {} as its CLTV expiry was too soon (had {}, earliest expected {})",
+												&payment_hash, cltv_expiry, expected_min_expiry_height);
+												fail_htlc!(claimable_htlc, payment_hash);
 											}
 										}
+										let purpose = events::PaymentPurpose::from_parts(
+											payment_preimage,
+											payment_data.payment_secret,
+											payment_context,
+										);
+										check_total_value!(purpose);
 									},
-								};
+									OnionPayload::Spontaneous(preimage) => {
+										let purpose = events::PaymentPurpose::SpontaneousPayment(preimage);
+										check_total_value!(purpose);
+									}
+								}
 							},
 							HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
 								panic!("Got pending fail of our own HTLC");
@@ -10121,10 +10081,6 @@ where
 			}
 		}
 		max_time!(self.highest_seen_timestamp);
-		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
-		payment_secrets.retain(|_, inbound_payment| {
-			inbound_payment.expiry_time > header.time as u64
-		});
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
@@ -11873,7 +11829,6 @@ where
 			decode_update_add_htlcs_opt = Some(decode_update_add_htlcs);
 		}
 
-		let pending_inbound_payments = self.pending_inbound_payments.lock().unwrap();
 		let claimable_payments = self.claimable_payments.lock().unwrap();
 		let pending_outbound_payments = self.pending_outbound_payments.pending_outbound_payments.lock().unwrap();
 
@@ -11945,11 +11900,10 @@ where
 		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
 		(self.highest_seen_timestamp.load(Ordering::Acquire) as u32).write(writer)?;
 
-		(pending_inbound_payments.len() as u64).write(writer)?;
-		for (hash, pending_payment) in pending_inbound_payments.iter() {
-			hash.write(writer)?;
-			pending_payment.write(writer)?;
-		}
+		// LDK versions prior to 0.0.104 wrote `pending_inbound_payments` here, with deprecated support
+		// for stateful inbound payments maintained until 0.0.116, after which no further inbound
+		// payments could have been written here.
+		(0 as u64).write(writer)?;
 
 		// For backwards compat, write the session privs and their total length.
 		let mut num_pending_outbounds_compat: u64 = 0;
@@ -12463,12 +12417,13 @@ where
 		let _last_node_announcement_serial: u32 = Readable::read(reader)?; // Only used < 0.0.111
 		let highest_seen_timestamp: u32 = Readable::read(reader)?;
 
+		// The last version where a pending inbound payment may have been added was 0.0.116.
 		let pending_inbound_payment_count: u64 = Readable::read(reader)?;
-		let mut pending_inbound_payments: HashMap<PaymentHash, PendingInboundPayment> = hash_map_with_capacity(cmp::min(pending_inbound_payment_count as usize, MAX_ALLOC_SIZE/(3*32)));
 		for _ in 0..pending_inbound_payment_count {
-			if pending_inbound_payments.insert(Readable::read(reader)?, Readable::read(reader)?).is_some() {
-				return Err(DecodeError::InvalidValue);
-			}
+			let payment_hash: PaymentHash = Readable::read(reader)?;
+			let logger = WithContext::from(&args.logger, None, None, Some(payment_hash));
+			let inbound: PendingInboundPayment = Readable::read(reader)?;
+			log_warn!(logger, "Ignoring deprecated pending inbound payment with payment hash {}: {:?}", payment_hash, inbound);
 		}
 
 		let pending_outbound_payments_count_compat: u64 = Readable::read(reader)?;
@@ -12855,16 +12810,16 @@ where
 					OnionPayload::Invoice { _legacy_hop_data } => {
 						if let Some(hop_data) = _legacy_hop_data {
 							events::PaymentPurpose::Bolt11InvoicePayment {
-								payment_preimage: match pending_inbound_payments.get(&payment_hash) {
-									Some(inbound_payment) => inbound_payment.payment_preimage,
-									None => match inbound_payment::verify(payment_hash, &hop_data, 0, &expanded_inbound_key, &args.logger) {
+								payment_preimage:
+									match inbound_payment::verify(
+										payment_hash, &hop_data, 0, &expanded_inbound_key, &args.logger
+									) {
 										Ok((payment_preimage, _)) => payment_preimage,
 										Err(()) => {
 											log_error!(args.logger, "Failed to read claimable payment data for HTLC with payment hash {} - was not a pending inbound payment and didn't match our payment key", &payment_hash);
 											return Err(DecodeError::InvalidValue);
 										}
-									}
-								},
+									},
 								payment_secret: hop_data.payment_secret,
 							}
 						} else { return Err(DecodeError::InvalidValue); }
@@ -13043,7 +12998,6 @@ where
 			best_block: RwLock::new(BestBlock::new(best_block_hash, best_block_height)),
 
 			inbound_payment_key: expanded_inbound_key,
-			pending_inbound_payments: Mutex::new(pending_inbound_payments),
 			pending_outbound_payments: pending_outbounds,
 			pending_intercepted_htlcs: Mutex::new(pending_intercepted_htlcs.unwrap()),
 
