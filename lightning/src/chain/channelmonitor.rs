@@ -3304,7 +3304,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						commitment_tx_fee_satoshis,
 						anchor_descriptor: AnchorDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
-								keys_id: self.channel_keys_id,
+								channel_keys_id: self.channel_keys_id,
 								value_satoshis: self.channel_value_satoshis,
 								transaction_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
 							},
@@ -3328,7 +3328,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					for htlc in htlcs {
 						htlc_descriptors.push(HTLCDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
-								keys_id: self.channel_keys_id,
+								channel_keys_id: self.channel_keys_id,
 								value_satoshis: self.channel_value_satoshis,
 								transaction_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
 							},

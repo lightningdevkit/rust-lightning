@@ -553,7 +553,7 @@ pub struct ChannelDerivationParameters {
 	/// The value in satoshis of the channel we're attempting to spend the anchor output of.
 	pub value_satoshis: u64,
 	/// The unique identifier to re-derive the signer for the associated channel.
-	pub keys_id: [u8; 32],
+	pub channel_keys_id: [u8; 32],
 	/// The necessary channel parameters that need to be provided to the re-derived signer through
 	/// [`ChannelSigner::provide_channel_parameters`].
 	pub transaction_parameters: ChannelTransactionParameters,
@@ -561,7 +561,7 @@ pub struct ChannelDerivationParameters {
 
 impl_writeable_tlv_based!(ChannelDerivationParameters, {
 	(0, value_satoshis, required),
-	(2, keys_id, required),
+	(2, channel_keys_id, required),
 	(4, transaction_parameters, required),
 });
 
@@ -715,7 +715,7 @@ impl HTLCDescriptor {
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
-			self.channel_derivation_parameters.keys_id,
+			self.channel_derivation_parameters.channel_keys_id,
 		);
 		signer
 			.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
