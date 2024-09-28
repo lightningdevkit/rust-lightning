@@ -10488,7 +10488,7 @@ mod tests {
 					let htlc_holder_sig = signer.sign_holder_htlc_transaction(&htlc_tx, 0, &HTLCDescriptor {
 						channel_derivation_parameters: ChannelDerivationParameters {
 							value_satoshis: chan.context.channel_value_satoshis,
-							keys_id: chan.context.channel_keys_id,
+							channel_keys_id: chan.context.channel_keys_id,
 							transaction_parameters: chan.context.channel_transaction_parameters.clone(),
 						},
 						commitment_txid: trusted_tx.txid(),

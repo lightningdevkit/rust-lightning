@@ -1199,7 +1199,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			let htlc_descriptor = HTLCDescriptor {
 				channel_derivation_parameters: ChannelDerivationParameters {
 					value_satoshis: self.channel_value_satoshis,
-					keys_id: self.channel_keys_id,
+					channel_keys_id: self.channel_keys_id,
 					transaction_parameters: self.channel_transaction_parameters.clone(),
 				},
 				commitment_txid: trusted_tx.txid(),
