@@ -43,7 +43,7 @@ use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
-use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, ecdsa::EcdsaChannelSigner, SignerProvider, EntropySource};
+use crate::sign::{ChannelDerivationParameters, ChannelKeysDerivationParameters, HTLCDescriptor, SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, ecdsa::EcdsaChannelSigner, SignerProvider, EntropySource};
 use crate::chain::onchaintx::{ClaimEvent, FeerateStrategy, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
@@ -872,7 +872,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	counterparty_payment_script: ScriptBuf,
 	shutdown_script: Option<ScriptBuf>,
 
-	channel_keys_id: [u8; 32],
+	channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	holder_revocation_basepoint: RevocationBasepoint,
 	channel_id: ChannelId,
 	funding_info: (OutPoint, ScriptBuf),
@@ -1076,7 +1076,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			None => ScriptBuf::new().write(writer)?,
 		}
 
-		self.channel_keys_id.write(writer)?;
+		self.channel_keys_derivation_params.channel_keys_id.write(writer)?;
 		self.holder_revocation_basepoint.write(writer)?;
 		writer.write_all(&self.funding_info.0.txid[..])?;
 		writer.write_all(&self.funding_info.0.index.to_be_bytes())?;
@@ -1237,6 +1237,7 @@ impl<Signer: EcdsaChannelSigner> Writeable for ChannelMonitorImpl<Signer> {
 			(21, self.balances_empty_height, option),
 			(23, self.holder_pays_commitment_tx_fee, option),
 			(25, self.payment_preimages, required),
+			(27, self.channel_keys_derivation_params.channel_keys_derivation_version, option),
 		});
 
 		Ok(())
@@ -1355,7 +1356,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let counterparty_htlc_base_key = counterparty_channel_parameters.pubkeys.htlc_basepoint;
 		let counterparty_commitment_params = CounterpartyCommitmentParameters { counterparty_delayed_payment_base_key, counterparty_htlc_base_key, on_counterparty_tx_csv };
 
-		let channel_keys_id = keys.channel_keys_id();
+		let channel_keys_derivation_params = keys.channel_keys_derivation_params();
 		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
 
 		// block for Rust 1.34 compat
@@ -1379,7 +1380,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		};
 
 		let onchain_tx_handler = OnchainTxHandler::new(
-			channel_value_satoshis, channel_keys_id, destination_script.into(), keys,
+			channel_value_satoshis, channel_keys_derivation_params, destination_script.into(), keys,
 			channel_parameters.clone(), initial_holder_commitment_tx, secp_ctx
 		);
 
@@ -1395,7 +1396,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			counterparty_payment_script,
 			shutdown_script,
 
-			channel_keys_id,
+			channel_keys_derivation_params,
 			holder_revocation_basepoint,
 			channel_id,
 			funding_info,
@@ -3304,7 +3305,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						commitment_tx_fee_satoshis,
 						anchor_descriptor: AnchorDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
-								channel_keys_id: self.channel_keys_id,
+								channel_keys_derivation_params: self.channel_keys_derivation_params,
 								value_satoshis: self.channel_value_satoshis,
 								transaction_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
 							},
@@ -3328,7 +3329,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					for htlc in htlcs {
 						htlc_descriptors.push(HTLCDescriptor {
 							channel_derivation_parameters: ChannelDerivationParameters {
-								channel_keys_id: self.channel_keys_id,
+								channel_keys_derivation_params: self.channel_keys_derivation_params,
 								value_satoshis: self.channel_value_satoshis,
 								transaction_parameters: self.onchain_tx_handler.channel_transaction_parameters.clone(),
 							},
@@ -4609,7 +4610,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 					output: outp.clone(),
-					channel_keys_id: Some(self.channel_keys_id),
+					channel_keys_derivation_params: Some(self.channel_keys_derivation_params),
 				});
 			}
 			if let Some(ref broadcasted_holder_revokable_script) = self.broadcasted_holder_revokable_script {
@@ -4620,7 +4621,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						to_self_delay: self.on_holder_tx_csv,
 						output: outp.clone(),
 						revocation_pubkey: broadcasted_holder_revokable_script.2,
-						channel_keys_id: self.channel_keys_id,
+						channel_keys_derivation_params: self.channel_keys_derivation_params,
 						channel_value_satoshis: self.channel_value_satoshis,
 						channel_transaction_parameters: Some(self.onchain_tx_handler.channel_transaction_parameters.clone()),
 					}));
@@ -4630,7 +4631,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticPaymentOutput(StaticPaymentOutputDescriptor {
 					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 					output: outp.clone(),
-					channel_keys_id: self.channel_keys_id,
+					channel_keys_derivation_params: self.channel_keys_derivation_params,
 					channel_value_satoshis: self.channel_value_satoshis,
 					channel_transaction_parameters: Some(self.onchain_tx_handler.channel_transaction_parameters.clone()),
 				}));
@@ -4639,7 +4640,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
 					output: outp.clone(),
-					channel_keys_id: Some(self.channel_keys_id),
+					channel_keys_derivation_params: Some(self.channel_keys_derivation_params),
 				});
 			}
 		}
@@ -4929,6 +4930,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut channel_id = None;
 		let mut holder_pays_commitment_tx_fee = None;
 		let mut payment_preimages_with_info: Option<HashMap<_, _>> = None;
+		let mut channel_keys_derivation_version: Option<u8> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -4943,6 +4945,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(21, balances_empty_height, option),
 			(23, holder_pays_commitment_tx_fee, option),
 			(25, payment_preimages_with_info, option),
+			(27, channel_keys_derivation_version, option),
 		});
 		if let Some(payment_preimages_with_info) = payment_preimages_with_info {
 			if payment_preimages_with_info.len() != payment_preimages.len() {
@@ -4982,6 +4985,11 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_basepoint).to_p2wsh();
 		}
 
+		let channel_keys_derivation_params = ChannelKeysDerivationParameters {
+			channel_keys_derivation_version,
+			channel_keys_id,
+		};
+
 		Ok((best_block.block_hash, ChannelMonitor::from_impl(ChannelMonitorImpl {
 			latest_update_id,
 			commitment_transaction_number_obscure_factor,
@@ -4991,7 +4999,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			counterparty_payment_script,
 			shutdown_script,
 
-			channel_keys_id,
+			channel_keys_derivation_params,
 			holder_revocation_basepoint,
 			channel_id: channel_id.unwrap_or(ChannelId::v1_from_funding_outpoint(outpoint)),
 			funding_info,
@@ -5070,7 +5078,7 @@ mod tests {
 	use crate::chain::channelmonitor::{ChannelMonitor, WithChannelMonitor};
 	use crate::chain::package::{weight_offered_htlc, weight_received_htlc, weight_revoked_offered_htlc, weight_revoked_received_htlc, WEIGHT_REVOKED_OUTPUT};
 	use crate::chain::transaction::OutPoint;
-	use crate::sign::InMemorySigner;
+	use crate::sign::{InMemorySigner, ChannelKeysDerivationParameters, CHANNEL_KEYS_DERIVATION_VERSION};
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcBasepoint, RevocationBasepoint, RevocationKey};
@@ -5233,6 +5241,11 @@ mod tests {
 			}
 		}
 
+		let dummy_key_derivation_params = ChannelKeysDerivationParameters {
+			channel_keys_derivation_version: Some(CHANNEL_KEYS_DERIVATION_VERSION),
+			channel_keys_id: [0; 32],
+		};
+
 		let keys = InMemorySigner::new(
 			&secp_ctx,
 			SecretKey::from_slice(&[41; 32]).unwrap(),
@@ -5242,7 +5255,7 @@ mod tests {
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			[41; 32],
 			0,
-			[0; 32],
+			dummy_key_derivation_params,
 			[0; 32],
 		);
 
@@ -5485,6 +5498,11 @@ mod tests {
 
 		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 
+		let dummy_key_derivation_params = ChannelKeysDerivationParameters {
+			channel_keys_derivation_version: Some(CHANNEL_KEYS_DERIVATION_VERSION),
+			channel_keys_id: [0; 32],
+		};
+
 		let keys = InMemorySigner::new(
 			&secp_ctx,
 			SecretKey::from_slice(&[41; 32]).unwrap(),
@@ -5494,7 +5512,7 @@ mod tests {
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			[41; 32],
 			0,
-			[0; 32],
+			dummy_key_derivation_params,
 			[0; 32],
 		);
 

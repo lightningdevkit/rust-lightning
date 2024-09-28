@@ -21,7 +21,7 @@ use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::MonitorEvent;
 use crate::chain::transaction::OutPoint;
 use crate::routing::router::{CandidateRouteHop, FirstHopCandidate, PublicHopCandidate, PrivateHopCandidate};
-use crate::sign;
+use crate::sign::{self, ChannelKeysDerivationParameters};
 use crate::events;
 use crate::events::bump_transaction::{WalletSource, Utxo};
 use crate::ln::types::ChannelId;
@@ -316,9 +316,9 @@ impl SignerProvider for OnlyReadsKeysInterface {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] { unreachable!(); }
+	fn generate_channel_keys_derivation_params(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> ChannelKeysDerivationParameters { unreachable!(); }
 
-	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner { unreachable!(); }
+	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_derivation_params: ChannelKeysDerivationParameters) -> Self::EcdsaSigner { unreachable!(); }
 
 	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
 		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
@@ -331,7 +331,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { Err(()) }
+	fn get_destination_script(&self, _channel_keys_derivation_params: ChannelKeysDerivationParameters) -> Result<ScriptBuf, ()> { Err(()) }
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { Err(()) }
 }
 
@@ -1291,16 +1291,18 @@ impl SignerProvider for TestKeysInterface {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
-		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
+	fn generate_channel_keys_derivation_params(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> ChannelKeysDerivationParameters {
+		self.backing.generate_channel_keys_derivation_params(inbound, channel_value_satoshis, user_channel_id)
 	}
 
-	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> TestChannelSigner {
-		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+	fn derive_channel_signer(
+		&self, channel_value_satoshis: u64, channel_keys_derivation_params: ChannelKeysDerivationParameters
+	) -> TestChannelSigner {
+		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_derivation_params);
 		let state = self.make_enforcement_state_cell(keys.commitment_seed);
 		let signer = TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check);
 		#[cfg(test)]
-		if let Some(ops) = self.unavailable_signers_ops.lock().unwrap().get(&channel_keys_id) {
+		if let Some(ops) = self.unavailable_signers_ops.lock().unwrap().get(&channel_keys_derivation_params.channel_keys_id) {
 			for &op in ops {
 				signer.disable_op(op);
 			}
@@ -1321,7 +1323,11 @@ impl SignerProvider for TestKeysInterface {
 		))
 	}
 
-	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { self.backing.get_destination_script(channel_keys_id) }
+	fn get_destination_script(
+		&self, channel_keys_derivation_params: ChannelKeysDerivationParameters
+	) -> Result<ScriptBuf, ()> {
+		self.backing.get_destination_script(channel_keys_derivation_params)
+	}
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
 		match &mut *self.expectations.lock().unwrap() {
@@ -1356,8 +1362,10 @@ impl TestKeysInterface {
 		self
 	}
 
-	pub fn derive_channel_keys(&self, channel_value_satoshis: u64, id: &[u8; 32]) -> TestChannelSigner {
-		self.derive_channel_signer(channel_value_satoshis, *id)
+	pub fn derive_channel_keys(
+		&self, channel_value_satoshis: u64, channel_keys_derivation_params: ChannelKeysDerivationParameters
+	) -> TestChannelSigner {
+		self.derive_channel_signer(channel_value_satoshis, channel_keys_derivation_params)
 	}
 
 	fn make_enforcement_state_cell(&self, commitment_seed: [u8; 32]) -> Arc<Mutex<EnforcementState>> {

@@ -17,7 +17,7 @@ use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
 use crate::chain::channelmonitor::{Balance, CLOSED_CHANNEL_UPDATE_ID, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
-use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
+use crate::sign::{ChannelKeysDerivationParameters, CHANNEL_KEYS_DERIVATION_VERSION, ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
 use crate::events::{Event, FundingInfo, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentSecret, PaymentHash};
@@ -2639,8 +2639,12 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	// that a revoked commitment transaction is broadcasted
 	// (Similar to `revoked_output_claim` test but we get the justice tx + broadcast manually)
 	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let destination_script0 = chanmon_cfgs[0].keys_manager.get_destination_script([0; 32]).unwrap();
-	let destination_script1 = chanmon_cfgs[1].keys_manager.get_destination_script([0; 32]).unwrap();
+	let channel_keys_derivation_params = ChannelKeysDerivationParameters {
+		channel_keys_derivation_version: Some(CHANNEL_KEYS_DERIVATION_VERSION),
+		channel_keys_id: [0; 32],
+	};
+	let destination_script0 = chanmon_cfgs[0].keys_manager.get_destination_script(channel_keys_derivation_params).unwrap();
+	let destination_script1 = chanmon_cfgs[1].keys_manager.get_destination_script(channel_keys_derivation_params).unwrap();
 	let persisters = vec![WatchtowerPersister::new(destination_script0),
 		WatchtowerPersister::new(destination_script1)];
 	let node_cfgs = create_node_cfgs_with_persisters(2, &chanmon_cfgs, persisters.iter().collect());

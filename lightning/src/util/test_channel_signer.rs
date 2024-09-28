@@ -11,9 +11,9 @@ use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSH
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use crate::ln::channel_keys::HtlcKey;
 use crate::ln::msgs;
-use crate::types::payment::PaymentPreimage;
-use crate::sign::{InMemorySigner, ChannelSigner};
 use crate::sign::ecdsa::EcdsaChannelSigner;
+use crate::sign::{ChannelSigner, ChannelKeysDerivationParameters, InMemorySigner};
+use crate::types::payment::PaymentPreimage;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -205,7 +205,9 @@ impl ChannelSigner for TestChannelSigner {
 
 	fn pubkeys(&self) -> &ChannelPublicKeys { self.inner.pubkeys() }
 
-	fn channel_keys_id(&self) -> [u8; 32] { self.inner.channel_keys_id() }
+	fn channel_keys_derivation_params(&self) -> ChannelKeysDerivationParameters {
+		self.inner.channel_keys_derivation_params()
+	}
 
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
 		self.inner.provide_channel_parameters(channel_parameters)

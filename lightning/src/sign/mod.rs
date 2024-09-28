@@ -58,7 +58,7 @@ use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::types::payment::PaymentPreimage;
-use crate::util::ser::{Readable, ReadableArgs, Writeable};
+use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::transaction_utils;
 
 use crate::crypto::chacha20::ChaCha20;
@@ -106,9 +106,10 @@ pub struct DelayedPaymentOutputDescriptor {
 	/// The revocation point specific to the commitment transaction which was broadcast. Used to
 	/// derive the witnessScript for this output.
 	pub revocation_pubkey: RevocationKey,
-	/// Arbitrary identification information returned by a call to [`ChannelSigner::channel_keys_id`].
-	/// This may be useful in re-deriving keys used in the channel to spend the output.
-	pub channel_keys_id: [u8; 32],
+	/// Information returned from a call to [`ChannelSigner::channel_keys_derivation_params`].
+	///
+	/// This is required for re-deriving keys used in the channel to spend the output.
+	pub channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	/// The value of the channel which this output originated from, possibly indirectly.
 	pub channel_value_satoshis: u64,
 	/// The channel public keys and other parameters needed to generate a spending transaction or
@@ -128,16 +129,54 @@ impl DelayedPaymentOutputDescriptor {
 		1 + 73 + 1 + chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH as u64 + 1;
 }
 
-impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
-	(0, outpoint, required),
-	(2, per_commitment_point, required),
-	(4, to_self_delay, required),
-	(6, output, required),
-	(8, revocation_pubkey, required),
-	(10, channel_keys_id, required),
-	(12, channel_value_satoshis, required),
-	(13, channel_transaction_parameters, option),
-});
+impl Writeable for DelayedPaymentOutputDescriptor {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.outpoint, required),
+			(1, self.channel_keys_derivation_params.channel_keys_derivation_version, option),
+			(2, self.per_commitment_point, required),
+			(4, self.to_self_delay, required),
+			(6, self.output, required),
+			(8, self.revocation_pubkey, required),
+			(10, self.channel_keys_derivation_params.channel_keys_id, required),
+			(12, self.channel_value_satoshis, required),
+			(13, self.channel_transaction_parameters, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for DelayedPaymentOutputDescriptor {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(0, outpoint, required),
+			(1, channel_keys_derivation_version, option),
+			(2, per_commitment_point, required),
+			(4, to_self_delay, required),
+			(6, output, required),
+			(8, revocation_pubkey, required),
+			(10, channel_keys_id, required),
+			(12, channel_value_satoshis, required),
+			(13, channel_transaction_parameters, option),
+		});
+
+		let channel_keys_derivation_params = ChannelKeysDerivationParameters {
+			channel_keys_derivation_version,
+			channel_keys_id: channel_keys_id.0.unwrap(),
+		};
+
+		Ok(Self {
+			outpoint: outpoint.0.unwrap(),
+			per_commitment_point: per_commitment_point.0.unwrap(),
+			to_self_delay: to_self_delay.0.unwrap(),
+			output: output.0.unwrap(),
+			revocation_pubkey: revocation_pubkey.0.unwrap(),
+			channel_keys_derivation_params,
+			channel_value_satoshis: channel_value_satoshis.0.unwrap(),
+			channel_transaction_parameters,
+		})
+	}
+}
 
 pub(crate) const P2WPKH_WITNESS_WEIGHT: u64 = 1 /* num stack items */ +
 	1 /* sig length */ +
@@ -158,9 +197,10 @@ pub struct StaticPaymentOutputDescriptor {
 	pub outpoint: OutPoint,
 	/// The output which is referenced by the given outpoint.
 	pub output: TxOut,
-	/// Arbitrary identification information returned by a call to [`ChannelSigner::channel_keys_id`].
-	/// This may be useful in re-deriving keys used in the channel to spend the output.
-	pub channel_keys_id: [u8; 32],
+	/// Information returned from a call to [`ChannelSigner::channel_keys_derivation_params`].
+	///
+	/// This is required for re-deriving keys used in the channel to spend the output.
+	pub channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	/// The value of the channel which this transactions spends.
 	pub channel_value_satoshis: u64,
 	/// The necessary channel parameters that need to be provided to the re-derived signer through
@@ -202,13 +242,46 @@ impl StaticPaymentOutputDescriptor {
 		}
 	}
 }
-impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
-	(0, outpoint, required),
-	(2, output, required),
-	(4, channel_keys_id, required),
-	(6, channel_value_satoshis, required),
-	(7, channel_transaction_parameters, option),
-});
+
+impl Writeable for StaticPaymentOutputDescriptor {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.outpoint, required),
+			(2, self.output, required),
+			(4, self.channel_keys_derivation_params.channel_keys_id, required),
+			(5, self.channel_keys_derivation_params.channel_keys_derivation_version, option),
+			(6, self.channel_value_satoshis, required),
+			(7, self.channel_transaction_parameters, option),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for StaticPaymentOutputDescriptor {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(0, outpoint, required),
+			(2, output, required),
+			(4, channel_keys_id, required),
+			(5, channel_keys_derivation_version, option),
+			(6, channel_value_satoshis, required),
+			(7, channel_transaction_parameters, option),
+		});
+
+		let channel_keys_derivation_params = ChannelKeysDerivationParameters {
+			channel_keys_derivation_version,
+			channel_keys_id: channel_keys_id.0.unwrap(),
+		};
+
+		Ok(Self {
+			outpoint: outpoint.0.unwrap(),
+			output: output.0.unwrap(),
+			channel_keys_derivation_params,
+			channel_value_satoshis: channel_value_satoshis.0.unwrap(),
+			channel_transaction_parameters,
+		})
+	}
+}
 
 /// Describes the necessary information to spend a spendable output.
 ///
@@ -234,7 +307,7 @@ pub enum SpendableOutputDescriptor {
 		outpoint: OutPoint,
 		/// The output which is referenced by the given outpoint.
 		output: TxOut,
-		/// The `channel_keys_id` for the channel which this output came from.
+		/// The `channel_keys_derivation_params` for the channel which this output came from.
 		///
 		/// For channels which were generated on LDK 0.0.119 or later, this is the value which was
 		/// passed to the [`SignerProvider::get_destination_script`] call which provided this
@@ -242,7 +315,7 @@ pub enum SpendableOutputDescriptor {
 		///
 		/// For channels which were generated prior to LDK 0.0.119, no such argument existed,
 		/// however this field may still be filled in if such data is available.
-		channel_keys_id: Option<[u8; 32]>,
+		channel_keys_derivation_params: Option<ChannelKeysDerivationParameters>,
 	},
 	/// An output to a P2WSH script which can be spent with a single signature after an `OP_CSV`
 	/// delay.
@@ -303,16 +376,65 @@ pub enum SpendableOutputDescriptor {
 	StaticPaymentOutput(StaticPaymentOutputDescriptor),
 }
 
-impl_writeable_tlv_based_enum_legacy!(SpendableOutputDescriptor,
-	(0, StaticOutput) => {
-		(0, outpoint, required),
-		(1, channel_keys_id, option),
-		(2, output, required),
-	},
-;
-	(1, DelayedPaymentOutput),
-	(2, StaticPaymentOutput),
-);
+impl Writeable for SpendableOutputDescriptor {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			SpendableOutputDescriptor::StaticOutput {
+				outpoint,
+				output,
+				channel_keys_derivation_params,
+			} => {
+				0u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, outpoint, required),
+					(1, channel_keys_derivation_params.map(|p| p.channel_keys_id), option),
+					(2, output, required),
+					(3, channel_keys_derivation_params.and_then(|p| p.channel_keys_derivation_version), option),
+				});
+			},
+			SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
+				1u8.write(writer)?;
+				descriptor.write(writer)?;
+			},
+			SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
+				2u8.write(writer)?;
+				descriptor.write(writer)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl Readable for SpendableOutputDescriptor {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let id: u8 = Readable::read(reader)?;
+		match id {
+			0 => {
+				_init_and_read_len_prefixed_tlv_fields!(reader, {
+					(0, outpoint, required),
+					(1, channel_keys_id, option),
+					(2, output, required),
+					(3, channel_keys_derivation_version, option),
+				});
+
+				let channel_keys_derivation_params =
+					channel_keys_id.map(|channel_keys_id| ChannelKeysDerivationParameters {
+						channel_keys_derivation_version,
+						channel_keys_id,
+					});
+
+				Ok(SpendableOutputDescriptor::StaticOutput {
+					outpoint: outpoint.0.unwrap(),
+					output: output.0.unwrap(),
+					channel_keys_derivation_params,
+				})
+			},
+			1 => Ok(SpendableOutputDescriptor::DelayedPaymentOutput(Readable::read(reader)?)),
+			2 => Ok(SpendableOutputDescriptor::StaticPaymentOutput(Readable::read(reader)?)),
+			_ => Err(DecodeError::UnknownRequiredFeature),
+		}
+	}
+}
 
 impl SpendableOutputDescriptor {
 	/// Turns this into a [`bitcoin::psbt::Input`] which can be used to create a
@@ -554,18 +676,46 @@ impl SpendableOutputDescriptor {
 pub struct ChannelDerivationParameters {
 	/// The value in satoshis of the channel we're attempting to spend the anchor output of.
 	pub value_satoshis: u64,
-	/// The unique identifier to re-derive the signer for the associated channel.
-	pub channel_keys_id: [u8; 32],
+	/// The parameters necessary to re-derive the signer for the associated channel.
+	pub channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	/// The necessary channel parameters that need to be provided to the re-derived signer through
 	/// [`ChannelSigner::provide_channel_parameters`].
 	pub transaction_parameters: ChannelTransactionParameters,
 }
 
-impl_writeable_tlv_based!(ChannelDerivationParameters, {
-	(0, value_satoshis, required),
-	(2, channel_keys_id, required),
-	(4, transaction_parameters, required),
-});
+impl Writeable for ChannelDerivationParameters {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		write_tlv_fields!(writer, {
+			(0, self.value_satoshis, required),
+			(1, self.channel_keys_derivation_params.channel_keys_derivation_version, option),
+			(2, self.channel_keys_derivation_params.channel_keys_id, required),
+			(4, self.transaction_parameters, required),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for ChannelDerivationParameters {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(0, value_satoshis, required),
+			(1, channel_keys_derivation_version, option),
+			(2, channel_keys_id, required),
+			(4, transaction_parameters, required),
+		});
+
+		let channel_keys_derivation_params = ChannelKeysDerivationParameters {
+			channel_keys_derivation_version,
+			channel_keys_id: channel_keys_id.0.unwrap(),
+		};
+
+		Ok(Self {
+			value_satoshis: value_satoshis.0.unwrap(),
+			channel_keys_derivation_params,
+			transaction_parameters: transaction_parameters.0.unwrap(),
+		})
+	}
+}
 
 /// A descriptor used to sign for a commitment transaction's HTLC output.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -717,7 +867,7 @@ impl HTLCDescriptor {
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
-			self.channel_derivation_parameters.channel_keys_id,
+			self.channel_derivation_parameters.channel_keys_derivation_params,
 		);
 		signer
 			.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
@@ -783,10 +933,12 @@ pub trait ChannelSigner {
 	/// Returns the holder's channel public keys and basepoints.
 	fn pubkeys(&self) -> &ChannelPublicKeys;
 
-	/// Returns an arbitrary identifier describing the set of keys which are provided back to you in
-	/// some [`SpendableOutputDescriptor`] types. This should be sufficient to identify this
-	/// [`EcdsaChannelSigner`] object uniquely and lookup or re-derive its keys.
-	fn channel_keys_id(&self) -> [u8; 32];
+	/// Returns parameters used for channel keys derivation.
+	///
+	/// These will be returned back to you in some [`SpendableOutputDescriptor`] types. They should
+	/// be sufficient to identify this [`EcdsaChannelSigner`] object uniquely and lookup or
+	/// re-derive its keys.
+	fn channel_keys_derivation_params(&self) -> ChannelKeysDerivationParameters;
 
 	/// Set the counterparty static channel data, including basepoints,
 	/// `counterparty_selected`/`holder_selected_contest_delay` and funding outpoint.
@@ -959,24 +1111,25 @@ pub trait SignerProvider {
 	/// A type which implements [`TaprootChannelSigner`]
 	type TaprootSigner: TaprootChannelSigner;
 
-	/// Generates a unique `channel_keys_id` that can be used to obtain a [`Self::EcdsaSigner`] through
-	/// [`SignerProvider::derive_channel_signer`]. The `user_channel_id` is provided to allow
-	/// implementations of [`SignerProvider`] to maintain a mapping between itself and the generated
-	/// `channel_keys_id`.
+	/// Generates a unique set of [`ChannelKeysDerivationParameters`] that can be used to obtain a
+	/// [`Self::EcdsaSigner`] through [`SignerProvider::derive_channel_signer`]. The
+	/// `user_channel_id` is provided to allow implementations of [`SignerProvider`] to maintain a
+	/// mapping between itself and the generated set of parameters.
 	///
 	/// This method must return a different value each time it is called.
-	fn generate_channel_keys_id(
+	fn generate_channel_keys_derivation_params(
 		&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128,
-	) -> [u8; 32];
+	) -> ChannelKeysDerivationParameters;
 
 	/// Derives the private key material backing a `Signer`.
 	///
-	/// To derive a new `Signer`, a fresh `channel_keys_id` should be obtained through
-	/// [`SignerProvider::generate_channel_keys_id`]. Otherwise, an existing `Signer` can be
-	/// re-derived from its `channel_keys_id`, which can be obtained through its trait method
-	/// [`ChannelSigner::channel_keys_id`].
+	/// To derive a new `Signer`, a fresh `channel_keys_derivation_params` should be obtained
+	/// through [`SignerProvider::generate_channel_keys_derivation_params`]. Otherwise, an existing
+	/// `Signer` can be re-derived from its `channel_keys_derivation_params`, which can be obtained
+	/// through its trait method [`ChannelSigner::channel_keys_derivation_params`].
 	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+		&self, channel_value_satoshis: u64,
+		channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	) -> Self::EcdsaSigner;
 
 	/// Reads a [`Signer`] for this [`SignerProvider`] from the given input stream.
@@ -999,9 +1152,11 @@ pub trait SignerProvider {
 	/// If this function returns an error, this will result in a channel failing to open.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
-	/// on-chain funds across channels as controlled to the same user. `channel_keys_id` may be
-	/// used to derive a unique value for each channel.
-	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()>;
+	/// on-chain funds across channels as controlled to the same user.
+	/// `channel_keys_derivation_params` may be used to derive a unique value for each channel.
+	fn get_destination_script(
+		&self, channel_keys_derivation_params: ChannelKeysDerivationParameters,
+	) -> Result<ScriptBuf, ()>;
 
 	/// Get a script pubkey which we will send funds to when closing a channel.
 	///
@@ -1023,6 +1178,18 @@ pub trait ChangeDestinationSource {
 	/// This method should return a different value each time it is called, to avoid linking
 	/// on-chain funds controlled to the same user.
 	fn get_change_destination_script(&self) -> Result<ScriptBuf, ()>;
+}
+
+/// The version of the channel key derivation scheme.
+pub(crate) const CHANNEL_KEYS_DERIVATION_VERSION: u8 = 1;
+
+/// Parameters used for channel keys derivation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ChannelKeysDerivationParameters {
+	/// The version of the channel keys derivation scheme.
+	pub channel_keys_derivation_version: Option<u8>,
+	/// Key derivation parameters.
+	pub channel_keys_id: [u8; 32],
 }
 
 /// A simple implementation of [`EcdsaChannelSigner`] that just keeps the private keys in memory.
@@ -1049,8 +1216,8 @@ pub struct InMemorySigner {
 	channel_parameters: Option<ChannelTransactionParameters>,
 	/// The total value of this channel.
 	channel_value_satoshis: u64,
-	/// Key derivation parameters.
-	channel_keys_id: [u8; 32],
+	/// Channel keys derivation parameters.
+	channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	/// A source of random bytes.
 	entropy_source: RandomBytes,
 }
@@ -1066,7 +1233,7 @@ impl PartialEq for InMemorySigner {
 			&& self.holder_channel_pubkeys == other.holder_channel_pubkeys
 			&& self.channel_parameters == other.channel_parameters
 			&& self.channel_value_satoshis == other.channel_value_satoshis
-			&& self.channel_keys_id == other.channel_keys_id
+			&& self.channel_keys_derivation_params == other.channel_keys_derivation_params
 	}
 }
 
@@ -1082,7 +1249,7 @@ impl Clone for InMemorySigner {
 			holder_channel_pubkeys: self.holder_channel_pubkeys.clone(),
 			channel_parameters: self.channel_parameters.clone(),
 			channel_value_satoshis: self.channel_value_satoshis,
-			channel_keys_id: self.channel_keys_id,
+			channel_keys_derivation_params: self.channel_keys_derivation_params,
 			entropy_source: RandomBytes::new(self.get_secure_random_bytes()),
 		}
 	}
@@ -1093,7 +1260,8 @@ impl InMemorySigner {
 	pub fn new<C: Signing>(
 		secp_ctx: &Secp256k1<C>, funding_key: SecretKey, revocation_base_key: SecretKey,
 		payment_key: SecretKey, delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey,
-		commitment_seed: [u8; 32], channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+		commitment_seed: [u8; 32], channel_value_satoshis: u64,
+		channel_keys_derivation_params: ChannelKeysDerivationParameters,
 		rand_bytes_unique_start: [u8; 32],
 	) -> InMemorySigner {
 		let holder_channel_pubkeys = InMemorySigner::make_holder_keys(
@@ -1114,7 +1282,7 @@ impl InMemorySigner {
 			channel_value_satoshis,
 			holder_channel_pubkeys,
 			channel_parameters: None,
-			channel_keys_id,
+			channel_keys_derivation_params,
 			entropy_source: RandomBytes::new(rand_bytes_unique_start),
 		}
 	}
@@ -1381,8 +1549,8 @@ impl ChannelSigner for InMemorySigner {
 		&self.holder_channel_pubkeys
 	}
 
-	fn channel_keys_id(&self) -> [u8; 32] {
-		self.channel_keys_id
+	fn channel_keys_derivation_params(&self) -> ChannelKeysDerivationParameters {
+		self.channel_keys_derivation_params
 	}
 
 	fn provide_channel_parameters(&mut self, channel_parameters: &ChannelTransactionParameters) {
@@ -1811,7 +1979,16 @@ where
 			&delayed_payment_base_key,
 			&htlc_base_key,
 		);
-		let keys_id = Readable::read(reader)?;
+
+		let channel_keys_derivation_params = {
+			// `channel_keys_derivation_params` used to be simply `channel_keys_id: [u8; 32]`
+			// before we introduced a versioned struct with LDK v0.1
+			let channel_keys_id: [u8; 32] = Readable::read(reader)?;
+			ChannelKeysDerivationParameters {
+				channel_keys_derivation_version: None,
+				channel_keys_id,
+			}
+		};
 
 		read_tlv_fields!(reader, {});
 
@@ -1825,7 +2002,7 @@ where
 			channel_value_satoshis,
 			holder_channel_pubkeys,
 			channel_parameters: counterparty_channel_data,
-			channel_keys_id: keys_id,
+			channel_keys_derivation_params,
 			entropy_source: RandomBytes::new(entropy_source.get_secure_random_bytes()),
 		})
 	}
@@ -1963,8 +2140,11 @@ impl KeysManager {
 
 	/// Derive an old [`EcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
 	pub fn derive_channel_keys(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+		&self, channel_value_satoshis: u64,
+		channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	) -> InMemorySigner {
+		let channel_keys_id = channel_keys_derivation_params.channel_keys_id;
+
 		let chan_id = u64::from_be_bytes(channel_keys_id[0..8].try_into().unwrap());
 		let mut unique_start = Sha256::engine();
 		unique_start.input(&channel_keys_id);
@@ -1983,29 +2163,58 @@ impl KeysManager {
 			.expect("Your RNG is busted");
 		unique_start.input(&child_privkey.private_key[..]);
 
-		let seed = Sha256::from_engine(unique_start).to_byte_array();
+		let unique_seed = Sha256::from_engine(unique_start).to_byte_array();
 
 		let commitment_seed = {
 			let mut sha = Sha256::engine();
-			sha.input(&seed);
+			sha.input(&unique_seed);
 			sha.input(&b"commitment seed"[..]);
 			Sha256::from_engine(sha).to_byte_array()
 		};
 		macro_rules! key_step {
 			($info: expr, $prev_key: expr) => {{
 				let mut sha = Sha256::engine();
-				sha.input(&seed);
+				sha.input(&unique_seed);
 				sha.input(&$prev_key[..]);
 				sha.input(&$info[..]);
 				SecretKey::from_slice(&Sha256::from_engine(sha).to_byte_array())
 					.expect("SHA-256 is busted")
 			}};
 		}
-		let funding_key = key_step!(b"funding key", commitment_seed);
-		let revocation_base_key = key_step!(b"revocation base key", funding_key);
-		let payment_key = key_step!(b"payment key", revocation_base_key);
-		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
-		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
+
+		let funding_key;
+		let revocation_base_key;
+		let payment_key;
+		let delayed_payment_base_key;
+		let htlc_base_key;
+		if channel_keys_derivation_params.channel_keys_derivation_version < Some(1) {
+			// In LDK versions prior to 0.1 we used to derive the `payment_key` uniquely on a
+			// per-channel basis, which disallowed users to re-derive them if they lost their
+			// `channel_keys_id`.
+			funding_key = key_step!(b"funding key", commitment_seed);
+			revocation_base_key = key_step!(b"revocation base key", funding_key);
+			payment_key = key_step!(b"payment key", revocation_base_key);
+			delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
+			htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
+		} else {
+			funding_key = key_step!(b"funding key", commitment_seed);
+			revocation_base_key = key_step!(b"revocation base key", funding_key);
+			delayed_payment_base_key = key_step!(b"delayed payment base key", revocation_base_key);
+			htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
+
+			// Starting with LDK v0.1, we derive `payment_key` directly from our seed, allowing
+			// users to re-derive it even when losing all channel state. This allows them to
+			// recover any non-HTLC-encumbered funds in case of data loss if the counterparty is so
+			// nice to force-closure for them.
+			payment_key = {
+				let mut sha = Sha256::engine();
+				sha.input(&self.seed);
+				sha.input(&b"static payment key"[..]);
+				SecretKey::from_slice(&Sha256::from_engine(sha).to_byte_array())
+					.expect("SHA-256 is busted")
+			};
+		};
+
 		let prng_seed = self.get_secure_random_bytes();
 
 		InMemorySigner::new(
@@ -2017,7 +2226,7 @@ impl KeysManager {
 			htlc_base_key,
 			commitment_seed,
 			channel_value_satoshis,
-			channel_keys_id,
+			channel_keys_derivation_params,
 			prng_seed,
 		)
 	}
@@ -2033,7 +2242,7 @@ impl KeysManager {
 	pub fn sign_spendable_outputs_psbt<C: Signing>(
 		&self, descriptors: &[&SpendableOutputDescriptor], mut psbt: Psbt, secp_ctx: &Secp256k1<C>,
 	) -> Result<Psbt, ()> {
-		let mut keys_cache: Option<(InMemorySigner, [u8; 32])> = None;
+		let mut keys_cache: Option<(InMemorySigner, ChannelKeysDerivationParameters)> = None;
 		for outp in descriptors {
 			let get_input_idx = |outpoint: &OutPoint| {
 				psbt.unsigned_tx
@@ -2046,18 +2255,19 @@ impl KeysManager {
 				SpendableOutputDescriptor::StaticPaymentOutput(descriptor) => {
 					let input_idx = get_input_idx(&descriptor.outpoint)?;
 					if keys_cache.is_none()
-						|| keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id
+						|| keys_cache.as_ref().unwrap().1
+							!= descriptor.channel_keys_derivation_params
 					{
 						let mut signer = self.derive_channel_keys(
 							descriptor.channel_value_satoshis,
-							descriptor.channel_keys_id,
+							descriptor.channel_keys_derivation_params,
 						);
 						if let Some(channel_params) =
 							descriptor.channel_transaction_parameters.as_ref()
 						{
 							signer.provide_channel_parameters(channel_params);
 						}
-						keys_cache = Some((signer, descriptor.channel_keys_id));
+						keys_cache = Some((signer, descriptor.channel_keys_derivation_params));
 					}
 					let witness = keys_cache.as_ref().unwrap().0.sign_counterparty_payment_input(
 						&psbt.unsigned_tx,
@@ -2070,14 +2280,15 @@ impl KeysManager {
 				SpendableOutputDescriptor::DelayedPaymentOutput(descriptor) => {
 					let input_idx = get_input_idx(&descriptor.outpoint)?;
 					if keys_cache.is_none()
-						|| keys_cache.as_ref().unwrap().1 != descriptor.channel_keys_id
+						|| keys_cache.as_ref().unwrap().1
+							!= descriptor.channel_keys_derivation_params
 					{
 						keys_cache = Some((
 							self.derive_channel_keys(
 								descriptor.channel_value_satoshis,
-								descriptor.channel_keys_id,
+								descriptor.channel_keys_derivation_params,
 							),
-							descriptor.channel_keys_id,
+							descriptor.channel_keys_derivation_params,
 						));
 					}
 					let witness = keys_cache.as_ref().unwrap().0.sign_dynamic_p2wsh_input(
@@ -2254,9 +2465,9 @@ impl SignerProvider for KeysManager {
 	#[cfg(taproot)]
 	type TaprootSigner = InMemorySigner;
 
-	fn generate_channel_keys_id(
+	fn generate_channel_keys_derivation_params(
 		&self, _inbound: bool, _channel_value_satoshis: u64, user_channel_id: u128,
-	) -> [u8; 32] {
+	) -> ChannelKeysDerivationParameters {
 		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
 		// `child_idx` is the only thing guaranteed to make each channel unique without a restart
 		// (though `user_channel_id` should help, depending on user behavior). If it manages to
@@ -2264,25 +2475,32 @@ impl SignerProvider for KeysManager {
 		// in loss of funds. Because we only support 32-bit+ systems, assert that our `AtomicUsize`
 		// doesn't reach `u32::MAX`.
 		assert!(child_idx < core::u32::MAX as usize, "2^32 channels opened without restart");
-		let mut id = [0; 32];
-		id[0..4].copy_from_slice(&(child_idx as u32).to_be_bytes());
-		id[4..8].copy_from_slice(&self.starting_time_nanos.to_be_bytes());
-		id[8..16].copy_from_slice(&self.starting_time_secs.to_be_bytes());
-		id[16..32].copy_from_slice(&user_channel_id.to_be_bytes());
-		id
+		let mut channel_keys_id = [0; 32];
+		channel_keys_id[0..4].copy_from_slice(&(child_idx as u32).to_be_bytes());
+		channel_keys_id[4..8].copy_from_slice(&self.starting_time_nanos.to_be_bytes());
+		channel_keys_id[8..16].copy_from_slice(&self.starting_time_secs.to_be_bytes());
+		channel_keys_id[16..32].copy_from_slice(&user_channel_id.to_be_bytes());
+
+		ChannelKeysDerivationParameters {
+			channel_keys_derivation_version: Some(CHANNEL_KEYS_DERIVATION_VERSION),
+			channel_keys_id,
+		}
 	}
 
 	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+		&self, channel_value_satoshis: u64,
+		channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	) -> Self::EcdsaSigner {
-		self.derive_channel_keys(channel_value_satoshis, channel_keys_id)
+		self.derive_channel_keys(channel_value_satoshis, channel_keys_derivation_params)
 	}
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
 		InMemorySigner::read(&mut io::Cursor::new(reader), self)
 	}
 
-	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+	fn get_destination_script(
+		&self, _channel_keys_derivation_params: ChannelKeysDerivationParameters,
+	) -> Result<ScriptBuf, ()> {
 		Ok(self.destination_script.clone())
 	}
 
@@ -2405,24 +2623,31 @@ impl SignerProvider for PhantomKeysManager {
 	#[cfg(taproot)]
 	type TaprootSigner = InMemorySigner;
 
-	fn generate_channel_keys_id(
+	fn generate_channel_keys_derivation_params(
 		&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128,
-	) -> [u8; 32] {
-		self.inner.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
+	) -> ChannelKeysDerivationParameters {
+		self.inner.generate_channel_keys_derivation_params(
+			inbound,
+			channel_value_satoshis,
+			user_channel_id,
+		)
 	}
 
 	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+		&self, channel_value_satoshis: u64,
+		channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	) -> Self::EcdsaSigner {
-		self.inner.derive_channel_signer(channel_value_satoshis, channel_keys_id)
+		self.inner.derive_channel_signer(channel_value_satoshis, channel_keys_derivation_params)
 	}
 
 	fn read_chan_signer(&self, reader: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> {
 		self.inner.read_chan_signer(reader)
 	}
 
-	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
-		self.inner.get_destination_script(channel_keys_id)
+	fn get_destination_script(
+		&self, channel_keys_derivation_params: ChannelKeysDerivationParameters,
+	) -> Result<ScriptBuf, ()> {
+		self.inner.get_destination_script(channel_keys_derivation_params)
 	}
 
 	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
@@ -2463,9 +2688,10 @@ impl PhantomKeysManager {
 
 	/// See [`KeysManager::derive_channel_keys`] for documentation on this method.
 	pub fn derive_channel_keys(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+		&self, channel_value_satoshis: u64,
+		channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	) -> InMemorySigner {
-		self.inner.derive_channel_keys(channel_value_satoshis, channel_keys_id)
+		self.inner.derive_channel_keys(channel_value_satoshis, channel_keys_derivation_params)
 	}
 
 	/// Gets the "node_id" secret key used to sign gossip announcements, decode onion data, etc.

@@ -48,7 +48,7 @@ use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, LowerBounde
 use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, LATENCY_GRACE_PERIOD_BLOCKS, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient};
+use crate::sign::{EntropySource, ChannelSigner, SignerProvider, NodeSigner, Recipient, ChannelKeysDerivationParameters};
 use crate::events::ClosureReason;
 use crate::routing::gossip::NodeId;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -1484,12 +1484,12 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// Some if we initiated to shut down the channel.
 	local_initiated_shutdown: Option<()>,
 
-	/// The unique identifier used to re-derive the private key material for the channel through
+	/// The parameters used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
 	#[cfg(not(test))]
-	channel_keys_id: [u8; 32],
+	channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	#[cfg(test)]
-	pub channel_keys_id: [u8; 32],
+	pub channel_keys_derivation_params: ChannelKeysDerivationParameters,
 
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
@@ -1590,7 +1590,7 @@ trait InitialRemoteCommitmentReceiver<SP: Deref> where SP::Target: SignerProvide
 		let funding_txo_script = funding_redeemscript.to_p2wsh();
 		let obscure_factor = get_commitment_transaction_number_obscure_factor(&context.get_holder_pubkeys().payment_basepoint, &context.get_counterparty_pubkeys().payment_basepoint, context.is_outbound());
 		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
-		let mut monitor_signer = signer_provider.derive_channel_signer(context.channel_value_satoshis, context.channel_keys_id);
+		let mut monitor_signer = signer_provider.derive_channel_signer(context.channel_value_satoshis, context.channel_keys_derivation_params);
 		monitor_signer.provide_channel_parameters(&context.channel_transaction_parameters);
 		let channel_monitor = ChannelMonitor::new(context.secp_ctx.clone(), monitor_signer,
 		                                          shutdown_script, context.get_holder_selected_contest_delay(),
@@ -1673,8 +1673,9 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 		let channel_value_satoshis = our_funding_satoshis.saturating_add(open_channel_fields.funding_satoshis);
 
-		let channel_keys_id = signer_provider.generate_channel_keys_id(true, channel_value_satoshis, user_id);
-		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let channel_keys_derivation_params = signer_provider.generate_channel_keys_derivation_params(true, channel_value_satoshis, user_id);
+
+		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_derivation_params);
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		if config.channel_handshake_config.our_to_self_delay < BREAKDOWN_TIMEOUT {
@@ -1817,7 +1818,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 		}
 
-		let destination_script = match signer_provider.get_destination_script(channel_keys_id) {
+		let destination_script = match signer_provider.get_destination_script(channel_keys_derivation_params) {
 			Ok(script) => script,
 			Err(_) => return Err(ChannelError::close("Failed to get destination script".to_owned())),
 		};
@@ -1973,7 +1974,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			historical_inbound_htlc_fulfills: new_hash_set(),
 
 			channel_type,
-			channel_keys_id,
+			channel_keys_derivation_params,
 
 			local_initiated_shutdown: None,
 
@@ -1999,7 +2000,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		outbound_scid_alias: u64,
 		temporary_channel_id: Option<ChannelId>,
 		holder_selected_channel_reserve_satoshis: u64,
-		channel_keys_id: [u8; 32],
+		channel_keys_derivation_params: ChannelKeysDerivationParameters,
 		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
 		pubkeys: ChannelPublicKeys,
 		_logger: L,
@@ -2062,7 +2063,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			}
 		}
 
-		let destination_script = match signer_provider.get_destination_script(channel_keys_id) {
+		let destination_script = match signer_provider.get_destination_script(channel_keys_derivation_params) {
 			Ok(script) => script,
 			Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get destination script".to_owned()}),
 		};
@@ -2206,7 +2207,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			historical_inbound_htlc_fulfills: new_hash_set(),
 
 			channel_type,
-			channel_keys_id,
+			channel_keys_derivation_params,
 
 			blocked_monitor_updates: Vec::new(),
 			local_initiated_shutdown: None,
@@ -7806,8 +7807,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				implemention limit dust_limit_satoshis {}", holder_selected_channel_reserve_satoshis) });
 		}
 
-		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
-		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let channel_keys_derivation_params = signer_provider.generate_channel_keys_derivation_params(false, channel_value_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_derivation_params);
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		let chan = Self {
@@ -7825,7 +7826,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 				outbound_scid_alias,
 				temporary_channel_id,
 				holder_selected_channel_reserve_satoshis,
-				channel_keys_id,
+				channel_keys_derivation_params,
 				holder_signer,
 				pubkeys,
 				logger,
@@ -8293,8 +8294,8 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
 	{
-		let channel_keys_id = signer_provider.generate_channel_keys_id(false, funding_satoshis, user_id);
-		let holder_signer = signer_provider.derive_channel_signer(funding_satoshis, channel_keys_id);
+		let channel_keys_derivation_params = signer_provider.generate_channel_keys_derivation_params(false, funding_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(funding_satoshis, channel_keys_derivation_params);
 		let pubkeys = holder_signer.pubkeys().clone();
 
 		let temporary_channel_id = Some(ChannelId::temporary_v2_from_revocation_basepoint(&pubkeys.revocation_basepoint));
@@ -8320,7 +8321,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				outbound_scid_alias,
 				temporary_channel_id,
 				holder_selected_channel_reserve_satoshis,
-				channel_keys_id,
+				channel_keys_derivation_params,
 				holder_signer,
 				pubkeys,
 				logger,
@@ -8969,6 +8970,9 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 		let cur_holder_commitment_point = Some(self.context.holder_commitment_point.current_point());
 		let next_holder_commitment_point = self.context.holder_commitment_point.next_point();
 
+		let channel_keys_derivation_version = self.context.channel_keys_derivation_params.channel_keys_derivation_version;
+		let channel_keys_id = self.context.channel_keys_derivation_params.channel_keys_id;
+
 		write_tlv_fields!(writer, {
 			(0, self.context.announcement_sigs, option),
 			// minimum_depth and counterparty_selected_channel_reserve_satoshis used to have a
@@ -8995,7 +8999,7 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(21, self.context.outbound_scid_alias, required),
 			(23, channel_ready_event_emitted, option),
 			(25, user_id_high_opt, option),
-			(27, self.context.channel_keys_id, required),
+			(27, channel_keys_id, required),
 			(28, holder_max_accepted_htlcs, option),
 			(29, self.context.temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
@@ -9009,7 +9013,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(47, next_holder_commitment_point, option),
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
-			(53, funding_tx_broadcast_safe_event_emitted, option) // Added in 0.0.124
+			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
+			(55, channel_keys_derivation_version, option) // Added in 0.1
 		});
 
 		Ok(())
@@ -9302,6 +9307,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id: Option<[u8; 32]> = None;
+		let mut channel_keys_derivation_version: Option<u8> = None;
 		let mut temporary_channel_id: Option<ChannelId> = None;
 		let mut holder_max_accepted_htlcs: Option<u16> = None;
 
@@ -9359,21 +9365,26 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
+			(55, channel_keys_derivation_version, option),
 		});
 
-		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
-			let mut holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let (channel_keys_derivation_params, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
+			let channel_keys_derivation_params = ChannelKeysDerivationParameters {
+				channel_keys_derivation_version,
+				channel_keys_id
+			};
+			let mut holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_derivation_params);
 			// If we've gotten to the funding stage of the channel, populate the signer with its
 			// required channel parameters.
 			if channel_state >= ChannelState::FundingNegotiated {
 				holder_signer.provide_channel_parameters(&channel_parameters);
 			}
-			(channel_keys_id, holder_signer)
+			(channel_keys_derivation_params, holder_signer)
 		} else {
 			// `keys_data` can be `None` if we had corrupted data.
 			let keys_data = keys_data.ok_or(DecodeError::InvalidValue)?;
 			let holder_signer = signer_provider.read_chan_signer(&keys_data)?;
-			(holder_signer.channel_keys_id(), holder_signer)
+			(holder_signer.channel_keys_derivation_params(), holder_signer)
 		};
 
 		if let Some(preimages) = preimages_opt {
@@ -9612,7 +9623,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				historical_inbound_htlc_fulfills,
 
 				channel_type: channel_type.unwrap(),
-				channel_keys_id,
+				channel_keys_derivation_params,
 
 				local_initiated_shutdown,
 
@@ -9648,7 +9659,7 @@ mod tests {
 	use crate::ln::chan_utils::{self, htlc_success_tx_weight, htlc_timeout_tx_weight};
 	use crate::chain::BestBlock;
 	use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator, ConfirmationTarget};
-	use crate::sign::{ChannelSigner, InMemorySigner, EntropySource, SignerProvider};
+	use crate::sign::{ChannelSigner, InMemorySigner, EntropySource, SignerProvider, ChannelKeysDerivationParameters};
 	use crate::chain::transaction::OutPoint;
 	use crate::routing::router::{Path, RouteHop};
 	use crate::util::config::UserConfig;
@@ -9707,17 +9718,23 @@ mod tests {
 		#[cfg(taproot)]
 		type TaprootSigner = InMemorySigner;
 
-		fn generate_channel_keys_id(&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128) -> [u8; 32] {
-			self.signer.channel_keys_id()
+		fn generate_channel_keys_derivation_params(&self, _inbound: bool,
+			_channel_value_satoshis: u64, _user_channel_id: u128
+		) -> ChannelKeysDerivationParameters {
+			self.signer.channel_keys_derivation_params()
 		}
 
-		fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner {
+		fn derive_channel_signer(&self, _channel_value_satoshis: u64,
+			_channel_keys_derivation_params: ChannelKeysDerivationParameters
+		) -> Self::EcdsaSigner {
 			self.signer.clone()
 		}
 
 		fn read_chan_signer(&self, _data: &[u8]) -> Result<Self::EcdsaSigner, DecodeError> { panic!(); }
 
-		fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+		fn get_destination_script(&self,
+			_channel_keys_derivation_params: ChannelKeysDerivationParameters
+		) -> Result<ScriptBuf, ()> {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_monitor_claim_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
 			let channel_monitor_claim_key_hash = WPubkeyHash::hash(&PublicKey::from_secret_key(&secp_ctx, &channel_monitor_claim_key).serialize());

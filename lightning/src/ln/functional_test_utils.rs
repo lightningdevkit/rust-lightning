@@ -534,7 +534,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 			} else {
 				signer.disable_op(signer_op);
 			}
-			channel_keys_id = Some(chan.channel_keys_id);
+			channel_keys_id = Some(chan.channel_keys_derivation_params.channel_keys_id);
 		}
 
 		let monitor = self.chain_monitor.chain_monitor.list_monitors().into_iter()
@@ -542,7 +542,7 @@ impl<'a, 'b, 'c> Node<'a, 'b, 'c> {
 			.and_then(|(funding_txo, _)| self.chain_monitor.chain_monitor.get_monitor(funding_txo).ok());
 		if let Some(monitor) = monitor {
 			monitor.do_mut_signer_call(|signer| {
-				channel_keys_id = channel_keys_id.or(Some(signer.inner.channel_keys_id()));
+				channel_keys_id = channel_keys_id.or(Some(signer.inner.channel_keys_derivation_params().channel_keys_id));
 				if available {
 					signer.enable_op(signer_op);
 				} else {

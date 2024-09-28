@@ -23,7 +23,10 @@ use lightning::onion_message::messenger::{
 };
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::onion_message::packet::OnionMessageContents;
-use lightning::sign::{EntropySource, KeyMaterial, NodeSigner, Recipient, SignerProvider};
+use lightning::sign::{
+	ChannelKeysDerivationParameters, EntropySource, KeyMaterial, NodeSigner, Recipient,
+	SignerProvider,
+};
 use lightning::types::features::InitFeatures;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
@@ -258,14 +261,15 @@ impl SignerProvider for KeyProvider {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(
+	fn generate_channel_keys_derivation_params(
 		&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
-	) -> [u8; 32] {
+	) -> ChannelKeysDerivationParameters {
 		unreachable!()
 	}
 
 	fn derive_channel_signer(
-		&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32],
+		&self, _channel_value_satoshis: u64,
+		_channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	) -> Self::EcdsaSigner {
 		unreachable!()
 	}
@@ -274,7 +278,9 @@ impl SignerProvider for KeyProvider {
 		unreachable!()
 	}
 
-	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+	fn get_destination_script(
+		&self, _channel_keys_derivation_params: ChannelKeysDerivationParameters,
+	) -> Result<ScriptBuf, ()> {
 		unreachable!()
 	}
 

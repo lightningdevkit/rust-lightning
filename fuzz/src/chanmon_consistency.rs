@@ -61,7 +61,8 @@ use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::router::{InFlightHtlcs, Path, Route, RouteHop, RouteParameters, Router};
 use lightning::sign::{
-	EntropySource, InMemorySigner, KeyMaterial, NodeSigner, Recipient, SignerProvider,
+	ChannelKeysDerivationParameters, EntropySource, InMemorySigner, KeyMaterial, NodeSigner,
+	Recipient, SignerProvider,
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::UserConfig;
@@ -366,17 +367,23 @@ impl SignerProvider for KeyProvider {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(
+	fn generate_channel_keys_derivation_params(
 		&self, _inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
-	) -> [u8; 32] {
+	) -> ChannelKeysDerivationParameters {
 		let id = self.rand_bytes_id.fetch_add(1, atomic::Ordering::Relaxed) as u8;
-		[id; 32]
+		let channel_keys_id = [id; 32];
+		ChannelKeysDerivationParameters {
+			channel_keys_derivation_version: Some(1),
+			channel_keys_id,
+		}
 	}
 
 	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+		&self, channel_value_satoshis: u64,
+		channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	) -> Self::EcdsaSigner {
 		let secp_ctx = Secp256k1::signing_only();
+		let channel_keys_id = channel_keys_derivation_params.channel_keys_id;
 		let id = channel_keys_id[0];
 		#[rustfmt::skip]
 		let keys = InMemorySigner::new(
@@ -388,7 +395,7 @@ impl SignerProvider for KeyProvider {
 			SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, self.node_secret[31]]).unwrap(),
 			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_secret[31]],
 			channel_value_satoshis,
-			channel_keys_id,
+			channel_keys_derivation_params,
 			channel_keys_id,
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
@@ -404,7 +411,9 @@ impl SignerProvider for KeyProvider {
 		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
-	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+	fn get_destination_script(
+		&self, _channel_keys_derivation_params: ChannelKeysDerivationParameters,
+	) -> Result<ScriptBuf, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		#[rustfmt::skip]
 		let channel_monitor_claim_key = SecretKey::from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, self.node_secret[31]]).unwrap();

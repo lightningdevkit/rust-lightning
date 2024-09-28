@@ -49,12 +49,10 @@ impl TrackedSpendableOutput {
 	fn to_watched_output(&self, cur_hash: BlockHash) -> WatchedOutput {
 		let block_hash = self.status.first_broadcast_hash().or(Some(cur_hash));
 		match &self.descriptor {
-			SpendableOutputDescriptor::StaticOutput { outpoint, output, channel_keys_id: _ } => {
-				WatchedOutput {
-					block_hash,
-					outpoint: *outpoint,
-					script_pubkey: output.script_pubkey.clone(),
-				}
+			SpendableOutputDescriptor::StaticOutput { outpoint, output, .. } => WatchedOutput {
+				block_hash,
+				outpoint: *outpoint,
+				script_pubkey: output.script_pubkey.clone(),
 			},
 			SpendableOutputDescriptor::DelayedPaymentOutput(output) => WatchedOutput {
 				block_hash,
