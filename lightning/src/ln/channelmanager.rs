@@ -2888,6 +2888,13 @@ macro_rules! handle_error {
 	} };
 }
 
+/// When a channel is removed, two things need to happen:
+/// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
+/// (b) [`ChannelManager::finish_close_channel`] needs to be called without holding any locks
+///     (except [`ChannelManager::total_consistency_lock`].
+///
+/// Note that this step can be skipped if the channel was never opened (through the creation of a
+/// [`ChannelMonitor`]/channel funding transaction) to begin with.
 macro_rules! update_maps_on_chan_removal {
 	($self: expr, $peer_state: expr, $channel_context: expr) => {{
 		if let Some(outpoint) = $channel_context.get_funding_txo() {
@@ -3762,6 +3769,11 @@ where
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
+	/// When a channel is removed, two things need to happen:
+	/// (a) [`update_maps_on_chan_removal`] must be called in the same `per_peer_state` lock as
+	///     the channel-closing action,
+	/// (b) this needs to be called without holding any locks (except
+	///     [`ChannelManager::total_consistency_lock`].
 	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 		#[cfg(debug_assertions)]
@@ -9124,7 +9136,10 @@ where
 					_ => unblock_chan(chan, &mut peer_state.pending_msg_events),
 				};
 				if let Some(shutdown_result) = shutdown_result {
-					log_trace!(self.logger, "Removing channel after unblocking signer");
+					let context = &chan.context();
+					let logger = WithChannelContext::from(&self.logger, context, None);
+					log_trace!(logger, "Removing channel {} now that the signer is unblocked", context.channel_id());
+					update_maps_on_chan_removal!(self, peer_state, context);
 					shutdown_results.push(shutdown_result);
 					false
 				} else {
