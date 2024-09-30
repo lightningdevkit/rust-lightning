@@ -12024,6 +12024,7 @@ where
 			(11, self.probing_cookie_secret, required),
 			(13, htlc_onion_fields, optional_vec),
 			(14, decode_update_add_htlcs_opt, option),
+			(15, self.inbound_payment_id_secret, required),
 		});
 
 		Ok(())
