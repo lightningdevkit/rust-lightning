@@ -284,6 +284,9 @@ pub enum MessageContext {
 	///
 	/// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
 	AsyncPayments(AsyncPaymentsContext),
+	/// Represents a context for a blinded path used in a reply path when requesting a DNSSEC proof
+	/// in a `DNSResolverMessage`.
+	DNSResolver(DNSResolverContext),
 	/// Context specific to a [`CustomOnionMessageHandler::CustomMessage`].
 	///
 	/// [`CustomOnionMessageHandler::CustomMessage`]: crate::onion_message::messenger::CustomOnionMessageHandler::CustomMessage
@@ -402,6 +405,7 @@ impl_writeable_tlv_based_enum!(MessageContext,
 	{0, Offers} => (),
 	{1, Custom} => (),
 	{2, AsyncPayments} => (),
+	{3, DNSResolver} => (),
 );
 
 impl_writeable_tlv_based_enum!(OffersContext,
@@ -427,6 +431,22 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 		(4, hmac, required),
 	},
 );
+
+/// Contains a simple nonce for use in a blinded path's context.
+///
+/// Such a context is required when receiving a `DNSSECProof` message.
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct DNSResolverContext {
+	/// A nonce which uniquely describes a DNS resolution.
+	///
+	/// When we receive a DNSSEC proof message, we should check that it was sent over the blinded
+	/// path we included in the request by comparing a stored nonce with this one.
+	pub nonce: [u8; 16],
+}
+
+impl_writeable_tlv_based!(DNSResolverContext, {
+	(0, nonce, required),
+});
 
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
