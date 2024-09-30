@@ -125,6 +125,10 @@ pub enum PaymentPurpose {
 		/// The context of the payment such as information about the corresponding [`Offer`] and
 		/// [`InvoiceRequest`].
 		///
+		/// This includes the Human Readable Name which the sender indicated they were paying to,
+		/// for possible recipient disambiguation if you're using a single wildcard DNS entry to
+		/// resolve to many recipients.
+		///
 		/// [`Offer`]: crate::offers::offer::Offer
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		payment_context: Bolt12OfferContext,
