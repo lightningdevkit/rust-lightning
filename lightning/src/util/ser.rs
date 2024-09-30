@@ -1496,8 +1496,7 @@ impl Hostname {
 		s.len() <= 255 &&
 		s.chars().all(|c|
 			c.is_ascii_alphanumeric() ||
-			c == '.' ||
-			c == '-'
+			c == '.' || c == '_' || c == '-'
 		)
 	}
 }
