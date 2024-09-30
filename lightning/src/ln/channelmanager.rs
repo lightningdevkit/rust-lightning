@@ -1087,7 +1087,7 @@ pub(crate) struct PendingMPPClaim {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-/// When we're claiming a(n MPP) payment, we want to store information about thay payment in the
+/// When we're claiming a(n MPP) payment, we want to store information about that payment in the
 /// [`ChannelMonitor`] so that we can replay the claim without any information from the
 /// [`ChannelManager`] at all. This struct stores that information with enough to replay claims
 /// against all MPP parts as well as generate an [`Event::PaymentClaimed`].
@@ -12986,65 +12986,6 @@ where
 
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(args.fee_estimator);
 
-		for (_, monitor) in args.channel_monitors.iter() {
-			for (payment_hash, (payment_preimage, _)) in monitor.get_stored_preimages() {
-				if let Some(payment) = claimable_payments.remove(&payment_hash) {
-					log_info!(args.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", &payment_hash);
-					let mut claimable_amt_msat = 0;
-					let mut receiver_node_id = Some(our_network_pubkey);
-					let phantom_shared_secret = payment.htlcs[0].prev_hop.phantom_shared_secret;
-					if phantom_shared_secret.is_some() {
-						let phantom_pubkey = args.node_signer.get_node_id(Recipient::PhantomNode)
-							.expect("Failed to get node_id for phantom node recipient");
-						receiver_node_id = Some(phantom_pubkey)
-					}
-					for claimable_htlc in &payment.htlcs {
-						claimable_amt_msat += claimable_htlc.value;
-
-						// Add a holding-cell claim of the payment to the Channel, which should be
-						// applied ~immediately on peer reconnection. Because it won't generate a
-						// new commitment transaction we can just provide the payment preimage to
-						// the corresponding ChannelMonitor and nothing else.
-						//
-						// We do so directly instead of via the normal ChannelMonitor update
-						// procedure as the ChainMonitor hasn't yet been initialized, implying
-						// we're not allowed to call it directly yet. Further, we do the update
-						// without incrementing the ChannelMonitor update ID as there isn't any
-						// reason to.
-						// If we were to generate a new ChannelMonitor update ID here and then
-						// crash before the user finishes block connect we'd end up force-closing
-						// this channel as well. On the flip side, there's no harm in restarting
-						// without the new monitor persisted - we'll end up right back here on
-						// restart.
-						let previous_channel_id = claimable_htlc.prev_hop.channel_id;
-						if let Some(peer_node_id) = outpoint_to_peer.get(&claimable_htlc.prev_hop.outpoint) {
-							let peer_state_mutex = per_peer_state.get(peer_node_id).unwrap();
-							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-							let peer_state = &mut *peer_state_lock;
-							if let Some(ChannelPhase::Funded(channel)) = peer_state.channel_by_id.get_mut(&previous_channel_id) {
-								let logger = WithChannelContext::from(&args.logger, &channel.context, Some(payment_hash));
-								channel.claim_htlc_while_disconnected_dropping_mon_update(claimable_htlc.prev_hop.htlc_id, payment_preimage, &&logger);
-							}
-						}
-						if let Some(previous_hop_monitor) = args.channel_monitors.get(&claimable_htlc.prev_hop.outpoint) {
-							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &args.tx_broadcaster, &bounded_fee_estimator, &args.logger);
-						}
-					}
-					let payment_id = payment.inbound_payment_id(&inbound_payment_id_secret.unwrap());
-					pending_events_read.push_back((events::Event::PaymentClaimed {
-						receiver_node_id,
-						payment_hash,
-						purpose: payment.purpose,
-						amount_msat: claimable_amt_msat,
-						htlcs: payment.htlcs.iter().map(events::ClaimedHTLC::from).collect(),
-						sender_intended_total_msat: payment.htlcs.first().map(|htlc| htlc.total_msat),
-						onion_fields: payment.onion_fields,
-						payment_id: Some(payment_id),
-					}, None));
-				}
-			}
-		}
-
 		for (node_id, monitor_update_blocked_actions) in monitor_update_blocked_actions_per_peer.unwrap() {
 			if let Some(peer_state) = per_peer_state.get(&node_id) {
 				for (channel_id, actions) in monitor_update_blocked_actions.iter() {
@@ -13144,6 +13085,72 @@ where
 			logger: args.logger,
 			default_configuration: args.default_config,
 		};
+
+		for (_, monitor) in args.channel_monitors.iter() {
+			for (payment_hash, (payment_preimage, _)) in monitor.get_stored_preimages() {
+				let per_peer_state = channel_manager.per_peer_state.read().unwrap();
+				let mut claimable_payments = channel_manager.claimable_payments.lock().unwrap();
+				let payment = claimable_payments.claimable_payments.remove(&payment_hash);
+				mem::drop(claimable_payments);
+				if let Some(payment) = payment {
+					log_info!(channel_manager.logger, "Re-claiming HTLCs with payment hash {} as we've released the preimage to a ChannelMonitor!", &payment_hash);
+					let mut claimable_amt_msat = 0;
+					let mut receiver_node_id = Some(our_network_pubkey);
+					let phantom_shared_secret = payment.htlcs[0].prev_hop.phantom_shared_secret;
+					if phantom_shared_secret.is_some() {
+						let phantom_pubkey = channel_manager.node_signer.get_node_id(Recipient::PhantomNode)
+							.expect("Failed to get node_id for phantom node recipient");
+						receiver_node_id = Some(phantom_pubkey)
+					}
+					for claimable_htlc in &payment.htlcs {
+						claimable_amt_msat += claimable_htlc.value;
+
+						// Add a holding-cell claim of the payment to the Channel, which should be
+						// applied ~immediately on peer reconnection. Because it won't generate a
+						// new commitment transaction we can just provide the payment preimage to
+						// the corresponding ChannelMonitor and nothing else.
+						//
+						// We do so directly instead of via the normal ChannelMonitor update
+						// procedure as the ChainMonitor hasn't yet been initialized, implying
+						// we're not allowed to call it directly yet. Further, we do the update
+						// without incrementing the ChannelMonitor update ID as there isn't any
+						// reason to.
+						// If we were to generate a new ChannelMonitor update ID here and then
+						// crash before the user finishes block connect we'd end up force-closing
+						// this channel as well. On the flip side, there's no harm in restarting
+						// without the new monitor persisted - we'll end up right back here on
+						// restart.
+						let previous_channel_id = claimable_htlc.prev_hop.channel_id;
+						let peer_node_id_opt = channel_manager.outpoint_to_peer.lock().unwrap()
+							.get(&claimable_htlc.prev_hop.outpoint).cloned();
+						if let Some(peer_node_id) = peer_node_id_opt {
+							let peer_state_mutex = per_peer_state.get(&peer_node_id).unwrap();
+							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+							let peer_state = &mut *peer_state_lock;
+							if let Some(ChannelPhase::Funded(channel)) = peer_state.channel_by_id.get_mut(&previous_channel_id) {
+								let logger = WithChannelContext::from(&channel_manager.logger, &channel.context, Some(payment_hash));
+								channel.claim_htlc_while_disconnected_dropping_mon_update(claimable_htlc.prev_hop.htlc_id, payment_preimage, &&logger);
+							}
+						}
+						if let Some(previous_hop_monitor) = args.channel_monitors.get(&claimable_htlc.prev_hop.outpoint) {
+							previous_hop_monitor.provide_payment_preimage(&payment_hash, &payment_preimage, &channel_manager.tx_broadcaster, &channel_manager.fee_estimator, &channel_manager.logger);
+						}
+					}
+					let mut pending_events = channel_manager.pending_events.lock().unwrap();
+					let payment_id = payment.inbound_payment_id(&inbound_payment_id_secret.unwrap());
+					pending_events.push_back((events::Event::PaymentClaimed {
+						receiver_node_id,
+						payment_hash,
+						purpose: payment.purpose,
+						amount_msat: claimable_amt_msat,
+						htlcs: payment.htlcs.iter().map(events::ClaimedHTLC::from).collect(),
+						sender_intended_total_msat: payment.htlcs.first().map(|htlc| htlc.total_msat),
+						onion_fields: payment.onion_fields,
+						payment_id: Some(payment_id),
+					}, None));
+				}
+			}
+		}
 
 		for htlc_source in failed_htlcs.drain(..) {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
