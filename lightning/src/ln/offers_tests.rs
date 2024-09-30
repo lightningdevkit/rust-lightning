@@ -1101,6 +1101,7 @@ fn creates_and_pays_for_offer_with_retry() {
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
 	let _lost_onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	assert!(bob.onion_messenger.next_onion_message_for_peer(alice_id).is_none());
 
 	// Simulate a scenario where the original onion_message is lost before reaching Alice.
 	// Use handle_message_received to regenerate the message.
