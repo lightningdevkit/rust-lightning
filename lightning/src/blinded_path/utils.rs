@@ -228,3 +228,33 @@ impl Writeable for BlindedPathPadding {
 		Ok(())
 	}
 }
+
+/// Padding storage requires two extra bytes:
+/// - One byte for the type.
+/// - One byte for the padding length.
+/// This constant accounts for that overhead.
+const TLV_OVERHEAD: usize = 2;
+
+/// A generic struct that applies padding to blinded path TLVs, rounding their size off to `round_off`
+pub(crate) struct BlindedPathWithPadding<T: Writeable> {
+	pub(crate) tlvs: T,
+	pub(crate) round_off: usize,
+}
+
+impl<T: Writeable> Writeable for BlindedPathWithPadding<T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let tlv_length = self.tlvs.serialized_length();
+		let total_length = tlv_length + TLV_OVERHEAD;
+
+		let padding_length =
+			(total_length + self.round_off - 1) / self.round_off * self.round_off - total_length;
+
+		let padding = Some(BlindedPathPadding::new(padding_length));
+
+		encode_tlv_stream!(writer, {
+			(1, padding, option),
+		});
+
+		self.tlvs.write(writer)
+	}
+}
