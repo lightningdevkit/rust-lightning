@@ -878,26 +878,38 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	// Now restart nodes[3].
 	reload_node!(nodes[3], original_manager, &[&updated_monitor.0, &original_monitor.0], persister, new_chain_monitor, nodes_3_deserialized);
 
-	// On startup the preimage should have been copied into the non-persisted monitor:
+	// Until the startup background events are processed (in `get_and_clear_pending_events`,
+	// below), the preimage is not copied to the non-persisted monitor...
 	assert!(get_monitor!(nodes[3], chan_id_persisted).get_stored_preimages().contains_key(&payment_hash));
-	assert!(get_monitor!(nodes[3], chan_id_not_persisted).get_stored_preimages().contains_key(&payment_hash));
+	assert_eq!(
+		get_monitor!(nodes[3], chan_id_not_persisted).get_stored_preimages().contains_key(&payment_hash),
+		persist_both_monitors,
+	);
 
 	nodes[1].node.peer_disconnected(nodes[3].node.get_our_node_id());
 	nodes[2].node.peer_disconnected(nodes[3].node.get_our_node_id());
 
 	// During deserialization, we should have closed one channel and broadcast its latest
 	// commitment transaction. We should also still have the original PaymentClaimable event we
-	// never finished processing.
+	// never finished processing as well as a PaymentClaimed event regenerated when we replayed the
+	// preimage onto the non-persisted monitor.
 	let events = nodes[3].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), if persist_both_monitors { 4 } else { 3 });
 	if let Event::PaymentClaimable { amount_msat: 15_000_000, .. } = events[0] { } else { panic!(); }
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[1] { } else { panic!(); }
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }
-		check_added_monitors(&nodes[3], 2);
+		if let Event::PaymentClaimed { amount_msat: 15_000_000, .. } = events[3] { } else { panic!(); }
+		check_added_monitors(&nodes[3], 6);
 	} else {
-		check_added_monitors(&nodes[3], 1);
+		if let Event::PaymentClaimed { amount_msat: 15_000_000, .. } = events[2] { } else { panic!(); }
+		check_added_monitors(&nodes[3], 3);
 	}
+
+	// Now that we've processed background events, the preimage should have been copied into the
+	// non-persisted monitor:
+	assert!(get_monitor!(nodes[3], chan_id_persisted).get_stored_preimages().contains_key(&payment_hash));
+	assert!(get_monitor!(nodes[3], chan_id_not_persisted).get_stored_preimages().contains_key(&payment_hash));
 
 	// On restart, we should also get a duplicate PaymentClaimed event as we persisted the
 	// ChannelManager prior to handling the original one.
@@ -948,6 +960,11 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 		nodes[0].node.handle_update_fulfill_htlc(nodes[2].node.get_our_node_id(), &cs_updates.update_fulfill_htlcs[0]);
 		commitment_signed_dance!(nodes[0], nodes[2], cs_updates.commitment_signed, false, true);
 		expect_payment_sent!(nodes[0], payment_preimage);
+
+		// Ensure that the remaining channel is fully operation and not blocked (and that after a
+		// cycle of commitment updates the payment preimage is ultimately pruned).
+		send_payment(&nodes[0], &[&nodes[2], &nodes[3]], 100_000);
+		assert!(!get_monitor!(nodes[3], chan_id_not_persisted).get_stored_preimages().contains_key(&payment_hash));
 	}
 }
 

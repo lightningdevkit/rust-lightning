@@ -1290,7 +1290,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// further `send_update_fee` calls, dropping the previous holding cell update entirely.
 	holding_cell_update_fee: Option<u32>,
 	next_holder_htlc_id: u64,
-	next_counterparty_htlc_id: u64,
+	pub(super) next_counterparty_htlc_id: u64,
 	feerate_per_kw: u32,
 
 	/// The timestamp set on our latest `channel_update` message for this channel. It is updated
