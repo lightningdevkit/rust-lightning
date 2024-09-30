@@ -285,7 +285,9 @@ pub enum MessageContext {
 	/// [`AsyncPaymentsMessage`]: crate::onion_message::async_payments::AsyncPaymentsMessage
 	AsyncPayments(AsyncPaymentsContext),
 	/// Represents a context for a blinded path used in a reply path when requesting a DNSSEC proof
-	/// in a `DNSResolverMessage`.
+	/// in a [`DNSResolverMessage`].
+	///
+	/// [`DNSResolverMessage`]: crate::onion_message::dns_resolution::DNSResolverMessage
 	DNSResolver(DNSResolverContext),
 	/// Context specific to a [`CustomOnionMessageHandler::CustomMessage`].
 	///
@@ -434,7 +436,9 @@ impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
 
 /// Contains a simple nonce for use in a blinded path's context.
 ///
-/// Such a context is required when receiving a `DNSSECProof` message.
+/// Such a context is required when receiving a [`DNSSECProof`] message.
+///
+/// [`DNSSECProof`]: crate::onion_message::dns_resolution::DNSSECProof
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct DNSResolverContext {
 	/// A nonce which uniquely describes a DNS resolution.

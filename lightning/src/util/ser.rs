@@ -37,6 +37,9 @@ use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash};
+
+use dnssec_prover::rr::Name;
+
 use core::time::Duration;
 use crate::chain::ClaimId;
 use crate::ln::msgs::DecodeError;
@@ -1548,6 +1551,13 @@ impl Readable for Hostname {
 		vec.resize(len.into(), 0);
 		r.read_exact(&mut vec)?;
 		Hostname::try_from(vec).map_err(|_| DecodeError::InvalidValue)
+	}
+}
+
+impl TryInto<Name> for Hostname {
+	type Error = ();
+	fn try_into(self) -> Result<Name, ()> {
+		Name::try_from(self.0)
 	}
 }
 
