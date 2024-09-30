@@ -564,6 +564,7 @@ fn creates_and_pays_for_offer_using_two_hop_blinded_path() {
 			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
+			human_readable_name: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
@@ -724,6 +725,7 @@ fn creates_and_pays_for_offer_using_one_hop_blinded_path() {
 			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
+			human_readable_name: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
@@ -844,6 +846,7 @@ fn pays_for_offer_without_blinded_paths() {
 			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
+			human_readable_name: None,
 		},
 	});
 
@@ -1111,6 +1114,7 @@ fn creates_and_pays_for_offer_with_retry() {
 			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
+			human_readable_name: None,
 		},
 	});
 	assert_eq!(invoice_request.amount_msats(), None);
@@ -1175,6 +1179,7 @@ fn pays_bolt12_invoice_asynchronously() {
 			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
+			human_readable_name: None,
 		},
 	});
 
@@ -1264,6 +1269,7 @@ fn creates_offer_with_blinded_path_using_unannounced_introduction_node() {
 			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 			quantity: None,
 			payer_note_truncated: None,
+			human_readable_name: None,
 		},
 	});
 	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);

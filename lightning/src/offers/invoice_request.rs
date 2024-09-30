@@ -1030,6 +1030,7 @@ impl VerifiedInvoiceRequest {
 			quantity: *quantity,
 			payer_note_truncated: payer_note.clone()
 				.map(|mut s| { s.truncate(PAYER_NOTE_LIMIT); UntrustedString(s) }),
+			human_readable_name: self.offer_from_hrn().clone(),
 		}
 	}
 }
@@ -1350,6 +1351,9 @@ pub struct InvoiceRequestFields {
 	/// A payer-provided note which will be seen by the recipient and reflected back in the invoice
 	/// response. Truncated to [`PAYER_NOTE_LIMIT`] characters.
 	pub payer_note_truncated: Option<UntrustedString>,
+
+	/// The Human Readable Name which the sender indicated they were paying to.
+	pub human_readable_name: Option<HumanReadableName>,
 }
 
 /// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
@@ -1359,6 +1363,7 @@ impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.payer_signing_pubkey, required),
+			(1, self.human_readable_name, option),
 			(2, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
 			(4, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
 		});
@@ -1370,6 +1375,7 @@ impl Readable for InvoiceRequestFields {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payer_signing_pubkey, required),
+			(1, human_readable_name, option),
 			(2, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, payer_note_truncated, (option, encoding: (String, WithoutLength))),
 		});
@@ -1378,6 +1384,7 @@ impl Readable for InvoiceRequestFields {
 			payer_signing_pubkey: payer_signing_pubkey.0.unwrap(),
 			quantity,
 			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
+			human_readable_name,
 		})
 	}
 }
@@ -2733,6 +2740,7 @@ mod tests {
 						payer_signing_pubkey: payer_pubkey(),
 						quantity: Some(1),
 						payer_note_truncated: Some(UntrustedString("0".repeat(PAYER_NOTE_LIMIT))),
+						human_readable_name: None,
 					}
 				);
 

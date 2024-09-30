@@ -89,6 +89,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 			payer_note_truncated: invoice_request
 				.payer_note()
 				.map(|s| UntrustedString(s.to_string())),
+			human_readable_name: None,
 		},
 	});
 	let payee_tlvs = ReceiveTlvs {
