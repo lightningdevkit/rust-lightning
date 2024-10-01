@@ -327,7 +327,7 @@ pub struct ChannelHandshakeLimits {
 	///
 	/// Default value: `2016`, which we also enforce as a maximum value so you can tweak config to
 	/// reduce the loss of having useless locked funds (if your peer accepts)
-	pub their_to_self_delay: u16
+	pub their_to_self_delay: u16,
 }
 
 impl Default for ChannelHandshakeLimits {
@@ -582,7 +582,9 @@ pub struct ChannelConfig {
 impl ChannelConfig {
 	/// Applies the given [`ChannelConfigUpdate`] as a partial update to the [`ChannelConfig`].
 	pub fn apply(&mut self, update: &ChannelConfigUpdate) {
-		if let Some(forwarding_fee_proportional_millionths) = update.forwarding_fee_proportional_millionths {
+		if let Some(forwarding_fee_proportional_millionths) =
+			update.forwarding_fee_proportional_millionths
+		{
 			self.forwarding_fee_proportional_millionths = forwarding_fee_proportional_millionths;
 		}
 		if let Some(forwarding_fee_base_msat) = update.forwarding_fee_base_msat {
@@ -594,7 +596,9 @@ impl ChannelConfig {
 		if let Some(max_dust_htlc_exposure_msat) = update.max_dust_htlc_exposure_msat {
 			self.max_dust_htlc_exposure = max_dust_htlc_exposure_msat;
 		}
-		if let Some(force_close_avoidance_max_fee_satoshis) = update.force_close_avoidance_max_fee_satoshis {
+		if let Some(force_close_avoidance_max_fee_satoshis) =
+			update.force_close_avoidance_max_fee_satoshis
+		{
 			self.force_close_avoidance_max_fee_satoshis = force_close_avoidance_max_fee_satoshis;
 		}
 	}
@@ -683,11 +687,15 @@ pub struct ChannelConfigUpdate {
 impl From<ChannelConfig> for ChannelConfigUpdate {
 	fn from(config: ChannelConfig) -> ChannelConfigUpdate {
 		ChannelConfigUpdate {
-			forwarding_fee_proportional_millionths: Some(config.forwarding_fee_proportional_millionths),
+			forwarding_fee_proportional_millionths: Some(
+				config.forwarding_fee_proportional_millionths,
+			),
 			forwarding_fee_base_msat: Some(config.forwarding_fee_base_msat),
 			cltv_expiry_delta: Some(config.cltv_expiry_delta),
 			max_dust_htlc_exposure_msat: Some(config.max_dust_htlc_exposure),
-			force_close_avoidance_max_fee_satoshis: Some(config.force_close_avoidance_max_fee_satoshis),
+			force_close_avoidance_max_fee_satoshis: Some(
+				config.force_close_avoidance_max_fee_satoshis,
+			),
 		}
 	}
 }
@@ -760,8 +768,9 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 		});
 		let max_dust_htlc_exposure_msat_fixed_limit =
 			max_dust_htlc_exposure_msat_fixed_limit.unwrap_or(5_000_000);
-		let max_dust_htlc_exposure_msat = max_dust_htlc_exposure_enum
-			.unwrap_or(MaxDustHTLCExposure::FixedLimitMsat(max_dust_htlc_exposure_msat_fixed_limit));
+		let max_dust_htlc_exposure_msat = max_dust_htlc_exposure_enum.unwrap_or(
+			MaxDustHTLCExposure::FixedLimitMsat(max_dust_htlc_exposure_msat_fixed_limit),
+		);
 		Ok(Self {
 			options: ChannelConfig {
 				forwarding_fee_proportional_millionths,
