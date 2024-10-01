@@ -1054,9 +1054,9 @@ pub enum Event {
 		/// If this is `Some`, then the corresponding channel should be avoided when the payment is
 		/// retried. May be `None` for older [`Event`] serializations.
 		short_channel_id: Option<u64>,
-#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		error_code: Option<u16>,
-#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		error_data: Option<Vec<u8>>,
 	},
 	/// Indicates that a probe payment we sent returned successful, i.e., only failed at the destination.
@@ -1569,15 +1569,15 @@ impl Writeable for Event {
 			&Event::PaymentPathFailed {
 				ref payment_id, ref payment_hash, ref payment_failed_permanently, ref failure,
 				ref path, ref short_channel_id,
-				#[cfg(test)]
+				#[cfg(any(test, feature = "_test_utils"))]
 				ref error_code,
-				#[cfg(test)]
+				#[cfg(any(test, feature = "_test_utils"))]
 				ref error_data,
 			} => {
 				3u8.write(writer)?;
-				#[cfg(test)]
+				#[cfg(any(test, feature = "_test_utils"))]
 				error_code.write(writer)?;
-				#[cfg(test)]
+				#[cfg(any(test, feature = "_test_utils"))]
 				error_data.write(writer)?;
 				write_tlv_fields!(writer, {
 					(0, payment_hash, required),
@@ -1920,9 +1920,9 @@ impl MaybeReadable for Event {
 			},
 			3u8 => {
 				let mut f = || {
-					#[cfg(test)]
+					#[cfg(any(test, feature = "_test_utils"))]
 					let error_code = Readable::read(reader)?;
-					#[cfg(test)]
+					#[cfg(any(test, feature = "_test_utils"))]
 					let error_data = Readable::read(reader)?;
 					let mut payment_hash = PaymentHash([0; 32]);
 					let mut payment_failed_permanently = false;
@@ -1952,9 +1952,9 @@ impl MaybeReadable for Event {
 						failure,
 						path: Path { hops: path.unwrap(), blinded_tail },
 						short_channel_id,
-						#[cfg(test)]
+						#[cfg(any(test, feature = "_test_utils"))]
 						error_code,
-						#[cfg(test)]
+						#[cfg(any(test, feature = "_test_utils"))]
 						error_data,
 					}))
 				};
@@ -2364,7 +2364,7 @@ impl MaybeReadable for Event {
 /// broadcast to most peers).
 /// These events are handled by PeerManager::process_events if you are using a PeerManager.
 #[derive(Clone, Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[cfg_attr(any(test, feature = "_test_utils"), derive(PartialEq))]
 pub enum MessageSendEvent {
 	/// Used to indicate that we've accepted a channel open and should send the accept_channel
 	/// message provided to the given peer.

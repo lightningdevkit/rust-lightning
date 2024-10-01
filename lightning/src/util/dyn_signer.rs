@@ -425,7 +425,6 @@ impl NodeSigner for DynPhantomKeysInterface {
 			fn sign_bolt12_invoice(
 				&self, invoice: &crate::offers::invoice::UnsignedBolt12Invoice
 			) -> Result<secp256k1::schnorr::Signature, ()>;
-
 			fn get_inbound_payment_key(&self) -> ExpandedKey;
 		}
 	}

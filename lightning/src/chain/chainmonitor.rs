@@ -469,7 +469,7 @@ where C::Target: chain::Filter,
 	}
 
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn remove_monitor(&self, channel_id: &ChannelId) -> ChannelMonitor<ChannelSigner> {
 		self.monitors.write().unwrap().remove(channel_id).unwrap().monitor
 	}

@@ -505,7 +505,8 @@ pub enum RetryableSendFailure {
 /// as the Err() type describing which state the payment is in, see the description of individual
 /// enum states for more.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PaymentSendFailure {
+// FIXME
+pub enum PaymentSendFailure {
 	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
 	/// send the payment at all.
 	///
@@ -1543,9 +1544,9 @@ impl OutboundPayments {
 					failure: events::PathFailure::InitialSend { err: e },
 					path,
 					short_channel_id: failed_scid,
-					#[cfg(test)]
+					#[cfg(any(test, feature = "_test_utils"))]
 					error_code: None,
-					#[cfg(test)]
+					#[cfg(any(test, feature = "_test_utils"))]
 					error_data: None,
 				}, None));
 			}
@@ -1640,7 +1641,7 @@ impl OutboundPayments {
 		}
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_externalize_tests"))]
 	pub(super) fn test_add_new_pending_payment<ES: Deref>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		route: &Route, retry_strategy: Option<Retry>, entropy_source: &ES, best_block_height: u32
@@ -1898,7 +1899,7 @@ impl OutboundPayments {
 		}
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_externalize_tests"))]
 	pub(super) fn test_send_payment_internal<NS: Deref, F>(
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, payment_id: PaymentId, recv_value_msat: Option<u64>,
@@ -2096,12 +2097,12 @@ impl OutboundPayments {
 		probing_cookie_secret: [u8; 32], secp_ctx: &Secp256k1<secp256k1::All>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>, logger: &L,
 	) -> bool where L::Target: Logger {
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		let DecodedOnionFailure {
 			network_update, short_channel_id, payment_failed_permanently, onion_error_code,
 			onion_error_data, failed_within_blinded_path
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
-		#[cfg(not(test))]
+		#[cfg(not(any(test, feature = "_test_utils")))]
 		let DecodedOnionFailure {
 			network_update, short_channel_id, payment_failed_permanently, failed_within_blinded_path
 		} = onion_error.decode_onion_failure(secp_ctx, logger, &source);
@@ -2209,9 +2210,9 @@ impl OutboundPayments {
 					failure: events::PathFailure::OnPath { network_update },
 					path: path.clone(),
 					short_channel_id,
-					#[cfg(test)]
+					#[cfg(any(test, feature = "_test_utils"))]
 					error_code: onion_error_code,
-					#[cfg(test)]
+					#[cfg(any(test, feature = "_test_utils"))]
 					error_data: onion_error_data
 				}
 			}
