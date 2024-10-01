@@ -9,10 +9,10 @@
 
 //! Structs and impls for receiving messages about the network and storing the topology live here.
 
-pub mod utxo;
 pub mod gossip;
+mod log_approx;
 pub mod router;
 pub mod scoring;
-mod log_approx;
 #[cfg(test)]
 pub(crate) mod test_utils;
+pub mod utxo;
