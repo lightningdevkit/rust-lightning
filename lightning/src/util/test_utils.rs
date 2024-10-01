@@ -13,17 +13,18 @@ use crate::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use crate::chain;
 use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor::{ChainMonitor, Persist};
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
 };
 use crate::chain::transaction::OutPoint;
+use crate::sign::ChannelSignerExt;
 use crate::chain::WatchedOutput;
 use crate::events;
 use crate::events::bump_transaction::{Utxo, WalletSource};
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
@@ -50,9 +51,12 @@ use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::util::config::UserConfig;
 use crate::util::logger::{Logger, Record};
+#[cfg(feature = "std")]
+use crate::util::mut_global::MutGlobal;
 use crate::util::persist::{KVStore, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
+use crate::util::dyn_signer::{DynPhantomKeysInterface, DynSigner, DynKeysInterfaceTrait};
 
 use bitcoin::amount::Amount;
 use bitcoin::block::Block;
@@ -518,14 +522,14 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 struct JusticeTxData {
 	justice_tx: Transaction,
 	value: Amount,
 	commitment_number: u64,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 pub(crate) struct WatchtowerPersister {
 	persister: TestPersister,
 	/// Upon a new commitment_signed, we'll get a
@@ -539,9 +543,8 @@ pub(crate) struct WatchtowerPersister {
 	destination_script: ScriptBuf,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 impl WatchtowerPersister {
-	#[cfg(test)]
 	pub(crate) fn new(destination_script: ScriptBuf) -> Self {
 		let unsigned_justice_tx_data = Mutex::new(new_hash_map());
 		let watchtower_state = Mutex::new(new_hash_map());
@@ -553,7 +556,6 @@ impl WatchtowerPersister {
 		}
 	}
 
-	#[cfg(test)]
 	pub(crate) fn justice_tx(
 		&self, channel_id: ChannelId, commitment_txid: &Txid,
 	) -> Option<Transaction> {
@@ -584,7 +586,7 @@ impl WatchtowerPersister {
 	}
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, data: &ChannelMonitor<Signer>,
@@ -1554,7 +1556,7 @@ impl SignerProvider for TestKeysInterface {
 		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
 	) -> TestChannelSigner {
 		let keys = self.backing.derive_channel_signer(channel_value_satoshis, channel_keys_id);
-		let state = self.make_enforcement_state_cell(keys.commitment_seed);
+		let state = self.make_enforcement_state_cell(keys.commitment_seed());
 		let signer =
 			TestChannelSigner::new_with_revoked(keys, state, self.disable_revocation_policy_check);
 		#[cfg(test)]
@@ -1591,6 +1593,26 @@ impl SignerProvider for TestKeysInterface {
 				Some(expectation) => Ok(expectation.returns),
 			},
 		}
+	}
+}
+
+#[cfg(feature = "std")]
+pub static SIGNER_FACTORY: MutGlobal<Arc<dyn TestSignerFactory>> = MutGlobal::new(|| { Arc::new(DefaultSignerFactory()) });
+
+pub trait TestSignerFactory: Send + Sync {
+	/// Make a dynamic signer
+	fn make_signer(&self, seed: &[u8; 32], now: Duration) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner=DynSigner>>;
+}
+
+#[derive(Clone)]
+struct DefaultSignerFactory();
+
+impl TestSignerFactory for DefaultSignerFactory {
+	fn make_signer(&self, seed: &[u8; 32], now: Duration) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner=DynSigner>> {
+		let phantom = sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed);
+		let dphantom = DynPhantomKeysInterface::new(phantom);
+		let backing = Box::new(dphantom) as Box<dyn DynKeysInterfaceTrait<EcdsaSigner=DynSigner>>;
+		backing
 	}
 }
 

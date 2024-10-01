@@ -82,7 +82,7 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// only ever get called once.
 	///
 	/// This method is *not* async as it is intended only for testing purposes.
-	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment(
 		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()>;
