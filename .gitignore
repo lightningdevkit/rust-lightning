@@ -12,5 +12,6 @@ lightning/net_graph-*.bin
 lightning-rapid-gossip-sync/res/full_graph.lngossip
 lightning-custom-message/target
 lightning-transaction-sync/target
+ext-functional-test-demo/target
 no-std-check/target
 msrv-no-dev-deps-check/target

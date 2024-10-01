@@ -48,7 +48,7 @@ use crate::util::logger::{Logger, Record};
 use crate::util::mut_global::MutGlobal;
 use crate::util::ser::{Readable, ReadableArgs, Writer, Writeable};
 use crate::util::persist::KVStore;
-use crate::util::dyn_signer::{DynPhantomKeysInterface, DynSigner, DynKeysInterfaceTrait};
+use crate::util::dyn_signer::{DynKeysInterface, DynPhantomKeysInterface, DynSigner, DynKeysInterfaceTrait};
 
 use bitcoin::amount::Amount;
 use bitcoin::constants::ChainHash;
@@ -76,7 +76,7 @@ use core::time::Duration;
 use crate::sync::{Mutex, Arc};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::mem;
-use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
+use crate::sign::{RandomBytes, Recipient, EntropySource, NodeSigner, SignerProvider};
 
 use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
@@ -324,7 +324,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 	fn derive_channel_signer(&self, _channel_value_satoshis: u64, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner { unreachable!(); }
 
 	fn read_chan_signer(&self, mut reader: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
+		let inner: DynSigner = ReadableArgs::read(&mut reader, self)?;
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 
 		Ok(TestChannelSigner::new_with_revoked(
@@ -769,7 +769,7 @@ impl TestChannelMessageHandler {
 		let mut msgs = self.expected_recv_msgs.lock().unwrap();
 		if msgs.is_none() { return; }
 		assert!(!msgs.as_ref().unwrap().is_empty(), "Received message when we weren't expecting one");
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		assert_eq!(msgs.as_ref().unwrap()[0], _ev);
 		msgs.as_mut().unwrap().remove(0);
 	}
@@ -1229,7 +1229,7 @@ impl NodeSigner for TestNodeSigner {
 }
 
 pub struct TestKeysInterface {
-	pub backing: sign::PhantomKeysManager,
+	pub backing: DynKeysInterface,
 	pub override_random_bytes: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
 	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
@@ -1306,8 +1306,8 @@ impl SignerProvider for TestKeysInterface {
 	fn read_chan_signer(&self, buffer: &[u8]) -> Result<Self::EcdsaSigner, msgs::DecodeError> {
 		let mut reader = io::Cursor::new(buffer);
 
-		let inner: InMemorySigner = ReadableArgs::read(&mut reader, self)?;
-		let state = self.make_enforcement_state_cell(inner.commitment_seed);
+		let inner: DynSigner = ReadableArgs::read(&mut reader, &self.backing)?;
+		let state = self.make_enforcement_state_cell(inner.commitment_seed());
 
 		Ok(TestChannelSigner::new_with_revoked(
 			inner,
@@ -1351,9 +1351,16 @@ impl TestSignerFactory for DefaultSignerFactory {
 
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
+		#[cfg(feature = "std")]
+		let factory = SIGNER_FACTORY.get();
+
+		#[cfg(not(feature = "std"))]
+		let factory = DefaultSignerFactory();
+
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
+		let backing = factory.make_signer(seed, now);
 		Self {
-			backing: sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
+			backing: DynKeysInterface::new(backing),
 			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
 			enforcement_states: Mutex::new(new_hash_map()),
