@@ -142,3 +142,6 @@ mod prelude {
 extern crate backtrace;
 
 mod sync;
+
+#[cfg(feature = "_test_utils")]
+lightning_macros::xtest_inventory!();
