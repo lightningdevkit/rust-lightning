@@ -79,6 +79,7 @@ use bitcoin::secp256k1::schnorr;
 use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey};
 
 use lightning::io::Cursor;
+use lightning::util::dyn_signer::DynSigner;
 use std::cmp::{self, Ordering};
 use std::mem;
 use std::sync::atomic;
@@ -375,6 +376,7 @@ impl SignerProvider for KeyProvider {
 			channel_keys_id,
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
+		let keys = DynSigner::new(keys);
 		TestChannelSigner::new_with_revoked(keys, revoked_commitment, false)
 	}
 

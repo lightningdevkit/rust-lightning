@@ -25,6 +25,7 @@ use crate::offers::invoice::Bolt12Invoice;
 use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, ReadOnlyNetworkGraph, NetworkGraph, NodeId};
 use crate::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp};
 use crate::sign::EntropySource;
+#[cfg(any(test, feature = "_test_utils"))]
 use crate::sync::Mutex;
 use crate::util::ser::{Writeable, Readable, ReadableArgs, Writer};
 use crate::util::logger::Logger;
@@ -189,17 +190,20 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 /// A `Router` that returns a fixed route one time, erroring otherwise. Useful for
 /// `ChannelManager::send_payment_with_route` to support sending to specific routes without
 /// requiring a custom `Router` implementation.
+#[cfg(any(test, feature = "_test_utils"))]
 pub(crate) struct FixedRouter {
 	// Use an `Option` to avoid needing to clone the route when `find_route` is called.
 	route: Mutex<Option<Route>>,
 }
 
+#[cfg(any(test, feature = "_test_utils"))]
 impl FixedRouter {
 	pub(crate) fn new(route: Route) -> Self {
 		Self { route: Mutex::new(Some(route)) }
 	}
 }
 
+#[cfg(any(test, feature = "_test_utils"))]
 impl Router for FixedRouter {
 	fn find_route(
 		&self, _payer: &PublicKey, _route_params: &RouteParameters,

@@ -13,7 +13,7 @@ use crate::blinded_path::payment::{BlindedPaymentPath, ReceiveTlvs};
 use crate::chain;
 use crate::chain::chaininterface;
 use crate::chain::chaininterface::ConfirmationTarget;
-#[cfg(any(test, feature = "_test_utils"))]
+#[cfg(any(test, feature = "_externalize_tests"))]
 use crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use crate::chain::chainmonitor::{ChainMonitor, Persist};
 use crate::chain::channelmonitor::{
@@ -23,7 +23,7 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::WatchedOutput;
 use crate::events;
 use crate::events::bump_transaction::{Utxo, WalletSource};
-#[cfg(any(test, feature = "_test_utils"))]
+#[cfg(any(test, feature = "_externalize_tests"))]
 use crate::ln::chan_utils::CommitmentTransaction;
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
@@ -50,13 +50,15 @@ use crate::sign::ChannelSigner;
 use crate::sync::RwLock;
 use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::util::config::UserConfig;
+use crate::util::dyn_signer::{
+	DynKeysInterface, DynKeysInterfaceTrait, DynPhantomKeysInterface, DynSigner,
+};
 use crate::util::logger::{Logger, Record};
 #[cfg(feature = "std")]
 use crate::util::mut_global::MutGlobal;
 use crate::util::persist::{KVStore, MonitorName};
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::test_channel_signer::{EnforcementState, TestChannelSigner};
-use crate::util::dyn_signer::{DynPhantomKeysInterface, DynSigner, DynKeysInterfaceTrait};
 
 use bitcoin::amount::Amount;
 use bitcoin::block::Block;
@@ -509,14 +511,14 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 	}
 }
 
-#[cfg(any(test, feature = "_test_utils"))]
+#[cfg(any(test, feature = "_externalize_tests"))]
 struct JusticeTxData {
 	justice_tx: Transaction,
 	value: Amount,
 	commitment_number: u64,
 }
 
-#[cfg(any(test, feature = "_test_utils"))]
+#[cfg(any(test, feature = "_externalize_tests"))]
 pub(crate) struct WatchtowerPersister {
 	persister: TestPersister,
 	/// Upon a new commitment_signed, we'll get a
@@ -530,7 +532,7 @@ pub(crate) struct WatchtowerPersister {
 	destination_script: ScriptBuf,
 }
 
-#[cfg(any(test, feature = "_test_utils"))]
+#[cfg(any(test, feature = "_externalize_tests"))]
 impl WatchtowerPersister {
 	pub(crate) fn new(destination_script: ScriptBuf) -> Self {
 		let unsigned_justice_tx_data = Mutex::new(new_hash_map());
@@ -573,7 +575,7 @@ impl WatchtowerPersister {
 	}
 }
 
-#[cfg(any(test, feature = "_test_utils"))]
+#[cfg(any(test, feature = "_externalize_tests"))]
 impl<Signer: sign::ecdsa::EcdsaChannelSigner> Persist<Signer> for WatchtowerPersister {
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, data: &ChannelMonitor<Signer>,
@@ -951,7 +953,7 @@ impl TestChannelMessageHandler {
 			!msgs.as_ref().unwrap().is_empty(),
 			"Received message when we weren't expecting one"
 		);
-		#[cfg(test)]
+		#[cfg(any(test, feature = "_test_utils"))]
 		assert_eq!(msgs.as_ref().unwrap()[0], _ev);
 		msgs.as_mut().unwrap().remove(0);
 	}
@@ -1487,7 +1489,7 @@ impl NodeSigner for TestNodeSigner {
 }
 
 pub struct TestKeysInterface {
-	pub backing: sign::PhantomKeysManager,
+	pub backing: DynKeysInterface,
 	pub override_random_bytes: Mutex<Option<[u8; 32]>>,
 	pub disable_revocation_policy_check: bool,
 	enforcement_states: Mutex<HashMap<[u8; 32], Arc<Mutex<EnforcementState>>>>,
@@ -1581,30 +1583,42 @@ impl SignerProvider for TestKeysInterface {
 }
 
 #[cfg(feature = "std")]
-pub static SIGNER_FACTORY: MutGlobal<Arc<dyn TestSignerFactory>> = MutGlobal::new(|| { Arc::new(DefaultSignerFactory()) });
+pub static SIGNER_FACTORY: MutGlobal<Arc<dyn TestSignerFactory>> =
+	MutGlobal::new(|| Arc::new(DefaultSignerFactory()));
 
 pub trait TestSignerFactory: Send + Sync {
 	/// Make a dynamic signer
-	fn make_signer(&self, seed: &[u8; 32], now: Duration) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner=DynSigner>>;
+	fn make_signer(
+		&self, seed: &[u8; 32], now: Duration,
+	) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>;
 }
 
 #[derive(Clone)]
 struct DefaultSignerFactory();
 
 impl TestSignerFactory for DefaultSignerFactory {
-	fn make_signer(&self, seed: &[u8; 32], now: Duration) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner=DynSigner>> {
+	fn make_signer(
+		&self, seed: &[u8; 32], now: Duration,
+	) -> Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>> {
 		let phantom = sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed);
 		let dphantom = DynPhantomKeysInterface::new(phantom);
-		let backing = Box::new(dphantom) as Box<dyn DynKeysInterfaceTrait<EcdsaSigner=DynSigner>>;
+		let backing = Box::new(dphantom) as Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>;
 		backing
 	}
 }
 
 impl TestKeysInterface {
 	pub fn new(seed: &[u8; 32], network: Network) -> Self {
+		#[cfg(feature = "std")]
+		let factory = SIGNER_FACTORY.get();
+
+		#[cfg(not(feature = "std"))]
+		let factory = DefaultSignerFactory();
+
 		let now = Duration::from_secs(genesis_block(network).header.time as u64);
+		let backing = factory.make_signer(seed, now);
 		Self {
-			backing: sign::PhantomKeysManager::new(seed, now.as_secs(), now.subsec_nanos(), seed),
+			backing: DynKeysInterface::new(backing),
 			override_random_bytes: Mutex::new(None),
 			disable_revocation_policy_check: false,
 			enforcement_states: Mutex::new(new_hash_map()),

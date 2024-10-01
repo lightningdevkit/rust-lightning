@@ -15,7 +15,7 @@ use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSH
 use crate::ln::channel_keys::HtlcKey;
 use crate::ln::msgs;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::{ChannelSigner, InMemorySigner};
+use crate::sign::ChannelSigner;
 use crate::types::payment::PaymentPreimage;
 
 #[allow(unused_imports)]
@@ -36,6 +36,7 @@ use crate::ln::msgs::PartialSignatureWithNonce;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
 use crate::sign::HTLCDescriptor;
+use crate::util::dyn_signer::DynSigner;
 use bitcoin::secp256k1;
 #[cfg(taproot)]
 use bitcoin::secp256k1::All;
@@ -68,7 +69,7 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 /// forwards-compatibility prefix/suffixes!
 #[derive(Clone)]
 pub struct TestChannelSigner {
-	pub inner: InMemorySigner,
+	pub inner: DynSigner,
 	/// Channel state used for policy enforcement
 	pub state: Arc<Mutex<EnforcementState>>,
 	pub disable_revocation_policy_check: bool,
@@ -119,7 +120,7 @@ impl PartialEq for TestChannelSigner {
 
 impl TestChannelSigner {
 	/// Construct an TestChannelSigner
-	pub fn new(inner: InMemorySigner) -> Self {
+	pub fn new(inner: DynSigner) -> Self {
 		let state = Arc::new(Mutex::new(EnforcementState::new()));
 		Self { inner, state, disable_revocation_policy_check: false }
 	}
@@ -130,7 +131,7 @@ impl TestChannelSigner {
 	/// so that all copies are aware of enforcement state.  A pointer to this state is provided
 	/// here, usually by an implementation of KeysInterface.
 	pub fn new_with_revoked(
-		inner: InMemorySigner, state: Arc<Mutex<EnforcementState>>,
+		inner: DynSigner, state: Arc<Mutex<EnforcementState>>,
 		disable_revocation_policy_check: bool,
 	) -> Self {
 		Self { inner, state, disable_revocation_policy_check }

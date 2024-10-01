@@ -47,7 +47,7 @@ impl<T> TestEq for T {}
 /// variant contains a message from [`msgs`] or otherwise the message type if unknown.
 #[allow(missing_docs)]
 #[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[cfg_attr(any(test, feature = "_test_utils"), derive(PartialEq))]
 pub(crate) enum Message<T: core::fmt::Debug + Type + TestEq> {
 	Init(msgs::Init),
 	Error(msgs::ErrorMessage),

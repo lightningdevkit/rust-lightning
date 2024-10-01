@@ -306,7 +306,7 @@ pub fn drop_legacy_field_definition(expr: TokenStream) -> TokenStream {
 ///
 /// fn f1() {}
 ///
-/// #[xtest(feature = "_test_utils")]
+/// #[xtest(feature = "_externalize_tests")]
 /// pub fn test_f1() {
 ///     f1();
 /// }
