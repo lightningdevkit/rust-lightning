@@ -1597,10 +1597,10 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	/// Renegotiating existing channel, for splicing
 	/// First channel is the already funded (and confirmed, pre-splice) channel.
 	/// The second collection can hold:
-	/// - the negotiated (funded) but unconfirmed post-splice channel
+	/// - the negotiated (funded) but pending post-splice channel
 	/// - the channel being negotiated (post-splice, inbound or outbound)
 	#[cfg(splicing)]
-	RenegotiatingV2((Channel<SP>, ChannelVariants<SP>)),
+	RefundingV2((Channel<SP>, ChannelVariants<SP>)),
 }
 
 impl<'a, SP: Deref> ChannelPhase<SP> where
@@ -1618,7 +1618,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
 			// Both post and pre exist
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingV2((_pre_chan, post_chans)) => post_chans.context(),
+			ChannelPhase::RefundingV2((_pre_chan, post_chans)) => post_chans.context(),
 		}
 	}
 
@@ -1633,7 +1633,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
 			// Both post and pre exist
 			#[cfg(splicing)]
-			ChannelPhase::RenegotiatingV2((_pre_chan, ref mut post_chans)) => post_chans.context_mut(),
+			ChannelPhase::RefundingV2((_pre_chan, ref mut post_chans)) => post_chans.context_mut(),
 		}
 	}
 }
