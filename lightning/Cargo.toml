@@ -17,8 +17,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # Internal test utilities exposed to other repo crates
-_test_utils = ["regex", "bitcoin/bitcoinconsensus", "lightning-types/_test_utils"]
-
+_test_utils = ["regex", "bitcoin/bitcoinconsensus", "ext-test-macro", "lightning-types/_test_utils"]
 # Allow signing of local transactions that may have been revoked or will be revoked, for functional testing (e.g. justice tx handling).
 # This is unsafe to use in production because it may result in the counterparty publishing taking our funds.
 unsafe_revoked_tx_signing = []
@@ -48,6 +47,7 @@ backtrace = { version = "0.3", optional = true }
 
 libm = { version = "0.2", default-features = false }
 delegate = "0.12.0"
+ext-test-macro = { path = "../ext-test-macro", optional = true }
 
 [dev-dependencies]
 regex = "1.5.6"
