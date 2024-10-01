@@ -31,7 +31,6 @@ use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, Signature};
 use bitcoin::secp256k1::schnorr;
-#[cfg(taproot)]
 use bitcoin::secp256k1::All;
 use bitcoin::secp256k1::{Keypair, PublicKey, Scalar, Secp256k1, SecretKey, Signing};
 use bitcoin::{secp256k1, Psbt, Sequence, Txid, WPubkeyHash, Witness};
@@ -716,6 +715,36 @@ impl HTLCDescriptor {
 	}
 }
 
+/// Extension trait for [`ChannelSigner`] providing access to additional channel-specific
+/// details.  In particular, this is useful for functional tests.
+pub trait ChannelSignerExt: ChannelSigner {
+	/// Returns the commitment seed for the channel.
+	fn commitment_seed(&self) -> [u8; 32];
+	/// Returns the counterparty's pubkeys.
+	///
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys>;
+	/// Funding outpoint
+	///
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	fn funding_outpoint(&self) -> Option<&OutPoint>;
+	/// Returns a [`ChannelTransactionParameters`] for this channel, to be used when verifying or
+	/// building transactions.
+	///
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters>;
+
+	/// Returns the channel type features of the channel parameters. Should be helpful for
+	/// determining a channel's category, i.e. legacy/anchors/taproot/etc.
+	///
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	fn channel_type_features(&self) -> Option<&ChannelTypeFeatures>;
+}
+
 /// A trait to handle Lightning channel key material without concretizing the channel type or
 /// the signature mechanism.
 ///
@@ -920,10 +949,10 @@ pub trait OutputSpender {
 	/// Returns `Err(())` if the output value is greater than the input value minus required fee,
 	/// if a descriptor was duplicated, or if an output descriptor `script_pubkey`
 	/// does not match the one we can spend.
-	fn spend_spendable_outputs<C: Signing>(
+	fn spend_spendable_outputs(
 		&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>,
 		change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32,
-		locktime: Option<LockTime>, secp_ctx: &Secp256k1<C>,
+		locktime: Option<LockTime>, secp_ctx: &Secp256k1<All>,
 	) -> Result<Transaction, ()>;
 }
 
@@ -1129,16 +1158,6 @@ impl InMemorySigner {
 		}
 	}
 
-	/// Returns the counterparty's pubkeys.
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
-		self.get_channel_parameters().and_then(|params| {
-			params.counterparty_parameters.as_ref().map(|params| &params.pubkeys)
-		})
-	}
-
 	/// Returns the `contest_delay` value specified by our counterparty and applied on holder-broadcastable
 	/// transactions, i.e., the amount of time that we have to wait to recover our funds if we
 	/// broadcast a transaction.
@@ -1169,14 +1188,6 @@ impl InMemorySigner {
 		self.get_channel_parameters().map(|params| params.is_outbound_from_holder)
 	}
 
-	/// Funding outpoint
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn funding_outpoint(&self) -> Option<&OutPoint> {
-		self.get_channel_parameters().map(|params| params.funding_outpoint.as_ref()).flatten()
-	}
-
 	/// Returns a [`ChannelTransactionParameters`] for this channel, to be used when verifying or
 	/// building transactions.
 	///
@@ -1184,15 +1195,6 @@ impl InMemorySigner {
 	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
 	pub fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {
 		self.channel_parameters.as_ref()
-	}
-
-	/// Returns the channel type features of the channel parameters. Should be helpful for
-	/// determining a channel's category, i. e. legacy/anchors/taproot/etc.
-	///
-	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
-	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
-	pub fn channel_type_features(&self) -> Option<&ChannelTypeFeatures> {
-		self.get_channel_parameters().map(|params| &params.channel_type_features)
 	}
 
 	/// Sign the single input of `spend_tx` at index `input_idx`, which spends the output described
@@ -1346,6 +1348,35 @@ impl EntropySource for InMemorySigner {
 	}
 }
 
+impl ChannelSignerExt for InMemorySigner {
+	fn commitment_seed(&self) -> [u8; 32] {
+		self.commitment_seed
+	}
+
+	fn counterparty_pubkeys(&self) -> Option<&ChannelPublicKeys> {
+		self.get_channel_parameters().and_then(|params| {
+			params.counterparty_parameters.as_ref().map(|params| &params.pubkeys)
+		})
+	}
+
+	fn funding_outpoint(&self) -> Option<&OutPoint> {
+		self.get_channel_parameters().map(|params| params.funding_outpoint.as_ref()).flatten()
+	}
+
+	fn get_channel_parameters(&self) -> Option<&ChannelTransactionParameters> {
+		self.channel_parameters.as_ref()
+	}
+
+	/// Returns the channel type features of the channel parameters. Should be helpful for
+	/// determining a channel's category, i. e. legacy/anchors/taproot/etc.
+	///
+	/// Will return `None` if [`ChannelSigner::provide_channel_parameters`] has not been called.
+	/// In general, this is safe to `unwrap` only in [`ChannelSigner`] implementation.
+	fn channel_type_features(&self) -> Option<&ChannelTypeFeatures> {
+		self.get_channel_parameters().map(|params| &params.channel_type_features)
+	}
+}
+
 impl ChannelSigner for InMemorySigner {
 	fn get_per_commitment_point(
 		&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -1478,7 +1509,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 		))
 	}
 
-	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment(
 		&self, commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<Signature, ()> {
@@ -2227,10 +2258,10 @@ impl OutputSpender for KeysManager {
 	///
 	/// May panic if the [`SpendableOutputDescriptor`]s were not generated by channels which used
 	/// this [`KeysManager`] or one of the [`InMemorySigner`] created by this [`KeysManager`].
-	fn spend_spendable_outputs<C: Signing>(
+	fn spend_spendable_outputs(
 		&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>,
 		change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32,
-		locktime: Option<LockTime>, secp_ctx: &Secp256k1<C>,
+		locktime: Option<LockTime>, secp_ctx: &Secp256k1<All>,
 	) -> Result<Transaction, ()> {
 		let (mut psbt, expected_max_weight) =
 			SpendableOutputDescriptor::create_spendable_outputs_psbt(
@@ -2385,10 +2416,10 @@ impl NodeSigner for PhantomKeysManager {
 impl OutputSpender for PhantomKeysManager {
 	/// See [`OutputSpender::spend_spendable_outputs`] and [`KeysManager::spend_spendable_outputs`]
 	/// for documentation on this method.
-	fn spend_spendable_outputs<C: Signing>(
+	fn spend_spendable_outputs(
 		&self, descriptors: &[&SpendableOutputDescriptor], outputs: Vec<TxOut>,
 		change_destination_script: ScriptBuf, feerate_sat_per_1000_weight: u32,
-		locktime: Option<LockTime>, secp_ctx: &Secp256k1<C>,
+		locktime: Option<LockTime>, secp_ctx: &Secp256k1<All>,
 	) -> Result<Transaction, ()> {
 		self.inner.spend_spendable_outputs(
 			descriptors,
