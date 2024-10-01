@@ -1293,7 +1293,7 @@ where
 		}
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_externalize_tests"))]
 	pub(crate) fn set_offers_handler(&mut self, offers_handler: OMH) {
 		self.offers_handler = offers_handler;
 	}
