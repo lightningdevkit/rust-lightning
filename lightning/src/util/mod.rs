@@ -67,3 +67,48 @@ pub mod string {
 	//! [`lightning::types::string`]: crate::types::string
 	pub use lightning_types::string::{PrintableString, UntrustedString};
 }
+
+/// A macro to delegate trait implementations to a field of a struct.
+///
+/// For example:
+/// ```ignore
+/// use lightning::delegate;
+/// delegate!(A, T, inner,
+///     fn b(, c: u64) -> u64,
+///     fn m(mut, d: u64) -> (),
+///     fn o(, ) -> u64,
+///     #[cfg(debug_assertions)]
+///     fn t(,) -> (),
+///     ;
+///     type O = u64,
+///     #[cfg(debug_assertions)]
+///     type T = (),
+/// );
+/// ```
+///
+/// where T is the trait to be implemented, A is the struct
+/// to implement the trait for, and inner is the field of A
+/// to delegate the trait implementation to.
+#[cfg(any(test, feature = "_test_utils"))]
+macro_rules! delegate {
+    ($N: ident, $T: ident, $ref: ident,
+        $($(#[$fpat: meta])? fn $f: ident($($mu: ident)?, $($n: ident: $t: ty),*) -> $r: ty),* $(,)?
+        $(;$($(#[$tpat: meta])? type $TN: ident = $TT: ty),*)? $(,)?
+    ) => {
+        impl $T for $N {
+            $(
+                $(#[$fpat])?
+                fn $f(&$($mu)? self, $($n: $t),*) ->  $r {
+                   $T::$f(&$($mu)? *self.$ref, $($n),*)
+               }
+            )*
+            $($(
+                $(#[$tpat])?
+                type $TN = $TT;
+            )*)?
+        }
+    };
+}
+
+#[cfg(any(test, feature = "_test_utils"))]
+pub mod dyn_signer;
