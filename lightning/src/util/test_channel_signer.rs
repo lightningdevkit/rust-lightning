@@ -15,13 +15,13 @@ use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSH
 use crate::ln::channel_keys::HtlcKey;
 use crate::ln::msgs;
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::{ChannelSigner, InMemorySigner};
+use crate::sign::{ChannelSigner, InMemorySigner, ChannelSignerExt};
 use crate::types::payment::PaymentPreimage;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
 use crate::sync::MutexGuard;
 use crate::sync::{Arc, Mutex};
 use core::cmp;
@@ -136,17 +136,17 @@ impl TestChannelSigner {
 		Self { inner, state, disable_revocation_policy_check }
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_enforcement_state(&self) -> MutexGuard<EnforcementState> {
 		self.state.lock().unwrap()
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn enable_op(&self, signer_op: SignerOp) {
 		self.get_enforcement_state().disabled_signer_ops.remove(&signer_op);
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn disable_op(&self, signer_op: SignerOp) {
 		self.get_enforcement_state().disabled_signer_ops.insert(signer_op);
 	}
@@ -284,13 +284,13 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		{
 			if !self.disable_revocation_policy_check {
 				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed[0])
+				       state.last_holder_revoked_commitment, commitment_number, self.inner.commitment_seed()[0])
 			}
 		}
 		Ok(self.inner.sign_holder_commitment(channel_parameters, commitment_tx, secp_ctx).unwrap())
 	}
 
-	#[cfg(any(test, feature = "unsafe_revoked_tx_signing"))]
+	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
 	fn unsafe_sign_holder_commitment(
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &HolderCommitmentTransaction, secp_ctx: &Secp256k1<secp256k1::All>,
@@ -358,7 +358,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 		{
 			if !self.disable_revocation_policy_check {
 				panic!("can only sign the next two unrevoked commitment numbers, revoked={} vs requested={} for {}",
-				       state.last_holder_revoked_commitment, htlc_descriptor.per_commitment_number, self.inner.commitment_seed[0])
+				       state.last_holder_revoked_commitment, htlc_descriptor.per_commitment_number, self.inner.commitment_seed()[0])
 			}
 		}
 		assert_eq!(htlc_tx.input[input], htlc_descriptor.unsigned_tx_input());
