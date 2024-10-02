@@ -11,6 +11,7 @@ use bitcoin::network::constants::Network;
 use lightning::chain;
 
 use std::ops::Deref;
+use std::collections::HashSet;
 
 /// Returns a validated block header of the source's best chain tip.
 ///
@@ -156,7 +157,13 @@ pub async fn synchronize_listeners<B: Deref + Sized + Send + Sync, C: Cache, L: 
 	let mut chain_listeners_at_height = Vec::new();
 	let mut most_common_ancestor = None;
 	let mut most_connected_blocks = Vec::new();
+	let mut block_height_visited = HashSet::new();
 	for (old_header, chain_listener) in chain_listeners_with_old_headers.drain(..) {
+		if block_height_visited.contains(&old_header.height) {
+			continue;
+		} else {
+			block_height_visited.insert(old_header.height);
+		}
 		// Disconnect any stale blocks, but keep them in the cache for the next iteration.
 		let header_cache = &mut ReadOnlyCache(header_cache);
 		let (common_ancestor, connected_blocks) = {
