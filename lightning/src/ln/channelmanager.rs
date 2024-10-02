@@ -3598,6 +3598,11 @@ where
 					.filter_map(|(chan_id, phase)| match phase {
 						// Only `Channels` in the `ChannelPhase::Funded` phase can be considered funded.
 						ChannelPhase::Funded(chan) => Some((chan_id, chan)),
+						// Both pre and post exist
+						#[cfg(splicing)]
+						ChannelPhase::RefundingV2((pre_chan, _post_chans)) => {
+							Some((chan_id, pre_chan))
+						},
 						_ => None,
 					})
 					.filter(f)
@@ -4399,40 +4404,44 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(id) {
-				match chan_phase_entry.get_mut() {
-					ChannelPhase::Funded(chan) => {
-						if !chan.context.is_live() {
-							return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected".to_owned()});
-						}
-						let funding_txo = chan.context.get_funding_txo().unwrap();
-						let logger = WithChannelContext::from(&self.logger, &chan.context);
-						let send_res = chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(),
-							htlc_cltv, HTLCSource::OutboundRoute {
-								path: path.clone(),
-								session_priv: session_priv.clone(),
-								first_hop_htlc_msat: htlc_msat,
-								payment_id,
-							}, onion_packet, None, &self.fee_estimator, &&logger);
-						match break_chan_phase_entry!(self, send_res, chan_phase_entry) {
-							Some(monitor_update) => {
-								match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
-									false => {
-										// Note that MonitorUpdateInProgress here indicates (per function
-										// docs) that we will resend the commitment update once monitor
-										// updating completes. Therefore, we must return an error
-										// indicating that it is unsafe to retry the payment wholesale,
-										// which we do in the send_payment check for
-										// MonitorUpdateInProgress, below.
-										return Err(APIError::MonitorUpdateInProgress);
-									},
-									true => {},
-								}
+				let chan = match chan_phase_entry.get_mut() {
+					ChannelPhase::Funded(chan) => { chan },
+					// Both pre and post exist
+					// TODO(splicing): Handle on both
+					#[cfg(splicing)]
+					ChannelPhase::RefundingV2((ref mut pre_chan, ref mut _post_chans)) => {
+						pre_chan
+					},
+					_ => return Err(APIError::ChannelUnavailable{err: "Channel to first hop is unfunded".to_owned()}),
+				};
+				if !chan.context.is_live() {
+					return Err(APIError::ChannelUnavailable{err: "Peer for first hop currently disconnected".to_owned()});
+				}
+				let funding_txo = chan.context.get_funding_txo().unwrap();
+				let logger = WithChannelContext::from(&self.logger, &chan.context);
+				let send_res = chan.send_htlc_and_commit(htlc_msat, payment_hash.clone(),
+					htlc_cltv, HTLCSource::OutboundRoute {
+						path: path.clone(),
+						session_priv: session_priv.clone(),
+						first_hop_htlc_msat: htlc_msat,
+						payment_id,
+					}, onion_packet, None, &self.fee_estimator, &&logger);
+				match break_chan_phase_entry!(self, send_res, chan_phase_entry) {
+					Some(monitor_update) => {
+						match handle_new_monitor_update!(self, funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, chan) {
+							false => {
+								// Note that MonitorUpdateInProgress here indicates (per function
+								// docs) that we will resend the commitment update once monitor
+								// updating completes. Therefore, we must return an error
+								// indicating that it is unsafe to retry the payment wholesale,
+								// which we do in the send_payment check for
+								// MonitorUpdateInProgress, below.
+								return Err(APIError::MonitorUpdateInProgress);
 							},
-							None => {},
+							true => {},
 						}
 					},
-					// TODO(splicing): handle RefundingV2
-					_ => return Err(APIError::ChannelUnavailable{err: "Channel to first hop is unfunded".to_owned()}),
+					None => {},
 				};
 			} else {
 				// The channel was likely removed after we fetched the id from the
@@ -6555,12 +6564,22 @@ where
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(channel_id) {
 					hash_map::Entry::Occupied(chan_phase_entry) => {
-						if let ChannelPhase::Funded(chan) = chan_phase_entry.get() {
-							self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan)
-						} else {
-							// We shouldn't be trying to fail holding cell HTLCs on an unfunded channel.
-							debug_assert!(false);
-							(0x4000|10, Vec::new())
+						match chan_phase_entry.get() {
+							ChannelPhase::Funded(chan) => {
+								self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan)
+							},
+							// Both post and pre exist
+							// TODO(splicing): Handle on both
+							#[cfg(splicing)]
+							ChannelPhase::RefundingV2((pre_chan, _post_chans)) => {
+								let chan = pre_chan;
+								self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan)
+							}
+							_ => {
+								// We shouldn't be trying to fail holding cell HTLCs on an unfunded channel.
+								debug_assert!(false);
+								(0x4000|10, Vec::new())
+							}
 						}
 					},
 					hash_map::Entry::Vacant(_) => (0x4000|10, Vec::new())
@@ -8741,59 +8760,66 @@ where
 		let peer_state = &mut *peer_state_lock;
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
-					let mut pending_forward_info = match decoded_hop_res {
-						Ok((next_hop, shared_secret, next_packet_pk_opt)) =>
-							self.construct_pending_htlc_status(
-								msg, counterparty_node_id, shared_secret, next_hop,
-								chan.context.config().accept_underpaying_htlcs, next_packet_pk_opt,
-							),
-						Err(e) => PendingHTLCStatus::Fail(e)
-					};
-					let logger = WithChannelContext::from(&self.logger, &chan.context);
-					// If the update_add is completely bogus, the call will Err and we will close,
-					// but if we've sent a shutdown and they haven't acknowledged it yet, we just
-					// want to reject the new HTLC and fail it backwards instead of forwarding.
-					if let Err((_, error_code)) = chan.can_accept_incoming_htlc(&msg, &self.fee_estimator, &logger) {
-						if msg.blinding_point.is_some() {
-							pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
-								msgs::UpdateFailMalformedHTLC {
+				let chan = match chan_phase_entry.get_mut() {
+					ChannelPhase::Funded(chan) => { chan },
+					// Both pre and post exist
+					// TODO(splicing): handle on both
+					#[cfg(splicing)]
+					ChannelPhase::RefundingV2((pre_chan, _post_chans)) => {
+						pre_chan
+					},
+					_ => {
+						return try_chan_phase_entry!(self, Err(ChannelError::Close(
+							"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
+					}
+				};
+				let mut pending_forward_info = match decoded_hop_res {
+					Ok((next_hop, shared_secret, next_packet_pk_opt)) =>
+						self.construct_pending_htlc_status(
+							msg, counterparty_node_id, shared_secret, next_hop,
+							chan.context.config().accept_underpaying_htlcs, next_packet_pk_opt,
+						),
+					Err(e) => PendingHTLCStatus::Fail(e)
+				};
+				let logger = WithChannelContext::from(&self.logger, &chan.context);
+				// If the update_add is completely bogus, the call will Err and we will close,
+				// but if we've sent a shutdown and they haven't acknowledged it yet, we just
+				// want to reject the new HTLC and fail it backwards instead of forwarding.
+				if let Err((_, error_code)) = chan.can_accept_incoming_htlc(&msg, &self.fee_estimator, &logger) {
+					if msg.blinding_point.is_some() {
+						pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Malformed(
+							msgs::UpdateFailMalformedHTLC {
+								channel_id: msg.channel_id,
+								htlc_id: msg.htlc_id,
+								sha256_of_onion: [0; 32],
+								failure_code: INVALID_ONION_BLINDING,
+							}
+						))
+					} else {
+						match pending_forward_info {
+							PendingHTLCStatus::Forward(PendingHTLCInfo {
+								ref incoming_shared_secret, ref routing, ..
+							}) => {
+								let reason = if routing.blinded_failure().is_some() {
+									HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32])
+								} else if (error_code & 0x1000) != 0 {
+									let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
+									HTLCFailReason::reason(real_code, error_data)
+								} else {
+									HTLCFailReason::from_failure_code(error_code)
+								}.get_encrypted_failure_packet(incoming_shared_secret, &None);
+								let msg = msgs::UpdateFailHTLC {
 									channel_id: msg.channel_id,
 									htlc_id: msg.htlc_id,
-									sha256_of_onion: [0; 32],
-									failure_code: INVALID_ONION_BLINDING,
-								}
-							))
-						} else {
-							match pending_forward_info {
-								PendingHTLCStatus::Forward(PendingHTLCInfo {
-									ref incoming_shared_secret, ref routing, ..
-								}) => {
-									let reason = if routing.blinded_failure().is_some() {
-										HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32])
-									} else if (error_code & 0x1000) != 0 {
-										let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
-										HTLCFailReason::reason(real_code, error_data)
-									} else {
-										HTLCFailReason::from_failure_code(error_code)
-									}.get_encrypted_failure_packet(incoming_shared_secret, &None);
-									let msg = msgs::UpdateFailHTLC {
-										channel_id: msg.channel_id,
-										htlc_id: msg.htlc_id,
-										reason
-									};
-									pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msg));
-								},
-								_ => {},
-							}
+									reason
+								};
+								pending_forward_info = PendingHTLCStatus::Fail(HTLCFailureMsg::Relay(msg));
+							},
+							_ => {},
 						}
 					}
-					try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info, &self.fee_estimator), chan_phase_entry);
-				} else {
-					// TODO(splicing): also handle RefundingV2
-					return try_chan_phase_entry!(self, Err(ChannelError::Close(
-						"Got an update_add_htlc message for an unfunded channel!".into())), chan_phase_entry);
 				}
+				try_chan_phase_entry!(self, chan.update_add_htlc(&msg, pending_forward_info, &self.fee_estimator), chan_phase_entry);
 			},
 			hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 		}
@@ -8955,24 +8981,42 @@ where
 						}
 						Ok(())
 					},
+					// Both pre and post exist
 					#[cfg(splicing)]
-					ChannelPhase::RefundingV2((_pre_chan, post_chans)) => {
+					ChannelPhase::RefundingV2((pre_chan, post_chans)) => {
+						// Try handling on post
 						match post_chans.commitment_signed_initial_v2(&msg, best_block, &self.signer_provider, &self.logger) {
-							Ok((post_chan, monitor)) => {
-								let post_funding_txo = post_chan.context.get_funding_txo().unwrap();
-								if let Ok(persist_status) = self.chain_monitor.watch_channel(post_funding_txo, monitor) {
-									if let Some(tx_signatures) = post_chan.interactive_tx_signing_session.as_mut().map(|session| session.received_commitment_signed(msg.clone())).flatten() {
-										// At this point we have received a commitment signed and we are watching the channel so
-										// we're good to send our tx_signatures if we're up first.
-										peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
-											node_id: *counterparty_node_id,
-											msg: tx_signatures,
-										});
+							Ok(res) => {
+								if let Some((post_chan, monitor)) = res {
+									let post_funding_txo = post_chan.context.get_funding_txo().unwrap();
+									if let Ok(persist_status) = self.chain_monitor.watch_channel(post_funding_txo, monitor) {
+										if let Some(tx_signatures) = post_chan.interactive_tx_signing_session.as_mut().map(|session| session.received_commitment_signed(msg.clone())).flatten() {
+											// At this point we have received a commitment signed and we are watching the channel so
+											// we're good to send our tx_signatures if we're up first.
+											peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+												node_id: *counterparty_node_id,
+												msg: tx_signatures,
+											});
+										}
+										handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, post_chan, INITIAL_MONITOR);
+									} else {
+										try_chan_phase_entry!(self, Err(ChannelError::Close("Channel funding outpoint was a duplicate".to_owned())), chan_phase_entry)
 									}
-									handle_new_monitor_update!(self, persist_status, peer_state_lock, peer_state, per_peer_state, post_chan, INITIAL_MONITOR);
 									Ok(())
 								} else {
-									try_chan_phase_entry!(self, Err(ChannelError::Close("Channel funding outpoint was a duplicate".to_owned())), chan_phase_entry)
+									// Handle on pre
+									let logger = WithContext::from(&self.logger, None, Some(msg.channel_id));
+									log_trace!(logger, "Handling commitment_signed on pre-splice channel");
+
+									let monitor_update_opt = try_chan_phase_entry!(self, pre_chan.commitment_signed(&msg, &&logger), chan_phase_entry);
+									if let Some(monitor_update) = monitor_update_opt {
+										let pre_funding_txo = pre_chan.context.get_funding_txo().unwrap();
+										handle_new_monitor_update!(self, pre_funding_txo, monitor_update, peer_state_lock, peer_state, per_peer_state, pre_chan);
+									}
+
+									// TODO(splicing): Handle on post, as not initial
+
+									Ok(())
 								}
 							}
 							Err(err) => try_chan_phase_entry!(self, Err(err), chan_phase_entry),
@@ -9156,28 +9200,36 @@ where
 			let peer_state = &mut *peer_state_lock;
 			match peer_state.channel_by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan_phase_entry) => {
-					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
-						let logger = WithChannelContext::from(&self.logger, &chan.context);
-						let funding_txo_opt = chan.context.get_funding_txo();
-						let mon_update_blocked = if let Some(funding_txo) = funding_txo_opt {
-							self.raa_monitor_updates_held(
-								&peer_state.actions_blocking_raa_monitor_updates, funding_txo, msg.channel_id,
-								*counterparty_node_id)
-						} else { false };
-						let (htlcs_to_fail, monitor_update_opt) = try_chan_phase_entry!(self,
-							chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_phase_entry);
-						if let Some(monitor_update) = monitor_update_opt {
-							let funding_txo = funding_txo_opt
-								.expect("Funding outpoint must have been set for RAA handling to succeed");
-							handle_new_monitor_update!(self, funding_txo, monitor_update,
-								peer_state_lock, peer_state, per_peer_state, chan);
+					let chan = match chan_phase_entry.get_mut() {
+						ChannelPhase::Funded(chan) => { chan }
+						// Both post and pre exist
+						// TODO(splicing) handle on both pre and post
+						#[cfg(splicing)]
+						ChannelPhase::RefundingV2((pre_chan, _post_chans)) => {
+							pre_chan
 						}
-						htlcs_to_fail
-					} else {
-						// TODO(splicing): Handle RefundingV2
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
-							"Got a revoke_and_ack message for an unfunded channel!".into())), chan_phase_entry);
+						_ => {
+							return try_chan_phase_entry!(self, Err(ChannelError::Close(
+								"Got a revoke_and_ack message for an unfunded channel!".into())), chan_phase_entry);
+
+						}
+					};
+					let logger = WithChannelContext::from(&self.logger, &chan.context);
+					let funding_txo_opt = chan.context.get_funding_txo();
+					let mon_update_blocked = if let Some(funding_txo) = funding_txo_opt {
+						self.raa_monitor_updates_held(
+							&peer_state.actions_blocking_raa_monitor_updates, funding_txo, msg.channel_id,
+							*counterparty_node_id)
+					} else { false };
+					let (htlcs_to_fail, monitor_update_opt) = try_chan_phase_entry!(self,
+						chan.revoke_and_ack(&msg, &self.fee_estimator, &&logger, mon_update_blocked), chan_phase_entry);
+					if let Some(monitor_update) = monitor_update_opt {
+						let funding_txo = funding_txo_opt
+							.expect("Funding outpoint must have been set for RAA handling to succeed");
+						handle_new_monitor_update!(self, funding_txo, monitor_update,
+							peer_state_lock, peer_state, per_peer_state, chan);
 					}
+					htlcs_to_fail
 				},
 				hash_map::Entry::Vacant(_) => return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}

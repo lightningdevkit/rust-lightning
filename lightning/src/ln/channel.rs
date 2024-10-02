@@ -1502,20 +1502,36 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	#[cfg(any(dual_funding, splicing))]
-	pub fn commitment_signed_initial_v2<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L)
-		-> Result<(&mut Channel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), ChannelError>
+	pub fn commitment_signed<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, logger: &L) -> Result<(&mut Channel<SP>, Option<ChannelMonitorUpdate>), ChannelError>
 		where L::Target: Logger
 	{
 		if let Some(post_chan) = self.get_funded_channel_mut() {
-			// TODO(splicing): handle on pre as well
-			// TODO(splicing): For splice pending case expand this condition, depending if commitment was already received or not
-			let interactive_tx_signing_in_progress = post_chan.interactive_tx_signing_session.is_some();
-			if interactive_tx_signing_in_progress {
-				let monitor = post_chan.commitment_signed_initial_v2(&msg, best_block, signer_provider, logger)?;
-				Ok((post_chan, monitor))
+			let monitor_opt = post_chan.commitment_signed(msg, logger)?;
+			Ok((post_chan, monitor_opt))
+		} else {
+			Err(ChannelError::Close("Got a commitment_signed message, but there is no funded channel!".into()))
+		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	pub fn commitment_signed_initial_v2<L: Deref>(&mut self, msg: &msgs::CommitmentSigned, best_block: BestBlock, signer_provider: &SP, logger: &L)
+		-> Result<Option<(&mut Channel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>, ChannelError>
+		where L::Target: Logger
+	{
+		if let Some(post_chan) = self.get_funded_channel_mut() {
+			if matches!(post_chan.context.channel_state, ChannelState::FundingNegotiated) {
+				// First commitment
+				// TODO(splicing): For splice pending case expand this condition, depending if commitment was already received or not
+				let interactive_tx_signing_in_progress = post_chan.interactive_tx_signing_session.is_some();
+				if interactive_tx_signing_in_progress {
+					let monitor = post_chan.commitment_signed_initial_v2(&msg, best_block, signer_provider, logger)?;
+					Ok(Some((post_chan, monitor)))
+				} else {
+					Err(ChannelError::Close("Got a commitment_signed message, but there is no transaction negotiation context!".into()))
+				}
 			} else {
-				Err(ChannelError::Close("Got a commitment_signed message, but there is no transaction negotiation context!".into()))
+				// Not first commitment
+				Ok(None)
 			}
 		} else {
 			Err(ChannelError::Close("Got a commitment_signed message, but there is no funded channel!".into()))
@@ -1979,7 +1995,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// The current interactive transaction construction session under negotiation.
 	#[cfg(any(dual_funding, splicing))]
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
-	// If we've sent `commtiment_signed` for an interactive transaction construction,
+	// If we've sent `commitment_signed` for an interactive transaction construction,
 	// but have not received `tx_signatures` we MUST set `next_funding_txid` to the
 	// txid of that interactive transaction, else we MUST NOT set it.
 	next_funding_txid: Option<Txid>,
@@ -11316,7 +11332,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				#[cfg(any(dual_funding, splicing))]
 				interactive_tx_constructor: None,
-				// If we've sent `commtiment_signed` for an interactive transaction construction,
+				// If we've sent `commitment_signed` for an interactive transaction construction,
 				// but have not received `tx_signatures` we MUST set `next_funding_txid` to the
 				// txid of that interactive transaction, else we MUST NOT set it.
 				next_funding_txid: None,
