@@ -34,6 +34,8 @@ use dnssec_prover::validation::verify_rr_stream;
 
 use dnssec_prover::rr::Name;
 
+use lightning_types::features::NodeFeatures;
+
 use crate::blinded_path::message::DNSResolverContext;
 use crate::io;
 #[cfg(feature = "dnssec")]
@@ -66,6 +68,13 @@ pub trait DNSResolverMessageHandler {
 	///
 	/// With this, we should be able to validate the DNS record we requested.
 	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext);
+
+	/// Gets the node feature flags which this handler itself supports. Useful for setting the
+	/// `dns_resolver` flag if this handler supports returning [`DNSSECProof`] messages in response
+	/// to [`DNSSECQuery`] messages.
+	fn provided_node_features(&self) -> NodeFeatures {
+		NodeFeatures::empty()
+	}
 
 	/// Release any [`DNSResolverMessage`]s that need to be sent.
 	fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {

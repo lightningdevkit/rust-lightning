@@ -1778,7 +1778,7 @@ where
 	fn provided_node_features(&self) -> NodeFeatures {
 		let mut features = NodeFeatures::empty();
 		features.set_onion_messages_optional();
-		features
+		features | self.dns_resolver_handler.provided_node_features()
 	}
 
 	fn provided_init_features(&self, _their_node_id: PublicKey) -> InitFeatures {
