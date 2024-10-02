@@ -21,6 +21,8 @@ use lightning::onion_message::messenger::{
 	MessageSendInstructions, Responder, ResponseInstruction,
 };
 
+use lightning_types::features::NodeFeatures;
+
 #[cfg(not(any(target_pointer_width = "32", target_pointer_width = "64")))]
 const WE_REQUIRE_32_OR_64_BIT_USIZE: u8 = 424242;
 
@@ -105,6 +107,12 @@ where
 			}
 		});
 		None
+	}
+
+	fn provided_node_features(&self) -> NodeFeatures {
+		let mut features = NodeFeatures::empty();
+		features.set_dns_resolution_optional();
+		features
 	}
 
 	fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
