@@ -9,8 +9,6 @@
 
 use core::cmp::min;
 
-use crate::prelude::*;
-
 #[derive(Clone, Copy)]
 pub struct Poly1305 {
 	r: [u32; 5],

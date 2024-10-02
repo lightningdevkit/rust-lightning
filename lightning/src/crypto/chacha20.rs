@@ -342,8 +342,6 @@ pub use self::fuzzy_chacha::ChaCha20;
 mod test {
 	use core::iter::repeat;
 
-	use crate::prelude::*;
-
 	use super::ChaCha20;
 
 	#[test]
