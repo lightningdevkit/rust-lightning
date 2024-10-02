@@ -1301,7 +1301,7 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	}
 
 	/// Return the last funded (unconfirmed) channel
-	pub fn funded_channel_mut(&mut self) -> Option<&mut Channel<SP>> {
+	pub fn get_funded_channel_mut(&mut self) -> Option<&mut Channel<SP>> {
 		self.debug(); // TODO remove
 		if self.funded_channels.len() > 0 {
 			let n = self.funded_channels.len();
@@ -1495,7 +1495,7 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 
 	#[cfg(any(dual_funding, splicing))]
 	pub fn funding_transaction_signed(&mut self, channel_id: &ChannelId, witnesses: Vec<Witness>) -> Result<Option<msgs::TxSignatures>, ChannelError> {
-		if let Some(funded) = self.funded_channel_mut() {
+		if let Some(funded) = self.get_funded_channel_mut() {
 			funded.funding_transaction_signed(channel_id, witnesses)
 		} else {
 			Err(ChannelError::Close(format!("Channel with id {} is has no funded channel, not expecting funding signatures", channel_id)))
@@ -1507,7 +1507,7 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 		-> Result<(&mut Channel<SP>, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>), ChannelError>
 		where L::Target: Logger
 	{
-		if let Some(post_chan) = self.funded_channel_mut() {
+		if let Some(post_chan) = self.get_funded_channel_mut() {
 			// TODO(splicing): handle on pre as well
 			// TODO(splicing): For splice pending case expand this condition, depending if commitment was already received or not
 			let interactive_tx_signing_in_progress = post_chan.interactive_tx_signing_session.is_some();
@@ -1618,7 +1618,10 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
 			// Both post and pre exist
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2((_pre_chan, post_chans)) => post_chans.context(),
+			ChannelPhase::RefundingV2((pre_chan, post_chans)) => {
+				// If post is funded, use that, otherwise use pre
+				&post_chans.get_funded_channel().unwrap_or(pre_chan).context
+			},
 		}
 	}
 
@@ -1633,7 +1636,10 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
 			// Both post and pre exist
 			#[cfg(splicing)]
-			ChannelPhase::RefundingV2((_pre_chan, ref mut post_chans)) => post_chans.context_mut(),
+			ChannelPhase::RefundingV2((ref mut pre_chan, ref mut post_chans)) => {
+				// If post is funded, use that, otherwise use pre
+				&mut post_chans.get_funded_channel_mut().unwrap_or(pre_chan).context
+			},
 		}
 	}
 }

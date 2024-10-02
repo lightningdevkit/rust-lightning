@@ -942,37 +942,37 @@ fn test_splice_in_with_optional_payments(
 	// Extract the splice_ack message from node1 to node0
 	let splice_ack_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendSpliceAck, initiator_node.node.get_our_node_id());
 
-	exp_balance1 += 1000 * splice_in_sats; // increase in balance
-
-	// check that capacity has been updated, channel is not usable, and funding tx is unset
+	// still pre-splice channel: capacity not updated, channel usable, and funding tx set
 	assert_eq!(acceptor_node.node.list_channels().len(), 1);
 	{
 		let channel = &acceptor_node.node.list_channels()[0];
 		assert_eq!(channel.channel_id.to_string(), expected_funded_channel_id);
-		assert!(!channel.is_usable);
-		assert!(!channel.is_channel_ready);
-		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
+		assert!(channel.is_usable);
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
 		assert_eq!(channel.balance_msat, exp_balance2);
-		assert!(channel.funding_txo.is_none());
-		assert_eq!(channel.confirmations.unwrap(), 0);
+		assert!(channel.funding_txo.is_some());
+		assert!(channel.confirmations.unwrap() > 0);
 	}
 
 	let _res = initiator_node.node.handle_splice_ack(&acceptor_node.node.get_our_node_id(), &splice_ack_msg);
 
 	// Note: SpliceAckedInputsContributionReady event no longer used
 
-	// check that capacity has been updated, channel is not usable, and funding tx is unset
+	// still pre-splice channel: capacity not updated, channel usable, and funding tx set
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
 	{
 		let channel = &initiator_node.node.list_channels()[0];
 		assert_eq!(channel.channel_id.to_string(), expected_funded_channel_id);
-		assert!(!channel.is_usable);
-		assert!(!channel.is_channel_ready);
-		assert_eq!(channel.channel_value_satoshis, post_splice_channel_value);
+		assert!(channel.is_usable);
+		assert!(channel.is_channel_ready);
+		assert_eq!(channel.channel_value_satoshis, channel_value_sat);
 		assert_eq!(channel.balance_msat, exp_balance1);
-		assert!(channel.funding_txo.is_none());
-		assert_eq!(channel.confirmations.unwrap(), 0);
+		assert!(channel.funding_txo.is_some());
+		assert!(channel.confirmations.unwrap() > 0);
 	}
+
+	exp_balance1 += 1000 * splice_in_sats; // increase in balance
 
 	// Note: contribute_funding_inputs() call is no longer used
 

@@ -2828,7 +2828,7 @@ macro_rules! convert_chan_phase_err {
 			},
 			#[cfg(splicing)]
 			ChannelPhase::RefundingV2((_, channels)) => {
-				if let Some(funded_channel) = channels.funded_channel_mut() {
+				if let Some(funded_channel) = channels.get_funded_channel_mut() {
 					convert_chan_phase_err!($self, $err, funded_channel, $channel_id, FUNDED_CHANNEL)
 				} else {
 					match channels.get_pending_mut() {
@@ -8369,7 +8369,7 @@ where
 					ChannelPhase::Funded(chan) => chan,
 					#[cfg(splicing)]
 					ChannelPhase::RefundingV2((_, chans)) => {
-						if let Some(funded) = chans.funded_channel_mut() {
+						if let Some(funded) = chans.get_funded_channel_mut() {
 							funded
 						} else {
 							try_chan_phase_entry!(self, Err(ChannelError::Close(
@@ -10868,7 +10868,7 @@ where
 						// Both post and pre exist
 						#[cfg(splicing)]
 						ChannelPhase::RefundingV2((_, post_chans)) => {
-							if let Some(funded) = post_chans.funded_channel_mut() {
+							if let Some(funded) = post_chans.get_funded_channel_mut() {
 								funded
 							} else {
 								// no funded
