@@ -18,7 +18,7 @@
 use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::{self, Secp256k1, SecretKey, PublicKey};
 
-use crate::blinded_path::message::{AsyncPaymentsContext, OffersContext};
+use crate::blinded_path::message::{AsyncPaymentsContext, DNSResolverContext, OffersContext};
 use crate::sign::{NodeSigner, Recipient};
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::types::ChannelId;
@@ -30,6 +30,7 @@ use crate::ln::peer_channel_encryptor::{PeerChannelEncryptor, NextNoiseStep, Mes
 use crate::ln::wire;
 use crate::ln::wire::{Encode, Type};
 use crate::onion_message::async_payments::{AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc};
+use crate::onion_message::dns_resolution::{DNSResolverMessageHandler, DNSResolverMessage, DNSSECProof, DNSSECQuery};
 use crate::onion_message::messenger::{CustomOnionMessageHandler, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::onion_message::packet::OnionMessageContents;
@@ -153,6 +154,14 @@ impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
 		None
 	}
 	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
+}
+impl DNSResolverMessageHandler for IgnoringMessageHandler {
+	fn handle_dnssec_query(
+		&self, _message: DNSSECQuery, _responder: Option<Responder>,
+	) -> Option<(DNSResolverMessage, ResponseInstruction)> {
+		None
+	}
+	fn handle_dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;

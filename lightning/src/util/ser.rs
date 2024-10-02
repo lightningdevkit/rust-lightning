@@ -37,6 +37,9 @@ use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256d::Hash as Sha256dHash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hash_types::{Txid, BlockHash};
+
+use dnssec_prover::rr::Name;
+
 use core::time::Duration;
 use crate::chain::ClaimId;
 use crate::ln::msgs::DecodeError;
@@ -1487,6 +1490,15 @@ impl Hostname {
 	pub fn len(&self) -> u8 {
 		(&self.0).len() as u8
 	}
+
+	/// Check if the chars in `s` are allowed to be included in a [`Hostname`].
+	pub(crate) fn str_is_valid_hostname(s: &str) -> bool {
+		s.len() <= 255 &&
+		s.chars().all(|c|
+			c.is_ascii_alphanumeric() ||
+			c == '.' || c == '_' || c == '-'
+		)
+	}
 }
 
 impl core::fmt::Display for Hostname {
@@ -1522,11 +1534,7 @@ impl TryFrom<String> for Hostname {
 	type Error = ();
 
 	fn try_from(s: String) -> Result<Self, Self::Error> {
-		if s.len() <= 255 && s.chars().all(|c|
-			c.is_ascii_alphanumeric() ||
-			c == '.' ||
-			c == '-'
-		) {
+		if Hostname::str_is_valid_hostname(&s) {
 			Ok(Hostname(s))
 		} else {
 			Err(())
@@ -1548,6 +1556,13 @@ impl Readable for Hostname {
 		vec.resize(len.into(), 0);
 		r.read_exact(&mut vec)?;
 		Hostname::try_from(vec).map_err(|_| DecodeError::InvalidValue)
+	}
+}
+
+impl TryInto<Name> for Hostname {
+	type Error = ();
+	fn try_into(self) -> Result<Name, ()> {
+		Name::try_from(self.0)
 	}
 }
 
