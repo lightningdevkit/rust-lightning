@@ -17,7 +17,6 @@ _test_utils = []
 
 [dependencies]
 bitcoin = { version = "0.32.2", default-features = false }
-bech32 = { version = "0.9", default-features = false }
 
 [lints]
 workspace = true

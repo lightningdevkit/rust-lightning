@@ -8,10 +8,11 @@
 // licenses.
 
 use crate::utils::test_logger;
-use bech32::{u5, FromBase32, ToBase32};
+use bech32::Fe32;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
 use lightning_invoice::{
-	Bolt11Invoice, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField, TaggedField,
+	Base32Iterable, Bolt11Invoice, FromBase32, RawBolt11Invoice, RawDataPart, RawHrp,
+	RawTaggedField, TaggedField,
 };
 use std::str::FromStr;
 
@@ -25,19 +26,19 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 			Err(_) => return,
 		};
 		let bech32 =
-			data.iter().skip(hrp_len).map(|x| u5::try_from_u8(x % 32).unwrap()).collect::<Vec<_>>();
+			data.iter().skip(hrp_len).map(|x| Fe32::try_from(x % 32).unwrap()).collect::<Vec<_>>();
 		let invoice_data = match RawDataPart::from_base32(&bech32) {
 			Ok(invoice) => invoice,
 			Err(_) => return,
 		};
 
+		let invoice_data_base32 = invoice_data.fe_iter().collect::<Vec<_>>();
 		// Our data encoding is not worse than the input
-		assert!(invoice_data.to_base32().len() <= bech32.len());
+		assert!(invoice_data_base32.len() <= bech32.len());
 
 		// Our data serialization is loss-less
 		assert_eq!(
-			RawDataPart::from_base32(&invoice_data.to_base32())
-				.expect("faild parsing out own encoding"),
+			RawDataPart::from_base32(&invoice_data_base32).expect("faild parsing out own encoding"),
 			invoice_data
 		);
 

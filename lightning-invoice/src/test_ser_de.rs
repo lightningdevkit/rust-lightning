@@ -1,18 +1,17 @@
-use crate::{
-	sha256, FromBase32, PayeePubKey, PaymentSecret, PositiveTimestamp, RawDataPart, Sha256,
-};
-use bech32::{u5, Base32Len, ToBase32};
-
+use crate::de::FromBase32;
+use crate::ser::{Base32Iterable, Base32Len};
+use crate::{sha256, PayeePubKey, PaymentSecret, PositiveTimestamp, RawDataPart, Sha256};
+use bech32::Fe32;
 use core::fmt::Debug;
 use std::str::FromStr;
 
 /// Test base32 encode and decode
 fn ser_de_test<T>(o: T, expected_str: &str)
 where
-	T: ToBase32 + FromBase32 + Eq + Debug,
+	T: Base32Iterable + FromBase32 + Eq + Debug,
 	T::Err: Debug,
 {
-	let serialized_32 = o.to_base32();
+	let serialized_32 = o.fe_iter().collect::<Vec<Fe32>>();
 	let serialized_str = serialized_32.iter().map(|f| f.to_char()).collect::<String>();
 	assert_eq!(serialized_str, expected_str, "Mismatch for {:?}", o);
 
@@ -24,7 +23,7 @@ where
 /// Test base32 encode and decode, and also length hint
 fn ser_de_test_len<T>(o: T, expected_str: &str)
 where
-	T: ToBase32 + FromBase32 + Base32Len + Eq + Debug,
+	T: Base32Iterable + Base32Len + FromBase32 + Eq + Debug,
 	T::Err: Debug,
 {
 	assert_eq!(o.base32_len(), expected_str.len(), "Mismatch for {} {:?}", expected_str, o);
@@ -47,6 +46,50 @@ fn vec_u8() {
 	ser_de_test_len(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "qqqsyqcyq5rqwzqf");
 	ser_de_test_len(vec![9, 8, 7, 6, 5, 4, 3, 2, 1, 0], "pyyqwps9qspsyqgq");
 	ser_de_test_len(vec![255, 254, 253, 252, 251, 250, 249, 248, 247, 246], "lll0ml8mltul3alk");
+}
+
+#[test]
+fn array_u8() {
+	ser_de_test_len([0], "qq");
+	ser_de_test_len([255], "lu");
+	ser_de_test_len([0, 1], "qqqs");
+	ser_de_test_len([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "qqqsyqcyq5rqwzqf");
+	ser_de_test_len([255, 254, 253, 252, 251, 250, 249, 248, 247, 246], "lll0ml8mltul3alk");
+}
+
+#[test]
+fn array_u8_error_invalid_length() {
+	// correct len -- 5 fe32 -> 3 bytes
+	assert_eq!(
+		<[u8; 3]>::from_base32(
+			&"pqqql".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()[..]
+		)
+		.unwrap(),
+		[8, 0, 15]
+	);
+
+	// input too short
+	assert_eq!(
+		<[u8; 3]>::from_base32(
+			&"pqql".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()[..]
+		)
+		.err()
+		.unwrap()
+		.to_string(),
+		"Slice had length 2 instead of 3 for element <[u8; N]>"
+	);
+
+	// input too long
+	assert_eq!(
+		<[u8; 3]>::from_base32(
+			&"pqqqqql".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()
+				[..]
+		)
+		.err()
+		.unwrap()
+		.to_string(),
+		"Slice had length 4 instead of 3 for element <[u8; N]>"
+	);
 }
 
 #[test]
@@ -111,8 +154,8 @@ fn bolt11_invoice_features() {
 	// To test skipping 0's in deserialization, we have to start with deserialization
 	assert_eq!(
 		Bolt11InvoiceFeatures::from_base32(
-			&vec![0, 0, 0, 0, 0, 3, 4]
-				.iter().copied().map(|f| u5::try_from_u8(f).unwrap()).collect::<Vec<_>>()[..]
+			&"qqqqqry".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()
+				[..]
 		)
 		.unwrap()
 		.le_flags(),
@@ -120,8 +163,7 @@ fn bolt11_invoice_features() {
 	);
 	assert_eq!(
 		Bolt11InvoiceFeatures::from_base32(
-			&vec![3, 4]
-				.iter().copied().map(|f| u5::try_from_u8(f).unwrap()).collect::<Vec<_>>()[..]
+			&"ry".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()[..]
 		)
 		.unwrap()
 		.le_flags(),

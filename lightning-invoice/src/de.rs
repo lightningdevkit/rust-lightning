@@ -8,7 +8,8 @@ use core::num::ParseIntError;
 use core::str;
 use core::str::FromStr;
 
-use bech32::{u5, FromBase32};
+use bech32::primitives::decode::{CheckedHrpstring, CheckedHrpstringError};
+use bech32::{Bech32, Fe32, Fe32IterExt};
 
 use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 use bitcoin::hashes::Hash;
@@ -25,6 +26,117 @@ use super::{Bolt11Invoice, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDe
 	constants, SignedRawBolt11Invoice, RawDataPart, Bolt11InvoiceFeatures};
 
 use self::hrp_sm::parse_hrp;
+
+/// Trait for parsing/converting base32 slice.
+pub trait FromBase32: Sized {
+	/// The associated error which can be returned from parsing (e.g. because of bad padding).
+	type Err;
+
+	/// Convert a base32 slice to `Self`.
+	fn from_base32(b32: &[Fe32]) -> Result<Self, Self::Err>;
+}
+
+// FromBase32 implementations are here, because the trait is in this module.
+
+impl FromBase32 for Vec<u8> {
+	type Err = Bolt11ParseError;
+
+	fn from_base32(data: &[Fe32]) -> Result<Self, Self::Err> {
+		Ok(data.iter().copied().fes_to_bytes().collect::<Self>())
+	}
+}
+
+impl<const N: usize> FromBase32 for [u8; N] {
+	type Err = Bolt11ParseError;
+
+	fn from_base32(data: &[Fe32]) -> Result<Self, Self::Err> {
+		let mut res_arr = [0; N];
+		// Do in a for loop to place in the array directly, not using `collect`
+		let mut count = 0;
+		for elem in data.iter().copied().fes_to_bytes() {
+			if count >= N {
+				// too many elements
+				count += 1;
+				break;
+			}
+			res_arr[count] = elem;
+			count += 1;
+		}
+		if count != N {
+			return Err(Bolt11ParseError::InvalidSliceLength(
+				count, N, "<[u8; N]>",
+			));
+		}
+		Ok(res_arr)
+	}
+}
+
+impl FromBase32 for PaymentSecret {
+	type Err = Bolt11ParseError;
+
+	fn from_base32(field_data: &[Fe32]) -> Result<Self, Self::Err> {
+		if field_data.len() != 52 {
+			return Err(Bolt11ParseError::InvalidSliceLength(
+				field_data.len(),
+				52,
+				"PaymentSecret",
+			));
+		}
+		let data_bytes = <[u8; 32]>::from_base32(field_data)?;
+		Ok(PaymentSecret(data_bytes))
+	}
+}
+
+impl FromBase32 for Bolt11InvoiceFeatures {
+	type Err = Bolt11ParseError;
+
+	/// Convert to byte values, by packing the 5-bit groups,
+	/// putting the 5-bit values from left to-right (reverse order),
+	/// starting from the rightmost bit,
+	/// and taking the resulting 8-bit values (right to left),
+	/// with the leading 0's skipped.
+	fn from_base32(field_data: &[Fe32]) -> Result<Self, Self::Err> {
+		// Fe32 conversion cannot be used, because this unpacks from right, right-to-left
+		// Carry bits, 0, 1, 2, 3, or 4 bits
+		let mut carry_bits = 0;
+		let mut carry = 0u8;
+		let expected_raw_length = (field_data.len() * 5 + 7) / 8;
+		let mut output = Vec::<u8>::with_capacity(expected_raw_length);
+
+		// Iterate over input in reverse
+		for curr_in in field_data.iter().rev() {
+			let curr_in_as_u8 = curr_in.to_u8();
+			if carry_bits >= 3 {
+				// we have a new full byte -- 3, 4 or 5 carry bits, plus 5 new ones
+				// For combining with carry '|', '^', or '+' can be used (disjoint bit positions)
+				let next = carry + (curr_in_as_u8 << carry_bits);
+				output.push(next);
+				carry = curr_in_as_u8 >> (8 - carry_bits);
+				carry_bits -= 3; // added 5, removed 8
+			} else {
+				// only 0, 1, or 2 carry bits,  plus 5 new ones
+				carry += curr_in_as_u8 << carry_bits;
+				carry_bits += 5;
+			}
+		}
+
+		// No more inputs, output remaining (if any)
+		if carry_bits > 0 {
+			output.push(carry);
+		}
+
+		// This is to double check the estimated length and
+		// satisfying mutation test on the capacity, which is mutatable
+		debug_assert_eq!(output.len(), expected_raw_length);
+
+		// Trim the highest feature bits
+		while !output.is_empty() && output[output.len() - 1] == 0 {
+			output.pop();
+		}
+
+		Ok(Bolt11InvoiceFeatures::from_le_bytes(output))
+	}
+}
 
 /// State machine to parse the hrp
 mod hrp_sm {
@@ -269,31 +381,29 @@ impl FromStr for SignedRawBolt11Invoice {
 	type Err = Bolt11ParseError;
 
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let (hrp, data, var) = bech32::decode(s)?;
+		let parsed = CheckedHrpstring::new::<Bech32>(s)?;
+		let hrp = parsed.hrp();
+		// Access original non-packed 32 byte values (as Fe32s)
+		// Note: the type argument is needed due to the API peculiarities, but it's not used
+		let data: Vec<_> = parsed.fe32_iter::<&mut dyn Iterator<Item = u8>>().collect();
 
-		if var == bech32::Variant::Bech32m {
-			// Consider Bech32m addresses to be "Invalid Checksum", since that is what we'd get if
-			// we didn't support Bech32m (which lightning does not use).
-			return Err(Bolt11ParseError::Bech32Error(bech32::Error::InvalidChecksum));
-		}
-
-		if data.len() < 104 {
+		const SIGNATURE_LEN_5: usize = 104; // number of the 5-bit values (equals to 65 bytes)
+		if data.len() < SIGNATURE_LEN_5 {
 			return Err(Bolt11ParseError::TooShortDataPart);
 		}
 
-		let raw_hrp: RawHrp = hrp.parse()?;
-		let data_part = RawDataPart::from_base32(&data[..data.len()-104])?;
+		let raw_hrp: RawHrp = hrp.to_string().to_lowercase().parse()?;
+		let data_part = RawDataPart::from_base32(&data[..data.len() - SIGNATURE_LEN_5])?;
+		let raw_invoice = RawBolt11Invoice {
+			hrp: raw_hrp,
+			data: data_part,
+		};
+		let hash = raw_invoice.signable_hash();
 
 		Ok(SignedRawBolt11Invoice {
-			raw_invoice: RawBolt11Invoice {
-				hrp: raw_hrp,
-				data: data_part,
-			},
-			hash: RawBolt11Invoice::hash_from_parts(
-				hrp.as_bytes(),
-				&data[..data.len()-104]
-			),
-			signature: Bolt11InvoiceSignature::from_base32(&data[data.len()-104..])?,
+			raw_invoice,
+			hash,
+			signature: Bolt11InvoiceSignature::from_base32(&data[data.len() - SIGNATURE_LEN_5..])?,
 		})
 	}
 }
@@ -335,7 +445,7 @@ impl FromStr for RawHrp {
 impl FromBase32 for RawDataPart {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(data: &[u5]) -> Result<Self, Self::Err> {
+	fn from_base32(data: &[Fe32]) -> Result<Self, Self::Err> {
 		if data.len() < 7 { // timestamp length
 			return Err(Bolt11ParseError::TooShortDataPart);
 		}
@@ -353,9 +463,13 @@ impl FromBase32 for RawDataPart {
 impl FromBase32 for PositiveTimestamp {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(b32: &[u5]) -> Result<Self, Self::Err> {
+	fn from_base32(b32: &[Fe32]) -> Result<Self, Self::Err> {
 		if b32.len() != 7 {
-			return Err(Bolt11ParseError::InvalidSliceLength("PositiveTimestamp::from_base32()".into()));
+			return Err(Bolt11ParseError::InvalidSliceLength(
+				b32.len(),
+				7,
+				"PositiveTimestamp",
+			));
 		}
 		let timestamp: u64 = parse_u64_be(b32)
 			.expect("7*5bit < 64bit, no overflow possible");
@@ -368,11 +482,15 @@ impl FromBase32 for PositiveTimestamp {
 
 impl FromBase32 for Bolt11InvoiceSignature {
 	type Err = Bolt11ParseError;
-	fn from_base32(signature: &[u5]) -> Result<Self, Self::Err> {
+	fn from_base32(signature: &[Fe32]) -> Result<Self, Self::Err> {
 		if signature.len() != 104 {
-			return Err(Bolt11ParseError::InvalidSliceLength("Bolt11InvoiceSignature::from_base32()".into()));
+			return Err(Bolt11ParseError::InvalidSliceLength(
+				signature.len(),
+				104,
+				"Bolt11InvoiceSignature",
+			));
 		}
-		let recoverable_signature_bytes = Vec::<u8>::from_base32(signature)?;
+		let recoverable_signature_bytes = <[u8; 65]>::from_base32(signature)?;
 		let signature = &recoverable_signature_bytes[0..64];
 		let recovery_id = RecoveryId::from_i32(recoverable_signature_bytes[64] as i32)?;
 
@@ -384,7 +502,7 @@ impl FromBase32 for Bolt11InvoiceSignature {
 }
 
 macro_rules! define_parse_int_be { ($name: ident, $ty: ty) => {
-	fn $name(digits: &[u5]) -> Option<$ty> {
+	fn $name(digits: &[Fe32]) -> Option<$ty> {
 		digits.iter().fold(Some(Default::default()), |acc, b|
 			acc
 				.and_then(|x| x.checked_mul(32))
@@ -395,7 +513,7 @@ macro_rules! define_parse_int_be { ($name: ident, $ty: ty) => {
 define_parse_int_be!(parse_u16_be, u16);
 define_parse_int_be!(parse_u64_be, u64);
 
-fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, Bolt11ParseError> {
+fn parse_tagged_parts(data: &[Fe32]) -> Result<Vec<RawTaggedField>, Bolt11ParseError> {
 	let mut parts = Vec::<RawTaggedField>::new();
 	let mut data = data;
 
@@ -423,7 +541,9 @@ fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, Bolt11ParseErr
 			Ok(field) => {
 				parts.push(RawTaggedField::KnownSemantics(field))
 			},
-			Err(Bolt11ParseError::Skip)|Err(Bolt11ParseError::Bech32Error(bech32::Error::InvalidLength)) => {
+			Err(Bolt11ParseError::Skip)
+			| Err(Bolt11ParseError::InvalidSliceLength(_, _, _))
+			| Err(Bolt11ParseError::Bech32Error(_)) => {
 				parts.push(RawTaggedField::UnknownSemantics(field.into()))
 			},
 			Err(e) => {return Err(e)}
@@ -435,7 +555,7 @@ fn parse_tagged_parts(data: &[u5]) -> Result<Vec<RawTaggedField>, Bolt11ParseErr
 impl FromBase32 for TaggedField {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(field: &[u5]) -> Result<TaggedField, Bolt11ParseError> {
+	fn from_base32(field: &[Fe32]) -> Result<TaggedField, Bolt11ParseError> {
 		if field.len() < 3 {
 			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
@@ -477,12 +597,12 @@ impl FromBase32 for TaggedField {
 impl FromBase32 for Sha256 {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<Sha256, Bolt11ParseError> {
+	fn from_base32(field_data: &[Fe32]) -> Result<Sha256, Bolt11ParseError> {
 		if field_data.len() != 52 {
 			// "A reader MUST skip over […] a p, [or] h […] field that does not have data_length 52 […]."
 			Err(Bolt11ParseError::Skip)
 		} else {
-			Ok(Sha256(sha256::Hash::from_slice(&Vec::<u8>::from_base32(field_data)?)
+			Ok(Sha256(sha256::Hash::from_slice(&<[u8; 32]>::from_base32(field_data)?)
 				.expect("length was checked before (52 u5 -> 32 u8)")))
 		}
 	}
@@ -491,7 +611,7 @@ impl FromBase32 for Sha256 {
 impl FromBase32 for Description {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<Description, Bolt11ParseError> {
+	fn from_base32(field_data: &[Fe32]) -> Result<Description, Bolt11ParseError> {
 		let bytes = Vec::<u8>::from_base32(field_data)?;
 		let description = String::from(str::from_utf8(&bytes)?);
 		Ok(Description::new(description).expect(
@@ -503,12 +623,12 @@ impl FromBase32 for Description {
 impl FromBase32 for PayeePubKey {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<PayeePubKey, Bolt11ParseError> {
+	fn from_base32(field_data: &[Fe32]) -> Result<PayeePubKey, Bolt11ParseError> {
 		if field_data.len() != 53 {
 			// "A reader MUST skip over […] a n […] field that does not have data_length 53 […]."
 			Err(Bolt11ParseError::Skip)
 		} else {
-			let data_bytes = Vec::<u8>::from_base32(field_data)?;
+			let data_bytes = <[u8; 33]>::from_base32(field_data)?;
 			let pub_key = PublicKey::from_slice(&data_bytes)?;
 			Ok(pub_key.into())
 		}
@@ -518,7 +638,7 @@ impl FromBase32 for PayeePubKey {
 impl FromBase32 for ExpiryTime {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<ExpiryTime, Bolt11ParseError> {
+	fn from_base32(field_data: &[Fe32]) -> Result<ExpiryTime, Bolt11ParseError> {
 		match parse_u64_be(field_data)
 			.map(ExpiryTime::from_seconds)
 		{
@@ -531,7 +651,7 @@ impl FromBase32 for ExpiryTime {
 impl FromBase32 for MinFinalCltvExpiryDelta {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<MinFinalCltvExpiryDelta, Bolt11ParseError> {
+	fn from_base32(field_data: &[Fe32]) -> Result<MinFinalCltvExpiryDelta, Bolt11ParseError> {
 		let expiry = parse_u64_be(field_data);
 		if let Some(expiry) = expiry {
 			Ok(MinFinalCltvExpiryDelta(expiry))
@@ -544,7 +664,7 @@ impl FromBase32 for MinFinalCltvExpiryDelta {
 impl FromBase32 for Fallback {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<Fallback, Bolt11ParseError> {
+	fn from_base32(field_data: &[Fe32]) -> Result<Fallback, Bolt11ParseError> {
 		if field_data.is_empty() {
 			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
@@ -585,7 +705,7 @@ impl FromBase32 for Fallback {
 impl FromBase32 for PrivateRoute {
 	type Err = Bolt11ParseError;
 
-	fn from_base32(field_data: &[u5]) -> Result<PrivateRoute, Bolt11ParseError> {
+	fn from_base32(field_data: &[Fe32]) -> Result<PrivateRoute, Bolt11ParseError> {
 		let bytes = Vec::<u8>::from_base32(field_data)?;
 
 		if bytes.len() % 51 != 0 {
@@ -637,9 +757,13 @@ impl Display for Bolt11ParseError {
 			Bolt11ParseError::DescriptionDecodeError(ref e) => {
 				write!(f, "Description is not a valid utf-8 string: {}", e)
 			}
-			Bolt11ParseError::InvalidSliceLength(ref function) => {
-				write!(f, "Slice in function {} had the wrong length", function)
-			}
+			Bolt11ParseError::InvalidSliceLength(ref len, ref expected, ref elemen) => {
+				write!(
+					f,
+					"Slice had length {} instead of {} for element {}",
+					len, expected, elemen
+				)
+			},
 			Bolt11ParseError::BadPrefix => f.write_str("did not begin with 'ln'"),
 			Bolt11ParseError::UnknownCurrency => f.write_str("currency code unknown"),
 			Bolt11ParseError::UnknownSiPrefix => f.write_str("unknown SI prefix"),
@@ -702,12 +826,9 @@ from_error!(Bolt11ParseError::MalformedSignature, bitcoin::secp256k1::Error);
 from_error!(Bolt11ParseError::ParseAmountError, ParseIntError);
 from_error!(Bolt11ParseError::DescriptionDecodeError, str::Utf8Error);
 
-impl From<bech32::Error> for Bolt11ParseError {
-	fn from(e: bech32::Error) -> Self {
-		match e {
-			bech32::Error::InvalidPadding => Bolt11ParseError::PaddingError,
-			_ => Bolt11ParseError::Bech32Error(e)
-		}
+impl From<CheckedHrpstringError> for Bolt11ParseError {
+	fn from(e: CheckedHrpstringError) -> Self {
+		Self::Bech32Error(e)
 	}
 }
 
@@ -725,9 +846,10 @@ impl From<crate::Bolt11SemanticError> for ParseOrSemanticError {
 
 #[cfg(test)]
 mod test {
+	use super::FromBase32;
 	use crate::de::Bolt11ParseError;
 	use bitcoin::secp256k1::PublicKey;
-	use bech32::u5;
+	use bech32::Fe32;
 	use bitcoin::hashes::sha256;
 	use std::str::FromStr;
 
@@ -742,10 +864,10 @@ mod test {
 		1, 0, 3, 16, 11, 28, 12, 14, 6, 4, 2, -1, -1, -1, -1, -1
 	];
 
-	fn from_bech32(bytes_5b: &[u8]) -> Vec<u5> {
+	fn from_bech32(bytes_5b: &[u8]) -> Vec<Fe32> {
 		bytes_5b
 			.iter()
-			.map(|c| u5::try_from_u8(CHARSET_REV[*c as usize] as u8).unwrap())
+			.map(|c| Fe32::try_from(CHARSET_REV[*c as usize] as u8).unwrap())
 			.collect()
 	}
 
@@ -766,19 +888,18 @@ mod test {
 		use crate::de::parse_u16_be;
 
 		assert_eq!(parse_u16_be(&[
-				u5::try_from_u8(1).unwrap(), u5::try_from_u8(2).unwrap(),
-				u5::try_from_u8(3).unwrap(), u5::try_from_u8(4).unwrap()]
-			), Some(34916));
+			Fe32::try_from(1).unwrap(), Fe32::try_from(2).unwrap(),
+			Fe32::try_from(3).unwrap(), Fe32::try_from(4).unwrap(),
+		]), Some(34916));
 		assert_eq!(parse_u16_be(&[
-				u5::try_from_u8(2).unwrap(), u5::try_from_u8(0).unwrap(),
-				u5::try_from_u8(0).unwrap(), u5::try_from_u8(0).unwrap()]
-			), None);
+			Fe32::try_from(2).unwrap(), Fe32::try_from(0).unwrap(),
+			Fe32::try_from(0).unwrap(), Fe32::try_from(0).unwrap(),
+		]), None);
 	}
 
 	#[test]
 	fn test_parse_sha256_hash() {
 		use crate::Sha256;
-		use bech32::FromBase32;
 
 		let input = from_bech32(
 			"qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypq".as_bytes()
@@ -801,7 +922,6 @@ mod test {
 	#[test]
 	fn test_parse_description() {
 		use crate::Description;
-		use bech32::FromBase32;
 
 		let input = from_bech32("xysxxatsyp3k7enxv4js".as_bytes());
 		let expected = Ok(Description::new("1 cup coffee".to_owned()).unwrap());
@@ -811,7 +931,6 @@ mod test {
 	#[test]
 	fn test_parse_payee_pub_key() {
 		use crate::PayeePubKey;
-		use bech32::FromBase32;
 
 		let input = from_bech32("q0n326hr8v9zprg8gsvezcch06gfaqqhde2aj730yg0durunfhv66".as_bytes());
 		let pk_bytes = [
@@ -835,7 +954,6 @@ mod test {
 	#[test]
 	fn test_parse_expiry_time() {
 		use crate::ExpiryTime;
-		use bech32::FromBase32;
 
 		let input = from_bech32("pu".as_bytes());
 		let expected = Ok(ExpiryTime::from_seconds(60));
@@ -848,7 +966,6 @@ mod test {
 	#[test]
 	fn test_parse_min_final_cltv_expiry_delta() {
 		use crate::MinFinalCltvExpiryDelta;
-		use bech32::FromBase32;
 
 		let input = from_bech32("pr".as_bytes());
 		let expected = Ok(MinFinalCltvExpiryDelta(35));
@@ -859,7 +976,6 @@ mod test {
 	#[test]
 	fn test_parse_fallback() {
 		use crate::Fallback;
-		use bech32::FromBase32;
 		use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
 		use bitcoin::hashes::Hash;
 
@@ -889,7 +1005,7 @@ mod test {
 				})
 			),
 			(
-				vec![u5::try_from_u8(21).unwrap(); 41],
+				vec![Fe32::try_from(21).unwrap(); 41],
 				Err(Bolt11ParseError::Skip)
 			),
 			(
@@ -897,15 +1013,15 @@ mod test {
 				Err(Bolt11ParseError::UnexpectedEndOfTaggedFields)
 			),
 			(
-				vec![u5::try_from_u8(1).unwrap(); 81],
+				vec![Fe32::try_from(1).unwrap(); 81],
 				Err(Bolt11ParseError::InvalidSegWitProgramLength)
 			),
 			(
-				vec![u5::try_from_u8(17).unwrap(); 1],
+				vec![Fe32::try_from(17).unwrap(); 1],
 				Err(Bolt11ParseError::InvalidPubKeyHashLength)
 			),
 			(
-				vec![u5::try_from_u8(18).unwrap(); 1],
+				vec![Fe32::try_from(18).unwrap(); 1],
 				Err(Bolt11ParseError::InvalidScriptHashLength)
 			)
 		];
@@ -919,7 +1035,6 @@ mod test {
 	fn test_parse_route() {
 		use lightning_types::routing::{RoutingFees, RouteHint, RouteHintHop};
 		use crate::PrivateRoute;
-		use bech32::FromBase32;
 
 		let input = from_bech32(
 			"q20q82gphp2nflc7jtzrcazrra7wwgzxqc8u7754cdlpfrmccae92qgzqvzq2ps8pqqqqqqpqqqqq9qqqvpeuqa\
@@ -965,7 +1080,7 @@ mod test {
 		assert_eq!(PrivateRoute::from_base32(&input), Ok(PrivateRoute(RouteHint(expected))));
 
 		assert_eq!(
-			PrivateRoute::from_base32(&[u5::try_from_u8(0).unwrap(); 40][..]),
+			PrivateRoute::from_base32(&[Fe32::try_from(0).unwrap(); 40][..]),
 			Err(Bolt11ParseError::UnexpectedEndOfTaggedFields)
 		);
 	}
