@@ -30,6 +30,6 @@ pub(super) struct PayerContents(pub Metadata);
 /// [`Refund::payer_metadata`]: crate::offers::refund::Refund::payer_metadata
 pub(super) const PAYER_METADATA_TYPE: u64 = 0;
 
-tlv_stream!(PayerTlvStream, PayerTlvStreamRef, 0..1, {
+tlv_stream!(PayerTlvStream, PayerTlvStreamRef<'a>, 0..1, {
 	(PAYER_METADATA_TYPE, metadata: (Vec<u8>, WithoutLength)),
 });
