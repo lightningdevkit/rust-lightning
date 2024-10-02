@@ -30,6 +30,8 @@ use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::{secp256k1, Witness};
 use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
 use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
@@ -1028,6 +1030,8 @@ impl fmt::Display for SocketAddressParseError {
 	}
 }
 
+impl std::error::Error for SocketAddressParseError {}
+
 #[cfg(feature = "std")]
 impl From<std::net::SocketAddrV4> for SocketAddress {
 		fn from(addr: std::net::SocketAddrV4) -> Self {
@@ -1161,6 +1165,22 @@ impl FromStr for SocketAddress {
 				return Err(SocketAddressParseError::SocketAddrParse)
 			},
 		}
+	}
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for SocketAddress {
+	fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+		serializer.serialize_str(self.to_string().as_str())
+	}
+}
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for SocketAddress {
+	fn deserialize<D>(deserializer: D) -> Result<SocketAddress, D::Error> where D: Deserializer<'de> {
+		let socket_address = String::deserialize(deserializer)?
+			.parse::<SocketAddress>()
+			.map_err(|e| D::Error::custom(format_args!("{:?}", e)))?;
+		Ok(socket_address)
 	}
 }
 

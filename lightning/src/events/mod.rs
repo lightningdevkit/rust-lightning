@@ -17,6 +17,8 @@
 pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 use crate::blinded_path::message::OffersContext;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef};
@@ -292,6 +294,7 @@ impl_writeable_tlv_based_enum_upgradable!(PathFailure,
 );
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 /// The reason the channel was closed. See individual variants for more details.
 pub enum ClosureReason {
 	/// Closure generated from receiving a peer error message.
@@ -530,6 +533,7 @@ impl_writeable_tlv_based_enum!(InterceptNextHop,
 
 /// The reason the payment failed. Used in [`Event::PaymentFailed`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum PaymentFailureReason {
 	/// The intended recipient rejected our payment.
 	///

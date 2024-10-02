@@ -80,6 +80,8 @@
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 use core::hash::{Hash, Hasher};
 use core::num::NonZeroU64;
 use core::str::FromStr;
@@ -117,6 +119,7 @@ pub(super) const IV_BYTES_WITHOUT_METADATA: &[u8; IV_LEN] = b"LDK Offer v2~~~~";
 
 /// An identifier for an [`Offer`] built using [`DerivedMetadata`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct OfferId(pub [u8; 32]);
 
 impl OfferId {
