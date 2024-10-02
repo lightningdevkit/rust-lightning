@@ -2507,7 +2507,10 @@ impl EntropySource for RandomBytes {
 		let index = self.index.next();
 		let mut nonce = [0u8; 16];
 		nonce[..8].copy_from_slice(&index.to_be_bytes());
-		ChaCha20::get_single_block(&self.seed, &nonce)
+		let block = ChaCha20::get_single_block(&self.seed, &nonce);
+		let mut half_block = [0; 32];
+		half_block.copy_from_slice(&block[..32]);
+		half_block
 	}
 }
 

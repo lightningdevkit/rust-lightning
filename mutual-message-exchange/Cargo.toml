@@ -1,0 +1,21 @@
+[package]
+name = "mutual-message-exchange"
+version = "0.1.0"
+authors = ["Matt Corallo"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lightningdevkit/rust-lightning/"
+description = """
+An implementation of a trivial mutual authentication scheme where a message can be exchanged iff two parties mutually trust each other (out of individual trusted-keys lists).
+"""
+edition = "2021"
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+
+[dependencies]
+bitcoin_hashes = { version = "^0.12.0", default-features = false }
+secp256k1 = { version = "^0.27.0", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
