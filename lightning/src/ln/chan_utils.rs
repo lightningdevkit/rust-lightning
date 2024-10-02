@@ -1412,7 +1412,7 @@ impl Readable for CommitmentTransaction {
 			(8, keys, required),
 			(10, built, required),
 			(12, htlcs, required_vec),
-			(14, _legacy_deserialization_prevention_marker, option),
+			(14, _legacy_deserialization_prevention_marker, (option, explicit_type: ())),
 			(15, channel_type_features, option),
 		});
 

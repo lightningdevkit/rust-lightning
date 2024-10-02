@@ -281,6 +281,12 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (option, explicit_type: $fieldty: ty)) => {{
+		// no-op
+	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (required, explicit_type: $fieldty: ty)) => {{
+		_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required);
+	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required_vec) => {{
 		$crate::_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required);
 	}};
@@ -332,6 +338,12 @@ macro_rules! _check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, option) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (option, explicit_type: $fieldty: ty)) => {{
+		// no-op
+	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (required, explicit_type: $fieldty: ty)) => {{
+		_check_missing_tlv!($last_seen_type, $type, $field, required);
+	}};
 	($last_seen_type: expr, $type: expr, $field: ident, optional_vec) => {{
 		// no-op
 	}};
@@ -371,6 +383,14 @@ macro_rules! _decode_tlv {
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, option) => {{
 		$field = Some($crate::util::ser::Readable::read(&mut $reader)?);
+	}};
+	($outer_reader: expr, $reader: expr, $field: ident, (option, explicit_type: $fieldty: ty)) => {{
+		let _field: &Option<$fieldty> = &$field;
+		_decode_tlv!($outer_reader, $reader, $field, option);
+	}};
+	($outer_reader: expr, $reader: expr, $field: ident, (required, explicit_type: $fieldty: ty)) => {{
+		let _field: &$fieldty = &$field;
+		_decode_tlv!($outer_reader, $reader, $field, required);
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, optional_vec) => {{
 		let f: $crate::util::ser::WithoutLength<Vec<_>> = $crate::util::ser::Readable::read(&mut $reader)?;
@@ -794,6 +814,12 @@ macro_rules! _init_tlv_field_var {
 	};
 	($field: ident, optional_vec) => {
 		let mut $field = Some(Vec::new());
+	};
+	($field: ident, (option, explicit_type: $fieldty: ty)) => {
+		let mut $field: Option<$fieldty> = None;
+	};
+	($field: ident, (required, explicit_type: $fieldty: ty)) => {
+		let mut $field = $crate::util::ser::RequiredWrapper::<$fieldty>(None);
 	};
 	($field: ident, (option, encoding: ($fieldty: ty, $encoding: ident))) => {
 		$crate::_init_tlv_field_var!($field, option);
