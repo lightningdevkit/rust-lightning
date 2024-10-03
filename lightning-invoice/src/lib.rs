@@ -51,7 +51,7 @@ use core::num::ParseIntError;
 use core::ops::Deref;
 use core::slice::Iter;
 use core::time::Duration;
-use core::str;
+use alloc::string;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer,Serialize, Serializer, de::Error};
@@ -98,7 +98,7 @@ pub enum Bolt11ParseError {
 	MalformedHRP,
 	TooShortDataPart,
 	UnexpectedEndOfTaggedFields,
-	DescriptionDecodeError(str::Utf8Error),
+	DescriptionDecodeError(string::FromUtf8Error),
 	PaddingError,
 	IntegerOverflowError,
 	InvalidSegWitProgramLength,

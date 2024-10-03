@@ -1,3 +1,4 @@
+use alloc::string;
 #[cfg(feature = "std")]
 use std::error;
 #[cfg(not(feature = "std"))]
@@ -5,7 +6,6 @@ use core::convert::TryFrom;
 use core::fmt;
 use core::fmt::{Display, Formatter};
 use core::num::ParseIntError;
-use core::str;
 use core::str::FromStr;
 
 use bech32::primitives::decode::{CheckedHrpstring, CheckedHrpstringError};
@@ -613,7 +613,7 @@ impl FromBase32 for Description {
 
 	fn from_base32(field_data: &[Fe32]) -> Result<Description, Bolt11ParseError> {
 		let bytes = Vec::<u8>::from_base32(field_data)?;
-		let description = String::from(str::from_utf8(&bytes)?);
+		let description = String::from_utf8(bytes)?;
 		Ok(Description::new(description).expect(
 			"Max len is 639=floor(1023*5/8) since the len field is only 10bits long"
 		))
@@ -824,7 +824,7 @@ macro_rules! from_error {
 
 from_error!(Bolt11ParseError::MalformedSignature, bitcoin::secp256k1::Error);
 from_error!(Bolt11ParseError::ParseAmountError, ParseIntError);
-from_error!(Bolt11ParseError::DescriptionDecodeError, str::Utf8Error);
+from_error!(Bolt11ParseError::DescriptionDecodeError, string::FromUtf8Error);
 
 impl From<CheckedHrpstringError> for Bolt11ParseError {
 	fn from(e: CheckedHrpstringError) -> Self {
