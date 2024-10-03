@@ -885,9 +885,10 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				if let Some((claim_id, _)) = self.claimable_outpoints.get(&inp.previous_output) {
 					// If outpoint has claim request pending on it...
 					if let Some(request) = self.pending_claim_requests.get_mut(claim_id) {
-						//... we need to verify equality between transaction outpoints and claim request
-						// outpoints to know if transaction is the original claim or a bumped one issued
-						// by us.
+						//... we need to check if the pending claim was for a subset of the inputs
+						// spent by the confirmed transaction. If so, we can drop the pending claim
+						// after ANTI_REORG_DELAY blocks, otherwise we need to split it and retry
+						// claiming the remaining outputs.
 						let mut is_claim_subset_of_tx = true;
 						let mut tx_inputs = tx.input.iter().map(|input| &input.previous_output).collect::<Vec<_>>();
 						tx_inputs.sort_unstable();
