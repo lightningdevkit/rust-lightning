@@ -767,7 +767,6 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 				log_trace!(logger, "Test if outpoint which our counterparty can spend at {} against aggregation limit {}", req.counterparty_spendable_height(), cur_height + CLTV_SHARED_CLAIM_BUFFER);
 				if req.counterparty_spendable_height() <= cur_height + CLTV_SHARED_CLAIM_BUFFER || !req.aggregable() {
-					// Don't aggregate if outpoint package timelock is soon or marked as non-aggregable
 					preprocessed_requests.push(req);
 				} else if aggregated_request.is_none() {
 					aggregated_request = Some(req);
