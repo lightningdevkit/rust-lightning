@@ -313,6 +313,7 @@ impl RawHrp {
 	pub fn to_hrp(&self) -> bech32::Hrp {
 		let hrp_str = self.to_string();
 		let s = core::str::from_utf8(&hrp_str.as_bytes()).expect("HRP bytes should be ASCII");
+		debug_assert!(bech32::Hrp::parse(s).is_ok(), "We should always build BIP 173-valid HRPs");
 		bech32::Hrp::parse_unchecked(s)
 	}
 }
