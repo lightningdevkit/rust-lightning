@@ -29,7 +29,7 @@ pub(crate) trait Base32Len: Base32Iterable {
 
 impl<const N: usize> Base32Iterable for [u8; N] {
 	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new((*self).into_iter().bytes_to_fes())
+		self[..].fe_iter()
 	}
 }
 
