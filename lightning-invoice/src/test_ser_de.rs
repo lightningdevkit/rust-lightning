@@ -1,33 +1,32 @@
-use crate::{
-	sha256, FromBase32, PayeePubKey, PaymentSecret, PositiveTimestamp, RawDataPart, Sha256,
-};
-use bech32::{Base32Len, ToBase32};
-
+use crate::de::FromBase32;
+use crate::ser::{Base32Iterable, Base32Len};
+use crate::{sha256, PayeePubKey, PaymentSecret, PositiveTimestamp, RawDataPart, Sha256};
+use bech32::Fe32;
 use core::fmt::Debug;
 use std::str::FromStr;
 
 /// Test base32 encode and decode
 fn ser_de_test<T>(o: T, expected_str: &str)
 where
-	T: ToBase32 + FromBase32 + Eq + Debug,
+	T: Base32Iterable + FromBase32 + Eq + Debug,
 	T::Err: Debug,
 {
-	let serialized_32 = o.to_base32();
+	let serialized_32 = o.fe_iter().collect::<Vec<Fe32>>();
 	let serialized_str = serialized_32.iter().map(|f| f.to_char()).collect::<String>();
-	assert_eq!(serialized_str, expected_str);
+	assert_eq!(serialized_str, expected_str, "Mismatch for {:?}", o);
 
 	// deserialize back
 	let o2 = T::from_base32(&serialized_32).unwrap();
-	assert_eq!(o, o2);
+	assert_eq!(o, o2, "Mismatch for {}", serialized_str);
 }
 
 /// Test base32 encode and decode, and also length hint
 fn ser_de_test_len<T>(o: T, expected_str: &str)
 where
-	T: ToBase32 + FromBase32 + Base32Len + Eq + Debug,
+	T: Base32Iterable + Base32Len + FromBase32 + Eq + Debug,
 	T::Err: Debug,
 {
-	assert_eq!(o.base32_len(), expected_str.len());
+	assert_eq!(o.base32_len(), expected_str.len(), "Mismatch for {} {:?}", expected_str, o);
 
 	ser_de_test(o, expected_str)
 }
@@ -50,6 +49,50 @@ fn vec_u8() {
 }
 
 #[test]
+fn array_u8() {
+	ser_de_test_len([0], "qq");
+	ser_de_test_len([255], "lu");
+	ser_de_test_len([0, 1], "qqqs");
+	ser_de_test_len([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "qqqsyqcyq5rqwzqf");
+	ser_de_test_len([255, 254, 253, 252, 251, 250, 249, 248, 247, 246], "lll0ml8mltul3alk");
+}
+
+#[test]
+fn array_u8_error_invalid_length() {
+	// correct len -- 5 fe32 -> 3 bytes
+	assert_eq!(
+		<[u8; 3]>::from_base32(
+			&"pqqql".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()[..]
+		)
+		.unwrap(),
+		[8, 0, 15]
+	);
+
+	// input too short
+	assert_eq!(
+		<[u8; 3]>::from_base32(
+			&"pqql".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()[..]
+		)
+		.err()
+		.unwrap()
+		.to_string(),
+		"Slice had length 2 instead of 3 for element <[u8; N]>"
+	);
+
+	// input too long
+	assert_eq!(
+		<[u8; 3]>::from_base32(
+			&"pqqqqql".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()
+				[..]
+		)
+		.err()
+		.unwrap()
+		.to_string(),
+		"Slice had length 4 instead of 3 for element <[u8; N]>"
+	);
+}
+
+#[test]
 fn payment_secret() {
 	let payment_secret = PaymentSecret([7; 32]);
 	ser_de_test_len(payment_secret, "qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurswpc8qurs");
@@ -67,8 +110,65 @@ fn positive_timestamp() {
 fn bolt11_invoice_features() {
 	use crate::Bolt11InvoiceFeatures;
 
-	let features = Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4, 5, 42, 100, 101]);
-	ser_de_test_len(features, "x2ep2q5zqxqsp");
+	// Test few values, lengths, and paddings
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4, 5, 42, 100, 101]),
+		"x2ep2q5zqxqsp",
+	);
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![]), "");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![0]), "");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1]), "p");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![31]), "l");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![100]), "ry");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![255]), "8l");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1]), "p");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2]), "sp");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3]), "xqsp");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4]), "zqxqsp");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![1, 2, 3, 4, 5]), "5zqxqsp");
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 254, 253, 252, 251]),
+		"l070mlhl",
+	);
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![100, 0]), "ry");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![100, 0, 0, 0]), "ry");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![0, 100]), "eqq");
+	ser_de_test_len(Bolt11InvoiceFeatures::from_le_bytes(vec![0, 0, 0, 100]), "pjqqqqq");
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 255, 255, 255, 255, 255, 255, 255, 255]),
+		"rllllllllllllll",
+	);
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 255, 255, 255, 255, 255, 255, 255, 254]),
+		"rl0llllllllllll",
+	);
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 255, 255, 255, 255, 255, 255, 255, 127]),
+		"pllllllllllllll",
+	);
+	ser_de_test_len(
+		Bolt11InvoiceFeatures::from_le_bytes(vec![255, 255, 255, 255, 255, 255, 255, 255, 63]),
+		"llllllllllllll",
+	);
+
+	// To test skipping 0's in deserialization, we have to start with deserialization
+	assert_eq!(
+		Bolt11InvoiceFeatures::from_base32(
+			&"qqqqqry".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()
+				[..]
+		)
+		.unwrap()
+		.le_flags(),
+		vec![100]
+	);
+	assert_eq!(
+		Bolt11InvoiceFeatures::from_base32(
+			&"ry".to_string().chars().map(|c| Fe32::from_char(c).unwrap()).collect::<Vec<_>>()[..]
+		)
+		.unwrap()
+		.le_flags(),
+		vec![100]
+	);
 }
 
 #[test]
