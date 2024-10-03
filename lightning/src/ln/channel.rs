@@ -104,6 +104,7 @@ enum FeeUpdateState {
 	Outbound,
 }
 
+#[derive(Clone)]
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
 	FailMalformed(([u8; 32], u16)),
@@ -138,6 +139,7 @@ impl_writeable_tlv_based_enum!(InboundHTLCResolution,
 	},
 );
 
+#[derive(Clone)]
 enum InboundHTLCState {
 	/// Offered by remote, to be included in next local commitment tx. I.e., the remote sent an
 	/// update_add_htlc message for this HTLC.
@@ -212,6 +214,7 @@ impl From<&InboundHTLCState> for Option<InboundHTLCStateDetails> {
 	}
 }
 
+#[derive(Clone)]
 struct InboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -220,7 +223,8 @@ struct InboundHTLCOutput {
 	state: InboundHTLCState,
 }
 
-#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 enum OutboundHTLCState {
 	/// Added by us and included in a commitment_signed (if we were AwaitingRemoteRevoke when we
 	/// created it we would have put it in the holding cell instead). When they next revoke_and_ack
@@ -302,7 +306,8 @@ impl<'a> Into<Option<&'a HTLCFailReason>> for &'a OutboundHTLCOutcome {
 	}
 }
 
-#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 struct OutboundHTLCOutput {
 	htlc_id: u64,
 	amount_msat: u64,
@@ -315,7 +320,8 @@ struct OutboundHTLCOutput {
 }
 
 /// See AwaitingRemoteRevoke ChannelState for more info
-#[cfg_attr(test, derive(Clone, Debug, PartialEq))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 enum HTLCUpdateAwaitingACK {
 	AddHTLC { // TODO: Time out if we're getting close to cltv_expiry
 		// always outbound
@@ -790,7 +796,7 @@ pub(super) enum ChannelUpdateStatus {
 }
 
 /// We track when we sent an `AnnouncementSignatures` to our peer in a few states, described here.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum AnnouncementSigsState {
 	/// We have not sent our peer an `AnnouncementSignatures` yet, or our peer disconnected since
 	/// we sent the last `AnnouncementSignatures`.
@@ -1106,6 +1112,7 @@ pub(crate) const UNFUNDED_CHANNEL_AGE_LIMIT_TICKS: usize = 60;
 /// Number of blocks needed for an output from a coinbase transaction to be spendable.
 pub(crate) const COINBASE_MATURITY: u32 = 100;
 
+#[derive(Clone)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
@@ -3621,6 +3628,111 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 		self.channel_transaction_parameters.channel_type_features = self.channel_type.clone();
 		Ok(())
 	}
+
+	/// Clone, each field, with a few exceptions, notably the channel signer, and
+	/// a few non-cloneable fields (such as Secp256k1 context)
+	#[allow(unused)]
+	fn clone(&self, holder_signer: <SP::Target as SignerProvider>::EcdsaSigner) -> Self {
+		Self {
+			config: self.config,
+			prev_config: self.prev_config,
+			inbound_handshake_limits_override: self.inbound_handshake_limits_override,
+			user_id: self.user_id,
+			channel_id: self.channel_id,
+			temporary_channel_id: self.temporary_channel_id,
+			channel_state: self.channel_state,
+			announcement_sigs_state: self.announcement_sigs_state.clone(),
+			// Create new Secp256k context
+			secp_ctx: Secp256k1::new(),
+			channel_value_satoshis: self.channel_value_satoshis,
+			latest_monitor_update_id: self.latest_monitor_update_id,
+			// Use provided channel signer
+			holder_signer: ChannelSignerType::Ecdsa(holder_signer),
+			shutdown_scriptpubkey: self.shutdown_scriptpubkey.clone(),
+			destination_script: self.destination_script.clone(),
+			holder_commitment_point: self.holder_commitment_point,
+			cur_counterparty_commitment_transaction_number: self.cur_counterparty_commitment_transaction_number,
+			value_to_self_msat: self.value_to_self_msat,
+			pending_inbound_htlcs: self.pending_inbound_htlcs.clone(),
+			pending_outbound_htlcs: self.pending_outbound_htlcs.clone(),
+			holding_cell_htlc_updates: self.holding_cell_htlc_updates.clone(),
+			resend_order: self.resend_order.clone(),
+			monitor_pending_channel_ready: self.monitor_pending_channel_ready,
+			monitor_pending_revoke_and_ack: self.monitor_pending_revoke_and_ack,
+			monitor_pending_commitment_signed: self.monitor_pending_commitment_signed,
+			monitor_pending_forwards: self.monitor_pending_forwards.clone(),
+			monitor_pending_failures: self.monitor_pending_failures.clone(),
+			monitor_pending_finalized_fulfills: self.monitor_pending_finalized_fulfills.clone(),
+			monitor_pending_update_adds: self.monitor_pending_update_adds.clone(),
+			signer_pending_revoke_and_ack: self.signer_pending_revoke_and_ack,
+			signer_pending_commitment_update: self.signer_pending_commitment_update,
+			signer_pending_funding: self.signer_pending_funding,
+			signer_pending_closing: self.signer_pending_closing,
+			pending_update_fee: self.pending_update_fee,
+			holding_cell_update_fee: self.holding_cell_update_fee,
+			next_holder_htlc_id: self.next_holder_htlc_id,
+			next_counterparty_htlc_id: self.next_counterparty_htlc_id,
+			feerate_per_kw: self.feerate_per_kw,
+			update_time_counter: self.update_time_counter,
+			// Create new mutex with copied values
+			#[cfg(debug_assertions)]
+			holder_max_commitment_tx_output: Mutex::new(*self.holder_max_commitment_tx_output.lock().unwrap()),
+			#[cfg(debug_assertions)]
+			counterparty_max_commitment_tx_output: Mutex::new(*self.counterparty_max_commitment_tx_output.lock().unwrap()),
+			last_sent_closing_fee: self.last_sent_closing_fee.clone(),
+			last_received_closing_sig: self.last_received_closing_sig,
+			target_closing_feerate_sats_per_kw: self.target_closing_feerate_sats_per_kw,
+			pending_counterparty_closing_signed: self.pending_counterparty_closing_signed.clone(),
+			closing_fee_limits: self.closing_fee_limits,
+			expecting_peer_commitment_signed: self.expecting_peer_commitment_signed,
+			funding_tx_confirmed_in: self.funding_tx_confirmed_in,
+			funding_tx_confirmation_height: self.funding_tx_confirmation_height,
+			short_channel_id: self.short_channel_id,
+			channel_creation_height: self.channel_creation_height,
+			counterparty_dust_limit_satoshis: self.counterparty_dust_limit_satoshis,
+			holder_dust_limit_satoshis: self.holder_dust_limit_satoshis,
+			counterparty_max_htlc_value_in_flight_msat: self.counterparty_max_htlc_value_in_flight_msat,
+			holder_max_htlc_value_in_flight_msat: self.holder_max_htlc_value_in_flight_msat,
+			counterparty_selected_channel_reserve_satoshis: self.counterparty_selected_channel_reserve_satoshis,
+			holder_selected_channel_reserve_satoshis: self.holder_selected_channel_reserve_satoshis,
+			counterparty_htlc_minimum_msat: self.counterparty_htlc_minimum_msat,
+			holder_htlc_minimum_msat: self.holder_htlc_minimum_msat,
+			counterparty_max_accepted_htlcs: self.counterparty_max_accepted_htlcs,
+			holder_max_accepted_htlcs: self.holder_max_accepted_htlcs,
+			minimum_depth: self.minimum_depth,
+			counterparty_forwarding_info: self.counterparty_forwarding_info.clone(),
+			channel_transaction_parameters: self.channel_transaction_parameters.clone(),
+			funding_transaction: self.funding_transaction.clone(),
+			is_manual_broadcast: self.is_manual_broadcast,
+			is_batch_funding: self.is_batch_funding,
+			counterparty_cur_commitment_point: self.counterparty_cur_commitment_point,
+			counterparty_prev_commitment_point: self.counterparty_prev_commitment_point,
+			counterparty_node_id: self.counterparty_node_id,
+			counterparty_shutdown_scriptpubkey: self.counterparty_shutdown_scriptpubkey.clone(),
+			commitment_secrets: self.commitment_secrets.clone(),
+			channel_update_status: self.channel_update_status,
+			closing_signed_in_flight: self.closing_signed_in_flight,
+			announcement_sigs: self.announcement_sigs,
+			// Create new mutex with copied values
+			#[cfg(any(test, fuzzing))]
+			next_local_commitment_tx_fee_info_cached: Mutex::new(self.next_local_commitment_tx_fee_info_cached.lock().unwrap().clone()),
+			#[cfg(any(test, fuzzing))]
+			next_remote_commitment_tx_fee_info_cached: Mutex::new(self.next_remote_commitment_tx_fee_info_cached.lock().unwrap().clone()),
+			workaround_lnd_bug_4006: self.workaround_lnd_bug_4006.clone(),
+			sent_message_awaiting_response: self.sent_message_awaiting_response,
+			#[cfg(any(test, fuzzing))]
+			historical_inbound_htlc_fulfills: self.historical_inbound_htlc_fulfills.clone(),
+			channel_type: self.channel_type.clone(),
+			latest_inbound_scid_alias: self.latest_inbound_scid_alias,
+			outbound_scid_alias: self.outbound_scid_alias,
+			channel_pending_event_emitted: self.channel_pending_event_emitted,
+			funding_tx_broadcast_safe_event_emitted: self.funding_tx_broadcast_safe_event_emitted,
+			channel_ready_event_emitted: self.channel_ready_event_emitted,
+			local_initiated_shutdown: self.local_initiated_shutdown.clone(),
+			channel_keys_id: self.channel_keys_id,
+			blocked_monitor_updates: self.blocked_monitor_updates.clone(),
+		}
+	}
 }
 
 // Internal utility functions for channels
@@ -3702,6 +3814,7 @@ pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 }
 
 #[cfg(any(test, fuzzing))]
+#[derive(Clone)]
 struct CommitmentTxInfoCached {
 	fee: u64,
 	total_pending_htlcs: usize,
@@ -9604,7 +9717,7 @@ mod tests {
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
-	use crate::ln::channel::{AwaitingChannelReadyFlags, Channel, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_sat};
+	use crate::ln::channel::{AwaitingChannelReadyFlags, Channel, ChannelContext, ChannelState, InboundHTLCOutput, OutboundV1Channel, InboundV1Channel, OutboundHTLCOutput, InboundHTLCState, OutboundHTLCState, HTLCCandidate, HTLCInitiator, HTLCUpdateAwaitingACK, commit_tx_fee_sat};
 	use crate::ln::channel::{MAX_FUNDING_SATOSHIS_NO_WUMBO, TOTAL_BITCOIN_SUPPLY_SATOSHIS, MIN_THEIR_CHAN_RESERVE_SATOSHIS};
 	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 	use crate::ln::msgs;
@@ -11367,5 +11480,56 @@ mod tests {
 		node_a_chan.set_batch_ready();
 		assert_eq!(node_a_chan.context.channel_state, ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::THEIR_CHANNEL_READY));
 		assert!(node_a_chan.check_get_channel_ready(0, &&logger).is_some());
+	}
+
+	#[test]
+	fn channel_context_clone() {
+		let fee_estimator = TestFeeEstimator {fee_est: 253 };
+		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
+		let seed = [42; 32];
+		let network = Network::Testnet;
+		let keys_provider = test_utils::TestKeysInterface::new(&seed, network);
+		let secp_ctx = Secp256k1::new();
+		let node_a_node_id = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let config = UserConfig::default();
+
+		let signer_provider: &TestKeysInterface = &&keys_provider;
+		let channel_value_satoshis = 10000000;
+		let user_id = 42;
+		let channel_keys_id = signer_provider.generate_channel_keys_id(false, channel_value_satoshis, user_id);
+		let holder_signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let logger = test_utils::TestLogger::new();
+		let pubkeys = holder_signer.pubkeys().clone();
+
+		// Create a context
+		let context = ChannelContext::<&TestKeysInterface>::new_for_outbound_channel(
+			&bounded_fee_estimator,
+			&&keys_provider,
+			&signer_provider,
+			node_a_node_id,
+			&channelmanager::provided_init_features(&config),
+			channel_value_satoshis,
+			100000,
+			user_id,
+			&config,
+			0,
+			42,
+			None,
+			100000,
+			[42; 32],
+			holder_signer,
+			pubkeys,
+			&logger,
+		).unwrap();
+
+		// Clone it
+		let holder_signer2 = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
+		let context_cloned = context.clone(holder_signer2);
+
+		// Compare some fields
+		assert_eq!(context_cloned.channel_value_satoshis, context.channel_value_satoshis);
+		assert_eq!(context_cloned.channel_id, context.channel_id);
+		assert_eq!(context_cloned.funding_tx_broadcast_safe_event_emitted, context.funding_tx_broadcast_safe_event_emitted);
+		assert_eq!(context_cloned.channel_keys_id, context.channel_keys_id);
 	}
 }
