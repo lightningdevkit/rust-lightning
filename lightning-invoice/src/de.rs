@@ -712,7 +712,7 @@ impl FromBase32 for PrivateRoute {
 			return Err(Bolt11ParseError::UnexpectedEndOfTaggedFields);
 		}
 
-		let mut route_hops = Vec::<RouteHintHop>::new();
+		let mut route_hops = Vec::with_capacity(bytes.len() / 51);
 
 		let mut bytes = bytes.as_slice();
 		while !bytes.is_empty() {

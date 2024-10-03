@@ -218,19 +218,20 @@ impl Display for SiPrefix {
 }
 
 /// Encode an integer to base32, big endian, without leading zeros
-fn encode_int_be_base32(int: u64) -> Vec<Fe32> {
+fn encode_int_be_base32(int: u64) -> impl ExactSizeIterator<Item=Fe32> {
 	let base = 32u64;
 
 	// (64 + 4) / 5 == 13
-	let mut out_vec = Vec::<Fe32>::with_capacity(13);
+	let mut out = [Fe32::Q; 13];
+	let mut out_pos = 0;
 	let mut rem_int = int;
 	while rem_int != 0 {
-		out_vec.push(Fe32::try_from((rem_int % base) as u8).expect("always <32"));
+		out[out_pos] = Fe32::try_from((rem_int % base) as u8).expect("always <32");
+		out_pos += 1;
 		rem_int /= base;
 	}
 
-	out_vec.reverse();
-	out_vec
+	out.into_iter().take(out_pos).rev()
 }
 
 /// The length of the output of `encode_int_be_base32`.
@@ -252,7 +253,7 @@ impl Base32Iterable for PositiveTimestamp {
 		let fes = encode_int_be_base32(self.as_unix_timestamp());
 		debug_assert!(fes.len() <= 7, "Invalid timestamp length");
 		let to_pad = 7 - fes.len();
-		Box::new(core::iter::repeat(Fe32::Q).take(to_pad).chain(fes.into_iter()))
+		Box::new(core::iter::repeat(Fe32::Q).take(to_pad).chain(fes))
 	}
 }
 
@@ -305,7 +306,7 @@ impl Base32Len for PayeePubKey {
 
 impl Base32Iterable for ExpiryTime {
 	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(encode_int_be_base32(self.as_seconds()).into_iter())
+		Box::new(encode_int_be_base32(self.as_seconds()))
 	}
 }
 
@@ -317,7 +318,7 @@ impl Base32Len for ExpiryTime {
 
 impl Base32Iterable for MinFinalCltvExpiryDelta {
 	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(encode_int_be_base32(self.0).into_iter())
+		Box::new(encode_int_be_base32(self.0))
 	}
 }
 
@@ -504,6 +505,6 @@ mod test {
 			.map(|v| Fe32::try_from(v).expect("<= 31"))
 			.collect::<Vec<Fe32>>();
 
-		assert_eq!(expected_out, encode_int_be_base32(input));
+		assert_eq!(expected_out, encode_int_be_base32(input).collect::<Vec<Fe32>>());
 	}
 }
