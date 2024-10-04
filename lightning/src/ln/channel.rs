@@ -1610,6 +1610,12 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	UnfundedInboundV2(InboundV2Channel<SP>),
 	/// Funding transaction negotiated (pending or locked)
 	Funded(Channel<SP>),
+	/// V2 funding phase:
+	/// - at least one funding has been negotiated
+	/// - there may be more negotiated variants due to RBF, and
+	/// - there may be a latest variant which is still being negotiated
+	#[cfg(any(dual_funding, splicing))]
+	FundingV2(Channel<SP>),
 	/// Renegotiating existing channel, for splicing
 	/// First channel is the already funded (and confirmed, pre-splice) channel.
 	/// The second collection can hold:
@@ -1632,6 +1638,8 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedOutboundV2(chan) => &chan.context,
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
+			#[cfg(any(dual_funding, splicing))]
+			ChannelPhase::FundingV2(chan) => &chan.context,
 			// Both post and pre exist
 			#[cfg(splicing)]
 			ChannelPhase::RefundingV2((pre_chan, post_chans)) => {
@@ -1650,6 +1658,8 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			ChannelPhase::UnfundedOutboundV2(ref mut chan) => &mut chan.context,
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
+			#[cfg(any(dual_funding, splicing))]
+			ChannelPhase::FundingV2(ref mut chan) => &mut chan.context,
 			// Both post and pre exist
 			#[cfg(splicing)]
 			ChannelPhase::RefundingV2((ref mut pre_chan, ref mut post_chans)) => {
@@ -3034,6 +3044,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// Returns true if we've ever received a message from the remote end for this Channel
 	pub fn have_received_message(&self) -> bool {
 		self.channel_state > ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT)
+	}
+
+	/// Returns true if this channel is fully established and not known to be closing.
+	/// Allowed in any state (including after shutdown)
+	pub fn is_ready(&self) -> bool {
+		matches!(self.channel_state, ChannelState::ChannelReady(_))
 	}
 
 	/// Returns true if this channel is fully established and not known to be closing.
