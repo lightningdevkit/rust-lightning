@@ -1378,6 +1378,8 @@ pub enum Event {
 	/// * When an unknown SCID is requested for forwarding a payment.
 	/// * Expected MPP amount has already been reached
 	/// * The HTLC has timed out
+	/// * The HTLC failed to meet the forwarding requirements (i.e. insufficient fees paid, or a
+	/// CLTV that is too soon)
 	///
 	/// This event, however, does not get generated if an HTLC fails to meet the forwarding
 	/// requirements (i.e. insufficient fees paid, or a CLTV that is too soon).
