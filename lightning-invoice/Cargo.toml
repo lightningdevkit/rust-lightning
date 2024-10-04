@@ -21,7 +21,7 @@ std = []
 bech32 = { version = "0.11.0", default-features = false }
 lightning-types = { version = "0.1.0", path = "../lightning-types", default-features = false }
 serde = { version = "1.0.118", optional = true }
-bitcoin = { version = "0.32.2", default-features = false, features = ["secp-recovery"] }
+bitcoin = { version = "0.32.3", default-features = false, features = ["secp-recovery"] }
 
 [dev-dependencies]
 serde_json = { version = "1"}
