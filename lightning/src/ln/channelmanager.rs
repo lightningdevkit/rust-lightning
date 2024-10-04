@@ -12403,11 +12403,23 @@ where
 		let best_block_height: u32 = Readable::read(reader)?;
 		let best_block_hash: BlockHash = Readable::read(reader)?;
 
-		let mut failed_htlcs = Vec::new();
+		let empty_peer_state = || {
+			PeerState {
+				channel_by_id: new_hash_map(),
+				inbound_channel_request_by_id: new_hash_map(),
+				latest_features: InitFeatures::empty(),
+				pending_msg_events: Vec::new(),
+				in_flight_monitor_updates: BTreeMap::new(),
+				monitor_update_blocked_actions: BTreeMap::new(),
+				actions_blocking_raa_monitor_updates: BTreeMap::new(),
+				is_connected: false,
+			}
+		};
 
+		let mut failed_htlcs = Vec::new();
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut funding_txo_set = hash_set_with_capacity(cmp::min(channel_count as usize, 128));
-		let mut funded_peer_channels: HashMap<PublicKey, HashMap<ChannelId, ChannelPhase<SP>>> = hash_map_with_capacity(cmp::min(channel_count as usize, 128));
+		let mut per_peer_state = hash_map_with_capacity(cmp::min(channel_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<SP>>)>()));
 		let mut outpoint_to_peer = hash_map_with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_chan_info = hash_map_with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = VecDeque::new();
@@ -12495,17 +12507,10 @@ where
 					if let Some(funding_txo) = channel.context.get_funding_txo() {
 						outpoint_to_peer.insert(funding_txo, channel.context.get_counterparty_node_id());
 					}
-					match funded_peer_channels.entry(channel.context.get_counterparty_node_id()) {
-						hash_map::Entry::Occupied(mut entry) => {
-							let by_id_map = entry.get_mut();
-							by_id_map.insert(channel.context.channel_id(), ChannelPhase::Funded(channel));
-						},
-						hash_map::Entry::Vacant(entry) => {
-							let mut by_id_map = new_hash_map();
-							by_id_map.insert(channel.context.channel_id(), ChannelPhase::Funded(channel));
-							entry.insert(by_id_map);
-						}
-					}
+					per_peer_state.entry(channel.context.get_counterparty_node_id())
+						.or_insert_with(|| Mutex::new(empty_peer_state()))
+						.get_mut().unwrap()
+						.channel_by_id.insert(channel.context.channel_id(), ChannelPhase::Funded(channel));
 				}
 			} else if channel.is_awaiting_initial_mon_persist() {
 				// If we were persisted and shut down while the initial ChannelMonitor persistence
@@ -12572,27 +12577,13 @@ where
 			claimable_htlcs_list.push((payment_hash, previous_hops));
 		}
 
-		let peer_state_from_chans = |channel_by_id| {
-			PeerState {
-				channel_by_id,
-				inbound_channel_request_by_id: new_hash_map(),
-				latest_features: InitFeatures::empty(),
-				pending_msg_events: Vec::new(),
-				in_flight_monitor_updates: BTreeMap::new(),
-				monitor_update_blocked_actions: BTreeMap::new(),
-				actions_blocking_raa_monitor_updates: BTreeMap::new(),
-				is_connected: false,
-			}
-		};
-
 		let peer_count: u64 = Readable::read(reader)?;
-		let mut per_peer_state = hash_map_with_capacity(cmp::min(peer_count as usize, MAX_ALLOC_SIZE/mem::size_of::<(PublicKey, Mutex<PeerState<SP>>)>()));
 		for _ in 0..peer_count {
-			let peer_pubkey = Readable::read(reader)?;
-			let peer_chans = funded_peer_channels.remove(&peer_pubkey).unwrap_or(new_hash_map());
-			let mut peer_state = peer_state_from_chans(peer_chans);
-			peer_state.latest_features = Readable::read(reader)?;
-			per_peer_state.insert(peer_pubkey, Mutex::new(peer_state));
+			let peer_pubkey: PublicKey = Readable::read(reader)?;
+			let latest_features = Readable::read(reader)?;
+			if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
+				peer_state.get_mut().unwrap().latest_features = latest_features;
+			}
 		}
 
 		let event_count: u64 = Readable::read(reader)?;
@@ -12804,7 +12795,7 @@ where
 					// still open, we need to replay any monitor updates that are for closed channels,
 					// creating the neccessary peer_state entries as we go.
 					let peer_state_mutex = per_peer_state.entry(counterparty_id).or_insert_with(|| {
-						Mutex::new(peer_state_from_chans(new_hash_map()))
+						Mutex::new(empty_peer_state())
 					});
 					let mut peer_state = peer_state_mutex.lock().unwrap();
 					handle_in_flight_updates!(counterparty_id, chan_in_flight_updates,
