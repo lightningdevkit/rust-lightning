@@ -1312,9 +1312,8 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	}
 
 	/// Return all the funded channels
-	pub fn all_funded(&mut self) -> Vec<&mut Channel<SP>> {
-		debug_assert!(false, "This is to be used in RBF, not yet implemented");
-		self.funded_channels.iter_mut().collect::<Vec<_>>()
+	pub fn all_funded(&self) -> Vec<&Channel<SP>> {
+		self.funded_channels.iter().collect::<Vec<_>>()
 	}
 
 	/// TODO remove
@@ -1422,15 +1421,19 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	/// Take the last funded (unconfirmed) channel
-	pub fn take_funded_channel(&mut self) -> Option<Channel<SP>> {
+	/// Take one funded (unconfirmed) channel
+	pub fn take_funded_channel(&mut self, idx: usize) -> Option<Channel<SP>> {
 		// self.debug(); // TODO remove
-		if self.funded_channels.len() > 0 {
-			let n = self.funded_channels.len();
-			Some(self.funded_channels.remove(n - 1))
+		if idx < self.funded_channels.len() {
+			Some(self.funded_channels.remove(idx))
 		} else {
 			None
 		}
+	}
+
+	/// Take the last funded (unconfirmed) channel
+	pub fn take_last_funded_channel(&mut self) -> Option<Channel<SP>> {
+		self.take_funded_channel(self.funded_channels.len() - 1)
 	}
 
 	/// Keep only the one confirmed channel, drop the other variants
@@ -1615,7 +1618,7 @@ pub(super) enum ChannelPhase<SP: Deref> where SP::Target: SignerProvider {
 	/// - there may be more negotiated variants due to RBF, and
 	/// - there may be a latest variant which is still being negotiated
 	#[cfg(any(dual_funding, splicing))]
-	FundingV2(Channel<SP>),
+	FundingV2(ChannelVariants<SP>),
 	/// Renegotiating existing channel, for splicing
 	/// First channel is the already funded (and confirmed, pre-splice) channel.
 	/// The second collection can hold:
@@ -1639,13 +1642,15 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(chan) => &chan.context,
 			#[cfg(any(dual_funding, splicing))]
-			ChannelPhase::FundingV2(chan) => &chan.context,
+			ChannelPhase::FundingV2(chans) => {
+				&chans.get_funded_channel().expect("FundingV2 must be funded").context
+			}
 			// Both post and pre exist
 			#[cfg(splicing)]
 			ChannelPhase::RefundingV2((pre_chan, post_chans)) => {
 				// If post is funded, use that, otherwise use pre
 				&post_chans.get_funded_channel().unwrap_or(pre_chan).context
-			},
+			}
 		}
 	}
 
@@ -1659,13 +1664,15 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(ref mut chan) => &mut chan.context,
 			#[cfg(any(dual_funding, splicing))]
-			ChannelPhase::FundingV2(ref mut chan) => &mut chan.context,
+			ChannelPhase::FundingV2(ref mut chans) => {
+				&mut chans.get_funded_channel_mut().expect("FundingV2 must be funded").context
+			}
 			// Both post and pre exist
 			#[cfg(splicing)]
 			ChannelPhase::RefundingV2((ref mut pre_chan, ref mut post_chans)) => {
 				// If post is funded, use that, otherwise use pre
 				&mut post_chans.get_funded_channel_mut().unwrap_or(pre_chan).context
-			},
+			}
 		}
 	}
 }

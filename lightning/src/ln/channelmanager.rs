@@ -942,7 +942,14 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 				#[cfg(any(dual_funding, splicing))]
 				ChannelPhase::UnfundedInboundV2(_) => false,
 				#[cfg(any(dual_funding, splicing))]
-				ChannelPhase::FundingV2(_) => true, // TODO(RBF): may have unfunded incoming
+				ChannelPhase::FundingV2(chans) => {
+					if let Some(pending) = chans.get_pending() {
+						pending.is_outbound()
+					} else {
+						// funded
+						true
+					}
+				}
 				#[cfg(splicing)]
 				ChannelPhase::RefundingV2((_pre_chan, post_chans)) => {
 					if let Some(pending) = post_chans.get_pending() {
@@ -951,7 +958,7 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 						// funded
 						true
 					}
-				},
+				}
 			}
 		)
 			&& self.monitor_update_blocked_actions.is_empty()
@@ -2813,25 +2820,26 @@ macro_rules! convert_chan_phase_err {
 		match $channel_phase {
 			ChannelPhase::Funded(channel) => {
 				convert_chan_phase_err!($self, $err, channel, $channel_id, FUNDED_CHANNEL)
-			},
+			}
 			ChannelPhase::UnfundedOutboundV1(channel) => {
 				convert_chan_phase_err!($self, $err, channel, $channel_id, UNFUNDED_CHANNEL)
-			},
+			}
 			ChannelPhase::UnfundedInboundV1(channel) => {
 				convert_chan_phase_err!($self, $err, channel, $channel_id, UNFUNDED_CHANNEL)
-			},
+			}
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedOutboundV2(channel) => {
 				convert_chan_phase_err!($self, $err, channel, $channel_id, UNFUNDED_CHANNEL)
-			},
+			}
 			#[cfg(any(dual_funding, splicing))]
 			ChannelPhase::UnfundedInboundV2(channel) => {
 				convert_chan_phase_err!($self, $err, channel, $channel_id, UNFUNDED_CHANNEL)
-			},
+			}
 			#[cfg(any(dual_funding, splicing))]
-			ChannelPhase::FundingV2(channel) => {
+			ChannelPhase::FundingV2(channels) => {
+				let channel = channels.get_funded_channel_mut().expect("FundingV2 must be funded");
 				convert_chan_phase_err!($self, $err, channel, $channel_id, FUNDED_CHANNEL)
-			},
+			}
 			#[cfg(splicing)]
 			ChannelPhase::RefundingV2((_, channels)) => {
 				if let Some(funded_channel) = channels.get_funded_channel_mut() {
@@ -2847,7 +2855,7 @@ macro_rules! convert_chan_phase_err {
 						None => panic!("No channel"),
 					}
 				}
-			},
+			}
 		}
 	};
 }
@@ -3605,7 +3613,10 @@ where
 						// Only `Channels` in the `ChannelPhase::Funded` phase can be considered funded.
 						ChannelPhase::Funded(chan) => Some((chan_id, chan)),
 						#[cfg(any(dual_funding, splicing))]
-						ChannelPhase::FundingV2(chan) => Some((chan_id, chan)),
+						ChannelPhase::FundingV2(chans) => {
+							let chan = chans.get_funded_channel().expect("FundingV2 must be funded");
+							Some((chan_id, chan))
+						}
 						// Both pre and post exist
 						#[cfg(splicing)]
 						ChannelPhase::RefundingV2((pre_chan, _post_chans)) => {
@@ -5133,38 +5144,38 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		match peer_state.channel_by_id.get_mut(channel_id) {
-			Some(ChannelPhase::Funded(chan)) |
-			Some(ChannelPhase::FundingV2(chan)) => {
-				let tx_signatures_opt = chan.funding_transaction_signed(channel_id, witnesses)
+		let tx_signatures_opt = match peer_state.channel_by_id.get_mut(channel_id) {
+			Some(ChannelPhase::Funded(chan)) => {
+				chan.funding_transaction_signed(channel_id, witnesses)
 					.map_err(|_err| APIError::APIMisuseError {
 						err: format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)
-					})?;
-				if let Some(tx_signatures) = tx_signatures_opt {
-					peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
-						node_id: *counterparty_node_id,
-						msg: tx_signatures,
-					});
-				}
-			},
+					})?
+			}
+			Some(ChannelPhase::FundingV2(chans)) => {
+				chans.funding_transaction_signed(channel_id, witnesses)
+					.map_err(|_err| APIError::APIMisuseError {
+						err: format!("Channel with id {} has no pending signing session, not expecting funding signatures", channel_id)
+					})?
+			}
 			#[cfg(splicing)]
 			Some(ChannelPhase::RefundingV2((_, chans))) => {
-				let tx_signatures_opt = chans.funding_transaction_signed(channel_id, witnesses)
+				chans.funding_transaction_signed(channel_id, witnesses)
 					.map_err(|_err| APIError::APIMisuseError {
 						err: format!("Channel with id {} not expecting funding signatures", channel_id)
-					})?;
-				if let Some(tx_signatures) = tx_signatures_opt {
-					peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
-						node_id: *counterparty_node_id,
-						msg: tx_signatures,
-					});
-				}
-			},
+					})?
+			}
 			Some(_) => return Err(APIError::APIMisuseError {
 				err: format!("Channel with id {} not expecting funding signatures", channel_id)}),
 			None => return Err(APIError::ChannelUnavailable{
 				err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id,
 					counterparty_node_id) }),
+		};
+
+		if let Some(tx_signatures) = tx_signatures_opt {
+			peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxSignatures {
+				node_id: *counterparty_node_id,
+				msg: tx_signatures,
+			});
 		}
 
 		Ok(())
@@ -8367,7 +8378,7 @@ where
 								#[cfg(splicing)]
 								peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::RefundingV2((pre_chan, ChannelVariants::new(channel))));
 							} else {
-								peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::FundingV2(channel));
+								peer_state.channel_by_id.insert(channel_id.clone(), ChannelPhase::FundingV2(ChannelVariants::new(channel)));
 							}
 						},
 						Err((channel_phase, _err)) => {
@@ -8403,7 +8414,9 @@ where
 				let chan = match channel_phase {
 					ChannelPhase::Funded(chan) => chan,
 					#[cfg(any(dual_funding, splicing))]
-					ChannelPhase::FundingV2(chan) => chan,
+					ChannelPhase::FundingV2(chans) => {
+						&mut chans.get_funded_channel_mut().expect("FundingV2 must be funded")
+					}
 					#[cfg(splicing)]
 					ChannelPhase::RefundingV2((_, chans)) => {
 						if let Some(funded) = chans.get_funded_channel_mut() {
@@ -8413,7 +8426,7 @@ where
 								"Got tx_signatures while renegotiating but no funded channel"
 								.into())), chan_phase_entry)
 						}
-					},
+					}
 					_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got tx_signatures message with no funded channel"
 						.into())), chan_phase_entry)
@@ -8479,7 +8492,9 @@ where
 					let chan = match chan_phase_entry.get_mut() {
 						ChannelPhase::Funded(chan) => { chan }
 						#[cfg(any(dual_funding, splicing))]
-						ChannelPhase::FundingV2(chan) => { chan }
+						ChannelPhase::FundingV2(chans) => {
+							&mut chans.get_funded_channel_mut().expect("FundingV2 must be funded")
+						}
 						_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
 							"Got a channel_ready message for an unfunded channel!".into())), chan_phase_entry),
 					};
@@ -8564,15 +8579,15 @@ where
 		let chan = match phase {
 			// Some(ChannelPhase::Funded(chan)) => chan,
 			Some(ChannelPhase::RefundingV2((_, mut chans))) => {
-				if let Some(funded) = chans.take_funded_channel() {
+				if let Some(funded) = chans.take_last_funded_channel() {
 					funded
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal error TODO".into(), msg.channel_id));
 				}
-			},
+			}
 			_ => {
 				return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal error TODO".into(), msg.channel_id));
-			},
+			}
 		};
 		// Re-add as Funded
 		peer_state.channel_by_id.insert(msg.channel_id, ChannelPhase::Funded(chan));
@@ -9018,7 +9033,9 @@ where
 						let chan = match chan_phase_entry.get_mut() {
 							ChannelPhase::Funded(chan) => { chan },
 							#[cfg(any(dual_funding, splicing))]
-							ChannelPhase::FundingV2(chan) => { chan },
+							ChannelPhase::FundingV2(chans) => {
+								&mut chans.get_funded_channel_mut().expect("FundingV2 must be funded")
+							}
 							_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
 								"Got a commitment_signed message for an unfunded channel!".into())), chan_phase_entry),
 						};
@@ -9311,7 +9328,9 @@ where
 				let chan = match chan_phase_entry.get_mut() {
 					ChannelPhase::Funded(chan) => { chan }
 					#[cfg(any(dual_funding, splicing))]
-					ChannelPhase::FundingV2(chan) => { chan }
+					ChannelPhase::FundingV2(chans) => {
+						&mut chans.get_funded_channel_mut().expect("FundingV2 must be funded")
+					}
 					_ => return try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got an announcement_signatures message for an unfunded channel!".into())), chan_phase_entry),
 				};
@@ -9355,8 +9374,10 @@ where
 				let chan = match chan_phase_entry.get_mut() {
 					ChannelPhase::Funded(chan) => { chan }
 					#[cfg(any(dual_funding, splicing))]
-					ChannelPhase::FundingV2(chan) => { chan },
-							_ => return try_chan_phase_entry!(self, Err(ChannelError::Close(
+					ChannelPhase::FundingV2(chans) => {
+						&mut chans.get_funded_channel_mut().expect("FundingV2 must be funded")
+					}
+					_ => return try_chan_phase_entry!(self, Err(ChannelError::Close(
 						"Got a channel_update for an unfunded channel!".into())), chan_phase_entry),
 				};
 				if chan.context.get_counterparty_node_id() != *counterparty_node_id {
@@ -10960,7 +10981,9 @@ where
 						ChannelPhase::UnfundedOutboundV2(_) | ChannelPhase::UnfundedInboundV2(_) => { return true },
 						ChannelPhase::Funded(chan) => { chan }
 						#[cfg(any(dual_funding, splicing))]
-						ChannelPhase::FundingV2(chan) => { chan }
+						ChannelPhase::FundingV2(chans) => {
+							&mut chans.get_funded_channel_mut().expect("FundingV2 must be funded")
+						}
 						// Both post and pre exist
 						#[cfg(splicing)]
 						ChannelPhase::RefundingV2((_, post_chans)) => {
@@ -11149,9 +11172,13 @@ where
 			// TODO not retain, no removal here
 			peer_state.channel_by_id.retain(|cid, phase| {
 				match phase {
-					ChannelPhase::FundingV2(channel) => {
-						if channel.context.is_ready() {
-							just_locked_channels.push((cp_id, cid.clone()));
+					ChannelPhase::FundingV2(channels) => {
+						// Check ALL variants
+						for (idx, channel) in channels.all_funded().into_iter().enumerate() {
+							if channel.context.is_ready() {
+								just_locked_channels.push((cp_id, cid.clone(), idx));
+								break;
+							}
 						}
 					}
 					_ => {}
@@ -11160,20 +11187,21 @@ where
 			});
 		}
 		if just_locked_channels.len() > 0 {
-			for (cp, cid) in just_locked_channels {
+			for (cp, cid, idx) in just_locked_channels {
 				if let Some(peer_state_mutex) = per_peer_state.get(cp) {
 					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
 					// remove
 					match peer_state.channel_by_id.remove(&cid) {
-						Some(ChannelPhase::FundingV2(ch)) => {
+						Some(ChannelPhase::FundingV2(mut channels)) => {
 							// removed, re-add
-							peer_state.channel_by_id.insert(ch.context.channel_id(), ChannelPhase::Funded(ch));
-						},
+							let ready_channel = channels.take_funded_channel(idx).expect("Internal error: prev. found index could not be accessed");
+							peer_state.channel_by_id.insert(cid, ChannelPhase::Funded(ready_channel));
+						}
 						Some(_) => {
 							// Error TODO
 							panic!("Became ready from some other state");
-						},
+						}
 						// could not remove, do nothing
 						None => {}
 					}
