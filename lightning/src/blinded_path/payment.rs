@@ -508,7 +508,6 @@ impl Writeable for UnauthenticatedReceiveTlvs {
 
 impl<'a> Writeable for BlindedPaymentTlvsRef<'a> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		// TODO: write padding
 		match self {
 			Self::Forward(tlvs) => tlvs.write(w)?,
 			Self::Receive(tlvs) => tlvs.write(w)?,
