@@ -353,7 +353,7 @@ fn do_forward_checks_failure(check: ForwardCheckFail, intro_fails: bool) {
 	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
 		&[&chan_upd_1_2, &chan_upd_2_3], &chanmon_cfgs[3].keys_manager);
-	route_params.payment_params.max_path_length = 17;
+	route_params.payment_params.max_path_length = 16;
 
 	let route = get_route(&nodes[0], &route_params).unwrap();
 	node_cfgs[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
@@ -877,6 +877,8 @@ fn do_multi_hop_receiver_fail(check: ReceiveCheckFail) {
 	let mut route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1, 1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
 		&chanmon_cfgs[2].keys_manager);
+
+	route_params.payment_params.max_path_length = 17;
 
 	let route = if check == ReceiveCheckFail::ProcessPendingHTLCsCheck {
 		let mut route = get_route(&nodes[0], &route_params).unwrap();

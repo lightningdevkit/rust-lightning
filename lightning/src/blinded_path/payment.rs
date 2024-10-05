@@ -14,7 +14,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
-use crate::blinded_path::utils;
+use crate::blinded_path::utils::{self, BlindedPathWithPadding};
 use crate::blinded_path::{BlindedHop, BlindedPath, IntroductionNode, NodeIdLookUp};
 use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::io;
@@ -560,6 +560,10 @@ impl Readable for BlindedPaymentTlvs {
 	}
 }
 
+/// Represents the padding round off size (in bytes) that
+/// is used to pad payment bilnded path's [`BlindedHop`]
+pub(crate) const PAYMENT_PADDING_ROUND_OFF: usize = 30;
+
 /// Construct blinded payment hops for the given `intermediate_nodes` and payee info.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
@@ -572,7 +576,9 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 		.map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
 		.chain(core::iter::once(BlindedPaymentTlvsRef::Receive(&payee_tlvs)));
 
-	let path = pks.zip(tlvs);
+	let path = pks.zip(
+		tlvs.map(|tlv| BlindedPathWithPadding { tlvs: tlv, round_off: PAYMENT_PADDING_ROUND_OFF }),
+	);
 
 	utils::construct_blinded_hops(secp_ctx, path, session_priv)
 }
