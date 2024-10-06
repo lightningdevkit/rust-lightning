@@ -40,7 +40,7 @@ use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt1
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
-use crate::chain::channelmonitor::{Balance, ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
+use crate::chain::channelmonitor::{Balance, ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::events;
 use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
@@ -1299,6 +1299,13 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// will remove a preimage that needs to be durably in an upstream channel first), we put an
 	/// entry here to note that the channel with the key's ID is blocked on a set of actions.
 	actions_blocking_raa_monitor_updates: BTreeMap<ChannelId, Vec<RAAMonitorUpdateBlockingAction>>,
+	/// The latest [`ChannelMonitor::get_latest_update_id`] value for all closed channels as they
+	/// exist on-disk/in our [`chain::Watch`]. This *ignores* all pending updates not yet applied
+	/// in [`ChannelManager::pending_background_events`].
+	///
+	/// If there are any updates pending in [`Self::in_flight_monitor_updates`] this will contain
+	/// the highest `update_id` of all the pending in-flight updates.
+	closed_channel_monitor_update_ids: BTreeMap<ChannelId, u64>,
 	/// The peer is currently connected (i.e. we've seen a
 	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
 	/// [`ChannelMessageHandler::peer_disconnected`].
@@ -1325,6 +1332,7 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 		)
 			&& self.monitor_update_blocked_actions.is_empty()
 			&& self.in_flight_monitor_updates.is_empty()
+			&& self.closed_channel_monitor_update_ids.is_empty()
 	}
 
 	// Returns a count of all channels we have with this peer, including unfunded channels.
@@ -2897,6 +2905,32 @@ macro_rules! handle_error {
 /// [`ChannelMonitor`]/channel funding transaction) to begin with.
 macro_rules! update_maps_on_chan_removal {
 	($self: expr, $peer_state: expr, $channel_context: expr) => {{
+		// If there's a possibility that we need to generate further monitor updates for this
+		// channel, we need to store the last update_id of it. However, we don't want to insert
+		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
+		// never even got confirmations (which would open us up to DoS attacks).
+		let mut update_id = $channel_context.get_latest_monitor_update_id();
+		if $channel_context.get_funding_tx_confirmation_height().is_some() || $channel_context.minimum_depth() == Some(0) || update_id > 1 {
+			// There may be some pending background events which we have to ignore when setting the
+			// latest update ID.
+			for event in $self.pending_background_events.lock().unwrap().iter() {
+				match event {
+					BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, channel_id, update, .. } => {
+						if *channel_id == $channel_context.channel_id() && *counterparty_node_id == $channel_context.get_counterparty_node_id() {
+							update_id = cmp::min(update_id, update.update_id - 1);
+						}
+					},
+					BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup(..) => {
+						// This is only generated for very old channels which were already closed
+						// on startup, so it should never be present for a channel that is closing
+						// here.
+					},
+					BackgroundEvent::MonitorUpdatesComplete { .. } => {},
+				}
+			}
+			let chan_id = $channel_context.channel_id();
+			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
+		}
 		if let Some(outpoint) = $channel_context.get_funding_txo() {
 			$self.outpoint_to_peer.lock().unwrap().remove(&outpoint);
 		}
@@ -3769,6 +3803,64 @@ where
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
+	/// Ensures any saved latest ID in [`PeerState::closed_channel_monitor_update_ids`] is updated,
+	/// then applies the provided [`ChannelMonitorUpdate`].
+	#[must_use]
+	fn apply_post_close_monitor_update(
+		&self, counterparty_node_id: PublicKey, channel_id: ChannelId, funding_txo: OutPoint,
+		mut monitor_update: ChannelMonitorUpdate,
+	) -> ChannelMonitorUpdateStatus {
+		// Note that there may be some post-close updates which need to be well-ordered with
+		// respect to the `update_id`, so we hold the `closed_channel_monitor_update_ids` lock
+		// here (and also make sure the `monitor_update` we're applying has the right id.
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let mut peer_state_lock = per_peer_state.get(&counterparty_node_id)
+			.expect("We must always have a peer entry for a peer with which we have channels that have ChannelMonitors")
+			.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(channel_id) {
+			hash_map::Entry::Occupied(mut chan_phase) => {
+				if let ChannelPhase::Funded(chan) = chan_phase.get_mut() {
+					let in_flight = handle_new_monitor_update!(self, funding_txo,
+						monitor_update, peer_state_lock, peer_state, per_peer_state, chan);
+					return if in_flight { ChannelMonitorUpdateStatus::InProgress } else { ChannelMonitorUpdateStatus::Completed };
+				} else {
+					debug_assert!(false, "We shouldn't have an update for a non-funded channel");
+				}
+			},
+			hash_map::Entry::Vacant(_) => {},
+		}
+		match peer_state.closed_channel_monitor_update_ids.entry(channel_id) {
+			btree_map::Entry::Vacant(entry) => {
+				let is_closing_unupdated_monitor = monitor_update.update_id == 1
+					&& monitor_update.updates.len() == 1
+					&& matches!(&monitor_update.updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. });
+				// If the ChannelMonitorUpdate is closing a channel that never got past initial
+				// funding (to have any commitment updates), we'll skip inserting in
+				// `update_maps_on_chan_removal`, allowing us to avoid keeping around the PeerState
+				// for that peer. In that specific case we expect no entry in the map here. In any
+				// other cases, this is a bug, but in production we go ahead and recover by
+				// inserting the update_id and hoping its right.
+				debug_assert!(is_closing_unupdated_monitor, "Expected closing monitor against an unused channel, got {:?}", monitor_update);
+				if !is_closing_unupdated_monitor {
+					entry.insert(monitor_update.update_id);
+				}
+			},
+			btree_map::Entry::Occupied(entry) => {
+				// If we're running in a threaded environment its possible we generate updates for
+				// a channel that is closing, then apply some preimage update, then go back and
+				// apply the close monitor update here. In order to ensure the updates are still
+				// well-ordered, we have to use the `closed_channel_monitor_update_ids` map to
+				// override the `update_id`, taking care to handle old monitors where the
+				// `latest_update_id` is already `u64::MAX`.
+				let latest_update_id = entry.into_mut();
+				*latest_update_id = latest_update_id.saturating_add(1);
+				monitor_update.update_id = *latest_update_id;
+			}
+		}
+		self.chain_monitor.update_channel(funding_txo, &monitor_update)
+	}
+
 	/// When a channel is removed, two things need to happen:
 	/// (a) [`update_maps_on_chan_removal`] must be called in the same `per_peer_state` lock as
 	///     the channel-closing action,
@@ -3798,7 +3890,7 @@ where
 			// force-closing. The monitor update on the required in-memory copy should broadcast
 			// the latest local state, which is the best we can do anyway. Thus, it is safe to
 			// ignore the result here.
-			let _ = self.chain_monitor.update_channel(funding_txo, &monitor_update);
+			let _ = self.apply_post_close_monitor_update(shutdown_res.counterparty_node_id, shutdown_res.channel_id, funding_txo, monitor_update);
 		}
 		let mut shutdown_results = Vec::new();
 		if let Some(txid) = shutdown_res.unbroadcasted_batch_funding_txid {
@@ -6148,30 +6240,9 @@ where
 					let _ = self.chain_monitor.update_channel(funding_txo, &update);
 				},
 				BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, funding_txo, channel_id, update } => {
-					let mut updated_chan = false;
-					{
-						let per_peer_state = self.per_peer_state.read().unwrap();
-						if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
-							let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-							let peer_state = &mut *peer_state_lock;
-							match peer_state.channel_by_id.entry(channel_id) {
-								hash_map::Entry::Occupied(mut chan_phase) => {
-									if let ChannelPhase::Funded(chan) = chan_phase.get_mut() {
-										updated_chan = true;
-										handle_new_monitor_update!(self, funding_txo, update.clone(),
-											peer_state_lock, peer_state, per_peer_state, chan);
-									} else {
-										debug_assert!(false, "We shouldn't have an update for a non-funded channel");
-									}
-								},
-								hash_map::Entry::Vacant(_) => {},
-							}
-						}
-					}
-					if !updated_chan {
-						// TODO: Track this as in-flight even though the channel is closed.
-						let _ = self.chain_monitor.update_channel(funding_txo, &update);
-					}
+					// The monitor update will be replayed on startup if it doesnt complete, so no
+					// use bothering to care about the monitor update completing.
+					let _ = self.apply_post_close_monitor_update(counterparty_node_id, channel_id, funding_txo, update);
 				},
 				BackgroundEvent::MonitorUpdatesComplete { counterparty_node_id, channel_id } => {
 					let per_peer_state = self.per_peer_state.read().unwrap();
@@ -7072,8 +7143,9 @@ where
 				}
 			}
 		}
+
 		let preimage_update = ChannelMonitorUpdate {
-			update_id: CLOSED_CHANNEL_UPDATE_ID,
+			update_id: 0, // apply_post_close_monitor_update will set the right value
 			counterparty_node_id: prev_hop.counterparty_node_id,
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage,
@@ -7095,7 +7167,7 @@ where
 		if !during_init {
 			// We update the ChannelMonitor on the backward link, after
 			// receiving an `update_fulfill_htlc` from the forward link.
-			let update_res = self.chain_monitor.update_channel(prev_hop.funding_txo, &preimage_update);
+			let update_res = self.apply_post_close_monitor_update(counterparty_node_id, prev_hop.channel_id, prev_hop.funding_txo, preimage_update);
 			if update_res != ChannelMonitorUpdateStatus::Completed {
 				// TODO: This needs to be handled somehow - if we receive a monitor update
 				// with a preimage we *must* somehow manage to propagate it to the upstream
@@ -7119,6 +7191,7 @@ where
 			};
 			self.pending_background_events.lock().unwrap().push(event);
 		}
+
 		// Note that we do process the completion action here. This totally could be a
 		// duplicate claim, but we have no way of knowing without interrogating the
 		// `ChannelMonitor` we've provided the above update to. Instead, note that `Event`s are
@@ -7138,6 +7211,7 @@ where
 					in_flight_monitor_updates: BTreeMap::new(),
 					monitor_update_blocked_actions: BTreeMap::new(),
 					actions_blocking_raa_monitor_updates: BTreeMap::new(),
+					closed_channel_monitor_update_ids: BTreeMap::new(),
 					is_connected: false,
 				}));
 			let mut peer_state = peer_state_mutex.lock().unwrap();
@@ -10955,6 +11029,7 @@ where
 							in_flight_monitor_updates: BTreeMap::new(),
 							monitor_update_blocked_actions: BTreeMap::new(),
 							actions_blocking_raa_monitor_updates: BTreeMap::new(),
+							closed_channel_monitor_update_ids: BTreeMap::new(),
 							is_connected: true,
 						}));
 					},
@@ -12418,6 +12493,7 @@ where
 				in_flight_monitor_updates: BTreeMap::new(),
 				monitor_update_blocked_actions: BTreeMap::new(),
 				actions_blocking_raa_monitor_updates: BTreeMap::new(),
+				closed_channel_monitor_update_ids: BTreeMap::new(),
 				is_connected: false,
 			}
 		};
@@ -12467,7 +12543,19 @@ where
 					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
-					if let Some((counterparty_node_id, funding_txo, channel_id, update)) = shutdown_result.monitor_update {
+					if let Some((counterparty_node_id, funding_txo, channel_id, mut update)) = shutdown_result.monitor_update {
+						// Our channel information is out of sync with the `ChannelMonitor`, so
+						// force the update to use the `ChannelMonitor`'s update_id for the close
+						// update.
+						let latest_update_id = monitor.get_latest_update_id();
+						update.update_id = latest_update_id.saturating_add(1);
+						per_peer_state.entry(counterparty_node_id)
+							.or_insert_with(|| Mutex::new(empty_peer_state()))
+							.lock().unwrap()
+							.closed_channel_monitor_update_ids.entry(channel_id)
+								.and_modify(|v| *v = cmp::max(latest_update_id, *v))
+								.or_insert(latest_update_id);
+
 						close_background_events.push(BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 							counterparty_node_id, funding_txo, channel_id, update
 						});
@@ -12548,8 +12636,8 @@ where
 				let channel_id = monitor.channel_id();
 				log_info!(logger, "Queueing monitor update to ensure missing channel {} is force closed",
 					&channel_id);
-				let monitor_update = ChannelMonitorUpdate {
-					update_id: CLOSED_CHANNEL_UPDATE_ID,
+				let mut monitor_update = ChannelMonitorUpdate {
+					update_id: monitor.get_latest_update_id().saturating_add(1),
 					counterparty_node_id: None,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
 					channel_id: Some(monitor.channel_id()),
@@ -12562,6 +12650,13 @@ where
 						update: monitor_update,
 					};
 					close_background_events.push(update);
+
+					per_peer_state.entry(counterparty_node_id)
+						.or_insert_with(|| Mutex::new(empty_peer_state()))
+						.lock().unwrap()
+						.closed_channel_monitor_update_ids.entry(monitor.channel_id())
+							.and_modify(|v| *v = cmp::max(monitor.get_latest_update_id(), *v))
+							.or_insert(monitor.get_latest_update_id());
 				} else {
 					// This is a fairly old `ChannelMonitor` that hasn't seen an update to its
 					// off-chain state since LDK 0.0.118 (as in LDK 0.0.119 any off-chain
@@ -12569,6 +12664,7 @@ where
 					// Thus, we assume that it has no pending HTLCs and we will not need to
 					// generate a `ChannelMonitorUpdate` for it aside from this
 					// `ChannelForceClosed` one.
+					monitor_update.update_id = u64::MAX;
 					close_background_events.push(BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((*funding_txo, channel_id, monitor_update)));
 				}
 			}
@@ -14047,15 +14143,15 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-		let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+		create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 0);
 
 		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+		let chan_id = nodes[0].node.list_channels()[0].channel_id;
 		let error_message = "Channel force-closed";
-		nodes[0].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
-		check_closed_broadcast!(nodes[0], true);
+		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), error_message.to_string()).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 100000);
+		check_closed_event!(nodes[0], 1, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true) }, [nodes[1].node.get_our_node_id()], 1_000_000);
 
 		{
 			// Assert that nodes[1] is awaiting removal for nodes[0] once nodes[1] has been
@@ -14072,6 +14168,31 @@ mod tests {
 			// Assert that nodes[1] has now been removed.
 			assert_eq!(nodes[0].node.per_peer_state.read().unwrap().len(), 0);
 		}
+	}
+
+	#[test]
+	fn test_drop_peers_when_removing_unfunded_channels() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		exchange_open_accept_chan(&nodes[0], &nodes[1], 1_000_000, 0);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1, "Unexpected events {:?}", events);
+		match events[0] {
+			Event::FundingGenerationReady { .. } => {}
+			_ => panic!("Unexpected event {:?}", events),
+		}
+
+		nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
+		nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+		check_closed_event!(nodes[0], 1, ClosureReason::DisconnectedPeer, [nodes[1].node.get_our_node_id()], 1_000_000);
+		check_closed_event!(nodes[1], 1, ClosureReason::DisconnectedPeer, [nodes[0].node.get_our_node_id()], 1_000_000);
+
+		// At this point the state for the peers should have been removed.
+		assert_eq!(nodes[0].node.per_peer_state.read().unwrap().len(), 0);
+		assert_eq!(nodes[1].node.per_peer_state.read().unwrap().len(), 0);
 	}
 
 	#[test]

@@ -89,11 +89,9 @@ pub struct ChannelMonitorUpdate {
 	/// [`ChannelMonitorUpdateStatus::InProgress`] have been applied to all copies of a given
 	/// ChannelMonitor when ChannelManager::channel_monitor_updated is called.
 	///
-	/// The only instances we allow where update_id values are not strictly increasing have a
-	/// special update ID of [`CLOSED_CHANNEL_UPDATE_ID`]. This update ID is used for updates that
-	/// will force close the channel by broadcasting the latest commitment transaction or
-	/// special post-force-close updates, like providing preimages necessary to claim outputs on the
-	/// broadcast commitment transaction. See its docs for more details.
+	/// Note that for [`ChannelMonitorUpdate`]s generated on LDK versions prior to 0.1 after the
+	/// channel was closed, this value may be [`u64::MAX`]. In that case, multiple updates may
+	/// appear with the same ID, and all should be replayed.
 	///
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: super::ChannelMonitorUpdateStatus::InProgress
 	pub update_id: u64,
@@ -104,15 +102,9 @@ pub struct ChannelMonitorUpdate {
 	pub channel_id: Option<ChannelId>,
 }
 
-/// The update ID used for a [`ChannelMonitorUpdate`] that is either:
-///
-///	(1) attempting to force close the channel by broadcasting our latest commitment transaction or
-///	(2) providing a preimage (after the channel has been force closed) from a forward link that
-///		allows us to spend an HTLC output on this channel's (the backward link's) broadcasted
-///		commitment transaction.
-///
-/// No other [`ChannelMonitorUpdate`]s are allowed after force-close.
-pub const CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
+/// LDK prior to 0.1 used this constant as the [`ChannelMonitorUpdate::update_id`] for any
+/// [`ChannelMonitorUpdate`]s which were generated after the channel was closed.
+const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
 
 impl Writeable for ChannelMonitorUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -1553,6 +1545,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Gets the update_id from the latest ChannelMonitorUpdate which was applied to this
 	/// ChannelMonitor.
+	///
+	/// Note that for channels closed prior to LDK 0.1, this may return [`u64::MAX`].
 	pub fn get_latest_update_id(&self) -> u64 {
 		self.inner.lock().unwrap().get_latest_update_id()
 	}
@@ -3116,11 +3110,11 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		F::Target: FeeEstimator,
 		L::Target: Logger,
 	{
-		if self.latest_update_id == CLOSED_CHANNEL_UPDATE_ID && updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
-			log_info!(logger, "Applying post-force-closed update to monitor {} with {} change(s).",
+		if self.latest_update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID && updates.update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID {
+			log_info!(logger, "Applying pre-0.1 post-force-closed update to monitor {} with {} change(s).",
 				log_funding_info!(self), updates.updates.len());
-		} else if updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
-			log_info!(logger, "Applying force close update to monitor {} with {} change(s).",
+		} else if updates.update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID {
+			log_info!(logger, "Applying pre-0.1 force close update to monitor {} with {} change(s).",
 				log_funding_info!(self), updates.updates.len());
 		} else {
 			log_info!(logger, "Applying update to monitor {}, bringing update_id from {} to {} with {} change(s).",
@@ -3143,14 +3137,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// The `ChannelManager` may also queue redundant `ChannelForceClosed` updates if it still
 		// thinks the channel needs to have its commitment transaction broadcast, so we'll allow
 		// them as well.
-		if updates.update_id == CLOSED_CHANNEL_UPDATE_ID {
+		if updates.update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID || self.lockdown_from_offchain {
 			assert_eq!(updates.updates.len(), 1);
 			match updates.updates[0] {
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				// We should have already seen a `ChannelForceClosed` update if we're trying to
 				// provide a preimage at this point.
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } =>
-					debug_assert_eq!(self.latest_update_id, CLOSED_CHANNEL_UPDATE_ID),
+					debug_assert!(self.lockdown_from_offchain),
 				_ => {
 					log_error!(logger, "Attempted to apply post-force-close ChannelMonitorUpdate of type {}", updates.updates[0].variant_name());
 					panic!("Attempted to apply post-force-close ChannelMonitorUpdate that wasn't providing a payment preimage");
@@ -3230,17 +3224,29 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.counterparty_commitment_txs_from_update(updates);
 		}
 
-		// If the updates succeeded and we were in an already closed channel state, then there's no
-		// need to refuse any updates we expect to receive afer seeing a confirmed commitment.
-		if ret.is_ok() && updates.update_id == CLOSED_CHANNEL_UPDATE_ID && self.latest_update_id == updates.update_id {
-			return Ok(());
-		}
-
 		self.latest_update_id = updates.update_id;
 
-		// Refuse updates after we've detected a spend onchain, but only if we haven't processed a
-		// force closed monitor update yet.
-		if ret.is_ok() && self.funding_spend_seen && self.latest_update_id != CLOSED_CHANNEL_UPDATE_ID {
+		// Refuse updates after we've detected a spend onchain (or if the channel was otherwise
+		// closed), but only if the update isn't the kind of update we expect to see after channel
+		// closure.
+		let mut is_pre_close_update = false;
+		for update in updates.updates.iter() {
+			match update {
+				ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo { .. }
+					|ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { .. }
+					|ChannelMonitorUpdateStep::ShutdownScript { .. }
+					|ChannelMonitorUpdateStep::CommitmentSecret { .. } =>
+						is_pre_close_update = true,
+				// After a channel is closed, we don't communicate with our peer about it, so the
+				// only things we will update is getting a new preimage (from a different channel)
+				// or being told that the channel is closed. All other updates are generated while
+				// talking to our peer.
+				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
+				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
+			}
+		}
+
+		if ret.is_ok() && (self.funding_spend_seen || self.lockdown_from_offchain) && is_pre_close_update {
 			log_error!(logger, "Refusing Channel Monitor Update as counterparty attempted to update commitment after funding was spent");
 			Err(())
 		} else { ret }
