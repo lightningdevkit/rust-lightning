@@ -897,9 +897,9 @@ struct ClaimablePayments {
 #[derive(Debug)]
 enum BackgroundEvent {
 	/// Handle a ChannelMonitorUpdate which closes the channel or for an already-closed channel.
-	/// This is only separated from [`Self::MonitorUpdateRegeneratedOnStartup`] as the
-	/// maybe-non-closing variant needs a public key to handle channel resumption, whereas if the
-	/// channel has been force-closed we do not need the counterparty node_id.
+	/// This is only separated from [`Self::MonitorUpdateRegeneratedOnStartup`] as for truly
+	/// ancient [`ChannelMonitor`]s that haven't seen an update since LDK 0.0.118 we may not have
+	/// the counterparty node ID available.
 	///
 	/// Note that any such events are lost on shutdown, so in general they must be updates which
 	/// are regenerated on startup.
@@ -6978,17 +6978,15 @@ where
 			// If we're running during init we cannot update a monitor directly - they probably
 			// haven't actually been loaded yet. Instead, push the monitor update as a background
 			// event.
-			// Note that while it's safe to use `ClosedMonitorUpdateRegeneratedOnStartup` here (the
-			// channel is already closed) we need to ultimately handle the monitor update
-			// completion action only after we've completed the monitor update. This is the only
-			// way to guarantee this update *will* be regenerated on startup (otherwise if this was
-			// from a forwarded HTLC the downstream preimage may be deleted before we claim
-			// upstream). Thus, we need to transition to some new `BackgroundEvent` type which will
-			// complete the monitor update completion action from `completion_action`.
-			self.pending_background_events.lock().unwrap().push(
-				BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((
-					prev_hop.outpoint, prev_hop.channel_id, preimage_update,
-				)));
+			// TODO: Track this update as pending and only complete the completion action when it
+			// finishes.
+			let event = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+				counterparty_node_id,
+				funding_txo: prev_hop.outpoint,
+				channel_id: prev_hop.channel_id,
+				update: preimage_update,
+			};
+			self.pending_background_events.lock().unwrap().push(event);
 		}
 		// Note that we do process the completion action here. This totally could be a
 		// duplicate claim, but we have no way of knowing without interrogating the
@@ -7081,22 +7079,35 @@ where
 								// There should be a `BackgroundEvent` pending...
 								assert!(background_events.iter().any(|ev| {
 									match ev {
-										// to apply a monitor update that blocked the claiming channel,
 										BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 											funding_txo, update, ..
 										} => {
 											if *funding_txo == claiming_chan_funding_outpoint {
+												// to apply a monitor update that blocked the claiming channel,
 												assert!(update.updates.iter().any(|upd|
 													if let ChannelMonitorUpdateStep::PaymentPreimage {
 														payment_preimage: update_preimage
 													} = upd {
 														payment_preimage == *update_preimage
-													} else { false }
+													} else {
+														false
+													}
+												), "{:?}", update);
+												true
+											} else if *funding_txo == next_channel_outpoint {
+												// or the channel we'd unblock is already closed,
+												assert!(update.updates.iter().any(|upd|
+													if let ChannelMonitorUpdateStep::ChannelForceClosed { .. } = upd {
+														true
+													} else {
+														false
+													}
 												), "{:?}", update);
 												true
 											} else { false }
 										},
-										// or the channel we'd unblock is already closed,
+										// or the channel we'd unblock is already closed (for an
+										// old channel),
 										BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup(
 											(funding_txo, _channel_id, monitor_update)
 										) => {
@@ -12389,7 +12400,23 @@ where
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
 					channel_id: Some(monitor.channel_id()),
 				};
-				close_background_events.push(BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((*funding_txo, channel_id, monitor_update)));
+				if let Some(counterparty_node_id) = monitor.get_counterparty_node_id() {
+					let update = BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+						counterparty_node_id,
+						funding_txo: *funding_txo,
+						channel_id,
+						update: monitor_update,
+					};
+					close_background_events.push(update);
+				} else {
+					// This is a fairly old `ChannelMonitor` that hasn't seen an update to its
+					// off-chain state since LDK 0.0.118 (as in LDK 0.0.119 any off-chain
+					// `ChannelMonitorUpdate` will set the counterparty ID).
+					// Thus, we assume that it has no pending HTLCs and we will not need to
+					// generate a `ChannelMonitorUpdate` for it aside from this
+					// `ChannelForceClosed` one.
+					close_background_events.push(BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((*funding_txo, channel_id, monitor_update)));
+				}
 			}
 		}
 
