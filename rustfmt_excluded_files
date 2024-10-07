@@ -1,7 +1,6 @@
 lightning-invoice/fuzz/fuzz_targets/serde_data_part.rs
 lightning-invoice/src/lib.rs
 lightning-invoice/src/payment.rs
-lightning-invoice/src/tb.rs
 lightning-invoice/src/utils.rs
 lightning-invoice/tests/ser_de.rs
 lightning/src/blinded_path/message.rs
