@@ -1,15 +1,15 @@
 extern crate bech32;
 extern crate lightning_invoice;
 
-use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
-use bitcoin::hex::FromHex;
 use bitcoin::hashes::{sha256, Hash};
-use lightning_invoice::*;
-use bitcoin::secp256k1::PublicKey;
+use bitcoin::hex::FromHex;
 use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
+use lightning_invoice::*;
 use std::collections::HashSet;
-use std::time::Duration;
 use std::str::FromStr;
+use std::time::Duration;
 
 fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 	vec![
@@ -379,7 +379,8 @@ fn get_test_tuples() -> Vec<(String, SignedRawBolt11Invoice, bool, bool)> {
 
 #[test]
 fn invoice_deserialize() {
-	for (serialized, deserialized, ignore_feature_diff, ignore_unknown_fields) in get_test_tuples() {
+	for (serialized, deserialized, ignore_feature_diff, ignore_unknown_fields) in get_test_tuples()
+	{
 		eprintln!("Testing invoice {}...", serialized);
 		let parsed = serialized.parse::<SignedRawBolt11Invoice>().unwrap();
 
@@ -390,17 +391,33 @@ fn invoice_deserialize() {
 		assert_eq!(deserialized_invoice.hrp, parsed_invoice.hrp);
 		assert_eq!(deserialized_invoice.data.timestamp, parsed_invoice.data.timestamp);
 
-		let mut deserialized_hunks: HashSet<_> = deserialized_invoice.data.tagged_fields.iter().collect();
+		let mut deserialized_hunks: HashSet<_> =
+			deserialized_invoice.data.tagged_fields.iter().collect();
 		let mut parsed_hunks: HashSet<_> = parsed_invoice.data.tagged_fields.iter().collect();
 		if ignore_feature_diff {
-			deserialized_hunks.retain(|h|
-				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h { false } else { true });
-			parsed_hunks.retain(|h|
-				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h { false } else { true });
+			deserialized_hunks.retain(|h| {
+				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h {
+					false
+				} else {
+					true
+				}
+			});
+			parsed_hunks.retain(|h| {
+				if let RawTaggedField::KnownSemantics(TaggedField::Features(_)) = h {
+					false
+				} else {
+					true
+				}
+			});
 		}
 		if ignore_unknown_fields {
-			parsed_hunks.retain(|h|
-				if let RawTaggedField::UnknownSemantics(_) = h { false } else { true });
+			parsed_hunks.retain(|h| {
+				if let RawTaggedField::UnknownSemantics(_) = h {
+					false
+				} else {
+					true
+				}
+			});
 		}
 		assert_eq!(deserialized_hunks, parsed_hunks);
 
@@ -410,7 +427,9 @@ fn invoice_deserialize() {
 
 #[test]
 fn test_bolt_invalid_invoices() {
-	use bech32::primitives::decode::{CharError, ChecksumError, CheckedHrpstringError, UncheckedHrpstringError};
+	use bech32::primitives::decode::{
+		CharError, CheckedHrpstringError, ChecksumError, UncheckedHrpstringError,
+	};
 
 	// Tests the BOLT 11 invalid invoice test vectors
 	assert_eq!(Bolt11Invoice::from_str(
