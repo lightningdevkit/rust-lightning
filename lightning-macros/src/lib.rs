@@ -21,30 +21,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::spanned::Spanned;
-use syn::{parse, ImplItemFn, ItemImpl, ItemTrait, Token};
-
-fn add_async_trait(mut parsed: ItemTrait) -> TokenStream {
-	let output = quote! {
-		#[cfg(not(feature = "async-interface"))]
-		#parsed
-	};
-
-	for mut item in &mut parsed.items {
-		if let syn::TraitItem::Fn(f) = &mut item {
-			f.sig.asyncness = Some(Token![async](f.span()));
-		}
-	}
-
-	let output = quote! {
-		#output
-
-		#[cfg(feature = "async-interface")]
-		#[async_trait(?Send)]
-		#parsed
-	};
-
-	output.into()
-}
+use syn::{parse, ImplItemFn, Token};
 
 fn add_async_method(mut parsed: ImplItemFn) -> TokenStream {
 	let output = quote! {
@@ -64,44 +41,14 @@ fn add_async_method(mut parsed: ImplItemFn) -> TokenStream {
 	output.into()
 }
 
-fn add_async_impl_trait(mut parsed: ItemImpl) -> TokenStream {
-	let output = quote! {
-		#[cfg(not(feature = "async-interface"))]
-		#parsed
-	};
-
-	for mut item in &mut parsed.items {
-		if let syn::ImplItem::Fn(f) = &mut item {
-			f.sig.asyncness = Some(Token![async](f.span()));
-		}
-	}
-
-	let output = quote! {
-		#output
-
-		#[cfg(feature = "async-interface")]
-		#[async_trait(?Send)]
-		#parsed
-	};
-
-	output.into()
-}
-
-/// Makes a method or every method of a trait `async`, if the `async-interface` feature is enabled.
-///
-/// Requires the `async-trait` crate as a dependency whenever this attribute is used on a trait
-/// definition or trait implementation.
+/// Makes a method `async`, if the `async-interface` feature is enabled.
 #[proc_macro_attribute]
 pub fn maybe_async(_attr: TokenStream, item: TokenStream) -> TokenStream {
-	if let Ok(parsed) = parse(item.clone()) {
-		add_async_trait(parsed)
-	} else if let Ok(parsed) = parse(item.clone()) {
+	if let Ok(parsed) = parse(item) {
 		add_async_method(parsed)
-	} else if let Ok(parsed) = parse(item) {
-		add_async_impl_trait(parsed)
 	} else {
 		(quote! {
-			compile_error!("#[maybe_async] can only be used on methods, trait or trait impl blocks")
+			compile_error!("#[maybe_async] can only be used on methods")
 		})
 		.into()
 	}
