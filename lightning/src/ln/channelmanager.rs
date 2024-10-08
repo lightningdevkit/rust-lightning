@@ -3506,6 +3506,20 @@ where
 		Ok(temporary_channel_id)
 	}
 
+	/// __RBF__
+	/// Initiate RBF on a pending V2 channel
+	#[cfg(any(dual_funding, splicing))]
+	pub fn rbf_on_pending_v2_channel_open(
+		&self,
+		_counterparty_node_id: PublicKey,
+		_channel_id: ChannelId,
+		_funding_inputs: Vec<(TxIn, Transaction)>,
+		_feerate_sat_per_1000_weight: u32,
+		_locktime: u32,
+	) -> Result<ChannelId, APIError> {
+		Err(APIError::APIMisuseError{ err: format!("TODO RBF")})
+	}
+
 	/// #SPLICING STEP1 I
 	/// Inspired by create_channel() and close_channel()
 	/// Initiate a splice, to change the channel capacity

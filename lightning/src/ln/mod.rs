@@ -53,6 +53,9 @@ mod blinded_payment_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod functional_tests;
+#[cfg(all(test, any(dual_funding, splicing)))]
+#[allow(unused_mut)]
+mod functional_tests_dual_funding;
 #[cfg(all(test, splicing))]
 #[allow(unused_mut)]
 mod functional_tests_splice;
