@@ -165,8 +165,8 @@ pub trait Persist<ChannelSigner: EcdsaChannelSigner> {
 	fn archive_persisted_channel(&self, channel_funding_outpoint: OutPoint);
 }
 
-struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
-	monitor: ChannelMonitor<ChannelSigner>,
+pub(crate) struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
+	pub(crate) monitor: ChannelMonitor<ChannelSigner>,
 	/// The full set of pending monitor updates for this Channel.
 	///
 	/// Note that this lock must be held from [`ChannelMonitor::update_monitor`] through to
@@ -181,7 +181,7 @@ struct MonitorHolder<ChannelSigner: EcdsaChannelSigner> {
 	/// could cause users to have a full [`ChannelMonitor`] on disk as well as a
 	/// [`ChannelMonitorUpdate`] which was already applied. While this isn't an issue for the
 	/// LDK-provided update-based [`Persist`], it is somewhat surprising for users so we avoid it.
-	pending_monitor_updates: Mutex<Vec<u64>>,
+	pub(crate) pending_monitor_updates: Mutex<Vec<u64>>,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> MonitorHolder<ChannelSigner> {
@@ -195,8 +195,8 @@ impl<ChannelSigner: EcdsaChannelSigner> MonitorHolder<ChannelSigner> {
 /// Note that this holds a mutex in [`ChainMonitor`] and may block other events until it is
 /// released.
 pub struct LockedChannelMonitor<'a, ChannelSigner: EcdsaChannelSigner> {
-	lock: RwLockReadGuard<'a, HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
-	funding_txo: OutPoint,
+	pub(crate) lock: RwLockReadGuard<'a, HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
+	pub(crate) funding_txo: OutPoint,
 }
 
 impl<ChannelSigner: EcdsaChannelSigner> Deref for LockedChannelMonitor<'_, ChannelSigner> {
@@ -230,6 +230,7 @@ pub struct ChainMonitor<ChannelSigner: EcdsaChannelSigner, C: Deref, T: Deref, F
         P::Target: Persist<ChannelSigner>,
 {
 	monitors: RwLock<HashMap<OutPoint, MonitorHolder<ChannelSigner>>>,
+
 	chain_source: Option<C>,
 	broadcaster: T,
 	logger: L,
@@ -266,7 +267,7 @@ where C::Target: chain::Filter,
 	/// Calls which represent a new blockchain tip height should set `best_height`.
 	fn process_chain_data<FN>(&self, header: &Header, best_height: Option<u32>, txdata: &TransactionData, process: FN)
 	where
-		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>
+		FN: Fn(&ChannelMonitor<ChannelSigner>, &TransactionData) -> Vec<TransactionOutputs>,
 	{
 		let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
 		let funding_outpoints = hash_set_from_iter(self.monitors.read().unwrap().keys().cloned());

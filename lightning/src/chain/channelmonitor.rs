@@ -36,18 +36,20 @@ use crate::ln::channel::INITIAL_COMMITMENT_NUMBER;
 use crate::ln::types::{PaymentHash, PaymentPreimage, ChannelId};
 use crate::ln::msgs::DecodeError;
 use crate::ln::channel_keys::{DelayedPaymentKey, DelayedPaymentBasepoint, HtlcBasepoint, HtlcKey, RevocationKey, RevocationBasepoint};
-use crate::ln::chan_utils::{self,CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
+use crate::ln::chan_utils::{self, CommitmentTransaction, CounterpartyCommitmentSecrets, HTLCOutputInCommitment, HTLCClaim, ChannelTransactionParameters, HolderCommitmentTransaction, TxCreationKeys};
 use crate::ln::channelmanager::{HTLCSource, SentHTLCId};
+use crate::ln::features::ChannelTypeFeatures;
 use crate::chain;
 use crate::chain::{BestBlock, WatchedOutput};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::{OutPoint, TransactionData};
+use crate::crypto::chacha20poly1305rfc::ChaCha20Poly1305RFC;
 use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, SpendableOutputDescriptor, StaticPaymentOutputDescriptor, DelayedPaymentOutputDescriptor, ecdsa::EcdsaChannelSigner, SignerProvider, EntropySource};
 use crate::chain::onchaintx::{ClaimEvent, FeerateStrategy, OnchainTxHandler};
 use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderFundingOutput, HolderHTLCOutput, PackageSolvingData, PackageTemplate, RevokedOutput, RevokedHTLCOutput};
 use crate::chain::Filter;
 use crate::util::logger::{Logger, Record};
-use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48};
+use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, MaybeReadable, UpgradableRequired, Writer, Writeable, U48, VecWriter};
 use crate::util::byte_utils;
 use crate::events::{ClosureReason, Event, EventHandler, ReplayEvent};
 use crate::events::bump_transaction::{AnchorDescriptor, BumpTransactionEvent};
@@ -112,6 +114,11 @@ pub struct ChannelMonitorUpdate {
 ///
 /// No other [`ChannelMonitorUpdate`]s are allowed after force-close.
 pub const CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
+
+/// This update ID is used inside [`ChannelMonitorImpl`] to recognise
+/// that we're dealing with a [`StubChannelMonitor`]. Since we require some
+/// exceptions while dealing with it.
+pub const STUB_CHANNEL_UPDATE_IDENTIFIER: u64 = CLOSED_CHANNEL_UPDATE_ID - 1;
 
 impl Writeable for ChannelMonitorUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -832,6 +839,202 @@ impl Readable for IrrevocablyResolvedHTLC {
 	}
 }
 
+/// [StubChannel] is the smallest unit of [OurPeerStorage], it contains
+/// information about a single channel using which we can recover on-chain funds.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StubChannel {
+	pub(crate) channel_id: ChannelId,
+	pub(crate) funding_outpoint: OutPoint,
+	pub(crate) channel_value_stoshis: u64,
+	pub(crate) channel_keys_id: [u8;32],
+	pub(crate) commitment_secrets: CounterpartyCommitmentSecrets,
+	pub(crate) counterparty_node_id: PublicKey,
+	pub(crate) counterparty_delayed_payment_base_key: DelayedPaymentBasepoint,
+	pub(crate) counterparty_htlc_base_key: HtlcBasepoint,
+	pub(crate) on_counterparty_tx_csv: u16,
+	pub(crate) obscure_factor: u64,
+	pub(crate) latest_state: Option<Txid>,
+	pub(crate) their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>,
+	pub(crate) features: ChannelTypeFeatures,
+}
+
+impl StubChannel {
+    pub(crate) fn new(channel_id: ChannelId, funding_outpoint: OutPoint, channel_value_stoshis: u64, channel_keys_id: [u8; 32],
+		       commitment_secrets: CounterpartyCommitmentSecrets, counterparty_node_id: PublicKey, counterparty_delayed_payment_base_key: DelayedPaymentBasepoint, counterparty_htlc_base_key: HtlcBasepoint, on_counterparty_tx_csv: u16,
+			   obscure_factor: u64, latest_state: Option<Txid>, their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>,
+			   features: ChannelTypeFeatures) -> Self {
+        StubChannel {
+            channel_id,
+			funding_outpoint,
+			channel_value_stoshis,
+            channel_keys_id,
+            commitment_secrets,
+			counterparty_node_id,
+			counterparty_delayed_payment_base_key,
+			counterparty_htlc_base_key,
+			on_counterparty_tx_csv,
+			obscure_factor,
+			latest_state,
+			their_cur_per_commitment_points,
+			features,
+        }
+    }
+
+	/// Get the min seen secret from the commitment secrets.
+	pub fn get_min_seen_secret(&self) -> u64 {
+		return self.commitment_secrets.get_min_seen_secret();
+	}
+}
+
+impl_writeable_tlv_based!(StubChannel, {
+	(0, channel_id, required),
+	(2, channel_keys_id, required),
+	(4, channel_value_stoshis, required),
+	(6, funding_outpoint, required),
+	(8, commitment_secrets, required),
+	(10, counterparty_node_id, required),
+	(12, counterparty_delayed_payment_base_key, required),
+	(14, counterparty_htlc_base_key, required),
+	(16, on_counterparty_tx_csv, required),
+	(18, obscure_factor, required),
+	(20, latest_state, required),
+	(22, their_cur_per_commitment_points, option),
+	(24, features, required),
+});
+
+/// [`OurPeerStorage`] is used to store our channels using which we
+/// can create our PeerStorage Backup.
+/// This includes timestamp to compare between two given 
+/// [`OurPeerStorage`] and version defines the structure.
+#[derive(Clone, PartialEq, Eq)]
+pub struct OurPeerStorage {
+    version: u32,
+    timestamp: u32,
+    channels: Vec<StubChannel>,
+}
+
+impl OurPeerStorage {
+	/// Returns a [`OurPeerStorage`] with version 1 and current timestamp.
+    pub fn new() -> Self {
+        let duration_since_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .expect("Time must be > 1970");
+
+        Self {
+            version: 1,
+            timestamp: duration_since_epoch.as_secs() as u32,
+            channels: Vec::new(),
+        }
+    }
+
+	/// Stubs a channel inside [`OurPeerStorage`]
+    pub fn stub_channel(&mut self, chan: StubChannel) {
+        self.channels.push(chan);
+    }
+
+	/// Get a reference of `channels` array from [`StubChannel::channels`]
+	pub fn get_channels(&self) -> &Vec<StubChannel> {
+		self.channels.as_ref()
+	}
+
+	pub(crate) fn update_latest_state(&mut self, cid: ChannelId, txid: Txid, their_cur_per_commitment_points: Option<(u64, PublicKey, Option<PublicKey>)>) {
+        for stub_channel in &mut self.channels {
+            if stub_channel.channel_id == cid {
+                stub_channel.latest_state = Some(txid);
+				stub_channel.their_cur_per_commitment_points = their_cur_per_commitment_points;
+                return;
+            }
+        }
+	}
+
+	pub(crate) fn provide_secret(&mut self, cid: ChannelId, idx:u64, secret: [u8; 32]) -> Result<(), ()> {
+		for stub_channel in &mut self.channels {
+            if stub_channel.channel_id == cid {
+                return stub_channel.commitment_secrets.provide_secret(idx, secret);
+            }
+        }
+		return Err(());
+	}
+
+	/// This is called to update the data of the latest state inside [`OurPeerStorage`] using
+	/// [`ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo`]
+	pub(crate) fn update_state_from_monitor_update(&mut self, cid: ChannelId, monitor_update: ChannelMonitorUpdate) -> Result<(),()> {
+		for update in monitor_update.updates.iter() {
+			match update {
+				ChannelMonitorUpdateStep::LatestCounterpartyCommitmentTXInfo { commitment_txid, htlc_outputs, commitment_number, 
+					their_per_commitment_point, .. } => {
+						let stub_channels = &self.channels;
+						let mut cur_per_commitment_points = None;
+						for stub_channel in stub_channels {
+							if stub_channel.channel_id == cid {
+								match stub_channel.their_cur_per_commitment_points {
+									Some(old_points) => {
+										if old_points.0 == commitment_number + 1 {
+											cur_per_commitment_points = Some((old_points.0, old_points.1, Some(*their_per_commitment_point)));
+										} else if old_points.0 == commitment_number + 2 {
+											if let Some(old_second_point) = old_points.2 {
+												cur_per_commitment_points = Some((old_points.0 - 1, old_second_point, Some(*their_per_commitment_point)));
+											} else {
+												cur_per_commitment_points = Some((*commitment_number, *their_per_commitment_point, None));
+											}
+										} else {
+											cur_per_commitment_points = Some((*commitment_number, *their_per_commitment_point, None));
+										}
+									},
+									None => {
+										cur_per_commitment_points = Some((*commitment_number, *their_per_commitment_point, None));
+									}
+								}
+							}
+						}
+						self.update_latest_state(cid, *commitment_txid, cur_per_commitment_points);
+						return Ok(());
+					}
+					_ => {}
+			}
+		}
+		Err(())
+	}
+
+	/// Encrypt [`OurPeerStorage`] using the `key` and return a Vec<u8> containing the result.
+    pub fn encrypt_our_peer_storage(&self, key: [u8; 32]) -> Vec<u8> {
+        let n = 0u64;
+        let mut peer_storage = VecWriter(Vec::new());
+        self.write(&mut peer_storage).unwrap();
+        let mut res = vec![0;peer_storage.0.len() + 16];
+
+        let plaintext = &peer_storage.0[..];
+		let mut nonce = [0; 12];
+		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+
+		let mut chacha = ChaCha20Poly1305RFC::new(&key, &nonce, b"");
+		let mut tag = [0; 16];
+		chacha.encrypt(plaintext, &mut res[0..plaintext.len()], &mut tag);
+		res[plaintext.len()..].copy_from_slice(&tag);
+        res
+	}
+
+	/// Decrypt `OurPeerStorage` using the `key`, result is stored inside the `res`.
+	/// Returns an error if the the `cyphertext` is not correct.
+    pub fn decrypt_our_peer_storage(&self, res: &mut[u8], cyphertext: &[u8], key: [u8; 32]) -> Result<(), ()> {
+		let n = 0u64;
+        let mut nonce = [0; 12];
+		nonce[4..].copy_from_slice(&n.to_le_bytes()[..]);
+
+		let mut chacha = ChaCha20Poly1305RFC::new(&key, &nonce, b"");
+		if chacha.variable_time_decrypt(&cyphertext[0..cyphertext.len() - 16], res, &cyphertext[cyphertext.len() - 16..]).is_err() {
+			return Err(());
+		}
+		Ok(())
+	}
+}
+
+impl_writeable_tlv_based!(OurPeerStorage, {
+	(0, version, (default_value, 1)),
+	(2, timestamp, required),
+	(4, channels, optional_vec),
+});
+
 /// A ChannelMonitor handles chain events (blocks connected and disconnected) and generates
 /// on-chain transactions to ensure no loss of funds occurs.
 ///
@@ -1432,6 +1635,100 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		})
 	}
 
+	/// Returns a [`ChannelMonitor`] using [`StubChannel`] and other
+	/// important information to sweep funds and create penalty transactions.
+	pub(crate) fn new_stub(secp_ctx: Secp256k1<secp256k1::All>, stub_channel: &StubChannel, best_block: BestBlock, keys: Signer, channel_parameters: ChannelTransactionParameters ,funding_info_scriptbuf: ScriptBuf, destination_script: ScriptBuf) -> ChannelMonitor<Signer> {
+		let mut outputs_to_watch = new_hash_map();
+		outputs_to_watch.insert(stub_channel.funding_outpoint.get_txid(), vec![(stub_channel.funding_outpoint.index as u32, funding_info_scriptbuf.clone())]);
+		let dummy_key = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let dummy_sig = crate::crypto::utils::sign(&secp_ctx, &secp256k1::Message::from_digest_slice(&[42; 32]).unwrap(), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let counterparty_payment_script = chan_utils::get_counterparty_payment_script(
+			&stub_channel.features, &keys.pubkeys().payment_point
+		);
+		let holder_revocation_basepoint = keys.pubkeys().revocation_basepoint;
+		let holder_commitment_tx = HolderSignedTx {
+			txid: stub_channel.funding_outpoint.get_txid(),
+			revocation_key: RevocationKey(dummy_key),
+			a_htlc_key: HtlcKey(dummy_key),
+			b_htlc_key: HtlcKey(dummy_key),
+			delayed_payment_key: DelayedPaymentKey(dummy_key),
+			per_commitment_point: dummy_key,
+			htlc_outputs: Vec::new(), // There are never any HTLCs in the initial commitment transactions
+			to_self_value_sat: 0,
+			feerate_per_kw: 1,
+		};
+
+		let dummy_tx_creation_keys = TxCreationKeys {
+			per_commitment_point: dummy_key.clone(),
+			revocation_key: RevocationKey::from_basepoint(&secp_ctx, &RevocationBasepoint::from(dummy_key), &dummy_key),
+			broadcaster_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
+			countersignatory_htlc_key: HtlcKey::from_basepoint(&secp_ctx, &HtlcBasepoint::from(dummy_key), &dummy_key),
+			broadcaster_delayed_payment_key: DelayedPaymentKey::from_basepoint(&secp_ctx, &DelayedPaymentBasepoint::from(dummy_key), &dummy_key),
+		};
+		let counterparty_htlc_sigs = Vec::new();
+		let mut nondust_htlcs: Vec<(HTLCOutputInCommitment, Option<Box<HTLCSource>>)> = Vec::new();
+		let inner = CommitmentTransaction::new_with_auxiliary_htlc_data(0, 0, 0, dummy_key.clone(), dummy_key.clone(), dummy_tx_creation_keys, 0, &mut nondust_htlcs, &channel_parameters.as_counterparty_broadcastable());
+		let holder_commitment = HolderCommitmentTransaction::new(inner, dummy_sig, counterparty_htlc_sigs, &dummy_key, &PublicKey::from_slice(&[2;33]).unwrap());
+		let onchain_tx_handler = OnchainTxHandler::new(
+			stub_channel.channel_value_stoshis, stub_channel.channel_keys_id, destination_script.clone(), keys,
+			channel_parameters, holder_commitment, secp_ctx
+		);
+		let counterparty_commitment_params = CounterpartyCommitmentParameters { counterparty_delayed_payment_base_key: stub_channel.counterparty_delayed_payment_base_key, 
+			counterparty_htlc_base_key: stub_channel.counterparty_htlc_base_key, on_counterparty_tx_csv: stub_channel.on_counterparty_tx_csv };
+		let mut counterparty_claimable_outpoints = new_hash_map();
+		counterparty_claimable_outpoints.insert(stub_channel.latest_state.unwrap(), Vec::new());
+
+		Self::from_impl(ChannelMonitorImpl {
+			latest_update_id: STUB_CHANNEL_UPDATE_IDENTIFIER,
+			commitment_transaction_number_obscure_factor: stub_channel.obscure_factor,
+			destination_script: destination_script.clone(),
+			broadcasted_holder_revokable_script: None,
+			counterparty_payment_script,
+			shutdown_script: None,
+			channel_keys_id: stub_channel.channel_keys_id,
+			holder_revocation_basepoint,
+			channel_id: stub_channel.channel_id,
+			funding_info: (stub_channel.funding_outpoint, ScriptBuf::new()),
+			current_counterparty_commitment_txid: None,
+			prev_counterparty_commitment_txid: None,
+			counterparty_commitment_params,
+			funding_redeemscript: ScriptBuf::new(),
+			channel_value_satoshis: stub_channel.channel_value_stoshis,
+			their_cur_per_commitment_points: stub_channel.their_cur_per_commitment_points,
+			on_holder_tx_csv: 1,
+			commitment_secrets: stub_channel.commitment_secrets.clone(),
+			counterparty_claimable_outpoints,
+
+			holder_pays_commitment_tx_fee: None,
+
+			counterparty_hash_commitment_number: new_hash_map(),
+			counterparty_commitment_txn_on_chain: new_hash_map(),
+			counterparty_fulfilled_htlcs: new_hash_map(),
+			prev_holder_signed_commitment_tx: None,
+			current_holder_commitment_tx: holder_commitment_tx,
+			current_counterparty_commitment_number: 0,
+			current_holder_commitment_number: 1,
+			payment_preimages: new_hash_map(),
+			pending_monitor_events: Vec::new(),
+			pending_events: Vec::new(),
+			is_processing_pending_events: false,
+			onchain_events_awaiting_threshold_conf: Vec::new(),
+			outputs_to_watch,
+			onchain_tx_handler,
+			lockdown_from_offchain: true,
+			holder_tx_signed: true,
+			funding_spend_seen: false,
+			funding_spend_confirmed: None,
+			confirmed_commitment_tx_counterparty_output: None,
+			htlcs_resolved_on_chain: Vec::new(),
+			spendable_txids_confirmed: Vec::new(),
+			best_block,
+			counterparty_node_id: Some(stub_channel.counterparty_node_id),
+			initial_counterparty_commitment_info: None,
+			balances_empty_height: None
+		})
+	}
+
 	#[cfg(test)]
 	fn provide_secret(&self, idx: u64, secret: [u8; 32]) -> Result<(), &'static str> {
 		self.inner.lock().unwrap().provide_secret(idx, secret)
@@ -1532,6 +1829,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_latest_update_id()
 	}
 
+	/// Gets the latest claiming info from the ChannelMonitor to update our PeerStorageBackup.
+	pub(crate) fn get_latest_commitment_txn_and_its_claiming_info(&self) -> Option<(Txid, Vec<(HTLCOutputInCommitment, Option<std::boxed::Box<HTLCSource>>)>, Option<(u64, PublicKey, Option<PublicKey>)>)> {
+		let lock = self.inner.lock().unwrap();
+		if let Some(latest_txid) = lock.current_counterparty_commitment_txid {
+			return Some((
+				latest_txid, lock.counterparty_claimable_outpoints.get(&latest_txid).unwrap().clone(),
+				lock.their_cur_per_commitment_points
+			))
+		}
+ 
+		None
+	}
+
 	/// Gets the funding transaction outpoint of the channel this ChannelMonitor is monitoring for.
 	pub fn get_funding_txo(&self) -> (OutPoint, ScriptBuf) {
 		self.inner.lock().unwrap().get_funding_txo().clone()
@@ -1572,6 +1882,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				});
 			}
 		}
+	}
+
+	pub fn update_latest_state_from_new_stubmonitor(&self, stub: &StubChannel) {
+		self.inner.lock().unwrap().update_latest_state_from_new_stubmonitor(stub);
 	}
 
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
@@ -3417,6 +3731,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.current_holder_commitment_number
 	}
 
+	/// Updates the [`ChannelMonitor`] when we receive a new more recent
+	/// peer storage from our peer.
+	fn update_latest_state_from_new_stubmonitor(&mut self, stub: &StubChannel) {
+		let mut latest_state = new_hash_map();
+		latest_state.insert(stub.latest_state.unwrap(), Vec::new());
+		self.commitment_secrets = stub.commitment_secrets.clone();
+		self.counterparty_claimable_outpoints = latest_state;
+		self.their_cur_per_commitment_points = stub.their_cur_per_commitment_points.clone();
+	}
+
 	/// Attempts to claim a counterparty commitment transaction's outputs using the revocation key and
 	/// data in counterparty_claimable_outpoints. Will directly claim any HTLC outputs which expire at a
 	/// height > height + CLTV_SHARED_CLAIM_BUFFER. In any case, will install monitoring for
@@ -3493,6 +3817,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						block_hash, per_commitment_claimable_data.iter().map(|(htlc, htlc_source)|
 							(htlc, htlc_source.as_ref().map(|htlc_source| htlc_source.as_ref()))
 						), logger);
+				} else if self.latest_update_id == STUB_CHANNEL_UPDATE_IDENTIFIER {
+					// Since we aren't storing per commitment option inside stub channels.
+					fail_unbroadcast_htlcs!(self, "revoked counterparty", commitment_txid, tx, height,
+						block_hash, [].iter().map(|reference| *reference), logger);
 				} else {
 					// Our fuzzers aren't constrained by pesky things like valid signatures, so can
 					// spend our funding output with a transaction which doesn't match our past
@@ -4253,6 +4581,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					if *idx == input.previous_output.vout {
 						#[cfg(test)]
 						{
+							if self.latest_update_id == STUB_CHANNEL_UPDATE_IDENTIFIER {
+								return true;
+							}
 							// If the expected script is a known type, check that the witness
 							// appears to be spending the correct type (ie that the match would
 							// actually succeed in BIP 158/159-style filters).

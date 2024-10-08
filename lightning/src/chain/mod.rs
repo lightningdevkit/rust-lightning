@@ -16,7 +16,7 @@ use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::network::Network;
 use bitcoin::secp256k1::PublicKey;
 
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, MonitorEvent};
+use crate::chain::channelmonitor::{ChannelMonitor, StubChannel, ChannelMonitorUpdate, MonitorEvent};
 use crate::ln::types::ChannelId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::chain::transaction::{OutPoint, TransactionData};
