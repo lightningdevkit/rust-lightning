@@ -959,10 +959,10 @@ impl PackageTemplate {
 	pub(crate) fn get_height_timer(&self, current_height: u32) -> u32 {
 		let mut height_timer = current_height + LOW_FREQUENCY_BUMP_INTERVAL;
 		let timer_for_target_conf = |target_conf| -> u32 {
-			if target_conf <= current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL {
-				current_height + HIGH_FREQUENCY_BUMP_INTERVAL
-			} else if target_conf <= current_height + LOW_FREQUENCY_BUMP_INTERVAL {
+			if target_conf <= current_height + LOW_FREQUENCY_BUMP_INTERVAL {
 				current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL
+			} else if target_conf <= current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL {
+				current_height + HIGH_FREQUENCY_BUMP_INTERVAL
 			} else {
 				current_height + LOW_FREQUENCY_BUMP_INTERVAL
 			}
