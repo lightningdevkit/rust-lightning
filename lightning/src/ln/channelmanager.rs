@@ -9520,7 +9520,7 @@ where
 	}
 
 	/// Pays for an [`Offer`] looked up using [BIP 353] Human Readable Names resolved by the DNS
-	/// resolver which resolves names according to bLIP 32 at the `dns_resolver` [`Destination`].
+	/// resolver(s) at `dns_resolvers` which resolve names according to bLIP 32.
 	///
 	/// If the wallet supports paying on-chain schemes, you should instead use
 	/// [`OMNameResolver::resolve_name`] and [`OMNameResolver::handle_dnssec_proof_for_uri`] (by
