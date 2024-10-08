@@ -3684,6 +3684,7 @@ where
 				counterparty_node_id: Some(shutdown_res.counterparty_node_id),
 				channel_capacity_sats: Some(shutdown_res.channel_capacity_satoshis),
 				channel_funding_txo: shutdown_res.channel_funding_txo,
+				last_local_balance_msat: Some(shutdown_res.last_local_balance_msat),
 			}, None));
 
 			if let Some(transaction) = shutdown_res.unbroadcasted_funding_tx {
@@ -12294,6 +12295,7 @@ where
 						counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
 						channel_capacity_sats: Some(channel.context.get_value_satoshis()),
 						channel_funding_txo: channel.context.get_funding_txo(),
+						last_local_balance_msat: Some(channel.context.get_value_to_self_msat()),
 					}, None));
 					for (channel_htlc_source, payment_hash) in channel.inflight_htlc_sources() {
 						let mut found_htlc = false;
@@ -12350,6 +12352,7 @@ where
 					counterparty_node_id: Some(channel.context.get_counterparty_node_id()),
 					channel_capacity_sats: Some(channel.context.get_value_satoshis()),
 					channel_funding_txo: channel.context.get_funding_txo(),
+					last_local_balance_msat: Some(channel.context.get_value_to_self_msat()),
 				}, None));
 			} else {
 				log_error!(logger, "Missing ChannelMonitor for channel {} needed by ChannelManager.", &channel.context.channel_id());

@@ -1293,6 +1293,17 @@ pub enum Event {
 		/// status of the closing tx.
 		/// Note that for instances serialized in v0.0.119 or prior this will be missing (None).
 		channel_funding_txo: Option<transaction::OutPoint>,
+		/// An upper bound on the our last local balance in msats before the channel was closed.
+		///
+		/// Will overstate our balance as it ignores pending outbound HTLCs and transaction fees.
+		///
+		/// For more accurate balances including fee information see
+		/// [`ChainMonitor::get_claimable_balances`].
+		///
+		/// This field will be `None` only for objects serialized prior to LDK 0.1.
+		///
+		/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
+		last_local_balance_msat: Option<u64>,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -1573,7 +1584,8 @@ impl Writeable for Event {
 				});
 			},
 			&Event::ChannelClosed { ref channel_id, ref user_channel_id, ref reason,
-				ref counterparty_node_id, ref channel_capacity_sats, ref channel_funding_txo
+				ref counterparty_node_id, ref channel_capacity_sats, ref channel_funding_txo,
+				ref last_local_balance_msat,
 			} => {
 				9u8.write(writer)?;
 				// `user_channel_id` used to be a single u64 value. In order to remain backwards
@@ -1589,6 +1601,7 @@ impl Writeable for Event {
 					(5, counterparty_node_id, option),
 					(7, channel_capacity_sats, option),
 					(9, channel_funding_txo, option),
+					(11, last_local_balance_msat, option)
 				});
 			},
 			&Event::DiscardFunding { ref channel_id, ref funding_info } => {
@@ -1964,6 +1977,7 @@ impl MaybeReadable for Event {
 					let mut counterparty_node_id = None;
 					let mut channel_capacity_sats = None;
 					let mut channel_funding_txo = None;
+					let mut last_local_balance_msat = None;
 					read_tlv_fields!(reader, {
 						(0, channel_id, required),
 						(1, user_channel_id_low_opt, option),
@@ -1972,6 +1986,7 @@ impl MaybeReadable for Event {
 						(5, counterparty_node_id, option),
 						(7, channel_capacity_sats, option),
 						(9, channel_funding_txo, option),
+						(11, last_local_balance_msat, option)
 					});
 
 					// `user_channel_id` used to be a single u64 value. In order to remain
@@ -1980,8 +1995,10 @@ impl MaybeReadable for Event {
 					let user_channel_id = (user_channel_id_low_opt.unwrap_or(0) as u128) +
 						((user_channel_id_high_opt.unwrap_or(0) as u128) << 64);
 
-					Ok(Some(Event::ChannelClosed { channel_id, user_channel_id, reason: _init_tlv_based_struct_field!(reason, upgradable_required),
-						counterparty_node_id, channel_capacity_sats, channel_funding_txo }))
+					Ok(Some(Event::ChannelClosed {
+						channel_id, user_channel_id, reason: _init_tlv_based_struct_field!(reason, upgradable_required),
+						counterparty_node_id, channel_capacity_sats, channel_funding_txo, last_local_balance_msat,
+					}))
 				};
 				f()
 			},
