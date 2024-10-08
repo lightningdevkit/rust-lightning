@@ -2435,7 +2435,7 @@ where
 	last_days_feerates: Mutex<VecDeque<(u32, u32)>>,
 
 	#[cfg(feature = "dnssec")]
-	dns_resolver: OMNameResolver,
+	hrn_resolver: OMNameResolver,
 	#[cfg(feature = "dnssec")]
 	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
 
@@ -3264,7 +3264,7 @@ where
 			logger,
 
 			#[cfg(feature = "dnssec")]
-			dns_resolver: OMNameResolver::new(current_timestamp, params.best_block.height),
+			hrn_resolver: OMNameResolver::new(current_timestamp, params.best_block.height),
 			#[cfg(feature = "dnssec")]
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
 		}
@@ -9566,7 +9566,7 @@ where
 		dns_resolvers: Vec<Destination>,
 	) -> Result<(), ()> {
 		let (onion_message, context) =
-			self.dns_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
+			self.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
 		let reply_paths = self.create_blinded_paths(MessageContext::DNSResolver(context))?;
 		let expiration = StaleExpiration::TimerTicks(2);
 		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, max_total_routing_fee_msat, amount_msats)?;
@@ -10215,7 +10215,7 @@ where
 		});
 		#[cfg(feature = "dnssec")] {
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Relaxed) as u32;
-			self.dns_resolver.new_best_block(height, timestamp);
+			self.hrn_resolver.new_best_block(height, timestamp);
 		}
 	}
 
@@ -11463,7 +11463,7 @@ where
 	}
 
 	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
-		let offer_opt = self.dns_resolver.handle_dnssec_proof_for_offer(message, context);
+		let offer_opt = self.hrn_resolver.handle_dnssec_proof_for_offer(message, context);
 		if let Some((completed_requests, offer)) = offer_opt {
 			for (name, payment_id) in completed_requests {
 				if let Ok(amt_msats) = self.pending_outbound_payments.amt_msats_for_payment_awaiting_offer(payment_id) {
@@ -13238,7 +13238,7 @@ where
 			default_configuration: args.default_config,
 
 			#[cfg(feature = "dnssec")]
-			dns_resolver: OMNameResolver::new(highest_seen_timestamp, best_block_height),
+			hrn_resolver: OMNameResolver::new(highest_seen_timestamp, best_block_height),
 			#[cfg(feature = "dnssec")]
 			pending_dns_onion_messages: Mutex::new(Vec::new()),
 		};
