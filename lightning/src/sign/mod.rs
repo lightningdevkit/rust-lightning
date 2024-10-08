@@ -177,11 +177,14 @@ impl StaticPaymentOutputDescriptor {
 	/// originated from an anchor outputs channel, as they take the form of a P2WSH script.
 	pub fn witness_script(&self) -> Option<ScriptBuf> {
 		self.channel_transaction_parameters.as_ref().and_then(|channel_params| {
+			let payment_point = channel_params.holder_pubkeys.payment_point;
 			if channel_params.supports_anchors() {
-				let payment_point = channel_params.holder_pubkeys.payment_point;
 				Some(chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point))
 			} else {
-				None
+				Some(ScriptBuf::new_p2pkh(
+					&bitcoin::PublicKey::new(payment_point)
+						.pubkey_hash(),
+				))
 			}
 		})
 	}
