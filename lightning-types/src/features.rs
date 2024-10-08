@@ -68,6 +68,8 @@
 //!     (see the [`Keysend` feature assignment proposal](https://github.com/lightning/bolts/issues/605#issuecomment-606679798) for more information).
 //! - `Trampoline` - supports receiving and forwarding Trampoline payments
 //!     (see the [`Trampoline` feature proposal](https://github.com/lightning/bolts/pull/836) for more information).
+//! - `DnsResolver` - supports resolving DNS names to TXT DNSSEC proofs for BIP 353 payments
+//!     (see [bLIP 32](https://github.com/lightning/blips/blob/master/blip-0032.md) for more information).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -174,6 +176,10 @@ mod sealed {
 			ZeroConf | Keysend,
 			// Byte 7
 			Trampoline,
+			// Byte 8 - 31
+			,,,,,,,,,,,,,,,,,,,,,,,,
+			// Byte 32
+			DnsResolver,
 		]
 	);
 	define_context!(ChannelContext, []);
@@ -562,6 +568,17 @@ mod sealed {
 		supports_trampoline_routing,
 		requires_trampoline_routing
 	);
+	define_feature!(
+		259,
+		DnsResolver,
+		[NodeContext],
+		"Feature flags for DNS resolving.",
+		set_dns_resolution_optional,
+		set_dns_resolution_required,
+		supports_dns_resolution,
+		requires_dns_resolution
+	);
+
 	// Note: update the module-level docs when a new feature bit is added!
 
 	#[cfg(any(test, feature = "_test_utils"))]
