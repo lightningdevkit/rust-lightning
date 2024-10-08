@@ -18,9 +18,9 @@ monitoring for liveness of peers, routing messages to `ChannelManager` and `P2PG
 instances directly, and receiving messages from them via the `EventsProvider` interface.
 
 These structs communicate with each other using a public API, so that you can easily add
-a proxy in between for special handling. Further, APIs for key generation, transaction
-broadcasting, block fetching, and fee estimation must be implemented and the data
-provided by you, the user.
+a proxy in between for special handling. Further, APIs for key generation, entropy source,
+transaction broadcasting, block fetching, and fee estimation must be implemented and the
+data provided by you, the user.
 
 The library does not rely on the presence of a runtime environment outside of access to
 heap, atomic integers, and basic Mutex primitives. This means the library will never
@@ -31,28 +31,30 @@ block time for current time knowledge.
 
 At a high level, some of the common interfaces fit together as follows:
 
-
 ```
-
-                     -----------------
-                     | KeysInterface |  --------------
-                     -----------------  | UserConfig |
-         --------------------       ^   --------------
-   ------| MessageSendEvent |       |   ^     ----------------
-  /      --------------------       |   |     | FeeEstimator | <-----------------------
- |   (as MessageSendEventsProvider) |   |     ----------------                         \
- |                         ^        |   |    ^                ------------------------  |
- |                          \       |   |   /      ---------> | BroadcasterInterface |  |
- |                           \      |   |  /      /           ------------------------  |
- |                            \     |   | /      /                          ^           |
- |    (as                      ------------------       ----------------    |           |
- |    ChannelMessageHandler)-> | ChannelManager | ----> | chain::Watch |    |           |
- v               /             ------------------       ----------------    |           |
---------------- /                  (as EventsProvider)         ^            |           |
-| PeerManager |-                             \                 |            |           |
----------------                               \                | (is-a)     |           |
- |                    --------------           \       _----------------   /           /
- |                    | UtxoLookup |            \     / | ChainMonitor |---------------
+                      ------------------   --------------
+                      | SignerProvider |   | NodeSigner |
+                      ------------------   --------------
+            -----------------         ^    ^        --------------
+            | EntropySource | <----    \  /   ----> | UserConfig |
+            -----------------       \  |  |  /      --------------
+                                    |  |  |  |
+         --------------------       |  |  |  |     ----------------
+   ------| MessageSendEvent |       |  |  |  |     | FeeEstimator | <----------------
+  /      --------------------       |  |  |  |     ----------------                  \
+ |   (as MessageSendEventsProvider) |  |  |  |      ^                                |
+ |                         ^        |  |  |  |     /       -----------------------   |
+ |                          \       |  |  |  |    /  ----> | BroadcasterInterface |  |
+ |                           \      |  |  |  |   / /       -----------------------   |
+ |                            \     |  |  |  |  / /                       ^          |
+ |    (as                      ------------------       ----------------  |          |
+ |    ChannelMessageHandler)-> | ChannelManager | ----> | chain::Watch |  |          |
+ v               /             ------------------       ----------------  |          |
+--------------- /                  (as EventsProvider)         ^          |          |
+| PeerManager |-                             \                 |          |          |
+---------------                               \                | (is-a)  /           |
+ |                    --------------           \       _----------------            /
+ |                    | UtxoLookup |            \     / | ChainMonitor |------------
  |                    --------------             \   /  ----------------
  |                            ^                   \ /          |
 (as RoutingMessageHandler)    |                    v           v
