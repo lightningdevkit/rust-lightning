@@ -74,7 +74,7 @@ use crate::offers::signer;
 #[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
-use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
+use crate::onion_message::messenger::{BlindedPathType, Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -1846,12 +1846,13 @@ where
 /// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
 /// # use lightning::ln::channelmanager::AChannelManager;
 /// # use lightning::offers::parse::Bolt12SemanticError;
+/// # use lightning::onion_message::messenger::BlindedPathType;
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
-/// # let absolute_expiry = None;
+/// # let blinded_path = BlindedPathType::Full;
 /// let offer = channel_manager
-///     .create_offer_builder(absolute_expiry)?
+///     .create_offer_builder(Some(blinded_path))?
 /// # ;
 /// # // Needed for compiling for c_bindings
 /// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
@@ -1949,6 +1950,7 @@ where
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
 /// # use lightning::offers::parse::Bolt12SemanticError;
+/// # use lightning::onion_message::messenger::BlindedPathType;
 /// #
 /// # fn example<T: AChannelManager>(
 /// #     channel_manager: T, amount_msats: u64, absolute_expiry: Duration, retry: Retry,
@@ -1956,9 +1958,10 @@ where
 /// # ) -> Result<(), Bolt12SemanticError> {
 /// # let channel_manager = channel_manager.get_cm();
 /// let payment_id = PaymentId([42; 32]);
+/// let blinded_path = Some(BlindedPathType::Full);
 /// let refund = channel_manager
 ///     .create_refund_builder(
-///         amount_msats, absolute_expiry, payment_id, retry, max_total_routing_fee_msat
+///         amount_msats, absolute_expiry, payment_id, retry, max_total_routing_fee_msat, blinded_path
 ///     )?
 /// # ;
 /// # // Needed for compiling for c_bindings
@@ -2622,9 +2625,7 @@ const MAX_NO_CHANNEL_PEERS: usize = 250;
 /// short-lived, while anything with a greater expiration is considered long-lived.
 ///
 /// Using [`ChannelManager::create_offer_builder`] or [`ChannelManager::create_refund_builder`],
-/// will included a [`BlindedMessagePath`] created using:
-/// - [`MessageRouter::create_compact_blinded_paths`] when short-lived, and
-/// - [`MessageRouter::create_blinded_paths`] when long-lived.
+/// will included a [`BlindedMessagePath`] created using [`MessageRouter::create_blinded_paths`].
 ///
 /// Using compact [`BlindedMessagePath`]s may provide better privacy as the [`MessageRouter`] could select
 /// more hops. However, since they use short channel ids instead of pubkeys, they are more likely to
@@ -4451,7 +4452,7 @@ where
 			let reply_paths = match self.create_blinded_paths(
 				MessageContext::AsyncPayments(
 					AsyncPaymentsContext::OutboundPayment { payment_id, nonce, hmac }
-				)
+				), BlindedPathType::Full
 			) {
 				Ok(paths) => paths,
 				Err(()) => {
@@ -9113,7 +9114,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(
-		&$self, absolute_expiry: Option<Duration>
+		&$self, blinded_path: Option<BlindedPathType>,
 	) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
@@ -9121,17 +9122,23 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		let secp_ctx = &$self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::InvoiceRequest { nonce };
-		let path = $self.create_blinded_paths_using_absolute_expiry(context, absolute_expiry)
-			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-		let builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
-			.chain_hash($self.chain_hash)
-			.path(path);
+		let context = MessageContext::Offers (
+			OffersContext::InvoiceRequest { nonce }
+		);
+		let builder = match blinded_path {
+			Some(blinded_path) => {
+				let path = $self
+					.create_blinded_paths(context, blinded_path)
+					.and_then(|paths| paths.into_iter().next().ok_or(()))
+					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-		let builder = match absolute_expiry {
-			None => builder,
-			Some(absolute_expiry) => builder.absolute_expiry(absolute_expiry),
+				OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
+					.chain_hash($self.chain_hash)
+					.path(path)
+			}
+
+			None => OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
+				.chain_hash($self.chain_hash),
 		};
 
 		Ok(builder.into())
@@ -9186,7 +9193,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn create_refund_builder(
 		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
-		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
+		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>, blinded_path: Option<BlindedPathType>
 	) -> Result<$builder, Bolt12SemanticError> {
 		let node_id = $self.get_our_node_id();
 		let expanded_key = &$self.inbound_payment_key;
@@ -9194,17 +9201,34 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 		let secp_ctx = &$self.secp_ctx;
 
 		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: None };
-		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
-			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let context = MessageContext::Offers (
+			OffersContext::OutboundPayment { payment_id, nonce, hmac: None }
+		);
 
-		let builder = RefundBuilder::deriving_signing_pubkey(
-			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
-		)?
+		let builder = match blinded_path {
+			Some(blinded_path) => {
+				let path = $self
+					.create_blinded_paths(context, blinded_path)
+					.and_then(|paths| paths.into_iter().next().ok_or(()))
+					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+
+				RefundBuilder::deriving_signing_pubkey(
+					node_id, expanded_key, nonce, secp_ctx,
+					amount_msats, payment_id,
+				)?
+				.chain_hash($self.chain_hash)
+				.absolute_expiry(absolute_expiry)
+				.path(path)
+			}
+
+			None => RefundBuilder::deriving_signing_pubkey(
+				node_id, expanded_key, nonce, secp_ctx,
+				amount_msats, payment_id,
+			)?
 			.chain_hash($self.chain_hash)
 			.absolute_expiry(absolute_expiry)
-			.path(path);
+			.absolute_expiry(absolute_expiry),
+		};
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop($self);
 
@@ -9334,7 +9358,7 @@ where
 		let context = MessageContext::Offers(
 			OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }
 		);
-		let reply_paths = self.create_blinded_paths(context)
+		let reply_paths = self.create_blinded_paths(context, BlindedPathType::Full)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -9456,7 +9480,7 @@ where
 				let context = MessageContext::Offers(OffersContext::InboundPayment {
 					payment_hash: invoice.payment_hash(), nonce, hmac
 				});
-				let reply_paths = self.create_blinded_paths(context)
+				let reply_paths = self.create_blinded_paths(context, BlindedPathType::Full)
 					.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 				let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
@@ -9588,25 +9612,7 @@ where
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
 	}
 
-	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
-	/// the path's intended lifetime.
-	///
-	/// Whether or not the path is compact depends on whether the path is short-lived or long-lived,
-	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
-	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
-	fn create_blinded_paths_using_absolute_expiry(
-		&self, context: OffersContext, absolute_expiry: Option<Duration>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let now = self.duration_since_epoch();
-		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
-
-		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
-			self.create_compact_blinded_paths(context)
-		} else {
-			self.create_blinded_paths(MessageContext::Offers(context))
-		}
-	}
-
+	#[cfg(test)]
 	pub(super) fn duration_since_epoch(&self) -> Duration {
 		#[cfg(not(feature = "std"))]
 		let now = Duration::from_secs(
@@ -9624,7 +9630,7 @@ where
 	/// [`MessageRouter::create_blinded_paths`].
 	///
 	/// Errors if the `MessageRouter` errors.
-	fn create_blinded_paths(&self, context: MessageContext) -> Result<Vec<BlindedMessagePath>, ()> {
+	fn create_blinded_paths(&self, context: MessageContext, blinded_path: BlindedPathType) -> Result<Vec<BlindedMessagePath>, ()> {
 		let recipient = self.get_our_node_id();
 		let secp_ctx = &self.secp_ctx;
 
@@ -9633,39 +9639,30 @@ where
 			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
 			.filter(|(_, peer)| peer.is_connected)
 			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
-			.map(|(node_id, _)| *node_id)
-			.collect::<Vec<_>>();
-
-		self.message_router
-			.create_blinded_paths(recipient, context, peers, secp_ctx)
-			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
-	}
-
-	/// Creates a collection of blinded paths by delegating to
-	/// [`MessageRouter::create_compact_blinded_paths`].
-	///
-	/// Errors if the `MessageRouter` errors.
-	fn create_compact_blinded_paths(&self, context: OffersContext) -> Result<Vec<BlindedMessagePath>, ()> {
-		let recipient = self.get_our_node_id();
-		let secp_ctx = &self.secp_ctx;
-
-		let peers = self.per_peer_state.read().unwrap()
-			.iter()
-			.map(|(node_id, peer_state)| (node_id, peer_state.lock().unwrap()))
-			.filter(|(_, peer)| peer.is_connected)
-			.filter(|(_, peer)| peer.latest_features.supports_onion_messages())
-			.map(|(node_id, peer)| MessageForwardNode {
-				node_id: *node_id,
-				short_channel_id: peer.channel_by_id
-					.iter()
-					.filter(|(_, channel)| channel.context().is_usable())
-					.min_by_key(|(_, channel)| channel.context().channel_creation_height)
-					.and_then(|(_, channel)| channel.context().get_short_channel_id()),
+			.map(|(node_id, peer)| {
+				match blinded_path {
+					BlindedPathType::Full => {
+						MessageForwardNode {
+							node_id: *node_id,
+							short_channel_id: None,
+						}
+					}
+					BlindedPathType::Compact => {
+						MessageForwardNode {
+							node_id: *node_id,
+							short_channel_id: peer.channel_by_id
+								.iter()
+								.filter(|(_, channel)| channel.context().is_usable())
+								.min_by_key(|(_, channel)| channel.context().channel_creation_height)
+								.and_then(|(_, channel)| channel.context().get_short_channel_id()),
+						}
+					}
+				}
 			})
 			.collect::<Vec<_>>();
 
 		self.message_router
-			.create_compact_blinded_paths(recipient, MessageContext::Offers(context), peers, secp_ctx)
+			.create_blinded_paths(recipient, context, blinded_path, peers, secp_ctx)
 			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
 	}
 
@@ -11052,7 +11049,7 @@ where
 				nonce,
 				hmac: Some(hmac)
 			});
-			match self.create_blinded_paths(context) {
+			match self.create_blinded_paths(context, BlindedPathType::Full) {
 				Ok(reply_paths) => match self.enqueue_invoice_request(invoice_request, reply_paths) {
 					Ok(_) => {}
 					Err(_) => {
