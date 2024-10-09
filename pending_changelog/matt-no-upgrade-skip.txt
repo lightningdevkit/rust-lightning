@@ -1,0 +1,6 @@
+## Backwards Compatibility
+ * Nodes with pending forwarded HTLCs or unclaimed payments cannot be
+   upgraded directly from 0.0.123 or earlier to 0.1. Instead, they must
+   first either resolve all pending HTLCs (including those pending
+   resolution on-chain), or run 0.0.124 and resolve any HTLCs that were
+   originally forwarded or received running 0.0.123 or earlier.
