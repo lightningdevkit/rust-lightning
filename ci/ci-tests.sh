@@ -46,6 +46,7 @@ WORKSPACE_MEMBERS=(
 	lightning-rapid-gossip-sync
 	lightning-custom-message
 	lightning-transaction-sync
+	lightning-macros
 	possiblyrandom
 )
 
