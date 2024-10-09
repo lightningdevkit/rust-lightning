@@ -40,7 +40,7 @@ use crate::blinded_path::payment::{BlindedPaymentPath, Bolt12OfferContext, Bolt1
 use crate::chain;
 use crate::chain::{Confirm, ChannelMonitorUpdateStatus, Watch, BestBlock};
 use crate::chain::chaininterface::{BroadcasterInterface, ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
-use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
+use crate::chain::channelmonitor::{Balance, ChannelMonitor, ChannelMonitorUpdate, WithChannelMonitor, ChannelMonitorUpdateStep, HTLC_FAIL_BACK_BUFFER, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY, MonitorEvent, CLOSED_CHANNEL_UPDATE_ID};
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::events;
 use crate::events::{Event, EventHandler, EventsProvider, MessageSendEvent, MessageSendEventsProvider, ClosureReason, HTLCDestination, PaymentFailureReason, ReplayEvent};
@@ -6836,15 +6836,16 @@ where
 		debug_assert_ne!(self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
 		debug_assert_ne!(self.claimable_payments.held_by_thread(), LockHeldState::HeldByThread);
 
+		let counterparty_node_id_opt = prev_hop.counterparty_node_id.or_else(|| {
+			match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
+				Some((cp_id, _dup_chan_id)) => Some(cp_id.clone()),
+				None => None
+			}
+		});
+
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let chan_id = prev_hop.channel_id;
-			let counterparty_node_id_opt = prev_hop.counterparty_node_id.or_else(|| {
-				match self.short_to_chan_info.read().unwrap().get(&prev_hop.short_channel_id) {
-					Some((cp_id, _dup_chan_id)) => Some(cp_id.clone()),
-					None => None
-				}
-			});
 
 			let peer_state_opt = counterparty_node_id_opt.as_ref().map(
 				|counterparty_node_id| per_peer_state.get(counterparty_node_id)
@@ -6950,6 +6951,16 @@ where
 			channel_id: Some(prev_hop.channel_id),
 		};
 
+		if counterparty_node_id_opt.is_none() {
+			let payment_hash: PaymentHash = payment_preimage.into();
+			panic!(
+				"Prior to upgrading to LDK 0.1, all pending HTLCs must be resolved. It appears at least the HTLC with payment_hash {} (preimage {}) was not resolved. Please downgrade to LDK 0.0.124 and resolve the HTLC prior to upgrading.",
+				payment_hash,
+				payment_preimage,
+			);
+		}
+		let counterparty_node_id = counterparty_node_id_opt.expect("Checked immediately above");
+
 		if !during_init {
 			// We update the ChannelMonitor on the backward link, after
 			// receiving an `update_fulfill_htlc` from the forward link.
@@ -6987,40 +6998,25 @@ where
 		let (action_opt, raa_blocker_opt) = completion_action(None, false);
 
 		if let Some(raa_blocker) = raa_blocker_opt {
-			let counterparty_node_id = prev_hop.counterparty_node_id.or_else(||
-				// prev_hop.counterparty_node_id is always available for payments received after
-				// LDK 0.0.123, but for those received on 0.0.123 and claimed later, we need to
-				// look up the counterparty in the `action_opt`, if possible.
-				action_opt.as_ref().and_then(|action|
-					if let MonitorUpdateCompletionAction::PaymentClaimed { pending_mpp_claim, .. } = action {
-						pending_mpp_claim.as_ref().map(|(node_id, _, _, _)| *node_id)
-					} else { None }
-				)
-			);
-			if let Some(counterparty_node_id) = counterparty_node_id {
-				// TODO: Avoid always blocking the world for the write lock here.
-				let mut per_peer_state = self.per_peer_state.write().unwrap();
-				let peer_state_mutex = per_peer_state.entry(counterparty_node_id).or_insert_with(||
-					Mutex::new(PeerState {
-						channel_by_id: new_hash_map(),
-						inbound_channel_request_by_id: new_hash_map(),
-						latest_features: InitFeatures::empty(),
-						pending_msg_events: Vec::new(),
-						in_flight_monitor_updates: BTreeMap::new(),
-						monitor_update_blocked_actions: BTreeMap::new(),
-						actions_blocking_raa_monitor_updates: BTreeMap::new(),
-						is_connected: false,
-					}));
-				let mut peer_state = peer_state_mutex.lock().unwrap();
+			// TODO: Avoid always blocking the world for the write lock here.
+			let mut per_peer_state = self.per_peer_state.write().unwrap();
+			let peer_state_mutex = per_peer_state.entry(counterparty_node_id).or_insert_with(||
+				Mutex::new(PeerState {
+					channel_by_id: new_hash_map(),
+					inbound_channel_request_by_id: new_hash_map(),
+					latest_features: InitFeatures::empty(),
+					pending_msg_events: Vec::new(),
+					in_flight_monitor_updates: BTreeMap::new(),
+					monitor_update_blocked_actions: BTreeMap::new(),
+					actions_blocking_raa_monitor_updates: BTreeMap::new(),
+					is_connected: false,
+				}));
+			let mut peer_state = peer_state_mutex.lock().unwrap();
 
-				peer_state.actions_blocking_raa_monitor_updates
-					.entry(prev_hop.channel_id)
-					.or_default()
-					.push(raa_blocker);
-			} else {
-				debug_assert!(false,
-					"RAA ChannelMonitorUpdate blockers are only set with PaymentClaimed completion actions, so we should always have a counterparty node id");
-			}
+			peer_state.actions_blocking_raa_monitor_updates
+				.entry(prev_hop.channel_id)
+				.or_default()
+				.push(raa_blocker);
 		}
 
 		self.handle_monitor_update_completion_actions(action_opt);
@@ -12773,11 +12769,96 @@ where
 				// Whether the downstream channel was closed or not, try to re-apply any payment
 				// preimages from it which may be needed in upstream channels for forwarded
 				// payments.
+				let mut fail_read = false;
 				let outbound_claimed_htlcs_iter = monitor.get_all_current_outbound_htlcs()
 					.into_iter()
 					.filter_map(|(htlc_source, (htlc, preimage_opt))| {
-						if let HTLCSource::PreviousHopData(_) = htlc_source {
+						if let HTLCSource::PreviousHopData(prev_hop) = &htlc_source {
 							if let Some(payment_preimage) = preimage_opt {
+								let inbound_edge_monitor = args.channel_monitors.get(&prev_hop.outpoint);
+								// Note that for channels which have gone to chain,
+								// `get_all_current_outbound_htlcs` is never pruned and always returns
+								// a constant set until the monitor is removed/archived. Thus, we
+								// want to skip replaying claims that have definitely been resolved
+								// on-chain.
+
+								// If the inbound monitor is not present, we assume it was fully
+								// resolved and properly archived, implying this payment had plenty
+								// of time to get claimed and we can safely skip any further
+								// attempts to claim it (they wouldn't succeed anyway as we don't
+								// have a monitor against which to do so).
+								let inbound_edge_monitor = if let Some(monitor) = inbound_edge_monitor {
+									monitor
+								} else {
+									return None;
+								};
+								// Second, if the inbound edge of the payment's monitor has been
+								// fully claimed we've had at least `ANTI_REORG_DELAY` blocks to
+								// get any PaymentForwarded event(s) to the user and assume that
+								// there's no need to try to replay the claim just for that.
+								let inbound_edge_balances = inbound_edge_monitor.get_claimable_balances();
+								if inbound_edge_balances.is_empty() {
+									return None;
+								}
+
+								if prev_hop.counterparty_node_id.is_none() {
+									// We no longer support claiming an HTLC where we don't have
+									// the counterparty_node_id available if the claim has to go to
+									// a closed channel. Its possible we can get away with it if
+									// the channel is not yet closed, but its by no means a
+									// guarantee.
+
+									// Thus, in this case we are a bit more aggressive with our
+									// pruning - if we have no use for the claim (because the
+									// inbound edge of the payment's monitor has already claimed
+									// the HTLC) we skip trying to replay the claim.
+									let htlc_payment_hash: PaymentHash = payment_preimage.into();
+									if !inbound_edge_balances.iter().all(|bal| {
+										match bal {
+											Balance::ClaimableOnChannelClose { .. } => {
+												// The channel is still open, assume we can still
+												// claim against it
+												false
+											},
+											Balance::MaybePreimageClaimableHTLC { payment_hash, .. } => {
+												*payment_hash != htlc_payment_hash
+											},
+											_ => true,
+										}
+									}) {
+										return None;
+									}
+
+									// First check if we're absolutely going to fail - if we need
+									// to replay this claim to get the preimage into the inbound
+									// edge monitor but the channel is closed (and thus we'll
+									// immediately panic if we call claim_funds_from_hop).
+									if outpoint_to_peer.get(&prev_hop.outpoint).is_none() {
+										log_error!(args.logger,
+											"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
+											All HTLCs which were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
+											htlc_payment_hash,
+											payment_preimage,
+										);
+										fail_read = true;
+									}
+
+									// At this point we're confident we need the claim, but the
+									// inbound edge channel is still live. As long as this remains
+									// the case, we can conceivably proceed, but we run some risk
+									// of panicking at runtime. The user ideally should have read
+									// the release notes and we wouldn't be here, but we go ahead
+									// and let things run in the hope that it'll all just work out.
+									log_error!(args.logger,
+										"We need to replay the HTLC claim for payment_hash {} (preimage {}) but don't have all the required information to do so reliably.\
+										As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
+										All HTLCs which were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
+										Continuing anyway, though panics may occur!",
+										htlc_payment_hash,
+										payment_preimage,
+									);
+								}
+
 								Some((htlc_source, payment_preimage, htlc.amount_msat,
 									// Check if `counterparty_opt.is_none()` to see if the
 									// downstream chan is closed (because we don't have a
@@ -12796,6 +12877,9 @@ where
 					});
 				for tuple in outbound_claimed_htlcs_iter {
 					pending_claims_to_replay.push(tuple);
+				}
+				if fail_read {
+					return Err(DecodeError::InvalidValue);
 				}
 			}
 		}
