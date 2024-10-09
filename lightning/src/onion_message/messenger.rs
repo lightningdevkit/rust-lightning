@@ -1623,7 +1623,7 @@ where
 					},
 					#[cfg(async_payments)]
 					ParsedOnionMessageContents::AsyncPayments(AsyncPaymentsMessage::HeldHtlcAvailable(msg)) => {
-						let response_instructions = self.async_payments_handler.held_htlc_available(
+						let response_instructions = self.async_payments_handler.handle_held_htlc_available(
 							msg, responder
 						);
 						if let Some((msg, instructions)) = response_instructions {
@@ -1640,7 +1640,7 @@ where
 							},
 							None => return,
 						};
-						self.async_payments_handler.release_held_htlc(msg, context);
+						self.async_payments_handler.handle_release_held_htlc(msg, context);
 					},
 					ParsedOnionMessageContents::DNSResolver(DNSResolverMessage::DNSSECQuery(msg)) => {
 						let response_instructions = self.dns_resolver_handler.handle_dnssec_query(msg, responder);

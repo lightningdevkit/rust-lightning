@@ -148,12 +148,12 @@ impl OffersMessageHandler for IgnoringMessageHandler {
 	}
 }
 impl AsyncPaymentsMessageHandler for IgnoringMessageHandler {
-	fn held_htlc_available(
+	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
 		None
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
+	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 }
 impl DNSResolverMessageHandler for IgnoringMessageHandler {
 	fn handle_dnssec_query(
