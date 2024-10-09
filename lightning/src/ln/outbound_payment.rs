@@ -1017,7 +1017,7 @@ impl OutboundPayments {
 						abandon_with_entry!(entry, PaymentFailureReason::UnknownRequiredFeatures);
 						return Err(Bolt12PaymentError::UnknownRequiredFeatures)
 					}
-					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq) {
+					let amount_msat = match InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(invreq, None) {
 						Ok(amt) => amt,
 						Err(_) => {
 							// We check this during invoice request parsing, when constructing the invreq's
