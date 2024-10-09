@@ -1292,7 +1292,6 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 
 	/// Return the last funded (unconfirmed) channel, or if none, the pending one
 	pub fn get_funded_channel(&self) -> Option<&Channel<SP>> {
-		// self.debug(); // TODO remove
 		if self.funded_channels.len() > 0 {
 			Some(&self.funded_channels[self.funded_channels.len() - 1])
 		} else {
@@ -1302,7 +1301,6 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 
 	/// Return the last funded (unconfirmed) channel
 	pub fn get_funded_channel_mut(&mut self) -> Option<&mut Channel<SP>> {
-		self.debug(); // TODO remove
 		if self.funded_channels.len() > 0 {
 			let n = self.funded_channels.len();
 			Some(&mut self.funded_channels[n - 1])
@@ -1316,8 +1314,9 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 		self.funded_channels.iter().collect::<Vec<_>>()
 	}
 
-	/// TODO remove
-	pub fn debug(&self) {
+	/// Return all the funded channels (mut ref)
+	pub fn all_funded_mut(&mut self) -> Vec<&mut Channel<SP>> {
+		self.funded_channels.iter_mut().collect::<Vec<_>>()
 	}
 
 	/// Add new funded, close any unfunded
@@ -1354,8 +1353,6 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	pub fn set_new_pending_out(&mut self, variant_channel: OutboundV2Channel<SP>) {
 		debug_assert!(self.unfunded_channel.is_none());
 		self.unfunded_channel = Some(V2Channel::UnfundedOutboundV2(variant_channel));
-		self.debug(); // TODO remove
-		panic!("This is to be used in RBF, not yet implemented");
 	}
 
 	#[cfg(any(dual_funding, splicing))]
@@ -1389,8 +1386,6 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	pub fn set_new_pending_in(&mut self, variant_channel: InboundV2Channel<SP>) {
 		debug_assert!(self.unfunded_channel.is_none());
 		self.unfunded_channel = Some(V2Channel::UnfundedInboundV2(variant_channel));
-		self.debug(); // TODO remove
-		panic!("This is to be used in RBF, not yet implemented");
 	}
 
 	#[cfg(any(dual_funding, splicing))]
@@ -1423,7 +1418,6 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 
 	/// Take one funded (unconfirmed) channel
 	pub fn take_funded_channel(&mut self, idx: usize) -> Option<Channel<SP>> {
-		// self.debug(); // TODO remove
 		if idx < self.funded_channels.len() {
 			Some(self.funded_channels.remove(idx))
 		} else {
@@ -1439,7 +1433,6 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	/// Keep only the one confirmed channel, drop the other variants
 	// This is to be relaced by going to Confirmed phase with one channel
 	pub fn keep_one_confirmed(&mut self, channel_index: usize) {
-		self.debug(); // TODO remove
 		if self.funded_channels.len() > 1 {
 			debug_assert!(channel_index < self.funded_channels.len());
 			self.funded_channels = vec![self.funded_channels.remove(channel_index)];
@@ -1447,7 +1440,6 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 			{
 				self.unfunded_channel = None;
 			}
-			self.debug(); // TODO remove
 		}
 	}
 
@@ -1484,13 +1476,15 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	#[cfg(any(dual_funding, splicing))]
 	pub fn funding_tx_constructed<L: Deref>(
 		mut self, counterparty_node_id: &PublicKey, signing_session: InteractiveTxSigningSession, logger: &L
-	) -> Result<(Channel<SP>, msgs::CommitmentSigned, Option<Event>), (Self, ChannelError)>
+	) -> Result<((Channel<SP>, msgs::CommitmentSigned, Option<Event>), Self), (Self, ChannelError)>
 	where
 		L::Target: Logger
 	{
 		if let Some(pending) = self.take_pending() {
-			pending.funding_tx_constructed(counterparty_node_id, signing_session, logger)
-				.map_err(|(_ch, err)| (self, err))
+			match pending.funding_tx_constructed(counterparty_node_id, signing_session, logger) {
+				Ok(r) => Ok((r, self)),
+				Err((_ch, err)) => Err((self, err)),
+			}
 		} else {
 			Err((self, ChannelError::Close(format!("Channel is already funded, not expecting tx_constructed"))))
 		}
@@ -2917,6 +2911,45 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 			interactive_tx_constructor: None,
 			next_funding_txid: self.next_funding_txid,
 		}
+	}
+
+	#[cfg(any(dual_funding, splicing))]
+	fn reset_common_rbf_fields(&mut self, funding_feerate_sat_per_1000_weight: u32)
+	{
+		self.funding_transaction = None;
+		self.funding_tx_confirmed_in = None;
+		self.funding_tx_confirmation_height = 0;
+		self.channel_transaction_parameters.funding_outpoint = None;
+		self.next_funding_txid = None;
+		// reset transaction numbers
+		self.cur_holder_commitment_transaction_number = INITIAL_COMMITMENT_NUMBER;
+		self.cur_counterparty_commitment_transaction_number = INITIAL_COMMITMENT_NUMBER;
+		// update feerate
+		self.feerate_per_kw = funding_feerate_sat_per_1000_weight;
+		// reset emitted... fields
+		self.channel_pending_event_emitted = false;
+		self.channel_ready_event_emitted = false;
+	}
+
+	/// __RBF__ Clone a channel context for a new RBF variant
+	#[cfg(any(dual_funding, splicing))]
+	fn clone_for_rbf(
+		prev_context: &Self,
+		is_outbound: bool,
+		holder_signer: <SP::Target as SignerProvider>::EcdsaSigner,
+		funding_feerate_sat_per_1000_weight: u32,
+	) -> Result<ChannelContext<SP>, ChannelError> {
+		let mut context = Self::clone(prev_context, holder_signer);
+
+		context.reset_common_rbf_fields(funding_feerate_sat_per_1000_weight);
+		// reset state
+		context.channel_state = if is_outbound {
+			ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT)
+		} else {
+			ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
+		};
+
+		Ok(context)
 	}
 
 	/// Create channel context for spliced channel, by duplicating and updating the context.
@@ -4896,6 +4929,47 @@ pub(crate) fn per_outbound_htlc_counterparty_commit_tx_fee_msat(feerate_per_kw: 
 		commitment_tx_fee + htlc_success_tx_weight(channel_type_features) * feerate_per_kw as u64 / 1000
 	} else {
 		commitment_tx_fee
+	}
+}
+
+#[cfg(any(dual_funding, splicing))]
+pub(super) fn calculate_our_funding_satoshis(
+	is_initiator: bool, funding_inputs: &[(TxIn, TransactionU16LenLimited)],
+	funding_feerate_sat_per_1000_weight: u32, holder_dust_limit_satoshis: u64,
+) -> Result<u64, APIError> {
+	use bitcoin::WScriptHash;
+
+	let mut total_input_satoshis = 0u64;
+	let mut our_contributed_weight = 0u64;
+
+	for (idx, input) in funding_inputs.iter().enumerate() {
+		if let Some(output) = input.1.as_transaction().output.get(input.0.previous_output.vout as usize) {
+			total_input_satoshis = total_input_satoshis.saturating_add(output.value);
+			our_contributed_weight = our_contributed_weight.saturating_add(estimate_input_weight(output).to_wu());
+		} else {
+			return Err(APIError::APIMisuseError {
+				err: format!("Transaction with txid {} does not have an output with vout of {} corresponding to TxIn at funding_inputs[{}]",
+					input.1.as_transaction().txid(), input.0.previous_output.vout, idx) });
+		}
+	}
+
+	// If we are the initiator, we must pay for weight of all common fields in the funding transaction.
+	if is_initiator {
+		our_contributed_weight = our_contributed_weight
+			.saturating_add(TX_COMMON_FIELDS_WEIGHT)
+			// The weight of a P2WSH output to be added later.
+			.saturating_add(get_output_weight(&ScriptBuf::new_v0_p2wsh(
+				&WScriptHash::from_slice(&[2; 32]).expect("valid scrpt hash")
+			)).to_wu())
+	}
+
+	let funding_satoshis = total_input_satoshis
+		.saturating_sub(fee_for_weight(funding_feerate_sat_per_1000_weight, our_contributed_weight));
+
+	if funding_satoshis < holder_dust_limit_satoshis {
+		Ok(0)
+	} else {
+		Ok(funding_satoshis)
 	}
 }
 
@@ -9770,6 +9844,39 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		Ok(chan)
 	}
 
+	/// __RBF__
+	/// Create new OutboundV2Channel context for a new outgoing RBF variant
+	pub fn new_for_rbf(
+		pre_channel: &ChannelContext<SP>,
+		signer_provider: &SP,
+		funding_feerate_sat_per_1000_weight: u32,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+		locktime: u32,
+	) -> Result<Self, ChannelError> {
+		let dust_limit = pre_channel.holder_dust_limit_satoshis;
+		let funding_satoshis = calculate_our_funding_satoshis(
+			true, &funding_inputs, funding_feerate_sat_per_1000_weight,
+			dust_limit
+		).map_err(|_| ChannelError::Close("Failed to open RBF variant, failed to compute funding".to_string()))?;
+
+		let holder_signer = signer_provider.derive_channel_signer(pre_channel.channel_value_satoshis, pre_channel.channel_keys_id);
+
+		let context = ChannelContext::clone_for_rbf(pre_channel, true, holder_signer, funding_feerate_sat_per_1000_weight)?;
+
+		let chan = Self {
+			context,
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			dual_funding_context: DualFundingChannelContext {
+				our_funding_satoshis: funding_satoshis,
+				their_funding_satoshis: 0,
+				funding_tx_locktime: LockTime::from_consensus(locktime),
+				funding_feerate_sat_per_1000_weight: funding_feerate_sat_per_1000_weight,
+				our_funding_inputs: funding_inputs,
+			},
+		};
+		Ok(chan)
+	}
+
 	/// If we receive an error message, it may only be a rejection of the channel type we tried,
 	/// not of our ability to open any channel at all. Thus, on error, we should first call this
 	/// and see if we get a new `OpenChannelV2` message, otherwise the channel is failed.
@@ -9876,6 +9983,12 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 			default_limits, their_features, &msg.common_fields, get_v2_channel_reserve_satoshis(
 				msg.common_fields.dust_limit_satoshis, self.context.channel_value_satoshis))
 	}
+
+	pub fn ack_rbf(&mut self, _msg: &msgs::TxAckRbf) -> Result<(), ChannelError> {
+		self.context.channel_state = ChannelState::NegotiatingFunding(
+			NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT);
+		Ok(())
+	}
 }
 
 // A not-yet-funded inbound (from counterparty) channel using V2 channel establishment.
@@ -9964,6 +10077,38 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		Ok(chan)
 	}
 
+	/// __RBF__ Create new InboundV2Channel context for a new incoming RBF variant
+	pub fn new_for_rbf(
+		pre_channel: &ChannelContext<SP>,
+		signer_provider: &SP,
+		msg: &msgs::TxInitRbf,
+		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
+	) -> Result<Self, ChannelError> {
+		let dust_limit = pre_channel.holder_dust_limit_satoshis;
+		let funding_satoshis = calculate_our_funding_satoshis(
+			false, &funding_inputs, msg.feerate_sat_per_1000_weight,
+			dust_limit
+		).map_err(|_| ChannelError::Close("Failed to accept channel".to_string()))?;
+
+		let holder_signer = signer_provider.derive_channel_signer(pre_channel.channel_value_satoshis, pre_channel.channel_keys_id);
+
+		let context = ChannelContext::clone_for_rbf(pre_channel, false, holder_signer, msg.feerate_sat_per_1000_weight)?;
+
+		let chan = Self {
+			context,
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			dual_funding_context: DualFundingChannelContext {
+				our_funding_satoshis: funding_satoshis,
+				their_funding_satoshis: msg.funding_output_contribution.unwrap_or(0) as u64,
+				funding_tx_locktime: LockTime::from_consensus(msg.locktime),
+				funding_feerate_sat_per_1000_weight: msg.feerate_sat_per_1000_weight,
+				our_funding_inputs: funding_inputs,
+			},
+		};
+
+		Ok(chan)
+	}
+
 	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannelV2`] message which
 	/// should be sent back to the counterparty node.
 	///
@@ -10021,6 +10166,38 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			funding_satoshis: self.dual_funding_context.our_funding_satoshis,
 			second_per_commitment_point,
 			require_confirmed_inputs: None,
+		}
+	}
+
+	/// __RBF__
+	/// Marks an inbound channel as accepted and generates a [`msgs::TxAckRbf`] message which
+	/// should be sent back to the counterparty node.
+	///
+	/// [`msgs::TxAckRbf`]: crate::ln::msgs::TxAckRbf
+	pub fn accept_inbound_dual_funded_rbf_channel(&mut self) -> msgs::TxAckRbf {
+		if self.context.is_outbound() {
+			debug_assert!(false, "Tried to send tx_ack_rbf for an outbound channel?");
+		}
+		if !matches!(
+			self.context.channel_state, ChannelState::NegotiatingFunding(flags)
+			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
+		) {
+			debug_assert!(false, "Tried to send tx_ack_rbf on a channel that's not NegotiatingFundingFlags");
+		}
+		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+			debug_assert!(false, "Tried to send an tx_ack_rbf for a channel that has already advanced");
+		}
+		self.generate_tx_ack_rbf_message()
+	}
+
+	/// This function is used to explicitly generate a [`msgs::TxAckRbf`] message for an
+	/// inbound RBF channel.
+	///
+	/// [`msgs::TxAckRbf`]: crate::ln::msgs::TxAckRbf
+	fn generate_tx_ack_rbf_message(&self) -> msgs::TxAckRbf {
+		msgs::TxAckRbf {
+			channel_id: self.context.channel_id(),
+			funding_output_contribution: Some(self.dual_funding_context.their_funding_satoshis as i64),
 		}
 	}
 
