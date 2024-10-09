@@ -50,13 +50,13 @@ impl RpcClient {
 	/// Creates a new RPC client connected to the given endpoint with the provided credentials. The
 	/// credentials should be a base64 encoding of a user name and password joined by a colon, as is
 	/// required for HTTP basic access authentication.
-	pub fn new(credentials: &str, endpoint: HttpEndpoint) -> std::io::Result<Self> {
-		Ok(Self {
+	pub fn new(credentials: &str, endpoint: HttpEndpoint) -> Self {
+		Self {
 			basic_auth: "Basic ".to_string() + credentials,
 			endpoint,
 			client: Mutex::new(None),
 			id: AtomicUsize::new(0),
-		})
+		}
 	}
 
 	/// Calls a method with the response encoded in JSON format and interpreted as type `T`.
@@ -204,7 +204,7 @@ mod tests {
 	#[tokio::test]
 	async fn call_method_returning_unknown_response() {
 		let server = HttpServer::responding_with_not_found();
-		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
 			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
@@ -216,7 +216,7 @@ mod tests {
 	async fn call_method_returning_malfomred_response() {
 		let response = serde_json::json!("foo");
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
-		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
 			Err(e) => {
@@ -233,7 +233,7 @@ mod tests {
 			"error": { "code": -8, "message": "invalid parameter" },
 		});
 		let server = HttpServer::responding_with_server_error(response);
-		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		let invalid_block_hash = serde_json::json!("foo");
 		match client.call_method::<u64>("getblock", &[invalid_block_hash]).await {
@@ -251,7 +251,7 @@ mod tests {
 	async fn call_method_returning_missing_result() {
 		let response = serde_json::json!({});
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
-		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
 			Err(e) => {
@@ -266,7 +266,7 @@ mod tests {
 	async fn call_method_returning_malformed_result() {
 		let response = serde_json::json!({ "result": "foo" });
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
-		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
 			Err(e) => {
@@ -281,7 +281,7 @@ mod tests {
 	async fn call_method_returning_valid_result() {
 		let response = serde_json::json!({ "result": 654470 });
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
-		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 
 		match client.call_method::<u64>("getblockcount", &[]).await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
@@ -293,7 +293,7 @@ mod tests {
 	async fn fails_to_fetch_spent_utxo() {
 		let response = serde_json::json!({ "result": null });
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
-		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
 		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
 		assert_eq!(unspent_output, false);
@@ -303,7 +303,7 @@ mod tests {
 	async fn fetches_utxo() {
 		let response = serde_json::json!({ "result": {"bestblock": 1, "confirmations": 42}});
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
-		let client = RpcClient::new(CREDENTIALS, server.endpoint()).unwrap();
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
 		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
 		assert_eq!(unspent_output, true);
