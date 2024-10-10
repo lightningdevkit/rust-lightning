@@ -2300,9 +2300,6 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 
 	// Connecting more blocks should result in the HTLC transactions being rebroadcast.
 	connect_blocks(&nodes[0], 6);
-	if check_old_monitor_retries_after_upgrade {
-		check_added_monitors(&nodes[0], 1);
-	}
 	{
 		let txn = nodes[0].tx_broadcaster.txn_broadcast();
 		if !nodes[0].connect_style.borrow().skips_blocks() {
@@ -3023,7 +3020,6 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 		// If we saw the commitment before our `counterparty_payment_script` was fixed, we'll never
 		// get the spendable output event for the `to_remote` output, so we'll need to get it
 		// manually via `get_spendable_outputs`.
-		check_added_monitors(&nodes[1], 1);
 		let outputs = get_monitor!(nodes[1], chan_id).get_spendable_outputs(&commitment_tx, commitment_tx_conf_height);
 		assert_eq!(outputs.len(), 1);
 		let spend_tx = nodes[1].keys_manager.backing.spend_spendable_outputs(
