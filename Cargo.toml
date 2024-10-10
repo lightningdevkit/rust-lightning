@@ -61,7 +61,6 @@ check-cfg = [
     "cfg(taproot)",
     "cfg(async_signing)",
     "cfg(require_route_graph_test)",
-    "cfg(dual_funding)",
     "cfg(splicing)",
     "cfg(async_payments)",
 ]
