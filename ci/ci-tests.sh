@@ -46,6 +46,7 @@ WORKSPACE_MEMBERS=(
 	lightning-rapid-gossip-sync
 	lightning-custom-message
 	lightning-transaction-sync
+	lightning-dns-resolver
 	possiblyrandom
 )
 
@@ -55,10 +56,6 @@ for DIR in "${WORKSPACE_MEMBERS[@]}"; do
 	cargo check -p "$DIR" --verbose --color always
 	cargo doc -p "$DIR" --document-private-items
 done
-
-echo -e "\n\nChecking and testing lightning crate with dnssec feature"
-cargo test -p lightning --verbose --color always --features dnssec
-cargo check -p lightning --verbose --color always --features dnssec
 
 echo -e "\n\nChecking and testing Block Sync Clients with features"
 

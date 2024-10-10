@@ -198,7 +198,12 @@ pub struct HumanReadableName {
 impl HumanReadableName {
 	/// Constructs a new [`HumanReadableName`] from the `user` and `domain` parts. See the
 	/// struct-level documentation for more on the requirements on each.
-	pub fn new(user: String, domain: String) -> Result<HumanReadableName, ()> {
+	pub fn new(user: String, mut domain: String) -> Result<HumanReadableName, ()> {
+		// First normalize domain and remove the optional trailing `.`
+		if domain.ends_with(".") {
+			domain.pop();
+		}
+		// Note that `REQUIRED_EXTRA_LEN` includes the (now implicit) trailing `.`
 		const REQUIRED_EXTRA_LEN: usize = ".user._bitcoin-payment.".len() + 1;
 		if user.len() + domain.len() + REQUIRED_EXTRA_LEN > 255 {
 			return Err(());

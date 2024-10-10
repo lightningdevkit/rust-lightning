@@ -75,6 +75,7 @@ use crate::offers::offer::{Offer, OfferContents, OfferId, OfferTlvStream, OfferT
 use crate::offers::parse::{Bolt12ParseError, ParsedMessage, Bolt12SemanticError};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial};
+use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::util::ser::{CursorReadable, HighZeroBytesDroppedBigSize, Readable, WithoutLength, Writeable, Writer};
 use crate::util::string::{PrintableString, UntrustedString};
 
@@ -241,6 +242,7 @@ macro_rules! invoice_request_builder_methods { (
 		InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
+			source_human_readable_name: None,
 		}
 	}
 
@@ -296,6 +298,14 @@ macro_rules! invoice_request_builder_methods { (
 	/// Successive calls to this method will override the previous setting.
 	pub fn payer_note($($self_mut)* $self: $self_type, payer_note: String) -> $return_type {
 		$self.invoice_request.payer_note = Some(payer_note);
+		$return_value
+	}
+
+	/// Sets the [`InvoiceRequest::source_human_readable_name`].
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn sourced_from_human_readable_name($($self_mut)* $self: $self_type, hrn: HumanReadableName) -> $return_type {
+		$self.invoice_request.source_human_readable_name = Some(hrn);
 		$return_value
 	}
 
@@ -643,6 +653,7 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	features: InvoiceRequestFeatures,
 	quantity: Option<u64>,
 	payer_note: Option<String>,
+	source_human_readable_name: Option<HumanReadableName>,
 }
 
 macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
@@ -686,6 +697,12 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	/// response.
 	pub fn payer_note(&$self) -> Option<PrintableString> {
 		$contents.payer_note()
+	}
+
+	/// If the [`Offer`] was sourced from a BIP 353 Human Readable Name, this should be set by the
+	/// builder to indicate the original [`HumanReadableName`] which was resolved.
+	pub fn source_human_readable_name(&$self) -> &Option<HumanReadableName> {
+		$contents.source_human_readable_name()
 	}
 } }
 
@@ -940,7 +957,7 @@ impl VerifiedInvoiceRequest {
 		let InvoiceRequestContents {
 			payer_signing_pubkey,
 			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
-				payer: _, offer: _, chain: _, amount_msats: _, features: _, quantity, payer_note
+				quantity, payer_note, ..
 			},
 		} = &self.inner.contents;
 
@@ -949,6 +966,7 @@ impl VerifiedInvoiceRequest {
 			quantity: *quantity,
 			payer_note_truncated: payer_note.clone()
 				.map(|mut s| { s.truncate(PAYER_NOTE_LIMIT); UntrustedString(s) }),
+			human_readable_name: self.source_human_readable_name().clone(),
 		}
 	}
 }
@@ -981,6 +999,10 @@ impl InvoiceRequestContents {
 	pub(super) fn payer_note(&self) -> Option<PrintableString> {
 		self.inner.payer_note.as_ref()
 			.map(|payer_note| PrintableString(payer_note.as_str()))
+	}
+
+	pub(super) fn source_human_readable_name(&self) -> &Option<HumanReadableName> {
+		&self.inner.source_human_readable_name
 	}
 
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef {
@@ -1018,6 +1040,7 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 			quantity: self.quantity,
 			payer_id: None,
 			payer_note: self.payer_note.as_ref(),
+			source_human_readable_name: self.source_human_readable_name.as_ref(),
 			paths: None,
 		};
 
@@ -1070,6 +1093,7 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef, INVOICE_REQUEST
 	(89, payer_note: (String, WithoutLength)),
 	// Only used for Refund since the onion message of an InvoiceRequest has a reply path.
 	(90, paths: (Vec<BlindedMessagePath>, WithoutLength)),
+	(91, source_human_readable_name: HumanReadableName),
 });
 
 type FullInvoiceRequestTlvStream =
@@ -1154,6 +1178,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 			offer_tlv_stream,
 			InvoiceRequestTlvStream {
 				chain, amount, features, quantity, payer_id, payer_note, paths,
+				source_human_readable_name,
 			},
 		) = tlv_stream;
 
@@ -1188,6 +1213,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 		Ok(InvoiceRequestContents {
 			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
 				payer, offer, chain, amount_msats: amount, features, quantity, payer_note,
+				source_human_readable_name,
 			},
 			payer_signing_pubkey,
 		})
@@ -1208,6 +1234,9 @@ pub struct InvoiceRequestFields {
 	/// A payer-provided note which will be seen by the recipient and reflected back in the invoice
 	/// response. Truncated to [`PAYER_NOTE_LIMIT`] characters.
 	pub payer_note_truncated: Option<UntrustedString>,
+
+	/// The Human Readable Name which the sender indicated they were paying to.
+	pub human_readable_name: Option<HumanReadableName>,
 }
 
 /// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
@@ -1217,6 +1246,7 @@ impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.payer_signing_pubkey, required),
+			(1, self.human_readable_name, option),
 			(2, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
 			(4, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
 		});
@@ -1228,6 +1258,7 @@ impl Readable for InvoiceRequestFields {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payer_signing_pubkey, required),
+			(1, human_readable_name, option),
 			(2, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, payer_note_truncated, (option, encoding: (String, WithoutLength))),
 		});
@@ -1236,6 +1267,7 @@ impl Readable for InvoiceRequestFields {
 			payer_signing_pubkey: payer_signing_pubkey.0.unwrap(),
 			quantity,
 			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
+			human_readable_name,
 		})
 	}
 }
@@ -1365,6 +1397,7 @@ mod tests {
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
 					paths: None,
+					source_human_readable_name: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice_request.signature()) },
 			),
@@ -2352,6 +2385,7 @@ mod tests {
 						payer_signing_pubkey: payer_pubkey(),
 						quantity: Some(1),
 						payer_note_truncated: Some(UntrustedString("0".repeat(PAYER_NOTE_LIMIT))),
+						human_readable_name: None,
 					}
 				);
 
