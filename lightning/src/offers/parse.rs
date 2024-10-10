@@ -58,7 +58,7 @@ mod sealed {
 
 			let parsed = CheckedHrpstring::new::<NoChecksum>(encoded.as_ref())?;
 			let hrp = parsed.hrp();
-			if hrp.to_string() != Self::BECH32_HRP {
+			if hrp.as_str() != Self::BECH32_HRP {
 				return Err(Bolt12ParseError::InvalidBech32Hrp);
 			}
 
