@@ -2778,7 +2778,7 @@ impl Writeable for OutboundTrampolinePayload {
 			},
 			Self::BlindedForward { amt_to_forward, outgoing_cltv_value, payment_paths, invoice_features } => {
 				let blinded_path_value: Vec<u8> = payment_paths.iter().flat_map(|p| {
-					p.inner_blinded_path().encode().into_iter().chain(p.payinfo.encode()).collect::<Vec<u8>>()
+					p.inner_blinded_path().encode().into_iter().chain(p.payinfo.encode())
 				}).collect();
 				let blinded_path_tlv = (22, blinded_path_value);
 
