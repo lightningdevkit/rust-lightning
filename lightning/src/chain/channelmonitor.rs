@@ -1711,6 +1711,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		self.inner.lock().unwrap().get_cur_holder_commitment_number()
 	}
 
+	/// Gets whether we've been notified that this channel is closed by the `ChannelManager` (i.e.
+	/// via a [`ChannelMonitorUpdateStep::ChannelForceClosed`]).
+	pub(crate) fn offchain_closed(&self) -> bool {
+		self.inner.lock().unwrap().lockdown_from_offchain
+	}
+
 	/// Gets the `node_id` of the counterparty for this channel.
 	///
 	/// Will be `None` for channels constructed on LDK versions prior to 0.0.110 and always `Some`

@@ -7253,8 +7253,6 @@ where
 				let prev_channel_id = hop_data.channel_id;
 				let prev_user_channel_id = hop_data.user_channel_id;
 				let completed_blocker = RAAMonitorUpdateBlockingAction::from_prev_hop_data(&hop_data);
-				#[cfg(debug_assertions)]
-				let claiming_chan_funding_outpoint = hop_data.outpoint;
 				self.claim_funds_from_hop(hop_data, payment_preimage, None,
 					|htlc_claim_value_msat, definitely_duplicate| {
 						let chan_to_release =
@@ -7279,61 +7277,6 @@ where
 							// monitor updates still in flight. In that case, we shouldn't
 							// immediately free, but instead let that monitor update complete
 							// in the background.
-							#[cfg(debug_assertions)] {
-								let background_events = self.pending_background_events.lock().unwrap();
-								// There should be a `BackgroundEvent` pending...
-								assert!(background_events.iter().any(|ev| {
-									match ev {
-										BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-											funding_txo, update, ..
-										} => {
-											if *funding_txo == claiming_chan_funding_outpoint {
-												// to apply a monitor update that blocked the claiming channel,
-												assert!(update.updates.iter().any(|upd|
-													if let ChannelMonitorUpdateStep::PaymentPreimage {
-														payment_preimage: update_preimage, ..
-													} = upd {
-														payment_preimage == *update_preimage
-													} else {
-														false
-													}
-												), "{:?}", update);
-												true
-											} else if *funding_txo == next_channel_outpoint {
-												// or the channel we'd unblock is already closed,
-												assert!(update.updates.iter().any(|upd|
-													if let ChannelMonitorUpdateStep::ChannelForceClosed { .. } = upd {
-														true
-													} else {
-														false
-													}
-												), "{:?}", update);
-												true
-											} else { false }
-										},
-										// or the channel we'd unblock is already closed (for an
-										// old channel),
-										BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup(
-											(funding_txo, _channel_id, monitor_update)
-										) => {
-											if *funding_txo == next_channel_outpoint {
-												assert_eq!(monitor_update.updates.len(), 1);
-												assert!(matches!(
-													monitor_update.updates[0],
-													ChannelMonitorUpdateStep::ChannelForceClosed { .. }
-												));
-												true
-											} else { false }
-										},
-										// or the monitor update has completed and will unblock
-										// immediately once we get going.
-										BackgroundEvent::MonitorUpdatesComplete {
-											channel_id, ..
-										} =>
-											*channel_id == prev_channel_id,
-									}
-								}), "{:?}", *background_events);
-							}
 							(None, None)
 						} else if definitely_duplicate {
 							if let Some(other_chan) = chan_to_release {
@@ -12632,6 +12575,28 @@ where
 
 		for (funding_txo, monitor) in args.channel_monitors.iter() {
 			if !funding_txo_set.contains(funding_txo) {
+				if let Some(counterparty_node_id) = monitor.get_counterparty_node_id() {
+					// If the ChannelMonitor had any updates, we may need to update it further and
+					// thus track it in `closed_channel_monitor_update_ids`. If the channel never
+					// had any updates at all, there can't be any HTLCs pending which we need to
+					// claim.
+					// Note that a `ChannelMonitor` is created with `update_id` 0 and after we
+					// provide it with a closure update its `update_id` will be at 1.
+					if !monitor.offchain_closed() || monitor.get_latest_update_id() > 1 {
+						per_peer_state.entry(counterparty_node_id)
+							.or_insert_with(|| Mutex::new(empty_peer_state()))
+							.lock().unwrap()
+							.closed_channel_monitor_update_ids.entry(monitor.channel_id())
+								.and_modify(|v| *v = cmp::max(monitor.get_latest_update_id(), *v))
+								.or_insert(monitor.get_latest_update_id());
+					}
+				}
+
+				if monitor.offchain_closed() {
+					// We already appled a ChannelForceClosed update.
+					continue;
+				}
+
 				let logger = WithChannelMonitor::from(&args.logger, monitor, None);
 				let channel_id = monitor.channel_id();
 				log_info!(logger, "Queueing monitor update to ensure missing channel {} is force closed",
@@ -12650,13 +12615,6 @@ where
 						update: monitor_update,
 					};
 					close_background_events.push(update);
-
-					per_peer_state.entry(counterparty_node_id)
-						.or_insert_with(|| Mutex::new(empty_peer_state()))
-						.lock().unwrap()
-						.closed_channel_monitor_update_ids.entry(monitor.channel_id())
-							.and_modify(|v| *v = cmp::max(monitor.get_latest_update_id(), *v))
-							.or_insert(monitor.get_latest_update_id());
 				} else {
 					// This is a fairly old `ChannelMonitor` that hasn't seen an update to its
 					// off-chain state since LDK 0.0.118 (as in LDK 0.0.119 any off-chain
