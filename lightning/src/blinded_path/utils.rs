@@ -21,7 +21,7 @@ use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::onion_message::messenger::Destination;
 use crate::crypto::streams::ChaChaPolyWriteAdapter;
-use crate::util::ser::{Readable, Writeable};
+use crate::util::ser::{Readable, Writeable, Writer};
 
 use crate::io;
 
@@ -170,17 +170,83 @@ fn encrypt_payload<P: Writeable>(payload: P, encrypted_tlvs_rho: [u8; 32]) -> Ve
 	write_adapter.encode()
 }
 
-/// Blinded path encrypted payloads may be padded to ensure they are equal length.
-///
-/// Reads padding to the end, ignoring what's read.
-pub(crate) struct Padding {}
+/// Represents the padding round off size (in bytes) that is used to pad [`BlindedHop`]
+pub(crate) const PADDING_ROUND_OFF: usize = 50;
+
+/// Represents optional padding for encrypted payloads.
+/// Padding is used to ensure payloads have a consistent length.
+pub(crate) struct Padding {
+	length: usize,
+}
+
+impl Padding {
+	/// Creates a new [`Padding`] instance with a specified size.
+	/// Use this method when defining the padding size before writing
+	/// an encrypted payload.
+	pub fn new(length: usize) -> Self {
+		Self { length }
+	}
+}
+
 impl Readable for Padding {
+	/// Reads and discards the padding data.
 	#[inline]
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		loop {
 			let mut buf = [0; 8192];
 			if reader.read(&mut buf[..])? == 0 { break; }
 		}
-		Ok(Self {})
+		Ok(Self::new(0))
 	}
+}
+
+impl Writeable for Padding {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		const BUFFER_SIZE: usize = 1024;
+		let buffer = [0u8; BUFFER_SIZE];
+
+		let mut remaining = self.length;
+		loop {
+			let to_write = core::cmp::min(remaining, BUFFER_SIZE);
+			writer.write_all(&buffer[..to_write])?;
+			remaining -= to_write;
+			if remaining == 0 { break; }
+		}
+		Ok(())
+	}
+}
+
+/// A generic struct that applies padding to TLVs, rounding their size off to [`PADDING_ROUND_OFF`].
+pub(crate) struct WithPadding<T: Writeable> {
+    pub(crate) tlvs: T,
+}
+
+impl<T:Writeable> Writeable for WithPadding<T> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let length = self.tlvs.serialized_length();
+		let padding_length = (length + PADDING_ROUND_OFF - 1) / PADDING_ROUND_OFF * PADDING_ROUND_OFF - length;
+
+		let padding = Some(Padding::new(padding_length));
+
+		encode_tlv_stream!(writer, {
+			(1, padding, option),
+		});
+
+		self.tlvs.write(writer)
+	}
+}
+
+#[cfg(test)]
+/// Checks if all the packets in the blinded path are properly padded.
+pub fn is_padded(hops: &[BlindedHop]) -> bool {
+	let first_hop = hops.first().expect("BlindedPath must have at least one hop");
+	let first_payload_size = first_hop.encrypted_payload.len();
+
+	// The unencrypted payload data is padded before getting encrypted.
+	// Assuming the first payload is padded properly, get the extra data length.
+	let extra_length = first_payload_size % PADDING_ROUND_OFF;
+	hops.iter().all(|hop| {
+		// Check that every packet is padded to the round off length subtracting the extra length.
+		(hop.encrypted_payload.len() - extra_length) % PADDING_ROUND_OFF == 0
+	})
 }
