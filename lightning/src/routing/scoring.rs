@@ -491,13 +491,12 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// Default value: 500 msat
 	pub base_penalty_msat: u64,
 
-	/// A multiplier used with the total amount flowing over a channel to calculate a fixed penalty
-	/// applied to each channel, in excess of the [`base_penalty_msat`].
+	/// A multiplier used with the payment amount to calculate a fixed penalty applied to each
+	/// channel, in excess of the [`base_penalty_msat`].
 	///
 	/// The purpose of the amount penalty is to avoid having fees dominate the channel cost (i.e.,
 	/// fees plus penalty) for large payments. The penalty is computed as the product of this
-	/// multiplier and `2^30`ths of the total amount flowing over a channel (i.e. the payment
-	/// amount plus the amount of any other HTLCs flowing we sent over the same channel).
+	/// multiplier and `2^30`ths of the payment amount.
 	///
 	/// ie `base_penalty_amount_multiplier_msat * amount_msat / 2^30`
 	///
