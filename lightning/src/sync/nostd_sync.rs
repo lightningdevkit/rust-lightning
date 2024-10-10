@@ -40,6 +40,10 @@ impl<T> Mutex<T> {
 	pub fn into_inner(self) -> LockResult<T> {
 		Ok(self.inner.into_inner())
 	}
+
+	pub fn get_mut<'a>(&'a mut self) -> LockResult<&'a mut T> {
+		Ok(self.inner.get_mut())
+	}
 }
 
 impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {

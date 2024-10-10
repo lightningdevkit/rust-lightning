@@ -992,7 +992,6 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
 	nodes[0].node.test_process_background_events();
-	check_added_monitors(&nodes[0], 1);
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.send_channel_ready = (true, true);
@@ -1022,7 +1021,6 @@ fn do_test_completed_payment_not_retryable_on_reload(use_dust: bool) {
 	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
 
 	nodes[0].node.test_process_background_events();
-	check_added_monitors(&nodes[0], 1);
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
@@ -1161,7 +1159,6 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(persist_manager_post_event: bo
 	let height = nodes[0].blocks.lock().unwrap().len() as u32 - 1;
 	nodes[0].chain_monitor.chain_monitor.block_connected(&claim_block, height);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
-	check_added_monitors(&nodes[0], 1);
 }
 
 #[test]
@@ -3521,7 +3518,6 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	reload_node!(nodes[0], test_default_channel_config(), &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister_c, chain_monitor_c, nodes_0_deserialized_c);
 	let events = nodes[0].node.get_and_clear_pending_events();
 	assert!(events.is_empty());
-	check_added_monitors(&nodes[0], 1);
 }
 
 #[test]
