@@ -1381,11 +1381,23 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			let refund = RefundContents::try_from(
 				(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
 			)?;
+
+			if amount_msats != refund.amount_msats() {
+				return Err(Bolt12SemanticError::InvalidAmount);
+			}
+
 			Ok(InvoiceContents::ForRefund { refund, fields })
 		} else {
 			let invoice_request = InvoiceRequestContents::try_from(
 				(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream)
 			)?;
+
+			if let Some(requested_amount_msats) = invoice_request.amount_msats() {
+				if amount_msats != requested_amount_msats {
+					return Err(Bolt12SemanticError::InvalidAmount);
+				}
+			}
+
 			Ok(InvoiceContents::ForOffer { invoice_request, fields })
 		}
 	}

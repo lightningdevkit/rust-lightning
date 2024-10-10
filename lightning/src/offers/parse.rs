@@ -147,6 +147,9 @@ pub enum Bolt12SemanticError {
 	/// An amount was expected but was missing.
 	MissingAmount,
 	/// The amount exceeded the total bitcoin supply.
+	///
+	/// This error can also occur if the amount in an invoice does not match the expected
+	/// amount specified in the associated `InvoiceRequest` or `Refund`.
 	InvalidAmount,
 	/// An amount was provided but was not sufficient in value.
 	InsufficientAmount,
@@ -178,8 +181,8 @@ pub enum Bolt12SemanticError {
 	MissingPayerMetadata,
 	/// A payer signing pubkey was expected but was missing.
 	MissingPayerSigningPubkey,
-	/// The payment id for a refund or request is already in use.
-	DuplicatePaymentId,
+	/// A payer id was expected but was missing.
+	MissingPayerId,
 	/// Blinded paths were expected but were missing.
 	MissingPaths,
 	/// Blinded paths were provided but were not expected.
