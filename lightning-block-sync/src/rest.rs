@@ -23,8 +23,8 @@ impl RestClient {
 	/// Creates a new REST client connected to the given endpoint.
 	///
 	/// The endpoint should contain the REST path component (e.g., http://127.0.0.1:8332/rest).
-	pub fn new(endpoint: HttpEndpoint) -> std::io::Result<Self> {
-		Ok(Self { endpoint, client: Mutex::new(None) })
+	pub fn new(endpoint: HttpEndpoint) -> Self {
+		Self { endpoint, client: Mutex::new(None) }
 	}
 
 	/// Requests a resource encoded in `F` format and interpreted as type `T`.
@@ -120,7 +120,7 @@ mod tests {
 	#[tokio::test]
 	async fn request_unknown_resource() {
 		let server = HttpServer::responding_with_not_found();
-		let client = RestClient::new(server.endpoint()).unwrap();
+		let client = RestClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
 			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Other),
@@ -131,7 +131,7 @@ mod tests {
 	#[tokio::test]
 	async fn request_malformed_resource() {
 		let server = HttpServer::responding_with_ok(MessageBody::Content("foo"));
-		let client = RestClient::new(server.endpoint()).unwrap();
+		let client = RestClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
 			Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidData),
@@ -142,7 +142,7 @@ mod tests {
 	#[tokio::test]
 	async fn request_valid_resource() {
 		let server = HttpServer::responding_with_ok(MessageBody::Content(42));
-		let client = RestClient::new(server.endpoint()).unwrap();
+		let client = RestClient::new(server.endpoint());
 
 		match client.request_resource::<BinaryResponse, u32>("/").await {
 			Err(e) => panic!("Unexpected error: {:?}", e),
@@ -157,7 +157,7 @@ mod tests {
 			// "bitmap" field, so this should suffice for testing
 			"{\"chainHeight\": 1, \"bitmap\":\"0\",\"utxos\":[]}",
 		));
-		let client = RestClient::new(server.endpoint()).unwrap();
+		let client = RestClient::new(server.endpoint());
 
 		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
 		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
@@ -171,7 +171,7 @@ mod tests {
 			// field, so this should suffice for testing
 			"{\"chainHeight\": 1, \"bitmap\":\"1\",\"utxos\":[]}",
 		));
-		let client = RestClient::new(server.endpoint()).unwrap();
+		let client = RestClient::new(server.endpoint());
 
 		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
 		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
