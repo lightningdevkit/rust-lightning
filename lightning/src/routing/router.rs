@@ -13,7 +13,7 @@ use bitcoin::secp256k1::{PublicKey, Secp256k1, self};
 
 use crate::blinded_path::{BlindedHop, Direction, IntroductionNode};
 use crate::blinded_path::payment::{BlindedPaymentPath, ForwardTlvs, PaymentConstraints, PaymentForwardNode, PaymentRelay, ReceiveTlvs};
-use crate::ln::{PaymentHash, PaymentPreimage};
+use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{PaymentId, MIN_FINAL_CLTV_EXPIRY_DELTA, RecipientOnionFields};
 use crate::types::features::{BlindedHopFeatures, Bolt11InvoiceFeatures, Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};

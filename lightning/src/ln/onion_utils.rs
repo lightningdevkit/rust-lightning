@@ -13,11 +13,11 @@ use crate::crypto::streams::ChaChaReader;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
-use crate::ln::types::{PaymentHash, PaymentPreimage};
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{Path, RouteHop, RouteParameters};
 use crate::sign::NodeSigner;
 use crate::types::features::{ChannelFeatures, NodeFeatures};
+use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::errors::{self, APIError};
 use crate::util::logger::Logger;
 use crate::util::ser::{LengthCalculatingWriter, Readable, ReadableArgs, Writeable, Writer};
@@ -1271,9 +1271,9 @@ fn decode_next_hop<T, R: ReadableArgs<T>, N: NextPacketBytes>(
 mod tests {
 	use crate::io;
 	use crate::ln::msgs;
-	use crate::ln::types::PaymentHash;
 	use crate::routing::router::{Path, Route, RouteHop};
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
+	use crate::types::payment::PaymentHash;
 	use crate::util::ser::{VecWriter, Writeable, Writer};
 
 	#[allow(unused_imports)]

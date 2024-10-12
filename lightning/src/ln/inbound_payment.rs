@@ -18,7 +18,7 @@ use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::utils::hkdf_extract_expand_5x;
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
-use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::offers::nonce::Nonce;
 use crate::sign::{KeyMaterial, EntropySource};
 use crate::util::errors::APIError;

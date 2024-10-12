@@ -25,7 +25,8 @@ use bitcoin::secp256k1::{PublicKey,SecretKey};
 use bitcoin::secp256k1::{Secp256k1,ecdsa::Signature};
 use bitcoin::secp256k1;
 
-use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash};
+use crate::ln::types::ChannelId;
+use crate::types::payment::{PaymentPreimage, PaymentHash};
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
@@ -9605,7 +9606,7 @@ mod tests {
 	use bitcoin::opcodes;
 	use bitcoin::network::Network;
 	use crate::ln::onion_utils::INVALID_ONION_BLINDING;
-	use crate::ln::types::{PaymentHash, PaymentPreimage};
+	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::ln::channel_keys::{RevocationKey, RevocationBasepoint};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId};
 	use crate::ln::channel::InitFeatures;
@@ -10293,7 +10294,7 @@ mod tests {
 		use bitcoin::hex::DisplayHex;
 		use bitcoin::secp256k1::Message;
 		use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ecdsa::EcdsaChannelSigner};
-		use crate::ln::PaymentPreimage;
+		use crate::types::payment::PaymentPreimage;
 		use crate::ln::channel::{HTLCOutputInCommitment ,TxCreationKeys};
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 		use crate::ln::chan_utils::{ChannelPublicKeys, HolderCommitmentTransaction, CounterpartyChannelTransactionParameters};

@@ -21,9 +21,9 @@ use core::fmt;
 use core::ops::Deref;
 
 use crate::ln::types::ChannelId;
-use crate::ln::PaymentHash;
 #[cfg(c_bindings)]
 use crate::prelude::*; // Needed for String
+use crate::types::payment::PaymentHash;
 
 static LOG_LEVEL_NAMES: [&'static str; 6] = ["GOSSIP", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
 
@@ -265,8 +265,8 @@ impl<T: fmt::Display, I: core::iter::Iterator<Item = T> + Clone> fmt::Display fo
 #[cfg(test)]
 mod tests {
 	use crate::ln::types::ChannelId;
-	use crate::ln::PaymentHash;
 	use crate::sync::Arc;
+	use crate::types::payment::PaymentHash;
 	use crate::util::logger::{Level, Logger, WithContext};
 	use crate::util::test_utils::TestLogger;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};

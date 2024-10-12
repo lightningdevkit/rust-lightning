@@ -15,14 +15,13 @@ use lightning::blinded_path::payment::{
 	PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 };
 use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
-use lightning::ln::types::PaymentSecret;
-use lightning::ln::PaymentHash;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
 use lightning::offers::offer::OfferId;
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::sign::EntropySource;
 use lightning::types::features::BlindedHopFeatures;
+use lightning::types::payment::{PaymentHash, PaymentSecret};
 use lightning::util::ser::Writeable;
 use lightning::util::string::UntrustedString;
 

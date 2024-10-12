@@ -19,7 +19,8 @@ use crate::ln::channel::{EXPIRE_PREV_CONFIG_TICKS, get_holder_selected_channel_r
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MPP_TIMEOUT_TICKS, MIN_CLTV_EXPIRY_DELTA, PaymentId, PaymentSendFailure, RecentPaymentDetails, RecipientOnionFields, HTLCForwardInfo, PendingHTLCRouting, PendingAddHTLCInfo};
 use crate::types::features::{Bolt11InvoiceFeatures, ChannelTypeFeatures};
 use crate::ln::msgs;
-use crate::ln::types::{ChannelId, PaymentHash, PaymentSecret, PaymentPreimage};
+use crate::ln::types::ChannelId;
+use crate::types::payment::{PaymentHash, PaymentSecret, PaymentPreimage};
 use crate::ln::chan_utils;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::onion_utils;

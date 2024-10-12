@@ -15,7 +15,7 @@ use bitcoin::secp256k1::{self, Secp256k1, SecretKey};
 
 use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{self, PaymentFailureReason};
-use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
+use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{EventCompletionAction, HTLCSource, PaymentId};
 use crate::types::features::Bolt12InvoiceFeatures;
@@ -2265,7 +2265,7 @@ mod tests {
 
 	use crate::blinded_path::EmptyNodeIdLookUp;
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
-	use crate::ln::types::{PaymentHash, PaymentPreimage};
+	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
 	use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};

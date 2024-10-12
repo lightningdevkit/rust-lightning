@@ -13,8 +13,8 @@ use bitcoin::hashes::Hash;
 use lightning_invoice::Bolt11Invoice;
 
 use crate::ln::channelmanager::RecipientOnionFields;
-use crate::ln::types::PaymentHash;
 use crate::routing::router::{PaymentParameters, RouteParameters};
+use crate::types::payment::PaymentHash;
 
 /// Builds the necessary parameters to pay or pre-flight probe the given zero-amount
 /// [`Bolt11Invoice`] using [`ChannelManager::send_payment`] or
@@ -87,8 +87,8 @@ fn params_from_invoice(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::ln::types::PaymentSecret;
 	use crate::routing::router::Payee;
+	use crate::types::payment::PaymentSecret;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use lightning_invoice::{Currency, InvoiceBuilder};

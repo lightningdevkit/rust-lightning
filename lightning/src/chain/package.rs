@@ -24,7 +24,7 @@ use bitcoin::secp256k1::{SecretKey,PublicKey};
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Version;
 
-use crate::ln::types::PaymentPreimage;
+use crate::types::payment::PaymentPreimage;
 use crate::ln::chan_utils::{self, TxCreationKeys, HTLCOutputInCommitment};
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
@@ -1199,7 +1199,7 @@ mod tests {
 	use crate::chain::package::{CounterpartyOfferedHTLCOutput, CounterpartyReceivedHTLCOutput, HolderHTLCOutput, PackageTemplate, PackageSolvingData, RevokedOutput, WEIGHT_REVOKED_OUTPUT, weight_offered_htlc, weight_received_htlc};
 	use crate::chain::Txid;
 	use crate::ln::chan_utils::HTLCOutputInCommitment;
-	use crate::ln::types::{PaymentPreimage, PaymentHash};
+	use crate::types::payment::{PaymentPreimage, PaymentHash};
 	use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 
 	use bitcoin::amount::Amount;

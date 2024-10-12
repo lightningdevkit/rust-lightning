@@ -28,7 +28,7 @@
 //! use lightning::offers::refund::Refund;
 //! use lightning::util::ser::Writeable;
 //!
-//! # use lightning::ln::types::PaymentHash;
+//! # use lightning::types::payment::PaymentHash;
 //! # use lightning::offers::invoice::{ExplicitSigningPubkey, InvoiceBuilder};
 //! # use lightning::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 //! #
@@ -113,7 +113,7 @@ use crate::io;
 use crate::blinded_path::BlindedPath;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
-use crate::ln::types::PaymentHash;
+use crate::types::payment::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
 use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};

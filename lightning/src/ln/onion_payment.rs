@@ -11,7 +11,7 @@ use bitcoin::secp256k1::{self, PublicKey, Scalar, Secp256k1};
 use crate::blinded_path;
 use crate::blinded_path::payment::{PaymentConstraints, PaymentRelay};
 use crate::chain::channelmonitor::{HTLC_FAIL_BACK_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS};
-use crate::ln::types::PaymentHash;
+use crate::types::payment::PaymentHash;
 use crate::ln::channelmanager::{BlindedFailure, BlindedForward, CLTV_FAR_FAR_AWAY, HTLCFailureMsg, MIN_CLTV_EXPIRY_DELTA, PendingHTLCInfo, PendingHTLCRouting};
 use crate::types::features::BlindedHopFeatures;
 use crate::ln::msgs;
@@ -508,7 +508,8 @@ mod tests {
 	use bitcoin::hashes::Hash;
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
-	use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
+	use crate::ln::types::ChannelId;
+	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 	use crate::ln::channelmanager::RecipientOnionFields;
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs;

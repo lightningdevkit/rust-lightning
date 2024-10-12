@@ -64,7 +64,7 @@ use bitcoin::secp256k1::schnorr::Signature;
 use crate::io;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::BlindedPaymentPath;
-use crate::ln::types::PaymentHash;
+use crate::types::payment::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};

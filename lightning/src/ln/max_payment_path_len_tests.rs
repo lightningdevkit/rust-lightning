@@ -14,7 +14,7 @@ use bitcoin::secp256k1::{Secp256k1, PublicKey};
 use crate::blinded_path::BlindedHop;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath, PaymentConstraints, PaymentContext, ReceiveTlvs};
 use crate::events::{Event, MessageSendEventsProvider};
-use crate::ln::PaymentSecret;
+use crate::types::payment::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
 use crate::ln::channelmanager::PaymentId;
 use crate::types::features::BlindedHopFeatures;

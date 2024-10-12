@@ -11,7 +11,7 @@ use crate::ln::channel::{ANCHOR_OUTPUT_VALUE_SATOSHI, MIN_CHAN_DUST_LIMIT_SATOSH
 use crate::ln::chan_utils::{HTLCOutputInCommitment, ChannelPublicKeys, HolderCommitmentTransaction, CommitmentTransaction, ChannelTransactionParameters, TrustedCommitmentTransaction, ClosingTransaction};
 use crate::ln::channel_keys::{HtlcKey};
 use crate::ln::msgs;
-use crate::ln::types::PaymentPreimage;
+use crate::types::payment::PaymentPreimage;
 use crate::sign::{InMemorySigner, ChannelSigner};
 use crate::sign::ecdsa::EcdsaChannelSigner;
 

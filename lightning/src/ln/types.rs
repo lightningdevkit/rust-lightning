@@ -8,12 +8,6 @@
 // licenses.
 
 //! Various wrapper types (most around 32-byte arrays) for use in lightning.
-//!
-//! Note that the re-exports of [`PaymentHash`], [`PaymentPreimage`], and [`PaymentSecret`] here
-//! are deprecated and will be removed in a future version. Instead, use them via
-//! [`lightning::types::payment`].
-//!
-//! [`lightning::types::payment`]: crate::types::payment
 
 use crate::chain::transaction::OutPoint;
 use crate::io;
@@ -133,8 +127,6 @@ impl_fmt_traits! {
 		const LENGTH: usize = 32;
 	}
 }
-
-pub use lightning_types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 
 #[cfg(test)]
 mod tests {

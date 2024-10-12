@@ -55,9 +55,9 @@ use crate::ln::channel_keys::{
 use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
-use crate::ln::types::PaymentPreimage;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::offers::invoice_request::UnsignedInvoiceRequest;
+use crate::types::payment::PaymentPreimage;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::transaction_utils;
 

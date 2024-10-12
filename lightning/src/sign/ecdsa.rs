@@ -10,7 +10,7 @@ use crate::ln::chan_utils::{
 	ClosingTransaction, CommitmentTransaction, HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::msgs::UnsignedChannelAnnouncement;
-use crate::ln::types::PaymentPreimage;
+use crate::types::payment::PaymentPreimage;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
