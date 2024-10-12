@@ -6129,11 +6129,11 @@ where
 				self.finish_close_channel(shutdown_res);
 			}
 
-			#[cfg(feature = "std")]
+			#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 			let duration_since_epoch = std::time::SystemTime::now()
 				.duration_since(std::time::SystemTime::UNIX_EPOCH)
 				.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
-			#[cfg(not(feature = "std"))]
+			#[cfg(any(not(feature = "std"), target_arch = "wasm32"))]
 			let duration_since_epoch = Duration::from_secs(
 				self.highest_seen_timestamp.load(Ordering::Acquire).saturating_sub(7200) as u64
 			);
@@ -9345,11 +9345,11 @@ where
 	}
 
 	pub(super) fn duration_since_epoch(&self) -> Duration {
-		#[cfg(not(feature = "std"))]
+		#[cfg(any(not(feature = "std"), target_arch = "wasm32"))]
 		let now = Duration::from_secs(
 			self.highest_seen_timestamp.load(Ordering::Acquire) as u64
 		);
-		#[cfg(feature = "std")]
+		#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 		let now = std::time::SystemTime::now()
 			.duration_since(std::time::SystemTime::UNIX_EPOCH)
 			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
