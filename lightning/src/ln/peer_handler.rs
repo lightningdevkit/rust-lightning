@@ -22,7 +22,7 @@ use crate::blinded_path::message::{AsyncPaymentsContext, DNSResolverContext, Off
 use crate::sign::{NodeSigner, Recipient};
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::types::ChannelId;
-use crate::ln::features::{InitFeatures, NodeFeatures};
+use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, Init, LightningError, SocketAddress, OnionMessageHandler, RoutingMessageHandler};
 use crate::util::ser::{VecWriter, Writeable, Writer};
@@ -2712,7 +2712,7 @@ mod tests {
 	use crate::events;
 	use crate::io;
 	use crate::ln::types::ChannelId;
-	use crate::ln::features::{InitFeatures, NodeFeatures};
+	use crate::types::features::{InitFeatures, NodeFeatures};
 	use crate::ln::peer_channel_encryptor::PeerChannelEncryptor;
 	use crate::ln::peer_handler::{CustomMessageHandler, PeerManager, MessageHandler, SocketDescriptor, IgnoringMessageHandler, filter_addresses, ErroringMessageHandler, MAX_BUFFER_DRAIN_TICK_INTERVALS_PER_PEER};
 	use crate::ln::{msgs, wire};

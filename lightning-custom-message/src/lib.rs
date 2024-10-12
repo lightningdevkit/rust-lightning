@@ -21,9 +21,9 @@
 //! # use bitcoin::secp256k1::PublicKey;
 //! # use lightning::io;
 //! # use lightning::ln::msgs::{DecodeError, Init, LightningError};
-//! # use lightning::ln::features::{InitFeatures, NodeFeatures};
 //! use lightning::ln::peer_handler::CustomMessageHandler;
 //! use lightning::ln::wire::{CustomMessageReader, self};
+//! # use lightning::types::features::{InitFeatures, NodeFeatures};
 //! use lightning::util::ser::Writeable;
 //! # use lightning::util::ser::Writer;
 //!
@@ -321,8 +321,8 @@ macro_rules! composite_custom_message_handler {
 				result
 			}
 
-			fn provided_node_features(&self) -> $crate::lightning::ln::features::NodeFeatures {
-				$crate::lightning::ln::features::NodeFeatures::empty()
+			fn provided_node_features(&self) -> $crate::lightning::types::features::NodeFeatures {
+				$crate::lightning::types::features::NodeFeatures::empty()
 					$(
 						| self.$field.provided_node_features()
 					)*
@@ -330,8 +330,8 @@ macro_rules! composite_custom_message_handler {
 
 			fn provided_init_features(
 				&self, their_node_id: $crate::bitcoin::secp256k1::PublicKey
-			) -> $crate::lightning::ln::features::InitFeatures {
-				$crate::lightning::ln::features::InitFeatures::empty()
+			) -> $crate::lightning::types::features::InitFeatures {
+				$crate::lightning::types::features::InitFeatures::empty()
 					$(
 						| self.$field.provided_init_features(their_node_id)
 					)*

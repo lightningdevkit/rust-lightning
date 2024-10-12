@@ -7,21 +7,12 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! Feature flag definitions for the Lightning protocol according to [BOLT #9].
-//!
-//! See [`lightning_types::features`] for the list of features currently supported.
-//!
-//! Note that the use of types via this module is deprecated and will be removed in a future
-//! version. Instead, use feature objects via [`lightning::types::features`].
-//!
-//! [`lightning::types::features`]: crate::types::features
-//! [BOLT #9]: https://github.com/lightning/bolts/blob/master/09-features.md
+//! Implementations of extensions on features.
 
-pub use lightning_types::features::Features;
-pub use lightning_types::features::{InitFeatures, NodeFeatures, ChannelFeatures};
-pub use lightning_types::features::{Bolt11InvoiceFeatures, OfferFeatures, InvoiceRequestFeatures};
-pub use lightning_types::features::{Bolt12InvoiceFeatures, BlindedHopFeatures};
-pub use lightning_types::features::ChannelTypeFeatures;
+use lightning_types::features::{InitFeatures, NodeFeatures, ChannelFeatures};
+use lightning_types::features::{Bolt11InvoiceFeatures, OfferFeatures, InvoiceRequestFeatures};
+use lightning_types::features::{Bolt12InvoiceFeatures, BlindedHopFeatures};
+use lightning_types::features::ChannelTypeFeatures;
 
 #[allow(unused_imports)]
 use crate::prelude::*;

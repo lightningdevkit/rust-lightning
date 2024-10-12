@@ -18,7 +18,7 @@ use crate::events::{self, PaymentFailureReason};
 use crate::ln::types::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{EventCompletionAction, HTLCSource, PaymentId};
-use crate::ln::features::Bolt12InvoiceFeatures;
+use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::onion_utils;
 use crate::ln::onion_utils::{DecodedOnionFailure, HTLCFailReason};
 use crate::offers::invoice::Bolt12Invoice;
@@ -2267,7 +2267,7 @@ mod tests {
 	use crate::events::{Event, PathFailure, PaymentFailureReason};
 	use crate::ln::types::{PaymentHash, PaymentPreimage};
 	use crate::ln::channelmanager::{PaymentId, RecipientOnionFields};
-	use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
+	use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 	use crate::ln::msgs::{ErrorAction, LightningError};
 	use crate::ln::outbound_payment::{Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, Retry, RetryableSendFailure, StaleExpiration};
 	#[cfg(feature = "std")]

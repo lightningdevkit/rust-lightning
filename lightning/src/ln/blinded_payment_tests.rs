@@ -17,7 +17,7 @@ use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsP
 use crate::ln::types::{ChannelId, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager;
 use crate::ln::channelmanager::{HTLCFailureMsg, PaymentId, RecipientOnionFields};
-use crate::ln::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
+use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, UnsignedGossipMessage};

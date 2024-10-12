@@ -8,7 +8,7 @@
 // licenses.
 
 use crate::routing::gossip::{NetworkGraph, NodeAlias, P2PGossipSync};
-use crate::ln::features::{ChannelFeatures, NodeFeatures};
+use crate::types::features::{ChannelFeatures, NodeFeatures};
 use crate::ln::msgs::{ChannelAnnouncement, ChannelUpdate, MAX_VALUE_MSAT, NodeAnnouncement, RoutingMessageHandler, SocketAddress, UnsignedChannelAnnouncement, UnsignedChannelUpdate, UnsignedNodeAnnouncement};
 use crate::util::test_utils;
 use crate::util::ser::Writeable;

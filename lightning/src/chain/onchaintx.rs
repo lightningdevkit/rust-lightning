@@ -44,7 +44,7 @@ use core::cmp;
 use core::ops::Deref;
 use core::mem::replace;
 use core::mem::swap;
-use crate::ln::features::ChannelTypeFeatures;
+use crate::types::features::ChannelTypeFeatures;
 
 const MAX_ALLOC_SIZE: usize = 64*1024;
 

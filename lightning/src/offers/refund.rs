@@ -95,7 +95,7 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
-use crate::ln::features::InvoiceRequestFeatures;
+use crate::types::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
@@ -941,7 +941,7 @@ mod tests {
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::ln::channelmanager::PaymentId;
-	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
+	use crate::types::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;

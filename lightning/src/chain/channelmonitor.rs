@@ -5018,7 +5018,7 @@ mod tests {
 	use crate::util::logger::Logger;
 	use crate::sync::Arc;
 	use crate::io;
-	use crate::ln::features::ChannelTypeFeatures;
+	use crate::types::features::ChannelTypeFeatures;
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;

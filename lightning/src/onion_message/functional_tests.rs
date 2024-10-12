@@ -12,7 +12,7 @@
 use crate::blinded_path::EmptyNodeIdLookUp;
 use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageForwardNode, MessageContext, OffersContext};
 use crate::events::{Event, EventsProvider};
-use crate::ln::features::{ChannelFeatures, InitFeatures};
+use crate::types::features::{ChannelFeatures, InitFeatures};
 use crate::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
 use crate::routing::test_utils::{add_channel, add_or_update_node};

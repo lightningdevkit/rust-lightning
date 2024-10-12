@@ -18,7 +18,7 @@ use crate::io;
 use crate::io::Cursor;
 use crate::ln::types::PaymentSecret;
 use crate::ln::channel_state::CounterpartyForwardingInfo;
-use crate::ln::features::BlindedHopFeatures;
+use crate::types::features::BlindedHopFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
 use crate::offers::invoice_request::InvoiceRequestFields;
@@ -633,7 +633,7 @@ mod tests {
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{PaymentForwardNode, ForwardTlvs, ReceiveTlvs, PaymentConstraints, PaymentContext, PaymentRelay};
 	use crate::ln::types::PaymentSecret;
-	use crate::ln::features::BlindedHopFeatures;
+	use crate::types::features::BlindedHopFeatures;
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
 
 	#[test]

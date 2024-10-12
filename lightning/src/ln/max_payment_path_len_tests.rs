@@ -17,7 +17,7 @@ use crate::events::{Event, MessageSendEventsProvider};
 use crate::ln::PaymentSecret;
 use crate::ln::blinded_payment_tests::get_blinded_route_parameters;
 use crate::ln::channelmanager::PaymentId;
-use crate::ln::features::BlindedHopFeatures;
+use crate::types::features::BlindedHopFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs;
 use crate::ln::msgs::OnionMessageHandler;

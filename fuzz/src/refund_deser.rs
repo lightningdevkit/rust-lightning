@@ -15,13 +15,13 @@ use lightning::blinded_path::payment::{
 	PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 };
 use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
-use lightning::ln::features::BlindedHopFeatures;
 use lightning::ln::types::PaymentSecret;
 use lightning::ln::PaymentHash;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::offers::refund::Refund;
 use lightning::sign::EntropySource;
+use lightning::types::features::BlindedHopFeatures;
 use lightning::util::ser::Writeable;
 
 #[inline]

@@ -37,7 +37,7 @@ use musig2::types::{PartialSignature, PublicNonce};
 use crate::sign::HTLCDescriptor;
 use crate::util::ser::{Writeable, Writer};
 use crate::io::Error;
-use crate::ln::features::ChannelTypeFeatures;
+use crate::types::features::ChannelTypeFeatures;
 #[cfg(taproot)]
 use crate::ln::msgs::PartialSignatureWithNonce;
 #[cfg(taproot)]

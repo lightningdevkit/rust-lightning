@@ -27,7 +27,7 @@ use crate::ln::{chan_utils, onion_utils};
 use crate::ln::chan_utils::{commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, OFFERED_HTLC_SCRIPT_WEIGHT, htlc_success_tx_weight, htlc_timeout_tx_weight, HTLCOutputInCommitment};
 use crate::routing::gossip::{NetworkGraph, NetworkUpdate};
 use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, get_route, RouteParameters};
-use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
+use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::test_channel_signer::TestChannelSigner;

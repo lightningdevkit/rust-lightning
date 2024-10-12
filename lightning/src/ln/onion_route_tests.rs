@@ -20,7 +20,7 @@ use crate::ln::channelmanager::{HTLCForwardInfo, FailureCode, CLTV_FAR_FAR_AWAY,
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkUpdate, RoutingFees};
 use crate::routing::router::{get_route, PaymentParameters, Route, RouteParameters, RouteHint, RouteHintHop};
-use crate::ln::features::{InitFeatures, Bolt11InvoiceFeatures};
+use crate::types::features::{InitFeatures, Bolt11InvoiceFeatures};
 use crate::ln::functional_test_utils::test_default_channel_config;
 use crate::ln::msgs;
 use crate::ln::msgs::{ChannelMessageHandler, ChannelUpdate, OutboundTrampolinePayload};

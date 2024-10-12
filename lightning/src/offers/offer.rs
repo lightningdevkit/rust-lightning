@@ -87,7 +87,7 @@ use core::time::Duration;
 use crate::io;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::ln::channelmanager::PaymentId;
-use crate::ln::features::OfferFeatures;
+use crate::types::features::OfferFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::merkle::{TaggedHash, TlvStream};
@@ -603,7 +603,7 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	}
 
 	/// Features pertaining to the offer.
-	pub fn offer_features(&$self) -> &$crate::ln::features::OfferFeatures {
+	pub fn offer_features(&$self) -> &$crate::types::features::OfferFeatures {
 		&$contents.features()
 	}
 
@@ -1191,7 +1191,7 @@ mod tests {
 	use crate::blinded_path::BlindedHop;
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
-	use crate::ln::features::OfferFeatures;
+	use crate::types::features::OfferFeatures;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::nonce::Nonce;

@@ -25,7 +25,7 @@
 //!
 //! use bitcoin::network::Network;
 //! use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
-//! use lightning::ln::features::OfferFeatures;
+//! use lightning::types::features::OfferFeatures;
 //! use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 //! use lightning::offers::offer::Offer;
 //! use lightning::util::ser::Writeable;
@@ -66,7 +66,7 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
-use crate::ln::features::InvoiceRequestFeatures;
+use crate::types::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::merkle::{SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, self};
@@ -1252,7 +1252,7 @@ mod tests {
 	use core::time::Duration;
 	use crate::sign::KeyMaterial;
 	use crate::ln::channelmanager::PaymentId;
-	use crate::ln::features::{InvoiceRequestFeatures, OfferFeatures};
+	use crate::types::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 	use crate::offers::invoice::{Bolt12Invoice, SIGNATURE_TAG as INVOICE_SIGNATURE_TAG};

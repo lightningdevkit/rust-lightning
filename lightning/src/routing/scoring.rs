@@ -3481,7 +3481,7 @@ pub mod benches {
 	use criterion::Criterion;
 	use crate::routing::router::{bench_utils, RouteHop};
 	use crate::util::test_utils::TestLogger;
-	use crate::ln::features::{ChannelFeatures, NodeFeatures};
+	use crate::types::features::{ChannelFeatures, NodeFeatures};
 
 	pub fn decay_100k_channel_bounds(bench: &mut Criterion) {
 		let logger = TestLogger::new();

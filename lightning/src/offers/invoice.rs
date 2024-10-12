@@ -115,7 +115,7 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use crate::ln::types::PaymentHash;
 use crate::ln::channelmanager::PaymentId;
-use crate::ln::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
+use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice_macros::{invoice_accessors_common, invoice_builder_methods_common};
@@ -1453,7 +1453,7 @@ mod tests {
 	use crate::blinded_path::BlindedHop;
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
-	use crate::ln::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
+	use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;

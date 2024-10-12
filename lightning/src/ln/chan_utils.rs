@@ -45,7 +45,7 @@ use crate::util::transaction_utils::sort_outputs;
 use crate::ln::channel::{INITIAL_COMMITMENT_NUMBER, ANCHOR_OUTPUT_VALUE_SATOSHI};
 use core::ops::Deref;
 use crate::chain;
-use crate::ln::features::ChannelTypeFeatures;
+use crate::types::features::ChannelTypeFeatures;
 use crate::crypto::utils::{sign, sign_with_aux_rand};
 use super::channel_keys::{DelayedPaymentBasepoint, DelayedPaymentKey, HtlcKey, HtlcBasepoint, RevocationKey, RevocationBasepoint};
 
@@ -1903,7 +1903,7 @@ mod tests {
 	use bitcoin::hex::FromHex;
 	use crate::ln::types::PaymentHash;
 	use bitcoin::PublicKey as BitcoinPublicKey;
-	use crate::ln::features::ChannelTypeFeatures;
+	use crate::types::features::ChannelTypeFeatures;
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;

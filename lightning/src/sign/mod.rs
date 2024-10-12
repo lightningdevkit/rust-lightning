@@ -63,12 +63,12 @@ use crate::util::transaction_utils;
 
 use crate::crypto::chacha20::ChaCha20;
 use crate::io::{self, Error};
-use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 #[cfg(taproot)]
 use crate::sign::taproot::TaprootChannelSigner;
+use crate::types::features::ChannelTypeFeatures;
 use crate::util::atomic_counter::AtomicCounter;
 use core::convert::TryInto;
 use core::ops::Deref;
