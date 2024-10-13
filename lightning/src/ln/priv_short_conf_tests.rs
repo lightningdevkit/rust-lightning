@@ -190,11 +190,11 @@ fn do_test_1_conf_open(connect_style: ConnectStyle) {
 	connect_blocks(&nodes[1], 5);
 	let bs_announce_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_announce_events.len(), 2);
-	let bs_announcement_sigs = if let MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } = bs_announce_events[0] {
+	let bs_announcement_sigs = if let MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg } = bs_announce_events[1] {
 		assert_eq!(*node_id, nodes[0].node.get_our_node_id());
 		msg.clone()
 	} else { panic!("Unexpected event"); };
-	let (bs_announcement, bs_update) = if let MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } = bs_announce_events[1] {
+	let (bs_announcement, bs_update) = if let MessageSendEvent::BroadcastChannelAnnouncement { ref msg, ref update_msg } = bs_announce_events[0] {
 		(msg.clone(), update_msg.clone().unwrap())
 	} else { panic!("Unexpected event"); };
 
