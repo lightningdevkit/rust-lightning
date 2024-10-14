@@ -1,3 +1,26 @@
+# 0.0.125 - Oct 14, 2024 - "Delayed Beta Testing"
+
+## Bug Fixes
+ * On upgrade to 0.0.124, channels which were at a steady-state (i.e. for which
+   the counterparty has received our latest `revoke_and_ack` message) will
+   force-close upon receiving the next channel state update from our
+   counterparty. When built with debug assertions a debug assertion failure will
+   occur instead (#3362).
+ * Listeners in a `ChainListenerSet` will now have their `block_connected`
+   method called, when appropriate, rather than always having their
+   `filtered_block_connected` method called with full block data (#3354).
+ * Routefinding historical liquidity channel scores were made more consistent
+   for channels which have very little data which has been decayed (#3362).
+ * A debug assertion failure when adding nodes to the network graph after
+   removal of nodes from the network graph was fixed (#3362).
+
+In total, this release features 6 files changed, 32 insertions, 7
+deletions in 5 commits since 0.0.124 from 2 authors, in alphabetical order:
+
+ * Elias Rohrer
+ * Matt Corallo
+
+
 # 0.0.124 - Sep 3, 2024 - "Papercutting Feature Requests"
 
 ## API Updates
