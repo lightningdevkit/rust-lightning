@@ -2500,11 +2500,11 @@ impl EntropySource for RandomBytes {
 	}
 }
 
-// Ensure that EcdsaChannelSigner can have a vtable
-#[test]
+// Ensure that EcdsaChannelSigner can have a vtable - not required in bindings
+/*#[test]
 pub fn dyn_sign() {
 	let _signer: Box<dyn EcdsaChannelSigner>;
-}
+}*/
 
 #[cfg(ldk_bench)]
 pub mod benches {

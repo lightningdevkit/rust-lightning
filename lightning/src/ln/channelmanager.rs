@@ -111,7 +111,7 @@ use core::time::Duration;
 use core::ops::Deref;
 
 // Re-export this for use in the public API.
-pub use crate::ln::outbound_payment::{Bolt12PaymentError, PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
+pub(crate) use crate::ln::outbound_payment::{Bolt12PaymentError, PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 use crate::ln::script::ShutdownScript;
 
 // We hold various information about HTLC relay in the HTLC objects in Channel itself:
@@ -1165,8 +1165,6 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 		Arc<L>,
 		Arc<KeysManager>,
 		Arc<RwLock<ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>>>,
-		ProbabilisticScoringFeeParameters,
-		ProbabilisticScorer<Arc<NetworkGraph<Arc<L>>>, Arc<L>>,
 	>>,
 	Arc<L>
 >;
@@ -1196,8 +1194,6 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, M, T, F, L> =
 			&'g L,
 			&'c KeysManager,
 			&'h RwLock<ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>>,
-			ProbabilisticScoringFeeParameters,
-			ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>
 		>,
 		&'g L
 	>;
@@ -4013,7 +4009,7 @@ where
 		// If we returned an error and the `node_signer` cannot provide a signature for whatever
 		// reason`, we wouldn't be able to receive inbound payments through the corresponding
 		// channel.
-		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&unsigned)).unwrap();
+		let sig = self.node_signer.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(unsigned.clone())).unwrap();
 
 		Ok(msgs::ChannelUpdate {
 			signature: sig,
@@ -4238,10 +4234,10 @@ where
 	/// whether or not the payment was successful.
 	///
 	/// [timer tick]: Self::timer_tick_occurred
-	pub fn send_payment_for_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
+	pub(crate) fn send_payment_for_bolt12_invoice(
+		&self, invoice: &Bolt12Invoice, context: Option<OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
-		match self.verify_bolt12_invoice(invoice, context) {
+		match self.verify_bolt12_invoice(invoice, context.as_ref()) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
 			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
 		}
@@ -4822,7 +4818,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_partial_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config_update: &ChannelConfigUpdate,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config_update: &ChannelConfigUpdate,
 	) -> Result<(), APIError> {
 		if config_update.cltv_expiry_delta.map(|delta| delta < MIN_CLTV_EXPIRY_DELTA).unwrap_or(false) {
 			return Err(APIError::APIMisuseError {
@@ -4837,14 +4833,14 @@ where
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
 
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if !peer_state.has_channel(channel_id) {
 				return Err(APIError::ChannelUnavailable {
 					err: format!("Channel with id {} not found for the passed counterparty node_id {}", channel_id, counterparty_node_id),
 				});
 			};
 		}
-		for channel_id in channel_ids {
+		for channel_id in channel_ids.iter() {
 			if let Some(channel_phase) = peer_state.channel_by_id.get_mut(channel_id) {
 				let mut config = channel_phase.context().config();
 				config.apply(config_update);
@@ -4899,7 +4895,7 @@ where
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn update_channel_config(
-		&self, counterparty_node_id: &PublicKey, channel_ids: &[ChannelId], config: &ChannelConfig,
+		&self, counterparty_node_id: &PublicKey, channel_ids: Vec<ChannelId>, config: &ChannelConfig,
 	) -> Result<(), APIError> {
 		return self.update_partial_channel_config(counterparty_node_id, channel_ids, &(*config).into());
 	}
@@ -9085,7 +9081,7 @@ where
 		let invoice_request = builder.build_and_sign()?;
 
 		let hmac = payment_id.hmac_for_offer_payment(nonce, expanded_key);
-		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) };
+		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac.to_byte_array()) };
 		let reply_paths = self.create_blinded_paths(context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -10960,7 +10956,7 @@ where
 
 				match context {
 					Some(OffersContext::OutboundPayment { payment_id, nonce, hmac: Some(hmac) }) => {
-						if let Ok(()) = payment_id.verify(hmac, nonce, expanded_key) {
+						if let Ok(()) = payment_id.verify(bitcoin::hashes::hmac::Hmac::from_byte_array(hmac), nonce, expanded_key) {
 							self.abandon_payment_with_reason(
 								payment_id, PaymentFailureReason::InvoiceRequestRejected,
 							);

@@ -1,3 +1,5 @@
+//! Chain sync using the electrum protocol
+
 use crate::common::{ConfirmedTx, FilterQueue, SyncState};
 use crate::error::{InternalError, TxSyncError};
 

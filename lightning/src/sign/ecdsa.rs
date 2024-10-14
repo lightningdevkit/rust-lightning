@@ -24,7 +24,7 @@ use crate::sign::{ChannelSigner, HTLCDescriptor};
 /// policies in order to be secure. Please refer to the [VLS Policy
 /// Controls](https://gitlab.com/lightning-signer/validating-lightning-signer/-/blob/main/docs/policy-controls.md)
 /// for an example of such policies.
-pub trait EcdsaChannelSigner: ChannelSigner {
+pub trait EcdsaChannelSigner: ChannelSigner + Clone {
 	/// Create a signature for a counterparty's commitment transaction and associated HTLC transactions.
 	///
 	/// Note that if signing fails or is rejected, the channel will be force-closed.

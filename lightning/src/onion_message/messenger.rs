@@ -200,8 +200,8 @@ for OnionMessenger<ES, NS, L, NL, MR, OMH, APH, CMH> where
 ///     &keys_manager, &keys_manager, logger, &node_id_lookup, message_router,
 ///     &offers_message_handler, &async_payments_message_handler, &custom_message_handler
 /// );
-
-/// # #[derive(Debug)]
+///
+/// # #[derive(Debug, Clone)]
 /// # struct YourCustomMessage {}
 /// impl Writeable for YourCustomMessage {
 /// 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
