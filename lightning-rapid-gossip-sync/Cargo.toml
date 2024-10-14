@@ -9,6 +9,10 @@ description = """
 Utility to process gossip routing data from Rapid Gossip Sync Server.
 """
 
+[package.metadata.docs.rs]
+all-features = true
+features = ["lightning/std"]
+
 [features]
 default = ["std"]
 std = []

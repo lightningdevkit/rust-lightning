@@ -11,6 +11,7 @@ edition = "2021"
 
 [package.metadata.docs.rs]
 all-features = true
+features = ["lightning/std"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
