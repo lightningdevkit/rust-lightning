@@ -49,7 +49,7 @@ jobs:
           cargo update -p aws-lc-rs --precise "1.6.4" --verbose
           cargo update -p aws-lc-sys --precise "0.14.1" --verbose
           cargo update -p ring --precise "0.17.0" --verbose
-          # cargo update -p cmake --precise "0.1.48" --verbose
+          cargo update -p cmake --precise "0.1.48" --verbose
           cargo update -p cc --precise "1.0.72" --verbose
       - name: Enable caching for bitcoind
         id: cache-bitcoind
