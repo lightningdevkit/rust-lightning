@@ -46,7 +46,7 @@ jobs:
         run: |
           cargo update -p rustls@0.23.14 --precise "0.23.0" --verbose
           # cargo update -p rustls-webpki@0.102.8 --precise "0.102.2" --verbose
-          cargo update -p aws-lc-rs --precise "1.9.0" --verbose
+          cargo update -p aws-lc-rs --precise "1.6.4" --verbose
           cargo update -p aws-lc-sys --precise "0.14.1" --verbose
           # cargo update -p ring --precise "0.17.0" --verbose
           # cargo update -p cmake --precise "0.1.48" --verbose
