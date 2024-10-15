@@ -1695,6 +1695,27 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let msghash = hash_to_message!(&Sha256dHash::hash(&msg.encode()[..])[..]);
 		Ok(secp_ctx.sign_ecdsa(&msghash, &self.funding_key))
 	}
+
+	fn sign_splicing_funding_input(
+		&self, tx: &Transaction, input_index: usize, input_value: u64,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		let funding_pubkey = PublicKey::from_secret_key(secp_ctx, &self.funding_key);
+		let counterparty_funding_key =
+			&self.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
+		let funding_redeemscript =
+			make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
+		let sighash = &sighash::SighashCache::new(tx)
+			.p2wsh_signature_hash(
+				input_index,
+				&funding_redeemscript,
+				Amount::from_sat(input_value),
+				EcdsaSighashType::All,
+			)
+			.unwrap()[..];
+		let msg = hash_to_message!(sighash);
+		Ok(sign(secp_ctx, &msg, &self.funding_key))
+	}
 }
 
 #[cfg(taproot)]
