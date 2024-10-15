@@ -2600,8 +2600,14 @@ where
 	/// offer they resolve to to the given one.
 	pub testing_dnssec_proof_offer_resolution_override: Mutex<HashMap<HumanReadableName, Offer>>,
 
+	#[cfg(test)]
+	pub(super) entropy_source: ES,
+	#[cfg(not(test))]
 	entropy_source: ES,
 	node_signer: NS,
+	#[cfg(test)]
+	pub(super) signer_provider: SP,
+	#[cfg(not(test))]
 	signer_provider: SP,
 
 	logger: L,
@@ -3467,6 +3473,11 @@ where
 	/// Gets the current configuration applied to all new channels.
 	pub fn get_current_default_configuration(&self) -> &UserConfig {
 		&self.default_configuration
+	}
+
+	#[cfg(test)]
+	pub fn create_and_insert_outbound_scid_alias_for_test(&self) -> u64 {
+		self.create_and_insert_outbound_scid_alias()
 	}
 
 	fn create_and_insert_outbound_scid_alias(&self) -> u64 {
@@ -15674,9 +15685,6 @@ mod tests {
 
 		expect_pending_htlcs_forwardable!(nodes[0]);
 	}
-
-	// Dual-funding: V2 Channel Establishment Tests
-	// TODO(dual_funding): Complete these.
 }
 
 #[cfg(ldk_bench)]

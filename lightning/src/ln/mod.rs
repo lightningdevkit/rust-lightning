@@ -44,6 +44,9 @@ pub(crate) mod onion_utils;
 mod outbound_payment;
 pub mod wire;
 
+#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
+pub(crate) mod interactivetxs;
+
 pub use onion_utils::create_payment_onion;
 // Older rustc (which we support) refuses to let us call the get_payment_preimage_hash!() macro
 // without the node parameter being mut. This is incorrect, and thus newer rustcs will complain
@@ -88,7 +91,8 @@ mod async_signer_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod offers_tests;
-#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
-pub(crate) mod interactivetxs;
+#[cfg(test)]
+#[allow(unused_mut)]
+mod dual_funding_tests;
 
 pub use self::peer_channel_encryptor::LN_MAX_MSG_LEN;
