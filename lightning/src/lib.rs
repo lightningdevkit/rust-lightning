@@ -61,6 +61,7 @@ extern crate alloc;
 pub extern crate lightning_types as types;
 
 pub extern crate bitcoin;
+pub extern crate bech32;
 #[cfg(any(test, feature = "std"))]
 extern crate core;
 
