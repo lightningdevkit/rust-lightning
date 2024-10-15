@@ -38,17 +38,20 @@ use crate::util::test_utils;
 use crate::util::test_utils::{TestChainMonitor, TestScorer, TestKeysInterface};
 use crate::util::ser::{ReadableArgs, Writeable};
 
+use bitcoin::WPubkeyHash;
 use bitcoin::amount::Amount;
-use bitcoin::block::{Block, Header, Version};
-use bitcoin::locktime::absolute::LockTime;
-use bitcoin::transaction::{Transaction, TxIn, TxOut};
+use bitcoin::block::{Block, Header, Version as BlockVersion};
+use bitcoin::locktime::absolute::{LockTime, LOCK_TIME_THRESHOLD};
+use bitcoin::transaction::{Sequence, Transaction, TxIn, TxOut};
 use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash as _;
 use bitcoin::network::Network;
 use bitcoin::pow::CompactTarget;
+use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::transaction;
+use bitcoin::transaction::{self, Version as TxVersion};
+use bitcoin::witness::Witness;
 
 use alloc::rc::Rc;
 use core::cell::RefCell;
@@ -90,7 +93,7 @@ pub fn mine_transaction_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Nod
 	let height = node.best_block_info().1 + 1;
 	let mut block = Block {
 		header: Header {
-			version: Version::NO_SOFT_FORK_SIGNALLING,
+			version: BlockVersion::NO_SOFT_FORK_SIGNALLING,
 			prev_blockhash: node.best_block_hash(),
 			merkle_root: TxMerkleNode::all_zeros(),
 			time: height,
@@ -217,7 +220,7 @@ impl ConnectStyle {
 
 pub fn create_dummy_header(prev_blockhash: BlockHash, time: u32) -> Header {
 	Header {
-		version: Version::NO_SOFT_FORK_SIGNALLING,
+		version: BlockVersion::NO_SOFT_FORK_SIGNALLING,
 		prev_blockhash,
 		merkle_root: TxMerkleNode::all_zeros(),
 		time,
@@ -1219,6 +1222,37 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>,
 		},
 		_ => panic!("Unexpected event"),
 	}
+}
+
+pub fn create_dual_funding_utxos_with_prev_txs(
+	node: &Node<'_, '_, '_>, utxo_values_in_satoshis: &[u64],
+) -> Vec<(TxIn, Transaction)> {
+	// Ensure we have unique transactions per node by using the locktime.
+	let tx = Transaction {
+		version: TxVersion::TWO,
+		lock_time: LockTime::from_height(
+			u32::from_be_bytes(node.keys_manager.get_secure_random_bytes()[0..4].try_into().unwrap()) % LOCK_TIME_THRESHOLD
+		).unwrap(),
+		input: vec![],
+		output: utxo_values_in_satoshis.iter().map(|value_satoshis| TxOut {
+			value: Amount::from_sat(*value_satoshis), script_pubkey: ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros()),
+		}).collect()
+	};
+
+	let mut result = vec![];
+	for i in 0..utxo_values_in_satoshis.len() {
+		result.push(
+			(TxIn {
+				previous_output: OutPoint {
+					txid: tx.compute_txid(),
+					index: i as u16,
+				}.into_bitcoin_outpoint(),
+				script_sig: ScriptBuf::new(),
+				sequence: Sequence::ZERO,
+				witness: Witness::new(),
+			}, tx.clone()));
+	}
+	result
 }
 
 pub fn sign_funding_transaction<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, node_b: &Node<'a, 'b, 'c>, channel_value: u64, expected_temporary_channel_id: ChannelId) -> Transaction {
