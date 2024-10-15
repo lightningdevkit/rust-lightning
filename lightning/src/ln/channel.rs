@@ -10177,8 +10177,10 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		) {
 			debug_assert!(false, "Tried to send tx_ack_rbf on a channel that's not NegotiatingFundingFlags");
 		}
-		if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
-			debug_assert!(false, "Tried to send an tx_ack_rbf for a channel that has already advanced");
+		if !self.context.is_splice_pending() {
+			if self.context.cur_holder_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
+				debug_assert!(false, "Tried to send an tx_ack_rbf for a channel that has already advanced");
+			}
 		}
 		self.generate_tx_ack_rbf_message()
 	}

@@ -466,6 +466,8 @@ fn test_splice_in_with_optional_payments(
 	do_payment_pre_splice: bool,
 	do_payment_post_splice: bool,
 	do_payment_pending_splice: bool,
+	do_rbf: bool,
+	index_of_tx_to_confirm: u8,
 	expected_pre_funding_txid: &str,
 	expected_splice_funding_txid: &str,
 	expected_post_funding_tx: &str,
@@ -948,7 +950,7 @@ fn test_splice_in_with_optional_payments(
 	assert!(fee <= expected_maximum_fee);
 
 	// The splice is pending: it is committed to, new funding transaction has been broadcast but not yet locked
-	println!("Splice is pending");
+	println!("Splice is pending (splice funding transaction negotiated, signed, and broadcasted)");
 
 	if do_payment_pending_splice {
 		// === Send another payment
@@ -963,18 +965,186 @@ fn test_splice_in_with_optional_payments(
 		exp_balance2 += payment3_amount_msat;
 	}
 
-	println!("Confirming splice transaction...");
+	let mut splice_funding_tx_2: Option<Transaction> = None;
+	if do_rbf {
+		println!("Start RBF on pending splice");
+
+		// Initiator sends an RBF
+		let rbf_2nd_feerate = 506;
+		let extra_splice_funding_input_sats_2 = 36_000;
+		let funding_inputs_2 = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_splice_funding_input_sats_2, &custom_input_pubkey)];
+
+		let _res = initiator_node.node.rbf_on_pending_splice(
+			&channel_id1,
+			&acceptor_node.node.get_our_node_id(),
+			splice_in_sats as i64,
+			funding_inputs_2,
+			rbf_2nd_feerate,
+			0,
+		).unwrap();
+
+		let rbf_msg = get_event_msg!(initiator_node, MessageSendEvent::SendTxInitRbf, acceptor_node.node.get_our_node_id());
+		assert_eq!(initiator_node.node.list_channels().len(), 1);
+
+		// handle init_rbf on acceptor side
+		let _res = acceptor_node.node.handle_tx_init_rbf(&initiator_node.node.get_our_node_id(), &rbf_msg);
+		let ack_rbf_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxAckRbf, initiator_node.node.get_our_node_id());
+		assert_eq!(acceptor_node.node.list_channels().len(), 1);
+
+		// handle ack_rbf on initator side
+		let _res = initiator_node.node.handle_tx_ack_rbf(&acceptor_node.node.get_our_node_id(), &ack_rbf_msg);
+
+		let tx_add_input_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
+		let input_value = tx_add_input_msg.prevtx.as_transaction().output[tx_add_input_msg.prevtx_out as usize].value;
+		assert_eq!(input_value, extra_splice_funding_input_sats_2);
+
+		acceptor_node.node.handle_tx_add_input(&initiator_node.node.get_our_node_id(), &tx_add_input_msg);
+
+		let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
+		assert_eq!(tx_complete_msg.channel_id.to_string(), expected_funded_channel_id);
+
+		initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+
+		let tx_add_input_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddInput, acceptor_node.node.get_our_node_id());
+		let input_value = tx_add_input_msg.prevtx.as_transaction().output[tx_add_input_msg.prevtx_out as usize].value;
+		assert_eq!(input_value, channel_value_sat);
+
+		acceptor_node.node.handle_tx_add_input(&initiator_node.node.get_our_node_id(), &tx_add_input_msg);
+
+		let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
+		assert_eq!(tx_complete_msg.channel_id.to_string(), expected_funded_channel_id);
+
+		initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+
+		let tx_add_output_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
+		acceptor_node.node.handle_tx_add_output(&initiator_node.node.get_our_node_id(), &tx_add_output_msg);
+
+		let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
+		initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+
+		let tx_add_output_msg = get_event_msg!(&initiator_node, MessageSendEvent::SendTxAddOutput, acceptor_node.node.get_our_node_id());
+		acceptor_node.node.handle_tx_add_output(&initiator_node.node.get_our_node_id(), &tx_add_output_msg);
+
+		let tx_complete_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendTxComplete, initiator_node.node.get_our_node_id());
+		initiator_node.node.handle_tx_complete(&acceptor_node.node.get_our_node_id(), &tx_complete_msg);
+
+		let msg_events = initiator_node.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 2);
+		let tx_complete_msg = match msg_events[0] {
+			MessageSendEvent::SendTxComplete { ref node_id, ref msg } => {
+				assert_eq!(*node_id, acceptor_node.node.get_our_node_id());
+				(*msg).clone()
+			},
+			_ => panic!("Unexpected event {:?}", msg_events[0]),
+		};
+		let msg_commitment_signed_from_0 = match msg_events[1] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				assert_eq!(*node_id, acceptor_node.node.get_our_node_id());
+				updates.commitment_signed.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+		if let Event::FundingTransactionReadyForSigning {
+			channel_id,
+			counterparty_node_id,
+			mut unsigned_transaction,
+			..
+		} = get_event!(initiator_node, Event::FundingTransactionReadyForSigning) {
+			assert_eq!(channel_id.to_string(), expected_funded_channel_id);
+			assert_eq!(counterparty_node_id, acceptor_node.node.get_our_node_id());
+			assert_eq!(unsigned_transaction.input.len(), 2);
+			// Note: input order may vary (based on SerialId)
+			// This is the previous funding tx input, already signed (partially)
+			assert_eq!(unsigned_transaction.input[0].previous_output.txid.to_string(), expected_pre_funding_txid);
+			assert_eq!(unsigned_transaction.input[0].witness.len(), 4);
+			// This is the extra input, not yet signed
+			assert_eq!(unsigned_transaction.input[1].witness.len(), 0);
+
+			// Placeholder for signature on the contributed input
+			let mut witness1 = Witness::new();
+			witness1.push([7; 72]);
+			unsigned_transaction.input[1].witness = witness1;
+
+			let _res = initiator_node.node.funding_transaction_signed(&channel_id, &counterparty_node_id, unsigned_transaction).unwrap();
+		} else { panic!(); }
+
+		acceptor_node.node.handle_tx_complete(&initiator_node.node.get_our_node_id(), &tx_complete_msg);
+		let msg_events = acceptor_node.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1);
+		let msg_commitment_signed_from_1 = match msg_events[0] {
+			MessageSendEvent::UpdateHTLCs { ref node_id, ref updates } => {
+				assert_eq!(*node_id, initiator_node.node.get_our_node_id());
+				updates.commitment_signed.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+
+		// Handle the initial commitment_signed exchange. Order is not important here.
+		acceptor_node.node.handle_commitment_signed(&initiator_node.node.get_our_node_id(), &msg_commitment_signed_from_0);
+		initiator_node.node.handle_commitment_signed(&acceptor_node.node.get_our_node_id(), &msg_commitment_signed_from_1);
+		check_added_monitors(&initiator_node, 1);
+		check_added_monitors(&acceptor_node, 1);
+
+		let tx_signatures_exchange = |first: usize, second: usize| {
+			let msg_events = nodes[second].node.get_and_clear_pending_msg_events();
+			assert!(msg_events.is_empty());
+			let tx_signatures_from_first = get_event_msg!(nodes[first], MessageSendEvent::SendTxSignatures, nodes[second].node.get_our_node_id());
+
+			nodes[second].node.handle_tx_signatures(&nodes[first].node.get_our_node_id(), &tx_signatures_from_first);
+			let events_0 = nodes[second].node.get_and_clear_pending_events();
+			assert_eq!(events_0.len(), 1);
+			match events_0[0] {
+				Event::ChannelPending{ ref counterparty_node_id, .. } => {
+					assert_eq!(*counterparty_node_id, nodes[first].node.get_our_node_id());
+				},
+				_ => panic!("Unexpected event"),
+			}
+			let tx_signatures_from_second = get_event_msg!(nodes[second], MessageSendEvent::SendTxSignatures, nodes[first].node.get_our_node_id());
+			nodes[first].node.handle_tx_signatures(&nodes[second].node.get_our_node_id(), &tx_signatures_from_second);
+			let events_1 = nodes[first].node.get_and_clear_pending_events();
+			assert_eq!(events_1.len(), 1);
+			match events_1[0] {
+				Event::ChannelPending{ ref counterparty_node_id, .. } => {
+					assert_eq!(*counterparty_node_id, nodes[second].node.get_our_node_id());
+				},
+				_ => panic!("Unexpected event {:?}", events_1[0]),
+			}
+		};
+		tx_signatures_exchange(1, 0);
+
+		let funding_tx = {
+			let tx_0 = &initiator_node.tx_broadcaster.txn_broadcasted.lock().unwrap()[1];
+			let tx_1 = &acceptor_node.tx_broadcaster.txn_broadcasted.lock().unwrap()[1];
+			assert_eq!(tx_0, tx_1);
+			tx_0.clone()
+		};
+		let expected_tx2_id = "e83b07b825b61fb54ec3129b4f9aa0b6fb2752bf16907d4b5def4753d1e6662c";
+		assert_eq!(funding_tx.txid().to_string(), expected_tx2_id);
+
+		splice_funding_tx_2 = Some(funding_tx);
+	}
+
+	let tx_to_confirm = if !do_rbf {
+		broadcasted_splice_tx
+	} else {
+		match index_of_tx_to_confirm {
+			1 => broadcasted_splice_tx,
+			2 | _ =>splice_funding_tx_2.unwrap(),
+		}
+	};
+
+	println!("Confirming splice transaction... (index: {})", index_of_tx_to_confirm);
 
 	// Splice_locked: make the steps not in the natural order, to test the path when
 	// splice_locked is received before sending splice_locked (this path had a bug, 2024.06.).
 	// Receive splice_locked before seeing the confirmation of the new funding tx
 	// Simulate confirmation of the funding tx
-	confirm_transaction(&initiator_node, &broadcasted_splice_tx);
+	confirm_transaction(&initiator_node, &tx_to_confirm);
 	// Send splice_locked from initiator to acceptor, process it there
 	let splice_locked_message = get_event_msg!(initiator_node, MessageSendEvent::SendSpliceLocked, acceptor_node.node.get_our_node_id());
 	let _res = acceptor_node.node.handle_splice_locked(&initiator_node.node.get_our_node_id(), &splice_locked_message);
 
-	confirm_transaction(&acceptor_node, &broadcasted_splice_tx);
+	confirm_transaction(&acceptor_node, &tx_to_confirm);
 	let events = acceptor_node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -1092,7 +1262,7 @@ fn test_splice_in_with_optional_payments(
 #[test]
 fn test_v2_splice_in() {
 	test_splice_in_with_optional_payments(
-		false, false, false,
+		false, false, false, false, 0,
 		"951459a816fd3e1105bd8b623b004c5fdf640e82c306f473b50c42097610dcdf",
 		"e83b07b825b61fb54ec3129b4f9aa0b6fb2752bf16907d4b5def4753d1e6662c",
 		"02000000000102a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b79000000000000000000dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a859149501000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f0148070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707040047304402202262f62a07d13f0b65142ca4a891a12387749a65320e84d4a2cda4997eac71e9022070ff453bd2c49b67da48bfff541d8c1cdbfce13670641fe9dfa26bfc567b1a3e0147304402200b8553f0651c962e8356f1e59e07b7f2744194375779a6c6f9df100fce4042ef02206c53fb9671f812e9b6359b2f01eb9e50eca0b248da1203b7f6acd1e73fea4304014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae00000000",
@@ -1104,7 +1274,7 @@ fn test_v2_splice_in() {
 #[test]
 fn test_payment_splice_in() {
 	test_splice_in_with_optional_payments(
-		true, false, false,
+		true, false, false, false, 0,
 		"951459a816fd3e1105bd8b623b004c5fdf640e82c306f473b50c42097610dcdf",
 		"ab06c66b663fdcaa43509c7f50acf96df8483117e24e014874e02ae8c265a84e",
 		"02000000000102dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a8591495010000000000000000a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b7900000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f04004730440220496589c8ab19a2cea70f9204634aa45a642a2a8ba5fb8952a04f4998719f397c02204642179dedd6bf2627f1cd53d2f32832af32fc28504b636fd86a098bfc992acb01473044022050d84dcf82005d21989f0595cd1d38b5e85beb1ab5843ac1323afeeecae33c960220649f00b713ccd15c868d7ebab19f978ae5bd9e25c06ee2849f10a42997a2f8b2014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae014807070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070700000000",
@@ -1116,7 +1286,7 @@ fn test_payment_splice_in() {
 #[test]
 fn test_payment_splice_in_payment() {
 	test_splice_in_with_optional_payments(
-		true, true, false,
+		true, true, false, false, 0,
 		"951459a816fd3e1105bd8b623b004c5fdf640e82c306f473b50c42097610dcdf",
 		"ab06c66b663fdcaa43509c7f50acf96df8483117e24e014874e02ae8c265a84e",
 		"02000000000102dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a8591495010000000000000000a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b7900000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f04004730440220496589c8ab19a2cea70f9204634aa45a642a2a8ba5fb8952a04f4998719f397c02204642179dedd6bf2627f1cd53d2f32832af32fc28504b636fd86a098bfc992acb01473044022050d84dcf82005d21989f0595cd1d38b5e85beb1ab5843ac1323afeeecae33c960220649f00b713ccd15c868d7ebab19f978ae5bd9e25c06ee2849f10a42997a2f8b2014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae014807070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070700000000",
@@ -1131,7 +1301,31 @@ fn test_payment_splice_in_payment() {
 //#[test] // TODO
 fn test_payment_while_splice_pending() {
 	test_splice_in_with_optional_payments(
-		false, false, true,
+		false, false, true, false, 0,
+		"951459a816fd3e1105bd8b623b004c5fdf640e82c306f473b50c42097610dcdf",
+		"e83b07b825b61fb54ec3129b4f9aa0b6fb2752bf16907d4b5def4753d1e6662c",
+		"02000000000102a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b79000000000000000000dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a859149501000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f0148070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707040047304402202262f62a07d13f0b65142ca4a891a12387749a65320e84d4a2cda4997eac71e9022070ff453bd2c49b67da48bfff541d8c1cdbfce13670641fe9dfa26bfc567b1a3e0147304402200b8553f0651c962e8356f1e59e07b7f2744194375779a6c6f9df100fce4042ef02206c53fb9671f812e9b6359b2f01eb9e50eca0b248da1203b7f6acd1e73fea4304014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae00000000",
+		false,
+	)
+}
+
+/// Splicing test with RBF. The 2nd RBF variant is confirmed.
+#[test]
+fn test_v2_splice_with_rbf_conf_2nd() {
+	test_splice_in_with_optional_payments(
+		false, false, false, true, 2,
+		"951459a816fd3e1105bd8b623b004c5fdf640e82c306f473b50c42097610dcdf",
+		"e83b07b825b61fb54ec3129b4f9aa0b6fb2752bf16907d4b5def4753d1e6662c",
+		"02000000000102a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b79000000000000000000dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a859149501000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f0148070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707040047304402202262f62a07d13f0b65142ca4a891a12387749a65320e84d4a2cda4997eac71e9022070ff453bd2c49b67da48bfff541d8c1cdbfce13670641fe9dfa26bfc567b1a3e0147304402200b8553f0651c962e8356f1e59e07b7f2744194375779a6c6f9df100fce4042ef02206c53fb9671f812e9b6359b2f01eb9e50eca0b248da1203b7f6acd1e73fea4304014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae00000000",
+		false,
+	)
+}
+
+/// Splicing test with RBF. The 1st RBF variant is confirmed.
+#[test]
+fn test_v2_splice_with_rbf_conf_1st() {
+	test_splice_in_with_optional_payments(
+		false, false, false, true, 1,
 		"951459a816fd3e1105bd8b623b004c5fdf640e82c306f473b50c42097610dcdf",
 		"e83b07b825b61fb54ec3129b4f9aa0b6fb2752bf16907d4b5def4753d1e6662c",
 		"02000000000102a29ca934f2f9e07815e35099881dc8c0de1847ce0f00154de3d66c0133384b79000000000000000000dfdc107609420cb573f406c3820e64df5f4c003b628bbd05113efd16a859149501000000000000000002c0d401000000000022002034c0cc0ad0dd5fe61dcf7ef58f995e3d34f8dbd24aa2a6fae68fefe102bf025c0d37000000000000160014d5a9aa98b89acc215fc3d23d6fec0ad59ca3665f0148070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707070707040047304402202262f62a07d13f0b65142ca4a891a12387749a65320e84d4a2cda4997eac71e9022070ff453bd2c49b67da48bfff541d8c1cdbfce13670641fe9dfa26bfc567b1a3e0147304402200b8553f0651c962e8356f1e59e07b7f2744194375779a6c6f9df100fce4042ef02206c53fb9671f812e9b6359b2f01eb9e50eca0b248da1203b7f6acd1e73fea4304014752210307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db32103c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b52ae00000000",
