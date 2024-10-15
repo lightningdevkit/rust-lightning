@@ -8597,7 +8597,7 @@ where
 				match channel_phase {
 					ChannelPhase::FundingV2(ref mut channels) => {
 						let mut channel = match InboundV2Channel::new_for_rbf(
-							&channels.get_funded_channel().expect("FundedV2 must be funded").context,
+							&channels.get_funded_channel().expect("Channel must be funded").context,
 							&self.signer_provider,
 							msg,
 							Vec::new(),
@@ -8756,7 +8756,7 @@ where
 			}
 		}
 
-		// Channel ready state may have changed ('their'), check if transition needed
+		// Channel ready state may have changed ('their' ready), check if transition needed
 		self.transition_confirmed_channels();
 
 		Ok(())
@@ -8764,104 +8764,73 @@ where
 
 	#[cfg(splicing)]
 	fn internal_splice_locked(&self, counterparty_node_id: &PublicKey, msg: &msgs::SpliceLocked) -> Result<(), MsgHandleErrInternal> {
-		// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
-		// closing a channel), so any changes are likely to be lost on restart!
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		let peer_state_mutex = per_peer_state.get(counterparty_node_id)
-			.ok_or_else(|| {
-				debug_assert!(false);
-				MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
-			})?;
-		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-		let peer_state = &mut *peer_state_lock;
-		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				match chan_phase_entry.get_mut() {
-					// Note: no need to cover Funded
-					ChannelPhase::RefundingV2((_, chans)) => {
-						if let Some(_funded) = chans.get_funded_channel() {
-							// OK, noop
-						} else {
-							return try_chan_phase_entry!(self, Err(ChannelError::Close(
-								"Got a splice_locked message while renegotiating, but there is no funded channel!".into())), chan_phase_entry);
-						}
-					},
-					_ => {
-						return try_chan_phase_entry!(self, Err(ChannelError::Close(
-							"Got a splice_locked message for an unfunded channel!".into())), chan_phase_entry);
-					},
-				}
-			},
-			hash_map::Entry::Vacant(_) => {
-				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
-			}
-		}
+		{ // scope for locking
+			// Note that the ChannelManager is NOT re-persisted on disk after this (unless we error
+			// closing a channel), so any changes are likely to be lost on restart!
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			let peer_state_mutex = per_peer_state.get(counterparty_node_id)
+				.ok_or_else(|| {
+					debug_assert!(false);
+					MsgHandleErrInternal::send_err_msg_no_close(format!("Can't find a peer matching the passed counterparty node_id {}", counterparty_node_id), msg.channel_id)
+				})?;
+			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+			let peer_state = &mut *peer_state_lock;
+			match peer_state.channel_by_id.entry(msg.channel_id) {
+				hash_map::Entry::Occupied(mut chan_phase_entry) => {
+					match chan_phase_entry.get_mut() {
+						// Note: no need to cover Funded
+						ChannelPhase::RefundingV2((_, post_chans)) => {
+							if let Some(chan) = post_chans.get_funded_channel_mut() {
+								let logger = WithChannelContext::from(&self.logger, &chan.context);
+								let announcement_sigs_opt = try_chan_phase_entry!(self, chan.splice_locked(&msg, &self.node_signer,
+									self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_phase_entry);
+								if let Some(announcement_sigs) = announcement_sigs_opt {
+									log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
+									peer_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
+										node_id: counterparty_node_id.clone(),
+										msg: announcement_sigs,
+									});
+								} else if chan.context.is_usable() {
+									// If we're sending an announcement_signatures, we'll send the (public)
+									// channel_update after sending a channel_announcement when we receive our
+									// counterparty's announcement_signatures. Thus, we only bother to send a
+									// channel_update here if the channel is not public, i.e. we're not sending an
+									// announcement_signatures.
+									log_trace!(logger, "Sending private initial channel_update for our counterparty on channel {}", chan.context.channel_id());
+									if let Ok(msg) = self.get_channel_update_for_unicast(chan) {
+										peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
+											node_id: counterparty_node_id.clone(),
+											msg,
+										});
+									}
+								}
 
-		// Remove
-		let phase = peer_state.channel_by_id.remove(&msg.channel_id);
-		let chan = match phase {
-			// Some(ChannelPhase::Funded(chan)) => chan,
-			Some(ChannelPhase::RefundingV2((_, mut chans))) => {
-				if let Some(funded) = chans.take_last_funded_channel() {
-					funded
-				} else {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal error TODO".into(), msg.channel_id));
-				}
-			}
-			_ => {
-				return Err(MsgHandleErrInternal::send_err_msg_no_close("Internal error TODO".into(), msg.channel_id));
-			}
-		};
-		// Re-add as Funded
-		peer_state.channel_by_id.insert(msg.channel_id, ChannelPhase::Funded(chan));
-
-		match peer_state.channel_by_id.entry(msg.channel_id) {
-			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				match chan_phase_entry.get_mut() {
-					// Note: no need to cover RefundingV2
-					ChannelPhase::Funded(chan) => {
-						let logger = WithChannelContext::from(&self.logger, &chan.context);
-						let announcement_sigs_opt = try_chan_phase_entry!(self, chan.splice_locked(&msg, &self.node_signer,
-							self.chain_hash, &self.default_configuration, &self.best_block.read().unwrap(), &&logger), chan_phase_entry);
-						if let Some(announcement_sigs) = announcement_sigs_opt {
-							log_trace!(logger, "Sending announcement_signatures for channel {}", chan.context.channel_id());
-							peer_state.pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
-								node_id: counterparty_node_id.clone(),
-								msg: announcement_sigs,
-							});
-						} else if chan.context.is_usable() {
-							// If we're sending an announcement_signatures, we'll send the (public)
-							// channel_update after sending a channel_announcement when we receive our
-							// counterparty's announcement_signatures. Thus, we only bother to send a
-							// channel_update here if the channel is not public, i.e. we're not sending an
-							// announcement_signatures.
-							log_trace!(logger, "Sending private initial channel_update for our counterparty on channel {}", chan.context.channel_id());
-							if let Ok(msg) = self.get_channel_update_for_unicast(chan) {
-								peer_state.pending_msg_events.push(events::MessageSendEvent::SendChannelUpdate {
-									node_id: counterparty_node_id.clone(),
-									msg,
-								});
+								{
+									let mut pending_events = self.pending_events.lock().unwrap();
+									// Pass the splice flag explicitly, as splice has jsut been completed by this time point
+									emit_channel_ready_event_with_splice!(pending_events, chan, true);
+								}
+							} else {
+								return try_chan_phase_entry!(self, Err(ChannelError::Close(
+									"Got a splice_locked message while renegotiating, but there is no funded channel!".into())), chan_phase_entry);
 							}
 						}
-
-						{
-							let mut pending_events = self.pending_events.lock().unwrap();
-							// Pass the splice flag explicitly, as splice has jsut been completed by this time point
-							emit_channel_ready_event_with_splice!(pending_events, chan, true);
+						_ => {
+							return try_chan_phase_entry!(self, Err(ChannelError::Close(
+								"Got a splice_locked message for an unfunded channel!".into())), chan_phase_entry);
 						}
-
-						Ok(())
-					},
-					_ => {
-						try_chan_phase_entry!(self, Err(ChannelError::Close(
-							"Got a splice_locked message for an unfunded channel!".into())), chan_phase_entry)
-					},
+					}
+				},
+				hash_map::Entry::Vacant(_) => {
+					return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 				}
-			},
-			hash_map::Entry::Vacant(_) => {
-				Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		}
+
+		// Channel ready state may have changed ('their' ready), check if transition needed
+		self.transition_confirmed_channels();
+
+		Ok(())
 	}
 
 	fn internal_shutdown(&self, counterparty_node_id: &PublicKey, msg: &msgs::Shutdown) -> Result<(), MsgHandleErrInternal> {
@@ -11093,46 +11062,51 @@ where
 			self.do_chain_event(Some(last_best_block_height), |channel| channel.best_block_updated(last_best_block_height, timestamp as u32, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context)));
 		}
 
-		// Channel ready state may have changed ('our'), check if transition needed
+		// Channel ready state may have changed ('our' confirmation), check if transition needed
 		self.transition_confirmed_channels();
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
-		// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
-		// during initialization prior to the chain_monitor being fully configured in some cases.
-		// See the docs for `ChannelManagerReadArgs` for more.
+		{ // scope for locking
+			// Note that we MUST NOT end up calling methods on self.chain_monitor here - we're called
+			// during initialization prior to the chain_monitor being fully configured in some cases.
+			// See the docs for `ChannelManagerReadArgs` for more.
 
-		let block_hash = header.block_hash();
-		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
+			let block_hash = header.block_hash();
+			log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
 
-		let _persistence_guard =
-			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
-				self, || -> NotifyOption { NotifyOption::DoPersist });
-		*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
+			let _persistence_guard =
+				PersistenceNotifierGuard::optionally_notify_skipping_background_events(
+					self, || -> NotifyOption { NotifyOption::DoPersist });
+			*self.best_block.write().unwrap() = BestBlock::new(block_hash, height);
 
-		self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context)));
+			self.do_chain_event(Some(height), |channel| channel.best_block_updated(height, header.time, self.chain_hash, &self.node_signer, &self.default_configuration, &&WithChannelContext::from(&self.logger, &channel.context)));
 
-		macro_rules! max_time {
-			($timestamp: expr) => {
-				loop {
-					// Update $timestamp to be the max of its current value and the block
-					// timestamp. This should keep us close to the current time without relying on
-					// having an explicit local time source.
-					// Just in case we end up in a race, we loop until we either successfully
-					// update $timestamp or decide we don't need to.
-					let old_serial = $timestamp.load(Ordering::Acquire);
-					if old_serial >= header.time as usize { break; }
-					if $timestamp.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
-						break;
+			macro_rules! max_time {
+				($timestamp: expr) => {
+					loop {
+						// Update $timestamp to be the max of its current value and the block
+						// timestamp. This should keep us close to the current time without relying on
+						// having an explicit local time source.
+						// Just in case we end up in a race, we loop until we either successfully
+						// update $timestamp or decide we don't need to.
+						let old_serial = $timestamp.load(Ordering::Acquire);
+						if old_serial >= header.time as usize { break; }
+						if $timestamp.compare_exchange(old_serial, header.time as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+							break;
+						}
 					}
 				}
 			}
+			max_time!(self.highest_seen_timestamp);
+			let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
+			payment_secrets.retain(|_, inbound_payment| {
+				inbound_payment.expiry_time > header.time as u64
+			});
 		}
-		max_time!(self.highest_seen_timestamp);
-		let mut payment_secrets = self.pending_inbound_payments.lock().unwrap();
-		payment_secrets.retain(|_, inbound_payment| {
-			inbound_payment.expiry_time > header.time as u64
-		});
+
+		// Channel ready state may have changed ('our' confirmation), check if transition needed
+		self.transition_confirmed_channels();
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
@@ -11402,6 +11376,17 @@ where
 					ChannelPhase::FundingV2(channels) => {
 						// Check ALL variants
 						for (idx, channel) in channels.all_funded().into_iter().enumerate() {
+							if channel.is_ready() {
+								just_locked_channels.push((cp_id, cid.clone(), idx));
+								break;
+							}
+						}
+					}
+					// TOOD(splicing): Merge with above branches if config flag goes away
+					#[cfg(splicing)]
+					ChannelPhase::RefundingV2((_pre_chan, post_channels)) => {
+						// Check ALL variants
+						for (idx, channel) in post_channels.all_funded().into_iter().enumerate() {
 							if channel.is_ready() {
 								just_locked_channels.push((cp_id, cid.clone(), idx));
 								break;
