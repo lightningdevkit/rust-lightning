@@ -1350,9 +1350,9 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 	}
 
 	#[cfg(any(dual_funding, splicing))]
-	pub fn set_new_pending_out(&mut self, variant_channel: OutboundV2Channel<SP>) {
-		debug_assert!(self.unfunded_channel.is_none());
-		self.unfunded_channel = Some(V2Channel::UnfundedOutboundV2(variant_channel));
+	pub fn set_new_pending(&mut self, variant_channel: V2Channel<SP>) {
+		debug_assert!(self.unfunded_channel.is_none(), "Attempting to set pending when it is set");
+		self.unfunded_channel = Some(variant_channel);
 	}
 
 	#[cfg(any(dual_funding, splicing))]
@@ -1380,12 +1380,6 @@ impl<SP: Deref> ChannelVariants<SP> where SP::Target: SignerProvider {
 				}
 			},
 		}
-	}
-
-	#[cfg(any(dual_funding, splicing))]
-	pub fn set_new_pending_in(&mut self, variant_channel: InboundV2Channel<SP>) {
-		debug_assert!(self.unfunded_channel.is_none());
-		self.unfunded_channel = Some(V2Channel::UnfundedInboundV2(variant_channel));
 	}
 
 	#[cfg(any(dual_funding, splicing))]
@@ -3084,12 +3078,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	/// Returns true if we've ever received a message from the remote end for this Channel
 	pub fn have_received_message(&self) -> bool {
 		self.channel_state > ChannelState::NegotiatingFunding(NegotiatingFundingFlags::OUR_INIT_SENT)
-	}
-
-	/// Returns true if this channel is fully established and not known to be closing.
-	/// Allowed in any state (including after shutdown)
-	pub fn is_ready(&self) -> bool {
-		matches!(self.channel_state, ChannelState::ChannelReady(_))
 	}
 
 	/// Returns true if this channel is fully established and not known to be closing.
@@ -8106,6 +8094,11 @@ impl<SP: Deref> Channel<SP> where
 	pub fn set_channel_update_status(&mut self, status: ChannelUpdateStatus) {
 		self.context.update_time_counter += 1;
 		self.context.channel_update_status = status;
+	}
+
+	/// Returns true if this channel is ready (ChannelReady)
+	pub fn is_ready(&self) -> bool {
+		matches!(self.context.channel_state, ChannelState::ChannelReady(_))
 	}
 
 	fn check_get_channel_ready<L: Deref>(&mut self, height: u32, logger: &L) -> (Option<msgs::ChannelReady>, Option<msgs::SpliceLocked>) where L::Target: Logger {

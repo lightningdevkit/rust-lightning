@@ -3552,7 +3552,7 @@ where
 						};
 						debug_assert_eq!(channel.context.channel_id().to_string(), channel_id.to_string());
 
-						channels.set_new_pending_out(channel);
+						channels.set_new_pending(V2Channel::UnfundedOutboundV2(channel));
 
 						let msg_rbf = msgs::TxInitRbf {
 							channel_id,
@@ -8614,15 +8614,15 @@ where
 
 						let msg = channel.accept_inbound_dual_funded_rbf_channel();
 
-						channels.set_new_pending_in(channel);
+						channels.set_new_pending(V2Channel::UnfundedInboundV2(channel));
 
 						peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxAckRbf {
 							node_id: counterparty_node_id.clone(), msg,
 						});
-					},
+					}
 					_ => {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("RBF on a pending inbound V2 channel, id {} with node {}", channel_id, counterparty_node_id), channel_id));
-					},
+					}
 				}
 			},
 		}
@@ -8710,6 +8710,7 @@ where
 						ChannelPhase::Funded(chan) => { vec![chan] }
 						#[cfg(any(dual_funding, splicing))]
 						ChannelPhase::FundingV2(chans) => {
+							// Handle ALL variants
 							chans.all_funded_mut()
 						}
 						_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
@@ -11205,17 +11206,14 @@ where
 						ChannelPhase::Funded(chan) => { vec![chan] }
 						#[cfg(any(dual_funding, splicing))]
 						ChannelPhase::FundingV2(chans) => {
+							// Handle ALL variants
 							chans.all_funded_mut()
 						}
 						// Both post and pre exist
 						#[cfg(splicing)]
 						ChannelPhase::RefundingV2((_, post_chans)) => {
-							if let Some(funded) = post_chans.get_funded_channel_mut() {
-								vec![funded]
-							} else {
-								// no funded
-								todo!("splicing");
-							}
+							// Handle ALL variants
+							post_chans.all_funded_mut()
 						},
 					};
 
@@ -11404,7 +11402,7 @@ where
 					ChannelPhase::FundingV2(channels) => {
 						// Check ALL variants
 						for (idx, channel) in channels.all_funded().into_iter().enumerate() {
-							if channel.context.is_ready() {
+							if channel.is_ready() {
 								just_locked_channels.push((cp_id, cid.clone(), idx));
 								break;
 							}
@@ -11425,6 +11423,12 @@ where
 						Some(ChannelPhase::FundingV2(mut channels)) => {
 							// removed, re-add
 							let ready_channel = channels.take_funded_channel(idx).expect("Internal error: prev. found index could not be accessed");
+							peer_state.channel_by_id.insert(cid, ChannelPhase::Funded(ready_channel));
+						}
+						#[cfg(splicing)]
+						Some(ChannelPhase::RefundingV2((_pre_chan, mut post_channels))) => {
+							// removed, re-add
+							let ready_channel = post_channels.take_funded_channel(idx).expect("Internal error: prev. found index could not be accessed");
 							peer_state.channel_by_id.insert(cid, ChannelPhase::Funded(ready_channel));
 						}
 						Some(_) => {
