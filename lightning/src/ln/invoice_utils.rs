@@ -491,6 +491,40 @@ where
 }
 
 /// See [`create_invoice_from_channelmanager_and_duration_since_epoch`]
+/// This version allows for providing custom [`PaymentHash`] and description hash for the invoice.
+///
+/// This may be useful if you're building an on-chain swap or involving another protocol where
+/// the payment hash is also involved outside the scope of lightning and want to set the
+/// description hash.
+pub fn create_invoice_from_channelmanager_with_description_hash_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
+	network: Currency, amt_msat: Option<u64>, description_hash: Sha256, duration_since_epoch: Duration,
+	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, min_final_cltv_expiry_delta: Option<u16>,
+) -> Result<Bolt11Invoice, SignOrCreationError<()>>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
+	let payment_secret = channelmanager
+		.create_inbound_payment_for_hash(payment_hash, amt_msat, invoice_expiry_delta_secs,
+			min_final_cltv_expiry_delta)
+		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
+	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
+		channelmanager, node_signer, logger, network, amt_msat,
+		Bolt11InvoiceDescription::Hash(&description_hash),
+		duration_since_epoch, invoice_expiry_delta_secs, payment_hash, payment_secret,
+		min_final_cltv_expiry_delta,
+	)
+}
+
+/// See [`create_invoice_from_channelmanager_and_duration_since_epoch`]
 /// This version allows for providing a custom [`PaymentHash`] for the invoice.
 /// This may be useful if you're building an on-chain swap or involving another protocol where
 /// the payment hash is also involved outside the scope of lightning.
