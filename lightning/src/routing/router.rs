@@ -7357,7 +7357,7 @@ mod tests {
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let scorer = ProbabilisticScorer::new(decay_params, &*network_graph, Arc::clone(&logger));
 
-		// Set the fee on channel 13 to 100% to match channel 4 giving us two equivalent paths (us
+		// Set the fee on channel 13 to 0% to match channel 4 giving us two equivalent paths (us
 		// -> node 7 -> node2 and us -> node 1 -> node 2) which we should balance over.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
