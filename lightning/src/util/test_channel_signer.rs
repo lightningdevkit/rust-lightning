@@ -353,6 +353,13 @@ impl EcdsaChannelSigner for TestChannelSigner {
 	) -> Result<Signature, ()> {
 		self.inner.sign_channel_announcement_with_funding_key(msg, secp_ctx)
 	}
+
+	fn sign_splicing_funding_input(
+		&self, tx: &Transaction, input_index: usize, input_value: u64,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> Result<Signature, ()> {
+		self.inner.sign_splicing_funding_input(tx, input_index, input_value, secp_ctx)
+	}
 }
 
 #[cfg(taproot)]
