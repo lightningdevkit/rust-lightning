@@ -21,7 +21,7 @@ pub mod inbound_payment;
 pub mod msgs;
 pub mod peer_handler;
 pub mod chan_utils;
-pub mod features;
+mod features;
 pub mod script;
 pub mod types;
 
