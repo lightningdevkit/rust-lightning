@@ -8,11 +8,15 @@
 // licenses.
 
 use crate::utils::test_logger;
-use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::Secp256k1;
 use core::convert::TryFrom;
-use lightning::offers::invoice_request::UnsignedInvoiceRequest;
+use lightning::ln::channelmanager::PaymentId;
+use lightning::ln::inbound_payment::ExpandedKey;
+use lightning::offers::invoice_request::InvoiceRequest;
+use lightning::offers::nonce::Nonce;
 use lightning::offers::offer::{Amount, Offer, Quantity};
 use lightning::offers::parse::Bolt12SemanticError;
+use lightning::sign::{EntropySource, KeyMaterial};
 use lightning::util::ser::Writeable;
 
 #[inline]
@@ -22,27 +26,30 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], _out: Out) {
 		offer.write(&mut bytes).unwrap();
 		assert_eq!(data, bytes);
 
-		let secp_ctx = Secp256k1::new();
-		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-		let pubkey = PublicKey::from(keys);
 		let mut buffer = Vec::new();
 
-		if let Ok(invoice_request) = build_response(&offer, pubkey) {
-			invoice_request
-				.sign(|message: &UnsignedInvoiceRequest| {
-					Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
-				})
-				.unwrap()
-				.write(&mut buffer)
-				.unwrap();
+		if let Ok(invoice_request) = build_request(&offer) {
+			invoice_request.write(&mut buffer).unwrap();
 		}
 	}
 }
 
-fn build_response(
-	offer: &Offer, pubkey: PublicKey,
-) -> Result<UnsignedInvoiceRequest, Bolt12SemanticError> {
-	let mut builder = offer.request_invoice(vec![42; 64], pubkey)?;
+struct FixedEntropy;
+
+impl EntropySource for FixedEntropy {
+	fn get_secure_random_bytes(&self) -> [u8; 32] {
+		[42; 32]
+	}
+}
+
+fn build_request(offer: &Offer) -> Result<InvoiceRequest, Bolt12SemanticError> {
+	let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+	let entropy = FixedEntropy {};
+	let nonce = Nonce::from_entropy_source(&entropy);
+	let secp_ctx = Secp256k1::new();
+	let payment_id = PaymentId([1; 32]);
+
+	let mut builder = offer.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)?;
 
 	builder = match offer.amount() {
 		None => builder.amount_msats(1000).unwrap(),
@@ -56,7 +63,7 @@ fn build_response(
 		Quantity::One => builder,
 	};
 
-	builder.build()
+	builder.build_and_sign()
 }
 
 pub fn offer_deser_test<Out: test_logger::Output>(data: &[u8], out: Out) {
