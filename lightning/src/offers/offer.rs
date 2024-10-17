@@ -963,7 +963,9 @@ impl OfferContents {
 						OFFER_ISSUER_ID_TYPE => !metadata.derives_recipient_keys(),
 						_ => true,
 					}
-				});
+				})
+				.chain(TlvStream::new(bytes).range(EXPERIMENTAL_OFFER_TYPES));
+
 				let signing_pubkey = match self.issuer_signing_pubkey() {
 					Some(signing_pubkey) => signing_pubkey,
 					None => return Err(()),

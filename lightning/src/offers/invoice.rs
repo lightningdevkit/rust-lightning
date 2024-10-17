@@ -1147,6 +1147,9 @@ impl InvoiceContents {
 		&self, bytes: &[u8], metadata: &Metadata, key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
 		secp_ctx: &Secp256k1<T>
 	) -> Result<PaymentId, ()> {
+		const EXPERIMENTAL_TYPES: core::ops::Range<u64> =
+			EXPERIMENTAL_OFFER_TYPES.start..EXPERIMENTAL_INVOICE_REQUEST_TYPES.end;
+
 		let offer_records = TlvStream::new(bytes).range(OFFER_TYPES);
 		let invreq_records = TlvStream::new(bytes).range(INVOICE_REQUEST_TYPES).filter(|record| {
 			match record.r#type {
@@ -1155,7 +1158,8 @@ impl InvoiceContents {
 				_ => true,
 			}
 		});
-		let tlv_stream = offer_records.chain(invreq_records);
+		let experimental_records = TlvStream::new(bytes).range(EXPERIMENTAL_TYPES);
+		let tlv_stream = offer_records.chain(invreq_records).chain(experimental_records);
 
 		let signing_pubkey = self.payer_signing_pubkey();
 		signer::verify_payer_metadata(
