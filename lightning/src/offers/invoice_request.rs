@@ -270,6 +270,11 @@ macro_rules! invoice_request_builder_methods { (
 	/// Sets the [`InvoiceRequest::amount_msats`] for paying an invoice. Errors if `amount_msats` is
 	/// not at least the expected invoice amount (i.e., [`Offer::amount`] times [`quantity`]).
 	///
+	/// When the [`Offer`] specifies a currency, this method allows setting the `amount_msats` in the
+	/// `InvoiceRequest`. The issuer of the Offer will validate this amount and must set a matching
+	/// amount in the final invoice. If the issuer disagrees with the specfified amount, the invoice
+	/// request will be rejected. This is also useful if the Offer doesn't specify an amount.
+	///
 	/// Successive calls to this method will override the previous setting.
 	///
 	/// [`quantity`]: Self::quantity
@@ -1737,6 +1742,29 @@ mod tests {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 1000 })
+			.build_unchecked()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount(), Some(Amount::Currency { iso4217_code: *b"USD", amount: 1000 }));
+		assert_eq!(invoice_request.amount_msats(), None);
+		assert_eq!(tlv_stream.amount, None);
+
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount(Amount::Currency { iso4217_code: *b"USD", amount: 100 })
+			.build_unchecked()
+			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.amount_msats(150_000_000)
+			.unwrap()
+			.build().unwrap()
+			.sign(payer_sign).unwrap();
+		let (_, _, tlv_stream, _) = invoice_request.as_tlv_stream();
+		assert_eq!(invoice_request.amount_msats(), Some(150_000_000));
+		assert_eq!(tlv_stream.amount, Some(150_000_000));
 	}
 
 	#[test]
@@ -2043,11 +2071,8 @@ mod tests {
 		let mut buffer = Vec::new();
 		invoice_request.write(&mut buffer).unwrap();
 
-		match InvoiceRequest::try_from(buffer) {
-			Ok(_) => panic!("expected error"),
-			Err(e) => {
-				assert_eq!(e, Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnsupportedCurrency));
-			},
+		if let Err(e) = InvoiceRequest::try_from(buffer) {
+			panic!("error parsing invoice_request: {:?}", e);
 		}
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
