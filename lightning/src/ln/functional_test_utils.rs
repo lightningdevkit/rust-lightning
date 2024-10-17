@@ -716,6 +716,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					panic!();
 				}
 			}
+
 			assert_eq!(*chain_source.watched_txn.unsafe_well_ordered_double_lock_self(), *self.chain_source.watched_txn.unsafe_well_ordered_double_lock_self());
 			assert_eq!(*chain_source.watched_outputs.unsafe_well_ordered_double_lock_self(), *self.chain_source.watched_outputs.unsafe_well_ordered_double_lock_self());
 		}
@@ -854,6 +855,12 @@ macro_rules! get_htlc_update_msgs {
 /// such messages are intended to all peers.
 pub fn remove_first_msg_event_to_node(msg_node_id: &PublicKey, msg_events: &mut Vec<MessageSendEvent>) -> MessageSendEvent {
 	let ev_index = msg_events.iter().position(|e| { match e {
+		MessageSendEvent::SendPeerStorageMessage { node_id, .. } => {
+			node_id == msg_node_id
+		},
+		MessageSendEvent::SendYourPeerStorageMessage { node_id, .. } => {
+			node_id == msg_node_id
+		},
 		MessageSendEvent::SendAcceptChannel { node_id, .. } => {
 			node_id == msg_node_id
 		},
@@ -1001,6 +1008,29 @@ macro_rules! get_channel_type_features {
 			let mut peer_state_lock;
 			let chan = get_channel_ref!($node, $counterparty_node, per_peer_state_lock, peer_state_lock, $channel_id);
 			chan.context().get_channel_type().clone()
+		}
+	}
+}
+
+/// Returns a Stub Channel Monitor given a channel Id, making some naive assumptions
+#[macro_export]
+macro_rules! get_stub {
+	($node: expr, $channel_id: expr) => {
+		{
+			use bitcoin::hashes::Hash;
+			let mut stub = None;
+			// Assume funding vout is either 0 or 1 blindly
+			for index in 0..2 {
+				if let Ok(mon) = $node.chain_monitor.chain_monitor.get_stub_monitor(
+					$crate::chain::transaction::OutPoint{
+						txid: bitcoin::Txid::from_slice(&$channel_id.0[..]).unwrap(), index
+					})
+				{
+					stub = Some(mon);
+					break;
+				}
+			}
+			stub.unwrap()
 		}
 	}
 }
@@ -2028,6 +2058,16 @@ pub fn do_main_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<
 	check_added_monitors!(node_b, 0);
 	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 	node_b.node.handle_revoke_and_ack(node_a.node.get_our_node_id(), &as_revoke_and_ack);
+	let events = node_b.node.get_and_clear_pending_msg_events();
+	assert!(events.len() == 1);
+
+	match events.get(0).unwrap() {
+		MessageSendEvent::SendPeerStorageMessage { ref node_id, ref msg } => {
+			assert_eq!(*node_id, node_a.node.get_our_node_id());
+			node_a.node.handle_peer_storage(node_b.node.get_our_node_id(), msg);
+		},
+		_ =>panic!("Unexpected event"),
+	}
 	assert!(node_b.node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors!(node_b, 1);
 	node_b.node.handle_commitment_signed(node_a.node.get_our_node_id(), &as_commitment_signed);
@@ -2089,6 +2129,15 @@ pub fn do_commitment_signed_dance(node_a: &Node<'_, '_, '_>, node_b: &Node<'_, '
 		// Expecting the failure backwards event to the previous hop (not `node_b`)
 		assert_eq!(number_of_msg_events, 1);
 	} else {
+		let events = node_a.node.get_and_clear_pending_msg_events();
+		assert!(events.len() == 1);
+		match events.get(0).unwrap() {
+			MessageSendEvent::SendPeerStorageMessage { ref node_id, ref msg } => {
+				assert_eq!(*node_id, node_b.node.get_our_node_id());
+				node_b.node.handle_peer_storage(node_b.node.get_our_node_id(), msg);
+			},
+			_ =>panic!("Unexpected event"),
+		}
 		assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	}
 }
@@ -3568,6 +3617,12 @@ macro_rules! get_chan_reestablish_msgs {
 				} else if let MessageSendEvent::SendChannelAnnouncement { ref node_id, ref msg, .. } = msg {
 					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 					announcements.insert(msg.contents.short_channel_id);
+				} else if let MessageSendEvent::SendPeerStorageMessage { ref node_id, ref msg } = msg {
+					$dst_node.node.handle_peer_storage($src_node.node.get_our_node_id(), msg);
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				} else if let MessageSendEvent::SendYourPeerStorageMessage { ref node_id, ref msg } = msg {
+					$dst_node.node.handle_your_peer_storage($src_node.node.get_our_node_id(), msg);
+					assert_eq!(*node_id, $dst_node.node.get_our_node_id());
 				} else {
 					panic!("Unexpected event")
 				}

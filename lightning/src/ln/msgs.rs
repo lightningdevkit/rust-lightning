@@ -723,6 +723,24 @@ pub struct UpdateFulfillHTLC {
 	pub payment_preimage: PaymentPreimage,
 }
 
+/// A [`PeerStorage`] message to be sent to or received from a peer.
+///
+/// [`PeerStorage`]: https://github.com/lightning/bolts/pull/1110
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct PeerStorageMessage {
+	/// Data included in the msg
+	pub data: Vec<u8>,
+}
+
+/// An [`YourPeerStorage`] message to be sent to or received from a peer.
+/// 
+/// [`YourPeerStorage`]: https://github.com/lightning/bolts/pull/1110
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct YourPeerStorageMessage {
+	/// Data included in the msg
+	pub data: Vec<u8>,
+}
+
 /// An [`update_fail_htlc`] message to be sent to or received from a peer.
 ///
 /// [`update_fail_htlc`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#removing-an-htlc-update_fulfill_htlc-update_fail_htlc-and-update_fail_malformed_htlc
@@ -1504,6 +1522,12 @@ pub trait ChannelMessageHandler : MessageSendEventsProvider {
 	fn handle_funding_signed(&self, their_node_id: PublicKey, msg: &FundingSigned);
 	/// Handle an incoming `channel_ready` message from the given peer.
 	fn handle_channel_ready(&self, their_node_id: PublicKey, msg: &ChannelReady);
+
+	// Peer Storage
+	/// Handle an incoming `peer_storage` message from the given peer.
+	fn handle_peer_storage(&self, their_node_id: PublicKey, msg: &PeerStorageMessage);
+	/// Handle an incoming `your_peer_storage` message from the given peer.
+	fn handle_your_peer_storage(&self, their_node_id: PublicKey, msg: &YourPeerStorageMessage);
 
 	// Channel close:
 	/// Handle an incoming `shutdown` message from the given peer.
@@ -2595,6 +2619,14 @@ impl_writeable_msg!(UpdateFulfillHTLC, {
 	channel_id,
 	htlc_id,
 	payment_preimage
+}, {});
+
+impl_writeable_msg!(PeerStorageMessage, {
+	data
+}, {});
+
+impl_writeable_msg!(YourPeerStorageMessage, {
+	data
 }, {});
 
 // Note that this is written as a part of ChannelManager objects, and thus cannot change its
@@ -4444,6 +4476,26 @@ mod tests {
 		};
 		let encoded_value = ping.encode();
 		let target_value = <Vec<u8>>::from_hex("0040004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_peer_storage() {
+		let peerstorage = msgs::PeerStorageMessage {
+			data: <Vec<u8>>::from_hex("01020304050607080910").unwrap()
+		};
+		let encoded_value = peerstorage.encode();
+		let target_value = <Vec<u8>>::from_hex("000a01020304050607080910").unwrap();
+		assert_eq!(encoded_value, target_value);
+	}
+
+	#[test]
+	fn encoding_your_peer_storage() {
+		let yourpeerstorage = msgs::YourPeerStorageMessage {
+			data: <Vec<u8>>::from_hex("01020304050607080910").unwrap()
+		};
+		let encoded_value = yourpeerstorage.encode();
+		let target_value = <Vec<u8>>::from_hex("000a01020304050607080910").unwrap();
 		assert_eq!(encoded_value, target_value);
 	}
 
