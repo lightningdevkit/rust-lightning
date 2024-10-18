@@ -1074,26 +1074,30 @@ fn three_f64_pow_3(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
 ///
 /// Must not return a numerator or denominator greater than 2^31 for arguments less than 2^31.
 ///
+/// `total_inflight_amount_msat` includes the amount of the HTLC and any HTLCs in flight over the
+/// channel.
+///
 /// min_zero_implies_no_successes signals that a `min_liquidity_msat` of 0 means we've not
 /// (recently) seen an HTLC successfully complete over this channel.
 #[inline(always)]
 fn success_probability(
-	amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64, capacity_msat: u64,
-	params: &ProbabilisticScoringFeeParameters, min_zero_implies_no_successes: bool,
+	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
+	capacity_msat: u64, params: &ProbabilisticScoringFeeParameters,
+	min_zero_implies_no_successes: bool,
 ) -> (u64, u64) {
-	debug_assert!(min_liquidity_msat <= amount_msat);
-	debug_assert!(amount_msat < max_liquidity_msat);
+	debug_assert!(min_liquidity_msat <= total_inflight_amount_msat);
+	debug_assert!(total_inflight_amount_msat < max_liquidity_msat);
 	debug_assert!(max_liquidity_msat <= capacity_msat);
 
 	let (numerator, mut denominator) =
 		if params.linear_success_probability {
-			(max_liquidity_msat - amount_msat,
+			(max_liquidity_msat - total_inflight_amount_msat,
 				(max_liquidity_msat - min_liquidity_msat).saturating_add(1))
 		} else {
 			let capacity = capacity_msat as f64;
 			let min = (min_liquidity_msat as f64) / capacity;
 			let max = (max_liquidity_msat as f64) / capacity;
-			let amount = (amount_msat as f64) / capacity;
+			let amount = (total_inflight_amount_msat as f64) / capacity;
 
 			// Assume the channel has a probability density function of (x - 0.5)^2 for values from
 			// 0 to 1 (where 1 is the channel's full capacity). The success probability given some
@@ -1779,7 +1783,7 @@ mod bucketed_history {
 
 		#[inline]
 		pub(super) fn calculate_success_probability_times_billion(
-			&self, params: &ProbabilisticScoringFeeParameters, amount_msat: u64,
+			&self, params: &ProbabilisticScoringFeeParameters, total_inflight_amount_msat: u64,
 			capacity_msat: u64
 		) -> Option<u64> {
 			// If historical penalties are enabled, we try to calculate a probability of success
@@ -1789,7 +1793,7 @@ mod bucketed_history {
 			// state). For each pair, we calculate the probability as if the bucket's corresponding
 			// min- and max- liquidity bounds were our current liquidity bounds and then multiply
 			// that probability by the weight of the selected buckets.
-			let payment_pos = amount_to_pos(amount_msat, capacity_msat);
+			let payment_pos = amount_to_pos(total_inflight_amount_msat, capacity_msat);
 			if payment_pos >= POSITION_TICKS { return None; }
 
 			let min_liquidity_offset_history_buckets =
