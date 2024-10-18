@@ -66,7 +66,8 @@ use crate::sign::type_resolver::ChannelSignerType;
 
 use super::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "_test_utils"))]
+#[allow(unused)]
 pub struct ChannelValueStat {
 	pub value_to_self_msat: u64,
 	pub channel_value_msat: u64,
@@ -1056,9 +1057,9 @@ impl HolderCommitmentPoint {
 /// the channel. Sadly, there isn't really a good number for this - if we expect to have no new
 /// HTLCs for days we may need this to suffice for feerate increases across days, but that may
 /// leave the channel less usable as we hold a bigger reserve.
-#[cfg(any(fuzzing, test))]
+#[cfg(any(fuzzing, test, feature = "_test_utils"))]
 pub const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
-#[cfg(not(any(fuzzing, test)))]
+#[cfg(not(any(fuzzing, test, feature = "_test_utils")))]
 const FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE: u64 = 2;
 
 /// If we fail to see a funding transaction confirmed on-chain within this many blocks after the
@@ -1317,9 +1318,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	/// The minimum and maximum absolute fee, in satoshis, we are willing to place on the closing
 	/// transaction. These are set once we reach `closing_negotiation_ready`.
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) closing_fee_limits: Option<(u64, u64)>,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	closing_fee_limits: Option<(u64, u64)>,
 
 	/// If we remove an HTLC (or fee update), commit, and receive our counterparty's
@@ -1346,34 +1347,34 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	counterparty_dust_limit_satoshis: u64,
 
-	#[cfg(test)]
-	pub(super) holder_dust_limit_satoshis: u64,
-	#[cfg(not(test))]
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) holder_dust_limit_satoshis: u64,
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	holder_dust_limit_satoshis: u64,
 
-	#[cfg(test)]
-	pub(super) counterparty_max_htlc_value_in_flight_msat: u64,
-	#[cfg(not(test))]
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) counterparty_max_htlc_value_in_flight_msat: u64,
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	counterparty_max_htlc_value_in_flight_msat: u64,
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) holder_max_htlc_value_in_flight_msat: u64,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	holder_max_htlc_value_in_flight_msat: u64,
 
 	/// minimum channel reserve for self to maintain - set by them.
 	counterparty_selected_channel_reserve_satoshis: Option<u64>,
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) holder_selected_channel_reserve_satoshis: u64,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	holder_selected_channel_reserve_satoshis: u64,
 
 	counterparty_htlc_minimum_msat: u64,
 	holder_htlc_minimum_msat: u64,
-	#[cfg(test)]
+	#[cfg(any(test, feature="_test_utils"))]
 	pub counterparty_max_accepted_htlcs: u16,
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature="_test_utils")))]
 	counterparty_max_accepted_htlcs: u16,
 	holder_max_accepted_htlcs: u16,
 	minimum_depth: Option<u32>,
@@ -1485,9 +1486,9 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 
 	/// The unique identifier used to re-derive the private key material for the channel through
 	/// [`SignerProvider::derive_channel_signer`].
-	#[cfg(not(test))]
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	channel_keys_id: [u8; 32],
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub channel_keys_id: [u8; 32],
 
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
@@ -2191,7 +2192,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 	}
 
 	/// Returns the holder signer for this channel.
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_mut_signer(&mut self) -> &mut ChannelSignerType<SP> {
 		return &mut self.holder_signer
 	}
@@ -6481,12 +6482,12 @@ impl<SP: Deref> Channel<SP> where
 		self.context.cur_counterparty_commitment_transaction_number + 2
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_signer(&self) -> &ChannelSignerType<SP> {
 		&self.context.holder_signer
 	}
 
-	#[cfg(test)]
+	#[cfg(any(test, feature = "_test_utils"))]
 	pub fn get_value_stat(&self) -> ChannelValueStat {
 		ChannelValueStat {
 			value_to_self_msat: self.context.value_to_self_msat,

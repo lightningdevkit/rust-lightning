@@ -15,6 +15,12 @@ pub(crate) mod fuzz_wrappers;
 #[macro_use]
 pub mod ser_macros;
 
+#[cfg(any(test, feature = "_test_utils"))]
+pub mod dyn_signer;
+
+#[cfg(any(test, feature = "_test_utils"))]
+pub mod mut_global;
+
 pub mod errors;
 pub mod ser;
 pub mod message_signing;
