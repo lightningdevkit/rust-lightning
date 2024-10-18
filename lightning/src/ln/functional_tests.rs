@@ -15,7 +15,7 @@ use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
-use crate::chain::channelmonitor::{CLOSED_CHANNEL_UPDATE_ID, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
+use crate::chain::channelmonitor::{Balance, CLOSED_CHANNEL_UPDATE_ID, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
 use crate::events::{Event, FundingInfo, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
@@ -2811,7 +2811,7 @@ fn claim_htlc_outputs_single_tx() {
 
 		// Filter out any non justice transactions.
 		node_txn.retain(|tx| tx.input[0].previous_output.txid == revoked_local_txn[0].compute_txid());
-		assert!(node_txn.len() > 3);
+		assert!(node_txn.len() >= 3);
 
 		assert_eq!(node_txn[0].input.len(), 1);
 		assert_eq!(node_txn[1].input.len(), 1);
@@ -3138,18 +3138,27 @@ fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
 	mine_transaction(&nodes[1], &commitment_tx[0]);
 	check_closed_event!(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false
 		, [nodes[2].node.get_our_node_id()], 100000);
-	connect_blocks(&nodes[1], 200 - nodes[2].best_block_info().1);
+	let htlc_expiry = get_monitor!(nodes[1], chan_2.2).get_claimable_balances().iter().filter_map(|bal|
+			if let Balance::MaybeTimeoutClaimableHTLC { claimable_height, .. } = bal {
+				Some(*claimable_height)
+			} else {
+				None
+			}
+		).next().unwrap();
+	connect_blocks(&nodes[1], htlc_expiry - nodes[1].best_block_info().1);
 	let timeout_tx = {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
-		if nodes[1].connect_style.borrow().skips_blocks() {
-			assert_eq!(txn.len(), 1);
-		} else {
-			assert_eq!(txn.len(), 3); // Two extra fee bumps for timeout transaction
-		}
+		assert_eq!(txn.len(), 1);
 		txn.iter().for_each(|tx| check_spends!(tx, commitment_tx[0]));
 		assert_eq!(txn[0].clone().input[0].witness.last().unwrap().len(), ACCEPTED_HTLC_SCRIPT_WEIGHT);
 		txn.remove(0)
 	};
+
+	// Make sure that if we connect only one block we aren't aggressively fee-bumping the HTLC
+	// claim which was only just broadcasted (and as at least `MIN_CLTV_EXPIRY_DELTA` blocks to
+	// confirm).
+	connect_blocks(&nodes[1], 1);
+	assert_eq!(nodes[1].tx_broadcaster.txn_broadcast().len(), 0);
 
 	mine_transaction(&nodes[1], &timeout_tx);
 	check_added_monitors!(nodes[1], 1);
@@ -7805,7 +7814,7 @@ fn test_bump_penalty_txn_on_remote_commitment() {
 	assert_ne!(feerate_preimage, 0);
 
 	// After exhaustion of height timer, new bumped claim txn should have been broadcast, check it
-	connect_blocks(&nodes[1], 1);
+	connect_blocks(&nodes[1], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
 	{
 		let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
 		assert_eq!(node_txn.len(), 1);

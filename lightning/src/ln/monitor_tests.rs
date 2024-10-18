@@ -2299,17 +2299,13 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 	}
 
 	// Connecting more blocks should result in the HTLC transactions being rebroadcast.
-	connect_blocks(&nodes[0], 6);
+	connect_blocks(&nodes[0], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
 	if check_old_monitor_retries_after_upgrade {
 		check_added_monitors(&nodes[0], 1);
 	}
 	{
 		let txn = nodes[0].tx_broadcaster.txn_broadcast();
-		if !nodes[0].connect_style.borrow().skips_blocks() {
-			assert_eq!(txn.len(), 6);
-		} else {
-			assert!(txn.len() < 6);
-		}
+		assert_eq!(txn.len(), 1);
 		for tx in txn {
 			assert_eq!(tx.input.len(), htlc_timeout_tx.input.len());
 			assert_eq!(tx.output.len(), htlc_timeout_tx.output.len());
@@ -2423,9 +2419,9 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	connect_blocks(&nodes[0], 1);
 	check_htlc_retry(true, false);
 
-	// Connect one more block, expecting a retry with a fee bump. Unfortunately, we cannot bump HTLC
-	// transactions pre-anchors.
-	connect_blocks(&nodes[0], 1);
+	// Connect a few more blocks, expecting a retry with a fee bump. Unfortunately, we cannot bump
+	// HTLC transactions pre-anchors.
+	connect_blocks(&nodes[0], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
 	check_htlc_retry(true, anchors);
 
 	// Trigger a call and we should have another retry, but without a bump.
@@ -2437,20 +2433,13 @@ fn do_test_monitor_rebroadcast_pending_claims(anchors: bool) {
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
 	check_htlc_retry(true, anchors);
 
-	// Connect one more block, expecting a retry with a fee bump. Unfortunately, we cannot bump HTLC
-	// transactions pre-anchors.
-	connect_blocks(&nodes[0], 1);
+	// Connect a few more blocks, expecting a retry with a fee bump. Unfortunately, we cannot bump
+	// HTLC transactions pre-anchors.
+	connect_blocks(&nodes[0], crate::chain::package::LOW_FREQUENCY_BUMP_INTERVAL);
 	let htlc_tx = check_htlc_retry(true, anchors).unwrap();
 
 	// Mine the HTLC transaction to ensure we don't retry claims while they're confirmed.
 	mine_transaction(&nodes[0], &htlc_tx);
-	// If we have a `ConnectStyle` that advertises the new block first without the transactions,
-	// we'll receive an extra bumped claim.
-	if nodes[0].connect_style.borrow().updates_best_block_first() {
-		nodes[0].wallet_source.add_utxo(bitcoin::OutPoint { txid: coinbase_tx.compute_txid(), vout: 0 }, coinbase_tx.output[0].value);
-		nodes[0].wallet_source.remove_utxo(bitcoin::OutPoint { txid: htlc_tx.compute_txid(), vout: 1 });
-		check_htlc_retry(true, anchors);
-	}
 	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
 	check_htlc_retry(false, false);
 }

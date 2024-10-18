@@ -28,6 +28,7 @@ use crate::ln::types::PaymentPreimage;
 use crate::ln::chan_utils::{self, TxCreationKeys, HTLCOutputInCommitment};
 use crate::ln::features::ChannelTypeFeatures;
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
+use crate::ln::channelmanager::MIN_CLTV_EXPIRY_DELTA;
 use crate::ln::msgs::DecodeError;
 use crate::chain::chaininterface::{FeeEstimator, ConfirmationTarget, MIN_RELAY_FEE_SAT_PER_1000_WEIGHT, compute_feerate_sat_per_1000_weight, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::transaction::MaybeSignedTransaction;
@@ -104,8 +105,13 @@ pub(crate) fn verify_channel_type_features(channel_type_features: &Option<Channe
 // number_of_witness_elements + sig_length + revocation_sig + true_length + op_true + witness_script_length + witness_script
 pub(crate) const WEIGHT_REVOKED_OUTPUT: u64 = 1 + 1 + 73 + 1 + 1 + 1 + 77;
 
+#[cfg(not(test))]
 /// Height delay at which transactions are fee-bumped/rebroadcasted with a low priority.
 const LOW_FREQUENCY_BUMP_INTERVAL: u32 = 15;
+#[cfg(test)]
+/// Height delay at which transactions are fee-bumped/rebroadcasted with a low priority.
+pub(crate) const LOW_FREQUENCY_BUMP_INTERVAL: u32 = 15;
+
 /// Height delay at which transactions are fee-bumped/rebroadcasted with a middle priority.
 const MIDDLE_FREQUENCY_BUMP_INTERVAL: u32 = 3;
 /// Height delay at which transactions are fee-bumped/rebroadcasted with a high priority.
@@ -725,10 +731,14 @@ pub struct PackageTemplate {
 	// Untractable packages have been counter-signed and thus imply that we can't aggregate
 	// them without breaking signatures. Fee-bumping strategy will also rely on CPFP.
 	malleability: PackageMalleability,
-	// Block height after which the earlier-output belonging to this package is mature for a
-	// competing claim by the counterparty. As our chain tip becomes nearer from the timelock,
-	// the fee-bumping frequency will increase. See `OnchainTxHandler::get_height_timer`.
-	soonest_conf_deadline: u32,
+	/// Block height at which our counterparty can potentially claim this output as well (assuming
+	/// they have the keys or information required to do so).
+	///
+	/// This is used primarily by external consumers to decide when an output becomes "pinnable"
+	/// because the counterparty can potentially spend it. It is also used internally by
+	/// [`Self::get_height_timer`] to identify when an output must be claimed by, depending on the
+	/// type of output.
+	counterparty_spendable_height: u32,
 	// Determines if this package can be aggregated.
 	// Timelocked outputs belonging to the same transaction might have differing
 	// satisfying heights. Picking up the later height among the output set would be a valid
@@ -746,17 +756,18 @@ pub struct PackageTemplate {
 	// Cache of next height at which fee-bumping and rebroadcast will be attempted. In
 	// the future, we might abstract it to an observed mempool fluctuation.
 	height_timer: u32,
-	// Confirmation height of the claimed outputs set transaction. In case of reorg reaching
-	// it, we wipe out and forget the package.
-	height_original: u32,
 }
 
 impl PackageTemplate {
 	pub(crate) fn is_malleable(&self) -> bool {
 		self.malleability == PackageMalleability::Malleable
 	}
-	pub(crate) fn timelock(&self) -> u32 {
-		self.soonest_conf_deadline
+	/// The height at which our counterparty may be able to spend this output.
+	///
+	/// This is an important limit for aggregation as after this height our counterparty may be
+	/// able to pin transactions spending this output in the mempool.
+	pub(crate) fn counterparty_spendable_height(&self) -> u32 {
+		self.counterparty_spendable_height
 	}
 	pub(crate) fn aggregable(&self) -> bool {
 		self.aggregable
@@ -783,21 +794,18 @@ impl PackageTemplate {
 		match self.malleability {
 			PackageMalleability::Malleable => {
 				let mut split_package = None;
-				let timelock = self.soonest_conf_deadline;
 				let aggregable = self.aggregable;
 				let feerate_previous = self.feerate_previous;
 				let height_timer = self.height_timer;
-				let height_original = self.height_original;
 				self.inputs.retain(|outp| {
 					if *split_outp == outp.0 {
 						split_package = Some(PackageTemplate {
 							inputs: vec![(outp.0, outp.1.clone())],
 							malleability: PackageMalleability::Malleable,
-							soonest_conf_deadline: timelock,
+							counterparty_spendable_height: self.counterparty_spendable_height,
 							aggregable,
 							feerate_previous,
 							height_timer,
-							height_original,
 						});
 						return false;
 					}
@@ -816,7 +824,6 @@ impl PackageTemplate {
 		}
 	}
 	pub(crate) fn merge_package(&mut self, mut merge_from: PackageTemplate) {
-		assert_eq!(self.height_original, merge_from.height_original);
 		if self.malleability == PackageMalleability::Untractable || merge_from.malleability == PackageMalleability::Untractable {
 			panic!("Merging template on untractable packages");
 		}
@@ -832,8 +839,8 @@ impl PackageTemplate {
 			self.inputs.push((k, v));
 		}
 		//TODO: verify coverage and sanity?
-		if self.soonest_conf_deadline > merge_from.soonest_conf_deadline {
-			self.soonest_conf_deadline = merge_from.soonest_conf_deadline;
+		if self.counterparty_spendable_height > merge_from.counterparty_spendable_height {
+			self.counterparty_spendable_height = merge_from.counterparty_spendable_height;
 		}
 		if self.feerate_previous > merge_from.feerate_previous {
 			self.feerate_previous = merge_from.feerate_previous;
@@ -947,18 +954,83 @@ impl PackageTemplate {
 			return None;
 		} else { panic!("API Error: Package must not be inputs empty"); }
 	}
-	/// In LN, output claimed are time-sensitive, which means we have to spend them before reaching some timelock expiration. At in-channel
-	/// output detection, we generate a first version of a claim tx and associate to it a height timer. A height timer is an absolute block
-	/// height that once reached we should generate a new bumped "version" of the claim tx to be sure that we safely claim outputs before
-	/// that our counterparty can do so. If timelock expires soon, height timer is going to be scaled down in consequence to increase
-	/// frequency of the bump and so increase our bets of success.
+	/// Gets the next height at which we should fee-bump this package, assuming we can do so and
+	/// the package is last fee-bumped at `current_height`.
+	///
+	/// As the deadline with which to get a claim confirmed approaches, the rate at which the timer
+	/// ticks increases.
 	pub(crate) fn get_height_timer(&self, current_height: u32) -> u32 {
-		if self.soonest_conf_deadline <= current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL {
-			return current_height + HIGH_FREQUENCY_BUMP_INTERVAL
-		} else if self.soonest_conf_deadline - current_height <= LOW_FREQUENCY_BUMP_INTERVAL {
-			return current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL
+		let mut height_timer = current_height + LOW_FREQUENCY_BUMP_INTERVAL;
+		let timer_for_target_conf = |target_conf| -> u32 {
+			if target_conf <= current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL {
+				current_height + HIGH_FREQUENCY_BUMP_INTERVAL
+			} else if target_conf <= current_height + LOW_FREQUENCY_BUMP_INTERVAL {
+				current_height + MIDDLE_FREQUENCY_BUMP_INTERVAL
+			} else {
+				current_height + LOW_FREQUENCY_BUMP_INTERVAL
+			}
+		};
+		for (_, input) in self.inputs.iter() {
+			match input {
+				PackageSolvingData::RevokedOutput(_) => {
+					// Revoked Outputs will become spendable by our counterparty at the height
+					// where the CSV expires, which is also our `counterparty_spendable_height`.
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(self.counterparty_spendable_height),
+					);
+				},
+				PackageSolvingData::RevokedHTLCOutput(_) => {
+					// Revoked HTLC Outputs may be spendable by our counterparty right now, but
+					// after they spend them they still have to wait for an additional CSV delta
+					// before they can claim the full funds. Thus, we leave the timer at
+					// `LOW_FREQUENCY_BUMP_INTERVAL` until the HTLC output is spent, creating a
+					// `RevokedOutput`.
+				},
+				PackageSolvingData::CounterpartyOfferedHTLCOutput(outp) => {
+					// Incoming HTLCs being claimed by preimage should be claimed by the time their
+					// CLTV unlocks.
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(outp.htlc.cltv_expiry),
+					);
+				},
+				PackageSolvingData::HolderHTLCOutput(outp) if outp.preimage.is_some() => {
+					// We have the same deadline here as for `CounterpartyOfferedHTLCOutput`. Note
+					// that `outp.cltv_expiry` is always 0 in this case, but
+					// `counterparty_spendable_height` holds the real HTLC expiry.
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(self.counterparty_spendable_height),
+					);
+				},
+				PackageSolvingData::CounterpartyReceivedHTLCOutput(outp) => {
+					// Outgoing HTLCs being claimed through their timeout should be claimed fast
+					// enough to allow us to claim before the CLTV lock expires on the inbound
+					// edge (assuming the HTLC was forwarded).
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(outp.htlc.cltv_expiry + MIN_CLTV_EXPIRY_DELTA as u32),
+					);
+				},
+				PackageSolvingData::HolderHTLCOutput(outp) => {
+					// We have the same deadline for holder timeout claims as for
+					// `CounterpartyReceivedHTLCOutput`
+					height_timer = cmp::min(
+						height_timer,
+						timer_for_target_conf(outp.cltv_expiry + MIN_CLTV_EXPIRY_DELTA as u32),
+					);
+				},
+				PackageSolvingData::HolderFundingOutput(_) => {
+					// We should apply a smart heuristic here based on the HTLCs in the commitment
+					// transaction, but we don't currently have that information available so
+					// instead we just bump once per block.
+					height_timer =
+						cmp::min(height_timer, current_height + HIGH_FREQUENCY_BUMP_INTERVAL);
+				},
+			}
 		}
-		current_height + LOW_FREQUENCY_BUMP_INTERVAL
+		height_timer
 	}
 
 	/// Returns value in satoshis to be included as package outgoing output amount and feerate
@@ -1031,17 +1103,16 @@ impl PackageTemplate {
 		}).is_some()
 	}
 
-	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, soonest_conf_deadline: u32, height_original: u32) -> Self {
+	pub (crate) fn build_package(txid: Txid, vout: u32, input_solving_data: PackageSolvingData, counterparty_spendable_height: u32) -> Self {
 		let (malleability, aggregable) = PackageSolvingData::map_output_type_flags(&input_solving_data);
 		let inputs = vec![(BitcoinOutPoint { txid, vout }, input_solving_data)];
 		PackageTemplate {
 			inputs,
 			malleability,
-			soonest_conf_deadline,
+			counterparty_spendable_height,
 			aggregable,
 			feerate_previous: 0,
-			height_timer: height_original,
-			height_original,
+			height_timer: 0,
 		}
 	}
 }
@@ -1054,9 +1125,10 @@ impl Writeable for PackageTemplate {
 			rev_outp.write(writer)?;
 		}
 		write_tlv_fields!(writer, {
-			(0, self.soonest_conf_deadline, required),
+			(0, self.counterparty_spendable_height, required),
 			(2, self.feerate_previous, required),
-			(4, self.height_original, required),
+			// Prior to 0.1, the height at which the package's inputs were mined, but was always unused
+			(4, 0u32, required),
 			(6, self.height_timer, required)
 		});
 		Ok(())
@@ -1075,27 +1147,23 @@ impl Readable for PackageTemplate {
 		let (malleability, aggregable) = if let Some((_, lead_input)) = inputs.first() {
 			PackageSolvingData::map_output_type_flags(&lead_input)
 		} else { return Err(DecodeError::InvalidValue); };
-		let mut soonest_conf_deadline = 0;
+		let mut counterparty_spendable_height = 0;
 		let mut feerate_previous = 0;
 		let mut height_timer = None;
-		let mut height_original = 0;
+		let mut _height_original: Option<u32> = None;
 		read_tlv_fields!(reader, {
-			(0, soonest_conf_deadline, required),
+			(0, counterparty_spendable_height, required),
 			(2, feerate_previous, required),
-			(4, height_original, required),
+			(4, _height_original, option), // Written with a dummy value since 0.1
 			(6, height_timer, option),
 		});
-		if height_timer.is_none() {
-			height_timer = Some(height_original);
-		}
 		Ok(PackageTemplate {
 			inputs,
 			malleability,
-			soonest_conf_deadline,
+			counterparty_spendable_height,
 			aggregable,
 			feerate_previous,
-			height_timer: height_timer.unwrap(),
-			height_original,
+			height_timer: height_timer.unwrap_or(0),
 		})
 	}
 }
@@ -1261,26 +1329,14 @@ mod tests {
 
 	#[test]
 	#[should_panic]
-	fn test_package_differing_heights() {
-		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
-		let secp_ctx = Secp256k1::new();
-		let revk_outp = dumb_revk_output!(secp_ctx, false);
-
-		let mut package_one_hundred = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, 100);
-		let package_two_hundred = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, 200);
-		package_one_hundred.merge_package(package_two_hundred);
-	}
-
-	#[test]
-	#[should_panic]
 	fn test_package_untractable_merge_to() {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let htlc_outp = dumb_htlc_output!();
 
-		let mut untractable_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, 100);
-		let malleable_package = PackageTemplate::build_package(txid, 1, htlc_outp.clone(), 1000, 100);
+		let mut untractable_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000);
+		let malleable_package = PackageTemplate::build_package(txid, 1, htlc_outp.clone(), 1000);
 		untractable_package.merge_package(malleable_package);
 	}
 
@@ -1292,8 +1348,8 @@ mod tests {
 		let htlc_outp = dumb_htlc_output!();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
-		let mut malleable_package = PackageTemplate::build_package(txid, 0, htlc_outp.clone(), 1000, 100);
-		let untractable_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, 100);
+		let mut malleable_package = PackageTemplate::build_package(txid, 0, htlc_outp.clone(), 1000);
+		let untractable_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000);
 		malleable_package.merge_package(untractable_package);
 	}
 
@@ -1305,8 +1361,8 @@ mod tests {
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_counterparty_balance = dumb_revk_output!(secp_ctx, true);
 
-		let mut noaggregation_package = PackageTemplate::build_package(txid, 0, revk_outp_counterparty_balance.clone(), 1000, 100);
-		let aggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, 100);
+		let mut noaggregation_package = PackageTemplate::build_package(txid, 0, revk_outp_counterparty_balance.clone(), 1000);
+		let aggregation_package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000);
 		noaggregation_package.merge_package(aggregation_package);
 	}
 
@@ -1318,8 +1374,8 @@ mod tests {
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_counterparty_balance = dumb_revk_output!(secp_ctx, true);
 
-		let mut aggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, 100);
-		let noaggregation_package = PackageTemplate::build_package(txid, 1, revk_outp_counterparty_balance.clone(), 1000, 100);
+		let mut aggregation_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000);
+		let noaggregation_package = PackageTemplate::build_package(txid, 1, revk_outp_counterparty_balance.clone(), 1000);
 		aggregation_package.merge_package(noaggregation_package);
 	}
 
@@ -1330,9 +1386,9 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
-		let mut empty_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000, 100);
+		let mut empty_package = PackageTemplate::build_package(txid, 0, revk_outp.clone(), 1000);
 		empty_package.inputs = vec![];
-		let package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000, 100);
+		let package = PackageTemplate::build_package(txid, 1, revk_outp.clone(), 1000);
 		empty_package.merge_package(package);
 	}
 
@@ -1344,8 +1400,8 @@ mod tests {
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 0, ChannelTypeFeatures::only_static_remote_key());
 
-		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, 100);
-		let counterparty_package = PackageTemplate::build_package(txid, 1, counterparty_outp, 1000, 100);
+		let mut revoked_package = PackageTemplate::build_package(txid, 0, revk_outp, 1000);
+		let counterparty_package = PackageTemplate::build_package(txid, 1, counterparty_outp, 1000);
 		revoked_package.merge_package(counterparty_package);
 	}
 
@@ -1357,9 +1413,9 @@ mod tests {
 		let revk_outp_two = dumb_revk_output!(secp_ctx, false);
 		let revk_outp_three = dumb_revk_output!(secp_ctx, false);
 
-		let mut package_one = PackageTemplate::build_package(txid, 0, revk_outp_one, 1000, 100);
-		let package_two = PackageTemplate::build_package(txid, 1, revk_outp_two, 1000, 100);
-		let package_three = PackageTemplate::build_package(txid, 2, revk_outp_three, 1000, 100);
+		let mut package_one = PackageTemplate::build_package(txid, 0, revk_outp_one, 1000);
+		let package_two = PackageTemplate::build_package(txid, 1, revk_outp_two, 1000);
+		let package_three = PackageTemplate::build_package(txid, 2, revk_outp_three, 1000);
 
 		package_one.merge_package(package_two);
 		package_one.merge_package(package_three);
@@ -1368,11 +1424,10 @@ mod tests {
 		if let Some(split_package) = package_one.split_package(&BitcoinOutPoint { txid, vout: 1 }) {
 			// Packages attributes should be identical
 			assert!(split_package.is_malleable());
-			assert_eq!(split_package.soonest_conf_deadline, package_one.soonest_conf_deadline);
+			assert_eq!(split_package.counterparty_spendable_height, package_one.counterparty_spendable_height);
 			assert_eq!(split_package.aggregable, package_one.aggregable);
 			assert_eq!(split_package.feerate_previous, package_one.feerate_previous);
 			assert_eq!(split_package.height_timer, package_one.height_timer);
-			assert_eq!(split_package.height_original, package_one.height_original);
 		} else { panic!(); }
 		assert_eq!(package_one.outpoints().len(), 2);
 	}
@@ -1382,7 +1437,7 @@ mod tests {
 		let txid = Txid::from_str("c2d4449afa8d26140898dd54d3390b057ba2a5afcf03ba29d7dc0d8b9ffe966e").unwrap();
 		let htlc_outp_one = dumb_htlc_output!();
 
-		let mut package_one = PackageTemplate::build_package(txid, 0, htlc_outp_one, 1000, 100);
+		let mut package_one = PackageTemplate::build_package(txid, 0, htlc_outp_one, 1000);
 		let ret_split = package_one.split_package(&BitcoinOutPoint { txid, vout: 0});
 		assert!(ret_split.is_none());
 	}
@@ -1393,8 +1448,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let revk_outp = dumb_revk_output!(secp_ctx, false);
 
-		let mut package = PackageTemplate::build_package(txid, 0, revk_outp, 1000, 100);
-		assert_eq!(package.timer(), 100);
+		let mut package = PackageTemplate::build_package(txid, 0, revk_outp, 1000);
+		assert_eq!(package.timer(), 0);
 		package.set_timer(101);
 		assert_eq!(package.timer(), 101);
 	}
@@ -1405,7 +1460,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, ChannelTypeFeatures::only_static_remote_key());
 
-		let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
+		let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000);
 		assert_eq!(package.package_amount(), 1000);
 	}
 
@@ -1419,14 +1474,14 @@ mod tests {
 
 		{
 			let revk_outp = dumb_revk_output!(secp_ctx, false);
-			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0, 100);
+			let package = PackageTemplate::build_package(txid, 0, revk_outp, 0);
 			assert_eq!(package.package_weight(&ScriptBuf::new()),  weight_sans_output + WEIGHT_REVOKED_OUTPUT);
 		}
 
 		{
 			for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 				let counterparty_outp = dumb_counterparty_output!(secp_ctx, 1_000_000, channel_type_features.clone());
-				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
+				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000);
 				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_received_htlc(channel_type_features));
 			}
 		}
@@ -1434,7 +1489,7 @@ mod tests {
 		{
 			for channel_type_features in [ChannelTypeFeatures::only_static_remote_key(), ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()].iter() {
 				let counterparty_outp = dumb_counterparty_offered_output!(secp_ctx, 1_000_000, channel_type_features.clone());
-				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000, 100);
+				let package = PackageTemplate::build_package(txid, 0, counterparty_outp, 1000);
 				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_offered_htlc(channel_type_features));
 			}
 		}
