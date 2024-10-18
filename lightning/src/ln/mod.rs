@@ -8,12 +8,6 @@
 // licenses.
 
 //! Implementations of various parts of the Lightning protocol are in this module.
-//!
-//! Note that the re-exports of [`PaymentHash`], [`PaymentPreimage`], and [`PaymentSecret`] here
-//! are deprecated and will be removed in a future version. Instead, use them via
-//! [`lightning::types::payment`].
-//!
-//! [`lightning::types::payment`]: crate::types::payment
 
 #[cfg(any(test, feature = "_test_utils"))]
 #[macro_use]
@@ -27,7 +21,7 @@ pub mod inbound_payment;
 pub mod msgs;
 pub mod peer_handler;
 pub mod chan_utils;
-pub mod features;
+mod features;
 pub mod script;
 pub mod types;
 
@@ -35,8 +29,6 @@ pub mod types;
 // crate now:
 pub mod invoice_utils;
 pub mod bolt11_payment;
-
-pub use lightning_types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 
 #[cfg(fuzzing)]
 pub mod peer_channel_encryptor;

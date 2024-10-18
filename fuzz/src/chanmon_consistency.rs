@@ -55,7 +55,7 @@ use lightning::ln::msgs::{
 	self, ChannelMessageHandler, CommitmentUpdate, DecodeError, Init, UpdateAddHTLC,
 };
 use lightning::ln::script::ShutdownScript;
-use lightning::ln::types::{ChannelId, PaymentHash, PaymentPreimage, PaymentSecret};
+use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
@@ -63,6 +63,7 @@ use lightning::routing::router::{InFlightHtlcs, Path, Route, RouteHop, RoutePara
 use lightning::sign::{
 	EntropySource, InMemorySigner, KeyMaterial, NodeSigner, Recipient, SignerProvider,
 };
+use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::UserConfig;
 use lightning::util::errors::APIError;
 use lightning::util::hash_tables::*;

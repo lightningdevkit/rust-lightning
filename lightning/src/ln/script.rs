@@ -7,7 +7,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 
 use crate::ln::channelmanager;
-use crate::ln::features::InitFeatures;
+use crate::types::features::InitFeatures;
 use crate::ln::msgs::DecodeError;
 use crate::util::ser::{Readable, Writeable, Writer};
 
@@ -175,7 +175,7 @@ mod shutdown_script_tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use bitcoin::secp256k1::{PublicKey, SecretKey};
 
-	use crate::ln::features::InitFeatures;
+	use crate::types::features::InitFeatures;
 	use crate::prelude::*;
 
 	fn pubkey() -> bitcoin::key::PublicKey {

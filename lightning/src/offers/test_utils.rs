@@ -16,8 +16,8 @@ use core::time::Duration;
 use crate::blinded_path::BlindedHop;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use crate::sign::EntropySource;
-use crate::ln::types::PaymentHash;
-use crate::ln::features::BlindedHopFeatures;
+use crate::types::payment::PaymentHash;
+use crate::types::features::BlindedHopFeatures;
 use crate::offers::merkle::TaggedHash;
 
 #[allow(unused_imports)]

@@ -17,10 +17,11 @@ use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::OutPoint;
 use crate::io;
 use crate::ln::channel::ChannelContext;
-use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 use crate::ln::msgs::DecodeError;
-use crate::ln::types::{ChannelId, PaymentHash};
+use crate::ln::types::ChannelId;
 use crate::sign::SignerProvider;
+use crate::types::features::{ChannelTypeFeatures, InitFeatures};
+use crate::types::payment::PaymentHash;
 use crate::util::config::ChannelConfig;
 use crate::util::ser::{Readable, Writeable, Writer};
 

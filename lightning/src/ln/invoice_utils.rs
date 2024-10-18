@@ -9,7 +9,7 @@ use bitcoin::hashes::Hash;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
-use crate::ln::types::{PaymentHash, PaymentSecret};
+use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{ChannelManager, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use crate::ln::channelmanager::{PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA};
@@ -869,8 +869,7 @@ mod test {
 	use bitcoin::hashes::sha256::Hash as Sha256;
 	use crate::sign::PhantomKeysManager;
 	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
-	use crate::ln::types::PaymentHash;
-	use crate::ln::types::PaymentPreimage;
+	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;

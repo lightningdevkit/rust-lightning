@@ -11,8 +11,8 @@ use crate::ln::chan_utils::{
 	ClosingTransaction, CommitmentTransaction, HTLCOutputInCommitment, HolderCommitmentTransaction,
 };
 use crate::ln::msgs::PartialSignatureWithNonce;
-use crate::ln::PaymentPreimage;
 use crate::sign::{ChannelSigner, HTLCDescriptor};
+use crate::types::payment::PaymentPreimage;
 
 /// A Taproot-specific signer type that defines signing-related methods that are either unique to
 /// Taproot or have argument or return types that differ from the ones an ECDSA signer would be

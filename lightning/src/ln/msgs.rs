@@ -32,8 +32,9 @@ use bitcoin::script::ScriptBuf;
 use bitcoin::hash_types::Txid;
 
 use crate::blinded_path::payment::{BlindedPaymentTlvs, ForwardTlvs, ReceiveTlvs};
-use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
-use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+use crate::ln::types::ChannelId;
+use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 use crate::ln::onion_utils;
 use crate::onion_message;
 use crate::sign::{NodeSigner, Recipient};
@@ -1746,8 +1747,8 @@ pub struct FinalOnionHopData {
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{PaymentConstraints, PaymentContext, PaymentRelay};
-	use crate::ln::types::{PaymentPreimage, PaymentSecret};
-	use crate::ln::features::BlindedHopFeatures;
+	use crate::types::payment::{PaymentPreimage, PaymentSecret};
+	use crate::types::features::BlindedHopFeatures;
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
 
 	#[allow(unused_imports)]
@@ -3298,8 +3299,9 @@ impl_writeable_msg!(GossipTimestampFilter, {
 mod tests {
 	use bitcoin::{Amount, Transaction, TxIn, ScriptBuf, Sequence, Witness, TxOut};
 	use bitcoin::hex::DisplayHex;
-	use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
+	use crate::ln::types::ChannelId;
+	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
+	use crate::types::features::{ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 	use crate::ln::msgs::{self, FinalOnionHopData, OnionErrorPacket, CommonOpenChannelFields, CommonAcceptChannelFields, TrampolineOnionPacket};
 	use crate::ln::msgs::SocketAddress;
 	use crate::routing::gossip::{NodeAlias, NodeId};

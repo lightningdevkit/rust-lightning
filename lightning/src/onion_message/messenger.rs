@@ -20,7 +20,7 @@ use crate::blinded_path::message::{BlindedMessagePath, MessageForwardNode, Forwa
 use crate::blinded_path::utils;
 use crate::events::{Event, EventHandler, EventsProvider, ReplayEvent};
 use crate::sign::{EntropySource, NodeSigner, Recipient};
-use crate::ln::features::{InitFeatures, NodeFeatures};
+use crate::types::features::{InitFeatures, NodeFeatures};
 use crate::ln::msgs::{self, OnionMessage, OnionMessageHandler, SocketAddress};
 use crate::ln::onion_utils;
 use crate::routing::gossip::{NetworkGraph, NodeId, ReadOnlyNetworkGraph};

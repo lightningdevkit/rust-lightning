@@ -1077,18 +1077,19 @@ mod tests {
 	use lightning::ln::channelmanager::{
 		ChainParameters, PaymentId, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 	};
-	use lightning::ln::features::{ChannelFeatures, NodeFeatures};
 	use lightning::ln::functional_test_utils::*;
 	use lightning::ln::msgs::{ChannelMessageHandler, Init};
 	use lightning::ln::peer_handler::{
 		IgnoringMessageHandler, MessageHandler, PeerManager, SocketDescriptor,
 	};
-	use lightning::ln::types::{ChannelId, PaymentHash};
+	use lightning::ln::types::ChannelId;
 	use lightning::onion_message::messenger::{DefaultMessageRouter, OnionMessenger};
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
 	use lightning::sign::{ChangeDestinationSource, InMemorySigner, KeysManager};
+	use lightning::types::features::{ChannelFeatures, NodeFeatures};
+	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
 	use lightning::util::persist::{
 		KVStore, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,

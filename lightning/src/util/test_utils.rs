@@ -29,7 +29,7 @@ use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager;
 #[cfg(test)]
 use crate::ln::chan_utils::CommitmentTransaction;
-use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
+use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::{msgs, wire};
 use crate::ln::msgs::LightningError;
 use crate::ln::script::ShutdownScript;

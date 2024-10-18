@@ -56,5 +56,9 @@ pub mod test_channel_signer;
 
 pub mod string {
 	//! Utilities to wrap untrusted strings and handle them (more) safely
+	//!
+	//! These re-exports are deprecated in favor of [`lightning::types::string`].
+	//!
+	//! [`lightning::types::string`]: crate::types::string
 	pub use lightning_types::string::{PrintableString, UntrustedString};
 }

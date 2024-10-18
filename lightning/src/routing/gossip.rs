@@ -22,7 +22,6 @@ use bitcoin::hashes::Hash;
 use bitcoin::network::Network;
 
 use crate::events::{MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::ln::msgs;
 use crate::ln::msgs::{
 	ChannelAnnouncement, ChannelUpdate, GossipTimestampFilter, NodeAnnouncement,
@@ -36,6 +35,7 @@ use crate::ln::msgs::{
 };
 use crate::ln::types::ChannelId;
 use crate::routing::utxo::{self, UtxoLookup, UtxoResolver};
+use crate::types::features::{ChannelFeatures, InitFeatures, NodeFeatures};
 use crate::util::indexed_map::{Entry as IndexedMapEntry, IndexedMap};
 use crate::util::logger::{Level, Logger};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
@@ -2683,8 +2683,6 @@ pub(crate) mod tests {
 	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 	use crate::ln::chan_utils::make_funding_redeemscript;
 	use crate::ln::channelmanager;
-	#[cfg(feature = "std")]
-	use crate::ln::features::InitFeatures;
 	use crate::ln::msgs::SocketAddress;
 	use crate::ln::msgs::{
 		ChannelAnnouncement, ChannelUpdate, NodeAnnouncement, QueryChannelRange,
@@ -2698,6 +2696,8 @@ pub(crate) mod tests {
 		MAX_EXCESS_BYTES_FOR_RELAY,
 	};
 	use crate::routing::utxo::{UtxoLookupError, UtxoResult};
+	#[cfg(feature = "std")]
+	use crate::types::features::InitFeatures;
 	use crate::util::config::UserConfig;
 	use crate::util::scid_utils::scid_from_parts;
 	use crate::util::ser::{Hostname, Readable, ReadableArgs, Writeable};

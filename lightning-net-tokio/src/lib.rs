@@ -624,10 +624,10 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use bitcoin::Network;
 	use lightning::events::*;
-	use lightning::ln::features::*;
 	use lightning::ln::msgs::*;
 	use lightning::ln::peer_handler::{IgnoringMessageHandler, MessageHandler, PeerManager};
 	use lightning::routing::gossip::NodeId;
+	use lightning::types::features::*;
 	use lightning::util::test_utils::TestNodeSigner;
 
 	use tokio::sync::mpsc;

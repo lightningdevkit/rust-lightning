@@ -23,9 +23,10 @@ use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, Paym
 use crate::chain::transaction;
 use crate::ln::channelmanager::{InterceptId, PaymentId, RecipientOnionFields};
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
-use crate::ln::features::ChannelTypeFeatures;
+use crate::types::features::ChannelTypeFeatures;
 use crate::ln::msgs;
-use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash, PaymentSecret};
+use crate::ln::types::ChannelId;
+use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::offers::invoice::Bolt12Invoice;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;

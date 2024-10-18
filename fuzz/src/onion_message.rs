@@ -9,7 +9,6 @@ use lightning::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, MessageContext, OffersContext,
 };
 use lightning::blinded_path::EmptyNodeIdLookUp;
-use lightning::ln::features::InitFeatures;
 use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::ln::script::ShutdownScript;
@@ -25,6 +24,7 @@ use lightning::onion_message::messenger::{
 use lightning::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use lightning::onion_message::packet::OnionMessageContents;
 use lightning::sign::{EntropySource, KeyMaterial, NodeSigner, Recipient, SignerProvider};
+use lightning::types::features::InitFeatures;
 use lightning::util::logger::Logger;
 use lightning::util::ser::{Readable, Writeable, Writer};
 use lightning::util::test_channel_signer::TestChannelSigner;

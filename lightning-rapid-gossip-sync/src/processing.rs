@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(all(not(feature = "std"), not(test)))]
 use alloc::{borrow::ToOwned, vec::Vec};
-use lightning::ln::features::NodeFeatures;
+use lightning::types::features::NodeFeatures;
 
 /// The purpose of this prefix is to identify the serialization format, should other rapid gossip
 /// sync formats arise in the future.

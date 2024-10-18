@@ -12,7 +12,6 @@
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::BlindedPaymentPath;
 use crate::io;
-use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
@@ -29,6 +28,7 @@ use crate::offers::offer::{
 	Amount, Offer, OfferContents, OfferTlvStream, OfferTlvStreamRef, Quantity, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
+use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
 use crate::util::ser::{CursorReadable, Iterable, WithoutLength, Writeable, Writer};
 use crate::util::string::PrintableString;
 use bitcoin::address::Address;
@@ -603,7 +603,6 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 mod tests {
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::blinded_path::BlindedHop;
-	use crate::ln::features::{Bolt12InvoiceFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice::InvoiceTlvStreamRef;
@@ -617,6 +616,7 @@ mod tests {
 	};
 	use crate::offers::test_utils::*;
 	use crate::sign::KeyMaterial;
+	use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
 	use crate::util::ser::{BigSize, Iterable, Writeable};
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{self, Secp256k1};
