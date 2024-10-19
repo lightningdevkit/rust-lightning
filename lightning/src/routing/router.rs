@@ -7357,7 +7357,7 @@ mod tests {
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let scorer = ProbabilisticScorer::new(decay_params, &*network_graph, Arc::clone(&logger));
 
-		// Set the fee on channel 13 to 100% to match channel 4 giving us two equivalent paths (us
+		// Set the fee on channel 13 to 0% to match channel 4 giving us two equivalent paths (us
 		// -> node 7 -> node2 and us -> node 1 -> node 2) which we should balance over.
 		update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
@@ -7392,9 +7392,12 @@ mod tests {
 			.unwrap();
 		let random_seed_bytes = [42; 32];
 
-		// 100,000 sats is less than the available liquidity on each channel, set above.
+		// 75,000 sats is less than the available liquidity on each channel, set above, when
+		// applying max_channel_saturation_power_of_half. This value also ensures the cost of paths
+		// considered when applying max_channel_saturation_power_of_half is less than the cost of
+		// those when it is not applied.
 		let route_params = RouteParameters::from_payment_params_and_value(
-			payment_params, 100_000_000);
+			payment_params, 75_000_000);
 		let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 			Arc::clone(&logger), &scorer, &ProbabilisticScoringFeeParameters::default(), &random_seed_bytes).unwrap();
 		assert_eq!(route.paths.len(), 2);
