@@ -24,7 +24,7 @@ async-interface = []
 
 [dependencies]
 lightning = { version = "0.2.0", path = "../lightning", default-features = false, features = ["std"] }
-lightning-macros = { version = "0.1", path = "../lightning-macros", default-features = false }
+lightning-macros = { version = "0.2", path = "../lightning-macros", default-features = false }
 bitcoin = { version = "0.32.2", default-features = false }
 futures = { version = "0.3", optional = true }
 esplora-client = { version = "0.11", default-features = false, optional = true }

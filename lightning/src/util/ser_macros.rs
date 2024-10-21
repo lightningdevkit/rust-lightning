@@ -54,6 +54,9 @@ macro_rules! _encode_tlv {
 			field.write($stream)?;
 		}
 	};
+	($stream: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr)) => {
+		$crate::_encode_tlv!($stream, $optional_type, $write, option);
+	};
 	($stream: expr, $type: expr, $field: expr, optional_vec) => {
 		if !$field.is_empty() {
 			$crate::_encode_tlv!($stream, $type, $field, required_vec);
@@ -213,6 +216,9 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 			$len.0 += field_len;
 		}
 	};
+	($len: expr, $optional_type: expr, $optional_field: expr, (legacy, $fieldty: ty, $write: expr)) => {
+		$crate::_get_varint_length_prefixed_tlv_length!($len, $optional_type, $write, option);
+	};
 	($len: expr, $type: expr, $field: expr, optional_vec) => {
 		if !$field.is_empty() {
 			$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required_vec);
@@ -295,6 +301,9 @@ macro_rules! _check_decoded_tlv_order {
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (option, explicit_type: $fieldty: ty)) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (legacy, $fieldty: ty, $write: expr)) => {{
+		// no-op
+	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (required, explicit_type: $fieldty: ty)) => {{
 		_check_decoded_tlv_order!($last_seen_type, $typ, $type, $field, required);
 	}};
@@ -354,6 +363,9 @@ macro_rules! _check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: ident, (option, explicit_type: $fieldty: ty)) => {{
 		// no-op
 	}};
+	($last_seen_type: expr, $type: expr, $field: ident, (legacy, $fieldty: ty, $write: expr)) => {{
+		// no-op
+	}};
 	($last_seen_type: expr, $type: expr, $field: ident, (required, explicit_type: $fieldty: ty)) => {{
 		_check_missing_tlv!($last_seen_type, $type, $field, required);
 	}};
@@ -399,7 +411,10 @@ macro_rules! _decode_tlv {
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, (option, explicit_type: $fieldty: ty)) => {{
 		let _field: &Option<$fieldty> = &$field;
-		_decode_tlv!($outer_reader, $reader, $field, option);
+		$crate::_decode_tlv!($outer_reader, $reader, $field, option);
+	}};
+	($outer_reader: expr, $reader: expr, $field: ident, (legacy, $fieldty: ty, $write: expr)) => {{
+		$crate::_decode_tlv!($outer_reader, $reader, $field, (option, explicit_type: $fieldty));
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, (required, explicit_type: $fieldty: ty)) => {{
 		let _field: &$fieldty = &$field;
@@ -785,9 +800,13 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, option) => {
 		$field
 	};
+	($field: ident, (legacy, $fieldty: ty, $write: expr)) => {
+		$crate::_init_tlv_based_struct_field!($field, option)
+	};
 	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
 		$crate::_init_tlv_based_struct_field!($field, option)
 	};
+	// Note that legacy TLVs are eaten by `drop_legacy_field_definition`
 	($field: ident, upgradable_required) => {
 		$field.0.unwrap()
 	};
@@ -835,6 +854,9 @@ macro_rules! _init_tlv_field_var {
 	($field: ident, (option, explicit_type: $fieldty: ty)) => {
 		let mut $field: Option<$fieldty> = None;
 	};
+	($field: ident, (legacy, $fieldty: ty, $write: expr)) => {
+		$crate::_init_tlv_field_var!($field, (option, explicit_type: $fieldty));
+	};
 	($field: ident, (required, explicit_type: $fieldty: ty)) => {
 		let mut $field = $crate::util::ser::RequiredWrapper::<$fieldty>(None);
 	};
@@ -881,11 +903,45 @@ macro_rules! _init_and_read_tlv_stream {
 		$(
 			$crate::_init_tlv_field_var!($field, $fieldty);
 		)*
-
 		$crate::decode_tlv_stream!($reader, {
 			$(($type, $field, $fieldty)),*
 		});
 	}
+}
+
+/// Dummy macro that drops the second argument (which is used by
+/// [`lightning_macros::drop_legacy_field_definition`] to match for legacy fields but isn't needed
+/// in the final code we want to generate).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! _ignore_arg {
+	($field: ident, $fieldty: tt) => {
+		$field
+	};
+}
+
+/// Reads a TLV stream with the given fields to build a struct/enum variant of type `$thing`
+#[doc(hidden)]
+#[macro_export]
+macro_rules! _decode_and_build {
+	($stream: ident, $thing: path, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => { {
+		$crate::_init_and_read_len_prefixed_tlv_fields!($stream, {
+			$(($type, $field, $fieldty)),*
+		});
+		// rustc is kinda dumb about unused variable warnings when we declare a variable via an
+		// ident in a macro and then use it in an expr also defined in the same macro call. Thus,
+		// it may generate unused variable warnings for variables that are, in fact, very much
+		// used. Instead, we just blanket ignore unused variables here as it may be useful to write
+		// field names without a _ prefix for legacy fields even if we don't care about the read
+		// value.
+		$(
+			#[allow(unused_variables)]
+			let $field = $crate::_init_tlv_based_struct_field!($field, $fieldty);
+		)*
+		::lightning_macros::drop_legacy_field_definition!($thing {
+			$($field: $crate::_ignore_arg!($field, $fieldty)),*
+		})
+	} }
 }
 
 /// Implements [`Readable`]/[`Writeable`] for a struct storing it as a set of TLVs
@@ -894,6 +950,10 @@ macro_rules! _init_and_read_tlv_stream {
 /// If `$fieldty` is `option`, then `$field` is optional field.
 /// If `$fieldty` is `optional_vec`, then `$field` is a [`Vec`], which needs to have its individual elements serialized.
 ///    Note that for `optional_vec` no bytes are written if the vec is empty
+/// If `$fieldty` is `(legacy, $ty, $write)` then, when writing, the expression $write will
+///    be called which returns an `Option` and is written as a TLV if `Some`. When reading, an
+///    optional field of type `$ty` is read (which can be used in later `default_value` or
+///    `static_value` fields).
 ///
 /// For example,
 /// ```
@@ -946,14 +1006,7 @@ macro_rules! impl_writeable_tlv_based {
 
 		impl $crate::util::ser::Readable for $st {
 			fn read<R: $crate::io::Read>(reader: &mut R) -> Result<Self, $crate::ln::msgs::DecodeError> {
-				$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
-					$(($type, $field, $fieldty)),*
-				});
-				Ok(Self {
-					$(
-						$field: $crate::_init_tlv_based_struct_field!($field, $fieldty)
-					),*
-				})
+				Ok($crate::_decode_and_build!(reader, Self, {$(($type, $field, $fieldty)),*}))
 			}
 		}
 	}
@@ -1053,8 +1106,8 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 	$(($length_prefixed_tuple_variant_id: expr, $length_prefixed_tuple_variant_name: ident)),* $(,)?) => {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
-				match self {
-					$($st::$variant_name { $(ref $field, )* .. } => {
+				lightning_macros::skip_legacy_fields!(match self {
+					$($st::$variant_name { $(ref $field: $fieldty, )* .. } => {
 						let id: u8 = $variant_id;
 						id.write(writer)?;
 						$crate::write_tlv_fields!(writer, {
@@ -1072,7 +1125,7 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 						$crate::util::ser::BigSize(field.serialized_length() as u64).write(writer)?;
 						field.write(writer)?;
 					}),*
-				}
+				});
 				Ok(())
 			}
 		}
@@ -1139,14 +1192,7 @@ macro_rules! impl_writeable_tlv_based_enum {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let mut f = || {
-							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
-								$(($type, $field, $fieldty)),*
-							});
-							Ok($st::$variant_name {
-								$(
-									$field: $crate::_init_tlv_based_struct_field!($field, $fieldty)
-								),*
-							})
+							Ok($crate::_decode_and_build!(reader, $st::$variant_name, {$(($type, $field, $fieldty)),*}))
 						};
 						f()
 					}),*
@@ -1188,14 +1234,7 @@ macro_rules! impl_writeable_tlv_based_enum_legacy {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let mut f = || {
-							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
-								$(($type, $field, $fieldty)),*
-							});
-							Ok($st::$variant_name {
-								$(
-									$field: $crate::_init_tlv_based_struct_field!($field, $fieldty)
-								),*
-							})
+							Ok($crate::_decode_and_build!(reader, $st::$variant_name, {$(($type, $field, $fieldty)),*}))
 						};
 						f()
 					}),*
@@ -1251,14 +1290,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let mut f = || {
-							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
-								$(($type, $field, $fieldty)),*
-							});
-							Ok(Some($st::$variant_name {
-								$(
-									$field: $crate::_init_tlv_based_struct_field!($field, $fieldty)
-								),*
-							}))
+							Ok(Some($crate::_decode_and_build!(reader, $st::$variant_name, {$(($type, $field, $fieldty)),*})))
 						};
 						f()
 					}),*
@@ -1307,14 +1339,7 @@ macro_rules! impl_writeable_tlv_based_enum_upgradable_legacy {
 						// Because read_tlv_fields creates a labeled loop, we cannot call it twice
 						// in the same function body. Instead, we define a closure and call it.
 						let mut f = || {
-							$crate::_init_and_read_len_prefixed_tlv_fields!(reader, {
-								$(($type, $field, $fieldty)),*
-							});
-							Ok(Some($st::$variant_name {
-								$(
-									$field: $crate::_init_tlv_based_struct_field!($field, $fieldty)
-								),*
-							}))
+							Ok(Some($crate::_decode_and_build!(reader, $st::$variant_name, {$(($type, $field, $fieldty)),*})))
 						};
 						f()
 					}),*
