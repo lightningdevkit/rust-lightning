@@ -1398,119 +1398,38 @@ impl<T: Writeable> Writeable for RwLock<T> {
 	}
 }
 
-impl<A: Readable, B: Readable> Readable for (A, B) {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let a: A = Readable::read(r)?;
-		let b: B = Readable::read(r)?;
-		Ok((a, b))
-	}
-}
-impl<A: Writeable, B: Writeable> Writeable for (A, B) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.0.write(w)?;
-		self.1.write(w)
+macro_rules! impl_tuple_ser {
+	($($i: ident : $type: tt),*) => {
+		impl<$($type),*> Readable for ($($type),*)
+		where $(
+			$type: Readable,
+		)*
+		{
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+				Ok(($(<$type as Readable>::read(r)?),*))
+			}
+		}
+
+		impl<$($type),*> Writeable for ($($type),*)
+		where $(
+			$type: Writeable,
+		)*
+		{
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				let ($($i),*) = self;
+				$($i.write(w)?;)*
+				Ok(())
+			}
+		}
 	}
 }
 
-impl<A: Readable, B: Readable, C: Readable> Readable for (A, B, C) {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let a: A = Readable::read(r)?;
-		let b: B = Readable::read(r)?;
-		let c: C = Readable::read(r)?;
-		Ok((a, b, c))
-	}
-}
-impl<A: Writeable, B: Writeable, C: Writeable> Writeable for (A, B, C) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.0.write(w)?;
-		self.1.write(w)?;
-		self.2.write(w)
-	}
-}
-
-impl<A: Readable, B: Readable, C: Readable, D: Readable> Readable for (A, B, C, D) {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let a: A = Readable::read(r)?;
-		let b: B = Readable::read(r)?;
-		let c: C = Readable::read(r)?;
-		let d: D = Readable::read(r)?;
-		Ok((a, b, c, d))
-	}
-}
-impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable> Writeable for (A, B, C, D) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.0.write(w)?;
-		self.1.write(w)?;
-		self.2.write(w)?;
-		self.3.write(w)
-	}
-}
-
-impl<A: Readable, B: Readable, C: Readable, D: Readable, E: Readable> Readable for (A, B, C, D, E) {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let a: A = Readable::read(r)?;
-		let b: B = Readable::read(r)?;
-		let c: C = Readable::read(r)?;
-		let d: D = Readable::read(r)?;
-		let e: E = Readable::read(r)?;
-		Ok((a, b, c, d, e))
-	}
-}
-impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable, E: Writeable> Writeable for (A, B, C, D, E) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.0.write(w)?;
-		self.1.write(w)?;
-		self.2.write(w)?;
-		self.3.write(w)?;
-		self.4.write(w)
-	}
-}
-
-impl<A: Readable, B: Readable, C: Readable, D: Readable, E: Readable, F: Readable> Readable for (A, B, C, D, E, F) {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let a: A = Readable::read(r)?;
-		let b: B = Readable::read(r)?;
-		let c: C = Readable::read(r)?;
-		let d: D = Readable::read(r)?;
-		let e: E = Readable::read(r)?;
-		let f: F = Readable::read(r)?;
-		Ok((a, b, c, d, e, f))
-	}
-}
-impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable, E: Writeable, F: Writeable> Writeable for (A, B, C, D, E, F) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.0.write(w)?;
-		self.1.write(w)?;
-		self.2.write(w)?;
-		self.3.write(w)?;
-		self.4.write(w)?;
-		self.5.write(w)
-	}
-}
-
-impl<A: Readable, B: Readable, C: Readable, D: Readable, E: Readable, F: Readable, G: Readable> Readable for (A, B, C, D, E, F, G) {
-	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let a: A = Readable::read(r)?;
-		let b: B = Readable::read(r)?;
-		let c: C = Readable::read(r)?;
-		let d: D = Readable::read(r)?;
-		let e: E = Readable::read(r)?;
-		let f: F = Readable::read(r)?;
-		let g: G = Readable::read(r)?;
-		Ok((a, b, c, d, e, f, g))
-	}
-}
-impl<A: Writeable, B: Writeable, C: Writeable, D: Writeable, E: Writeable, F: Writeable, G: Writeable> Writeable for (A, B, C, D, E, F, G) {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		self.0.write(w)?;
-		self.1.write(w)?;
-		self.2.write(w)?;
-		self.3.write(w)?;
-		self.4.write(w)?;
-		self.5.write(w)?;
-		self.6.write(w)
-	}
-}
+impl_tuple_ser!(a: A, b: B);
+impl_tuple_ser!(a: A, b: B, c: C);
+impl_tuple_ser!(a: A, b: B, c: C, d: D);
+impl_tuple_ser!(a: A, b: B, c: C, d: D, e: E);
+impl_tuple_ser!(a: A, b: B, c: C, d: D, e: E, f: F);
+impl_tuple_ser!(a: A, b: B, c: C, d: D, e: E, f: F, g: G);
 
 impl Writeable for () {
 	fn write<W: Writer>(&self, _: &mut W) -> Result<(), io::Error> {
