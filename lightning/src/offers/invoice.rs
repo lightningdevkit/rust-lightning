@@ -1274,12 +1274,7 @@ impl TryFrom<Vec<u8>> for UnsignedBolt12Invoice {
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let invoice = ParsedMessage::<PartialInvoiceTlvStream>::try_from(bytes)?;
 		let ParsedMessage { mut bytes, tlv_stream } = invoice;
-		let (
-			payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream,
-		) = tlv_stream;
-		let contents = InvoiceContents::try_from(
-			(payer_tlv_stream, offer_tlv_stream, invoice_request_tlv_stream, invoice_tlv_stream)
-		)?;
+		let contents = InvoiceContents::try_from(tlv_stream)?;
 
 		let tagged_hash = TaggedHash::from_valid_tlv_stream_bytes(SIGNATURE_TAG, &bytes);
 
