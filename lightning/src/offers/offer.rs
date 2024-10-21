@@ -77,6 +77,7 @@
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 //! [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
 
+use core::borrow::Borrow;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, self};
@@ -111,12 +112,13 @@ use crate::prelude::*;
 
 #[cfg(feature = "std")]
 use std::time::SystemTime;
+use bitcoin::hex::impl_fmt_traits;
 
 pub(super) const IV_BYTES_WITH_METADATA: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 pub(super) const IV_BYTES_WITHOUT_METADATA: &[u8; IV_LEN] = b"LDK Offer v2~~~~";
 
 /// An identifier for an [`Offer`] built using [`DerivedMetadata`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct OfferId(pub [u8; 32]);
 
 impl OfferId {
@@ -131,6 +133,18 @@ impl OfferId {
 		let tlv_stream = TlvStream::new(bytes).range(OFFER_TYPES);
 		let tagged_hash = TaggedHash::from_tlv_stream(Self::ID_TAG, tlv_stream);
 		Self(tagged_hash.to_bytes())
+	}
+}
+
+impl Borrow<[u8]> for OfferId {
+	fn borrow(&self) -> &[u8] {
+		&self.0[..]
+	}
+}
+
+impl_fmt_traits! {
+	impl fmt_traits for OfferId {
+		const LENGTH: usize = 32;
 	}
 }
 
