@@ -1651,8 +1651,6 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 
 	fn dual_funding_context(&self) -> &DualFundingChannelContext;
 
-	fn set_interactive_tx_constructor(&mut self, interactive_tx_constructor: InteractiveTxConstructor);
-
 	fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
 		InteractiveTxMessageSendResult(match self.interactive_tx_constructor_mut() {
 			Some(ref mut tx_constructor) => tx_constructor.handle_tx_add_input(msg).map_err(
@@ -1722,9 +1720,6 @@ impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Targ
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
 	}
-	fn set_interactive_tx_constructor(&mut self, interactive_tx_constructor: InteractiveTxConstructor) {
-		self.interactive_tx_constructor = Some(interactive_tx_constructor);
-	}
 }
 
 impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -1739,9 +1734,6 @@ impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Targe
 	}
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
-	}
-	fn set_interactive_tx_constructor(&mut self, interactive_tx_constructor: InteractiveTxConstructor) {
-		self.interactive_tx_constructor = Some(interactive_tx_constructor);
 	}
 }
 
@@ -8636,43 +8628,36 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			&context.get_counterparty_pubkeys().revocation_basepoint);
 		context.channel_id = channel_id;
 
-		let mut channel = Self {
-			context,
-			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
-			dual_funding_context: DualFundingChannelContext {
-				our_funding_satoshis: funding_satoshis,
-				their_funding_satoshis: msg.common_fields.funding_satoshis,
-				funding_tx_locktime: LockTime::from_consensus(msg.locktime),
-				funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
-				our_funding_inputs: funding_inputs,
-			},
-			interactive_tx_constructor: None,
+		let dual_funding_context = DualFundingChannelContext {
+			our_funding_satoshis: funding_satoshis,
+			their_funding_satoshis: msg.common_fields.funding_satoshis,
+			funding_tx_locktime: LockTime::from_consensus(msg.locktime),
+			funding_feerate_sat_per_1000_weight: msg.funding_feerate_sat_per_1000_weight,
+			our_funding_inputs: funding_inputs,
 		};
 
-		match InteractiveTxConstructor::new(
+		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
 				entropy_source,
-				channel_id: channel.context.channel_id,
-				feerate_sat_per_kw: channel.dual_funding_context.funding_feerate_sat_per_1000_weight,
-				funding_tx_locktime: channel.dual_funding_context.funding_tx_locktime,
+				channel_id: context.channel_id,
+				feerate_sat_per_kw: dual_funding_context.funding_feerate_sat_per_1000_weight,
+				funding_tx_locktime: dual_funding_context.funding_tx_locktime,
 				is_initiator: false,
-			    inputs_to_contribute: channel.dual_funding_context.our_funding_inputs.clone(),
+			    inputs_to_contribute: dual_funding_context.our_funding_inputs.clone(),
 			    outputs_to_contribute: Vec::new(),
-			    expected_remote_shared_funding_output: Some((channel.context().get_funding_redeemscript(), channel.context().channel_value_satoshis)),
+			    expected_remote_shared_funding_output: Some((context.get_funding_redeemscript(), context.channel_value_satoshis)),
 			}
-		) {
-			Ok(tx_constructor) => {
-				channel.set_interactive_tx_constructor(tx_constructor);
-			},
-			Err(_) => {
-				return Err(ChannelError::Close((
-					"V2 channel rejected due to sender error".into(),
-					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-				)))
-			}
-		}
+		).map_err(|_| ChannelError::Close((
+			"V2 channel rejected due to sender error".into(),
+			ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
+		)))?);
 
-		Ok(channel)
+		Ok(Self {
+			context,
+			dual_funding_context,
+			interactive_tx_constructor,
+			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+		})
 	}
 
 	/// Marks an inbound channel as accepted and generates a [`msgs::AcceptChannelV2`] message which
