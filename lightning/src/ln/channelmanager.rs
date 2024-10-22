@@ -8363,7 +8363,7 @@ where
 					ChannelPhase::UnfundedOutboundV2(chan) => chan.interactive_tx_constructor_mut(),
 					_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
 						(
-							"Got an unexpected tx_signatures message".into(),
+							"Got an unexpected tx_abort message".into(),
 							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
 						))), chan_phase_entry)
 				};
