@@ -107,13 +107,14 @@ use alloc::collections::{btree_map, BTreeMap};
 use crate::io;
 use crate::prelude::*;
 use core::{cmp, mem};
+use core::borrow::Borrow;
 use core::cell::RefCell;
 use crate::io::Read;
 use crate::sync::{Arc, Mutex, RwLock, RwLockReadGuard, FairRwLock, LockTestExt, LockHeldState};
 use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
-
+use bitcoin::hex::impl_fmt_traits;
 // Re-export this for use in the public API.
 pub use crate::ln::outbound_payment::{Bolt12PaymentError, PaymentSendFailure, ProbeSendFailure, Retry, RetryableSendFailure, RecipientOnionFields};
 use crate::ln::script::ShutdownScript;
@@ -468,7 +469,7 @@ impl Verification for PaymentHash {
 /// a payment and ensure idempotency in LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq)]
 pub struct PaymentId(pub [u8; Self::LENGTH]);
 
 impl PaymentId {
@@ -528,6 +529,18 @@ impl PaymentId {
 	}
 }
 
+impl Borrow<[u8]> for PaymentId {
+	fn borrow(&self) -> &[u8] {
+		&self.0[..]
+	}
+}
+
+impl_fmt_traits! {
+	impl fmt_traits for PaymentId {
+		const LENGTH: usize = 32;
+	}
+}
+
 impl Writeable for PaymentId {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		self.0.write(w)
@@ -538,12 +551,6 @@ impl Readable for PaymentId {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
 		let buf: [u8; 32] = Readable::read(r)?;
 		Ok(PaymentId(buf))
-	}
-}
-
-impl core::fmt::Display for PaymentId {
-	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-		crate::util::logger::DebugBytes(&self.0).fmt(f)
 	}
 }
 
