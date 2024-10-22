@@ -728,7 +728,7 @@ where
 	///   - No full monitor is found in [`KVStore`]
 	///   - The number of pending updates exceeds `maximum_pending_updates` as given to [`Self::new`]
 	///   - LDK commands re-persisting the entire monitor through this function, specifically when
-	///     `update` is `None`.
+	///	`update` is `None`.
 	///   - The update is at [`CLOSED_CHANNEL_UPDATE_ID`]
 	fn update_persisted_channel(
 		&self, funding_txo: OutPoint, update: Option<&ChannelMonitorUpdate>,
@@ -859,21 +859,59 @@ where
 	}
 }
 
-/// A struct representing a name for a monitor.
+/// A struct representing a name for a channel monitor.
+///
+/// `MonitorName` is primarily used within the [`MonitorUpdatingPersister`]
+/// in functions that store or retrieve channel monitor snapshots.
+/// It provides a consistent way to generate a unique key for channel
+/// monitors based on their funding outpoints.
+///
+/// While users of the Lightning Dev Kit library generally won't need
+/// to interact with [`MonitorName`] directly, it can be useful for:
+/// - Custom persistence implementations
+/// - Debugging or logging channel monitor operations
+/// - Extending the functionality of the `MonitorUpdatingPersister`
+//
+/// # Examples
+///
+/// ```
+/// use std::str::FromStr;
+///
+/// use bitcoin::Txid;
+///
+/// use lightning::util::persist::MonitorName;
+/// use lightning::chain::transaction::OutPoint;
+///
+/// let outpoint = OutPoint {
+///	 txid: Txid::from_str("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap(),
+///	 index: 1,
+/// };
+/// let monitor_name = MonitorName::from(outpoint);
+/// assert_eq!(monitor_name.as_str(), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1");
+///
+/// // Using MonitorName to generate a storage key
+/// let storage_key = format!("channel_monitors/{}", monitor_name.as_str());
+/// ```
 #[derive(Debug)]
-struct MonitorName(String);
+pub struct MonitorName(String);
 
 impl MonitorName {
 	/// Constructs a [`MonitorName`], after verifying that an [`OutPoint`] can
 	/// be formed from the given `name`.
+	/// This method is useful if you have a String and you want to verify that
+	/// it's a valid storage key for a channel monitor.
 	pub fn new(name: String) -> Result<Self, io::Error> {
 		MonitorName::do_try_into_outpoint(&name)?;
 		Ok(Self(name))
 	}
+
 	/// Convert this monitor name to a str.
+	/// This method is particularly useful when you need to use the monitor name
+	/// as a key in a key-value store or when logging.
 	pub fn as_str(&self) -> &str {
 		&self.0
 	}
+
 	/// Attempt to form a valid [`OutPoint`] from a given name string.
 	fn do_try_into_outpoint(name: &str) -> Result<OutPoint, io::Error> {
 		let mut parts = name.splitn(2, '_');
@@ -904,20 +942,60 @@ impl MonitorName {
 impl TryFrom<&MonitorName> for OutPoint {
 	type Error = io::Error;
 
+	/// Attempts to convert a `MonitorName` back into an `OutPoint`.
+	///
+	/// This is useful when you have a `MonitorName` (perhaps retrieved from storage)
+	/// and need to reconstruct the original `OutPoint` it represents.
 	fn try_from(value: &MonitorName) -> Result<Self, io::Error> {
 		MonitorName::do_try_into_outpoint(&value.0)
 	}
 }
 
 impl From<OutPoint> for MonitorName {
+	/// Creates a `MonitorName` from an `OutPoint`.
+	///
+	/// This is typically used when you need to generate a storage key or identifier
+	/// for a new or existing channel monitor.
 	fn from(value: OutPoint) -> Self {
 		MonitorName(format!("{}_{}", value.txid.to_string(), value.index))
 	}
 }
 
-/// A struct representing a name for an update.
+/// A struct representing a name for a channel monitor update.
+///
+/// [`UpdateName`] is primarily used within the [`MonitorUpdatingPersister`] in
+/// functions that store or retrieve partial updates to channel monitors. It
+/// provides a consistent way to generate and parse unique identifiers for
+/// monitor updates based on their sequence number.
+///
+/// The name is derived from the update's sequence ID, which is a monotonically
+/// increasing u64 value. This format allows for easy ordering of updates and
+/// efficient storage and retrieval in key-value stores.
+///
+/// # Usage
+///
+/// While users of the Lightning Dev Kit library generally won't need to
+/// interact with `UpdateName` directly, it still can be useful for custom
+/// persistence implementations. The u64 value is the update_id that can be
+/// compared with [ChannelMonitor::get_latest_update_id] to check if this update
+/// has been applied to the channel monitor or not, which is useful for pruning
+/// stale channel monitor updates off persistence.
+///
+/// # Examples
+///
+/// ```
+/// use lightning::util::persist::UpdateName;
+///
+/// let update_id: u64 = 42;
+/// let update_name = UpdateName::from(update_id);
+/// assert_eq!(update_name.as_str(), "42");
+///
+/// // Using UpdateName to generate a storage key
+/// let monitor_name = "some_monitor_name";
+/// let storage_key = format!("channel_monitor_updates/{}/{}", monitor_name, update_name.as_str());
+/// ```
 #[derive(Debug)]
-struct UpdateName(u64, String);
+pub struct UpdateName(pub u64, String);
 
 impl UpdateName {
 	/// Constructs an [`UpdateName`], after verifying that an update sequence ID
@@ -931,13 +1009,40 @@ impl UpdateName {
 		}
 	}
 
-	/// Convert this monitor update name to a &str
+	/// Convert this update name to a string slice.
+	///
+	/// This method is particularly useful when you need to use the update name
+	/// as part of a key in a key-value store or when logging.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// use lightning::util::persist::UpdateName;
+	///
+	/// let update_name = UpdateName::from(42);
+	/// assert_eq!(update_name.as_str(), "42");
+	/// ```
 	pub fn as_str(&self) -> &str {
 		&self.1
 	}
 }
 
 impl From<u64> for UpdateName {
+	/// Creates an `UpdateName` from a `u64`.
+	///
+	/// This is typically used when you need to generate a storage key or
+	/// identifier
+	/// for a new channel monitor update.
+	///
+	/// # Examples
+	///
+	/// ```
+	/// use lightning::util::persist::UpdateName;
+	///
+	/// let update_id: u64 = 42;
+	/// let update_name = UpdateName::from(update_id);
+	/// assert_eq!(update_name.as_str(), "42");
+	/// ```
 	fn from(value: u64) -> Self {
 		Self(value, value.to_string())
 	}
