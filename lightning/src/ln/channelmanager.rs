@@ -220,6 +220,10 @@ pub enum PendingHTLCRouting {
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
 		/// Set if this HTLC is the final hop in a multi-hop blinded path.
 		requires_blinded_error: bool,
+		/// Set if we are receiving a keysend to a blinded path, meaning we created the
+		/// [`PaymentSecret`] and should verify it using our
+		/// [`NodeSigner::get_inbound_payment_key_material`].
+		has_recipient_created_payment_secret: bool,
 	},
 }
 
@@ -5699,7 +5703,10 @@ where
 								}
 							}) => {
 								let blinded_failure = routing.blinded_failure();
-								let (cltv_expiry, onion_payload, payment_data, payment_context, phantom_shared_secret, mut onion_fields) = match routing {
+								let (
+									cltv_expiry, onion_payload, payment_data, payment_context, phantom_shared_secret,
+									mut onion_fields, has_recipient_created_payment_secret
+								) = match routing {
 									PendingHTLCRouting::Receive {
 										payment_data, payment_metadata, payment_context,
 										incoming_cltv_expiry, phantom_shared_secret, custom_tlvs,
@@ -5709,11 +5716,13 @@ where
 										let onion_fields = RecipientOnionFields { payment_secret: Some(payment_data.payment_secret),
 												payment_metadata, custom_tlvs };
 										(incoming_cltv_expiry, OnionPayload::Invoice { _legacy_hop_data },
-											Some(payment_data), payment_context, phantom_shared_secret, onion_fields)
+											Some(payment_data), payment_context, phantom_shared_secret, onion_fields,
+											true)
 									},
 									PendingHTLCRouting::ReceiveKeysend {
 										payment_data, payment_preimage, payment_metadata,
-										incoming_cltv_expiry, custom_tlvs, requires_blinded_error: _
+										incoming_cltv_expiry, custom_tlvs, requires_blinded_error: _,
+										has_recipient_created_payment_secret,
 									} => {
 										let onion_fields = RecipientOnionFields {
 											payment_secret: payment_data.as_ref().map(|data| data.payment_secret),
@@ -5721,7 +5730,7 @@ where
 											custom_tlvs,
 										};
 										(incoming_cltv_expiry, OnionPayload::Spontaneous(payment_preimage),
-											payment_data, None, None, onion_fields)
+											payment_data, None, None, onion_fields, has_recipient_created_payment_secret)
 									},
 									_ => {
 										panic!("short_channel_id == 0 should imply any pending_forward entries are of type Receive");
@@ -5886,9 +5895,8 @@ where
 								// that we are the ultimate recipient of the given payment hash.
 								// Further, we must not expose whether we have any other HTLCs
 								// associated with the same payment_hash pending or not.
-								match claimable_htlc.onion_payload {
-									OnionPayload::Invoice { .. } => {
-										let payment_data = payment_data.unwrap();
+								let payment_preimage = if has_recipient_created_payment_secret {
+									if let Some(ref payment_data) = payment_data {
 										let (payment_preimage, min_final_cltv_expiry_delta) = match inbound_payment::verify(payment_hash, &payment_data, self.highest_seen_timestamp.load(Ordering::Acquire) as u64, &self.inbound_payment_key, &self.logger) {
 											Ok(result) => result,
 											Err(()) => {
@@ -5904,6 +5912,12 @@ where
 												fail_htlc!(claimable_htlc, payment_hash);
 											}
 										}
+										payment_preimage
+									} else { fail_htlc!(claimable_htlc, payment_hash); }
+								} else { None };
+								match claimable_htlc.onion_payload {
+									OnionPayload::Invoice { .. } => {
+										let payment_data = payment_data.unwrap();
 										let purpose = events::PaymentPurpose::from_parts(
 											payment_preimage,
 											payment_data.payment_secret,
@@ -11422,6 +11436,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(3, payment_metadata, option),
 		(4, payment_data, option), // Added in 0.0.116
 		(5, custom_tlvs, optional_vec),
+		(7, has_recipient_created_payment_secret, (default_value, false)),
 	},
 );
 
