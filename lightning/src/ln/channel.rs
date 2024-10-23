@@ -1385,6 +1385,8 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// The transaction which funds this channel. Note that for manually-funded channels (i.e.,
 	/// is_manual_broadcast is true) this will be a dummy empty transaction.
 	funding_transaction: Option<Transaction>,
+	/// Rememeber whether the funding transaction has been broadcasted
+	funding_transaction_broadcasted_flag: bool,
 	/// This flag indicates that it is the user's responsibility to validated and broadcast the
 	/// funding transaction.
 	is_manual_broadcast: bool,
@@ -1939,6 +1941,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				channel_type_features: channel_type.clone()
 			},
 			funding_transaction: None,
+			funding_transaction_broadcasted_flag: false,
 			is_batch_funding: None,
 
 			counterparty_cur_commitment_point: Some(open_channel_fields.first_per_commitment_point),
@@ -2172,6 +2175,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 				channel_type_features: channel_type.clone()
 			},
 			funding_transaction: None,
+			funding_transaction_broadcasted_flag: false,
 			is_batch_funding: None,
 
 			counterparty_cur_commitment_point: None,
@@ -3595,13 +3599,22 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 	}
 
+	/// Returns [`Self::funding_transaction`] if it's already set and has not been broadcasted yet
+	pub fn funding_transaction_unless_broadcasted(&self) -> Option<Transaction> {
+		if self.funding_transaction_broadcasted_flag {
+			None
+		} else {
+			self.funding_transaction.clone()
+		}
+	}
+
 	/// Returns the transaction if there is a pending funding transaction that is yet to be
 	/// broadcast.
 	///
 	/// Note that if [`Self::is_manual_broadcast`] is true the transaction will be a dummy
 	/// transaction.
 	pub fn unbroadcasted_funding(&self) -> Option<Transaction> {
-		self.if_unbroadcasted_funding(|| self.funding_transaction.clone())
+		self.if_unbroadcasted_funding(|| self.funding_transaction_unless_broadcasted())
 	}
 
 	/// Returns the transaction ID if there is a pending funding transaction that is yet to be
@@ -5486,7 +5499,10 @@ impl<SP: Deref> Channel<SP> where
 				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
 				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
 			{
-				self.context.funding_transaction.take()
+				let res = self.context.funding_transaction_unless_broadcasted();
+				// Prevent broadcasting again in the future
+				self.context.funding_transaction_broadcasted_flag = true;
+				res
 			} else { None };
 		// That said, if the funding transaction is already confirmed (ie we're active with a
 		// minimum_depth over 0) don't bother re-broadcasting the confirmed funding tx.
@@ -6747,7 +6763,9 @@ impl<SP: Deref> Channel<SP> where
 			// Because deciding we're awaiting initial broadcast spuriously could result in
 			// funds-loss (as we don't have a monitor, but have the funding transaction confirmed),
 			// we hard-assert here, even in production builds.
-			if self.context.is_outbound() { assert!(self.context.funding_transaction.is_some()); }
+			if self.context.is_outbound() {
+				assert!(self.context.funding_transaction_unless_broadcasted().is_some());
+			}
 			assert!(self.context.monitor_pending_channel_ready);
 			assert_eq!(self.context.latest_monitor_update_id, 0);
 			return true;
@@ -7893,7 +7911,9 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.context.minimum_depth = Some(COINBASE_MATURITY);
 		}
 
+		debug_assert!(self.context.funding_transaction.is_none());
 		self.context.funding_transaction = Some(funding_transaction);
+		self.context.funding_transaction_broadcasted_flag = false;
 		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
 
 		let funding_created = self.get_funding_created_msg(logger);
@@ -8994,7 +9014,8 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(47, next_holder_commitment_point, option),
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
-			(53, funding_tx_broadcast_safe_event_emitted, option) // Added in 0.0.124
+			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
+			(55, self.context.funding_transaction_broadcasted_flag, required), // Added in 0.1
 		});
 
 		Ok(())
@@ -9309,6 +9330,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut next_holder_commitment_point_opt: Option<PublicKey> = None;
 		let mut is_manual_broadcast = None;
 
+		let mut funding_transaction_broadcasted_flag: Option<bool> = None;
+
 		read_tlv_fields!(reader, {
 			(0, announcement_sigs, option),
 			(1, minimum_depth, option),
@@ -9344,6 +9367,7 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
+			(55, funding_transaction_broadcasted_flag, option), // Added in 0.1
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -9562,6 +9586,8 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				channel_transaction_parameters: channel_parameters,
 				funding_transaction,
+				// If value is missing, we use false, which may result in rebroadcast
+				funding_transaction_broadcasted_flag: funding_transaction_broadcasted_flag.unwrap_or(false),
 				is_batch_funding,
 
 				counterparty_cur_commitment_point,
