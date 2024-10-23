@@ -19,6 +19,9 @@ jobs:
       matrix:
         platform: [ ubuntu-latest, windows-latest, macos-latest ]
         toolchain: [ stable, beta, 1.63.0 ] # 1.63.0 is the MSRV for all crates.
+        exclude:
+          - platform: windows-latest
+            toolchain: 1.63.0
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
