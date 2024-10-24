@@ -29,7 +29,7 @@ use bitcoin::locktime::absolute::LockTime;
 
 use crate::ln::types::{ChannelId, PaymentPreimage, PaymentHash};
 #[cfg(splicing)]
-use crate::ln::channel_splice::{PendingSpliceInfoPre, PendingSpliceInfoPost, SplicingChannelValues};
+use crate::ln::channel_splice::{PendingSpliceInfoPre, PendingSpliceInfoPost};
 use crate::ln::features::{ChannelTypeFeatures, InitFeatures};
 #[cfg(any(dual_funding, splicing))]
 use crate::ln::interactivetxs::{ConstructedTransaction, estimate_input_weight, get_output_weight, HandleTxCompleteResult, InteractiveTxConstructor, InteractiveTxSigningSession, InteractiveTxMessageSend, InteractiveTxMessageSendResult, TX_COMMON_FIELDS_WEIGHT};
@@ -2977,11 +2977,8 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider  {
 
 		// Save relevant info from pre-splice state
 		let pending_splice_post = PendingSpliceInfoPost::new(
-			pre_channel_value,
-			our_funding_contribution,
-			their_funding_contribution,
-			pre_funding_transaction,
-			pre_funding_txo,
+			pre_channel_value, our_funding_contribution, their_funding_contribution,
+			pre_funding_transaction, pre_funding_txo,
 		);
 		let post_channel_value = pending_splice_post.post_channel_value();
 
@@ -8688,7 +8685,7 @@ impl<SP: Deref> Channel<SP> where
 			// the acceptor contribution is missing. There is a need for a way to generate a new funding pubkey,
 			// not based on the channel value
 			let pre_channel_value = self.context.channel_value_satoshis;
-			let incomplete_post_splice_channel_value = SplicingChannelValues::compute_post_value(pre_channel_value, our_funding_contribution_satoshis, 0);
+			let incomplete_post_splice_channel_value = PendingSpliceInfoPost::compute_post_value(pre_channel_value, our_funding_contribution_satoshis, 0);
 			let holder_signer = signer_provider.derive_channel_signer(incomplete_post_splice_channel_value, self.context.channel_keys_id);
 			holder_signer.pubkeys().funding_pubkey
 		};
@@ -10318,7 +10315,7 @@ impl<SP: Deref> V2Channel<SP> where SP::Target: SignerProvider {
 	) -> Result<Self, ChannelError> where L::Target: Logger
 	{
 		let pre_channel_value = pre_splice_context.get_value_satoshis();
-		let post_channel_value = SplicingChannelValues::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
+		let post_channel_value = PendingSpliceInfoPost::compute_post_value(pre_channel_value, our_funding_contribution, their_funding_contribution);
 		// Create new signer, using the new channel value.
 		// Note: channel_keys_id is not changed
 		let holder_signer = signer_provider.derive_channel_signer(post_channel_value, pre_splice_context.channel_keys_id);

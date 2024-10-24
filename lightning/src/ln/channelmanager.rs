@@ -54,7 +54,7 @@ use crate::ln::channel::{calculate_our_funding_satoshis, ChannelVariants, Inboun
 #[cfg(splicing)]
 use crate::ln::channel::HasChannelContext;
 #[cfg(splicing)]
-use crate::ln::channel_splice::{PendingSpliceInfoPre, SplicingChannelValues};
+use crate::ln::channel_splice::{PendingSpliceInfoPost, PendingSpliceInfoPre};
 use crate::ln::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::ln::features::Bolt11InvoiceFeatures;
@@ -3637,10 +3637,8 @@ where
 						return Err(APIError::ChannelUnavailable { err: format!("Channel has already a splice pending, channel id {}", channel_id) });
 					}
 
-					let their_funding_contribution = 0i64; // not yet known
 					chan.context.pending_splice_pre = Some(PendingSpliceInfoPre::new(
-						pre_channel_value, our_funding_contribution_satoshis, their_funding_contribution,
-						funding_feerate_perkw, locktime, funding_inputs
+						our_funding_contribution_satoshis, funding_feerate_perkw, locktime, funding_inputs
 					));
 
 					// Check channel id
@@ -9830,7 +9828,7 @@ where
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Splice-out not supported, only splice in, relative {}", -msg.funding_contribution_satoshis), msg.channel_id));
 					}
 
-					let post_channel_value = SplicingChannelValues::compute_post_value(pre_channel_value, msg.funding_contribution_satoshis, our_funding_contribution);
+					let post_channel_value = PendingSpliceInfoPost::compute_post_value(pre_channel_value, msg.funding_contribution_satoshis, our_funding_contribution);
 					if post_channel_value < 1000 {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Post-splicing channel value must be at least 1000 satoshis. It was {}", post_channel_value), msg.channel_id));
 					}
