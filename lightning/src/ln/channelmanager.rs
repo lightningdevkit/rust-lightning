@@ -2622,9 +2622,9 @@ const MAX_UNFUNDED_CHANS_PER_PEER: usize = 4;
 /// this many peers we reject new (inbound) channels from peers with which we don't have a channel.
 const MAX_UNFUNDED_CHANNEL_PEERS: usize = 50;
 
-/// The maximum number of peers which we do not have a (funded) channel with. Once we reach this
-/// many peers we reject new (inbound) connections.
-const MAX_NO_CHANNEL_PEERS: usize = 250;
+/// The default maximum number of peers which we do not have a (funded) channel with. Once we reach
+/// this many peers we reject new (inbound) connections.
+pub(crate) const DEFAULT_MAX_NO_CHANNEL_PEERS: usize = 250;
 
 /// The maximum expiration from the current time where an [`Offer`] or [`Refund`] is considered
 /// short-lived, while anything with a greater expiration is considered long-lived.
@@ -10776,7 +10776,8 @@ where
 			// unfunded channels taking up space in memory for disconnected peers, we still let new
 			// peers connect, but we'll reject new channels from them.
 			let connected_peers_without_funded_channels = self.peers_without_funded_channels(|node| node.is_connected);
-			let inbound_peer_limited = inbound && connected_peers_without_funded_channels >= MAX_NO_CHANNEL_PEERS;
+			let max_no_channel_peers = self.get_current_default_configuration().max_no_channel_peers;
+			let inbound_peer_limited = inbound && connected_peers_without_funded_channels >= max_no_channel_peers;
 
 			{
 				let mut peer_state_lock = self.per_peer_state.write().unwrap();
@@ -13124,7 +13125,7 @@ mod tests {
 	use crate::events::{Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, ClosureReason};
 	use crate::ln::types::ChannelId;
 	use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
-	use crate::ln::channelmanager::{create_recv_pending_htlc_info, HTLCForwardInfo, inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId};
+	use crate::ln::channelmanager::{create_recv_pending_htlc_info, HTLCForwardInfo, inbound_payment, PaymentId, PaymentSendFailure, RecipientOnionFields, InterceptId, UserConfig};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{self, ErrorAction};
 	use crate::ln::msgs::ChannelMessageHandler;
@@ -13995,8 +13996,8 @@ mod tests {
 		// Further, because all of our channels with nodes[0] are inbound, and none of them funded,
 		// it doesn't count as a "protected" peer, i.e. it counts towards the MAX_NO_CHANNEL_PEERS
 		// limit.
-		let mut peer_pks = Vec::with_capacity(super::MAX_NO_CHANNEL_PEERS);
-		for _ in 1..super::MAX_NO_CHANNEL_PEERS {
+		let mut peer_pks = Vec::with_capacity(super::DEFAULT_MAX_NO_CHANNEL_PEERS);
+		for _ in 1..super::DEFAULT_MAX_NO_CHANNEL_PEERS {
 			let random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
 				&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 			peer_pks.push(random_pk);
@@ -14060,6 +14061,34 @@ mod tests {
 		// last_random_pk.
 		nodes[1].node.handle_open_channel(last_random_pk, &open_channel_msg);
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, last_random_pk);
+	}
+
+	#[test]
+	fn test_custom_max_no_channel_peers_connection_limiting() {
+		// Test that we limit custom un-channel'd peers properly.
+		let max_no_channel_peers = 2usize.saturating_mul(super::DEFAULT_MAX_NO_CHANNEL_PEERS);
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let user_cfg = UserConfig { max_no_channel_peers, ..Default::default() };
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_cfg), Some(user_cfg)]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		// Note that create_network connects the nodes together for us
+
+		let mut peer_pks = Vec::with_capacity(max_no_channel_peers);
+		for _ in 1..max_no_channel_peers {
+			let random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
+				&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
+			peer_pks.push(random_pk);
+			nodes[1].node.peer_connected(random_pk, &msgs::Init {
+				features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+			}, true).unwrap();
+		}
+		let last_random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
+			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
+		nodes[1].node.peer_connected(last_random_pk, &msgs::Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap_err();
 	}
 
 	#[test]
