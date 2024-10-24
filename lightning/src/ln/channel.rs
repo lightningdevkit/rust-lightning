@@ -8643,9 +8643,9 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 				feerate_sat_per_kw: dual_funding_context.funding_feerate_sat_per_1000_weight,
 				funding_tx_locktime: dual_funding_context.funding_tx_locktime,
 				is_initiator: false,
-			    inputs_to_contribute: dual_funding_context.our_funding_inputs.clone(),
-			    outputs_to_contribute: Vec::new(),
-			    expected_remote_shared_funding_output: Some((context.get_funding_redeemscript(), context.channel_value_satoshis)),
+				inputs_to_contribute: dual_funding_context.our_funding_inputs.clone(),
+				outputs_to_contribute: Vec::new(),
+				expected_remote_shared_funding_output: Some((context.get_funding_redeemscript(), context.channel_value_satoshis)),
 			}
 		).map_err(|_| ChannelError::Close((
 			"V2 channel rejected due to sender error".into(),
