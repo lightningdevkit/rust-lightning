@@ -3938,12 +3938,12 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		Ok(())
 	}
 
-	/// Panics if the commitment tx numbers have advanced from their initial number.
+	/// Asserts that the commitment tx numbers have not advanced from their initial number.
 	fn assert_no_commitment_advancement(&self) {
 		if self.commitment_secrets.get_min_seen_secret() != (1 << 48) ||
 				self.cur_counterparty_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER ||
 				self.holder_commitment_point.transaction_number() != INITIAL_COMMITMENT_NUMBER {
-			panic!("Should not have advanced channel commitment tx numbers prior to funding_created");
+			debug_assert!(false, "Should not have advanced channel commitment tx numbers prior to funding_created");
 		}
 	}
 
