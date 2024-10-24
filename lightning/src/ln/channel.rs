@@ -1494,9 +1494,20 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	/// If we can't release a [`ChannelMonitorUpdate`] until some external action completes, we
 	/// store it here and only release it to the `ChannelManager` once it asks for it.
 	blocked_monitor_updates: Vec<PendingChannelMonitorUpdate>,
-	// If we've sent `commtiment_signed` for an interactive transaction construction,
-	// but have not received `tx_signatures` we MUST set `next_funding_txid` to the
-	// txid of that interactive transaction, else we MUST NOT set it.
+	// The `next_funding_txid` field allows peers to finalize the signing steps of an interactive
+	// transaction construction, or safely abort that transaction if it was not signed by one of the
+	// peers, who has thus already removed it from its state.
+	// 
+	// If we've sent `commtiment_signed` for an interactive an interactively constructed transaction
+	// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
+	// to the txid of that interactive transaction, else we MUST NOT set it.
+	//
+	// See the spec for further details on this:
+	//   * `channel_reestablish`-sending node: https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2466-L2470
+	//   * `channel_reestablish`-receiving node: https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L2520-L2531
+	//
+	// TODO(dual_funding): Persist this when we actually contribute funding inputs. For now we always
+	// send an empty witnesses array in `tx_signatures` as a V2 channel acceptor
 	next_funding_txid: Option<Txid>,
 }
 
