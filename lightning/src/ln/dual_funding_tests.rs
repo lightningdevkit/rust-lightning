@@ -11,17 +11,22 @@
 
 use crate::chain::chaininterface::{ConfirmationTarget, FeeEstimator, LowerBoundedFeeEstimator};
 use crate::events::{Event, MessageSendEvent, MessageSendEventsProvider};
-use crate::ln::types::ChannelId;
-use crate::ln::chan_utils::{make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters};
+use crate::ln::chan_utils::{
+	make_funding_redeemscript, ChannelPublicKeys, ChannelTransactionParameters,
+	CounterpartyChannelTransactionParameters,
+};
+use crate::ln::channel::{
+	calculate_our_funding_satoshis, OutboundV2Channel, MIN_CHAN_DUST_LIMIT_SATOSHIS,
+};
 use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint};
-use crate::ln::channel::{calculate_our_funding_satoshis, OutboundV2Channel, MIN_CHAN_DUST_LIMIT_SATOSHIS};
 use crate::ln::functional_test_utils::*;
-use crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete};
 use crate::ln::msgs::ChannelMessageHandler;
+use crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete};
+use crate::ln::types::ChannelId;
 use crate::prelude::*;
+use crate::sign::ChannelSigner as _;
 use crate::util::ser::TransactionU16LenLimited;
 use crate::util::test_utils;
-use crate::sign::ChannelSigner as _;
 
 // Dual-funding: V2 Channel Establishment Tests
 struct V2ChannelEstablishmentTestSession {
@@ -39,24 +44,49 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 
 	// Create a funding input for the new channel along with its previous transaction.
 	let initiator_funding_inputs: Vec<_> = create_dual_funding_utxos_with_prev_txs(
-		&nodes[0], &[session.initiator_input_value_satoshis]
-	).into_iter().map(|(txin, tx)| (txin, TransactionU16LenLimited::new(tx).unwrap())).collect();
+		&nodes[0],
+		&[session.initiator_input_value_satoshis],
+	)
+	.into_iter()
+	.map(|(txin, tx)| (txin, TransactionU16LenLimited::new(tx).unwrap()))
+	.collect();
 
 	// Alice creates a dual-funded channel as initiator.
-	let funding_feerate = node_cfgs[0].fee_estimator.get_est_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
+	let funding_feerate = node_cfgs[0]
+		.fee_estimator
+		.get_est_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
 	let funding_satoshis = calculate_our_funding_satoshis(
-		true, &initiator_funding_inputs[..], funding_feerate, MIN_CHAN_DUST_LIMIT_SATOSHIS
-	).unwrap();
-	let mut  channel = OutboundV2Channel::new(
-		&LowerBoundedFeeEstimator(node_cfgs[0].fee_estimator), &nodes[0].node.entropy_source, &nodes[0].node.signer_provider,
-		nodes[1].node.get_our_node_id(), &nodes[1].node.init_features(), funding_satoshis,
-		initiator_funding_inputs.clone(), 42 /* user_channel_id */, &nodes[0].node.get_current_default_configuration(), nodes[0].best_block_info().1,
-		nodes[0].node.create_and_insert_outbound_scid_alias_for_test(), ConfirmationTarget::NonAnchorChannelFee, &logger_a).unwrap();
+		true,
+		&initiator_funding_inputs[..],
+		funding_feerate,
+		MIN_CHAN_DUST_LIMIT_SATOSHIS,
+	)
+	.unwrap();
+	let mut channel = OutboundV2Channel::new(
+		&LowerBoundedFeeEstimator(node_cfgs[0].fee_estimator),
+		&nodes[0].node.entropy_source,
+		&nodes[0].node.signer_provider,
+		nodes[1].node.get_our_node_id(),
+		&nodes[1].node.init_features(),
+		funding_satoshis,
+		initiator_funding_inputs.clone(),
+		42, /* user_channel_id */
+		&nodes[0].node.get_current_default_configuration(),
+		nodes[0].best_block_info().1,
+		nodes[0].node.create_and_insert_outbound_scid_alias_for_test(),
+		ConfirmationTarget::NonAnchorChannelFee,
+		&logger_a,
+	)
+	.unwrap();
 	let open_channel_v2_msg = channel.get_open_channel_v2(nodes[0].chain_source.chain_hash);
 
 	nodes[1].node.handle_open_channel_v2(nodes[0].node.get_our_node_id(), &open_channel_v2_msg);
 
-	let accept_channel_v2_msg = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannelV2, nodes[0].node.get_our_node_id());
+	let accept_channel_v2_msg = get_event_msg!(
+		nodes[1],
+		MessageSendEvent::SendAcceptChannelV2,
+		nodes[0].node.get_our_node_id()
+	);
 	let channel_id = ChannelId::v2_from_revocation_basepoints(
 		&RevocationBasepoint::from(accept_channel_v2_msg.common_fields.revocation_basepoint),
 		&RevocationBasepoint::from(open_channel_v2_msg.common_fields.revocation_basepoint),
@@ -70,12 +100,14 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		sequence: initiator_funding_inputs[0].0.sequence.0,
 		shared_input_txid: None,
 	};
-	let input_value = tx_add_input_msg.prevtx.as_transaction().output[tx_add_input_msg.prevtx_out as usize].value;
+	let input_value =
+		tx_add_input_msg.prevtx.as_transaction().output[tx_add_input_msg.prevtx_out as usize].value;
 	assert_eq!(input_value.to_sat(), session.initiator_input_value_satoshis);
 
 	nodes[1].node.handle_tx_add_input(nodes[0].node.get_our_node_id(), &tx_add_input_msg);
 
-	let _tx_complete_msg = get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, nodes[0].node.get_our_node_id());
+	let _tx_complete_msg =
+		get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, nodes[0].node.get_our_node_id());
 
 	let tx_add_output_msg = TxAddOutput {
 		channel_id,
@@ -84,15 +116,15 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		script: make_funding_redeemscript(
 			&open_channel_v2_msg.common_fields.funding_pubkey,
 			&accept_channel_v2_msg.common_fields.funding_pubkey,
-		).to_p2wsh(),
+		)
+		.to_p2wsh(),
 	};
 	nodes[1].node.handle_tx_add_output(nodes[0].node.get_our_node_id(), &tx_add_output_msg);
 
-	let _tx_complete_msg = get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, nodes[0].node.get_our_node_id());
+	let _tx_complete_msg =
+		get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, nodes[0].node.get_our_node_id());
 
-	let tx_complete_msg = TxComplete {
-		channel_id,
-	};
+	let tx_complete_msg = TxComplete { channel_id };
 
 	nodes[1].node.handle_tx_complete(nodes[0].node.get_our_node_id(), &tx_complete_msg);
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
@@ -107,9 +139,10 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 
 	let (funding_outpoint, channel_type_features) = {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
-		let peer_state = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
-		let channel_context = peer_state
-			.channel_by_id.get(&tx_complete_msg.channel_id).unwrap().context();
+		let peer_state =
+			per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
+		let channel_context =
+			peer_state.channel_by_id.get(&tx_complete_msg.channel_id).unwrap().context();
 		(channel_context.get_funding_txo(), channel_context.get_channel_type().clone())
 	};
 
@@ -117,18 +150,26 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
 			pubkeys: ChannelPublicKeys {
 				funding_pubkey: accept_channel_v2_msg.common_fields.funding_pubkey,
-				revocation_basepoint: RevocationBasepoint(accept_channel_v2_msg.common_fields.revocation_basepoint),
+				revocation_basepoint: RevocationBasepoint(
+					accept_channel_v2_msg.common_fields.revocation_basepoint,
+				),
 				payment_point: accept_channel_v2_msg.common_fields.payment_basepoint,
-				delayed_payment_basepoint: DelayedPaymentBasepoint(accept_channel_v2_msg.common_fields.delayed_payment_basepoint),
+				delayed_payment_basepoint: DelayedPaymentBasepoint(
+					accept_channel_v2_msg.common_fields.delayed_payment_basepoint,
+				),
 				htlc_basepoint: HtlcBasepoint(accept_channel_v2_msg.common_fields.htlc_basepoint),
 			},
 			selected_contest_delay: accept_channel_v2_msg.common_fields.to_self_delay,
 		}),
 		holder_pubkeys: ChannelPublicKeys {
 			funding_pubkey: open_channel_v2_msg.common_fields.funding_pubkey,
-			revocation_basepoint: RevocationBasepoint(open_channel_v2_msg.common_fields.revocation_basepoint),
+			revocation_basepoint: RevocationBasepoint(
+				open_channel_v2_msg.common_fields.revocation_basepoint,
+			),
 			payment_point: open_channel_v2_msg.common_fields.payment_basepoint,
-			delayed_payment_basepoint: DelayedPaymentBasepoint(open_channel_v2_msg.common_fields.delayed_payment_basepoint),
+			delayed_payment_basepoint: DelayedPaymentBasepoint(
+				open_channel_v2_msg.common_fields.delayed_payment_basepoint,
+			),
 			htlc_basepoint: HtlcBasepoint(open_channel_v2_msg.common_fields.htlc_basepoint),
 		},
 		holder_selected_contest_delay: open_channel_v2_msg.common_fields.to_self_delay,
@@ -137,15 +178,23 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 		channel_type_features,
 	};
 
-	channel.context.get_mut_signer().as_mut_ecdsa().unwrap().provide_channel_parameters(&channel_transaction_parameters);
+	channel
+		.context
+		.get_mut_signer()
+		.as_mut_ecdsa()
+		.unwrap()
+		.provide_channel_parameters(&channel_transaction_parameters);
 
 	let msg_commitment_signed_from_0 = CommitmentSigned {
 		channel_id,
-		signature: channel.context.get_initial_counterparty_commitment_signature_for_test(
-			&&logger_a,
-			channel_transaction_parameters,
-			accept_channel_v2_msg.common_fields.first_per_commitment_point,
-		).unwrap(),
+		signature: channel
+			.context
+			.get_initial_counterparty_commitment_signature_for_test(
+				&&logger_a,
+				channel_transaction_parameters,
+				accept_channel_v2_msg.common_fields.first_per_commitment_point,
+			)
+			.unwrap(),
 		htlc_signatures: vec![],
 		batch: None,
 		#[cfg(taproot)]
@@ -153,7 +202,9 @@ fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) 
 	};
 
 	// Handle the initial commitment_signed exchange. Order is not important here.
-	nodes[1].node.handle_commitment_signed(nodes[0].node.get_our_node_id(), &msg_commitment_signed_from_0);
+	nodes[1]
+		.node
+		.handle_commitment_signed(nodes[0].node.get_our_node_id(), &msg_commitment_signed_from_0);
 	check_added_monitors(&nodes[1], 1);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
