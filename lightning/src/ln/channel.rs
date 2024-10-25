@@ -8564,7 +8564,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// Assumes chain_hash has already been checked and corresponds with what we expect!
 	pub fn new<ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &LowerBoundedFeeEstimator<F>, entropy_source: &ES, signer_provider: &SP,
-		counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
+		holder_node_id: PublicKey, counterparty_node_id: PublicKey, our_supported_features: &ChannelTypeFeatures,
 		their_features: &InitFeatures, msg: &msgs::OpenChannelV2,
 		funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>, total_witness_weight: Weight,
 		user_id: u128, config: &UserConfig, current_chain_height: u32, logger: &L,
@@ -8640,6 +8640,8 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		let interactive_tx_constructor = Some(InteractiveTxConstructor::new(
 			InteractiveTxConstructorArgs {
 				entropy_source,
+				holder_node_id,
+				counterparty_node_id,
 				channel_id: context.channel_id,
 				feerate_sat_per_kw: dual_funding_context.funding_feerate_sat_per_1000_weight,
 				funding_tx_locktime: dual_funding_context.funding_tx_locktime,

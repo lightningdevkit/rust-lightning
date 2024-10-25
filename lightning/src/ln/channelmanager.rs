@@ -7673,7 +7673,7 @@ where
 					},
 					OpenChannelMessage::V2(open_channel_msg) => {
 						InboundV2Channel::new(&self.fee_estimator, &self.entropy_source, &self.signer_provider,
-							*counterparty_node_id, &self.channel_type_features(), &peer_state.latest_features,
+							self.get_our_node_id(), *counterparty_node_id, &self.channel_type_features(), &peer_state.latest_features,
 							&open_channel_msg, funding_inputs, total_witness_weight, user_channel_id,
 							&self.default_configuration, best_block_height, &self.logger
 						).map_err(|_| MsgHandleErrInternal::from_chan_no_close(
@@ -7945,9 +7945,9 @@ where
 			},
 			OpenChannelMessageRef::V2(msg) => {
 				let channel = InboundV2Channel::new(&self.fee_estimator, &self.entropy_source,
-					&self.signer_provider, *counterparty_node_id, &self.channel_type_features(),
-					&peer_state.latest_features, msg, vec![], Weight::from_wu(0), user_channel_id,
-					&self.default_configuration, best_block_height, &self.logger
+					&self.signer_provider, self.get_our_node_id(), *counterparty_node_id,
+					&self.channel_type_features(), &peer_state.latest_features, msg, vec![], Weight::from_wu(0),
+					user_channel_id, &self.default_configuration, best_block_height, &self.logger
 				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?;
 				let message_send_event = events::MessageSendEvent::SendAcceptChannelV2 {
 					node_id: *counterparty_node_id,
@@ -8266,9 +8266,11 @@ where
 		match peer_state.channel_by_id.entry(msg.channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				let channel_phase = chan_phase_entry.get_mut();
-				let (msg_send_event_opt, tx_opt) = match channel_phase {
-					ChannelPhase::UnfundedInboundV2(channel) => channel.tx_complete(msg).into_msg_send_event_or_tx(counterparty_node_id),
-					ChannelPhase::UnfundedOutboundV2(channel) => channel.tx_complete(msg).into_msg_send_event_or_tx(counterparty_node_id),
+				let (msg_send_event_opt, signing_session_opt) = match channel_phase {
+					ChannelPhase::UnfundedInboundV2(channel) => channel.tx_complete(msg)
+						.into_msg_send_event_or_signing_session(counterparty_node_id),
+					ChannelPhase::UnfundedOutboundV2(channel) => channel.tx_complete(msg)
+						.into_msg_send_event_or_signing_session(counterparty_node_id),
 					_ => try_chan_phase_entry!(self, peer_state, Err(ChannelError::Close(
 						(
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress".into(),
@@ -8278,7 +8280,7 @@ where
 				if let Some(msg_send_event) = msg_send_event_opt {
 					peer_state.pending_msg_events.push(msg_send_event);
 				}
-				if let Some(tx) = tx_opt {
+				if let Some(signing_session) = signing_session_opt {
 					// TODO(dual_funding): Handle this unsigned transaction.
 				}
 				Ok(())
