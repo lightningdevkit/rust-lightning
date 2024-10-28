@@ -12967,17 +12967,17 @@ where
 									// inbound edge of the payment's monitor has already claimed
 									// the HTLC) we skip trying to replay the claim.
 									let htlc_payment_hash: PaymentHash = payment_preimage.into();
-									if !inbound_edge_balances.iter().all(|bal| {
+									if inbound_edge_balances.iter().any(|bal| {
 										match bal {
 											Balance::ClaimableOnChannelClose { .. } => {
 												// The channel is still open, assume we can still
 												// claim against it
-												false
+												true
 											},
 											Balance::MaybePreimageClaimableHTLC { payment_hash, .. } => {
-												*payment_hash != htlc_payment_hash
+												*payment_hash == htlc_payment_hash
 											},
-											_ => true,
+											_ => false,
 										}
 									}) {
 										return None;
