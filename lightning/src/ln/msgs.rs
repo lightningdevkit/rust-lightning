@@ -1834,7 +1834,6 @@ mod fuzzy_internal_msgs {
 	}
 
 	pub(crate) enum OutboundTrampolinePayload<'a> {
-		#[allow(unused)]
 		Forward {
 			/// The value, in msat, of the payment after this hop's fee is deducted.
 			amt_to_forward: u64,
@@ -1854,12 +1853,10 @@ mod fuzzy_internal_msgs {
 			/// If applicable, features of the BOLT12 invoice being paid.
 			invoice_features: Option<Bolt12InvoiceFeatures>,
 		},
-		#[allow(unused)]
 		BlindedForward {
 			encrypted_tlvs: &'a Vec<u8>,
 			intro_node_blinding_point: Option<PublicKey>,
 		},
-		#[allow(unused)]
 		BlindedReceive {
 			sender_intended_htlc_amt_msat: u64,
 			total_msat: u64,
