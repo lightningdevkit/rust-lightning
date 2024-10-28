@@ -9138,7 +9138,7 @@ where
 				if let Some(shutdown_result) = shutdown_result {
 					let context = &chan.context();
 					let logger = WithChannelContext::from(&self.logger, context, None);
-					log_trace!(logger, "Removing channel {} now that signer is unblocked", context.channel_id());
+					log_trace!(logger, "Removing channel {} now that the signer is unblocked", context.channel_id());
 					update_maps_on_chan_removal!(self, peer_state, context);
 					shutdown_results.push(shutdown_result);
 					false
