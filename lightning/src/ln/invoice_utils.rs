@@ -6,13 +6,12 @@ use lightning_invoice::{Description, Bolt11InvoiceDescription, Sha256};
 use crate::prelude::*;
 
 use bitcoin::hashes::Hash;
-use bitcoin::network::Network;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
-use crate::types::payment::{PaymentHash, PaymentSecret};
+use crate::types::payment::PaymentHash;
 use crate::ln::channel_state::ChannelDetails;
-use crate::ln::channelmanager::{ChannelManager, PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use crate::ln::channelmanager::{Bolt11InvoiceParameters, ChannelManager, PhantomRouteHints, MIN_CLTV_EXPIRY_DELTA, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use crate::ln::inbound_payment::{create, create_from_hash, ExpandedKey};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{RouteHint, RouteHintHop, Router};
@@ -314,7 +313,6 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 	})
 }
 
-#[cfg(feature = "std")]
 /// Utility to construct an invoice. Generally, unless you want to do something like a custom
 /// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
 /// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
@@ -331,9 +329,8 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 ///
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
-	min_final_cltv_expiry_delta: Option<u16>,
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, amt_msat: Option<u64>,
+	description: String, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
@@ -346,21 +343,17 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	use std::time::SystemTime;
-	let duration_since_epoch = SystemTime::now()
-		.duration_since(SystemTime::UNIX_EPOCH)
-		.expect("for the foreseeable future this shouldn't happen");
-
-	_create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, node_signer, logger, amt_msat,
-		Bolt11InvoiceDescription::Direct(
-			Description::new(description).map_err(SignOrCreationError::CreationError)?,
-		),
-		duration_since_epoch, invoice_expiry_delta_secs, min_final_cltv_expiry_delta,
-	)
+	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
+	let params = Bolt11InvoiceParameters {
+		amount_msats: amt_msat,
+		description: Bolt11InvoiceDescription::Direct(description),
+		invoice_expiry_delta_secs: Some(invoice_expiry_delta_secs),
+		min_final_cltv_expiry_delta,
+		payment_hash: None,
+	};
+	channelmanager.create_bolt11_invoice(params)
 }
 
-#[cfg(feature = "std")]
 /// Utility to construct an invoice. Generally, unless you want to do something like a custom
 /// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
 /// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
@@ -378,9 +371,9 @@ where
 ///
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	amt_msat: Option<u64>, description_hash: Sha256,
-	invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, amt_msat: Option<u64>,
+	description_hash: Sha256, invoice_expiry_delta_secs: u32,
+	min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
@@ -393,49 +386,16 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	use std::time::SystemTime;
-	let duration_since_epoch = SystemTime::now()
-		.duration_since(SystemTime::UNIX_EPOCH)
-		.expect("for the foreseeable future this shouldn't happen");
-
-	_create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, node_signer, logger, amt_msat,
-		Bolt11InvoiceDescription::Hash(description_hash),
-		duration_since_epoch, invoice_expiry_delta_secs, min_final_cltv_expiry_delta,
-	)
+	let params = Bolt11InvoiceParameters {
+		amount_msats: amt_msat,
+		description: Bolt11InvoiceDescription::Hash(description_hash),
+		invoice_expiry_delta_secs: Some(invoice_expiry_delta_secs),
+		min_final_cltv_expiry_delta,
+		payment_hash: None,
+	};
+	channelmanager.create_bolt11_invoice(params)
 }
 
-fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	amt_msat: Option<u64>, description: Bolt11InvoiceDescription,
-	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	MR::Target: MessageRouter,
-	L::Target: Logger,
-{
-	if min_final_cltv_expiry_delta.is_some() && min_final_cltv_expiry_delta.unwrap().saturating_add(3) < MIN_FINAL_CLTV_EXPIRY_DELTA {
-		return Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort));
-	}
-
-	// `create_inbound_payment` only returns an error if the amount is greater than the total bitcoin
-	// supply.
-	let (payment_hash, payment_secret) = channelmanager
-		.create_inbound_payment(amt_msat, invoice_expiry_delta_secs, min_final_cltv_expiry_delta)
-		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
-	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
-		channelmanager, node_signer, logger, amt_msat, description, duration_since_epoch,
-		invoice_expiry_delta_secs, payment_hash, payment_secret, min_final_cltv_expiry_delta)
-}
-
-#[cfg(feature = "std")]
 /// See [`create_invoice_from_channelmanager`].
 ///
 /// This version allows for providing custom [`PaymentHash`] and description hash for the invoice.
@@ -444,9 +404,9 @@ where
 /// the payment hash is also involved outside the scope of lightning and want to set the
 /// description hash.
 pub fn create_invoice_from_channelmanager_with_description_hash_and_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	amt_msat: Option<u64>, description_hash: Sha256,
-	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, min_final_cltv_expiry_delta: Option<u16>,
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, amt_msat: Option<u64>,
+	description_hash: Sha256, invoice_expiry_delta_secs: u32, payment_hash: PaymentHash,
+	min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
@@ -459,33 +419,25 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	use std::time::SystemTime;
-	let duration_since_epoch = SystemTime::now()
-		.duration_since(SystemTime::UNIX_EPOCH)
-		.expect("for the foreseeable future this shouldn't happen");
-
-	let payment_secret = channelmanager
-		.create_inbound_payment_for_hash(payment_hash, amt_msat, invoice_expiry_delta_secs,
-			min_final_cltv_expiry_delta)
-		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
-	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
-		channelmanager, node_signer, logger, amt_msat,
-		Bolt11InvoiceDescription::Hash(description_hash),
-		duration_since_epoch, invoice_expiry_delta_secs, payment_hash, payment_secret,
+	let params = Bolt11InvoiceParameters {
+		amount_msats: amt_msat,
+		description: Bolt11InvoiceDescription::Hash(description_hash),
+		invoice_expiry_delta_secs: Some(invoice_expiry_delta_secs),
 		min_final_cltv_expiry_delta,
-	)
+		payment_hash: Some(payment_hash),
+	};
+	channelmanager.create_bolt11_invoice(params)
 }
 
-#[cfg(feature = "std")]
 /// See [`create_invoice_from_channelmanager`].
 ///
 /// This version allows for providing a custom [`PaymentHash`] for the invoice.
 /// This may be useful if you're building an on-chain swap or involving another protocol where
 /// the payment hash is also involved outside the scope of lightning.
 pub fn create_invoice_from_channelmanager_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
-	payment_hash: PaymentHash, min_final_cltv_expiry_delta: Option<u16>,
+	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, amt_msat: Option<u64>,
+	description: String, invoice_expiry_delta_secs: u32, payment_hash: PaymentHash,
+	min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
@@ -498,91 +450,15 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	use std::time::SystemTime;
-	let duration_since_epoch = SystemTime::now()
-		.duration_since(SystemTime::UNIX_EPOCH)
-		.expect("for the foreseeable future this shouldn't happen");
-
-	let payment_secret = channelmanager
-		.create_inbound_payment_for_hash(payment_hash, amt_msat, invoice_expiry_delta_secs,
-			min_final_cltv_expiry_delta)
-		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
-	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
-		channelmanager, node_signer, logger, amt_msat,
-		Bolt11InvoiceDescription::Direct(
-			Description::new(description).map_err(SignOrCreationError::CreationError)?,
-		),
-		duration_since_epoch, invoice_expiry_delta_secs, payment_hash, payment_secret,
+	let description = Description::new(description).map_err(SignOrCreationError::CreationError)?;
+	let params = Bolt11InvoiceParameters {
+		amount_msats: amt_msat,
+		description: Bolt11InvoiceDescription::Direct(description),
+		invoice_expiry_delta_secs: Some(invoice_expiry_delta_secs),
 		min_final_cltv_expiry_delta,
-	)
-}
-
-fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
-	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	amt_msat: Option<u64>, description: Bolt11InvoiceDescription,
-	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, payment_hash: PaymentHash,
-	payment_secret: PaymentSecret, min_final_cltv_expiry_delta: Option<u16>,
-) -> Result<Bolt11Invoice, SignOrCreationError<()>>
-where
-	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
-	T::Target: BroadcasterInterface,
-	ES::Target: EntropySource,
-	NS::Target: NodeSigner,
-	SP::Target: SignerProvider,
-	F::Target: FeeEstimator,
-	R::Target: Router,
-	MR::Target: MessageRouter,
-	L::Target: Logger,
-{
-	let our_node_pubkey = channelmanager.get_our_node_id();
-	let channels = channelmanager.list_channels();
-
-	let network = Network::from_chain_hash(channelmanager.chain_hash)
-		.map(Into::into)
-		.unwrap_or(Currency::Bitcoin);
-
-	if min_final_cltv_expiry_delta.is_some() && min_final_cltv_expiry_delta.unwrap().saturating_add(3) < MIN_FINAL_CLTV_EXPIRY_DELTA {
-		return Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort));
-	}
-
-	log_trace!(logger, "Creating invoice with payment hash {}", &payment_hash);
-
-	let invoice = match description {
-		Bolt11InvoiceDescription::Direct(description) => {
-			InvoiceBuilder::new(network).description(description.into_inner().0)
-		}
-		Bolt11InvoiceDescription::Hash(hash) => InvoiceBuilder::new(network).description_hash(hash.0),
+		payment_hash: Some(payment_hash),
 	};
-
-	let mut invoice = invoice
-		.duration_since_epoch(duration_since_epoch)
-		.payee_pub_key(our_node_pubkey)
-		.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
-		.payment_secret(payment_secret)
-		.basic_mpp()
-		.min_final_cltv_expiry_delta(
-			// Add a buffer of 3 to the delta if present, otherwise use LDK's minimum.
-			min_final_cltv_expiry_delta.map(|x| x.saturating_add(3)).unwrap_or(MIN_FINAL_CLTV_EXPIRY_DELTA).into())
-		.expiry_time(Duration::from_secs(invoice_expiry_delta_secs.into()));
-	if let Some(amt) = amt_msat {
-		invoice = invoice.amount_milli_satoshis(amt);
-	}
-
-	let route_hints = sort_and_filter_channels(channels, amt_msat, &logger);
-	for hint in route_hints {
-		invoice = invoice.private_route(hint);
-	}
-
-	let raw_invoice = match invoice.build_raw() {
-		Ok(inv) => inv,
-		Err(e) => return Err(SignOrCreationError::CreationError(e))
-	};
-	let signature = node_signer.sign_invoice(&raw_invoice, Recipient::Node);
-	let signed_raw_invoice = raw_invoice.sign(|_| signature);
-	match signed_raw_invoice {
-		Ok(inv) => Ok(Bolt11Invoice::from_signed(inv).unwrap()),
-		Err(e) => Err(SignOrCreationError::SignError(e))
-	}
+	channelmanager.create_bolt11_invoice(params)
 }
 
 /// Sorts and filters the `channels` for an invoice, and returns the corresponding `RouteHint`s to include
@@ -604,7 +480,7 @@ where
 /// * Limited to a total of 3 channels.
 /// * Sorted by lowest inbound capacity if an online channel with the minimum amount requested exists,
 ///   otherwise sort by highest inbound capacity to give the payment the best chance of succeeding.
-fn sort_and_filter_channels<L: Deref>(
+pub(super) fn sort_and_filter_channels<L: Deref>(
 	channels: Vec<ChannelDetails>,
 	min_inbound_capacity_msat: Option<u64>,
 	logger: &L,
@@ -878,8 +754,7 @@ mod test {
 		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
 		let non_default_invoice_expiry_secs = 4200;
 		let invoice = create_invoice_from_channelmanager(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
-			Some(10_000), "test".to_string(), non_default_invoice_expiry_secs, None,
+			nodes[1].node, Some(10_000), "test".to_string(), non_default_invoice_expiry_secs, None,
 		).unwrap();
 		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
 		// If no `min_final_cltv_expiry_delta` is specified, then it should be `MIN_FINAL_CLTV_EXPIRY_DELTA`.
@@ -929,8 +804,7 @@ mod test {
 		let custom_min_final_cltv_expiry_delta = Some(50);
 
 		let invoice = create_invoice_from_channelmanager(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
-			Some(10_000), "".into(), 3600,
+			nodes[1].node, Some(10_000), "".into(), 3600,
 			if with_custom_delta { custom_min_final_cltv_expiry_delta } else { None },
 		).unwrap();
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), if with_custom_delta {
@@ -952,8 +826,7 @@ mod test {
 		let custom_min_final_cltv_expiry_delta = Some(21);
 
 		let invoice = create_invoice_from_channelmanager(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
-			Some(10_000), "".into(), 3600, custom_min_final_cltv_expiry_delta,
+			nodes[1].node, Some(10_000), "".into(), 3600, custom_min_final_cltv_expiry_delta,
 		).unwrap();
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 	}
@@ -966,8 +839,7 @@ mod test {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let description_hash = Sha256(Hash::hash("Testing description_hash".as_bytes()));
 		let invoice = create_invoice_from_channelmanager_with_description_hash(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
-			Some(10_000), description_hash, 3600, None,
+			nodes[1].node, Some(10_000), description_hash, 3600, None,
 		).unwrap();
 		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
@@ -982,8 +854,7 @@ mod test {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let payment_hash = PaymentHash([0; 32]);
 		let invoice = create_invoice_from_channelmanager_with_payment_hash(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
-			Some(10_000), "test".to_string(), 3600, payment_hash, None,
+			nodes[1].node, Some(10_000), "test".to_string(), 3600, payment_hash, None,
 		).unwrap();
 		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
@@ -1273,8 +1144,7 @@ mod test {
 		mut chan_ids_to_match: HashSet<u64>
 	) {
 		let invoice = create_invoice_from_channelmanager(
-			invoice_node.node, invoice_node.keys_manager, invoice_node.logger,
-			invoice_amt, "test".to_string(), 3600, None,
+			invoice_node.node, invoice_amt, "test".to_string(), 3600, None,
 		).unwrap();
 		let hints = invoice.private_routes();
 
@@ -1911,8 +1781,8 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let result = create_invoice_from_channelmanager(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
-			Some(10_000), "Some description".into(), 3600, Some(MIN_FINAL_CLTV_EXPIRY_DELTA - 4),
+			nodes[1].node, Some(10_000), "Some description".into(), 3600,
+			Some(MIN_FINAL_CLTV_EXPIRY_DELTA - 4),
 		);
 		match result {
 			Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort)) => {},
