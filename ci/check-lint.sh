@@ -2,6 +2,8 @@
 set -e
 set -x
 RUSTFLAGS='-D warnings' cargo clippy -- \
+	`# Things where clippy is just wrong` \
+	-A clippy::unwrap-or-default \
 	`# Errors` \
 	-A clippy::erasing_op \
 	-A clippy::never_loop \

@@ -1,0 +1,7 @@
+API Updates
+===========
+
+As a part of adding robustness against several unlikely scenarios, redundant `PaymentClaimed`
+`Event`s will be generated more frequently on startup for payments received on LDK 0.1 and
+newer. A new `Event::PaymentClaimed::payment_id` field may be used to better differentiate
+between redundant payments.

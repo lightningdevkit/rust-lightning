@@ -1,0 +1,6 @@
+API Changes
+===========
+
+Additional information is now stored in `ChannelMonitorUpdate`s which may increase the size of
+`ChannelMonitorUpdate`s claiming inbound payments substantially. The expected maximum size of
+`ChannelMonitorUpdate`s shouldn't change materially.

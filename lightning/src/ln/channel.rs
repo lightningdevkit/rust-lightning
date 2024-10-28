@@ -32,7 +32,7 @@ use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
 use crate::ln::script::{self, ShutdownScript};
 use crate::ln::channel_state::{ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails};
-use crate::ln::channelmanager::{self, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{self, PendingHTLCStatus, HTLCSource, SentHTLCId, HTLCFailureMsg, PendingHTLCInfo, RAACommitmentOrder, PaymentClaimDetails, BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MAX_LOCAL_BREAKDOWN_TIMEOUT};
 use crate::ln::chan_utils::{
 	CounterpartyCommitmentSecrets, TxCreationKeys, HTLCOutputInCommitment, htlc_success_tx_weight,
 	htlc_timeout_tx_weight, make_funding_redeemscript, ChannelPublicKeys, CommitmentTransaction,
@@ -1290,7 +1290,7 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	// further `send_update_fee` calls, dropping the previous holding cell update entirely.
 	holding_cell_update_fee: Option<u32>,
 	next_holder_htlc_id: u64,
-	next_counterparty_htlc_id: u64,
+	pub(super) next_counterparty_htlc_id: u64,
 	feerate_per_kw: u32,
 
 	/// The timestamp set on our latest `channel_update` message for this channel. It is updated
@@ -4027,26 +4027,31 @@ impl<SP: Deref> Channel<SP> where
 	/// Claims an HTLC while we're disconnected from a peer, dropping the [`ChannelMonitorUpdate`]
 	/// entirely.
 	///
+	/// This is only used for payments received prior to LDK 0.1.
+	///
 	/// The [`ChannelMonitor`] for this channel MUST be updated out-of-band with the preimage
 	/// provided (i.e. without calling [`crate::chain::Watch::update_channel`]).
 	///
 	/// The HTLC claim will end up in the holding cell (because the caller must ensure the peer is
 	/// disconnected).
-	pub fn claim_htlc_while_disconnected_dropping_mon_update<L: Deref>
+	pub fn claim_htlc_while_disconnected_dropping_mon_update_legacy<L: Deref>
 		(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage, logger: &L)
 	where L::Target: Logger {
 		// Assert that we'll add the HTLC claim to the holding cell in `get_update_fulfill_htlc`
 		// (see equivalent if condition there).
 		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
-		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, logger);
+		let fulfill_resp = self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, logger);
 		self.context.latest_monitor_update_id = mon_update_id;
 		if let UpdateFulfillFetch::NewClaim { msg, .. } = fulfill_resp {
 			assert!(msg.is_none()); // The HTLC must have ended up in the holding cell.
 		}
 	}
 
-	fn get_update_fulfill_htlc<L: Deref>(&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage, logger: &L) -> UpdateFulfillFetch where L::Target: Logger {
+	fn get_update_fulfill_htlc<L: Deref>(
+		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage,
+		payment_info: Option<PaymentClaimDetails>, logger: &L,
+	) -> UpdateFulfillFetch where L::Target: Logger {
 		// Either ChannelReady got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
 		// incoming HTLC anyway). If we got to ShutdownComplete, callers aren't allowed to call us,
@@ -4104,6 +4109,7 @@ impl<SP: Deref> Channel<SP> where
 			counterparty_node_id: Some(self.context.counterparty_node_id),
 			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
 				payment_preimage: payment_preimage_arg.clone(),
+				payment_info,
 			}],
 			channel_id: Some(self.context.channel_id()),
 		};
@@ -4171,9 +4177,12 @@ impl<SP: Deref> Channel<SP> where
 		}
 	}
 
-	pub fn get_update_fulfill_htlc_and_commit<L: Deref>(&mut self, htlc_id: u64, payment_preimage: PaymentPreimage, logger: &L) -> UpdateFulfillCommitFetch where L::Target: Logger {
+	pub fn get_update_fulfill_htlc_and_commit<L: Deref>(
+		&mut self, htlc_id: u64, payment_preimage: PaymentPreimage,
+		payment_info: Option<PaymentClaimDetails>, logger: &L,
+	) -> UpdateFulfillCommitFetch where L::Target: Logger {
 		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
-		match self.get_update_fulfill_htlc(htlc_id, payment_preimage, logger) {
+		match self.get_update_fulfill_htlc(htlc_id, payment_preimage, payment_info, logger) {
 			UpdateFulfillFetch::NewClaim { mut monitor_update, htlc_value_msat, msg } => {
 				// Even if we aren't supposed to let new monitor updates with commitment state
 				// updates run, we still need to push the preimage ChannelMonitorUpdateStep no
@@ -4934,9 +4943,14 @@ impl<SP: Deref> Channel<SP> where
 						// not fail - any in between attempts to claim the HTLC will have resulted
 						// in it hitting the holding cell again and we cannot change the state of a
 						// holding cell HTLC from fulfill to anything else.
+						//
+						// Note that we should have already provided a preimage-containing
+						// `ChannelMonitorUpdate` to the user, making this one redundant, however
+						// there's no harm in including the extra `ChannelMonitorUpdateStep` here.
+						// We do not bother to track and include `payment_info` here, however.
 						let mut additional_monitor_update =
 							if let UpdateFulfillFetch::NewClaim { monitor_update, .. } =
-								self.get_update_fulfill_htlc(htlc_id, *payment_preimage, logger)
+								self.get_update_fulfill_htlc(htlc_id, *payment_preimage, None, logger)
 							{ monitor_update } else { unreachable!() };
 						update_fulfill_count += 1;
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
