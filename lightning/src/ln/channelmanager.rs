@@ -6277,20 +6277,21 @@ where
 			let mut shutdown_channels = Vec::new();
 
 			macro_rules! process_unfunded_channel_tick {
-				($peer_state: expr, $context: expr, $unfunded_context: expr, $pending_msg_events: expr) => { {
-					$context.maybe_expire_prev_config();
-					if $unfunded_context.should_expire_unfunded_channel() {
-						let logger = WithChannelContext::from(&self.logger, $context, None);
+				($peer_state: expr, $chan: expr, $pending_msg_events: expr) => { {
+					let context = &mut $chan.context;
+					context.maybe_expire_prev_config();
+					if $chan.unfunded_context.should_expire_unfunded_channel() {
+						let logger = WithChannelContext::from(&self.logger, context, None);
 						log_error!(logger,
 							"Force-closing pending channel with ID {} for not establishing in a timely manner",
-							$context.channel_id());
-						update_maps_on_chan_removal!(self, $peer_state, $context);
-						shutdown_channels.push($context.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }));
+							context.channel_id());
+						update_maps_on_chan_removal!(self, $peer_state, context);
+						shutdown_channels.push(context.force_shutdown(false, ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }));
 						$pending_msg_events.push(MessageSendEvent::HandleError {
-							node_id: $context.get_counterparty_node_id(),
+							node_id: context.get_counterparty_node_id(),
 							action: msgs::ErrorAction::SendErrorMessage {
 								msg: msgs::ErrorMessage {
-									channel_id: $context.channel_id(),
+									channel_id: context.channel_id(),
 									data: "Force-closing pending channel due to timeout awaiting establishment handshake".to_owned(),
 								},
 							},
@@ -6386,22 +6387,18 @@ where
 								true
 							},
 							ChannelPhase::UnfundedInboundV1(chan) => {
-								process_unfunded_channel_tick!(peer_state, &mut chan.context, &mut chan.unfunded_context,
-									pending_msg_events)
+								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
 							},
 							ChannelPhase::UnfundedOutboundV1(chan) => {
-								process_unfunded_channel_tick!(peer_state, &mut chan.context, &mut chan.unfunded_context,
-									pending_msg_events)
+								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
 							},
 							#[cfg(any(dual_funding, splicing))]
 							ChannelPhase::UnfundedInboundV2(chan) => {
-								process_unfunded_channel_tick!(peer_state, &mut chan.context, &mut chan.unfunded_context,
-									pending_msg_events)
+								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
 							},
 							#[cfg(any(dual_funding, splicing))]
 							ChannelPhase::UnfundedOutboundV2(chan) => {
-								process_unfunded_channel_tick!(peer_state, &mut chan.context, &mut chan.unfunded_context,
-									pending_msg_events)
+								process_unfunded_channel_tick!(peer_state, chan, pending_msg_events)
 							},
 						}
 					});
