@@ -7568,6 +7568,10 @@ where
 	/// for zero confirmations. Instead, `accept_inbound_channel_from_trusted_peer_0conf` must be
 	/// used to accept such channels.
 	///
+	/// NOTE: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
+	/// will prevent the funding transaction from being relayed on the bitcoin network and hence being
+	/// confirmed.
+	///
 	/// [`Event::OpenChannelRequest`]: events::Event::OpenChannelRequest
 	/// [`Event::ChannelClosed::user_channel_id`]: events::Event::ChannelClosed::user_channel_id
 	pub fn accept_inbound_channel(&self, temporary_channel_id: &ChannelId, counterparty_node_id: &PublicKey, user_channel_id: u128) -> Result<(), APIError> {

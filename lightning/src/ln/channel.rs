@@ -1768,6 +1768,19 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 			signing_session.provide_holder_witnesses(self.context().channel_id, Vec::new());
 		} else {
 			// TODO(dual_funding): Send event for signing if we've contributed funds.
+			// Inform the user that SIGHASH_ALL must be used for all signatures when contributing
+			// inputs/signatures.
+			// Also warn the user that we don't do anything to prevent the counterparty from
+			// providing non-standard witnesses which will prevent the funding transaction from
+			// confirming. This warning must appear in doc comments wherever the user is contributing
+			// funds, whether they are initiator or acceptor.
+			//
+			// The following warning can be used when the APIs allowing contributing inputs become available:
+			// <div class="warning">
+			// WARNING: LDK makes no attempt to prevent the counterparty from using non-standard inputs which
+			// will prevent the funding transaction from being relayed on the bitcoin network and hence being
+			// confirmed.
+			// </div>
 		}
 
 		// Clear the interactive transaction constructor
