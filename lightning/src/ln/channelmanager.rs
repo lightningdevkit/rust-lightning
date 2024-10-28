@@ -8361,17 +8361,40 @@ where
 				let tx_constructor = match channel_phase {
 					ChannelPhase::UnfundedInboundV2(chan) => chan.interactive_tx_constructor_mut(),
 					ChannelPhase::UnfundedOutboundV2(chan) => chan.interactive_tx_constructor_mut(),
-					_ => try_chan_phase_entry!(self, Err(ChannelError::Close(
-						(
-							"Got an unexpected tx_abort message".into(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						))), chan_phase_entry)
+					ChannelPhase::Funded(_) => {
+						// TODO(splicing)/TODO(RBF): We'll also be doing interactive tx construction
+						// for a "ChannelPhase::Funded" when we want to bump the fee on an interactively
+						// constructed funding tx or during splicing. For now we send an error as we would
+						// never ack an RBF attempt or a splice for now:
+						try_chan_phase_entry!(self, Err(ChannelError::Warn(
+							"Got an unexpected tx_abort message: After initial funding transaction is signed, \
+							splicing and RBF attempts of interactive funding transactions are not supported yet so \
+							we don't have any negotiation in progress".into(),
+						)), chan_phase_entry)
+					}
+					ChannelPhase::UnfundedInboundV1(_) | ChannelPhase::UnfundedOutboundV1(_) => {
+						try_chan_phase_entry!(self, Err(ChannelError::Warn(
+							"Got an unexpected tx_abort message: This is an unfunded channel created with V1 channel \
+							establishment".into(),
+						)), chan_phase_entry)
+					},
 				};
+				// This checks for and resets the interactive negotiation state by `take()`ing it from the channel.
+				// The existence of the `tx_constructor` indicates that we have not moved into the signing
+				// phase for this interactively constructed transaction and hence we have not exchanged
+				// `tx_signatures`. Either way, we never close the channel upon receiving a `tx_abort`:
+				//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L574-L576
 				if tx_constructor.take().is_some() {
 					let msg = msgs::TxAbort {
 						channel_id: msg.channel_id,
 						data: "Acknowledged tx_abort".to_string().into_bytes(),
 					};
+					// NOTE: Since at this point we have not sent a `tx_abort` message for this negotiation
+					// previously (tx_constructor was `Some`), we need to echo back a tx_abort message according
+					// to the spec:
+					//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L560-L561
+					// For rationale why we echo back `tx_abort`:
+					//   https://github.com/lightning/bolts/blob/247e83d/02-peer-protocol.md?plain=1#L578-L580
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendTxAbort {
 						node_id: *counterparty_node_id,
 						msg,
