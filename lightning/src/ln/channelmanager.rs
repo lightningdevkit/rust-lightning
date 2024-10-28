@@ -2890,7 +2890,8 @@ macro_rules! handle_error {
 
 /// When a channel is removed, two things need to happen:
 /// (a) This must be called in the same `per_peer_state` lock as the channel-closing action,
-/// (b) [`ChannelManager::finish_close_channel`] needs to be called unlocked.
+/// (b) [`ChannelManager::finish_close_channel`] needs to be called without holding any locks
+///     (except [`ChannelManager::total_consistency_lock`].
 ///
 /// Note that this step can be skipped if the channel was never opened (through the creation of a
 /// [`ChannelMonitor`]/channel funding transaction) to begin with.
@@ -3771,7 +3772,8 @@ where
 	/// When a channel is removed, two things need to happen:
 	/// (a) [`update_maps_on_chan_removal`] must be called in the same `per_peer_state` lock as
 	///     the channel-closing action,
-	/// (b) this needs to be called unlocked.
+	/// (b) this needs to be called without holding any locks (except
+	///     [`ChannelManager::total_consistency_lock`].
 	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 		#[cfg(debug_assertions)]
