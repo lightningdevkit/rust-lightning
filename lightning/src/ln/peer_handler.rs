@@ -2403,9 +2403,16 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							}
 						},
 						MessageSendEvent::SendChannelRangeQuery { ref node_id, ref msg } => {
+							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendChannelRangeQuery event in peer_handler for node {} with first_blocknum={}, number_of_blocks={}",
+								log_pubkey!(node_id),
+								msg.first_blocknum,
+								msg.number_of_blocks);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						},
 						MessageSendEvent::SendShortIdsQuery { ref node_id, ref msg } => {
+							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendShortIdsQuery event in peer_handler for node {} with num_scids={}",
+								log_pubkey!(node_id),
+								msg.short_channel_ids.len());
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						}
 						MessageSendEvent::SendReplyChannelRange { ref node_id, ref msg } => {
@@ -2418,6 +2425,10 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						}
 						MessageSendEvent::SendGossipTimestampFilter { ref node_id, ref msg } => {
+							log_gossip!(WithContext::from(&self.logger, Some(*node_id), None, None), "Handling SendGossipTimestampFilter event in peer_handler for node {} with first_timestamp={}, timestamp_range={}",
+								log_pubkey!(node_id),
+								msg.first_timestamp,
+								msg.timestamp_range);
 							self.enqueue_message(&mut *get_peer_for_forwarding!(node_id)?, msg);
 						}
 					}
