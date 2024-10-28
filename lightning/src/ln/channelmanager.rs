@@ -12990,7 +12990,7 @@ where
 									if outpoint_to_peer.get(&prev_hop.outpoint).is_none() {
 										log_error!(args.logger,
 											"We need to replay the HTLC claim for payment_hash {} (preimage {}) but cannot do so as the HTLC was forwarded prior to LDK 0.0.124.\
-											All HTLCs which were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
+											All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1",
 											htlc_payment_hash,
 											payment_preimage,
 										);
@@ -13006,7 +13006,7 @@ where
 									log_error!(args.logger,
 										"We need to replay the HTLC claim for payment_hash {} (preimage {}) but don't have all the required information to do so reliably.\
 										As long as the channel for the inbound edge of the forward remains open, this may work okay, but we may panic at runtime!\
-										All HTLCs which were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
+										All HTLCs that were forwarded by LDK 0.0.123 and prior must be resolved prior to upgrading to LDK 0.1\
 										Continuing anyway, though panics may occur!",
 										htlc_payment_hash,
 										payment_preimage,
