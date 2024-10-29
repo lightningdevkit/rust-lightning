@@ -134,13 +134,16 @@ pub(crate) enum PendingOutboundPayment {
 	},
 }
 
+#[derive(Clone)]
 pub(crate) struct RetryableInvoiceRequest {
 	pub(crate) invoice_request: InvoiceRequest,
 	pub(crate) nonce: Nonce,
+	pub(super) needs_retry: bool,
 }
 
 impl_writeable_tlv_based!(RetryableInvoiceRequest, {
 	(0, invoice_request, required),
+	(1, needs_retry, (default_value, true)),
 	(2, nonce, required),
 });
 
@@ -760,7 +763,12 @@ pub(super) struct OutboundPayments {
 impl OutboundPayments {
 	pub(super) fn new(pending_outbound_payments: HashMap<PaymentId, PendingOutboundPayment>) -> Self {
 		let has_invoice_requests = pending_outbound_payments.values().any(|payment| {
-			matches!(payment, PendingOutboundPayment::AwaitingInvoice { retryable_invoice_request: Some(_), .. })
+			matches!(
+				payment,
+				PendingOutboundPayment::AwaitingInvoice {
+					retryable_invoice_request: Some(invreq), ..
+				} if invreq.needs_retry
+			)
 		});
 
 		Self {
@@ -2229,11 +2237,12 @@ impl OutboundPayments {
 			.iter_mut()
 			.filter_map(|(payment_id, payment)| {
 				if let PendingOutboundPayment::AwaitingInvoice {
-					retryable_invoice_request, ..
+					retryable_invoice_request: Some(invreq), ..
 				} = payment {
-					retryable_invoice_request.take().map(|retryable_invoice_request| {
-						(*payment_id, retryable_invoice_request)
-					})
+					if invreq.needs_retry {
+						invreq.needs_retry = false;
+						Some((*payment_id, invreq.clone()))
+					} else { None }
 				} else {
 					None
 				}
