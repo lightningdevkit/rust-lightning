@@ -145,8 +145,10 @@ fn revoked_output_htlc_resolution_timing() {
 	let bs_spend_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_spend_txn.len(), 2);
 	for tx in bs_spend_txn.iter() {
+		assert_eq!(tx.input.len(), 1);
 		check_spends!(tx, revoked_local_txn[0]);
 	}
+	assert_ne!(bs_spend_txn[0].input[0].previous_output, bs_spend_txn[1].input[0].previous_output);
 
 	// After the commitment transaction confirms, we should still wait on the HTLC spend
 	// transaction to confirm before resolving the HTLC.
@@ -1766,6 +1768,9 @@ fn do_test_revoked_counterparty_htlc_tx_balances(anchors: bool) {
 		assert_eq!(as_commitment_claim_txn[1].input.len(), 2);
 		check_spends!(as_commitment_claim_txn[0], revoked_local_txn[0]);
 		check_spends!(as_commitment_claim_txn[1], revoked_local_txn[0]);
+		assert_ne!(as_commitment_claim_txn[0].input[0].previous_output, as_commitment_claim_txn[1].input[0].previous_output);
+		assert_ne!(as_commitment_claim_txn[0].input[0].previous_output, as_commitment_claim_txn[1].input[1].previous_output);
+		assert_ne!(as_commitment_claim_txn[1].input[0].previous_output, as_commitment_claim_txn[1].input[1].previous_output);
 		as_commitment_claim_txn.remove(0)
 	};
 
@@ -2051,6 +2056,10 @@ fn do_test_revoked_counterparty_aggregated_claims(anchors: bool) {
 	assert_eq!(claim_txn[1].input.len(), 2);
 	check_spends!(claim_txn[0], as_revoked_txn[0]);
 	check_spends!(claim_txn[1], as_revoked_txn[0]);
+	assert_ne!(claim_txn[0].input[0].previous_output, claim_txn[1].input[0].previous_output);
+	assert_ne!(claim_txn[0].input[0].previous_output, claim_txn[1].input[1].previous_output);
+	assert_ne!(claim_txn[1].input[0].previous_output, claim_txn[1].input[1].previous_output);
+
 
 	let to_remote_maturity = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
 
