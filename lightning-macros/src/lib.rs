@@ -96,15 +96,89 @@ fn expect_punct(token: &TokenTree, expected: char) {
 	}
 }
 
-/// Scans a match statement for fields which should be skipped
+fn token_to_stream(token: TokenTree) -> proc_macro::TokenStream {
+	proc_macro::TokenStream::from(token)
+}
+
+/// Processes a list of fields in a variant definition (see the docs for [`skip_legacy_fields`])
+fn process_fields(group: Group) -> proc_macro::TokenStream {
+	let mut computed_fields = proc_macro::TokenStream::new();
+	if group.delimiter() == Delimiter::Brace {
+		let mut fields_stream = group.stream().into_iter().peekable();
+
+		let mut new_fields = proc_macro::TokenStream::new();
+		loop {
+			// The field list should end with .., at which point we break
+			let next_tok = fields_stream.peek();
+			if let Some(TokenTree::Punct(_)) = next_tok {
+				let dot1 = fields_stream.next().unwrap();
+				expect_punct(&dot1, '.');
+				let dot2 = fields_stream.next().expect("Missing second trailing .");
+				expect_punct(&dot2, '.');
+				let trailing_dots = [dot1, dot2];
+				new_fields.extend(trailing_dots.into_iter().map(token_to_stream));
+				assert!(fields_stream.peek().is_none());
+				break;
+			}
+
+			// Fields should take the form `ref field_name: ty_info` where `ty_info`
+			// may be a single ident or may be a group. We skip the field if `ty_info`
+			// is a group where the first token is the ident `legacy`.
+			let ref_ident = fields_stream.next().unwrap();
+			expect_ident(&ref_ident, Some("ref"));
+			let field_name_ident = fields_stream.next().unwrap();
+			let co = fields_stream.next().unwrap();
+			expect_punct(&co, ':');
+			let ty_info = fields_stream.next().unwrap();
+			let com = fields_stream.next().unwrap();
+			expect_punct(&com, ',');
+
+			if let TokenTree::Group(group) = ty_info {
+				let first_group_tok = group.stream().into_iter().next().unwrap();
+				if let TokenTree::Ident(ident) = first_group_tok {
+					if ident.to_string() == "legacy" {
+						continue;
+					}
+				}
+			}
+
+			let field = [ref_ident, field_name_ident, com];
+			new_fields.extend(field.into_iter().map(token_to_stream));
+		}
+		let fields_group = Group::new(Delimiter::Brace, new_fields);
+		computed_fields.extend(token_to_stream(TokenTree::Group(fields_group)));
+	} else {
+		computed_fields.extend(token_to_stream(TokenTree::Group(group)));
+	}
+	computed_fields
+}
+
+/// Scans a match statement for legacy fields which should be skipped.
+///
+/// This is used internally in LDK's TLV serialization logic and is not expected to be used by
+/// other crates.
 ///
 /// Wraps a `match self {..}` statement and scans the fields in the match patterns (in the form
 /// `ref $field_name: $field_ty`) for types marked `legacy`, skipping those fields.
+///
+/// Specifically, it expects input like the following, simply dropping `field3` and the
+/// `: $field_ty` after each field name.
+/// ```ignore
+/// match self {
+///		Enum::Variant {
+///			ref field1: option,
+///			ref field2: (option, explicit_type: u64),
+///			ref field3: (legacy, u64, {}, {}), // will be skipped
+///			..
+///		} => expression
+///	}
+/// ```
 #[proc_macro]
 pub fn skip_legacy_fields(expr: TokenStream) -> TokenStream {
 	let mut stream = expr.clone().into_iter();
 	let mut res = TokenStream::new();
 
+	// First expect `match self` followed by a `{}` group...
 	let match_ident = stream.next().unwrap();
 	expect_ident(&match_ident, Some("match"));
 	res.extend(proc_macro::TokenStream::from(match_ident));
@@ -113,14 +187,14 @@ pub fn skip_legacy_fields(expr: TokenStream) -> TokenStream {
 	expect_ident(&self_ident, Some("self"));
 	res.extend(proc_macro::TokenStream::from(self_ident));
 
-	let token_to_stream = |tok| proc_macro::TokenStream::from(tok);
-
 	let arms = stream.next().unwrap();
 	if let TokenTree::Group(group) = arms {
 		let mut new_arms = TokenStream::new();
 
 		let mut arm_stream = group.stream().into_iter().peekable();
 		while arm_stream.peek().is_some() {
+			// Each arm should contain Enum::Variant { fields } => init
+			// We explicitly check the :s, =, and >, as well as an optional trailing ,
 			let enum_ident = arm_stream.next().unwrap();
 			let co1 = arm_stream.next().unwrap();
 			expect_punct(&co1, ':');
@@ -140,52 +214,11 @@ pub fn skip_legacy_fields(expr: TokenStream) -> TokenStream {
 				arm_stream.next();
 			}
 
-			let mut computed_fields = proc_macro::TokenStream::new();
-			if let TokenTree::Group(group) = fields {
-				if group.delimiter() == Delimiter::Brace {
-					let mut fields_stream = group.stream().into_iter().peekable();
-
-					let mut new_fields = proc_macro::TokenStream::new();
-					loop {
-						let next_tok = fields_stream.peek();
-						if let Some(TokenTree::Punct(_)) = next_tok {
-							let dot1 = fields_stream.next().unwrap();
-							expect_punct(&dot1, '.');
-							let dot2 = fields_stream.next().expect("Missing second trailing .");
-							expect_punct(&dot2, '.');
-							let trailing_dots = [dot1, dot2];
-							new_fields.extend(trailing_dots.into_iter().map(token_to_stream));
-							assert!(fields_stream.peek().is_none());
-							break;
-						}
-
-						let ref_ident = fields_stream.next().unwrap();
-						expect_ident(&ref_ident, Some("ref"));
-						let field_name_ident = fields_stream.next().unwrap();
-						let co = fields_stream.next().unwrap();
-						expect_punct(&co, ':');
-						let ty_info = fields_stream.next().unwrap();
-						let com = fields_stream.next().unwrap();
-						expect_punct(&com, ',');
-
-						if let TokenTree::Group(group) = ty_info {
-							let first_group_tok = group.stream().into_iter().next().unwrap();
-							if let TokenTree::Ident(ident) = first_group_tok {
-								if ident.to_string() == "legacy" {
-									continue;
-								}
-							}
-						}
-
-						let field = [ref_ident, field_name_ident, com];
-						new_fields.extend(field.into_iter().map(token_to_stream));
-					}
-					let fields_group = Group::new(Delimiter::Brace, new_fields);
-					computed_fields.extend(token_to_stream(TokenTree::Group(fields_group)));
-				} else {
-					computed_fields.extend(token_to_stream(TokenTree::Group(group)));
-				}
-			}
+			let computed_fields = if let TokenTree::Group(group) = fields {
+				process_fields(group)
+			} else {
+				panic!("Expected a group for the fields in a match arm");
+			};
 
 			let arm_pfx = [enum_ident, co1, co2, variant_ident];
 			new_arms.extend(arm_pfx.into_iter().map(token_to_stream));
