@@ -5495,17 +5495,17 @@ impl<SP: Deref> Channel<SP> where
 		// If we're past (or at) the AwaitingChannelReady stage on an outbound channel, try to
 		// (re-)broadcast the funding transaction as we may have declined to broadcast it when we
 		// first received the funding_signed.
-		let mut funding_broadcastable =
+		let mut funding_broadcastable = None;
+		if let Some(funding_transaction) = &self.context.funding_transaction {
 			if self.context.is_outbound() &&
 				(matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(flags) if !flags.is_set(AwaitingChannelReadyFlags::WAITING_FOR_BATCH)) ||
 				matches!(self.context.channel_state, ChannelState::ChannelReady(_)))
 			{
-				self.context.funding_transaction.take()
-			} else { None };
-		// That said, if the funding transaction is already confirmed (ie we're active with a
-		// minimum_depth over 0) don't bother re-broadcasting the confirmed funding tx.
-		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) && self.context.minimum_depth != Some(0) {
-			funding_broadcastable = None;
+				// Broadcast only if not yet confirmed
+				if self.context.get_funding_tx_confirmation_height().is_none() {
+					funding_broadcastable = Some(funding_transaction.clone())
+				}
+			}
 		}
 
 		// We will never broadcast the funding transaction when we're in MonitorUpdateInProgress
@@ -7907,6 +7907,7 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			self.context.minimum_depth = Some(COINBASE_MATURITY);
 		}
 
+		debug_assert!(self.context.funding_transaction.is_none());
 		self.context.funding_transaction = Some(funding_transaction);
 		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
 
