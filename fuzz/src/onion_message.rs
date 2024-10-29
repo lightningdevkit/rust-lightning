@@ -100,8 +100,8 @@ impl MessageRouter for TestMessageRouter {
 	}
 
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
-		&self, _recipient: PublicKey, _context: MessageContext, _peers: Vec<PublicKey>,
-		_secp_ctx: &Secp256k1<T>,
+		&self, _recipient: PublicKey, _context: MessageContext, _custom_tlvs: Vec<u8>,
+		_peers: Vec<PublicKey>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
 		unreachable!()
 	}
@@ -112,7 +112,7 @@ struct TestOffersMessageHandler {}
 impl OffersMessageHandler for TestOffersMessageHandler {
 	fn handle_message(
 		&self, _message: OffersMessage, _context: Option<OffersContext>,
-		_responder: Option<Responder>,
+		_custom_tlvs: Option<Vec<u8>>, _responder: Option<Responder>,
 	) -> Option<(OffersMessage, ResponseInstruction)> {
 		None
 	}
