@@ -238,8 +238,19 @@ pub fn skip_legacy_fields(expr: TokenStream) -> TokenStream {
 	res
 }
 
-/// Scans an enum definition for fields initialized to `LDK_DROP_LEGACY_FIELD_DEFINITION` and drops
-/// that field.
+/// Scans an enum definition for fields initialized with `legacy` types and drops them.
+///
+/// This is used internally in LDK's TLV serialization logic and is not expected to be used by
+/// other crates.
+///
+/// Is expected to wrap a struct definition like
+/// ```ignore
+/// drop_legacy_field_definition!(Self {
+///		field1: _init_tlv_based_struct_field!(field1, option),
+///     field2: _init_tlv_based_struct_field!(field2, (legacy, u64, {}, {}))),
+/// })
+/// ```
+/// and will drop fields defined like `field2` with a type starting with `legacy`.
 #[proc_macro]
 pub fn drop_legacy_field_definition(expr: TokenStream) -> TokenStream {
 	let mut st = if let Ok(parsed) = parse::<syn::Expr>(expr) {
@@ -247,13 +258,13 @@ pub fn drop_legacy_field_definition(expr: TokenStream) -> TokenStream {
 			st
 		} else {
 			return (quote! {
-				compile_error!("drop_legacy_field_definitions!() can only be used on struct expressions")
+				compile_error!("drop_legacy_field_definition!() can only be used on struct expressions")
 			})
 			.into();
 		}
 	} else {
 		return (quote! {
-			compile_error!("drop_legacy_field_definitions!() can only be used on expressions")
+			compile_error!("drop_legacy_field_definition!() can only be used on expressions")
 		})
 		.into();
 	};
