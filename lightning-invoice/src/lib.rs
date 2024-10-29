@@ -235,11 +235,31 @@ pub struct Bolt11Invoice {
 
 /// Represents the description of an invoice which has to be either a directly included string or
 /// a hash of a description provided out of band.
+#[derive(Eq, PartialEq, Debug, Clone, Ord, PartialOrd)]
+pub enum Bolt11InvoiceDescription {
+	/// Description of what the invoice is for
+	Direct(Description),
+
+	/// Hash of the description of what the invoice is for
+	Hash(Sha256),
+}
+
+impl Display for Bolt11InvoiceDescription {
+	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+		match self {
+			Bolt11InvoiceDescription::Direct(desc) => write!(f, "{}", desc.0),
+			Bolt11InvoiceDescription::Hash(hash) => write!(f, "{}", hash.0),
+		}
+	}
+}
+
+/// Represents the description of an invoice which has to be either a directly included string or
+/// a hash of a description provided out of band.
 ///
 /// This is not exported to bindings users as we don't have a good way to map the reference lifetimes making this
 /// practically impossible to use safely in languages like C.
 #[derive(Eq, PartialEq, Debug, Clone, Ord, PartialOrd)]
-pub enum Bolt11InvoiceDescription<'f> {
+pub enum Bolt11InvoiceDescriptionRef<'f> {
 	/// Reference to the directly supplied description in the invoice
 	Direct(&'f Description),
 
@@ -247,11 +267,11 @@ pub enum Bolt11InvoiceDescription<'f> {
 	Hash(&'f Sha256),
 }
 
-impl<'f> Display for Bolt11InvoiceDescription<'f> {
+impl<'f> Display for Bolt11InvoiceDescriptionRef<'f> {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
 		match self {
-			Bolt11InvoiceDescription::Direct(desc) => write!(f, "{}", desc.0),
-			Bolt11InvoiceDescription::Hash(hash) => write!(f, "{}", hash.0),
+			Bolt11InvoiceDescriptionRef::Direct(desc) => write!(f, "{}", desc.0),
+			Bolt11InvoiceDescriptionRef::Hash(hash) => write!(f, "{}", hash.0),
 		}
 	}
 }
@@ -708,7 +728,7 @@ impl<H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool> InvoiceBui
 	pub fn invoice_description(self, description: Bolt11InvoiceDescription) -> InvoiceBuilder<tb::True, H, T, C, S, M> {
 		match description {
 			Bolt11InvoiceDescription::Direct(desc) => {
-				self.description(desc.clone().into_inner().0)
+				self.description(desc.0.0)
 			}
 			Bolt11InvoiceDescription::Hash(hash) => {
 				self.description_hash(hash.0)
@@ -1374,11 +1394,11 @@ impl Bolt11Invoice {
 	/// Return the description or a hash of it for longer ones
 	///
 	/// This is not exported to bindings users because we don't yet export Bolt11InvoiceDescription
-	pub fn description(&self) -> Bolt11InvoiceDescription {
+	pub fn description(&self) -> Bolt11InvoiceDescriptionRef {
 		if let Some(direct) = self.signed_invoice.description() {
-			return Bolt11InvoiceDescription::Direct(direct);
+			return Bolt11InvoiceDescriptionRef::Direct(direct);
 		} else if let Some(hash) = self.signed_invoice.description_hash() {
-			return Bolt11InvoiceDescription::Hash(hash);
+			return Bolt11InvoiceDescriptionRef::Hash(hash);
 		}
 		unreachable!("ensured by constructor");
 	}
@@ -2211,7 +2231,7 @@ mod test {
 		assert_eq!(invoice.private_routes(), vec![&PrivateRoute(route_1), &PrivateRoute(route_2)]);
 		assert_eq!(
 			invoice.description(),
-			Bolt11InvoiceDescription::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
+			Bolt11InvoiceDescriptionRef::Hash(&Sha256(sha256::Hash::from_slice(&[3;32][..]).unwrap()))
 		);
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&[21;32][..]).unwrap());
 		assert_eq!(invoice.payment_secret(), &PaymentSecret([42; 32]));

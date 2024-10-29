@@ -102,6 +102,8 @@ use {
 	crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder,
 };
 
+use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, CreationError, Currency, InvoiceBuilder as Bolt11InvoiceBuilder, SignOrCreationError, DEFAULT_EXPIRY_TIME};
+
 use alloc::collections::{btree_map, BTreeMap};
 
 use crate::io;
@@ -9240,6 +9242,144 @@ where
 			self.finish_close_channel(failure);
 		}
 	}
+
+	/// Utility for creating a BOLT11 invoice that can be verified by [`ChannelManager`] without
+	/// storing any additional state. It achieves this by including a [`PaymentSecret`] in the
+	/// invoice for which it uses to verify that the invoice has not expired and the payment amount
+	/// is sufficient, reproducing the [`PaymentPreimage`] if applicable.
+	pub fn create_bolt11_invoice(
+		&self, params: Bolt11InvoiceParameters,
+	) -> Result<Bolt11Invoice, SignOrCreationError<()>> {
+		let Bolt11InvoiceParameters {
+			currency, amount_msats, description, duration_since_epoch, invoice_expiry_delta_secs,
+			min_final_cltv_expiry_delta, payment_hash,
+		} = params;
+
+		let currency = match currency {
+			Some(currency) => currency,
+			None => Network::from_chain_hash(self.chain_hash).map(Into::into).unwrap_or(Currency::Bitcoin),
+		};
+
+		#[cfg(feature = "std")]
+		let duration_since_epoch = duration_since_epoch
+			.unwrap_or_else(|| {
+				use std::time::SystemTime;
+				SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
+					.expect("for the foreseeable future this shouldn't happen")
+			});
+		#[cfg(not(feature = "std"))]
+		let duration_since_epoch = duration_since_epoch.unwrap_or_else(||
+			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64)
+		);
+
+		if let Some(min_final_cltv_expiry_delta) = min_final_cltv_expiry_delta {
+			if min_final_cltv_expiry_delta.saturating_add(3) < MIN_FINAL_CLTV_EXPIRY_DELTA {
+				return Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort));
+			}
+		}
+
+		let (payment_hash, payment_secret) = match payment_hash {
+			Some(payment_hash) => {
+				let payment_secret = self
+					.create_inbound_payment_for_hash(
+						payment_hash, amount_msats,
+						invoice_expiry_delta_secs.unwrap_or(DEFAULT_EXPIRY_TIME as u32),
+						min_final_cltv_expiry_delta,
+					)
+					.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
+				(payment_hash, payment_secret)
+			},
+			None => {
+				self
+					.create_inbound_payment(
+						amount_msats, invoice_expiry_delta_secs.unwrap_or(DEFAULT_EXPIRY_TIME as u32),
+						min_final_cltv_expiry_delta,
+					)
+					.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?
+			},
+		};
+
+		log_trace!(self.logger, "Creating invoice with payment hash {}", &payment_hash);
+
+		let invoice = Bolt11InvoiceBuilder::new(currency);
+		let invoice = match description {
+			Bolt11InvoiceDescription::Direct(description) => invoice.description(description.into_inner().0),
+			Bolt11InvoiceDescription::Hash(hash) => invoice.description_hash(hash.0),
+		};
+
+		let mut invoice = invoice
+			.duration_since_epoch(duration_since_epoch)
+			.payee_pub_key(self.get_our_node_id())
+			.payment_hash(Hash::from_slice(&payment_hash.0).unwrap())
+			.payment_secret(payment_secret)
+			.basic_mpp()
+			.min_final_cltv_expiry_delta(
+				// Add a buffer of 3 to the delta if present, otherwise use LDK's minimum.
+				min_final_cltv_expiry_delta.map(|x| x.saturating_add(3)).unwrap_or(MIN_FINAL_CLTV_EXPIRY_DELTA).into()
+			);
+
+		if let Some(invoice_expiry_delta_secs) = invoice_expiry_delta_secs{
+			invoice = invoice.expiry_time(Duration::from_secs(invoice_expiry_delta_secs.into()));
+		}
+
+		if let Some(amount_msats) = amount_msats {
+			invoice = invoice.amount_milli_satoshis(amount_msats);
+		}
+
+		let channels = self.list_channels();
+		let route_hints = super::invoice_utils::sort_and_filter_channels(channels, amount_msats, &self.logger);
+		for hint in route_hints {
+			invoice = invoice.private_route(hint);
+		}
+
+		let raw_invoice = invoice.build_raw().map_err(|e| SignOrCreationError::CreationError(e))?;
+		let signature = self.node_signer.sign_invoice(&raw_invoice, Recipient::Node);
+
+		raw_invoice
+			.sign(|_| signature)
+			.map(|invoice| Bolt11Invoice::from_signed(invoice).unwrap())
+			.map_err(|e| SignOrCreationError::SignError(e))
+	}
+}
+
+/// Parameters used with [`create_bolt11_invoice`].
+///
+/// [`create_bolt11_invoice`]: ChannelManager::create_bolt11_invoice
+pub struct Bolt11InvoiceParameters {
+	/// A BIP-0173 currency. If not set, uses the [`Currency`] for the [`Network`] used when
+	/// initializing [`ChannelManager`]. See [`ChainParameters::network`].
+	pub currency: Option<Currency>,
+
+	/// The amount for the invoice, if any.
+	pub amount_msats: Option<u64>,
+
+	/// The description for what the invoice is for, or hash of such description.
+	pub description: Bolt11InvoiceDescription,
+
+	/// The duration since the Unix epoch signifying when the invoice was created. If not set,
+	/// the current time is used or the highest timestamp seen for non-`std` builds.
+	pub duration_since_epoch: Option<Duration>,
+
+	/// The invoice expiration relative to [`duration_since_epoch`]. If not set, the invoice will
+	/// expire in [`DEFAULT_EXPIRY_TIME`] by default.
+	///
+	/// [`duration_since_epoch`]: Self::duration_since_epoch
+	pub invoice_expiry_delta_secs: Option<u32>,
+
+	/// The minimum `cltv_expiry` for the last HTLC in the route. If not set, will use
+	/// [`MIN_FINAL_CLTV_EXPIRY_DELTA`].
+	///
+	/// If set, must be at least [`MIN_FINAL_CLTV_EXPIRY_DELTA`], and a three-block buffer will be
+	/// added as well to allow for up to a few new block confirmations during routing.
+	pub min_final_cltv_expiry_delta: Option<u16>,
+
+	/// The payment hash used in the invoice. If not set, a payment hash will be generated using a
+	/// preimage that can be reproduced by [`ChannelManager`] without storing any state.
+	///
+	/// Uses the payment hash if set. This may be useful if you're building an on-chain swap or
+	/// involving another protocol where the payment hash is also involved outside the scope of
+	/// lightning.
+	pub payment_hash: Option<PaymentHash>,
 }
 
 macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
