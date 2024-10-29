@@ -475,7 +475,6 @@ macro_rules! _run_legacy_tlv_read_logic {
 	($field: ident, $fieldty: tt) => { }
 }
 
-
 /// Checks if `$val` matches `$type`.
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
