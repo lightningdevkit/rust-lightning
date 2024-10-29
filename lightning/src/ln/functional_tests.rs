@@ -15,7 +15,7 @@ use crate::chain;
 use crate::chain::{ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::chain::channelmonitor;
-use crate::chain::channelmonitor::{Balance, CLOSED_CHANNEL_UPDATE_ID, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
+use crate::chain::channelmonitor::{Balance, ChannelMonitorUpdateStep, CLTV_CLAIM_BUFFER, LATENCY_GRACE_PERIOD_BLOCKS, ANTI_REORG_DELAY};
 use crate::chain::transaction::OutPoint;
 use crate::sign::{ecdsa::EcdsaChannelSigner, EntropySource, OutputSpender, SignerProvider};
 use crate::events::{Event, FundingInfo, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, ClosureReason, HTLCDestination, PaymentFailureReason};
@@ -11005,7 +11005,8 @@ fn test_close_in_funding_batch() {
 		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
 		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
 		assert_eq!(monitor_updates_1.len(), 1);
-		assert_eq!(monitor_updates_1[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
+		assert_eq!(monitor_updates_1[0].updates.len(), 1);
+		assert!(matches!(monitor_updates_1[0].updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. }));
 	}
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -11092,10 +11093,12 @@ fn test_batch_funding_close_after_funding_signed() {
 		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
 		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
 		assert_eq!(monitor_updates_1.len(), 1);
-		assert_eq!(monitor_updates_1[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
+		assert_eq!(monitor_updates_1[0].updates.len(), 1);
+		assert!(matches!(monitor_updates_1[0].updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. }));
 		let monitor_updates_2 = monitor_updates.get(&channel_id_2).unwrap();
 		assert_eq!(monitor_updates_2.len(), 1);
-		assert_eq!(monitor_updates_2[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
+		assert_eq!(monitor_updates_2[0].updates.len(), 1);
+		assert!(matches!(monitor_updates_2[0].updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. }));
 	}
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	match msg_events[0] {

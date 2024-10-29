@@ -11,7 +11,7 @@
 
 use crate::chain::{ChannelMonitorUpdateStatus, Watch};
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::chain::channelmonitor::{CLOSED_CHANNEL_UPDATE_ID, ChannelMonitor};
+use crate::chain::channelmonitor::{ChannelMonitor, ChannelMonitorUpdateStep};
 use crate::sign::EntropySource;
 use crate::chain::transaction::OutPoint;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
@@ -1264,7 +1264,8 @@ fn test_reload_partial_funding_batch() {
 		let mut monitor_updates = nodes[0].chain_monitor.monitor_updates.lock().unwrap();
 		let monitor_updates_1 = monitor_updates.get(&channel_id_1).unwrap();
 		assert_eq!(monitor_updates_1.len(), 1);
-		assert_eq!(monitor_updates_1[0].update_id, CLOSED_CHANNEL_UPDATE_ID);
+		assert_eq!(monitor_updates_1[0].updates.len(), 1);
+		assert!(matches!(monitor_updates_1[0].updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. }));
 	}
 
 	// The funding transaction should not have been broadcast, but we broadcast the force-close

@@ -1,4 +1,3 @@
-use lightning::chain::channelmonitor::CLOSED_CHANNEL_UPDATE_ID;
 use lightning::events::ClosureReason;
 use lightning::ln::functional_test_utils::{
 	connect_block, create_announced_chan_between_nodes, create_chanmon_cfgs, create_dummy_block,
@@ -168,5 +167,5 @@ pub(crate) fn do_test_store<K: KVStore>(store_0: &K, store_1: &K) {
 	check_added_monitors!(nodes[1], 1);
 
 	// Make sure everything is persisted as expected after close.
-	check_persisted_data!(CLOSED_CHANNEL_UPDATE_ID);
+	check_persisted_data!(11);
 }
