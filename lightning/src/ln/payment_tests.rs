@@ -2462,7 +2462,7 @@ fn auto_retry_partial_failure() {
 				fee_msat: amt_msat / 2,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -2471,7 +2471,7 @@ fn auto_retry_partial_failure() {
 				fee_msat: amt_msat / 2,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 		],
 		route_params: Some(route_params.clone()),
 	};
@@ -2493,7 +2493,7 @@ fn auto_retry_partial_failure() {
 				fee_msat: amt_msat / 4,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -2502,7 +2502,7 @@ fn auto_retry_partial_failure() {
 				fee_msat: amt_msat / 4,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 		],
 		route_params: Some(retry_1_params.clone()),
 	};
@@ -2524,7 +2524,7 @@ fn auto_retry_partial_failure() {
 				fee_msat: amt_msat / 4,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 		],
 		route_params: Some(retry_2_params.clone()),
 	};
@@ -2669,7 +2669,7 @@ fn auto_retry_zero_attempts_send_error() {
 				fee_msat: amt_msat,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 		],
 		route_params: Some(route_params.clone()),
 	};
@@ -2767,7 +2767,7 @@ fn retry_multi_path_single_failed_payment() {
 				fee_msat: 10_000,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -2776,7 +2776,7 @@ fn retry_multi_path_single_failed_payment() {
 				fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 		],
 		route_params: Some(route_params.clone()),
 	};
@@ -2858,7 +2858,7 @@ fn immediate_retry_on_failure() {
 				fee_msat: 100_000_001, // Our default max-HTLC-value is 10% of the channel value, which this is one more than
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 		],
 		route_params: Some(route_params.clone()),
 	};
@@ -2952,7 +2952,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -2969,7 +2969,7 @@ fn no_extra_retries_on_back_to_back_fail() {
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None }
+			}], trampoline_hops: vec![], blinded_tail: None }
 		],
 		route_params: Some(route_params.clone()),
 	};
@@ -3157,7 +3157,7 @@ fn test_simple_partial_retry() {
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[1].node.get_our_node_id(),
 				node_features: nodes[1].node.node_features(),
@@ -3174,7 +3174,7 @@ fn test_simple_partial_retry() {
 				fee_msat: 100_000_000,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None }
+			}], trampoline_hops: vec![], blinded_tail: None }
 		],
 		route_params: Some(route_params.clone()),
 	};
@@ -3328,7 +3328,7 @@ fn test_threaded_payment_retries() {
 				fee_msat: amt_msat / 1000,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None },
+			}], trampoline_hops: vec![], blinded_tail: None },
 			Path { hops: vec![RouteHop {
 				pubkey: nodes[2].node.get_our_node_id(),
 				node_features: nodes[2].node.node_features(),
@@ -3345,7 +3345,7 @@ fn test_threaded_payment_retries() {
 				fee_msat: amt_msat - amt_msat / 1000,
 				cltv_expiry_delta: 100,
 				maybe_announced_channel: true,
-			}], blinded_tail: None }
+			}], trampoline_hops: vec![], blinded_tail: None }
 		],
 		route_params: Some(route_params.clone()),
 	};
