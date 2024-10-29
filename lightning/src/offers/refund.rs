@@ -768,6 +768,7 @@ impl RefundContents {
 			payer_id: Some(&self.payer_signing_pubkey),
 			payer_note: self.payer_note.as_ref(),
 			paths: self.paths.as_ref(),
+			source_human_readable_name: None,
 		};
 
 		(payer, offer, invoice_request)
@@ -847,7 +848,8 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				issuer_id,
 			},
 			InvoiceRequestTlvStream {
-				chain, amount, features, quantity, payer_id, payer_note, paths
+				chain, amount, features, quantity, payer_id, payer_note, paths,
+				source_human_readable_name,
 			},
 		) = tlv_stream;
 
@@ -889,6 +891,11 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 
 		if issuer_id.is_some() {
 			return Err(Bolt12SemanticError::UnexpectedIssuerSigningPubkey);
+		}
+
+		if source_human_readable_name.is_some() {
+			// Only offers can be resolved using Human Readable Names
+			return Err(Bolt12SemanticError::UnexpectedHumanReadableName);
 		}
 
 		let amount_msats = match amount {
@@ -1013,6 +1020,7 @@ mod tests {
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
 					paths: None,
+					source_human_readable_name: None,
 				},
 			),
 		);
