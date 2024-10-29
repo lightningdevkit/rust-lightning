@@ -10046,6 +10046,7 @@ where
 			let retryable_invoice_request = RetryableInvoiceRequest {
 				invoice_request: invoice_request.clone(),
 				nonce,
+				needs_retry: true,
 			};
 			self.pending_outbound_payments
 				.add_new_awaiting_invoice(
@@ -11915,7 +11916,7 @@ where
 			.pending_outbound_payments
 			.release_invoice_requests_awaiting_invoice()
 		{
-			let RetryableInvoiceRequest { invoice_request, nonce } = retryable_invoice_request;
+			let RetryableInvoiceRequest { invoice_request, nonce, .. } = retryable_invoice_request;
 			let hmac = payment_id.hmac_for_offer_payment(nonce, &self.inbound_payment_key);
 			let context = MessageContext::Offers(OffersContext::OutboundPayment {
 				payment_id,
@@ -12250,6 +12251,7 @@ where
 								let retryable_invoice_request = RetryableInvoiceRequest {
 									invoice_request: invoice_request.clone(),
 									nonce,
+									needs_retry: true,
 								};
 								self.pending_outbound_payments
 									.received_offer(payment_id, Some(retryable_invoice_request))
