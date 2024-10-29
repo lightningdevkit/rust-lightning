@@ -2089,6 +2089,10 @@ where
 			};
 		}
 
+		core::mem::drop(nodes);
+		core::mem::drop(channels);
+		self.test_node_counter_consistency();
+
 		Ok(())
 	}
 
