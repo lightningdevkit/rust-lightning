@@ -710,6 +710,7 @@ mod test {
 	use lightning_invoice::{Currency, Description, Bolt11InvoiceDescriptionRef, SignOrCreationError, CreationError};
 	use bitcoin::hashes::{Hash, sha256};
 	use bitcoin::hashes::sha256::Hash as Sha256;
+	use bitcoin::network::Network;
 	use crate::sign::PhantomKeysManager;
 	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
@@ -901,6 +902,36 @@ mod test {
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.description(), Bolt11InvoiceDescriptionRef::Direct(&Description::new("test".to_string()).unwrap()));
 		assert_eq!(invoice.payment_hash(), &sha256::Hash::from_slice(&payment_hash.0[..]).unwrap());
+	}
+
+	#[cfg(not(feature = "std"))]
+	#[test]
+	fn creates_invoice_using_highest_seen_timestamp() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let invoice_params = Bolt11InvoiceParameters::default();
+		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
+		let best_block = bitcoin::constants::genesis_block(Network::Testnet);
+		assert_eq!(
+			invoice.duration_since_epoch(),
+			Duration::from_secs(best_block.header.time.into()),
+		);
+	}
+
+	#[test]
+	fn creates_invoice_using_currency_inferred_from_chain_hash() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let invoice_params = Bolt11InvoiceParameters::default();
+		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
+		assert_eq!(invoice.currency(), Currency::BitcoinTestnet);
+		assert_eq!(invoice.network(), Network::Testnet);
 	}
 
 	#[test]
