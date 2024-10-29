@@ -773,6 +773,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 				if requests[i].can_merge_with(&requests[j], cur_height) {
 					let merge = requests.remove(i);
 					if let Err(rejected) = requests[j].merge_package(merge, cur_height) {
+						debug_assert!(false, "Merging package should not be rejected after verifying can_merge_with.");
 						requests.insert(i, rejected);
 					} else {
 						break;
