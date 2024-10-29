@@ -1573,6 +1573,18 @@ mod tests {
 	}
 
 	#[test]
+	#[should_panic]
+	fn test_merge_package_different_tx_trees() {
+		let offered_htlc = dumb_offered_htlc_output!(900, ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies());
+		let mut offered_htlc_package = PackageTemplate::build_package(fake_txid(1), 0, offered_htlc.clone(), 0);
+		let counterparty_received_htlc = dumb_counterparty_received_output!(1_000_000, 900, ChannelTypeFeatures::only_static_remote_key());
+		let counterparty_received_htlc_package = PackageTemplate::build_package(fake_txid(2), 0, counterparty_received_htlc.clone(), 0);
+
+		assert!(!offered_htlc_package.can_merge_with(&counterparty_received_htlc_package, 1000));
+		assert!(offered_htlc_package.merge_package(counterparty_received_htlc_package.clone(), 1000).is_err());
+	}
+
+	#[test]
 	fn test_package_split_malleable() {
 		let revk_outp_one = dumb_revk_output!(false);
 		let revk_outp_two = dumb_revk_output!(false);
