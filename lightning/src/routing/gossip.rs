@@ -2077,9 +2077,9 @@ where
 				},
 				IndexedMapEntry::Vacant(node_entry) => {
 					let mut removed_node_counters = self.removed_node_counters.lock().unwrap();
-					**chan_info_node_counter = removed_node_counters
-						.pop()
-						.unwrap_or(self.next_node_counter.fetch_add(1, Ordering::Relaxed) as u32);
+					**chan_info_node_counter = removed_node_counters.pop().unwrap_or_else(|| {
+						self.next_node_counter.fetch_add(1, Ordering::Relaxed) as u32
+					});
 					node_entry.insert(NodeInfo {
 						channels: vec![short_channel_id],
 						announcement_info: None,
