@@ -359,7 +359,7 @@ impl OnionMessageRecipient {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Responder {
 	/// The path along which a response can be sent.
-	reply_path: BlindedMessagePath,
+	pub(crate) reply_path: BlindedMessagePath,
 }
 
 impl_writeable_tlv_based!(Responder, {
@@ -406,7 +406,7 @@ pub struct ResponseInstruction {
 }
 
 impl ResponseInstruction {
-	fn into_instructions(self) -> MessageSendInstructions {
+	pub(crate) fn into_instructions(self) -> MessageSendInstructions {
 		MessageSendInstructions::ForReply { instructions: self }
 	}
 }

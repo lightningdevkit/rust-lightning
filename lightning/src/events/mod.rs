@@ -28,6 +28,7 @@ use crate::ln::msgs;
 use crate::ln::types::ChannelId;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::offers::invoice::Bolt12Invoice;
+use crate::offers::invoice_request::InvoiceRequest;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters};
@@ -838,10 +839,38 @@ pub enum Event {
 		/// Sockets for connecting to the node.
 		addresses: Vec<msgs::SocketAddress>,
 	},
+
+	/// Event triggered when manual handling is enabled and an invoice request is received.
+	///
+	/// Indicates that an [`InvoiceRequest`] for an [`Offer`] created by us has been received.
+	///
+	/// This event will only be generated if [`UserConfig::manually_handle_bolt12_messages`] is set.
+	/// Use [`ChannelManager::send_invoice_request_response`] to respond with an appropriate
+	/// response to the received invoice request. Use [`ChannelManager::reject_invoice_request`] to
+	/// reject the invoice request and respond with an [`InvoiceError`]. See the docs for further details.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`UserConfig::manually_handle_bolt12_messages`]: crate::util::config::UserConfig::manually_handle_bolt12_messages
+	/// [`ChannelManager::send_invoice_request_response`]: crate::ln::channelmanager::ChannelManager::send_invoice_request_response
+	/// [`ChannelManager::reject_invoice_request`]: crate::ln::channelmanager::ChannelManager::reject_invoice_request
+	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
+	InvoiceRequestReceived {
+		/// The received invoice request to respond to.
+		invoice_request: InvoiceRequest,
+		/// The context of the [`BlindedMessagePath`] used to send the invoice request.
+		///
+		/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+		context: Option<OffersContext>,
+		/// A responder for replying with an [`InvoiceError`] if needed.
+		///
+		/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
+		responder: Responder,
+	},
+
 	/// Indicates a [`Bolt12Invoice`] in response to an [`InvoiceRequest`] or a [`Refund`] was
 	/// received.
 	///
-	/// This event will only be generated if [`UserConfig::manually_handle_bolt12_invoices`] is set.
+	/// This event will only be generated if [`UserConfig::manually_handle_bolt12_messages`] is set.
 	/// Use [`ChannelManager::send_payment_for_bolt12_invoice`] to pay the invoice or
 	/// [`ChannelManager::abandon_payment`] to abandon the associated payment. See those docs for
 	/// further details.
@@ -852,7 +881,7 @@ pub enum Event {
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Refund`]: crate::offers::refund::Refund
-	/// [`UserConfig::manually_handle_bolt12_invoices`]: crate::util::config::UserConfig::manually_handle_bolt12_invoices
+	/// [`UserConfig::manually_handle_bolt12_messages`]: crate::util::config::UserConfig::manually_handle_bolt12_messages
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	InvoiceReceived {
@@ -1776,6 +1805,14 @@ impl Writeable for Event {
 					(8, former_temporary_channel_id, required),
 				});
 			},
+			&Event::InvoiceRequestReceived { ref invoice_request, ref context, ref responder } => {
+				44u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(0, invoice_request, required),
+					(2, context, option),
+					(4, responder, required),
+				});
+			},
 			// Note that, going forward, all new events must only write data inside of
 			// `write_tlv_fields`. Versions 0.0.101+ will ignore odd-numbered events that write
 			// data via `write_tlv_fields`.
@@ -2279,6 +2316,21 @@ impl MaybeReadable for Event {
 					counterparty_node_id: counterparty_node_id.0.unwrap(),
 					former_temporary_channel_id: former_temporary_channel_id.0.unwrap(),
 				}))
+			},
+			44u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(0, invoice_request, required),
+						(2, context, option),
+						(4, responder, required),
+					});
+					Ok(Some(Event::InvoiceRequestReceived {
+						invoice_request: invoice_request.0.unwrap(),
+						context,
+						responder: responder.0.unwrap(),
+					}))
+				};
+				f()
 			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
