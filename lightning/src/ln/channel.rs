@@ -8296,7 +8296,7 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannel`]: crate::ln::msgs::AcceptChannel
-	pub fn accept_inbound_channel(&mut self) -> msgs::AcceptChannel {
+	pub fn accept_inbound_channel(&self) -> msgs::AcceptChannel {
 		if self.context.is_outbound() {
 			panic!("Tried to send accept_channel for an outbound channel?");
 		}
@@ -8664,7 +8664,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 	/// should be sent back to the counterparty node.
 	///
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
-	pub fn accept_inbound_dual_funded_channel(&mut self) -> msgs::AcceptChannelV2 {
+	pub fn accept_inbound_dual_funded_channel(&self) -> msgs::AcceptChannelV2 {
 		if self.context.is_outbound() {
 			debug_assert!(false, "Tried to send accept_channel for an outbound channel?");
 		}
@@ -8681,9 +8681,9 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		self.generate_accept_channel_v2_message()
 	}
 
-	/// This function is used to explicitly generate a [`msgs::AcceptChannel`] message for an
-	/// inbound channel. If the intention is to accept an inbound channel, use
-	/// [`InboundV1Channel::accept_inbound_channel`] instead.
+	/// This function is used to explicitly generate a [`msgs::AcceptChannelV2`] message for an
+	/// inbound dual-funded channel. If the intention is to accept a V1 established inbound channel,
+	/// use [`InboundV1Channel::accept_inbound_channel`] instead.
 	///
 	/// [`msgs::AcceptChannelV2`]: crate::ln::msgs::AcceptChannelV2
 	fn generate_accept_channel_v2_message(&self) -> msgs::AcceptChannelV2 {
