@@ -1828,15 +1828,27 @@ mod bucketed_history {
 			// values, which will result in us thinking we have some nontrivial probability of
 			// routing up to that amount.
 			if min_liquidity_offset_history_buckets[0] != 0 {
-				let mut highest_max_bucket_with_points = 0; // The highest max-bucket with any data
+				// Track the highest max-buckets with any data at all, as well as the highest
+				// max-bucket with at least BUCKET_FIXED_POINT_ONE.
+				let mut highest_max_bucket_with_points = 0;
+				let mut highest_max_bucket_with_full_points = None;
 				let mut total_max_points = 0; // Total points in max-buckets to consider
 				for (max_idx, max_bucket) in max_liquidity_offset_history_buckets.iter().enumerate() {
 					if *max_bucket >= BUCKET_FIXED_POINT_ONE {
+						highest_max_bucket_with_full_points = Some(cmp::max(highest_max_bucket_with_full_points.unwrap_or(0), max_idx));
+					}
+					if *max_bucket != 0 {
 						highest_max_bucket_with_points = cmp::max(highest_max_bucket_with_points, max_idx);
 					}
 					total_max_points += *max_bucket as u64;
 				}
-				let max_bucket_end_pos = BUCKET_START_POS[32 - highest_max_bucket_with_points] - 1;
+				// Use the highest max-bucket with at least BUCKET_FIXED_POINT_ONE, but if none is
+				// available use the highest max-bucket with any non-zero value. This ensures that
+				// if we have substantially decayed data we don't end up thinking the highest
+				// max-bucket is zero even though we have no points in the 0th max-bucket and do
+				// have points elsewhere.
+				let selected_max = highest_max_bucket_with_full_points.unwrap_or(highest_max_bucket_with_points);
+				let max_bucket_end_pos = BUCKET_START_POS[32 - selected_max] - 1;
 				if payment_pos < max_bucket_end_pos {
 					let (numerator, denominator) = success_probability(payment_pos as u64, 0,
 						max_bucket_end_pos as u64, POSITION_TICKS as u64 - 1, params, true);
