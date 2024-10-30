@@ -11,7 +11,9 @@
 //! applies for you.
 
 use crate::ln::channel::MAX_FUNDING_SATOSHIS_NO_WUMBO;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{
+	BREAKDOWN_TIMEOUT, DEFAULT_MAX_NO_CHANNEL_PEERS, MAX_LOCAL_BREAKDOWN_TIMEOUT,
+};
 
 #[cfg(fuzzing)]
 use crate::util::ser::Readable;
@@ -869,6 +871,13 @@ pub struct UserConfig {
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	pub manually_handle_bolt12_invoices: bool,
+	/// The maximum number of non-channel peers that we will accept. Once this number of non-channel
+	/// peers is reached, we will not accept any new non-channel peer connectionss. This could mean
+	/// that peers that wish to open a new channel will be unable to connect. Channel counterparties
+	/// are not checked against this limit.
+	/// 
+	/// Default value: 250
+	pub max_no_channel_peers: usize,
 }
 
 impl Default for UserConfig {
@@ -883,6 +892,7 @@ impl Default for UserConfig {
 			accept_intercept_htlcs: false,
 			accept_mpp_keysend: false,
 			manually_handle_bolt12_invoices: false,
+			max_no_channel_peers: DEFAULT_MAX_NO_CHANNEL_PEERS,
 		}
 	}
 }
