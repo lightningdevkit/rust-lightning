@@ -72,8 +72,6 @@ use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::signer;
-#[cfg(async_payments)]
-use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
@@ -88,6 +86,11 @@ use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, Maybe
 use crate::util::ser::TransactionU16LenLimited;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
+#[cfg(async_payments)] use {
+	crate::blinded_path::payment::AsyncBolt12OfferContext,
+	crate::offers::offer::Amount,
+	crate::offers::static_invoice::{DEFAULT_RELATIVE_EXPIRY as STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY, StaticInvoice, StaticInvoiceBuilder},
+};
 
 #[cfg(feature = "dnssec")]
 use crate::blinded_path::message::DNSResolverContext;
@@ -9987,6 +9990,86 @@ where
 	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);
 	#[cfg(c_bindings)]
 	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
+
+	/// Create an offer for receiving async payments as an often-offline recipient.
+	///
+	/// Because we may be offline when the payer attempts to request an invoice, you MUST:
+	/// 1. Provide at least 1 [`BlindedMessagePath`] terminating at an always-online node that will
+	///    serve the [`StaticInvoice`] created from this offer on our behalf.
+	/// 2. Use [`Self::create_static_invoice_builder`] to create a [`StaticInvoice`] from this
+	///    [`Offer`] plus the returned [`Nonce`], and provide the static invoice to the
+	///    aforementioned always-online node.
+	#[cfg(async_payments)]
+	pub fn create_async_receive_offer_builder(
+		&self, message_paths_to_always_online_node: Vec<BlindedMessagePath>
+	) -> Result<(OfferBuilder<DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError> {
+		if message_paths_to_always_online_node.is_empty() {
+			return Err(Bolt12SemanticError::MissingPaths)
+		}
+
+		let node_id = self.get_our_node_id();
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		let nonce = Nonce::from_entropy_source(entropy);
+		let mut builder = OfferBuilder::deriving_signing_pubkey(
+			node_id, expanded_key, nonce, secp_ctx
+		).chain_hash(self.chain_hash);
+
+		for path in message_paths_to_always_online_node {
+			builder = builder.path(path);
+		}
+
+		Ok((builder.into(), nonce))
+	}
+
+	/// Creates a [`StaticInvoiceBuilder`] from the corresponding [`Offer`] and [`Nonce`] that were
+	/// created via [`Self::create_async_receive_offer_builder`]. If `relative_expiry` is unset, the
+	/// invoice's expiry will default to [`STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY`].
+	#[cfg(async_payments)]
+	pub fn create_static_invoice_builder<'a>(
+		&self, offer: &'a Offer, offer_nonce: Nonce, relative_expiry: Option<Duration>
+	) -> Result<StaticInvoiceBuilder<'a>, Bolt12SemanticError> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		let payment_context = PaymentContext::AsyncBolt12Offer(
+			AsyncBolt12OfferContext { offer_nonce }
+		);
+		let amount_msat = offer.amount().and_then(|amount| {
+			match amount {
+				Amount::Bitcoin { amount_msats } => Some(amount_msats),
+				Amount::Currency { .. } => None
+			}
+		});
+
+		let relative_expiry = relative_expiry.unwrap_or(STATIC_INVOICE_DEFAULT_RELATIVE_EXPIRY);
+		let relative_expiry_secs: u32 = relative_expiry.as_secs().try_into().unwrap_or(u32::MAX);
+
+		let created_at = self.duration_since_epoch();
+		let payment_secret = inbound_payment::create_for_spontaneous_payment(
+			&self.inbound_payment_key, amount_msat, relative_expiry_secs, created_at.as_secs(), None
+		).map_err(|()| Bolt12SemanticError::InvalidAmount)?;
+
+		let payment_paths = self.create_blinded_payment_paths(
+			amount_msat, payment_secret, payment_context, relative_expiry_secs
+		).map_err(|()| Bolt12SemanticError::MissingPaths)?;
+
+		let nonce = Nonce::from_entropy_source(entropy);
+		let hmac = signer::hmac_for_held_htlc_available_context(nonce, expanded_key);
+		let context = MessageContext::AsyncPayments(
+			AsyncPaymentsContext::InboundPayment { nonce, hmac }
+		);
+		let async_receive_message_paths = self.create_blinded_paths(context)
+			.map_err(|()| Bolt12SemanticError::MissingPaths)?;
+
+		StaticInvoiceBuilder::for_offer_using_derived_keys(
+			offer, payment_paths, async_receive_message_paths, created_at, expanded_key,
+			offer_nonce, secp_ctx
+		).map(|inv| inv.allow_mpp().relative_expiry(relative_expiry_secs))
+	}
 
 	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
 	/// enqueuing it to be sent via an onion message. [`ChannelManager`] will pay the actual
