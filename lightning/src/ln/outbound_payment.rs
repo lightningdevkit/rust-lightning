@@ -945,7 +945,7 @@ impl OutboundPayments {
 		};
 
 		let payment_params = Some(route_params.payment_params.clone());
-		let (retryable_payment, onion_session_privs) = self.create_pending_payment(
+		let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
 			payment_hash, recipient_onion.clone(), keysend_preimage, &route, Some(retry_strategy),
 			payment_params, entropy_source, best_block_height
 		);
@@ -1546,7 +1546,7 @@ impl OutboundPayments {
 		match pending_outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(_) => Err(PaymentSendFailure::DuplicatePayment),
 			hash_map::Entry::Vacant(entry) => {
-				let (payment, onion_session_privs) = self.create_pending_payment(
+				let (payment, onion_session_privs) = Self::create_pending_payment(
 					payment_hash, recipient_onion, keysend_preimage, route, retry_strategy,
 					payment_params, entropy_source, best_block_height
 				);
@@ -1557,7 +1557,7 @@ impl OutboundPayments {
 	}
 
 	fn create_pending_payment<ES: Deref>(
-		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
+		payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, route: &Route, retry_strategy: Option<Retry>,
 		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32
 	) -> (PendingOutboundPayment, Vec<[u8; 32]>)
