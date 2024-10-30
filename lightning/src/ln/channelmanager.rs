@@ -7897,28 +7897,18 @@ where
 
 		let mut channel_phase = match msg {
 			OpenChannelMessageRef::V1(msg) => {
-				ChannelPhase::UnfundedInboundV1(match InboundV1Channel::new(
+				ChannelPhase::UnfundedInboundV1(InboundV1Channel::new(
 					&self.fee_estimator, &self.entropy_source, &self.signer_provider, *counterparty_node_id,
 					&self.channel_type_features(), &peer_state.latest_features, msg, user_channel_id,
 					&self.default_configuration, best_block_height, &self.logger, /*is_0conf=*/false
-				) {
-					Err(e) => {
-						return Err(MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id));
-					},
-					Ok(res) => res
-				})
+				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?)
 			},
 			OpenChannelMessageRef::V2(msg) => {
-				ChannelPhase::UnfundedInboundV2(match InboundV2Channel::new(&self.fee_estimator, &self.entropy_source,
+				ChannelPhase::UnfundedInboundV2(InboundV2Channel::new(&self.fee_estimator, &self.entropy_source,
 					&self.signer_provider, *counterparty_node_id, &self.channel_type_features(),
 					&peer_state.latest_features, msg, vec![], user_channel_id, &self.default_configuration,
-					best_block_height, &self.logger)
-				{
-					Err(e) => {
-						return Err(MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id));
-					},
-					Ok(res) => res
-				})
+					best_block_height, &self.logger
+				).map_err(|e| MsgHandleErrInternal::from_chan_no_close(e, msg.common_fields.temporary_channel_id))?)
 			},
 		};
 
