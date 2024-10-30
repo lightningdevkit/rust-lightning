@@ -2276,8 +2276,8 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(2, retry_strategy, required),
 		(4, max_total_routing_fee_msat, option),
 	},
-	// Added in 0.0.125. Prior versions will drop these outbounds on downgrade, which is safe because
-	// no HTLCs are in-flight.
+	// Added in 0.1. Prior versions will drop these outbounds on downgrade, which is safe because no
+	// HTLCs are in-flight.
 	(9, StaticInvoiceReceived) => {
 		(0, payment_hash, required),
 		(2, keysend_preimage, required),
