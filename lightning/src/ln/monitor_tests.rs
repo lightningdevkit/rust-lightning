@@ -346,122 +346,10 @@ fn sorted_vec<T: Ord>(mut v: Vec<T>) -> Vec<T> {
 	v
 }
 
-fn verify_claimable_balances(mut balances_1: Vec<Balance>, mut balances_2: Vec<Balance>, margin: u64) {
+fn verify_claimable_balances(mut balances_1: Vec<Balance>, mut balances_2: Vec<Balance>) {
 	balances_1.sort();
 	balances_2.sort();
-	assert_eq!(balances_1.len(), balances_2.len());
-	for i in 0..balances_1.len() {
-		match (balances_1.get(i).unwrap(), balances_2.get(i).unwrap()) {
-			(
-				Balance::ClaimableOnChannelClose {
-					amount_satoshis: amount_satoshis_1,
-					transaction_fee_satoshis: transaction_fee_satoshis_1,
-					outbound_payment_htlc_rounded_msat: outbound_payment_htlc_rounded_msat_1,
-					outbound_forwarded_htlc_rounded_msat: outbound_forwarded_htlc_rounded_msat_1,
-					inbound_claiming_htlc_rounded_msat: inbound_claiming_htlc_rounded_msat_1,
-					inbound_htlc_rounded_msat: inbound_htlc_rounded_msat_1,
-				},
-				Balance::ClaimableOnChannelClose {
-					amount_satoshis: amount_satoshis_2,
-					transaction_fee_satoshis: transaction_fee_satoshis_2,
-					outbound_payment_htlc_rounded_msat: outbound_payment_htlc_rounded_msat_2,
-					outbound_forwarded_htlc_rounded_msat: outbound_forwarded_htlc_rounded_msat_2,
-					inbound_claiming_htlc_rounded_msat: inbound_claiming_htlc_rounded_msat_2,
-					inbound_htlc_rounded_msat: inbound_htlc_rounded_msat_2,
-				},
-			) => {
-				assert!(amount_satoshis_1.abs_diff(*amount_satoshis_2) <= margin);
-				assert!(transaction_fee_satoshis_1.abs_diff(*transaction_fee_satoshis_2) <= margin);
-				assert!(outbound_payment_htlc_rounded_msat_1.abs_diff(*outbound_payment_htlc_rounded_msat_2) <= margin);
-				assert!(outbound_forwarded_htlc_rounded_msat_1.abs_diff(*outbound_forwarded_htlc_rounded_msat_2) <= margin);
-				assert!(inbound_claiming_htlc_rounded_msat_1.abs_diff(*inbound_claiming_htlc_rounded_msat_2) <= margin);
-				assert!(inbound_htlc_rounded_msat_1.abs_diff(*inbound_htlc_rounded_msat_2) <= margin);
-			},
-			(
-				Balance::ClaimableAwaitingConfirmations {
-					amount_satoshis: amount_satoshis_1,
-					confirmation_height: confirmation_height_1,
-					source: source_1,
-				},
-				Balance::ClaimableAwaitingConfirmations {
-					amount_satoshis: amount_satoshis_2,
-					confirmation_height: confirmation_height_2,
-					source: source_2,
-				},
-			) => {
-				assert!(amount_satoshis_1.abs_diff(*amount_satoshis_2) <= margin);
-				assert_eq!(confirmation_height_1, confirmation_height_2);
-				assert_eq!(source_1, source_2);
-			},
-			(
-				Balance::ContentiousClaimable {
-					amount_satoshis: amount_satoshis_1,
-					timeout_height: timeout_height_1,
-					payment_hash: payment_hash_1,
-					payment_preimage: payment_preimage_1,
-				},
-				Balance::ContentiousClaimable {
-					amount_satoshis: amount_satoshis_2,
-					timeout_height: timeout_height_2,
-					payment_hash: payment_hash_2,
-					payment_preimage: payment_preimage_2,
-				},
-			) => {
-				assert!(amount_satoshis_1.abs_diff(*amount_satoshis_2) <= margin);
-				assert_eq!(timeout_height_1, timeout_height_2);
-				assert_eq!(payment_hash_1, payment_hash_2);
-				assert_eq!(payment_preimage_1, payment_preimage_2);
-			},
-			(
-				Balance::MaybeTimeoutClaimableHTLC {
-					amount_satoshis: amount_satoshis_1,
-					claimable_height: claimable_height_1,
-					payment_hash: payment_hash_1,
-					outbound_payment: outbound_payment_1,
-				},
-				Balance::MaybeTimeoutClaimableHTLC {
-					amount_satoshis: amount_satoshis_2,
-					claimable_height: claimable_height_2,
-					payment_hash: payment_hash_2,
-					outbound_payment: outbound_payment_2,
-				},
-			) => {
-				assert!(amount_satoshis_1.abs_diff(*amount_satoshis_2) <= margin);
-				assert_eq!(claimable_height_1, claimable_height_2);
-				assert_eq!(payment_hash_1, payment_hash_2);
-				assert_eq!(outbound_payment_1, outbound_payment_2);
-			},
-			(
-				Balance::MaybePreimageClaimableHTLC {
-					amount_satoshis: amount_satoshis_1,
-					expiry_height: expiry_height_1,
-					payment_hash: payment_hash_1,
-				},
-				Balance::MaybePreimageClaimableHTLC {
-					amount_satoshis: amount_satoshis_2,
-					expiry_height: expiry_height_2,
-					payment_hash: payment_hash_2,
-				},
-			) => {
-				assert!(amount_satoshis_1.abs_diff(*amount_satoshis_2) <= margin);
-				assert_eq!(expiry_height_1, expiry_height_2);
-				assert_eq!(payment_hash_1, payment_hash_2);
-			},
-			(
-				Balance::CounterpartyRevokedOutputClaimable {
-					amount_satoshis: amount_satoshis_1,
-				},
-				Balance::CounterpartyRevokedOutputClaimable {
-					amount_satoshis: amount_satoshis_2,
-				},
-			) => {
-				assert!(amount_satoshis_1.abs_diff(*amount_satoshis_2) <= margin);
-			},
-			_ => {
-				panic!("unexpected balance type");
-			}
-		}
-	}
+	assert_eq!(balances_1, balances_2);
 }
 
 /// Asserts that `a` and `b` are close, but maybe off by up to 5.
@@ -1493,7 +1381,6 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 			outbound_payment: true,
 		}],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
-		5,
 	);
 
 	mine_transaction(&nodes[1], &as_revoked_txn[0]);
@@ -1513,8 +1400,14 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	// somewhat so it may not always be exact.
 	fuzzy_assert_eq(claim_txn[0].weight().to_wu(), pinnable_weight);
 	fuzzy_assert_eq(claim_txn[1].weight().to_wu(), unpinnable_weight);
-	let pinnable_fee = chan_feerate * claim_txn[0].weight().to_wu() / 1000;
-	let unpinnable_fee = chan_feerate * claim_txn[1].weight().to_wu() / 1000;
+	let pinnable_fee = claim_txn[0].input.iter().map(|txin| {
+		assert_eq!(txin.previous_output.txid, as_revoked_txn[0].compute_txid());
+		as_revoked_txn[0].output[txin.previous_output.vout as usize].value.to_sat()
+	}).sum::<u64>() - claim_txn[0].output.iter().map(|txout| txout.value.to_sat()).sum::<u64>();
+	let unpinnable_fee = claim_txn[1].input.iter().map(|txin| {
+		assert_eq!(txin.previous_output.txid, as_revoked_txn[0].compute_txid());
+		as_revoked_txn[0].output[txin.previous_output.vout as usize].value.to_sat()
+	}).sum::<u64>() - claim_txn[1].output.iter().map(|txout| txout.value.to_sat()).sum::<u64>();
 
 	// The expected balances for the next three checks.
 	let to_remote_balance = Balance::ClaimableAwaitingConfirmations {
@@ -1543,7 +1436,6 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 			htlc_unclaimed_balance(5_000),
 		],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
-		5,
 	);
 
 	if confirm_htlc_spend_first {
@@ -1558,7 +1450,7 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 	}
 
 	let pinnable_claimed_balance = Balance::ClaimableAwaitingConfirmations {
-		amount_satoshis: 5_000 + 3_000 + 4_000 - pinnable_fee - if anchors { 3 } else { 2 },
+		amount_satoshis: 5_000 + 3_000 + 4_000 - pinnable_fee,
 		confirmation_height: largest_htlc_claimed_avail_height,
 		source: BalanceSource::CounterpartyForceClosed,
 	};
@@ -1576,7 +1468,6 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 				to_self_unclaimed_balance.clone(),
 			],
 			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
-			5,
 		);
 	} else {
 		verify_claimable_balances(
@@ -1588,7 +1479,6 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 				htlc_unclaimed_balance(5_000),
 			],
 			nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
-			5,
 		);
 	}
 
@@ -1604,7 +1494,6 @@ fn do_test_revoked_counterparty_commitment_balances(anchors: bool, confirm_htlc_
 			unpinnable_claimed_balance.clone(),
 		],
 		nodes[1].chain_monitor.chain_monitor.get_monitor(funding_outpoint).unwrap().get_claimable_balances(),
-		5,
 	);
 
 	connect_blocks(&nodes[1], 3);
