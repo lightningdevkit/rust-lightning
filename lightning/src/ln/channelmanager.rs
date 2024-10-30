@@ -12209,7 +12209,12 @@ where
 
 	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
 		#[cfg(async_payments)] {
-			let AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } = _context;
+			let (payment_id, nonce, hmac) = match _context {
+				AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } => {
+					(payment_id, nonce, hmac)
+				},
+				_ => return
+			};
 			if payment_id.verify_for_async_payment(hmac, nonce, &self.inbound_payment_key).is_err() { return }
 			if let Err(e) = self.send_payment_for_static_invoice(payment_id) {
 				log_trace!(
