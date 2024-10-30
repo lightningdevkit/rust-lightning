@@ -20,6 +20,8 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::offers::merkle::TlvRecord;
 use crate::offers::nonce::Nonce;
+#[cfg(async_payments)]
+use crate::offers::offer::OfferId;
 use crate::util::ser::Writeable;
 
 use crate::prelude::*;
@@ -45,6 +47,10 @@ const ASYNC_PAYMENT_ID_HMAC_INPUT: &[u8; 16] = &[6; 16];
 
 // HMAC input for a `PaymentHash`. The HMAC is used in `OffersContext::InboundPayment`.
 const PAYMENT_HASH_HMAC_INPUT: &[u8; 16] = &[7; 16];
+
+// HMAC input for an `OfferId`. The HMAC is used in `AsyncPaymentsContext::InboundPayment`.
+#[cfg(async_payments)]
+const ASYNC_PAYMENT_OFFER_ID_HMAC_INPUT: &[u8; 16] = &[8; 16];
 
 /// Message metadata which possibly is derived from [`MetadataMaterial`] such that it can be
 /// verified.
@@ -456,6 +462,20 @@ fn hmac_for_payment_id(
 	hmac.input(&nonce.0);
 	hmac.input(hmac_input);
 	hmac.input(&payment_id.0);
+
+	Hmac::from_engine(hmac)
+}
+
+#[cfg(async_payments)]
+pub(crate) fn hmac_for_static_invoice_offer_id(
+	offer_id: OfferId, nonce: Nonce, expanded_key: &ExpandedKey,
+) -> Hmac<Sha256> {
+	const IV_BYTES: &[u8; IV_LEN] = b"LDK Offer ID ~~~";
+	let mut hmac = expanded_key.hmac_for_offer();
+	hmac.input(IV_BYTES);
+	hmac.input(&nonce.0);
+	hmac.input(ASYNC_PAYMENT_OFFER_ID_HMAC_INPUT);
+	hmac.input(&offer_id.0);
 
 	Hmac::from_engine(hmac)
 }
