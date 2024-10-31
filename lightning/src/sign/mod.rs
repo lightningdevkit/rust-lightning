@@ -178,8 +178,10 @@ impl StaticPaymentOutputDescriptor {
 	pub fn witness_script(&self) -> Option<ScriptBuf> {
 		self.channel_transaction_parameters.as_ref().and_then(|channel_params| {
 			if channel_params.supports_anchors() {
-				let payment_point = channel_params.holder_pubkeys.payment_point;
-				Some(chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point))
+				let payment_basepoint = channel_params.holder_pubkeys.payment_basepoint;
+				Some(chan_utils::get_to_countersignatory_with_anchors_redeemscript(
+					&payment_basepoint,
+				))
 			} else {
 				None
 			}
@@ -282,7 +284,7 @@ pub enum SpendableOutputDescriptor {
 	/// [`chan_utils::get_revokeable_redeemscript`].
 	DelayedPaymentOutput(DelayedPaymentOutputDescriptor),
 	/// An output spendable exclusively by our payment key (i.e., the private key that corresponds
-	/// to the `payment_point` in [`ChannelSigner::pubkeys`]). The output type depends on the
+	/// to the `payment_basepoint` in [`ChannelSigner::pubkeys`]). The output type depends on the
 	/// channel type negotiated.
 	///
 	/// On an anchor outputs channel, the witness in the spending input is:
@@ -1125,7 +1127,7 @@ impl InMemorySigner {
 		ChannelPublicKeys {
 			funding_pubkey: from_secret(&funding_key),
 			revocation_basepoint: RevocationBasepoint::from(from_secret(&revocation_base_key)),
-			payment_point: from_secret(&payment_key),
+			payment_basepoint: from_secret(&payment_key),
 			delayed_payment_basepoint: DelayedPaymentBasepoint::from(from_secret(
 				&delayed_payment_base_key,
 			)),
@@ -1226,7 +1228,7 @@ impl InMemorySigner {
 			return Err(());
 		}
 
-		let remotepubkey = bitcoin::PublicKey::new(self.pubkeys().payment_point);
+		let remotepubkey = bitcoin::PublicKey::new(self.pubkeys().payment_basepoint);
 		// We cannot always assume that `channel_parameters` is set, so can't just call
 		// `self.channel_parameters()` or anything that relies on it
 		let supports_anchors_zero_fee_htlc_tx = self
