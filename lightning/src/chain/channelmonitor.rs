@@ -1347,7 +1347,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 		assert!(commitment_transaction_number_obscure_factor <= (1 << 48));
 		let counterparty_payment_script = chan_utils::get_counterparty_payment_script(
-			&channel_parameters.channel_type_features, &keys.pubkeys().payment_point
+			&channel_parameters.channel_type_features, &keys.pubkeys().payment_basepoint
 		);
 
 		let counterparty_channel_parameters = channel_parameters.counterparty_parameters.as_ref().unwrap();
@@ -4971,9 +4971,9 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		if onchain_tx_handler.channel_type_features().supports_anchors_zero_fee_htlc_tx() &&
 			counterparty_payment_script.is_p2wpkh()
 		{
-			let payment_point = onchain_tx_handler.channel_transaction_parameters.holder_pubkeys.payment_point;
+			let payment_basepoint = onchain_tx_handler.channel_transaction_parameters.holder_pubkeys.payment_basepoint;
 			counterparty_payment_script =
-				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_point).to_p2wsh();
+				chan_utils::get_to_countersignatory_with_anchors_redeemscript(&payment_basepoint).to_p2wsh();
 		}
 
 		Ok((best_block.block_hash, ChannelMonitor::from_impl(ChannelMonitorImpl {
@@ -5243,7 +5243,7 @@ mod tests {
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
 			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap())),
-			payment_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
+			payment_basepoint: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
 			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap())),
 			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap()))
 		};
@@ -5495,7 +5495,7 @@ mod tests {
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[44; 32]).unwrap()),
 			revocation_basepoint: RevocationBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[45; 32]).unwrap())),
-			payment_point: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
+			payment_basepoint: PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[46; 32]).unwrap()),
 			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap())),
 			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap())),
 		};

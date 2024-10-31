@@ -478,7 +478,7 @@ pub struct ChannelPublicKeys {
 	/// The public key on which the non-broadcaster (ie the countersignatory) receives an immediately
 	/// spendable primary channel balance on the broadcaster's commitment transaction. This key is
 	/// static across every commitment transaction.
-	pub payment_point: PublicKey,
+	pub payment_basepoint: PublicKey,
 	/// The base point which is used (with derive_public_key) to derive a per-commitment payment
 	/// public key which receives non-HTLC-encumbered funds which are only available for spending
 	/// after some delay (or can be claimed via the revocation path).
@@ -491,7 +491,7 @@ pub struct ChannelPublicKeys {
 impl_writeable_tlv_based!(ChannelPublicKeys, {
 	(0, funding_pubkey, required),
 	(2, revocation_basepoint, required),
-	(4, payment_point, required),
+	(4, payment_basepoint, required),
 	(6, delayed_payment_basepoint, required),
 	(8, htlc_basepoint, required),
 });
@@ -816,9 +816,9 @@ pub(crate) fn legacy_deserialization_prevention_marker_for_channel_type_features
 
 /// Gets the witnessScript for the to_remote output when anchors are enabled.
 #[inline]
-pub fn get_to_countersignatory_with_anchors_redeemscript(payment_point: &PublicKey) -> ScriptBuf {
+pub fn get_to_countersignatory_with_anchors_redeemscript(payment_basepoint: &PublicKey) -> ScriptBuf {
 	Builder::new()
-		.push_slice(payment_point.serialize())
+		.push_slice(payment_basepoint.serialize())
 		.push_opcode(opcodes::all::OP_CHECKSIGVERIFY)
 		.push_int(1)
 		.push_opcode(opcodes::all::OP_CSV)
@@ -933,7 +933,7 @@ impl ChannelTransactionParameters {
 		let dummy_keys = ChannelPublicKeys {
 			funding_pubkey: PublicKey::from_slice(&[2; 33]).unwrap(),
 			revocation_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
-			payment_point: PublicKey::from_slice(&[2; 33]).unwrap(),
+			payment_basepoint: PublicKey::from_slice(&[2; 33]).unwrap(),
 			delayed_payment_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
 			htlc_basepoint: PublicKey::from_slice(&[2; 33]).unwrap().into(),
 		};
@@ -1119,7 +1119,7 @@ impl HolderCommitmentTransaction {
 		let channel_pubkeys = ChannelPublicKeys {
 			funding_pubkey: dummy_key.clone(),
 			revocation_basepoint: RevocationBasepoint::from(dummy_key),
-			payment_point: dummy_key.clone(),
+			payment_basepoint: dummy_key.clone(),
 			delayed_payment_basepoint: DelayedPaymentBasepoint::from(dummy_key.clone()),
 			htlc_basepoint: HtlcBasepoint::from(dummy_key.clone())
 		};
@@ -1515,9 +1515,9 @@ impl CommitmentTransaction {
 
 		if to_countersignatory_value_sat > Amount::ZERO {
 			let script = if channel_parameters.channel_type_features().supports_anchors_zero_fee_htlc_tx() {
-				get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_point).to_p2wsh()
+				get_to_countersignatory_with_anchors_redeemscript(&countersignatory_pubkeys.payment_basepoint).to_p2wsh()
 			} else {
-				ScriptBuf::new_p2wpkh(&Hash160::hash(&countersignatory_pubkeys.payment_point.serialize()).into())
+				ScriptBuf::new_p2wpkh(&Hash160::hash(&countersignatory_pubkeys.payment_basepoint.serialize()).into())
 			};
 			txouts.push((
 				TxOut {
@@ -1608,8 +1608,8 @@ impl CommitmentTransaction {
 		let broadcaster_pubkeys = channel_parameters.broadcaster_pubkeys();
 		let countersignatory_pubkeys = channel_parameters.countersignatory_pubkeys();
 		let commitment_transaction_number_obscure_factor = get_commitment_transaction_number_obscure_factor(
-			&broadcaster_pubkeys.payment_point,
-			&countersignatory_pubkeys.payment_point,
+			&broadcaster_pubkeys.payment_basepoint,
+			&countersignatory_pubkeys.payment_basepoint,
 			channel_parameters.is_outbound(),
 		);
 
@@ -1974,13 +1974,13 @@ mod tests {
 		// Generate broadcaster and counterparty outputs
 		let tx = builder.build(1000, 2000);
 		assert_eq!(tx.built.transaction.output.len(), 2);
-		assert_eq!(tx.built.transaction.output[1].script_pubkey, bitcoin::address::Address::p2wpkh(&CompressedPublicKey(builder.counterparty_pubkeys.payment_point), Network::Testnet).script_pubkey());
+		assert_eq!(tx.built.transaction.output[1].script_pubkey, bitcoin::address::Address::p2wpkh(&CompressedPublicKey(builder.counterparty_pubkeys.payment_basepoint), Network::Testnet).script_pubkey());
 
 		// Generate broadcaster and counterparty outputs as well as two anchors
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 		let tx = builder.build(1000, 2000);
 		assert_eq!(tx.built.transaction.output.len(), 4);
-		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersignatory_with_anchors_redeemscript(&builder.counterparty_pubkeys.payment_point).to_p2wsh());
+		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_to_countersignatory_with_anchors_redeemscript(&builder.counterparty_pubkeys.payment_basepoint).to_p2wsh());
 
 		// Generate broadcaster output and anchor
 		let tx = builder.build(3000, 0);
