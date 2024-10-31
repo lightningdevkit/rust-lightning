@@ -404,6 +404,8 @@ pub struct BlindedTail {
 	pub excess_final_cltv_expiry_delta: u32,
 	/// The total amount paid on this [`Path`], excluding the fees.
 	pub final_value_msat: u64,
+	/// Used for determining the type of Trampoline path to construct
+	pub final_hop_supports_trampoline: bool
 }
 
 impl_writeable_tlv_based!(BlindedTail, {
@@ -411,6 +413,7 @@ impl_writeable_tlv_based!(BlindedTail, {
 	(2, blinding_point, required),
 	(4, excess_final_cltv_expiry_delta, required),
 	(6, final_value_msat, required),
+	(8, final_hop_supports_trampoline, required),
 });
 
 /// A path in a [`Route`] to the payment recipient. Must always be at least length one.
@@ -3343,6 +3346,7 @@ where L::Target: Logger {
 					blinding_point: blinded_path.blinding_point(),
 					excess_final_cltv_expiry_delta: 0,
 					final_value_msat: h.fee_msat,
+					final_hop_supports_trampoline: false
 				})
 			} else { None }
 		});
@@ -7692,6 +7696,7 @@ mod tests {
 				blinding_point: ln_test_utils::pubkey(43),
 				excess_final_cltv_expiry_delta: 40,
 				final_value_msat: 100,
+				final_hop_supports_trampoline: false,
 			})}, Path {
 			hops: vec![RouteHop {
 				pubkey: ln_test_utils::pubkey(51),
@@ -7718,6 +7723,7 @@ mod tests {
 			blinding_point: ln_test_utils::pubkey(47),
 			excess_final_cltv_expiry_delta: 41,
 			final_value_msat: 101,
+			final_hop_supports_trampoline: false,
 		});
 		let encoded_route = route.encode();
 		let decoded_route: Route = Readable::read(&mut Cursor::new(&encoded_route[..])).unwrap();
@@ -7754,6 +7760,7 @@ mod tests {
 				blinding_point: ln_test_utils::pubkey(48),
 				excess_final_cltv_expiry_delta: 0,
 				final_value_msat: 200,
+				final_hop_supports_trampoline: false,
 			}),
 		};
 		inflight_htlcs.process_path(&path, ln_test_utils::pubkey(44));
@@ -7792,6 +7799,7 @@ mod tests {
 				blinding_point: ln_test_utils::pubkey(44),
 				excess_final_cltv_expiry_delta: 0,
 				final_value_msat: 200,
+				final_hop_supports_trampoline: false,
 			}),
 		}], route_params: None};
 
