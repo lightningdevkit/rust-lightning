@@ -58,7 +58,8 @@ use lightning::routing::router::{
 };
 use lightning::routing::utxo::UtxoLookup;
 use lightning::sign::{
-	EntropySource, InMemorySigner, KeyMaterial, NodeSigner, Recipient, SignerProvider,
+	ChannelKeysDerivationParameters, EntropySource, InMemorySigner, KeyMaterial, NodeSigner,
+	Recipient, SignerProvider,
 };
 use lightning::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use lightning::util::config::{ChannelConfig, UserConfig};
@@ -439,20 +440,26 @@ impl SignerProvider for KeyProvider {
 	#[cfg(taproot)]
 	type TaprootSigner = TestChannelSigner;
 
-	fn generate_channel_keys_id(
+	fn generate_channel_keys_derivation_params(
 		&self, inbound: bool, _channel_value_satoshis: u64, _user_channel_id: u128,
-	) -> [u8; 32] {
+	) -> ChannelKeysDerivationParameters {
 		let ctr = self.counter.fetch_add(1, Ordering::Relaxed) as u8;
 		self.signer_state
 			.borrow_mut()
 			.insert(ctr, (inbound, Arc::new(Mutex::new(EnforcementState::new()))));
-		[ctr; 32]
+		let channel_keys_id = [ctr; 32];
+		ChannelKeysDerivationParameters {
+			channel_keys_derivation_version: Some(1),
+			channel_keys_id,
+		}
 	}
 
 	fn derive_channel_signer(
-		&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32],
+		&self, channel_value_satoshis: u64,
+		channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	) -> Self::EcdsaSigner {
 		let secp_ctx = Secp256k1::signing_only();
+		let channel_keys_id = channel_keys_derivation_params.channel_keys_id;
 		let ctr = channel_keys_id[0];
 		let (inbound, state) = self.signer_state.borrow().get(&ctr).unwrap().clone();
 		TestChannelSigner::new_with_revoked(
@@ -489,7 +496,7 @@ impl SignerProvider for KeyProvider {
 						0, 0, 0, 0, 0, 6, ctr,
 					],
 					channel_value_satoshis,
-					channel_keys_id,
+					channel_keys_derivation_params,
 					channel_keys_id,
 				)
 			} else {
@@ -525,7 +532,7 @@ impl SignerProvider for KeyProvider {
 						0, 0, 0, 0, 0, 12, ctr,
 					],
 					channel_value_satoshis,
-					channel_keys_id,
+					channel_keys_derivation_params,
 					channel_keys_id,
 				)
 			},
@@ -541,7 +548,9 @@ impl SignerProvider for KeyProvider {
 		Ok(TestChannelSigner::new_with_revoked(inner, state, false))
 	}
 
-	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+	fn get_destination_script(
+		&self, _channel_keys_derivation_params: ChannelKeysDerivationParameters,
+	) -> Result<ScriptBuf, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		let channel_monitor_claim_key = SecretKey::from_slice(
 			&<Vec<u8>>::from_hex(

@@ -99,7 +99,7 @@ impl AnchorDescriptor {
 	{
 		let mut signer = signer_provider.derive_channel_signer(
 			self.channel_derivation_parameters.value_satoshis,
-			self.channel_derivation_parameters.keys_id,
+			self.channel_derivation_parameters.channel_keys_derivation_params,
 		);
 		signer.provide_channel_parameters(&self.channel_derivation_parameters.transaction_parameters);
 		signer
@@ -791,7 +791,9 @@ where
 
 		let mut signers = BTreeMap::new();
 		for (idx, htlc_descriptor) in htlc_descriptors.iter().enumerate() {
-			let signer = signers.entry(htlc_descriptor.channel_derivation_parameters.keys_id)
+			let channel_keys_derivation_params = htlc_descriptor.channel_derivation_parameters
+				.channel_keys_derivation_params;
+			let signer = signers.entry(channel_keys_derivation_params)
 				.or_insert_with(|| htlc_descriptor.derive_channel_signer(&self.signer_provider));
 			let htlc_sig = signer.sign_holder_htlc_transaction(&htlc_tx, idx, htlc_descriptor, &self.secp)?;
 			let witness_script = htlc_descriptor.witness_script(&self.secp);
@@ -860,7 +862,7 @@ mod tests {
 	use crate::ln::chan_utils::ChannelTransactionParameters;
 	use crate::util::ser::Readable;
 	use crate::util::test_utils::{TestBroadcaster, TestLogger};
-	use crate::sign::KeysManager;
+	use crate::sign::{KeysManager, ChannelKeysDerivationParameters, CHANNEL_KEYS_DERIVATION_VERSION};
 
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
@@ -945,6 +947,16 @@ mod tests {
 		let logger = TestLogger::new();
 		let handler = BumpTransactionEventHandler::new(&broadcaster, &source, &signer, &logger);
 
+		let channel_keys_derivation_params = ChannelKeysDerivationParameters {
+			channel_keys_derivation_version: Some(CHANNEL_KEYS_DERIVATION_VERSION),
+			channel_keys_id: [42; 32],
+		};
+		let channel_derivation_parameters = ChannelDerivationParameters {
+			value_satoshis: 42_000_000,
+			channel_keys_derivation_params,
+			transaction_parameters: ChannelTransactionParameters::test_dummy(),
+		};
+		let outpoint = OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 };
 		handler.handle_event(&BumpTransactionEvent::ChannelClose {
 			channel_id: ChannelId([42; 32]),
 			counterparty_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
@@ -953,12 +965,8 @@ mod tests {
 			commitment_tx_fee_satoshis: 930,
 			commitment_tx,
 			anchor_descriptor: AnchorDescriptor {
-				channel_derivation_parameters: ChannelDerivationParameters {
-					value_satoshis: 42_000_000,
-					keys_id: [42; 32],
-					transaction_parameters: ChannelTransactionParameters::test_dummy(),
-				},
-				outpoint: OutPoint { txid: Txid::from_byte_array([42; 32]), vout: 0 },
+				channel_derivation_parameters,
+				outpoint,
 			},
 			pending_htlcs: Vec::new(),
 		});

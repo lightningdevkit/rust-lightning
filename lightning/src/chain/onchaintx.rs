@@ -25,6 +25,7 @@ use bitcoin::secp256k1::{Secp256k1, ecdsa::Signature};
 use bitcoin::secp256k1;
 
 use crate::chain::chaininterface::{ConfirmationTarget, compute_feerate_sat_per_1000_weight};
+use crate::sign::ChannelKeysDerivationParameters;
 use crate::sign::{ChannelDerivationParameters, HTLCDescriptor, ChannelSigner, EntropySource, SignerProvider, ecdsa::EcdsaChannelSigner};
 use crate::ln::msgs::DecodeError;
 use crate::types::payment::PaymentPreimage;
@@ -230,7 +231,7 @@ pub(crate) enum FeerateStrategy {
 #[derive(Clone)]
 pub struct OnchainTxHandler<ChannelSigner: EcdsaChannelSigner> {
 	channel_value_satoshis: u64,
-	channel_keys_id: [u8; 32],
+	channel_keys_derivation_params: ChannelKeysDerivationParameters,
 	destination_script: ScriptBuf,
 	holder_commitment: HolderCommitmentTransaction,
 	prev_holder_commitment: Option<HolderCommitmentTransaction>,
@@ -288,7 +289,7 @@ impl<ChannelSigner: EcdsaChannelSigner> PartialEq for OnchainTxHandler<ChannelSi
 	fn eq(&self, other: &Self) -> bool {
 		// `signer`, `secp_ctx`, and `pending_claim_events` are excluded on purpose.
 		self.channel_value_satoshis == other.channel_value_satoshis &&
-			self.channel_keys_id == other.channel_keys_id &&
+			self.channel_keys_derivation_params == other.channel_keys_derivation_params &&
 			self.destination_script == other.destination_script &&
 			self.holder_commitment == other.holder_commitment &&
 			self.prev_holder_commitment == other.prev_holder_commitment &&
@@ -346,7 +347,9 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			entry.write(writer)?;
 		}
 
-		write_tlv_fields!(writer, {});
+		write_tlv_fields!(writer, {
+			(1, self.channel_keys_derivation_params.channel_keys_derivation_version, option),
+		});
 		Ok(())
 	}
 }
@@ -381,9 +384,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			reader.read_exact(read_slice)?;
 			bytes_read += bytes_to_read;
 		}
-
-		let mut signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_id);
-		signer.provide_channel_parameters(&channel_parameters);
 
 		let pending_claim_requests_len: u64 = Readable::read(reader)?;
 		let mut pending_claim_requests = hash_map_with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
@@ -420,14 +420,26 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 
-		read_tlv_fields!(reader, {});
+		let mut channel_keys_derivation_version: Option<u8> = None;
+
+		read_tlv_fields!(reader, {
+			(1, channel_keys_derivation_version, option)
+		});
+
+		let channel_keys_derivation_params = ChannelKeysDerivationParameters {
+			channel_keys_derivation_version,
+			channel_keys_id,
+		};
+
+		let mut signer = signer_provider.derive_channel_signer(channel_value_satoshis, channel_keys_derivation_params);
+		signer.provide_channel_parameters(&channel_parameters);
 
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		Ok(OnchainTxHandler {
 			channel_value_satoshis,
-			channel_keys_id,
+			channel_keys_derivation_params,
 			destination_script,
 			holder_commitment,
 			prev_holder_commitment,
@@ -445,13 +457,13 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 	pub(crate) fn new(
-		channel_value_satoshis: u64, channel_keys_id: [u8; 32], destination_script: ScriptBuf,
+		channel_value_satoshis: u64, channel_keys_derivation_params: ChannelKeysDerivationParameters, destination_script: ScriptBuf,
 		signer: ChannelSigner, channel_parameters: ChannelTransactionParameters,
 		holder_commitment: HolderCommitmentTransaction, secp_ctx: Secp256k1<secp256k1::All>
 	) -> Self {
 		OnchainTxHandler {
 			channel_value_satoshis,
-			channel_keys_id,
+			channel_keys_derivation_params,
 			destination_script,
 			holder_commitment,
 			prev_holder_commitment: None,
@@ -1199,7 +1211,7 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 			let htlc_descriptor = HTLCDescriptor {
 				channel_derivation_parameters: ChannelDerivationParameters {
 					value_satoshis: self.channel_value_satoshis,
-					keys_id: self.channel_keys_id,
+					channel_keys_derivation_params: self.channel_keys_derivation_params,
 					transaction_parameters: self.channel_transaction_parameters.clone(),
 				},
 				commitment_txid: trusted_tx.txid(),

@@ -2290,6 +2290,7 @@ fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool
 		check_spends!(txn[0], commitment_tx);
 		txn.pop().unwrap()
 	};
+		println!("TXID WE EXPECT: {:?}", htlc_timeout_tx.input[0].previous_output);
 
 	// Check that we can still rebroadcast these packages/transactions if we're upgrading from an
 	// old `ChannelMonitor` that did not exercise said rebroadcasting logic.
