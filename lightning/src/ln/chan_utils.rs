@@ -2015,9 +2015,9 @@ mod tests {
 		assert_eq!(tx.built.transaction.output[0].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
 		assert_eq!(tx.built.transaction.output[1].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh());
 		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh().to_hex_string(),
-				   "0020e43a7c068553003fe68fcae424fb7b28ec5ce48cd8b6744b3945631389bad2fb");
+			"0020510277dd095f7e3a7a46efbd9de3a49f527b5b32f4acc70f144dc5c928529520");
 		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::only_static_remote_key(), &keys).to_p2wsh().to_hex_string(),
-				   "0020215d61bba56b19e9eadb6107f5a85d7f99c40f65992443f69229c290165bc00d");
+			"0020b981c1ea6c0d0c3971e89800312d6fd5564872f22040771d1555605edf5b1cfe");
 
 		// Generate broadcaster output and received and offered HTLC outputs,  with anchors
 		builder.channel_parameters.channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
@@ -2027,9 +2027,9 @@ mod tests {
 		assert_eq!(tx.built.transaction.output[2].script_pubkey, get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
 		assert_eq!(tx.built.transaction.output[3].script_pubkey, get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh());
 		assert_eq!(get_htlc_redeemscript(&received_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
-				   "0020b70d0649c72b38756885c7a30908d912a7898dd5d79457a7280b8e9a20f3f2bc");
+			"002078193f615fc1b050814d866d6c46097f9d19fdae0dbc4905b2b35f427c8d0662");
 		assert_eq!(get_htlc_redeemscript(&offered_htlc, &ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(), &keys).to_p2wsh().to_hex_string(),
-				   "002087a3faeb1950a469c0e2db4a79b093a41b9526e5a6fc6ef5cb949bde3be379c7");
+			"0020ac28c4778c24e79755cedc11e7feb638630aa74478781ae7c809aed06e6bd325");
 	}
 
 	#[test]
