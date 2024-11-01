@@ -2855,12 +2855,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				self.their_cur_per_commitment_points = Some((commitment_number, their_per_commitment_point, None));
 			}
 		}
-		let mut htlcs = Vec::with_capacity(htlc_outputs.len());
-		for htlc in htlc_outputs {
-			if htlc.0.transaction_output_index.is_some() {
-				htlcs.push(htlc.0);
-			}
-		}
 	}
 
 	/// Informs this monitor of the latest holder (ie broadcastable) commitment transaction. The
