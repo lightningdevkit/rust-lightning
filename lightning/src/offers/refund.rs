@@ -98,9 +98,9 @@ use crate::ln::channelmanager::PaymentId;
 use crate::types::features::InvoiceRequestFeatures;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-use crate::offers::invoice_request::{InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
+use crate::offers::invoice_request::{ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{OfferTlvStream, OfferTlvStreamRef};
+use crate::offers::offer::{ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OfferTlvStream, OfferTlvStreamRef};
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
 use crate::offers::signer::{Metadata, MetadataMaterial, self};
@@ -176,6 +176,10 @@ macro_rules! refund_explicit_metadata_builder_methods { () => {
 				payer: PayerContents(metadata), description: String::new(), absolute_expiry: None,
 				issuer: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
 				quantity: None, payer_signing_pubkey: signing_pubkey, payer_note: None, paths: None,
+				#[cfg(test)]
+				experimental_foo: None,
+				#[cfg(test)]
+				experimental_bar: None,
 			},
 			secp_ctx: None,
 		})
@@ -218,6 +222,10 @@ macro_rules! refund_builder_methods { (
 				payer: PayerContents(metadata), description: String::new(), absolute_expiry: None,
 				issuer: None, chain: None, amount_msats, features: InvoiceRequestFeatures::empty(),
 				quantity: None, payer_signing_pubkey: node_id, payer_note: None, paths: None,
+				#[cfg(test)]
+				experimental_foo: None,
+				#[cfg(test)]
+				experimental_bar: None,
 			},
 			secp_ctx: Some(secp_ctx),
 		})
@@ -358,6 +366,18 @@ macro_rules! refund_builder_test_methods { (
 		$self.refund.features = features;
 		$return_value
 	}
+
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(super) fn experimental_foo($($self_mut)* $self: $self_type, experimental_foo: u64) -> $return_type {
+		$self.refund.experimental_foo = Some(experimental_foo);
+		$return_value
+	}
+
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(super) fn experimental_bar($($self_mut)* $self: $self_type, experimental_bar: u64) -> $return_type {
+		$self.refund.experimental_bar = Some(experimental_bar);
+		$return_value
+	}
 } }
 
 impl<'a> RefundBuilder<'a, secp256k1::SignOnly> {
@@ -437,6 +457,10 @@ pub(super) struct RefundContents {
 	payer_signing_pubkey: PublicKey,
 	payer_note: Option<String>,
 	paths: Option<Vec<BlindedMessagePath>>,
+	#[cfg(test)]
+	experimental_foo: Option<u64>,
+	#[cfg(test)]
+	experimental_bar: Option<u64>,
 }
 
 impl Refund {
@@ -770,7 +794,17 @@ impl RefundContents {
 			paths: self.paths.as_ref(),
 		};
 
-		(payer, offer, invoice_request)
+		let experimental_offer = ExperimentalOfferTlvStreamRef {
+			#[cfg(test)]
+			experimental_foo: self.experimental_foo,
+		};
+
+		let experimental_invoice_request = ExperimentalInvoiceRequestTlvStreamRef {
+			#[cfg(test)]
+			experimental_bar: self.experimental_bar,
+		};
+
+		(payer, offer, invoice_request, experimental_offer, experimental_invoice_request)
 	}
 }
 
@@ -793,12 +827,17 @@ impl Writeable for RefundContents {
 	}
 }
 
-type RefundTlvStream = (PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream);
+type RefundTlvStream = (
+	PayerTlvStream, OfferTlvStream, InvoiceRequestTlvStream, ExperimentalOfferTlvStream,
+	ExperimentalInvoiceRequestTlvStream,
+);
 
 type RefundTlvStreamRef<'a> = (
 	PayerTlvStreamRef<'a>,
 	OfferTlvStreamRef<'a>,
 	InvoiceRequestTlvStreamRef<'a>,
+	ExperimentalOfferTlvStreamRef,
+	ExperimentalInvoiceRequestTlvStreamRef,
 );
 
 impl CursorReadable for RefundTlvStream {
@@ -806,8 +845,10 @@ impl CursorReadable for RefundTlvStream {
 		let payer = CursorReadable::read(r)?;
 		let offer = CursorReadable::read(r)?;
 		let invoice_request = CursorReadable::read(r)?;
+		let experimental_offer = CursorReadable::read(r)?;
+		let experimental_invoice_request = CursorReadable::read(r)?;
 
-		Ok((payer, offer, invoice_request))
+		Ok((payer, offer, invoice_request, experimental_offer, experimental_invoice_request))
 	}
 }
 
@@ -848,6 +889,14 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			},
 			InvoiceRequestTlvStream {
 				chain, amount, features, quantity, payer_id, payer_note, paths
+			},
+			ExperimentalOfferTlvStream {
+				#[cfg(test)]
+				experimental_foo,
+			},
+			ExperimentalInvoiceRequestTlvStream {
+				#[cfg(test)]
+				experimental_bar,
 			},
 		) = tlv_stream;
 
@@ -909,6 +958,10 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 		Ok(RefundContents {
 			payer, description, absolute_expiry, issuer, chain, amount_msats, features, quantity,
 			payer_signing_pubkey, payer_note, paths,
+			#[cfg(test)]
+			experimental_foo,
+			#[cfg(test)]
+			experimental_bar,
 		})
 	}
 }
@@ -944,9 +997,9 @@ mod tests {
 	use crate::types::features::{InvoiceRequestFeatures, OfferFeatures};
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-	use crate::offers::invoice_request::InvoiceRequestTlvStreamRef;
+	use crate::offers::invoice_request::{EXPERIMENTAL_INVOICE_REQUEST_TYPES, ExperimentalInvoiceRequestTlvStreamRef, INVOICE_REQUEST_TYPES, InvoiceRequestTlvStreamRef};
 	use crate::offers::nonce::Nonce;
-	use crate::offers::offer::OfferTlvStreamRef;
+	use crate::offers::offer::{ExperimentalOfferTlvStreamRef, OfferTlvStreamRef};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
@@ -1014,6 +1067,12 @@ mod tests {
 					payer_note: None,
 					paths: None,
 				},
+				ExperimentalOfferTlvStreamRef {
+					experimental_foo: None,
+				},
+				ExperimentalInvoiceRequestTlvStreamRef {
+					experimental_bar: None,
+				},
 			),
 		);
 
@@ -1042,6 +1101,8 @@ mod tests {
 		let refund = RefundBuilder
 			::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
 			.unwrap()
+			.experimental_foo(42)
+			.experimental_bar(42)
 			.build().unwrap();
 		assert_eq!(refund.payer_signing_pubkey(), node_id);
 
@@ -1049,6 +1110,7 @@ mod tests {
 		let invoice = refund
 			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
+			.experimental_baz(42)
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 		match invoice.verify_using_metadata(&expanded_key, &secp_ctx) {
@@ -1109,12 +1171,15 @@ mod tests {
 			::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx, 1000, payment_id)
 			.unwrap()
 			.path(blinded_path)
+			.experimental_foo(42)
+			.experimental_bar(42)
 			.build().unwrap();
 		assert_ne!(refund.payer_signing_pubkey(), node_id);
 
 		let invoice = refund
 			.respond_with_no_std(payment_paths(), payment_hash(), recipient_pubkey(), now())
 			.unwrap()
+			.experimental_baz(42)
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
 		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
@@ -1166,7 +1231,7 @@ mod tests {
 			.absolute_expiry(future_expiry)
 			.build()
 			.unwrap();
-		let (_, tlv_stream, _) = refund.as_tlv_stream();
+		let (_, tlv_stream, _, _, _) = refund.as_tlv_stream();
 		#[cfg(feature = "std")]
 		assert!(!refund.is_expired());
 		assert!(!refund.is_expired_no_std(now));
@@ -1178,7 +1243,7 @@ mod tests {
 			.absolute_expiry(past_expiry)
 			.build()
 			.unwrap();
-		let (_, tlv_stream, _) = refund.as_tlv_stream();
+		let (_, tlv_stream, _, _, _) = refund.as_tlv_stream();
 		#[cfg(feature = "std")]
 		assert!(refund.is_expired());
 		assert!(refund.is_expired_no_std(now));
@@ -1210,7 +1275,7 @@ mod tests {
 			.path(paths[1].clone())
 			.build()
 			.unwrap();
-		let (_, _, invoice_request_tlv_stream) = refund.as_tlv_stream();
+		let (_, _, invoice_request_tlv_stream, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.payer_signing_pubkey(), pubkey(42));
 		assert_eq!(refund.paths(), paths.as_slice());
 		assert_ne!(pubkey(42), pubkey(44));
@@ -1224,7 +1289,7 @@ mod tests {
 			.issuer("bar".into())
 			.build()
 			.unwrap();
-		let (_, tlv_stream, _) = refund.as_tlv_stream();
+		let (_, tlv_stream, _, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.issuer(), Some(PrintableString("bar")));
 		assert_eq!(tlv_stream.issuer, Some(&String::from("bar")));
 
@@ -1233,7 +1298,7 @@ mod tests {
 			.issuer("baz".into())
 			.build()
 			.unwrap();
-		let (_, tlv_stream, _) = refund.as_tlv_stream();
+		let (_, tlv_stream, _, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.issuer(), Some(PrintableString("baz")));
 		assert_eq!(tlv_stream.issuer, Some(&String::from("baz")));
 	}
@@ -1246,14 +1311,14 @@ mod tests {
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.chain(Network::Bitcoin)
 			.build().unwrap();
-		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		let (_, _, tlv_stream, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.chain(), mainnet);
 		assert_eq!(tlv_stream.chain, None);
 
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.chain(Network::Testnet)
 			.build().unwrap();
-		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		let (_, _, tlv_stream, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.chain(), testnet);
 		assert_eq!(tlv_stream.chain, Some(&testnet));
 
@@ -1261,7 +1326,7 @@ mod tests {
 			.chain(Network::Regtest)
 			.chain(Network::Testnet)
 			.build().unwrap();
-		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		let (_, _, tlv_stream, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.chain(), testnet);
 		assert_eq!(tlv_stream.chain, Some(&testnet));
 	}
@@ -1271,7 +1336,7 @@ mod tests {
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.quantity(10)
 			.build().unwrap();
-		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		let (_, _, tlv_stream, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.quantity(), Some(10));
 		assert_eq!(tlv_stream.quantity, Some(10));
 
@@ -1279,7 +1344,7 @@ mod tests {
 			.quantity(10)
 			.quantity(1)
 			.build().unwrap();
-		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		let (_, _, tlv_stream, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.quantity(), Some(1));
 		assert_eq!(tlv_stream.quantity, Some(1));
 	}
@@ -1289,7 +1354,7 @@ mod tests {
 		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
 			.payer_note("bar".into())
 			.build().unwrap();
-		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		let (_, _, tlv_stream, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.payer_note(), Some(PrintableString("bar")));
 		assert_eq!(tlv_stream.payer_note, Some(&String::from("bar")));
 
@@ -1297,7 +1362,7 @@ mod tests {
 			.payer_note("bar".into())
 			.payer_note("baz".into())
 			.build().unwrap();
-		let (_, _, tlv_stream) = refund.as_tlv_stream();
+		let (_, _, tlv_stream, _, _) = refund.as_tlv_stream();
 		assert_eq!(refund.payer_note(), Some(PrintableString("baz")));
 		assert_eq!(tlv_stream.payer_note, Some(&String::from("baz")));
 	}
@@ -1522,7 +1587,81 @@ mod tests {
 	}
 
 	#[test]
-	fn fails_parsing_refund_with_extra_tlv_records() {
+	fn parses_refund_with_unknown_tlv_records() {
+		const UNKNOWN_ODD_TYPE: u64 = INVOICE_REQUEST_TYPES.end - 1;
+		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
+
+		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+
+		let mut encoded_refund = Vec::new();
+		refund.write(&mut encoded_refund).unwrap();
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut encoded_refund).unwrap();
+		BigSize(32).write(&mut encoded_refund).unwrap();
+		[42u8; 32].write(&mut encoded_refund).unwrap();
+
+		match Refund::try_from(encoded_refund.clone()) {
+			Ok(refund) => assert_eq!(refund.bytes, encoded_refund),
+			Err(e) => panic!("error parsing refund: {:?}", e),
+		}
+
+		const UNKNOWN_EVEN_TYPE: u64 = INVOICE_REQUEST_TYPES.end - 2;
+		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
+
+		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+
+		let mut encoded_refund = Vec::new();
+		refund.write(&mut encoded_refund).unwrap();
+		BigSize(UNKNOWN_EVEN_TYPE).write(&mut encoded_refund).unwrap();
+		BigSize(32).write(&mut encoded_refund).unwrap();
+		[42u8; 32].write(&mut encoded_refund).unwrap();
+
+		match Refund::try_from(encoded_refund) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
+		}
+	}
+
+	#[test]
+	fn parses_refund_with_experimental_tlv_records() {
+		const UNKNOWN_ODD_TYPE: u64 = EXPERIMENTAL_INVOICE_REQUEST_TYPES.start + 1;
+		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
+
+		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+
+		let mut encoded_refund = Vec::new();
+		refund.write(&mut encoded_refund).unwrap();
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut encoded_refund).unwrap();
+		BigSize(32).write(&mut encoded_refund).unwrap();
+		[42u8; 32].write(&mut encoded_refund).unwrap();
+
+		match Refund::try_from(encoded_refund.clone()) {
+			Ok(refund) => assert_eq!(refund.bytes, encoded_refund),
+			Err(e) => panic!("error parsing refund: {:?}", e),
+		}
+
+		const UNKNOWN_EVEN_TYPE: u64 = EXPERIMENTAL_INVOICE_REQUEST_TYPES.start;
+		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
+
+		let refund = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap()
+			.build().unwrap();
+
+		let mut encoded_refund = Vec::new();
+		refund.write(&mut encoded_refund).unwrap();
+		BigSize(UNKNOWN_EVEN_TYPE).write(&mut encoded_refund).unwrap();
+		BigSize(32).write(&mut encoded_refund).unwrap();
+		[42u8; 32].write(&mut encoded_refund).unwrap();
+
+		match Refund::try_from(encoded_refund) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::UnknownRequiredFeature)),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_refund_with_out_of_range_tlv_records() {
 		let secp_ctx = Secp256k1::new();
 		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let refund = RefundBuilder::new(vec![1; 32], keys.public_key(), 1000).unwrap()
@@ -1531,6 +1670,17 @@ mod tests {
 		let mut encoded_refund = Vec::new();
 		refund.write(&mut encoded_refund).unwrap();
 		BigSize(1002).write(&mut encoded_refund).unwrap();
+		BigSize(32).write(&mut encoded_refund).unwrap();
+		[42u8; 32].write(&mut encoded_refund).unwrap();
+
+		match Refund::try_from(encoded_refund) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
+		}
+
+		let mut encoded_refund = Vec::new();
+		refund.write(&mut encoded_refund).unwrap();
+		BigSize(EXPERIMENTAL_INVOICE_REQUEST_TYPES.end).write(&mut encoded_refund).unwrap();
 		BigSize(32).write(&mut encoded_refund).unwrap();
 		[42u8; 32].write(&mut encoded_refund).unwrap();
 

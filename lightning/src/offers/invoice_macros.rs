@@ -95,6 +95,11 @@ macro_rules! invoice_builder_methods_test { (
 		$return_value
 	}
 
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(super) fn experimental_baz($($self_mut)* $self: $self_type, experimental_baz: u64) -> $return_type {
+		$invoice_fields.experimental_baz = Some(experimental_baz);
+		$return_value
+	}
 } }
 
 macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice_type: ty) => {
