@@ -110,7 +110,7 @@ fn large_payment_metadata() {
 	let secp_ctx = Secp256k1::signing_only();
 	route_0_1.paths[0].hops[0].fee_msat = MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 	route_0_1.paths[0].hops[0].cltv_expiry_delta = DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA;
-	let err = onion_utils::create_payment_onion(&secp_ctx, &route_0_1.paths[0], &test_utils::privkey(42), MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY, &recipient_onion_too_large_md, nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, &payment_hash, &None, [0; 32]).unwrap_err();
+	let err = onion_utils::create_payment_onion(&secp_ctx, &route_0_1.paths[0], &test_utils::privkey(42), MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY, &recipient_onion_too_large_md, nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, &payment_hash, &None, None, [0; 32]).unwrap_err();
 	match err {
 		APIError::InvalidRoute { err } => {
 			assert_eq!(err, "Route size too large considering onion data");
@@ -184,6 +184,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		encrypted_tlvs: &blinded_path.blinded_hops()[0].encrypted_payload,
 		intro_node_blinding_point: Some(blinded_path.blinding_point()),
 		keysend_preimage: None,
+		invoice_request: None,
 		custom_tlvs: &Vec::new()
 	}.serialized_length();
 	let max_custom_tlv_len = 1300
@@ -275,7 +276,7 @@ fn blinded_path_with_custom_tlv() {
 	let reserved_packet_bytes_without_custom_tlv: usize = onion_utils::build_onion_payloads(
 		&route.paths[0], MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY,
 		&RecipientOnionFields::spontaneous_empty(),
-		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, &None
+		nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, &None, None
 	)
 		.unwrap()
 		.0
@@ -317,7 +318,7 @@ fn blinded_path_with_custom_tlv() {
 	let secp_ctx = Secp256k1::signing_only();
 	route.paths[0].hops[0].fee_msat = MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
 	route.paths[0].hops[0].cltv_expiry_delta = DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA;
-	let err = onion_utils::create_payment_onion(&secp_ctx, &route.paths[0], &test_utils::privkey(42), MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY, &recipient_onion_too_large_custom_tlv, nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, &payment_hash, &None, [0; 32]).unwrap_err();
+	let err = onion_utils::create_payment_onion(&secp_ctx, &route.paths[0], &test_utils::privkey(42), MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY, &recipient_onion_too_large_custom_tlv, nodes[0].best_block_info().1 + DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, &payment_hash, &None, None, [0; 32]).unwrap_err();
 	match err {
 		APIError::InvalidRoute { err } => {
 			assert_eq!(err, "Route size too large considering onion data");

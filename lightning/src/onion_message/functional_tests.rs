@@ -84,12 +84,12 @@ impl OffersMessageHandler for TestOffersMessageHandler {
 struct TestAsyncPaymentsMessageHandler {}
 
 impl AsyncPaymentsMessageHandler for TestAsyncPaymentsMessageHandler {
-	fn held_htlc_available(
+	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>,
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
 		None
 	}
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
+	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {}
 }
 
 struct TestDNSResolverMessageHandler {}

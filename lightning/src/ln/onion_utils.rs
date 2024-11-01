@@ -13,6 +13,7 @@ use crate::crypto::streams::ChaChaReader;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs;
+use crate::offers::invoice_request::InvoiceRequest;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{Path, RouteHop, RouteParameters};
 use crate::sign::NodeSigner;
@@ -179,6 +180,7 @@ pub(super) fn construct_onion_keys<T: secp256k1::Signing>(
 pub(super) fn build_onion_payloads<'a>(
 	path: &'a Path, total_msat: u64, recipient_onion: &'a RecipientOnionFields,
 	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
+	invoice_request: Option<&'a InvoiceRequest>,
 ) -> Result<(Vec<msgs::OutboundOnionPayload<'a>>, u64, u32), APIError> {
 	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(
 		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
@@ -197,6 +199,7 @@ pub(super) fn build_onion_payloads<'a>(
 		recipient_onion,
 		starting_htlc_offset,
 		keysend_preimage,
+		invoice_request,
 		|action, payload| match action {
 			PayloadCallbackAction::PushBack => res.push(payload),
 			PayloadCallbackAction::PushFront => res.insert(0, payload),
@@ -218,7 +221,8 @@ enum PayloadCallbackAction {
 fn build_onion_payloads_callback<'a, H, B, F>(
 	hops: H, mut blinded_tail: Option<BlindedTailHopIter<'a, B>>, total_msat: u64,
 	recipient_onion: &'a RecipientOnionFields, starting_htlc_offset: u32,
-	keysend_preimage: &Option<PaymentPreimage>, mut callback: F,
+	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&'a InvoiceRequest>,
+	mut callback: F,
 ) -> Result<(u64, u32), APIError>
 where
 	H: DoubleEndedIterator<Item = &'a RouteHop>,
@@ -262,6 +266,7 @@ where
 								encrypted_tlvs: &blinded_hop.encrypted_payload,
 								intro_node_blinding_point: blinding_point.take(),
 								keysend_preimage: *keysend_preimage,
+								invoice_request,
 								custom_tlvs: &recipient_onion.custom_tlvs,
 							},
 						);
@@ -315,7 +320,8 @@ pub(crate) const MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY: u64 = 100_000_000;
 
 pub(crate) fn set_max_path_length(
 	route_params: &mut RouteParameters, recipient_onion: &RecipientOnionFields,
-	keysend_preimage: Option<PaymentPreimage>, best_block_height: u32,
+	keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
+	best_block_height: u32,
 ) -> Result<(), ()> {
 	const PAYLOAD_HMAC_LEN: usize = 32;
 	let unblinded_intermed_payload_len = msgs::OutboundOnionPayload::Forward {
@@ -362,6 +368,7 @@ pub(crate) fn set_max_path_length(
 		&recipient_onion,
 		best_block_height,
 		&keysend_preimage,
+		invoice_request,
 		|_, payload| {
 			num_reserved_bytes = num_reserved_bytes
 				.saturating_add(payload.serialized_length())
@@ -1157,7 +1164,8 @@ where
 pub fn create_payment_onion<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, path: &Path, session_priv: &SecretKey, total_msat: u64,
 	recipient_onion: &RecipientOnionFields, cur_block_height: u32, payment_hash: &PaymentHash,
-	keysend_preimage: &Option<PaymentPreimage>, prng_seed: [u8; 32],
+	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
+	prng_seed: [u8; 32],
 ) -> Result<(msgs::OnionPacket, u64, u32), APIError> {
 	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv).map_err(|_| {
 		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
@@ -1168,6 +1176,7 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 		recipient_onion,
 		cur_block_height,
 		keysend_preimage,
+		invoice_request,
 	)?;
 	let onion_packet = construct_onion_packet(onion_payloads, onion_keys, prng_seed, payment_hash)
 		.map_err(|_| APIError::InvalidRoute {

@@ -1747,6 +1747,7 @@ pub struct FinalOnionHopData {
 mod fuzzy_internal_msgs {
 	use bitcoin::secp256k1::PublicKey;
 	use crate::blinded_path::payment::{BlindedPaymentPath, PaymentConstraints, PaymentContext, PaymentRelay};
+	use crate::offers::invoice_request::InvoiceRequest;
 	use crate::types::payment::{PaymentPreimage, PaymentSecret};
 	use crate::types::features::{BlindedHopFeatures, Bolt12InvoiceFeatures};
 	use super::{FinalOnionHopData, TrampolineOnionPacket};
@@ -1827,6 +1828,7 @@ mod fuzzy_internal_msgs {
 			intro_node_blinding_point: Option<PublicKey>, // Set if the introduction node of the blinded path is the final node
 			keysend_preimage: Option<PaymentPreimage>,
 			custom_tlvs: &'a Vec<(u64, Vec<u8>)>,
+			invoice_request: Option<&'a InvoiceRequest>,
 		}
 	}
 
@@ -2760,13 +2762,17 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 			},
 			Self::BlindedReceive {
 				sender_intended_htlc_amt_msat, total_msat, cltv_expiry_height, encrypted_tlvs,
-				intro_node_blinding_point, keysend_preimage, ref custom_tlvs,
+				intro_node_blinding_point, keysend_preimage, ref invoice_request, ref custom_tlvs,
 			} => {
 				// We need to update [`ln::outbound_payment::RecipientOnionFields::with_custom_tlvs`]
 				// to reject any reserved types in the experimental range if new ones are ever
 				// standardized.
+				let invoice_request_tlv = invoice_request.map(|invreq| (77_777, invreq.encode())); // TODO: update TLV type once the async payments spec is merged
 				let keysend_tlv = keysend_preimage.map(|preimage| (5482373484, preimage.encode()));
-				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter().chain(keysend_tlv.iter()).collect();
+				let mut custom_tlvs: Vec<&(u64, Vec<u8>)> = custom_tlvs.iter()
+					.chain(invoice_request_tlv.iter())
+					.chain(keysend_tlv.iter())
+					.collect();
 				custom_tlvs.sort_unstable_by_key(|(typ, _)| *typ);
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*sender_intended_htlc_amt_msat), required),

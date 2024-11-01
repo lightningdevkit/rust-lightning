@@ -560,11 +560,15 @@ pub enum PaymentFailureReason {
 	/// [`PaymentParameters::expiry_time`]: crate::routing::router::PaymentParameters::expiry_time
 	/// [`InvoiceRequestExpired`]: Self::InvoiceRequestExpired
 	PaymentExpired,
-	/// We failed to find a route while retrying the payment.
+	/// We failed to find a route while sending or retrying the payment.
 	///
 	/// Note that this generally indicates that we've exhausted the available set of possible
 	/// routes - we tried the payment over a few routes but were not able to find any further
 	/// candidate routes beyond those.
+	///
+	/// Also used for [`BlindedPathCreationFailed`] when downgrading to versions prior to 0.0.124.
+	///
+	/// [`BlindedPathCreationFailed`]: Self::BlindedPathCreationFailed
 	RouteNotFound,
 	/// This error should generally never happen. This likely means that there is a problem with
 	/// your router.
@@ -577,6 +581,12 @@ pub enum PaymentFailureReason {
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	InvoiceRequestRejected,
+	/// Failed to create a blinded path back to ourselves.
+	/// We attempted to initiate payment to a static invoice but failed to create a reply path for our
+	/// [`HeldHtlcAvailable`] message.
+	///
+	/// [`HeldHtlcAvailable`]: crate::onion_message::async_payments::HeldHtlcAvailable
+	BlindedPathCreationFailed,
 }
 
 impl_writeable_tlv_based_enum_upgradable!(PaymentFailureReason,
@@ -587,6 +597,7 @@ impl_writeable_tlv_based_enum_upgradable!(PaymentFailureReason,
 	(4, RetriesExhausted) => {},
 	(5, InvoiceRequestRejected) => {},
 	(6, PaymentExpired) => {},
+	(7, BlindedPathCreationFailed) => {},
 	(8, RouteNotFound) => {},
 	(10, UnexpectedError) => {},
 );
@@ -1651,6 +1662,8 @@ impl Writeable for Event {
 						&Some(PaymentFailureReason::RetriesExhausted),
 					Some(PaymentFailureReason::InvoiceRequestRejected) =>
 						&Some(PaymentFailureReason::RecipientRejected),
+					Some(PaymentFailureReason::BlindedPathCreationFailed) =>
+						&Some(PaymentFailureReason::RouteNotFound)
 				};
 				write_tlv_fields!(writer, {
 					(0, payment_id, required),

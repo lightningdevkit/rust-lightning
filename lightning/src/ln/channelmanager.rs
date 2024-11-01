@@ -4306,14 +4306,14 @@ where
 		let _lck = self.total_consistency_lock.read().unwrap();
 		self.send_payment_along_path(SendAlongPathArgs {
 			path, payment_hash, recipient_onion: &recipient_onion, total_value,
-			cur_height, payment_id, keysend_preimage, session_priv_bytes
+			cur_height, payment_id, keysend_preimage, invoice_request: None, session_priv_bytes
 		})
 	}
 
 	fn send_payment_along_path(&self, args: SendAlongPathArgs) -> Result<(), APIError> {
 		let SendAlongPathArgs {
 			path, payment_hash, recipient_onion, total_value, cur_height, payment_id, keysend_preimage,
-			session_priv_bytes
+			invoice_request, session_priv_bytes
 		} = args;
 		// The top-level caller should hold the total_consistency_lock read lock.
 		debug_assert!(self.total_consistency_lock.try_write().is_err());
@@ -4322,7 +4322,7 @@ where
 
 		let (onion_packet, htlc_msat, htlc_cltv) = onion_utils::create_payment_onion(
 			&self.secp_ctx, &path, &session_priv, total_value, recipient_onion, cur_height,
-			payment_hash, keysend_preimage, prng_seed
+			payment_hash, keysend_preimage, invoice_request, prng_seed
 		).map_err(|e| {
 			let logger = WithContext::from(&self.logger, Some(path.hops.first().unwrap().pubkey), None, Some(*payment_hash));
 			log_error!(logger, "Failed to build an onion for path for payment hash {}", payment_hash);
@@ -4590,7 +4590,7 @@ where
 			) {
 				Ok(paths) => paths,
 				Err(()) => {
-					self.abandon_payment_with_reason(payment_id, PaymentFailureReason::RouteNotFound);
+					self.abandon_payment_with_reason(payment_id, PaymentFailureReason::BlindedPathCreationFailed);
 					res = Err(Bolt12PaymentError::BlindedPathCreationFailed);
 					return NotifyOption::DoPersist
 				}
@@ -11474,13 +11474,13 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	fn held_htlc_available(
+	fn handle_held_htlc_available(
 		&self, _message: HeldHtlcAvailable, _responder: Option<Responder>
 	) -> Option<(ReleaseHeldHtlc, ResponseInstruction)> {
 		None
 	}
 
-	fn release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
+	fn handle_release_held_htlc(&self, _message: ReleaseHeldHtlc, _context: AsyncPaymentsContext) {
 		#[cfg(async_payments)] {
 			let AsyncPaymentsContext::OutboundPayment { payment_id, hmac, nonce } = _context;
 			if payment_id.verify_for_async_payment(hmac, nonce, &self.inbound_payment_key).is_err() { return }
