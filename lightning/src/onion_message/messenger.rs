@@ -628,13 +628,20 @@ where
 		Self::create_blinded_paths_from_iter(network_graph, recipient, context, peers.into_iter(), entropy_source, secp_ctx, false)
 	}
 
+	/// This implementation returns only a single `BlindedMessagePath` wrapped in a `Vec`.
+	/// It is intended for space-constrained scenarios where only one path is needed
+	/// to minimize overhead. By returning a single path, it ensures reduced memory
+	/// usage while maintaining the essential functionality of blinded message paths.
 	pub(crate) fn create_compact_blinded_paths<
 		T: secp256k1::Signing + secp256k1::Verification
 	>(
 		network_graph: &G, recipient: PublicKey, context: MessageContext,
 		peers: Vec<MessageForwardNode>, entropy_source: &ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedMessagePath>, ()> {
-		Self::create_blinded_paths_from_iter(network_graph, recipient, context, peers.into_iter(), entropy_source, secp_ctx, true)
+		let path = Self::create_blinded_paths_from_iter(network_graph, recipient, context, peers.into_iter(), entropy_source, secp_ctx, true)
+		.and_then(|paths| paths.into_iter().next().ok_or(()))?;
+
+		Ok(vec![path])
 	}
 }
 
