@@ -586,7 +586,7 @@ struct Peer {
 	msgs_sent_since_pong: usize,
 	awaiting_pong_timer_tick_intervals: i64,
 	received_message_since_timer_tick: bool,
-	sent_gossip_timestamp_filter: bool,
+	sent_gossip_timestamp_filter: Option<msgs::GossipTimestampFilter>,
 
 	/// Indicates we've received a `channel_announcement` since the last time we had
 	/// [`PeerManager::gossip_processing_backlogged`] set (or, really, that we've received a
@@ -614,7 +614,7 @@ impl Peer {
 	fn should_forward_channel_announcement(&self, channel_id: u64) -> bool {
 		if !self.handshake_complete() { return false; }
 		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
-			!self.sent_gossip_timestamp_filter {
+			self.sent_gossip_timestamp_filter.is_none() {
 				return false;
 			}
 		match self.sync_status {
@@ -628,7 +628,7 @@ impl Peer {
 	fn should_forward_node_announcement(&self, node_id: NodeId) -> bool {
 		if !self.handshake_complete() { return false; }
 		if self.their_features.as_ref().unwrap().supports_gossip_queries() &&
-			!self.sent_gossip_timestamp_filter {
+			self.sent_gossip_timestamp_filter.is_none() {
 				return false;
 			}
 		match self.sync_status {
@@ -1123,7 +1123,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					msgs_sent_since_pong: 0,
 					awaiting_pong_timer_tick_intervals: 0,
 					received_message_since_timer_tick: false,
-					sent_gossip_timestamp_filter: false,
+					sent_gossip_timestamp_filter: None,
 
 					received_channel_announce_since_backlogged: false,
 					inbound_connection: false,
@@ -1179,7 +1179,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					msgs_sent_since_pong: 0,
 					awaiting_pong_timer_tick_intervals: 0,
 					received_message_since_timer_tick: false,
-					sent_gossip_timestamp_filter: false,
+					sent_gossip_timestamp_filter: None,
 
 					received_channel_announce_since_backlogged: false,
 					inbound_connection: true,
@@ -1224,12 +1224,30 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 						if let Some((announce, update_a_option, update_b_option)) =
 							self.message_handler.route_handler.get_next_channel_announcement(c)
 						{
-							self.enqueue_message(peer, &announce);
+							let (min, max) = peer.sent_gossip_timestamp_filter.as_ref().map_or((0, u32::MAX), |f| {
+								(f.first_timestamp, f.first_timestamp.saturating_add(f.timestamp_range))
+							});
+
+							// we only wish to enqueue the announcement if at least one directional
+							// update is going to accompany it
+							let mut has_enqueued_announcement = false;
+
 							if let Some(update_a) = update_a_option {
-								self.enqueue_message(peer, &update_a);
+								if update_a.contents.timestamp >= min && update_a.contents.timestamp <= max {
+									if !has_enqueued_announcement {
+										self.enqueue_message(peer, &announce);
+										has_enqueued_announcement = true;
+									}
+									self.enqueue_message(peer, &update_a);
+								}
 							}
 							if let Some(update_b) = update_b_option {
-								self.enqueue_message(peer, &update_b);
+								if update_b.contents.timestamp >= min && update_b.contents.timestamp <= max {
+									if !has_enqueued_announcement {
+										self.enqueue_message(peer, &announce);
+									}
+									self.enqueue_message(peer, &update_b);
+								}
 							}
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
 						} else {
@@ -1238,7 +1256,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					},
 					InitSyncTracker::ChannelsSyncing(c) if c == 0xffff_ffff_ffff_ffff => {
 						if let Some(msg) = self.message_handler.route_handler.get_next_node_announcement(None) {
-							self.enqueue_message(peer, &msg);
+							let (min, max) = peer.sent_gossip_timestamp_filter.as_ref().map_or((0, u32::MAX), |f| {
+								(f.first_timestamp, f.first_timestamp.saturating_add(f.timestamp_range))
+							});
+
+							if msg.contents.timestamp >= min && msg.contents.timestamp <= max {
+								self.enqueue_message(peer, &msg);
+							}
+
 							peer.sync_status = InitSyncTracker::NodesSyncing(msg.contents.node_id);
 						} else {
 							peer.sync_status = InitSyncTracker::NoSyncRequested;
@@ -1722,12 +1747,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			return Err(PeerHandleError { }.into());
 		}
 
-		if let wire::Message::GossipTimestampFilter(_msg) = message {
+		if let wire::Message::GossipTimestampFilter(msg) = message {
 			// When supporting gossip messages, start initial gossip sync only after we receive
 			// a GossipTimestampFilter
 			if peer_lock.their_features.as_ref().unwrap().supports_gossip_queries() &&
-				!peer_lock.sent_gossip_timestamp_filter {
-				peer_lock.sent_gossip_timestamp_filter = true;
+				peer_lock.sent_gossip_timestamp_filter.is_none() {
+				peer_lock.sent_gossip_timestamp_filter = Some(msg);
 				peer_lock.sync_status = InitSyncTracker::ChannelsSyncing(0);
 			}
 			return Ok(None);

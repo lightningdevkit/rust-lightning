@@ -963,12 +963,21 @@ fn get_dummy_channel_announcement(short_chan_id: u64) -> msgs::ChannelAnnounceme
 fn get_dummy_channel_update(short_chan_id: u64) -> msgs::ChannelUpdate {
 	use bitcoin::secp256k1::ffi::Signature as FFISignature;
 	let network = Network::Testnet;
+
+	#[allow(unused_mut, unused_assignments)]
+	let mut timestamp = 0;
+	#[cfg(feature = "std")]
+	{
+		use std::time::{SystemTime, UNIX_EPOCH};
+		timestamp = SystemTime::now().duration_since(UNIX_EPOCH).expect("Time must be > 1970").as_secs() - 60 * 60 * 24 * 7 * 2;
+	}
+
 	msgs::ChannelUpdate {
 		signature: Signature::from(unsafe { FFISignature::new() }),
 		contents: msgs::UnsignedChannelUpdate {
 			chain_hash: ChainHash::using_genesis_block(network),
 			short_channel_id: short_chan_id,
-			timestamp: 0,
+			timestamp: timestamp as u32,
 			message_flags: 1, // Only must_be_one
 			channel_flags: 0,
 			cltv_expiry_delta: 0,
