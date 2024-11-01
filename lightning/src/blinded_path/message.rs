@@ -17,7 +17,7 @@ use crate::prelude::*;
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode, NodeIdLookUp};
-use crate::blinded_path::utils;
+use crate::blinded_path::utils::{self, WithPadding};
 use crate::io;
 use crate::io::Cursor;
 use crate::ln::channelmanager::PaymentId;
@@ -250,7 +250,6 @@ impl Writeable for ForwardTlvs {
 			NextMessageHop::NodeId(pubkey) => (Some(pubkey), None),
 			NextMessageHop::ShortChannelId(scid) => (None, Some(scid)),
 		};
-		// TODO: write padding
 		encode_tlv_stream!(writer, {
 			(2, short_channel_id, option),
 			(4, next_node_id, option),
@@ -262,7 +261,6 @@ impl Writeable for ForwardTlvs {
 
 impl Writeable for ReceiveTlvs {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		// TODO: write padding
 		encode_tlv_stream!(writer, {
 			(65537, self.context, option),
 		});
@@ -453,6 +451,10 @@ impl_writeable_tlv_based!(DNSResolverContext, {
 	(0, nonce, required),
 });
 
+/// Represents the padding round off size (in bytes) that is used
+/// to pad message blinded path's [`BlindedHop`]
+pub(crate) const MESSAGE_PADDING_ROUND_OFF: usize = 100;
+
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[MessageForwardNode],
@@ -460,6 +462,8 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 ) -> Result<Vec<BlindedHop>, secp256k1::Error> {
 	let pks = intermediate_nodes.iter().map(|node| node.node_id)
 		.chain(core::iter::once(recipient_node_id));
+	let is_compact = intermediate_nodes.iter().any(|node| node.short_channel_id.is_some());
+
 	let tlvs = pks.clone()
 		.skip(1) // The first node's TLVs contains the next node's pubkey
 		.zip(intermediate_nodes.iter().map(|node| node.short_channel_id))
@@ -470,8 +474,12 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 		.map(|next_hop| ControlTlvs::Forward(ForwardTlvs { next_hop, next_blinding_override: None }))
 		.chain(core::iter::once(ControlTlvs::Receive(ReceiveTlvs{ context: Some(context) })));
 
-	let path = pks.zip(tlvs);
-
-	utils::construct_blinded_hops(secp_ctx, path, session_priv)
+	if is_compact {
+		let path = pks.zip(tlvs);
+		utils::construct_blinded_hops(secp_ctx, path, session_priv)
+	} else {
+		let path = pks.zip(tlvs.map(|tlv| WithPadding { tlvs: tlv, round_off: MESSAGE_PADDING_ROUND_OFF }));
+		utils::construct_blinded_hops(secp_ctx, path, session_priv)
+	}
 }
 
