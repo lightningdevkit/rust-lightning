@@ -1361,7 +1361,7 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
+	/// returning `Err(ReplayEvent ())`) and won't be persisted across restarts.
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`ChannelManager::force_close_without_broadcasting_txn`]: crate::ln::channelmanager::ChannelManager::force_close_without_broadcasting_txn
