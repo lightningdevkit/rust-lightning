@@ -12,7 +12,6 @@
 //! LSP).
 
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::sign::NodeSigner;
 use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
 use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
 use crate::routing::gossip::RoutingFees;
@@ -20,17 +19,13 @@ use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
 use crate::types::features::ChannelTypeFeatures;
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;
-use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ChannelUpdate, ErrorAction};
-use crate::ln::wire::Encode;
+use crate::ln::msgs::{ChannelMessageHandler, RoutingMessageHandler, ErrorAction};
 use crate::util::config::{UserConfig, MaxDustHTLCExposure};
 use crate::util::ser::Writeable;
 
 use crate::prelude::*;
 
 use crate::ln::functional_test_utils::*;
-
-use bitcoin::constants::ChainHash;
-use bitcoin::network::Network;
 
 #[test]
 fn test_priv_forwarding_rejection() {
@@ -503,28 +498,7 @@ fn test_scid_alias_returned() {
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &bs_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], bs_updates.commitment_signed, false, true);
 
-	// Build the expected channel update
-	let contents = msgs::UnsignedChannelUpdate {
-		chain_hash: ChainHash::using_genesis_block(Network::Testnet),
-		short_channel_id: last_hop[0].inbound_scid_alias.unwrap(),
-		timestamp: 21,
-		message_flags: 1, // Only must_be_one
-		channel_flags: 1,
-		cltv_expiry_delta: accept_forward_cfg.channel_config.cltv_expiry_delta,
-		htlc_minimum_msat: 1_000,
-		htlc_maximum_msat: 1_000_000, // Defaults to 10% of the channel value
-		fee_base_msat: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_base_msat,
-		fee_proportional_millionths: last_hop[0].counterparty.forwarding_info.as_ref().unwrap().fee_proportional_millionths,
-		excess_data: Vec::new(),
-	};
-	let signature = nodes[1].keys_manager.sign_gossip_message(msgs::UnsignedGossipMessage::ChannelUpdate(&contents)).unwrap();
-	let msg = msgs::ChannelUpdate { signature, contents };
-
-	let mut err_data = Vec::new();
-	err_data.extend_from_slice(&(msg.serialized_length() as u16 + 2).to_be_bytes());
-	err_data.extend_from_slice(&ChannelUpdate::TYPE.to_be_bytes());
-	err_data.extend_from_slice(&msg.encode());
-
+	let err_data = 0u16.to_be_bytes();
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
 			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|7, &err_data));
@@ -546,9 +520,7 @@ fn test_scid_alias_returned() {
 
 	let mut err_data = Vec::new();
 	err_data.extend_from_slice(&10_000u64.to_be_bytes());
-	err_data.extend_from_slice(&(msg.serialized_length() as u16 + 2).to_be_bytes());
-	err_data.extend_from_slice(&ChannelUpdate::TYPE.to_be_bytes());
-	err_data.extend_from_slice(&msg.encode());
+	err_data.extend_from_slice(&0u16.to_be_bytes());
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
 			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|12, &err_data));
