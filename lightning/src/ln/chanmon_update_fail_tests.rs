@@ -77,6 +77,10 @@ fn test_monitor_and_persister_update_fail() {
 			let monitor = nodes[0].chain_monitor.chain_monitor.get_monitor(outpoint).unwrap();
 			let new_monitor = <(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
 				&mut io::Cursor::new(&monitor.encode()), (nodes[0].keys_manager, nodes[0].keys_manager)).unwrap().1;
+			// Compare events separately since we don't ever persist [`Event::PersistClaimInfo`] event.
+			let events = monitor.get_and_clear_pending_events();
+			let new_events = new_monitor.get_and_clear_pending_events();
+			assert_eq!(new_events, events);
 			assert!(new_monitor == *monitor);
 			new_monitor
 		};
@@ -2999,7 +3003,7 @@ fn test_blocked_chan_preimage_release() {
 	if let Event::PaymentForwarded { .. } = events[1] {} else { panic!(); }
 
 	// The event processing should release the last RAA updates on both channels.
-	check_added_monitors(&nodes[1], 2);
+	check_added_monitors_with_expected_claim_info_events(&nodes[1], 2, 2);
 
 	// When we fetch the next update the message getter will generate the next update for nodes[2],
 	// generating a further monitor update.

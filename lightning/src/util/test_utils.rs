@@ -77,6 +77,7 @@ use crate::sign::{InMemorySigner, RandomBytes, Recipient, EntropySource, NodeSig
 
 use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
+use crate::events::ClaimInfo;
 
 use super::test_channel_signer::SignerOp;
 
@@ -336,10 +337,12 @@ impl SignerProvider for OnlyReadsKeysInterface {
 }
 
 pub struct TestChainMonitor<'a> {
-	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<TestChannelSigner>)>>,
+	pub added_monitors: Mutex<Vec<(OutPoint, channelmonitor::ChannelMonitor<TestChannelSigner>, Option<channelmonitor::ChannelMonitorUpdate>)>>,
 	pub monitor_updates: Mutex<HashMap<ChannelId, Vec<channelmonitor::ChannelMonitorUpdate>>>,
 	pub latest_monitor_update_id: Mutex<HashMap<ChannelId, (OutPoint, u64, u64)>>,
 	pub chain_monitor: chainmonitor::ChainMonitor<TestChannelSigner, &'a TestChainSource, &'a dyn chaininterface::BroadcasterInterface, &'a TestFeeEstimator, &'a TestLogger, &'a dyn chainmonitor::Persist<TestChannelSigner>>,
+
+	pub persisted_claim_info: Mutex<HashMap<(OutPoint, Txid), ClaimInfo>>,
 	pub keys_manager: &'a TestKeysInterface,
 	/// If this is set to Some(), the next update_channel call (not watch_channel) must be a
 	/// ChannelForceClosed event for the given channel_id with should_broadcast set to the given
@@ -356,6 +359,7 @@ impl<'a> TestChainMonitor<'a> {
 			monitor_updates: Mutex::new(new_hash_map()),
 			latest_monitor_update_id: Mutex::new(new_hash_map()),
 			chain_monitor: chainmonitor::ChainMonitor::new(chain_source, broadcaster, logger, fee_estimator, persister),
+			persisted_claim_info: Mutex::new(new_hash_map()),
 			keys_manager,
 			expect_channel_force_closed: Mutex::new(None),
 			expect_monitor_round_trip_fail: Mutex::new(None),
@@ -378,7 +382,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 		assert!(new_monitor == monitor);
 		self.latest_monitor_update_id.lock().unwrap().insert(monitor.channel_id(),
 			(funding_txo, monitor.get_latest_update_id(), monitor.get_latest_update_id()));
-		self.added_monitors.lock().unwrap().push((funding_txo, monitor));
+		self.added_monitors.lock().unwrap().push((funding_txo, monitor, None));
 		self.chain_monitor.watch_channel(funding_txo, new_monitor)
 	}
 
@@ -414,9 +418,12 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			assert_eq!(chan_id, channel_id);
 			assert!(new_monitor != *monitor);
 		} else {
-			assert!(new_monitor == *monitor);
+			let expected_monitor = monitor.clone();
+			// Compare without [`Event::PersistClaimInfo`] events since we don't persist them.
+			expected_monitor.free_claim_info_events();
+			assert!(new_monitor == expected_monitor);
 		}
-		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor));
+		self.added_monitors.lock().unwrap().push((funding_txo, new_monitor, Some(update.clone())));
 		update_res
 	}
 
