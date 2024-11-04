@@ -14,6 +14,10 @@ function PIN_RELEASE_DEPS {
 	# Starting with version 0.7.12, the `tokio-util` crate has an MSRV of rustc 1.70.0
 	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio-util --precise "0.7.11" --verbose
 
+	# url 2.5.3 switched to idna 1.0.3 and ICU4X, which requires rustc 1.67 or newer.
+	# Here we opt to keep using unicode-rs by pinning idna_adapter as described here: https://docs.rs/crate/idna_adapter/1.2.0
+	[ "$RUSTC_MINOR_VERSION" -lt 67 ] && cargo update -p idna_adapter --precise "1.1.0" --verbose
+
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
@@ -73,10 +77,6 @@ cargo test -p lightning-block-sync --verbose --color always --features rpc-clien
 cargo check -p lightning-block-sync --verbose --color always --features rpc-client,rest-client,tokio
 
 if [[ "$HOST_PLATFORM" != *windows* ]]; then
-	# url 2.5.3 switched to idna 1.0.3 and ICU4X, which requires rustc 1.67 or newer.
-	# Here we opt to keep using unicode-rs by pinning idna_adapter as described here: https://docs.rs/crate/idna_adapter/1.2.0
-	[ "$RUSTC_MINOR_VERSION" -lt 67 ] && cargo update -p idna_adapter --precise "1.1.0" --verbose
-
 	echo -e "\n\nChecking Transaction Sync Clients with features."
 	cargo check -p lightning-transaction-sync --verbose --color always --features esplora-blocking
 	cargo check -p lightning-transaction-sync --verbose --color always --features esplora-async
