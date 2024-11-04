@@ -10371,22 +10371,47 @@ where
 									emit_channel_ready_event!(pending_events, channel);
 								}
 
+								if let Some(height) = height_opt {
+									// (re-)broadcast signed `channel_announcement`s and
+									// `channel_update`s for any channels less than a week old.
+									let funding_conf_height =
+										channel.context.get_funding_tx_confirmation_height().unwrap_or(height);
+									// To avoid broadcast storms after each block, only
+									// re-broadcast every hour (6 blocks) after the initial
+									// broadcast, or if this is the first time we're ready to
+									// broadcast this channel.
+									let rebroadcast_announcement = funding_conf_height < height + 1008
+										&& funding_conf_height % 6 == height % 6;
+									#[allow(unused_mut, unused_assignments)]
+									let mut should_announce = announcement_sigs.is_some() || rebroadcast_announcement;
+									// Most of our tests were written when we only broadcasted
+									// `channel_announcement`s once and then never re-broadcasted
+									// them again, so disable the re-broadcasting entirely in tests
+									#[cfg(test)]
+									{
+										should_announce = announcement_sigs.is_some();
+									}
+									if should_announce {
+										if let Some(announcement) = channel.get_signed_channel_announcement(
+											&self.node_signer, self.chain_hash, height, &self.default_configuration,
+										) {
+											pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
+												msg: announcement,
+												// Note that get_signed_channel_announcement fails
+												// if the channel cannot be announced, so
+												// get_channel_update_for_broadcast will never fail
+												// by the time we get here.
+												update_msg: Some(self.get_channel_update_for_broadcast(channel).unwrap()),
+											});
+										}
+									}
+								}
 								if let Some(announcement_sigs) = announcement_sigs {
 									log_trace!(logger, "Sending announcement_signatures for channel {}", channel.context.channel_id());
 									pending_msg_events.push(events::MessageSendEvent::SendAnnouncementSignatures {
 										node_id: channel.context.get_counterparty_node_id(),
 										msg: announcement_sigs,
 									});
-									if let Some(height) = height_opt {
-										if let Some(announcement) = channel.get_signed_channel_announcement(&self.node_signer, self.chain_hash, height, &self.default_configuration) {
-											pending_msg_events.push(events::MessageSendEvent::BroadcastChannelAnnouncement {
-												msg: announcement,
-												// Note that announcement_signatures fails if the channel cannot be announced,
-												// so get_channel_update_for_broadcast will never fail by the time we get here.
-												update_msg: Some(self.get_channel_update_for_broadcast(channel).unwrap()),
-											});
-										}
-									}
 								}
 								if channel.is_our_channel_ready() {
 									if let Some(real_scid) = channel.context.get_short_channel_id() {
