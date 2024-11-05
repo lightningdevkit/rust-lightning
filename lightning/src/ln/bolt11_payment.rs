@@ -16,9 +16,9 @@ use crate::ln::channelmanager::RecipientOnionFields;
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::types::payment::PaymentHash;
 
-/// Builds the necessary parameters to pay or pre-flight probe the given zero-amount
-/// [`Bolt11Invoice`] using [`ChannelManager::send_payment`] or
-/// [`ChannelManager::send_preflight_probes`].
+/// Builds the necessary parameters to pay or pre-flight probe the given variable-amount
+/// (also known as 'zero-amount') [`Bolt11Invoice`] using
+/// [`ChannelManager::send_payment`] or [`ChannelManager::send_preflight_probes`].
 ///
 /// Prior to paying, you must ensure that the [`Bolt11Invoice::payment_hash`] is unique and the
 /// same [`PaymentHash`] has never been paid before.
@@ -28,7 +28,7 @@ use crate::types::payment::PaymentHash;
 ///
 /// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 /// [`ChannelManager::send_preflight_probes`]: crate::ln::channelmanager::ChannelManager::send_preflight_probes
-pub fn payment_parameters_from_zero_amount_invoice(
+pub fn payment_parameters_from_variable_amount_invoice(
 	invoice: &Bolt11Invoice, amount_msat: u64,
 ) -> Result<(PaymentHash, RecipientOnionFields, RouteParameters), ()> {
 	if invoice.amount_milli_satoshis().is_some() {
@@ -45,7 +45,7 @@ pub fn payment_parameters_from_zero_amount_invoice(
 /// same [`PaymentHash`] has never been paid before.
 ///
 /// Will always succeed unless the invoice has no amount specified, in which case
-/// [`payment_parameters_from_zero_amount_invoice`] should be used.
+/// [`payment_parameters_from_variable_amount_invoice`] should be used.
 ///
 /// [`ChannelManager::send_payment`]: crate::ln::channelmanager::ChannelManager::send_payment
 /// [`ChannelManager::send_preflight_probes`]: crate::ln::channelmanager::ChannelManager::send_preflight_probes
@@ -112,7 +112,7 @@ mod tests {
 			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
 			.unwrap();
 
-		assert!(payment_parameters_from_zero_amount_invoice(&invoice, 42).is_err());
+		assert!(payment_parameters_from_variable_amount_invoice(&invoice, 42).is_err());
 
 		let (hash, onion, params) = payment_parameters_from_invoice(&invoice).unwrap();
 		assert_eq!(&hash.0[..], &payment_hash[..]);
@@ -146,7 +146,7 @@ mod tests {
 		assert!(payment_parameters_from_invoice(&invoice).is_err());
 
 		let (hash, onion, params) =
-			payment_parameters_from_zero_amount_invoice(&invoice, 42).unwrap();
+			payment_parameters_from_variable_amount_invoice(&invoice, 42).unwrap();
 		assert_eq!(&hash.0[..], &payment_hash[..]);
 		assert_eq!(onion.payment_secret, Some(PaymentSecret([0; 32])));
 		assert_eq!(params.final_value_msat, 42);
