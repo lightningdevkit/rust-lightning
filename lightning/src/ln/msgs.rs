@@ -684,6 +684,52 @@ pub struct ClosingSigned {
 	pub fee_range: Option<ClosingSignedFeeRange>,
 }
 
+/// A [`closing_complete`] message to be sent to or received from a peer.
+///
+/// [`closing_complete`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#closing-negotiation-closing_complete-and-closing_sig
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ClosingComplete {
+	/// The channel ID.
+	pub channel_id: ChannelId,
+	/// The destination of the closer's funds on closing.
+	pub closer_scriptpubkey: ScriptBuf,
+	/// The destination of the closee's funds on closing.
+	pub closee_scriptpubkey: ScriptBuf,
+	/// The proposed total fee for the closing transaction.
+	pub fee_satoshis: u64,
+	/// The locktime of the closing transaction.
+	pub locktime: u32,
+	/// A signature on the closing transaction omitting the `closee` output.
+	pub closer_output_only: Option<Signature>,
+	/// A signature on the closing transaction omitting the `closer` output.
+	pub closee_output_only: Option<Signature>,
+	/// A signature on the closing transaction covering both `closer` and `closee` outputs.
+	pub closer_and_closee_outputs: Option<Signature>,
+}
+
+/// A [`closing_sig`] message to be sent to or received from a peer.
+///
+/// [`closing_sig`]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#closing-negotiation-closing_complete-and-closing_sig
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct ClosingSig {
+	/// The channel ID.
+	pub channel_id: ChannelId,
+	/// The destination of the closer's funds on closing.
+	pub closer_scriptpubkey: ScriptBuf,
+	/// The destination of the closee's funds on closing.
+	pub closee_scriptpubkey: ScriptBuf,
+	/// The proposed total fee for the closing transaction.
+	pub fee_satoshis: u64,
+	/// The locktime of the closing transaction.
+	pub locktime: u32,
+	/// A signature on the closing transaction omitting the `closee` output.
+	pub closer_output_only: Option<Signature>,
+	/// A signature on the closing transaction omitting the `closer` output.
+	pub closee_output_only: Option<Signature>,
+	/// A signature on the closing transaction covering both `closer` and `closee` outputs.
+	pub closer_and_closee_outputs: Option<Signature>,
+}
+
 /// A [`start_batch`] message to be sent to group together multiple channel messages as a single
 /// logical message.
 ///
@@ -1914,6 +1960,12 @@ pub trait ChannelMessageHandler: BaseMessageHandler {
 	fn handle_shutdown(&self, their_node_id: PublicKey, msg: &Shutdown);
 	/// Handle an incoming `closing_signed` message from the given peer.
 	fn handle_closing_signed(&self, their_node_id: PublicKey, msg: &ClosingSigned);
+	/// Handle an incoming `closing_complete` message from the given peer.
+	#[cfg(simple_close)]
+	fn handle_closing_complete(&self, their_node_id: PublicKey, msg: ClosingComplete);
+	/// Handle an incoming `closing_sig` message from the given peer.
+	#[cfg(simple_close)]
+	fn handle_closing_sig(&self, their_node_id: PublicKey, msg: ClosingSig);
 
 	// Quiescence
 	/// Handle an incoming `stfu` message from the given peer.
@@ -2742,6 +2794,24 @@ impl_writeable_msg!(ChannelReestablish, {
 impl_writeable_msg!(ClosingSigned,
 	{ channel_id, fee_satoshis, signature },
 	{ (1, fee_range, option) }
+);
+
+impl_writeable_msg!(ClosingComplete,
+	{ channel_id, closer_scriptpubkey, closee_scriptpubkey, fee_satoshis, locktime },
+	{
+		(1, closer_output_only, option),
+		(2, closee_output_only, option),
+		(3, closer_and_closee_outputs, option)
+	}
+);
+
+impl_writeable_msg!(ClosingSig,
+	{ channel_id, closer_scriptpubkey, closee_scriptpubkey, fee_satoshis, locktime },
+	{
+		(1, closer_output_only, option),
+		(2, closee_output_only, option),
+		(3, closer_and_closee_outputs, option)
+	}
 );
 
 impl_writeable!(ClosingSignedFeeRange, {

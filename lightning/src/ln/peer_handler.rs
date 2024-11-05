@@ -306,6 +306,14 @@ impl ChannelMessageHandler for ErroringMessageHandler {
 	fn handle_closing_signed(&self, their_node_id: PublicKey, msg: &msgs::ClosingSigned) {
 		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
 	}
+	#[cfg(simple_close)]
+	fn handle_closing_complete(&self, their_node_id: PublicKey, msg: msgs::ClosingComplete) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
+	#[cfg(simple_close)]
+	fn handle_closing_sig(&self, their_node_id: PublicKey, msg: msgs::ClosingSig) {
+		ErroringMessageHandler::push_error(self, their_node_id, msg.channel_id);
+	}
 	fn handle_stfu(&self, their_node_id: PublicKey, msg: &msgs::Stfu) {
 		ErroringMessageHandler::push_error(&self, their_node_id, msg.channel_id);
 	}
@@ -451,7 +459,7 @@ pub struct MessageHandler<CM: Deref, RM: Deref, OM: Deref, CustomM: Deref, SM: D
 
 	/// A message handler which only allows sending messages. This should generally be a
 	/// [`ChainMonitor`].
-	/// 
+	///
 	/// [`ChainMonitor`]: crate::chain::chainmonitor::ChainMonitor
 	pub send_only_message_handler: SM,
 }
@@ -2098,6 +2106,14 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			},
 			wire::Message::ClosingSigned(msg) => {
 				self.message_handler.chan_handler.handle_closing_signed(their_node_id, &msg);
+			},
+			#[cfg(simple_close)]
+			wire::Message::ClosingComplete(msg) => {
+				self.message_handler.chan_handler.handle_closing_complete(their_node_id, msg);
+			},
+			#[cfg(simple_close)]
+			wire::Message::ClosingSig(msg) => {
+				self.message_handler.chan_handler.handle_closing_sig(their_node_id, msg);
 			},
 
 			// Commitment messages:
