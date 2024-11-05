@@ -1,13 +1,17 @@
+use alloc::boxed::Box;
 use core::fmt;
 use core::fmt::{Display, Formatter};
 use core::{array, iter};
-use alloc::boxed::Box;
 
-use bech32::{ByteIterExt, Fe32, Fe32IterExt};
 use crate::prelude::*;
+use bech32::{ByteIterExt, Fe32, Fe32IterExt};
 
-use super::{Bolt11Invoice, Bolt11InvoiceFeatures, Sha256, TaggedField, ExpiryTime, MinFinalCltvExpiryDelta, Fallback, PayeePubKey, Bolt11InvoiceSignature, PaymentSecret, PositiveTimestamp,
-	PrivateRoute, Description, RawTaggedField, Currency, RawHrp, SiPrefix, constants, SignedRawBolt11Invoice, RawDataPart, RouteHintHop};
+use super::{
+	constants, Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Currency, Description,
+	ExpiryTime, Fallback, MinFinalCltvExpiryDelta, PayeePubKey, PaymentSecret, PositiveTimestamp,
+	PrivateRoute, RawDataPart, RawHrp, RawTaggedField, RouteHintHop, Sha256, SiPrefix,
+	SignedRawBolt11Invoice, TaggedField,
+};
 
 /// Objects that can be encoded to base32 (bech32).
 ///
@@ -181,13 +185,7 @@ impl Display for RawHrp {
 			None => String::new(),
 		};
 
-		write!(
-			f,
-			"ln{}{}{}",
-			self.currency,
-			amount,
-			si_prefix
-		)
+		write!(f, "ln{}{}{}", self.currency, amount, si_prefix)
 	}
 }
 
@@ -206,7 +204,9 @@ impl Display for Currency {
 
 impl Display for SiPrefix {
 	fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-		write!(f, "{}",
+		write!(
+			f,
+			"{}",
 			match *self {
 				SiPrefix::Milli => "m",
 				SiPrefix::Micro => "u",
@@ -218,7 +218,7 @@ impl Display for SiPrefix {
 }
 
 /// Encode an integer to base32, big endian, without leading zeros
-fn encode_int_be_base32(int: u64) -> impl ExactSizeIterator<Item=Fe32> {
+fn encode_int_be_base32(int: u64) -> impl ExactSizeIterator<Item = Fe32> {
 	let base = 32u64;
 
 	// (64 + 4) / 5 == 13
@@ -282,13 +282,13 @@ impl Base32Len for Sha256 {
 
 impl Base32Iterable for Description {
 	fn fe_iter<'s>(&'s self) -> Box<dyn Iterator<Item = Fe32> + 's> {
-		Box::new(self.0.0.as_bytes().fe_iter())
+		Box::new(self.0 .0.as_bytes().fe_iter())
 	}
 }
 
 impl Base32Len for Description {
 	fn base32_len(&self) -> usize {
-		self.0.0.as_bytes().base32_len()
+		self.0 .0.as_bytes().base32_len()
 	}
 }
 
@@ -381,7 +381,7 @@ impl Base32Iterable for PrivateRoute {
 			i1.chain(i2).chain(i3).chain(i4).chain(i5)
 		}
 
-		Box::new(self.0.0.iter().map(serialize_to_iter).flatten().bytes_to_fes())
+		Box::new(self.0 .0.iter().map(serialize_to_iter).flatten().bytes_to_fes())
 	}
 }
 
