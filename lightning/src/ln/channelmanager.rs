@@ -11712,6 +11712,8 @@ where
 						&MessageSendEvent::UpdateHTLCs { .. } => false,
 						&MessageSendEvent::SendRevokeAndACK { .. } => false,
 						&MessageSendEvent::SendClosingSigned { .. } => false,
+						&MessageSendEvent::SendClosingComplete { .. } => false,
+						&MessageSendEvent::SendClosingSig { .. } => false,
 						&MessageSendEvent::SendShutdown { .. } => false,
 						&MessageSendEvent::SendChannelReestablish { .. } => false,
 						&MessageSendEvent::HandleError { .. } => false,

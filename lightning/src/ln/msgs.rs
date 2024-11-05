@@ -1776,6 +1776,20 @@ pub enum MessageSendEvent {
 		/// The message which should be sent.
 		msg: ClosingSigned,
 	},
+	/// Used to indicate that a `closing_complete` message should be sent to the peer with the given `node_id`.
+	SendClosingComplete {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: ClosingComplete,
+	},
+	/// Used to indicate that a `closing_sig` message should be sent to the peer with the given `node_id`.
+	SendClosingSig {
+		/// The node_id of the node which should receive this message
+		node_id: PublicKey,
+		/// The message which should be sent.
+		msg: ClosingSig,
+	},
 	/// Used to indicate that a shutdown message should be sent to the peer with the given node_id.
 	SendShutdown {
 		/// The node_id of the node which should receive this message
