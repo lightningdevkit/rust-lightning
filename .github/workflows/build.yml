@@ -86,7 +86,7 @@ jobs:
       - name: Run tests with coverage generation
         run: |
           cargo install cargo-llvm-cov
-          export RUSTFLAGS="-Clink-dead-code -Coverflow-checks=off"
+          export RUSTFLAGS="-Coverflow-checks=off"
           cargo llvm-cov --features rest-client,rpc-client,tokio,futures,serde --codecov --hide-instantiations --output-path=target/codecov.json
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
