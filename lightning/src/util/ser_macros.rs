@@ -952,7 +952,7 @@ macro_rules! impl_writeable_tlv_based {
 /// [`Readable`]: crate::util::ser::Readable
 /// [`Writeable`]: crate::util::ser::Writeable
 macro_rules! tlv_stream {
-	($name:ident, $nameref:ident, $range:expr, {
+	($name:ident, $nameref:ident $(<$lifetime:lifetime>)?, $range:expr, {
 		$(($type:expr, $field:ident : $fieldty:tt)),* $(,)*
 	}) => {
 		#[derive(Debug)]
@@ -964,13 +964,13 @@ macro_rules! tlv_stream {
 
 		#[cfg_attr(test, derive(PartialEq))]
 		#[derive(Debug)]
-		pub(crate) struct $nameref<'a> {
+		pub(crate) struct $nameref<$($lifetime)*> {
 			$(
 				pub(super) $field: Option<tlv_record_ref_type!($fieldty)>,
 			)*
 		}
 
-		impl<'a> $crate::util::ser::Writeable for $nameref<'a> {
+		impl<$($lifetime)*> $crate::util::ser::Writeable for $nameref<$($lifetime)*> {
 			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
 				encode_tlv_stream!(writer, {
 					$(($type, self.$field, (option, encoding: $fieldty))),*
