@@ -2057,8 +2057,11 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// May call [`send_data`] on [`SocketDescriptor`]s. Thus, be very careful with reentrancy
 	/// issues!
 	///
-	/// You don't have to call this function explicitly if you are using [`lightning-net-tokio`]
-	/// or one of the other clients provided in our language bindings.
+	/// This should be called any time we may have messages to send. It is automatically called by
+	/// [`lightning-net-tokio`] after processing incoming messages, and by
+	/// [`lightning-background-processor`] when channel state has changed. Therefore, If you are not
+	/// using both [`lightning-net-tokio`] and [`lightning-background-processor`], you may need to call
+	/// this function manually to prevent messages from being delayed.
 	///
 	/// Note that if there are any other calls to this function waiting on lock(s) this may return
 	/// without doing any work. All available events that need handling will be handled before the
