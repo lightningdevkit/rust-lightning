@@ -51,6 +51,8 @@
 //!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md) for more information).
 //! - `DualFund` - requires/supports V2 channel establishment
 //!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#channel-establishment-v2) for more information).
+//! - `SimpleClose` - requires/supports simplified closing negotiation
+//!   (see [BOLT-2](https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#closing-negotiation-closing_complete-and-closing_sig) for more information).
 //! - `OnionMessages` - requires/supports forwarding onion messages
 //!   (see [BOLT-7](https://github.com/lightning/bolts/pull/759/files) for more information).
 //     TODO: update link
@@ -161,7 +163,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf,
 			// Byte 7
-			Trampoline,
+			Trampoline | SimpleClose,
 		]
 	);
 	define_context!(
@@ -182,7 +184,7 @@ mod sealed {
 			// Byte 6
 			ZeroConf | Keysend,
 			// Byte 7
-			Trampoline,
+			Trampoline | SimpleClose,
 			// Byte 8 - 31
 			,,,,,,,,,,,,,,,,,,,,,,,,
 			// Byte 32
@@ -660,9 +662,20 @@ mod sealed {
 		supports_trampoline_routing,
 		requires_trampoline_routing
 	);
-	// By default, allocate enough bytes to cover up to Trampoline. Update this as new features are
+	define_feature!(
+		61,
+		SimpleClose,
+		[InitContext, NodeContext],
+		"Feature flags for simplified closing negotiation.",
+		set_simple_close_optional,
+		set_simple_close_required,
+		clear_simple_close,
+		supports_simple_close,
+		requires_simple_close
+	);
+	// By default, allocate enough bytes to cover up to SimpleClose. Update this as new features are
 	// added which we expect to appear commonly across contexts.
-	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = (57 + 7) / 8;
+	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = (61 + 7) / 8;
 	define_feature!(
 		259,
 		DnsResolver,
@@ -1355,6 +1368,7 @@ mod tests {
 		init_features.set_scid_privacy_optional();
 		init_features.set_zero_conf_optional();
 		init_features.set_quiescence_optional();
+		init_features.set_simple_close_optional();
 
 		assert!(init_features.initial_routing_sync());
 		assert!(!init_features.supports_upfront_shutdown_script());
@@ -1370,7 +1384,8 @@ mod tests {
 			// - onion_messages
 			// - option_channel_type | option_scid_alias
 			// - option_zeroconf
-			assert_eq!(node_features.flags.len(), 7);
+			// - option_simple_close
+			assert_eq!(node_features.flags.len(), 8);
 			assert_eq!(node_features.flags[0], 0b00000001);
 			assert_eq!(node_features.flags[1], 0b01010001);
 			assert_eq!(node_features.flags[2], 0b10001010);
@@ -1378,6 +1393,7 @@ mod tests {
 			assert_eq!(node_features.flags[4], 0b10001000);
 			assert_eq!(node_features.flags[5], 0b10100000);
 			assert_eq!(node_features.flags[6], 0b00001000);
+			assert_eq!(node_features.flags[7], 0b00100000);
 		}
 
 		// Check that cleared flags are kept blank when converting back:
