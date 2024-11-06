@@ -1983,29 +1983,61 @@ impl KeysManager {
 			.expect("Your RNG is busted");
 		unique_start.input(&child_privkey.private_key[..]);
 
-		let seed = Sha256::from_engine(unique_start).to_byte_array();
+		let unique_seed = Sha256::from_engine(unique_start).to_byte_array();
 
 		let commitment_seed = {
 			let mut sha = Sha256::engine();
-			sha.input(&seed);
+			sha.input(&unique_seed);
 			sha.input(&b"commitment seed"[..]);
 			Sha256::from_engine(sha).to_byte_array()
 		};
 		macro_rules! key_step {
 			($info: expr, $prev_key: expr) => {{
 				let mut sha = Sha256::engine();
-				sha.input(&seed);
+				sha.input(&unique_seed);
 				sha.input(&$prev_key[..]);
 				sha.input(&$info[..]);
 				SecretKey::from_slice(&Sha256::from_engine(sha).to_byte_array())
 					.expect("SHA-256 is busted")
 			}};
 		}
-		let funding_key = key_step!(b"funding key", commitment_seed);
-		let revocation_base_key = key_step!(b"revocation base key", funding_key);
-		let payment_key = key_step!(b"payment key", revocation_base_key);
-		let delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
-		let htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
+
+		let funding_key;
+		let revocation_base_key;
+		let payment_key;
+		let delayed_payment_base_key;
+		let htlc_base_key;
+
+		let channel_keys_derivation_version =
+			channel_keys_derivation_version_from_id(channel_keys_id);
+		if channel_keys_derivation_version < 1 {
+			// In LDK versions prior to 0.1 we used to derive the `payment_key` uniquely on a
+			// per-channel basis, which disallowed users to re-derive them if they lost their
+			// `channel_keys_id`.
+			funding_key = key_step!(b"funding key", commitment_seed);
+			revocation_base_key = key_step!(b"revocation base key", funding_key);
+			payment_key = key_step!(b"payment key", revocation_base_key);
+			delayed_payment_base_key = key_step!(b"delayed payment base key", payment_key);
+			htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
+		} else {
+			funding_key = key_step!(b"funding key", commitment_seed);
+			revocation_base_key = key_step!(b"revocation base key", funding_key);
+			delayed_payment_base_key = key_step!(b"delayed payment base key", revocation_base_key);
+			htlc_base_key = key_step!(b"HTLC base key", delayed_payment_base_key);
+
+			// Starting with LDK v0.1, we derive `payment_key` directly from our seed, allowing
+			// users to re-derive it even when losing all channel state. This allows them to
+			// recover any non-HTLC-encumbered funds in case of data loss if the counterparty is so
+			// nice to force-closure for them.
+			payment_key = {
+				let mut sha = Sha256::engine();
+				sha.input(&self.seed);
+				sha.input(&b"static payment key"[..]);
+				SecretKey::from_slice(&Sha256::from_engine(sha).to_byte_array())
+					.expect("SHA-256 is busted")
+			};
+		};
+
 		let prng_seed = self.get_secure_random_bytes();
 
 		InMemorySigner::new(
@@ -2249,6 +2281,14 @@ impl OutputSpender for KeysManager {
 	}
 }
 
+/// The version of the channel key derivation scheme.
+pub(crate) const CHANNEL_KEYS_DERIVATION_VERSION: u8 = 1;
+
+/// Returns the keys derviation version set in `channel_keys_id`.
+pub(crate) fn channel_keys_derivation_version_from_id(channel_keys_id: [u8; 32]) -> u8 {
+	channel_keys_id[0]
+}
+
 impl SignerProvider for KeysManager {
 	type EcdsaSigner = InMemorySigner;
 	#[cfg(taproot)]
@@ -2261,11 +2301,16 @@ impl SignerProvider for KeysManager {
 		// `child_idx` is the only thing guaranteed to make each channel unique without a restart
 		// (though `user_channel_id` should help, depending on user behavior). If it manages to
 		// roll over, we may generate duplicate keys for two different channels, which could result
-		// in loss of funds. Because we only support 32-bit+ systems, assert that our `AtomicUsize`
-		// doesn't reach `u32::MAX`.
-		assert!(child_idx < core::u32::MAX as usize, "2^32 channels opened without restart");
+		// in loss of funds. Because we only support 32-bit+ systems, and we use the first byte as
+		// a versioning field, assert that our `AtomicUsize`
+		// doesn't reach the maximal 24-bit value, i.e., `U24_MAX`.
+		const U24_MAX: usize = 0xFFFFFF;
+		assert!(child_idx < U24_MAX, "2^24 channels opened without restart");
+		let child_idx_be_bytes = (child_idx as u32).to_be_bytes();
+
 		let mut id = [0; 32];
-		id[0..4].copy_from_slice(&(child_idx as u32).to_be_bytes());
+		id[0] = CHANNEL_KEYS_DERIVATION_VERSION;
+		id[1..4].copy_from_slice(&child_idx_be_bytes[1..4]);
 		id[4..8].copy_from_slice(&self.starting_time_nanos.to_be_bytes());
 		id[8..16].copy_from_slice(&self.starting_time_secs.to_be_bytes());
 		id[16..32].copy_from_slice(&user_channel_id.to_be_bytes());
