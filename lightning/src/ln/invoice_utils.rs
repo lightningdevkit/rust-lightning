@@ -313,6 +313,7 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 	})
 }
 
+#[deprecated(note = "Use ChannelManager::create_bolt11_invoice instead.")]
 /// Utility to construct an invoice. Generally, unless you want to do something like a custom
 /// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
 /// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
@@ -354,6 +355,7 @@ where
 	channelmanager.create_bolt11_invoice(params)
 }
 
+#[deprecated(note = "Use ChannelManager::create_bolt11_invoice instead.")]
 /// Utility to construct an invoice. Generally, unless you want to do something like a custom
 /// cltv_expiry, this is what you should be using to create an invoice. The reason being, this
 /// method stores the invoice's payment secret and preimage in `ChannelManager`, so (a) the user
@@ -396,6 +398,7 @@ where
 	channelmanager.create_bolt11_invoice(params)
 }
 
+#[deprecated(note = "Use ChannelManager::create_bolt11_invoice instead.")]
 /// See [`create_invoice_from_channelmanager`].
 ///
 /// This version allows for providing custom [`PaymentHash`] and description hash for the invoice.
@@ -429,6 +432,7 @@ where
 	channelmanager.create_bolt11_invoice(params)
 }
 
+#[deprecated(note = "Use ChannelManager::create_bolt11_invoice instead.")]
 /// See [`create_invoice_from_channelmanager`].
 ///
 /// This version allows for providing a custom [`PaymentHash`] for the invoice.
