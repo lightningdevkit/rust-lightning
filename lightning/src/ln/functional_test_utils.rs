@@ -3193,6 +3193,10 @@ pub fn fail_payment<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path: &
 }
 
 pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
+	create_chanmon_cfgs_with_params(node_count, false)
+}
+
+pub fn create_chanmon_cfgs_with_params(node_count: usize, legacy_channel_keys_derivation: bool) -> Vec<TestChanMonCfg> {
 	let mut chan_mon_cfgs = Vec::new();
 	for i in 0..node_count {
 		let tx_broadcaster = test_utils::TestBroadcaster::new(Network::Testnet);
@@ -3201,7 +3205,8 @@ pub fn create_chanmon_cfgs(node_count: usize) -> Vec<TestChanMonCfg> {
 		let logger = test_utils::TestLogger::with_id(format!("node {}", i));
 		let persister = test_utils::TestPersister::new();
 		let seed = [i as u8; 32];
-		let keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+		let mut keys_manager = test_utils::TestKeysInterface::new(&seed, Network::Testnet);
+		keys_manager.legacy_channel_keys_derivation = legacy_channel_keys_derivation;
 		let scorer = RwLock::new(test_utils::TestScorer::new());
 
 		chan_mon_cfgs.push(TestChanMonCfg { tx_broadcaster, fee_estimator, chain_source, logger, persister, keys_manager, scorer });

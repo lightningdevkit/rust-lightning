@@ -1240,6 +1240,7 @@ pub struct TestKeysInterface {
 	enforcement_states: Mutex<HashMap<[u8;32], Arc<Mutex<EnforcementState>>>>,
 	expectations: Mutex<Option<VecDeque<OnGetShutdownScriptpubkey>>>,
 	pub unavailable_signers_ops: Mutex<HashMap<[u8; 32], HashSet<SignerOp>>>,
+	pub legacy_channel_keys_derivation: bool,
 }
 
 impl EntropySource for TestKeysInterface {
@@ -1292,7 +1293,11 @@ impl SignerProvider for TestKeysInterface {
 	type TaprootSigner = TestChannelSigner;
 
 	fn generate_channel_keys_id(&self, inbound: bool, channel_value_satoshis: u64, user_channel_id: u128) -> [u8; 32] {
-		self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id)
+		let mut channel_keys_id = self.backing.generate_channel_keys_id(inbound, channel_value_satoshis, user_channel_id);
+		if self.legacy_channel_keys_derivation {
+			channel_keys_id[0] = 0;
+		}
+		channel_keys_id
 	}
 
 	fn derive_channel_signer(&self, channel_value_satoshis: u64, channel_keys_id: [u8; 32]) -> TestChannelSigner {
@@ -1344,6 +1349,7 @@ impl TestKeysInterface {
 			enforcement_states: Mutex::new(new_hash_map()),
 			expectations: Mutex::new(None),
 			unavailable_signers_ops: Mutex::new(new_hash_map()),
+			legacy_channel_keys_derivation: false,
 		}
 	}
 

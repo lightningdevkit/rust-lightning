@@ -2242,8 +2242,9 @@ fn test_claimable_balance_correct_while_payment_pending() {
 
 fn do_test_restored_packages_retry(check_old_monitor_retries_after_upgrade: bool) {
 	// Tests that we'll retry packages that were previously timelocked after we've restored them.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let chanmon_cfgs = create_chanmon_cfgs_with_params(2, true);
+	let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
 	let persister;
 	let new_chain_monitor;
 
