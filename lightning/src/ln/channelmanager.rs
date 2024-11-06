@@ -1732,12 +1732,12 @@ where
 ///
 /// ## BOLT 11 Invoices
 ///
-/// The [`lightning-invoice`] crate is useful for creating BOLT 11 invoices. Specifically, use the
-/// functions in its `utils` module for constructing invoices that are compatible with
-/// [`ChannelManager`]. These functions serve as a convenience for building invoices with the
+/// The [`lightning-invoice`] crate is useful for creating BOLT 11 invoices. However, in order to
+/// construct a [`Bolt11Invoice`] that is compatible with [`ChannelManager`], use
+/// [`create_bolt11_invoice`]. This method serves as a convenience for building invoices with the
 /// [`PaymentHash`] and [`PaymentSecret`] returned from [`create_inbound_payment`]. To provide your
-/// own [`PaymentHash`], use [`create_inbound_payment_for_hash`] or the corresponding functions in
-/// the [`lightning-invoice`] `utils` module.
+/// own [`PaymentHash`], override the appropriate [`Bolt11InvoiceParameters`], which is equivalent
+/// to using [`create_inbound_payment_for_hash`].
 ///
 /// [`ChannelManager`] generates an [`Event::PaymentClaimable`] once the full payment has been
 /// received. Call [`claim_funds`] to release the [`PaymentPreimage`], which in turn will result in
@@ -1745,19 +1745,21 @@ where
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
-/// # use lightning::ln::channelmanager::AChannelManager;
+/// # use lightning::ln::channelmanager::{AChannelManager, Bolt11InvoiceParameters};
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) {
 /// # let channel_manager = channel_manager.get_cm();
-/// // Or use utils::create_invoice_from_channelmanager
-/// let known_payment_hash = match channel_manager.create_inbound_payment(
-///     Some(10_000_000), 3600, None
-/// ) {
-///     Ok((payment_hash, _payment_secret)) => {
-///         println!("Creating inbound payment {}", payment_hash);
-///         payment_hash
+/// let params = Bolt11InvoiceParameters {
+///     amount_msats: Some(10_000_000),
+///     invoice_expiry_delta_secs: Some(3600),
+///     ..Default::default()
+/// };
+/// let invoice = match channel_manager.create_bolt11_invoice(params) {
+///     Ok(invoice) => {
+///         println!("Creating invoice with payment hash {}", invoice.payment_hash());
+///         invoice
 ///     },
-///     Err(()) => panic!("Error creating inbound payment"),
+///     Err(e) => panic!("Error creating invoice: {}", e),
 /// };
 ///
 /// // On the event processing thread
@@ -1765,7 +1767,7 @@ where
 ///     match event {
 ///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
 ///             PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
-///                 assert_eq!(payment_hash, known_payment_hash);
+///                 assert_eq!(payment_hash.0, invoice.payment_hash().as_ref());
 ///                 println!("Claiming payment {}", payment_hash);
 ///                 channel_manager.claim_funds(payment_preimage);
 ///             },
@@ -1773,7 +1775,7 @@ where
 ///                 println!("Unknown payment hash: {}", payment_hash);
 ///             },
 ///             PaymentPurpose::SpontaneousPayment(payment_preimage) => {
-///                 assert_ne!(payment_hash, known_payment_hash);
+///                 assert_ne!(payment_hash.0, invoice.payment_hash().as_ref());
 ///                 println!("Claiming spontaneous payment {}", payment_hash);
 ///                 channel_manager.claim_funds(payment_preimage);
 ///             },
@@ -1781,7 +1783,7 @@ where
 /// #           _ => {},
 ///         },
 ///         Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
-///             assert_eq!(payment_hash, known_payment_hash);
+///             assert_eq!(payment_hash.0, invoice.payment_hash().as_ref());
 ///             println!("Claimed {} msats", amount_msat);
 ///         },
 ///         // ...
@@ -1792,8 +1794,8 @@ where
 /// # }
 /// ```
 ///
-/// For paying an invoice, [`lightning-invoice`] provides a `payment` module with convenience
-/// functions for use with [`send_payment`].
+/// For paying an invoice, see the [`bolt11_payment`] module with convenience functions for use with
+/// [`send_payment`].
 ///
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
@@ -2127,8 +2129,10 @@ where
 /// [`list_recent_payments`]: Self::list_recent_payments
 /// [`abandon_payment`]: Self::abandon_payment
 /// [`lightning-invoice`]: https://docs.rs/lightning_invoice/latest/lightning_invoice
+/// [`create_bolt11_invoice`]: Self::create_bolt11_invoice
 /// [`create_inbound_payment`]: Self::create_inbound_payment
 /// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
+/// [`bolt11_payment`]: crate::ln::bolt11_payment
 /// [`claim_funds`]: Self::claim_funds
 /// [`send_payment`]: Self::send_payment
 /// [`offers`]: crate::offers
