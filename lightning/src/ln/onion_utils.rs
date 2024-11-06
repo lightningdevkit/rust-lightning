@@ -16,7 +16,7 @@ use crate::ln::msgs;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{Path, RouteHop, RouteParameters, TrampolineHop};
-use crate::sign::NodeSigner;
+use crate::sign::{EntropySource, NodeSigner};
 use crate::types::features::{ChannelFeatures, NodeFeatures};
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::errors::{self, APIError};
@@ -34,7 +34,7 @@ use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 
 use crate::io::{Cursor, Read};
 use core::ops::Deref;
-
+use crate::blinded_path::payment::BlindedPaymentPath;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -186,6 +186,13 @@ fn build_trampoline_onion_payloads<'a>(
 	let blinded_tail = path.blinded_tail.as_ref().ok_or(APIError::InvalidRoute {
 		err: "Routes using Trampoline must terminate blindly.".to_string(),
 	})?;
+
+	if !blinded_tail.final_hop_supports_trampoline {
+		// if the final hop does not support Trampoline, we need to generate blinded tails
+		// here instead
+		debug_assert!(false);
+	}
+
 	let blinded_tail_with_hop_iter = BlindedTailHopIter {
 		hops: blinded_tail.hops.iter(),
 		blinding_point: blinded_tail.blinding_point,
@@ -297,23 +304,35 @@ pub(super) fn build_onion_payloads<'a>(
 	path: &'a Path, total_msat: u64, recipient_onion: &'a RecipientOnionFields,
 	starting_htlc_offset: u32, keysend_preimage: &Option<PaymentPreimage>,
 	invoice_request: Option<&'a InvoiceRequest>,
-) -> Result<(Vec<msgs::OutboundOnionPayload<'a>>, u64, u32), APIError> {
+) -> Result<(Vec<msgs::OutboundOnionPayload<'a>>, Vec<msgs::OutboundTrampolinePayload<'a>>, u64, u32), APIError> {
 	let mut res: Vec<msgs::OutboundOnionPayload> = Vec::with_capacity(
 		path.hops.len() + path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
 	);
-	let blinded_tail_with_hop_iter = path.blinded_tail.as_ref().map(|bt| BlindedTailHopIter {
-		hops: bt.hops.iter(),
-		blinding_point: bt.blinding_point,
-		final_value_msat: bt.final_value_msat,
-		excess_final_cltv_expiry_delta: bt.excess_final_cltv_expiry_delta,
-	});
+
+	let mut non_trampoline_total_msat = total_msat;
+	let mut non_trampoline_starting_htlc_offset = starting_htlc_offset;
+
+	let (blinded_tail_with_hop_iter, trampoline_payloads) = if path.trampoline_hops.len() > 0 {
+		let trampoline_payload_details = build_trampoline_onion_payloads(path, total_msat, recipient_onion, starting_htlc_offset, keysend_preimage)?;
+		non_trampoline_total_msat = trampoline_payload_details.1;
+		non_trampoline_starting_htlc_offset = trampoline_payload_details.2;
+		(None, trampoline_payload_details.0)
+	} else {
+		let blinded_tail_with_hop_iter = path.blinded_tail.as_ref().map(|bt| BlindedTailHopIter {
+			hops: bt.hops.iter(),
+			blinding_point: bt.blinding_point,
+			final_value_msat: bt.final_value_msat,
+			excess_final_cltv_expiry_delta: bt.excess_final_cltv_expiry_delta,
+		});
+		(blinded_tail_with_hop_iter, vec![])
+	};
 
 	let (value_msat, cltv) = build_onion_payloads_callback(
 		path.hops.iter(),
 		blinded_tail_with_hop_iter,
-		total_msat,
+		non_trampoline_total_msat,
 		recipient_onion,
-		starting_htlc_offset,
+		non_trampoline_starting_htlc_offset,
 		keysend_preimage,
 		invoice_request,
 		|action, payload| match action {
@@ -321,7 +340,7 @@ pub(super) fn build_onion_payloads<'a>(
 			PayloadCallbackAction::PushFront => res.insert(0, payload),
 		},
 	)?;
-	Ok((res, value_msat, cltv))
+	Ok((res, trampoline_payloads, value_msat, cltv))
 }
 
 struct BlindedTailHopIter<'a, I: Iterator<Item = &'a BlindedHop>> {
@@ -1305,7 +1324,7 @@ pub fn create_payment_onion<T: secp256k1::Signing>(
 	let onion_keys = construct_onion_keys(&secp_ctx, &path, &session_priv).map_err(|_| {
 		APIError::InvalidRoute { err: "Pubkey along hop was maliciously selected".to_owned() }
 	})?;
-	let (onion_payloads, htlc_msat, htlc_cltv) = build_onion_payloads(
+	let (onion_payloads, _, htlc_msat, htlc_cltv) = build_onion_payloads(
 		&path,
 		total_msat,
 		recipient_onion,
