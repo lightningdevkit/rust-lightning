@@ -709,7 +709,7 @@ mod test {
 	use crate::sign::PhantomKeysManager;
 	use crate::events::{MessageSendEvent, MessageSendEventsProvider};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
-	use crate::ln::channelmanager::{PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
+	use crate::ln::channelmanager::{Bolt11InvoiceParameters, PhantomRouteHints, MIN_FINAL_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::ChannelMessageHandler;
 	use crate::routing::router::{PaymentParameters, RouteParameters};
@@ -752,10 +752,18 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
+
+		let description = Bolt11InvoiceDescription::Direct(
+			Description::new("test".to_string()).unwrap()
+		);
 		let non_default_invoice_expiry_secs = 4200;
-		let invoice = create_invoice_from_channelmanager(
-			nodes[1].node, Some(10_000), "test".to_string(), non_default_invoice_expiry_secs, None,
-		).unwrap();
+		let invoice_params = Bolt11InvoiceParameters {
+			amount_msats: Some(10_000),
+			description,
+			invoice_expiry_delta_secs: Some(non_default_invoice_expiry_secs),
+			..Default::default()
+		};
+		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
 		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
 		// If no `min_final_cltv_expiry_delta` is specified, then it should be `MIN_FINAL_CLTV_EXPIRY_DELTA`.
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
@@ -803,10 +811,17 @@ mod test {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let custom_min_final_cltv_expiry_delta = Some(50);
 
-		let invoice = create_invoice_from_channelmanager(
-			nodes[1].node, Some(10_000), "".into(), 3600,
-			if with_custom_delta { custom_min_final_cltv_expiry_delta } else { None },
-		).unwrap();
+		let description = Bolt11InvoiceDescription::Direct(Description::empty());
+		let min_final_cltv_expiry_delta =
+			if with_custom_delta { custom_min_final_cltv_expiry_delta } else { None };
+		let invoice_params = Bolt11InvoiceParameters {
+			amount_msats: Some(10_000),
+			description,
+			invoice_expiry_delta_secs: Some(3600),
+			min_final_cltv_expiry_delta,
+			..Default::default()
+		};
+		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), if with_custom_delta {
 			custom_min_final_cltv_expiry_delta.unwrap() + 3 /* Buffer */} else { MIN_FINAL_CLTV_EXPIRY_DELTA } as u64);
 	}
@@ -823,11 +838,17 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let custom_min_final_cltv_expiry_delta = Some(21);
 
-		let invoice = create_invoice_from_channelmanager(
-			nodes[1].node, Some(10_000), "".into(), 3600, custom_min_final_cltv_expiry_delta,
-		).unwrap();
+		let custom_min_final_cltv_expiry_delta = Some(21);
+		let description = Bolt11InvoiceDescription::Direct(Description::empty());
+		let invoice_params = Bolt11InvoiceParameters {
+			amount_msats: Some(10_000),
+			description,
+			invoice_expiry_delta_secs: Some(3600),
+			min_final_cltv_expiry_delta: custom_min_final_cltv_expiry_delta,
+			..Default::default()
+		};
+		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 	}
 
@@ -837,10 +858,17 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let description_hash = Sha256(Hash::hash("Testing description_hash".as_bytes()));
-		let invoice = create_invoice_from_channelmanager_with_description_hash(
-			nodes[1].node, Some(10_000), description_hash, 3600, None,
-		).unwrap();
+
+		let description = Bolt11InvoiceDescription::Hash(
+			Sha256(Hash::hash("Testing description_hash".as_bytes()))
+		);
+		let invoice_params = Bolt11InvoiceParameters {
+			amount_msats: Some(10_000),
+			description,
+			invoice_expiry_delta_secs: Some(3600),
+			..Default::default()
+		};
+		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
 		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.description(), Bolt11InvoiceDescriptionRef::Hash(&Sha256(Sha256::hash("Testing description_hash".as_bytes()))));
@@ -852,10 +880,19 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
 		let payment_hash = PaymentHash([0; 32]);
-		let invoice = create_invoice_from_channelmanager_with_payment_hash(
-			nodes[1].node, Some(10_000), "test".to_string(), 3600, payment_hash, None,
-		).unwrap();
+		let description = Bolt11InvoiceDescription::Direct(
+			Description::new("test".to_string()).unwrap()
+		);
+		let invoice_params = Bolt11InvoiceParameters {
+			amount_msats: Some(10_000),
+			description,
+			invoice_expiry_delta_secs: Some(3600),
+			payment_hash: Some(payment_hash),
+			..Default::default()
+		};
+		let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
 		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
 		assert_eq!(invoice.description(), Bolt11InvoiceDescriptionRef::Direct(&Description::new("test".to_string()).unwrap()));
@@ -1143,9 +1180,16 @@ mod test {
 		invoice_node: &Node<'a, 'b, 'c>,
 		mut chan_ids_to_match: HashSet<u64>
 	) {
-		let invoice = create_invoice_from_channelmanager(
-			invoice_node.node, invoice_amt, "test".to_string(), 3600, None,
-		).unwrap();
+		let description = Bolt11InvoiceDescription::Direct(
+			Description::new("test".to_string()).unwrap()
+		);
+		let invoice_params = Bolt11InvoiceParameters {
+			amount_msats: invoice_amt,
+			description,
+			invoice_expiry_delta_secs: Some(3600),
+			..Default::default()
+		};
+		let invoice = invoice_node.node.create_bolt11_invoice(invoice_params).unwrap();
 		let hints = invoice.private_routes();
 
 		for hint in hints {
@@ -1780,11 +1824,18 @@ mod test {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-		let result = create_invoice_from_channelmanager(
-			nodes[1].node, Some(10_000), "Some description".into(), 3600,
-			Some(MIN_FINAL_CLTV_EXPIRY_DELTA - 4),
+
+		let description = Bolt11InvoiceDescription::Direct(
+			Description::new("Some description".to_string()).unwrap()
 		);
-		match result {
+		let invoice_params = Bolt11InvoiceParameters {
+			amount_msats: Some(10_000),
+			description,
+			invoice_expiry_delta_secs: Some(3600),
+			min_final_cltv_expiry_delta: Some(MIN_FINAL_CLTV_EXPIRY_DELTA - 4),
+			..Default::default()
+		};
+		match nodes[1].node.create_bolt11_invoice(invoice_params) {
 			Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort)) => {},
 			_ => panic!(),
 		}
