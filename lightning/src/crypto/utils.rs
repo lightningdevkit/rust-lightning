@@ -24,7 +24,7 @@ macro_rules! hkdf_extract_expand {
 		let (k1, k2, _) = hkdf_extract_expand!($salt, $ikm);
 		(k1, k2)
 	}};
-	($salt: expr, $ikm: expr, 5) => {{
+	($salt: expr, $ikm: expr, 6) => {{
 		let (k1, k2, prk) = hkdf_extract_expand!($salt, $ikm);
 
 		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
@@ -42,7 +42,12 @@ macro_rules! hkdf_extract_expand {
 		hmac.input(&[5; 1]);
 		let k5 = Hmac::from_engine(hmac).to_byte_array();
 
-		(k1, k2, k3, k4, k5)
+		let mut hmac = HmacEngine::<Sha256>::new(&prk[..]);
+		hmac.input(&k5);
+		hmac.input(&[6; 1]);
+		let k6 = Hmac::from_engine(hmac).to_byte_array();
+
+		(k1, k2, k3, k4, k5, k6)
 	}};
 }
 
@@ -50,10 +55,10 @@ pub fn hkdf_extract_expand_twice(salt: &[u8], ikm: &[u8]) -> ([u8; 32], [u8; 32]
 	hkdf_extract_expand!(salt, ikm, 2)
 }
 
-pub fn hkdf_extract_expand_5x(
+pub fn hkdf_extract_expand_6x(
 	salt: &[u8], ikm: &[u8],
-) -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
-	hkdf_extract_expand!(salt, ikm, 5)
+) -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
+	hkdf_extract_expand!(salt, ikm, 6)
 }
 
 #[inline]

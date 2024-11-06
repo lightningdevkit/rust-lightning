@@ -15,7 +15,7 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use crate::crypto::chacha20::ChaCha20;
-use crate::crypto::utils::hkdf_extract_expand_5x;
+use crate::crypto::utils::hkdf_extract_expand_6x;
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
@@ -55,6 +55,9 @@ pub struct ExpandedKey {
 	offers_base_key: [u8; 32],
 	/// The key used to encrypt message metadata for BOLT 12 Offers.
 	offers_encryption_key: [u8; 32],
+	/// The key used to authenticate spontaneous payments' metadata as previously registered with LDK
+	/// for inclusion in a blinded path.
+	spontaneous_pmt_key: [u8; 32],
 }
 
 impl ExpandedKey {
@@ -68,13 +71,15 @@ impl ExpandedKey {
 			user_pmt_hash_key,
 			offers_base_key,
 			offers_encryption_key,
-		) = hkdf_extract_expand_5x(b"LDK Inbound Payment Key Expansion", &key_material.0);
+			spontaneous_pmt_key,
+		) = hkdf_extract_expand_6x(b"LDK Inbound Payment Key Expansion", &key_material.0);
 		Self {
 			metadata_key,
 			ldk_pmt_hash_key,
 			user_pmt_hash_key,
 			offers_base_key,
 			offers_encryption_key,
+			spontaneous_pmt_key,
 		}
 	}
 
