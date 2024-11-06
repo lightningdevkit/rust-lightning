@@ -1010,8 +1010,9 @@ pub trait SignerProvider {
 	/// channel force close.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
-	/// on-chain funds across channels as controlled to the same user.
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()>;
+	/// on-chain funds across channels as controlled to the same user. `channel_keys_id` may be
+	/// used to derive a unique value for each channel.
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()>;
 }
 
 /// A helper trait that describes an on-chain wallet capable of returning a (change) destination
@@ -2331,7 +2332,7 @@ impl SignerProvider for KeysManager {
 		Ok(self.destination_script.clone())
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+	fn get_shutdown_scriptpubkey(&self, _channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
 		Ok(ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone()))
 	}
 }
@@ -2470,8 +2471,8 @@ impl SignerProvider for PhantomKeysManager {
 		self.inner.get_destination_script(channel_keys_id)
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
-		self.inner.get_shutdown_scriptpubkey()
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
+		self.inner.get_shutdown_scriptpubkey(channel_keys_id)
 	}
 }
 

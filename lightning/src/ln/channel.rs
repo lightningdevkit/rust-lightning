@@ -1805,7 +1805,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		} else { None };
 
 		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-			match signer_provider.get_shutdown_scriptpubkey() {
+			match signer_provider.get_shutdown_scriptpubkey(channel_keys_id) {
 				Ok(scriptpubkey) => Some(scriptpubkey),
 				Err(_) => return Err(ChannelError::close("Failed to get upfront shutdown scriptpubkey".to_owned())),
 			}
@@ -2050,7 +2050,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
 
 		let shutdown_scriptpubkey = if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-			match signer_provider.get_shutdown_scriptpubkey() {
+			match signer_provider.get_shutdown_scriptpubkey(channel_keys_id) {
 				Ok(scriptpubkey) => Some(scriptpubkey),
 				Err(_) => return Err(APIError::ChannelUnavailable { err: "Failed to get shutdown scriptpubkey".to_owned()}),
 			}
@@ -6219,7 +6219,7 @@ impl<SP: Deref> Channel<SP> where
 			Some(_) => false,
 			None => {
 				assert!(send_shutdown);
-				let shutdown_scriptpubkey = match signer_provider.get_shutdown_scriptpubkey() {
+				let shutdown_scriptpubkey = match signer_provider.get_shutdown_scriptpubkey(self.context.channel_keys_id) {
 					Ok(scriptpubkey) => scriptpubkey,
 					Err(_) => return Err(ChannelError::close("Failed to get shutdown scriptpubkey".to_owned())),
 				};
@@ -7711,7 +7711,7 @@ impl<SP: Deref> Channel<SP> where
 					Some(script) => script,
 					None => {
 						// otherwise, use the shutdown scriptpubkey provided by the signer
-						match signer_provider.get_shutdown_scriptpubkey() {
+						match signer_provider.get_shutdown_scriptpubkey(self.context.channel_keys_id) {
 							Ok(scriptpubkey) => scriptpubkey,
 							Err(_) => return Err(APIError::ChannelUnavailable{err: "Failed to get shutdown scriptpubkey".to_owned()}),
 						}
@@ -9724,7 +9724,7 @@ mod tests {
 			Ok(Builder::new().push_opcode(opcodes::all::OP_PUSHBYTES_0).push_slice(channel_monitor_claim_key_hash).into_script())
 		}
 
-		fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+		fn get_shutdown_scriptpubkey(&self, _channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
 			let secp_ctx = Secp256k1::signing_only();
 			let channel_close_key = SecretKey::from_slice(&<Vec<u8>>::from_hex("0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").unwrap()[..]).unwrap();
 			Ok(ShutdownScript::new_p2wpkh_from_pubkey(PublicKey::from_secret_key(&secp_ctx, &channel_close_key)))

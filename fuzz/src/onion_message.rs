@@ -278,7 +278,7 @@ impl SignerProvider for KeyProvider {
 		unreachable!()
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+	fn get_shutdown_scriptpubkey(&self, _channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
 		unreachable!()
 	}
 }

@@ -559,7 +559,7 @@ impl SignerProvider for KeyProvider {
 			.into_script())
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+	fn get_shutdown_scriptpubkey(&self, _channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
 		let secp_ctx = Secp256k1::signing_only();
 		let secret_key = SecretKey::from_slice(&[
 			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

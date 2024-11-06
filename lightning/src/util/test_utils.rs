@@ -332,7 +332,7 @@ impl SignerProvider for OnlyReadsKeysInterface {
 	}
 
 	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { Err(()) }
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> { Err(()) }
+	fn get_shutdown_scriptpubkey(&self, _channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> { Err(()) }
 }
 
 pub struct TestChainMonitor<'a> {
@@ -1328,9 +1328,9 @@ impl SignerProvider for TestKeysInterface {
 
 	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> { self.backing.get_destination_script(channel_keys_id) }
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
 		match &mut *self.expectations.lock().unwrap() {
-			None => self.backing.get_shutdown_scriptpubkey(),
+			None => self.backing.get_shutdown_scriptpubkey(channel_keys_id),
 			Some(expectations) => match expectations.pop_front() {
 				None => panic!("Unexpected get_shutdown_scriptpubkey"),
 				Some(expectation) => Ok(expectation.returns),
