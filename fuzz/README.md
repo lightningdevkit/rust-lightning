@@ -1,20 +1,20 @@
 # Fuzzing
 
-Fuzz tests generate a ton of random parameter arguments to the program and then validate that none 
+Fuzz tests generate a ton of random parameter arguments to the program and then validate that none
 cause it to crash.
 
 ## How does it work?
 
 Typically, CI will run `ci-fuzz.sh` on one of the environments the automated tests are
-configured for. Fuzzing is further only effective with a lot of CPU time, indicating that if crash 
+configured for. Fuzzing is further only effective with a lot of CPU time, indicating that if crash
 scenarios are discovered on CI with its low runtime constraints, the crash is caused relatively
 easily.
 
 ## How do I run fuzz tests locally?
 
-We support multiple fuzzing engines such as `honggfuzz`, `libFuzzer` and `AFL`. You typically won't 
-need to run the entire suite of different fuzzing tools. For local execution, `honggfuzz`should be 
-more than sufficient. 
+We support multiple fuzzing engines such as `honggfuzz`, `libFuzzer` and `AFL`. You typically won't
+need to run the entire suite of different fuzzing tools. For local execution, `honggfuzz`should be
+more than sufficient.
 
 ### Setup
 #### Honggfuzz
@@ -63,12 +63,12 @@ To run fuzzing using `cargo-fuzz / libFuzzer`, run
 rustup install nightly # Note: libFuzzer requires a nightly version of rust.
 cargo +nightly fuzz run --features "libfuzzer_fuzz" msg_ping_target
 ```
-Note: If you encounter a `SIGKILL` during run/build check for OOM in kernel logs and consider 
+Note: If you encounter a `SIGKILL` during run/build check for OOM in kernel logs and consider
 increasing RAM size for VM.
 
 If you wish to just generate fuzzing binary executables for `libFuzzer` and not run them:
-```shell 
-cargo +nightly fuzz build --features "libfuzzer_fuzz" msg_ping_target 
+```shell
+cargo +nightly fuzz build --features "libfuzzer_fuzz" msg_ping_target
 # Generates binary artifact in path ./target/aarch64-unknown-linux-gnu/release/msg_ping_target
 # Exact path depends on your system architecture.
 ```
@@ -83,7 +83,7 @@ ls ./src/bin/
 
 ## A fuzz test failed, what do I do?
 
-You're trying to create a PR, but need to find the underlying cause of that pesky fuzz failure 
+You're trying to create a PR, but need to find the underlying cause of that pesky fuzz failure
 blocking the merge?
 
 Worry not, for this is easily traced.
@@ -106,7 +106,7 @@ The command "if [ "$(rustup show | grep default | grep stable)" != "" ]; then cd
 ```
 
 Note that the penultimate stack trace line ends in `release/full_stack_target]`. That indicates that
-the failing target was `full_stack`. To reproduce the error locally, simply copy the hex, 
+the failing target was `full_stack`. To reproduce the error locally, simply copy the hex,
 and run the following from the `fuzz` directory:
 
 ```shell
@@ -119,11 +119,11 @@ mkdir -p ./test_cases/$TARGET
 echo $HEX | xxd -r -p > ./test_cases/$TARGET/any_filename_works
 
 export RUST_BACKTRACE=1
-export RUSTFLAGS="--cfg=fuzzing"
+export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
 cargo test
 ```
 
-Note that if the fuzz test failed locally, moving the offending run's trace 
+Note that if the fuzz test failed locally, moving the offending run's trace
 to the `test_cases` folder should also do the trick; simply replace the `echo $HEX |` line above
 with (the trace file name is of course a bit longer than in the example):
 
@@ -136,9 +136,9 @@ This will reproduce the failing fuzz input and yield a usable stack trace.
 
 ## How do I add a new fuzz test?
 
-1. The easiest approach is to take one of the files in `fuzz/src/`, such as 
-`process_network_graph.rs`, and duplicate it, renaming the new file to something more 
-suitable. For the sake of example, let's call the new fuzz target we're creating 
+1. The easiest approach is to take one of the files in `fuzz/src/`, such as
+`process_network_graph.rs`, and duplicate it, renaming the new file to something more
+suitable. For the sake of example, let's call the new fuzz target we're creating
 `my_fuzzy_experiment`.
 
 2. In the newly created file `fuzz/src/my_fuzzy_experiment.rs`, run a string substitution
@@ -147,12 +147,12 @@ file are `do_test`, `my_fuzzy_experiment_test`, and `my_fuzzy_experiment_run`.
 
 3. Adjust the body (not the signature!) of `do_test` as necessary for the new fuzz test.
 
-4. In `fuzz/src/bin/gen_target.sh`, add a line reading `GEN_TEST my_fuzzy_experiment` to the 
+4. In `fuzz/src/bin/gen_target.sh`, add a line reading `GEN_TEST my_fuzzy_experiment` to the
 first group of `GEN_TEST` lines (starting in line 9).
 
 5. If your test relies on a new local crate, add that crate as a dependency to `fuzz/Cargo.toml`.
 
-6. In `fuzz/src/lib.rs`, add the line `pub mod my_fuzzy_experiment`. Additionally, if 
+6. In `fuzz/src/lib.rs`, add the line `pub mod my_fuzzy_experiment`. Additionally, if
 you added a new crate dependency, add the `extern crate […]` import line.
 
 7. Run `fuzz/src/bin/gen_target.sh`.
