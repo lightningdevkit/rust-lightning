@@ -1600,6 +1600,11 @@ impl Description {
 		}
 	}
 
+	/// Creates an empty `Description`.
+	pub fn empty() -> Self {
+		Description(UntrustedString(String::new()))
+	}
+
 	/// Returns the underlying description [`UntrustedString`]
 	pub fn into_inner(self) -> UntrustedString {
 		self.0
