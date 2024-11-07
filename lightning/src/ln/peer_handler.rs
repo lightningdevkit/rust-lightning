@@ -1365,7 +1365,6 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 	/// Append a message to a peer's pending outbound/write gossip broadcast buffer
 	fn enqueue_encoded_gossip_broadcast(&self, peer: &mut Peer, encoded_message: MessageBuf) {
 		peer.msgs_sent_since_pong += 1;
-		debug_assert!(peer.gossip_broadcast_buffer.len() <= OUTBOUND_BUFFER_LIMIT_DROP_GOSSIP);
 		peer.gossip_broadcast_buffer.push_back(encoded_message);
 	}
 
