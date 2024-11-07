@@ -1639,6 +1639,62 @@ impl OutboundPayments {
 		(payment, onion_session_privs)
 	}
 
+	#[cfg(feature = "dnssec")]
+	pub(super) fn add_new_awaiting_offer(
+		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
+		max_total_routing_fee_msat: Option<u64>, amount_msats: u64,
+	) -> Result<(), ()> {
+		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
+		match pending_outbounds.entry(payment_id) {
+			hash_map::Entry::Occupied(_) => Err(()),
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(PendingOutboundPayment::AwaitingOffer {
+					expiration,
+					retry_strategy,
+					max_total_routing_fee_msat,
+					amount_msats,
+				});
+
+				Ok(())
+			},
+		}
+	}
+
+	#[cfg(feature = "dnssec")]
+	pub(super) fn amt_msats_for_payment_awaiting_offer(&self, payment_id: PaymentId) -> Result<u64, ()> {
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingOffer { amount_msats, .. } => Ok(*amount_msats),
+				_ => Err(()),
+			},
+			_ => Err(()),
+		}
+	}
+
+	#[cfg(feature = "dnssec")]
+	pub(super) fn received_offer(
+		&self, payment_id: PaymentId, retryable_invoice_request: Option<RetryableInvoiceRequest>,
+	) -> Result<(), ()> {
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingOffer {
+					expiration, retry_strategy, max_total_routing_fee_msat, ..
+				} => {
+					let mut new_val = PendingOutboundPayment::AwaitingInvoice {
+						expiration: *expiration,
+						retry_strategy: *retry_strategy,
+						max_total_routing_fee_msat: *max_total_routing_fee_msat,
+						retryable_invoice_request,
+					};
+					core::mem::swap(&mut new_val, entry.into_mut());
+					Ok(())
+				},
+				_ => Err(()),
+			},
+			hash_map::Entry::Vacant(_) => Err(()),
+		}
+	}
+
 	pub(super) fn add_new_awaiting_invoice(
 		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>, retryable_invoice_request: Option<RetryableInvoiceRequest>

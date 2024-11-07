@@ -75,6 +75,7 @@ use crate::offers::signer;
 #[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{AsyncPaymentsMessage, HeldHtlcAvailable, ReleaseHeldHtlc, AsyncPaymentsMessageHandler};
+use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::onion_message::messenger::{Destination, MessageRouter, Responder, ResponseInstruction, MessageSendInstructions};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sign::{EntropySource, NodeSigner, Recipient, SignerProvider};
@@ -86,6 +87,11 @@ use crate::util::string::UntrustedString;
 use crate::util::ser::{BigSize, FixedLengthReader, Readable, ReadableArgs, MaybeReadable, Writeable, Writer, VecWriter};
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
+
+#[cfg(feature = "dnssec")]
+use crate::blinded_path::message::DNSResolverContext;
+#[cfg(feature = "dnssec")]
+use crate::onion_message::dns_resolution::{DNSResolverMessage, DNSResolverMessageHandler, DNSSECQuery, DNSSECProof, OMNameResolver};
 
 #[cfg(not(c_bindings))]
 use {
@@ -2564,6 +2570,11 @@ where
 	/// [`ConfirmationTarget::MinAllowedNonAnchorChannelRemoteFee`] estimate.
 	last_days_feerates: Mutex<VecDeque<(u32, u32)>>,
 
+	#[cfg(feature = "dnssec")]
+	hrn_resolver: OMNameResolver,
+	#[cfg(feature = "dnssec")]
+	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
+
 	entropy_source: ES,
 	node_signer: NS,
 	signer_provider: SP,
@@ -3386,6 +3397,11 @@ where
 			signer_provider,
 
 			logger,
+
+			#[cfg(feature = "dnssec")]
+			hrn_resolver: OMNameResolver::new(current_timestamp, params.best_block.height),
+			#[cfg(feature = "dnssec")]
+			pending_dns_onion_messages: Mutex::new(Vec::new()),
 		}
 	}
 
@@ -9580,6 +9596,26 @@ where
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>
 	) -> Result<(), Bolt12SemanticError> {
+		self.pay_for_offer_intern(offer, quantity, amount_msats, payer_note, payment_id, None, |invoice_request, nonce| {
+			let expiration = StaleExpiration::TimerTicks(1);
+			let retryable_invoice_request = RetryableInvoiceRequest {
+				invoice_request: invoice_request.clone(),
+				nonce,
+			};
+			self.pending_outbound_payments
+				.add_new_awaiting_invoice(
+					payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
+					Some(retryable_invoice_request)
+				)
+				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+		})
+	}
+
+	fn pay_for_offer_intern<CPP: FnOnce(&InvoiceRequest, Nonce) -> Result<(), Bolt12SemanticError>>(
+		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
+		payer_note: Option<String>, payment_id: PaymentId,
+		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
+	) -> Result<(), Bolt12SemanticError> {
 		let expanded_key = &self.inbound_payment_key;
 		let entropy = &*self.entropy_source;
 		let secp_ctx = &self.secp_ctx;
@@ -9602,6 +9638,10 @@ where
 			None => builder,
 			Some(payer_note) => builder.payer_note(payer_note),
 		};
+		let builder = match human_readable_name {
+			None => builder,
+			Some(hrn) => builder.sourced_from_human_readable_name(hrn),
+		};
 		let invoice_request = builder.build_and_sign()?;
 
 		let hmac = payment_id.hmac_for_offer_payment(nonce, expanded_key);
@@ -9613,17 +9653,7 @@ where
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		let expiration = StaleExpiration::TimerTicks(1);
-		let retryable_invoice_request = RetryableInvoiceRequest {
-			invoice_request: invoice_request.clone(),
-			nonce,
-		};
-		self.pending_outbound_payments
-			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, max_total_routing_fee_msat,
-				Some(retryable_invoice_request)
-			)
-			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
+		create_pending_payment(&invoice_request, nonce)?;
 
 		self.enqueue_invoice_request(invoice_request, reply_paths)
 	}
@@ -9762,6 +9792,73 @@ where
 			},
 			Err(()) => Err(Bolt12SemanticError::InvalidAmount),
 		}
+	}
+
+	/// Pays for an [`Offer`] looked up using [BIP 353] Human Readable Names resolved by the DNS
+	/// resolver(s) at `dns_resolvers` which resolve names according to bLIP 32.
+	///
+	/// If the wallet supports paying on-chain schemes, you should instead use
+	/// [`OMNameResolver::resolve_name`] and [`OMNameResolver::handle_dnssec_proof_for_uri`] (by
+	/// implementing [`DNSResolverMessageHandler`]) directly to look up a URI and then delegate to
+	/// your normal URI handling.
+	///
+	/// If `max_total_routing_fee_msat` is not specified, the default from
+	/// [`RouteParameters::from_payment_params_and_value`] is applied.
+	///
+	/// # Payment
+	///
+	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
+	/// when received. See [Avoiding Duplicate Payments] for other requirements once the payment has
+	/// been sent.
+	///
+	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
+	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
+	/// payment will fail with an [`Event::InvoiceRequestFailed`].
+	///
+	/// # Privacy
+	///
+	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
+	/// to construct a [`BlindedPath`] for the reply path. For further privacy implications, see the
+	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
+	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to the given [`Destination`] as well as an introduction node in
+	/// [`Offer::paths`] or to [`Offer::signing_pubkey`], if empty. A similar restriction applies to
+	/// the responding [`Bolt12Invoice::payment_paths`].
+	///
+	/// # Errors
+	///
+	/// Errors if:
+	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
+	///
+	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
+	#[cfg(feature = "dnssec")]
+	pub fn pay_for_offer_from_human_readable_name(
+		&self, name: HumanReadableName, amount_msats: u64, payment_id: PaymentId,
+		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>,
+		dns_resolvers: Vec<Destination>,
+	) -> Result<(), ()> {
+		let (onion_message, context) =
+			self.hrn_resolver.resolve_name(payment_id, name, &*self.entropy_source)?;
+		let reply_paths = self.create_blinded_paths(MessageContext::DNSResolver(context))?;
+		let expiration = StaleExpiration::TimerTicks(1);
+		self.pending_outbound_payments.add_new_awaiting_offer(payment_id, expiration, retry_strategy, max_total_routing_fee_msat, amount_msats)?;
+		let message_params = dns_resolvers
+			.iter()
+			.flat_map(|destination| reply_paths.iter().map(move |path| (path, destination)))
+			.take(OFFERS_MESSAGE_REQUEST_LIMIT);
+		for (reply_path, destination) in message_params {
+			self.pending_dns_onion_messages.lock().unwrap().push((
+				DNSResolverMessage::DNSSECQuery(onion_message.clone()),
+				MessageSendInstructions::WithSpecifiedReplyPath {
+					destination: destination.clone(),
+					reply_path: reply_path.clone(),
+				},
+			));
+		}
+		Ok(())
 	}
 
 	/// Gets a payment secret and payment hash for use in an invoice given to a third party wishing
@@ -10387,6 +10484,10 @@ where
 			}
 		}
 		max_time!(self.highest_seen_timestamp);
+		#[cfg(feature = "dnssec")] {
+			let timestamp = self.highest_seen_timestamp.load(Ordering::Relaxed) as u32;
+			self.hrn_resolver.new_best_block(height, timestamp);
+		}
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
@@ -11634,6 +11735,62 @@ where
 
 	fn release_pending_messages(&self) -> Vec<(AsyncPaymentsMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.pending_async_payments_messages.lock().unwrap())
+	}
+}
+
+#[cfg(feature = "dnssec")]
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
+DNSResolverMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
+	fn handle_dnssec_query(
+		&self, _message: DNSSECQuery, _responder: Option<Responder>,
+	) -> Option<(DNSResolverMessage, ResponseInstruction)> {
+		None
+	}
+
+	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
+		let offer_opt = self.hrn_resolver.handle_dnssec_proof_for_offer(message, context);
+		if let Some((completed_requests, offer)) = offer_opt {
+			for (name, payment_id) in completed_requests {
+				if let Ok(amt_msats) = self.pending_outbound_payments.amt_msats_for_payment_awaiting_offer(payment_id) {
+					let offer_pay_res =
+						self.pay_for_offer_intern(&offer, None, Some(amt_msats), None, payment_id, Some(name),
+							|invoice_request, nonce| {
+								let retryable_invoice_request = RetryableInvoiceRequest {
+									invoice_request: invoice_request.clone(),
+									nonce,
+								};
+								self.pending_outbound_payments
+									.received_offer(payment_id, Some(retryable_invoice_request))
+									.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+						});
+					if offer_pay_res.is_err() {
+						// The offer we tried to pay is the canonical current offer for the name we
+						// wanted to pay. If we can't pay it, there's no way to recover so fail the
+						// payment.
+						// Note that the PaymentFailureReason should be ignored for an
+						// AwaitingInvoice payment.
+						self.pending_outbound_payments.abandon_payment(
+							payment_id, PaymentFailureReason::RouteNotFound, &self.pending_events,
+						);
+					}
+				}
+			}
+		}
+	}
+
+	fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
+		core::mem::take(&mut self.pending_dns_onion_messages.lock().unwrap())
 	}
 }
 
@@ -13321,6 +13478,11 @@ where
 
 			logger: args.logger,
 			default_configuration: args.default_config,
+
+			#[cfg(feature = "dnssec")]
+			hrn_resolver: OMNameResolver::new(highest_seen_timestamp, best_block_height),
+			#[cfg(feature = "dnssec")]
+			pending_dns_onion_messages: Mutex::new(Vec::new()),
 		};
 
 		for (_, monitor) in args.channel_monitors.iter() {
