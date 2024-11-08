@@ -2199,7 +2199,7 @@ where
 	L::Target: Logger,
 {
 	default_configuration: UserConfig,
-	chain_hash: ChainHash,
+	pub(super) chain_hash: ChainHash,
 	fee_estimator: LowerBoundedFeeEstimator<F>,
 	chain_monitor: M,
 	tx_broadcaster: T,

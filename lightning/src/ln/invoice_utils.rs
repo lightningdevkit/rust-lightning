@@ -6,6 +6,7 @@ use lightning_invoice::{Description, Bolt11InvoiceDescription, Sha256};
 use crate::prelude::*;
 
 use bitcoin::hashes::Hash;
+use bitcoin::network::Network;
 use crate::chain;
 use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 use crate::sign::{Recipient, NodeSigner, SignerProvider, EntropySource};
@@ -331,7 +332,7 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 pub fn create_invoice_from_channelmanager<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
+	amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
 	min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
@@ -351,7 +352,7 @@ where
 		.expect("for the foreseeable future this shouldn't happen");
 
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, node_signer, logger, network, amt_msat,
+		channelmanager, node_signer, logger, amt_msat,
 		Bolt11InvoiceDescription::Direct(
 			Description::new(description).map_err(SignOrCreationError::CreationError)?,
 		),
@@ -378,7 +379,7 @@ where
 /// [`MIN_FINAL_CLTV_EXPIRY_DETLA`]: crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA
 pub fn create_invoice_from_channelmanager_with_description_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
+	amt_msat: Option<u64>, description_hash: Sha256,
 	invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
@@ -398,7 +399,7 @@ where
 		.expect("for the foreseeable future this shouldn't happen");
 
 	_create_invoice_from_channelmanager_and_duration_since_epoch(
-		channelmanager, node_signer, logger, network, amt_msat,
+		channelmanager, node_signer, logger, amt_msat,
 		Bolt11InvoiceDescription::Hash(description_hash),
 		duration_since_epoch, invoice_expiry_delta_secs, min_final_cltv_expiry_delta,
 	)
@@ -406,7 +407,7 @@ where
 
 fn _create_invoice_from_channelmanager_and_duration_since_epoch<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	network: Currency, amt_msat: Option<u64>, description: Bolt11InvoiceDescription,
+	amt_msat: Option<u64>, description: Bolt11InvoiceDescription,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
@@ -430,7 +431,7 @@ where
 		.create_inbound_payment(amt_msat, invoice_expiry_delta_secs, min_final_cltv_expiry_delta)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
-		channelmanager, node_signer, logger, network, amt_msat, description, duration_since_epoch,
+		channelmanager, node_signer, logger, amt_msat, description, duration_since_epoch,
 		invoice_expiry_delta_secs, payment_hash, payment_secret, min_final_cltv_expiry_delta)
 }
 
@@ -444,7 +445,7 @@ where
 /// description hash.
 pub fn create_invoice_from_channelmanager_with_description_hash_and_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	network: Currency, amt_msat: Option<u64>, description_hash: Sha256,
+	amt_msat: Option<u64>, description_hash: Sha256,
 	invoice_expiry_delta_secs: u32, payment_hash: PaymentHash, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
@@ -468,7 +469,7 @@ where
 			min_final_cltv_expiry_delta)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
-		channelmanager, node_signer, logger, network, amt_msat,
+		channelmanager, node_signer, logger, amt_msat,
 		Bolt11InvoiceDescription::Hash(description_hash),
 		duration_since_epoch, invoice_expiry_delta_secs, payment_hash, payment_secret,
 		min_final_cltv_expiry_delta,
@@ -483,7 +484,7 @@ where
 /// the payment hash is also involved outside the scope of lightning.
 pub fn create_invoice_from_channelmanager_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	network: Currency, amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
+	amt_msat: Option<u64>, description: String, invoice_expiry_delta_secs: u32,
 	payment_hash: PaymentHash, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
 where
@@ -507,7 +508,7 @@ where
 			min_final_cltv_expiry_delta)
 		.map_err(|()| SignOrCreationError::CreationError(CreationError::InvalidAmount))?;
 	_create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
-		channelmanager, node_signer, logger, network, amt_msat,
+		channelmanager, node_signer, logger, amt_msat,
 		Bolt11InvoiceDescription::Direct(
 			Description::new(description).map_err(SignOrCreationError::CreationError)?,
 		),
@@ -518,7 +519,7 @@ where
 
 fn _create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>(
 	channelmanager: &ChannelManager<M, T, ES, NS, SP, F, R, MR, L>, node_signer: NS, logger: L,
-	network: Currency, amt_msat: Option<u64>, description: Bolt11InvoiceDescription,
+	amt_msat: Option<u64>, description: Bolt11InvoiceDescription,
 	duration_since_epoch: Duration, invoice_expiry_delta_secs: u32, payment_hash: PaymentHash,
 	payment_secret: PaymentSecret, min_final_cltv_expiry_delta: Option<u16>,
 ) -> Result<Bolt11Invoice, SignOrCreationError<()>>
@@ -535,6 +536,10 @@ where
 {
 	let our_node_pubkey = channelmanager.get_our_node_id();
 	let channels = channelmanager.list_channels();
+
+	let network = Network::from_chain_hash(channelmanager.chain_hash)
+		.map(Into::into)
+		.unwrap_or(Currency::Bitcoin);
 
 	if min_final_cltv_expiry_delta.is_some() && min_final_cltv_expiry_delta.unwrap().saturating_add(3) < MIN_FINAL_CLTV_EXPIRY_DELTA {
 		return Err(SignOrCreationError::CreationError(CreationError::MinFinalCltvExpiryDeltaTooShort));
@@ -873,7 +878,7 @@ mod test {
 		create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, 10001);
 		let non_default_invoice_expiry_secs = 4200;
 		let invoice = create_invoice_from_channelmanager(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
+			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
 			Some(10_000), "test".to_string(), non_default_invoice_expiry_secs, None,
 		).unwrap();
 		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
@@ -924,7 +929,7 @@ mod test {
 		let custom_min_final_cltv_expiry_delta = Some(50);
 
 		let invoice = create_invoice_from_channelmanager(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
+			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
 			Some(10_000), "".into(), 3600,
 			if with_custom_delta { custom_min_final_cltv_expiry_delta } else { None },
 		).unwrap();
@@ -947,7 +952,7 @@ mod test {
 		let custom_min_final_cltv_expiry_delta = Some(21);
 
 		let invoice = create_invoice_from_channelmanager(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
+			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
 			Some(10_000), "".into(), 3600, custom_min_final_cltv_expiry_delta,
 		).unwrap();
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), MIN_FINAL_CLTV_EXPIRY_DELTA as u64);
@@ -961,7 +966,7 @@ mod test {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let description_hash = Sha256(Hash::hash("Testing description_hash".as_bytes()));
 		let invoice = create_invoice_from_channelmanager_with_description_hash(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
+			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
 			Some(10_000), description_hash, 3600, None,
 		).unwrap();
 		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
@@ -977,7 +982,7 @@ mod test {
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let payment_hash = PaymentHash([0; 32]);
 		let invoice = create_invoice_from_channelmanager_with_payment_hash(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
+			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
 			Some(10_000), "test".to_string(), 3600, payment_hash, None,
 		).unwrap();
 		assert_eq!(invoice.amount_milli_satoshis(), Some(10_000));
@@ -1269,7 +1274,7 @@ mod test {
 	) {
 		let invoice = create_invoice_from_channelmanager(
 			invoice_node.node, invoice_node.keys_manager, invoice_node.logger,
-			Currency::BitcoinTestnet, invoice_amt, "test".to_string(), 3600, None,
+			invoice_amt, "test".to_string(), 3600, None,
 		).unwrap();
 		let hints = invoice.private_routes();
 
@@ -1906,7 +1911,7 @@ mod test {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 		let result = create_invoice_from_channelmanager(
-			nodes[1].node, nodes[1].keys_manager, nodes[1].logger, Currency::BitcoinTestnet,
+			nodes[1].node, nodes[1].keys_manager, nodes[1].logger,
 			Some(10_000), "Some description".into(), 3600, Some(MIN_FINAL_CLTV_EXPIRY_DELTA - 4),
 		);
 		match result {
