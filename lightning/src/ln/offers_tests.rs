@@ -1142,7 +1142,7 @@ fn creates_and_pays_for_offer_with_retry() {
 #[test]
 fn pays_bolt12_invoice_asynchronously() {
 	let mut manually_pay_cfg = test_default_channel_config();
-	manually_pay_cfg.manually_handle_bolt12_invoices = true;
+	manually_pay_cfg.manually_handle_bolt12_messages = true;
 
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1220,6 +1220,78 @@ fn pays_bolt12_invoice_asynchronously() {
 		bob.node.send_payment_for_bolt12_invoice(&invoice, context.as_ref()),
 		Err(Bolt12PaymentError::UnexpectedInvoice),
 	);
+}
+
+#[test]
+fn send_invoice_request_response_asynchronously() {
+	let mut manually_respond_cfg = test_default_channel_config();
+	manually_respond_cfg.manually_handle_bolt12_messages = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(manually_respond_cfg), None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder(None).unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, None, None, payment_id, Retry::Attempts(0), None).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, context, responder) = match get_event!(alice, Event::InvoiceRequestReceived) {
+		Event::InvoiceRequestReceived { invoice_request, context, responder } => {
+			(invoice_request, context, responder)
+		}
+		_ => panic!("No Event::InvoiceReceived"),
+	};
+
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+		},
+	});
+
+	assert_eq!(invoice_request.amount_msats(), None);
+	assert_ne!(invoice_request.payer_signing_pubkey(), bob_id);
+	assert_eq!(responder.reply_path.introduction_node(), &IntroductionNode::NodeId(bob_id));
+
+	match alice.node.send_invoice_request_response(invoice_request, context, None, responder) {
+		Ok(()) => (),
+		Err(_) => panic!("Unexpected Error.")
+	}
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let (invoice, _) = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice.amount_msats(), 10_000_000);
+	assert_ne!(invoice.signing_pubkey(), alice_id);
+	assert!(!invoice.payment_paths().is_empty());
+	for path in invoice.payment_paths() {
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(alice_id));
+	}
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	claim_bolt12_payment(bob, &[alice], payment_context);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
 /// Checks that an offer can be created using an unannounced node as a blinded path's introduction
@@ -2218,7 +2290,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	let created_at = alice.node.duration_since_epoch();
 	let invoice = invoice_request
 		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap()
-		.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at).unwrap()
+		.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at, None).unwrap()
 		.features_unchecked(Bolt12InvoiceFeatures::unknown())
 		.build_and_sign(&secp_ctx).unwrap();
 
