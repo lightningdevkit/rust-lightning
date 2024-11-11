@@ -9266,7 +9266,7 @@ where
 		let duration_since_epoch = {
 			use std::time::SystemTime;
 			SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
-				.expect("for the foreseeable future this shouldn't happen")
+				.expect("SystemTime::now() should be after SystemTime::UNIX_EPOCH")
 		};
 		#[cfg(not(feature = "std"))]
 		let duration_since_epoch =
