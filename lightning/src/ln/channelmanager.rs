@@ -9268,6 +9268,10 @@ where
 			SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
 				.expect("SystemTime::now() should be after SystemTime::UNIX_EPOCH")
 		};
+
+		// This may be up to 2 hours in the future because of bitcoin's block time rule or about
+		// 10-30 minutes in the past if a block hasn't been found recently. This should be fine as
+		// the default invoice expiration is 2 hours, though shorter expirations may be problematic.
 		#[cfg(not(feature = "std"))]
 		let duration_since_epoch =
 			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
