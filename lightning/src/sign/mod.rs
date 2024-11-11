@@ -1230,8 +1230,6 @@ impl InMemorySigner {
 		}
 
 		let remotepubkey = bitcoin::PublicKey::new(self.pubkeys().payment_basepoint);
-		// We cannot always assume that `channel_parameters` is set, so can't just call
-		// `self.channel_parameters()` or anything that relies on it
 		let supports_anchors_zero_fee_htlc_tx = self
 			.channel_type_features()
 			.map(|features| features.supports_anchors_zero_fee_htlc_tx())
