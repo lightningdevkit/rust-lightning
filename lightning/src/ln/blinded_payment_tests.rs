@@ -27,7 +27,6 @@ use crate::ln::onion_utils;
 use crate::ln::onion_utils::INVALID_ONION_BLINDING;
 use crate::ln::outbound_payment::{Retry, IDEMPOTENCY_TIMEOUT_TICKS};
 use crate::offers::invoice::UnsignedBolt12Invoice;
-use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::prelude::*;
 use crate::routing::router::{BlindedTail, Path, Payee, PaymentParameters, RouteHop, RouteParameters};
 use crate::sign::{KeyMaterial, NodeSigner, Recipient};
@@ -1540,9 +1539,6 @@ fn route_blinding_spec_test_vector() {
 		fn sign_invoice(
 			&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 		) -> Result<RecoverableSignature, ()> { unreachable!() }
-		fn sign_bolt12_invoice_request(
-			&self, _invoice_request: &UnsignedInvoiceRequest,
-		) -> Result<schnorr::Signature, ()> { unreachable!() }
 		fn sign_bolt12_invoice(
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }

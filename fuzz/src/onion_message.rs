@@ -13,7 +13,6 @@ use lightning::ln::msgs::{self, DecodeError, OnionMessageHandler};
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::ln::script::ShutdownScript;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
-use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::async_payments::{
 	AsyncPaymentsMessageHandler, HeldHtlcAvailable, ReleaseHeldHtlc,
 };
@@ -231,12 +230,6 @@ impl NodeSigner for KeyProvider {
 	fn sign_invoice(
 		&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
-		unreachable!()
-	}
-
-	fn sign_bolt12_invoice_request(
-		&self, _invoice_request: &UnsignedInvoiceRequest,
-	) -> Result<schnorr::Signature, ()> {
 		unreachable!()
 	}
 

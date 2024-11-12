@@ -57,7 +57,6 @@ use lightning::ln::msgs::{
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
-use lightning::offers::invoice_request::UnsignedInvoiceRequest;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::router::{InFlightHtlcs, Path, Route, RouteHop, RouteParameters, Router};
 use lightning::sign::{
@@ -337,12 +336,6 @@ impl NodeSigner for KeyProvider {
 	fn sign_invoice(
 		&self, _invoice: &RawBolt11Invoice, _recipient: Recipient,
 	) -> Result<RecoverableSignature, ()> {
-		unreachable!()
-	}
-
-	fn sign_bolt12_invoice_request(
-		&self, _invoice_request: &UnsignedInvoiceRequest,
-	) -> Result<schnorr::Signature, ()> {
 		unreachable!()
 	}
 

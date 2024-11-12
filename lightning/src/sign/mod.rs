@@ -56,7 +56,6 @@ use crate::ln::msgs::PartialSignatureWithNonce;
 use crate::ln::msgs::{UnsignedChannelAnnouncement, UnsignedGossipMessage};
 use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
-use crate::offers::invoice_request::UnsignedInvoiceRequest;
 use crate::types::payment::PaymentPreimage;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use crate::util::transaction_utils;
@@ -869,21 +868,6 @@ pub trait NodeSigner {
 	fn sign_invoice(
 		&self, invoice: &RawBolt11Invoice, recipient: Recipient,
 	) -> Result<RecoverableSignature, ()>;
-
-	/// Signs the [`TaggedHash`] of a BOLT 12 invoice request.
-	///
-	/// May be called by a function passed to [`UnsignedInvoiceRequest::sign`] where
-	/// `invoice_request` is the callee.
-	///
-	/// Implementors may check that the `invoice_request` is expected rather than blindly signing
-	/// the tagged hash. An `Ok` result should sign `invoice_request.tagged_hash().as_digest()` with
-	/// the node's signing key or an ephemeral key to preserve privacy, whichever is associated with
-	/// [`UnsignedInvoiceRequest::payer_signing_pubkey`].
-	///
-	/// [`TaggedHash`]: crate::offers::merkle::TaggedHash
-	fn sign_bolt12_invoice_request(
-		&self, invoice_request: &UnsignedInvoiceRequest,
-	) -> Result<schnorr::Signature, ()>;
 
 	/// Signs the [`TaggedHash`] of a BOLT 12 invoice.
 	///
@@ -2206,15 +2190,6 @@ impl NodeSigner for KeysManager {
 		Ok(self.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&hash), secret))
 	}
 
-	fn sign_bolt12_invoice_request(
-		&self, invoice_request: &UnsignedInvoiceRequest,
-	) -> Result<schnorr::Signature, ()> {
-		let message = invoice_request.tagged_hash().as_digest();
-		let keys = Keypair::from_secret_key(&self.secp_ctx, &self.node_secret);
-		let aux_rand = self.get_secure_random_bytes();
-		Ok(self.secp_ctx.sign_schnorr_with_aux_rand(message, &keys, &aux_rand))
-	}
-
 	fn sign_bolt12_invoice(
 		&self, invoice: &UnsignedBolt12Invoice,
 	) -> Result<schnorr::Signature, ()> {
@@ -2382,12 +2357,6 @@ impl NodeSigner for PhantomKeysManager {
 			Recipient::PhantomNode => &self.phantom_secret,
 		};
 		Ok(self.inner.secp_ctx.sign_ecdsa_recoverable(&hash_to_message!(&hash), secret))
-	}
-
-	fn sign_bolt12_invoice_request(
-		&self, invoice_request: &UnsignedInvoiceRequest,
-	) -> Result<schnorr::Signature, ()> {
-		self.inner.sign_bolt12_invoice_request(invoice_request)
 	}
 
 	fn sign_bolt12_invoice(

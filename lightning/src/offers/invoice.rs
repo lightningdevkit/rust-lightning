@@ -1607,6 +1607,7 @@ mod tests {
 	use crate::blinded_path::message::BlindedMessagePath;
 	use crate::sign::KeyMaterial;
 	use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
+	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice_request::{ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequestTlvStreamRef};
@@ -1648,15 +1649,21 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_for_offer_with_defaults() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let encrypted_payment_id = expanded_key.crypt_for_offer(payment_id.0, nonce);
+
 		let payment_paths = payment_paths();
 		let payment_hash = payment_hash();
 		let now = now();
 		let unsigned_invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths.clone(), payment_hash, now).unwrap()
 			.build().unwrap();
 
@@ -1664,7 +1671,7 @@ mod tests {
 		unsigned_invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(unsigned_invoice.bytes, buffer.as_slice());
-		assert_eq!(unsigned_invoice.payer_metadata(), &[1; 32]);
+		assert_eq!(unsigned_invoice.payer_metadata(), &encrypted_payment_id);
 		assert_eq!(unsigned_invoice.offer_chains(), Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)]));
 		assert_eq!(unsigned_invoice.metadata(), None);
 		assert_eq!(unsigned_invoice.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
@@ -1679,7 +1686,6 @@ mod tests {
 		assert_eq!(unsigned_invoice.amount_msats(), 1000);
 		assert_eq!(unsigned_invoice.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(unsigned_invoice.quantity(), None);
-		assert_eq!(unsigned_invoice.payer_signing_pubkey(), payer_pubkey());
 		assert_eq!(unsigned_invoice.payer_note(), None);
 		assert_eq!(unsigned_invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(unsigned_invoice.created_at(), now);
@@ -1706,7 +1712,7 @@ mod tests {
 		invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(invoice.bytes, buffer.as_slice());
-		assert_eq!(invoice.payer_metadata(), &[1; 32]);
+		assert_eq!(invoice.payer_metadata(), &encrypted_payment_id);
 		assert_eq!(invoice.offer_chains(), Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)]));
 		assert_eq!(invoice.metadata(), None);
 		assert_eq!(invoice.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
@@ -1721,7 +1727,10 @@ mod tests {
 		assert_eq!(invoice.amount_msats(), 1000);
 		assert_eq!(invoice.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice.quantity(), None);
-		assert_eq!(invoice.payer_signing_pubkey(), payer_pubkey());
+		assert_eq!(
+			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx),
+			Ok(payment_id),
+		);
 		assert_eq!(invoice.payer_note(), None);
 		assert_eq!(invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(invoice.created_at(), now);
@@ -1744,7 +1753,7 @@ mod tests {
 		assert_eq!(
 			invoice.as_tlv_stream(),
 			(
-				PayerTlvStreamRef { metadata: Some(&vec![1; 32]) },
+				PayerTlvStreamRef { metadata: Some(&encrypted_payment_id.to_vec()) },
 				OfferTlvStreamRef {
 					chains: None,
 					metadata: None,
@@ -1763,7 +1772,7 @@ mod tests {
 					amount: None,
 					features: None,
 					quantity: None,
-					payer_id: Some(&payer_pubkey()),
+					payer_id: Some(&invoice.payer_signing_pubkey()),
 					payer_note: None,
 					paths: None,
 					offer_from_hrn: None,
@@ -1904,6 +1913,12 @@ mod tests {
 	#[cfg(feature = "std")]
 	#[test]
 	fn builds_invoice_from_offer_with_expiration() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let future_expiry = Duration::from_secs(u64::max_value());
 		let past_expiry = Duration::from_secs(0);
 
@@ -1911,9 +1926,8 @@ mod tests {
 			.amount_msats(1000)
 			.absolute_expiry(future_expiry)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with(payment_paths(), payment_hash())
 			.unwrap()
 			.build()
@@ -1925,9 +1939,8 @@ mod tests {
 			.amount_msats(1000)
 			.absolute_expiry(past_expiry)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build_unchecked()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_unchecked_and_sign()
 			.respond_with(payment_paths(), payment_hash())
 			.unwrap()
 			.build()
@@ -1972,6 +1985,7 @@ mod tests {
 		let entropy = FixedEntropy {};
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
 
 		let blinded_path = BlindedMessagePath::from_raw(
 			pubkey(40), pubkey(41),
@@ -1983,14 +1997,14 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use crate::offers::offer::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let invoice_request = OfferBuilder
+			::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			.path(blinded_path)
 			.experimental_foo(42)
-			.build().unwrap();
-		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
-			.sign(payer_sign).unwrap();
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 
 		if let Err(e) = invoice_request.clone()
 			.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap()
@@ -2005,14 +2019,14 @@ mod tests {
 			invoice_request.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).is_err()
 		);
 
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+		let invoice_request = OfferBuilder
+			::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
 			.amount_msats(1000)
 			// Omit the path so that node_id is used for the signing pubkey instead of deriving it
 			.experimental_foo(42)
-			.build().unwrap();
-		let invoice_request = offer.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
-			.sign(payer_sign).unwrap();
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 
 		match invoice_request
 			.verify_using_metadata(&expanded_key, &secp_ctx).unwrap()
@@ -2076,15 +2090,20 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_relative_expiry() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let now = now();
 		let one_hour = Duration::from_secs(3600);
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now).unwrap()
 			.relative_expiry(one_hour.as_secs() as u32)
 			.build().unwrap()
@@ -2098,9 +2117,8 @@ mod tests {
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now - one_hour).unwrap()
 			.relative_expiry(one_hour.as_secs() as u32 - 1)
 			.build().unwrap()
@@ -2114,13 +2132,18 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_amount_from_request() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.amount_msats(1001).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
@@ -2131,14 +2154,19 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_quantity_from_request() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.quantity(2).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
@@ -2150,10 +2178,9 @@ mod tests {
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
 			.quantity(u64::max_value()).unwrap()
-			.build_unchecked()
-			.sign(payer_sign).unwrap()
+			.build_unchecked_and_sign()
 			.respond_with_no_std(payment_paths(), payment_hash(), now())
 		{
 			Ok(_) => panic!("expected error"),
@@ -2163,6 +2190,12 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_fallback_address() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let script = ScriptBuf::new();
 		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
 		let x_only_pubkey = XOnlyPublicKey::from_keypair(&recipient_keys()).0;
@@ -2171,9 +2204,8 @@ mod tests {
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.fallback_v0_p2wsh(&script.wscript_hash())
 			.fallback_v0_p2wpkh(&pubkey.wpubkey_hash().unwrap())
@@ -2210,15 +2242,20 @@ mod tests {
 
 	#[test]
 	fn builds_invoice_with_allow_mpp() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let mut features = Bolt12InvoiceFeatures::empty();
 		features.set_basic_mpp_optional();
 
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.allow_mpp()
 			.build().unwrap()
@@ -2230,12 +2267,17 @@ mod tests {
 
 	#[test]
 	fn fails_signing_invoice() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		match OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(fail_sign)
@@ -2247,9 +2289,8 @@ mod tests {
 		match OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(payer_sign)
@@ -2261,12 +2302,17 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_payment_paths() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
@@ -2316,12 +2362,17 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_created_at() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
@@ -2346,12 +2397,17 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_relative_expiry() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.relative_expiry(3600)
 			.build().unwrap()
@@ -2368,12 +2424,17 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_payment_hash() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
@@ -2398,12 +2459,17 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_amount() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
@@ -2426,12 +2492,17 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_allow_mpp() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.allow_mpp()
 			.build().unwrap()
@@ -2452,18 +2523,22 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_fallback_address() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let script = ScriptBuf::new();
 		let pubkey = bitcoin::key::PublicKey::new(recipient_pubkey());
 		let x_only_pubkey = XOnlyPublicKey::from_keypair(&recipient_keys()).0;
 		let tweaked_pubkey = TweakedPublicKey::dangerous_assume_tweaked(x_only_pubkey);
 
-		let offer = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
-			.build().unwrap();
-		let invoice_request = offer
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
 			.build().unwrap()
-			.sign(payer_sign).unwrap();
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap();
 		#[cfg(not(c_bindings))]
 		let invoice_builder = invoice_request
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap();
@@ -2512,12 +2587,17 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_node_id() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
@@ -2553,6 +2633,12 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_node_id_from_blinded_path() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let paths = vec![
 			BlindedMessagePath::from_raw(
 				pubkey(40), pubkey(41),
@@ -2582,9 +2668,8 @@ mod tests {
 			.path(paths[0].clone())
 			.path(paths[1].clone())
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std_using_signing_pubkey(
 				payment_paths(), payment_hash(), now(), pubkey(46)
 			).unwrap()
@@ -2604,9 +2689,8 @@ mod tests {
 			.path(paths[0].clone())
 			.path(paths[1].clone())
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std_using_signing_pubkey(
 				payment_paths(), payment_hash(), now(), recipient_pubkey()
 			).unwrap()
@@ -2626,13 +2710,18 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_invoice_without_signature() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let mut buffer = Vec::new();
 		OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.contents
@@ -2646,12 +2735,17 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_invoice_with_invalid_signature() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let mut invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
@@ -2671,6 +2765,11 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_unknown_tlv_records() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let payment_id = PaymentId([1; 32]);
+
 		const UNKNOWN_ODD_TYPE: u64 = INVOICE_TYPES.end - 1;
 		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
 
@@ -2679,9 +2778,8 @@ mod tests {
 		let mut unsigned_invoice = OfferBuilder::new(keys.public_key())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap();
 
@@ -2717,9 +2815,8 @@ mod tests {
 		let mut unsigned_invoice = OfferBuilder::new(keys.public_key())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap();
 
@@ -2752,14 +2849,18 @@ mod tests {
 
 	#[test]
 	fn parses_invoice_with_experimental_tlv_records() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let payment_id = PaymentId([1; 32]);
+
 		let secp_ctx = Secp256k1::new();
 		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 		let invoice = OfferBuilder::new(keys.public_key())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.experimental_baz(42)
 			.build().unwrap()
@@ -2779,9 +2880,8 @@ mod tests {
 		let mut unsigned_invoice = OfferBuilder::new(keys.public_key())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap();
 
@@ -2819,9 +2919,8 @@ mod tests {
 		let mut unsigned_invoice = OfferBuilder::new(keys.public_key())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap();
 
@@ -2856,9 +2955,8 @@ mod tests {
 		let invoice = OfferBuilder::new(keys.public_key())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(|message: &UnsignedBolt12Invoice|
@@ -2881,12 +2979,17 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_invoice_with_out_of_range_tlv_records() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
@@ -2905,12 +3008,17 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_invoice_with_message_paths() {
+		let expanded_key = ExpandedKey::new(&KeyMaterial([42; 32]));
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
 		let invoice = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.build().unwrap()
-			.request_invoice(vec![1; 32], payer_pubkey()).unwrap()
-			.build().unwrap()
-			.sign(payer_sign).unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id).unwrap()
+			.build_and_sign().unwrap()
 			.respond_with_no_std(payment_paths(), payment_hash(), now()).unwrap()
 			.build().unwrap()
 			.sign(recipient_sign).unwrap();
