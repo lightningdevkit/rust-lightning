@@ -1102,7 +1102,7 @@ fn creates_and_pays_for_offer_with_retry() {
 
 	// Simulate a scenario where the original onion_message is lost before reaching Alice.
 	// Use handle_message_received to regenerate the message.
-	bob.node.message_received();
+	bob.onion_messenger.message_received();
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
 
 	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
@@ -1125,7 +1125,7 @@ fn creates_and_pays_for_offer_with_retry() {
 
 	// Expect no more OffersMessage to be enqueued by this point, even after calling
 	// handle_message_received.
-	bob.node.message_received();
+	bob.onion_messenger.message_received();
 
 	assert!(bob.onion_messenger.next_onion_message_for_peer(alice_id).is_none());
 
