@@ -58,6 +58,15 @@ pub(crate) enum PendingOutboundPayment {
 	Legacy {
 		session_privs: HashSet<[u8; 32]>,
 	},
+	/// Used when we are waiting for an Offer to come back from a BIP 353 resolution
+	AwaitingOffer {
+		expiration: StaleExpiration,
+		retry_strategy: Retry,
+		max_total_routing_fee_msat: Option<u64>,
+		/// Human Readable Names-originated payments should always specify an explicit amount to
+		/// send up-front, which we track here and enforce once we receive the offer.
+		amount_msats: u64,
+	},
 	AwaitingInvoice {
 		expiration: StaleExpiration,
 		retry_strategy: Retry,
@@ -201,6 +210,7 @@ impl PendingOutboundPayment {
 	fn payment_hash(&self) -> Option<PaymentHash> {
 		match self {
 			PendingOutboundPayment::Legacy { .. } => None,
+			PendingOutboundPayment::AwaitingOffer { .. } => None,
 			PendingOutboundPayment::AwaitingInvoice { .. } => None,
 			PendingOutboundPayment::InvoiceReceived { payment_hash, .. } => Some(*payment_hash),
 			PendingOutboundPayment::StaticInvoiceReceived { payment_hash, .. } => Some(*payment_hash),
@@ -217,7 +227,8 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Retryable { session_privs, .. } |
 				PendingOutboundPayment::Fulfilled { session_privs, .. } |
 				PendingOutboundPayment::Abandoned { session_privs, .. } => session_privs,
-			PendingOutboundPayment::AwaitingInvoice { .. } |
+			PendingOutboundPayment::AwaitingOffer { .. } |
+				PendingOutboundPayment::AwaitingInvoice { .. } |
 				PendingOutboundPayment::InvoiceReceived { .. } |
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); return; },
 		});
@@ -258,7 +269,8 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Abandoned { session_privs, .. } => {
 					session_privs.remove(session_priv)
 				},
-			PendingOutboundPayment::AwaitingInvoice { .. } |
+			PendingOutboundPayment::AwaitingOffer { .. } |
+				PendingOutboundPayment::AwaitingInvoice { .. } |
 				PendingOutboundPayment::InvoiceReceived { .. } |
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); false },
 		};
@@ -288,7 +300,8 @@ impl PendingOutboundPayment {
 				PendingOutboundPayment::Retryable { session_privs, .. } => {
 					session_privs.insert(session_priv)
 				},
-			PendingOutboundPayment::AwaitingInvoice { .. } |
+			PendingOutboundPayment::AwaitingOffer { .. } |
+				PendingOutboundPayment::AwaitingInvoice { .. } |
 				PendingOutboundPayment::InvoiceReceived { .. } |
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => { debug_assert!(false); false },
 			PendingOutboundPayment::Fulfilled { .. } => false,
@@ -322,6 +335,7 @@ impl PendingOutboundPayment {
 					session_privs.len()
 				},
 			PendingOutboundPayment::AwaitingInvoice { .. } => 0,
+			PendingOutboundPayment::AwaitingOffer { .. } => 0,
 			PendingOutboundPayment::InvoiceReceived { .. } => 0,
 			PendingOutboundPayment::StaticInvoiceReceived { .. } => 0,
 		}
@@ -416,8 +430,9 @@ impl Display for PaymentAttempts {
 	}
 }
 
-/// How long before a [`PendingOutboundPayment::AwaitingInvoice`] should be considered stale and
-/// candidate for removal in [`OutboundPayments::remove_stale_payments`].
+/// How long before a [`PendingOutboundPayment::AwaitingInvoice`] or
+/// [`PendingOutboundPayment::AwaitingOffer`] should be considered stale and candidate for removal
+/// in [`OutboundPayments::remove_stale_payments`].
 #[derive(Clone, Copy)]
 pub(crate) enum StaleExpiration {
 	/// Number of times [`OutboundPayments::remove_stale_payments`] is called.
@@ -1388,7 +1403,9 @@ impl OutboundPayments {
 							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
 							return
 						},
-						PendingOutboundPayment::AwaitingInvoice { .. } => {
+						PendingOutboundPayment::AwaitingInvoice { .. }
+							| PendingOutboundPayment::AwaitingOffer { .. } =>
+						{
 							log_error!(logger, "Payment not yet sent");
 							debug_assert!(false);
 							return
@@ -1620,6 +1637,62 @@ impl OutboundPayments {
 		}
 
 		(payment, onion_session_privs)
+	}
+
+	#[cfg(feature = "dnssec")]
+	pub(super) fn add_new_awaiting_offer(
+		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
+		max_total_routing_fee_msat: Option<u64>, amount_msats: u64,
+	) -> Result<(), ()> {
+		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
+		match pending_outbounds.entry(payment_id) {
+			hash_map::Entry::Occupied(_) => Err(()),
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(PendingOutboundPayment::AwaitingOffer {
+					expiration,
+					retry_strategy,
+					max_total_routing_fee_msat,
+					amount_msats,
+				});
+
+				Ok(())
+			},
+		}
+	}
+
+	#[cfg(feature = "dnssec")]
+	pub(super) fn amt_msats_for_payment_awaiting_offer(&self, payment_id: PaymentId) -> Result<u64, ()> {
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingOffer { amount_msats, .. } => Ok(*amount_msats),
+				_ => Err(()),
+			},
+			_ => Err(()),
+		}
+	}
+
+	#[cfg(feature = "dnssec")]
+	pub(super) fn received_offer(
+		&self, payment_id: PaymentId, retryable_invoice_request: Option<RetryableInvoiceRequest>,
+	) -> Result<(), ()> {
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingOffer {
+					expiration, retry_strategy, max_total_routing_fee_msat, ..
+				} => {
+					let mut new_val = PendingOutboundPayment::AwaitingInvoice {
+						expiration: *expiration,
+						retry_strategy: *retry_strategy,
+						max_total_routing_fee_msat: *max_total_routing_fee_msat,
+						retryable_invoice_request,
+					};
+					core::mem::swap(&mut new_val, entry.into_mut());
+					Ok(())
+				},
+				_ => Err(()),
+			},
+			hash_map::Entry::Vacant(_) => Err(()),
+		}
 	}
 
 	pub(super) fn add_new_awaiting_invoice(
@@ -1910,7 +1983,9 @@ impl OutboundPayments {
 					true
 				}
 			},
-			PendingOutboundPayment::AwaitingInvoice { expiration, .. } => {
+			PendingOutboundPayment::AwaitingInvoice { expiration, .. }
+				| PendingOutboundPayment::AwaitingOffer { expiration, .. } =>
+			{
 				let is_stale = match expiration {
 					StaleExpiration::AbsoluteTimeout(absolute_expiry) => {
 						*absolute_expiry <= duration_since_epoch
@@ -2096,22 +2171,28 @@ impl OutboundPayments {
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 			payment.get_mut().mark_abandoned(reason);
-			if let PendingOutboundPayment::Abandoned { payment_hash, reason, .. } = payment.get() {
-				if payment.get().remaining_parts() == 0 {
+			match payment.get() {
+				PendingOutboundPayment::Abandoned { payment_hash, reason, .. } => {
+					if payment.get().remaining_parts() == 0 {
+						pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
+							payment_id,
+							payment_hash: Some(*payment_hash),
+							reason: *reason,
+						}, None));
+						payment.remove();
+					}
+				},
+				PendingOutboundPayment::AwaitingInvoice { .. }
+					| PendingOutboundPayment::AwaitingOffer { .. } =>
+				{
 					pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 						payment_id,
-						payment_hash: Some(*payment_hash),
-						reason: *reason,
+						payment_hash: None,
+						reason: Some(reason),
 					}, None));
 					payment.remove();
-				}
-			} else if let PendingOutboundPayment::AwaitingInvoice { .. } = payment.get() {
-				pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
-					payment_id,
-					payment_hash: None,
-					reason: Some(reason),
-				}, None));
-				payment.remove();
+				},
+				_ => {},
 			}
 		}
 	}
@@ -2183,7 +2264,8 @@ impl OutboundPayments {
 		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
 			hash_map::Entry::Occupied(mut entry) => {
 				let newly_added = match entry.get() {
-					PendingOutboundPayment::AwaitingInvoice { .. } |
+					PendingOutboundPayment::AwaitingOffer { .. } |
+						PendingOutboundPayment::AwaitingInvoice { .. } |
 						PendingOutboundPayment::InvoiceReceived { .. } |
 						PendingOutboundPayment::StaticInvoiceReceived { .. } =>
 					{
@@ -2284,6 +2366,14 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(4, retry_strategy, required),
 		(6, route_params, required),
 		(8, invoice_request, required),
+	},
+	// Added in 0.1. Prior versions will drop these outbounds on downgrade, which is safe because
+	// no HTLCs are in-flight.
+	(11, AwaitingOffer) => {
+		(0, expiration, required),
+		(2, retry_strategy, required),
+		(4, max_total_routing_fee_msat, option),
+		(6, amount_msats, required),
 	},
 );
 

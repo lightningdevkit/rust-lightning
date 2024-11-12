@@ -1766,6 +1766,7 @@ mod tests {
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
 					paths: None,
+					offer_from_hrn: None,
 				},
 				InvoiceTlvStreamRef {
 					paths: Some(Iterable(payment_paths.iter().map(|path| path.inner_blinded_path()))),
@@ -1868,6 +1869,7 @@ mod tests {
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
 					paths: None,
+					offer_from_hrn: None,
 				},
 				InvoiceTlvStreamRef {
 					paths: Some(Iterable(payment_paths.iter().map(|path| path.inner_blinded_path()))),
