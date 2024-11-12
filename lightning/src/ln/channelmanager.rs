@@ -11943,39 +11943,6 @@ where
 			NotifyOption::SkipPersistHandleEvents
 		});
 	}
-
-	fn message_received(&self) {
-		for (payment_id, retryable_invoice_request) in self
-			.pending_outbound_payments
-			.release_invoice_requests_awaiting_invoice()
-		{
-			let RetryableInvoiceRequest { invoice_request, nonce } = retryable_invoice_request;
-			let hmac = payment_id.hmac_for_offer_payment(nonce, &self.inbound_payment_key);
-			let context = MessageContext::Offers(OffersContext::OutboundPayment {
-				payment_id,
-				nonce,
-				hmac: Some(hmac)
-			});
-			match self.create_blinded_paths(context) {
-				Ok(reply_paths) => match self.enqueue_invoice_request(invoice_request, reply_paths) {
-					Ok(_) => {}
-					Err(_) => {
-						log_warn!(self.logger,
-							"Retry failed for an invoice request with payment_id: {}",
-							payment_id
-						);
-					}
-				},
-				Err(_) => {
-					log_warn!(self.logger,
-						"Retry failed for an invoice request with payment_id: {}. \
-							Reason: router could not find a blinded path to include as the reply path",
-						payment_id
-					);
-				}
-			}
-		}
-	}
 }
 
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref>
@@ -12202,6 +12169,39 @@ where
 
 				None
 			},
+		}
+	}
+
+	fn message_received(&self) {
+		for (payment_id, retryable_invoice_request) in self
+			.pending_outbound_payments
+			.release_invoice_requests_awaiting_invoice()
+		{
+			let RetryableInvoiceRequest { invoice_request, nonce } = retryable_invoice_request;
+			let hmac = payment_id.hmac_for_offer_payment(nonce, &self.inbound_payment_key);
+			let context = MessageContext::Offers(OffersContext::OutboundPayment {
+				payment_id,
+				nonce,
+				hmac: Some(hmac)
+			});
+			match self.create_blinded_paths(context) {
+				Ok(reply_paths) => match self.enqueue_invoice_request(invoice_request, reply_paths) {
+					Ok(_) => {}
+					Err(_) => {
+						log_warn!(self.logger,
+							"Retry failed for an invoice request with payment_id: {}",
+							payment_id
+						);
+					}
+				},
+				Err(_) => {
+					log_warn!(self.logger,
+						"Retry failed for an invoice request with payment_id: {}. \
+							Reason: router could not find a blinded path to include as the reply path",
+						payment_id
+					);
+				}
+			}
 		}
 	}
 

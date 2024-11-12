@@ -786,7 +786,6 @@ mod tests {
 		fn get_chain_hashes(&self) -> Option<Vec<ChainHash>> {
 			Some(vec![ChainHash::using_genesis_block(Network::Testnet)])
 		}
-		fn message_received(&self) {}
 	}
 	impl MessageSendEventsProvider for MsgHandler {
 		fn get_and_clear_pending_msg_events(&self) -> Vec<MessageSendEvent> {
