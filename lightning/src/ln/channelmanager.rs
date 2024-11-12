@@ -9360,7 +9360,8 @@ pub struct Bolt11InvoiceParameters {
 	/// [`DEFAULT_EXPIRY_TIME`] by default.
 	///
 	/// The creation time used is the duration since the Unix epoch for `std` builds. For non-`std`
-	/// builds, the highest block timestamp seen is used instead.
+	/// builds, the highest block timestamp seen is used instead. In the latter case, use a long
+	/// enough expiry to account for the average block time.
 	pub invoice_expiry_delta_secs: Option<u32>,
 
 	/// The minimum `cltv_expiry` for the last HTLC in the route. If not set, will use
