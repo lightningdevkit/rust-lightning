@@ -2587,6 +2587,7 @@ pub struct PassAlongPathArgs<'a, 'b, 'c, 'd> {
 	pub is_probe: bool,
 	pub custom_tlvs: Vec<(u64, Vec<u8>)>,
 	pub payment_metadata: Option<Vec<u8>>,
+	pub expected_failure: Option<HTLCDestination>,
 }
 
 impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
@@ -2597,7 +2598,7 @@ impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
 		Self {
 			origin_node, expected_path, recv_value, payment_hash, payment_secret: None, event,
 			payment_claimable_expected: true, clear_recipient_events: true, expected_preimage: None,
-			is_probe: false, custom_tlvs: Vec::new(), payment_metadata: None,
+			is_probe: false, custom_tlvs: Vec::new(), payment_metadata: None, expected_failure: None,
 		}
 	}
 	pub fn without_clearing_recipient_events(mut self) -> Self {
@@ -2629,6 +2630,11 @@ impl<'a, 'b, 'c, 'd> PassAlongPathArgs<'a, 'b, 'c, 'd> {
 		self.payment_metadata = Some(payment_metadata);
 		self
 	}
+	pub fn expect_failure(mut self, failure: HTLCDestination) -> Self {
+		self.payment_claimable_expected = false;
+		self.expected_failure = Some(failure);
+		self
+	}
 }
 
 pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> {
@@ -2636,6 +2642,7 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 		origin_node, expected_path, recv_value, payment_hash: our_payment_hash,
 		payment_secret: our_payment_secret, event: ev, payment_claimable_expected,
 		clear_recipient_events, expected_preimage, is_probe, custom_tlvs, payment_metadata,
+		expected_failure
 	} = args;
 
 	let mut payment_event = SendEvent::from_event(ev);
@@ -2699,6 +2706,11 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 					_ => panic!("Unexpected event"),
 				}
 				event = Some(events_2[0].clone());
+			} else if let Some(ref failure) = expected_failure {
+				assert_eq!(events_2.len(), 2);
+				expect_htlc_handling_failed_destinations!(events_2, &[failure]);
+				node.node.process_pending_htlc_forwards();
+				check_added_monitors!(node, 1);
 			} else {
 				assert!(events_2.is_empty());
 			}

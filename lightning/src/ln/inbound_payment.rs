@@ -15,7 +15,7 @@ use bitcoin::hashes::hmac::{Hmac, HmacEngine};
 use bitcoin::hashes::sha256::Hash as Sha256;
 
 use crate::crypto::chacha20::ChaCha20;
-use crate::crypto::utils::hkdf_extract_expand_5x;
+use crate::crypto::utils::hkdf_extract_expand_6x;
 use crate::ln::msgs;
 use crate::ln::msgs::MAX_VALUE_MSAT;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
@@ -55,6 +55,9 @@ pub struct ExpandedKey {
 	offers_base_key: [u8; 32],
 	/// The key used to encrypt message metadata for BOLT 12 Offers.
 	offers_encryption_key: [u8; 32],
+	/// The key used to authenticate spontaneous payments' metadata as previously registered with LDK
+	/// for inclusion in a blinded path.
+	spontaneous_pmt_key: [u8; 32],
 }
 
 impl ExpandedKey {
@@ -68,13 +71,15 @@ impl ExpandedKey {
 			user_pmt_hash_key,
 			offers_base_key,
 			offers_encryption_key,
-		) = hkdf_extract_expand_5x(b"LDK Inbound Payment Key Expansion", &key_material.0);
+			spontaneous_pmt_key,
+		) = hkdf_extract_expand_6x(b"LDK Inbound Payment Key Expansion", &key_material.0);
 		Self {
 			metadata_key,
 			ldk_pmt_hash_key,
 			user_pmt_hash_key,
 			offers_base_key,
 			offers_encryption_key,
+			spontaneous_pmt_key,
 		}
 	}
 
@@ -93,11 +98,13 @@ impl ExpandedKey {
 	}
 }
 
+/// We currently set aside 3 bits for the `Method` in the `PaymentSecret`.
 enum Method {
 	LdkPaymentHash = 0,
 	UserPaymentHash = 1,
 	LdkPaymentHashCustomFinalCltv = 2,
 	UserPaymentHashCustomFinalCltv = 3,
+	SpontaneousPayment = 4,
 }
 
 impl Method {
@@ -107,6 +114,7 @@ impl Method {
 			bits if bits == Method::UserPaymentHash as u8 => Ok(Method::UserPaymentHash),
 			bits if bits == Method::LdkPaymentHashCustomFinalCltv as u8 => Ok(Method::LdkPaymentHashCustomFinalCltv),
 			bits if bits == Method::UserPaymentHashCustomFinalCltv as u8 => Ok(Method::UserPaymentHashCustomFinalCltv),
+			bits if bits == Method::SpontaneousPayment as u8 => Ok(Method::SpontaneousPayment),
 			unknown => Err(unknown),
 		}
 	}
@@ -178,6 +186,26 @@ pub fn create_from_hash(keys: &ExpandedKey, min_value_msat: Option<u64>, payment
 	let mut hmac = HmacEngine::<Sha256>::new(&keys.user_pmt_hash_key);
 	hmac.input(&metadata_bytes);
 	hmac.input(&payment_hash.0);
+	let hmac_bytes = Hmac::from_engine(hmac).to_byte_array();
+
+	let mut iv_bytes = [0 as u8; IV_LEN];
+	iv_bytes.copy_from_slice(&hmac_bytes[..IV_LEN]);
+
+	Ok(construct_payment_secret(&iv_bytes, &metadata_bytes, &keys.metadata_key))
+}
+
+#[cfg(async_payments)]
+pub(super) fn create_for_spontaneous_payment(
+	keys: &ExpandedKey, min_value_msat: Option<u64>, invoice_expiry_delta_secs: u32,
+	current_time: u64, min_final_cltv_expiry_delta: Option<u16>
+) -> Result<PaymentSecret, ()> {
+	let metadata_bytes = construct_metadata_bytes(
+		min_value_msat, Method::SpontaneousPayment, invoice_expiry_delta_secs, current_time,
+		min_final_cltv_expiry_delta
+	)?;
+
+	let mut hmac = HmacEngine::<Sha256>::new(&keys.spontaneous_pmt_key);
+	hmac.input(&metadata_bytes);
 	let hmac_bytes = Hmac::from_engine(hmac).to_byte_array();
 
 	let mut iv_bytes = [0 as u8; IV_LEN];
@@ -315,6 +343,14 @@ pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::F
 				}
 			}
 		},
+		Ok(Method::SpontaneousPayment) => {
+			let mut hmac = HmacEngine::<Sha256>::new(&keys.spontaneous_pmt_key);
+			hmac.input(&metadata_bytes[..]);
+			if !fixed_time_eq(&iv_bytes, &Hmac::from_engine(hmac).to_byte_array().split_at_mut(IV_LEN).0) {
+				log_trace!(logger, "Failing async payment HTLC with sender-generated payment_hash {}: unexpected payment_secret", &payment_hash);
+				return Err(())
+			}
+		},
 		Err(unknown_bits) => {
 			log_trace!(logger, "Failing HTLC with payment hash {} due to unknown payment type {}", &payment_hash, unknown_bits);
 			return Err(());
@@ -359,6 +395,9 @@ pub(super) fn get_payment_preimage(payment_hash: PaymentHash, payment_secret: Pa
 		},
 		Ok(Method::UserPaymentHash) | Ok(Method::UserPaymentHashCustomFinalCltv) => Err(APIError::APIMisuseError {
 			err: "Expected payment type to be LdkPaymentHash, instead got UserPaymentHash".to_string()
+		}),
+		Ok(Method::SpontaneousPayment) => Err(APIError::APIMisuseError {
+			err: "Can't extract payment preimage for spontaneous payments".to_string()
 		}),
 		Err(other) => Err(APIError::APIMisuseError { err: format!("Unknown payment type: {}", other) }),
 	}

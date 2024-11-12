@@ -35,6 +35,10 @@ use crate::util::config::UserConfig;
 use crate::util::ser::WithoutLength;
 use crate::util::test_utils;
 use lightning_invoice::RawBolt11Invoice;
+#[cfg(async_payments)] use {
+	crate::ln::inbound_payment,
+	crate::types::payment::PaymentPreimage,
+};
 
 fn blinded_payment_path(
 	payment_secret: PaymentSecret, intro_node_min_htlc: u64, intro_node_max_htlc: u64,
@@ -1209,6 +1213,7 @@ fn conditionally_round_fwd_amt() {
 }
 
 #[test]
+#[cfg(async_payments)]
 fn blinded_keysend() {
 	let mut mpp_keysend_config = test_default_channel_config();
 	mpp_keysend_config.accept_mpp_keysend = true;
@@ -1219,8 +1224,15 @@ fn blinded_keysend() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
 	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
 
+	let inbound_payment_key = inbound_payment::ExpandedKey::new(
+		&nodes[2].keys_manager.get_inbound_payment_key_material()
+	);
+	let payment_secret = inbound_payment::create_for_spontaneous_payment(
+		&inbound_payment_key, None, u32::MAX, nodes[2].node.duration_since_epoch().as_secs(), None
+	).unwrap();
+
 	let amt_msat = 5000;
-	let (keysend_preimage, _, payment_secret) = get_payment_preimage_hash(&nodes[2], None, None);
+	let keysend_preimage = PaymentPreimage([42; 32]);
 	let route_params = get_blinded_route_parameters(amt_msat, payment_secret, 1,
 		1_0000_0000,
 		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
@@ -1241,6 +1253,7 @@ fn blinded_keysend() {
 }
 
 #[test]
+#[cfg(async_payments)]
 fn blinded_mpp_keysend() {
 	let mut mpp_keysend_config = test_default_channel_config();
 	mpp_keysend_config.accept_mpp_keysend = true;
@@ -1254,8 +1267,15 @@ fn blinded_mpp_keysend() {
 	let chan_1_3 = create_announced_chan_between_nodes(&nodes, 1, 3);
 	let chan_2_3 = create_announced_chan_between_nodes(&nodes, 2, 3);
 
+	let inbound_payment_key = inbound_payment::ExpandedKey::new(
+		&nodes[3].keys_manager.get_inbound_payment_key_material()
+	);
+	let payment_secret = inbound_payment::create_for_spontaneous_payment(
+		&inbound_payment_key, None, u32::MAX, nodes[3].node.duration_since_epoch().as_secs(), None
+	).unwrap();
+
 	let amt_msat = 15_000_000;
-	let (keysend_preimage, _, payment_secret) = get_payment_preimage_hash(&nodes[3], None, None);
+	let keysend_preimage = PaymentPreimage([42; 32]);
 	let route_params = {
 		let pay_params = PaymentParameters::blinded(
 			vec![
@@ -1291,6 +1311,59 @@ fn blinded_mpp_keysend() {
 	claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], expected_route, keysend_preimage)
 	);
+}
+
+#[test]
+#[cfg(async_payments)]
+fn invalid_keysend_payment_secret() {
+	let mut mpp_keysend_config = test_default_channel_config();
+	mpp_keysend_config.accept_mpp_keysend = true;
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, Some(mpp_keysend_config)]);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let chan_upd_1_2 = create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
+
+	let invalid_payment_secret = PaymentSecret([42; 32]);
+	let amt_msat = 5000;
+	let keysend_preimage = PaymentPreimage([42; 32]);
+	let route_params = get_blinded_route_parameters(
+		amt_msat, invalid_payment_secret, 1, 1_0000_0000,
+		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(), &[&chan_upd_1_2],
+		&chanmon_cfgs[2].keys_manager
+	);
+
+	let payment_hash = nodes[0].node.send_spontaneous_payment_with_retry(Some(keysend_preimage), RecipientOnionFields::spontaneous_empty(), PaymentId(keysend_preimage.0), route_params, Retry::Attempts(0)).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let args = PassAlongPathArgs::new(
+		&nodes[0], &expected_route[0], amt_msat, payment_hash, ev.clone()
+	)
+		.with_payment_secret(invalid_payment_secret)
+		.with_payment_preimage(keysend_preimage)
+		.expect_failure(HTLCDestination::FailedPayment { payment_hash });
+	do_pass_along_path(args);
+
+	let updates_2_1 = get_htlc_update_msgs!(nodes[2], nodes[1].node.get_our_node_id());
+	assert_eq!(updates_2_1.update_fail_malformed_htlcs.len(), 1);
+	let update_malformed = &updates_2_1.update_fail_malformed_htlcs[0];
+	assert_eq!(update_malformed.sha256_of_onion, [0; 32]);
+	assert_eq!(update_malformed.failure_code, INVALID_ONION_BLINDING);
+	nodes[1].node.handle_update_fail_malformed_htlc(nodes[2].node.get_our_node_id(), update_malformed);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates_2_1.commitment_signed, true, false);
+
+	let updates_1_0 = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
+	assert_eq!(updates_1_0.update_fail_htlcs.len(), 1);
+	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &updates_1_0.update_fail_htlcs[0]);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_1_0.commitment_signed, false, false);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
+		PaymentFailedConditions::new().expected_htlc_error_data(INVALID_ONION_BLINDING, &[0; 32]));
 }
 
 #[test]
