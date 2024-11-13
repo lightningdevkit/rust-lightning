@@ -7089,10 +7089,14 @@ where
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let chan_id = prev_hop.channel_id;
 
+			const MISSING_MON_ERROR: &'static str =
+				"If we're going to claim an HTLC against a channel, we should always have *some* state for the channel, even if just the latest ChannelMonitor update_id. This failure indicates we need to claim an HTLC from a channel for which we did not have a ChannelMonitor at startup and didn't create one while running.";
+
 			let peer_state_opt = prev_hop.counterparty_node_id.as_ref().map(
 				|counterparty_node_id| per_peer_state.get(counterparty_node_id)
 					.map(|peer_mutex| peer_mutex.lock().unwrap())
-			).unwrap_or(None);
+					.expect(MISSING_MON_ERROR)
+			);
 
 			if peer_state_opt.is_some() {
 				let mut peer_state_lock = peer_state_opt.unwrap();
