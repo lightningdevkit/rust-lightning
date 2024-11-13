@@ -1028,17 +1028,13 @@ impl OutboundPayments {
 	) -> Result<(), Bolt12PaymentError> where ES::Target: EntropySource {
 		macro_rules! abandon_with_entry {
 			($payment: expr, $reason: expr) => {
-				$payment.get_mut().mark_abandoned($reason);
-				if let PendingOutboundPayment::Abandoned { reason, .. } = $payment.get() {
-					if $payment.get().remaining_parts() == 0 {
-						pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
-							payment_id,
-							payment_hash: None,
-							reason: *reason,
-						}, None));
-						$payment.remove();
-					}
-				}
+				debug_assert!(matches!($payment.get(), PendingOutboundPayment::AwaitingInvoice { .. }));
+				pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
+					payment_id,
+					payment_hash: None,
+					reason: Some($reason),
+				}, None));
+				$payment.remove();
 			}
 		}
 
