@@ -7675,30 +7675,36 @@ where
 		if peer_state_mutex_opt.is_none() { return }
 		peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let channel =
-			if let Some(ChannelPhase::Funded(chan)) = peer_state.channel_by_id.get_mut(channel_id) {
-				chan
-			} else {
-				let update_actions = peer_state.monitor_update_blocked_actions
-					.remove(channel_id).unwrap_or(Vec::new());
-				mem::drop(peer_state_lock);
-				mem::drop(per_peer_state);
-				self.handle_monitor_update_completion_actions(update_actions);
-				return;
-			};
+
 		let remaining_in_flight =
 			if let Some(pending) = peer_state.in_flight_monitor_updates.get_mut(funding_txo) {
 				pending.retain(|upd| upd.update_id > highest_applied_update_id);
 				pending.len()
 			} else { 0 };
-		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-		log_trace!(logger, "ChannelMonitor updated to {}. Current highest is {}. {} pending in-flight updates.",
-			highest_applied_update_id, channel.context.get_latest_monitor_update_id(),
-			remaining_in_flight);
-		if !channel.is_awaiting_monitor_update() || remaining_in_flight != 0 {
+
+		let logger = WithContext::from(&self.logger, Some(counterparty_node_id), Some(*channel_id), None);
+		log_trace!(logger, "ChannelMonitor updated to {}. {} pending in-flight updates.",
+			highest_applied_update_id, remaining_in_flight);
+
+		if remaining_in_flight != 0 {
 			return;
 		}
-		handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, channel);
+
+		if let Some(ChannelPhase::Funded(chan)) = peer_state.channel_by_id.get_mut(channel_id) {
+			if chan.is_awaiting_monitor_update() {
+				log_trace!(logger, "Channel is open and awaiting update, resuming it");
+				handle_monitor_update_completion!(self, peer_state_lock, peer_state, per_peer_state, chan);
+			} else {
+				log_trace!(logger, "Channel is open but not awaiting update");
+			}
+		} else {
+			let update_actions = peer_state.monitor_update_blocked_actions
+				.remove(channel_id).unwrap_or(Vec::new());
+			log_trace!(logger, "Channel is closed, applying {} post-update actions", update_actions.len());
+			mem::drop(peer_state_lock);
+			mem::drop(per_peer_state);
+			self.handle_monitor_update_completion_actions(update_actions);
+		}
 	}
 
 	/// Accepts a request to open a channel after a [`Event::OpenChannelRequest`].
