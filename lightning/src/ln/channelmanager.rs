@@ -8305,7 +8305,7 @@ where
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
 				if let Some(signing_session) = signing_session_opt {
-					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_phase_entry.get_mut() {
+					let (commitment_signed_opt, funding_ready_for_sig_event_opt) = match chan_phase_entry.get_mut() {
 						ChannelPhase::UnfundedOutboundV2(chan) => {
 							*chan.interactive_tx_signing_session_mut() = Some(signing_session);
 							chan.funding_tx_constructed(&self.logger)
@@ -8318,6 +8318,15 @@ where
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
 							.into())),
 					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
+
+					// Check if the signer returned a result.
+					//
+					// TODO: This can be removed once ChannelPhase is refactored into Channel as the phase
+					// transition will happen internally.
+					let commitment_signed = match commitment_signed_opt {
+						Some(commitment_signed) => commitment_signed,
+						None => return Ok(()),
+					};
 
 					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
 					let channel = match channel_phase {

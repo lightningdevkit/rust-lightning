@@ -1760,7 +1760,7 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 
 	fn funding_tx_constructed<L: Deref>(
 		&mut self, logger: &L
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+	) -> Result<(Option<msgs::CommitmentSigned>, Option<Event>), ChannelError>
 	where
 		L::Target: Logger
 	{
@@ -1802,13 +1802,13 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 
 		let commitment_signed = context.get_initial_commitment_signed(logger);
 		let commitment_signed = match commitment_signed {
-			Ok(commitment_signed) => {
+			Some(commitment_signed) => {
 				context.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
 				commitment_signed
 			},
-			Err(err) => {
+			None => {
 				context.channel_transaction_parameters.funding_outpoint = None;
-				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })))
+				return Ok((None, None));
 			},
 		};
 
@@ -1843,7 +1843,7 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 		// Clear the interactive transaction constructor
 		self.interactive_tx_constructor_mut().take();
 
-		Ok((commitment_signed, funding_ready_for_sig_event))
+		Ok((Some(commitment_signed), funding_ready_for_sig_event))
 	}
 }
 
@@ -4036,7 +4036,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	fn get_initial_counterparty_commitment_signature<L: Deref>(
 		&self, logger: &L
-	) -> Result<Signature, ChannelError>
+	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
@@ -4049,11 +4049,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			ChannelSignerType::Ecdsa(ref ecdsa) => {
 				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
 					.map(|(signature, _)| signature)
-					.map_err(|_| ChannelError::Close(
-						(
-							"Failed to get signatures for new commitment_signed".to_owned(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)))
+					.ok()
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -4061,7 +4057,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	fn get_initial_commitment_signed<L: Deref>(&mut self, logger: &L) -> Result<msgs::CommitmentSigned, ChannelError>
+	fn get_initial_commitment_signed<L: Deref>(&mut self, logger: &L) -> Option<msgs::CommitmentSigned>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
@@ -4073,31 +4069,42 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 		self.assert_no_commitment_advancement("initial commitment_signed");
 
-		let signature = match self.get_initial_counterparty_commitment_signature(logger) {
-			Ok(res) => res,
-			Err(e) => {
-				log_error!(logger, "Got bad signatures: {:?}!", e);
-				return Err(e);
-			}
-		};
+		match self.get_initial_counterparty_commitment_signature(logger) {
+			Some(signature) => {
+				if self.signer_pending_funding {
+					log_trace!(logger, "Counterparty commitment signature ready for initial commitment_signed message: clearing signer_pending_funding");
+					self.signer_pending_funding = false;
+				}
 
-		log_info!(logger, "Generated commitment_signed for peer for channel {}", &self.channel_id());
+				log_info!(logger, "Generated commitment_signed for peer for channel {}", &self.channel_id);
 
-		Ok(msgs::CommitmentSigned {
-			channel_id: self.channel_id,
-			htlc_signatures: vec![],
-			signature,
-			batch: None,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-		})
+				Some(msgs::CommitmentSigned {
+					channel_id: self.channel_id,
+					htlc_signatures: vec![],
+					signature,
+					batch: None,
+					#[cfg(taproot)]
+					partial_signature_with_nonce: None,
+				})
+			},
+			None => {
+				#[cfg(not(async_signing))] {
+					panic!("Failed to get signature for initial commitment_signed");
+				}
+				#[cfg(async_signing)] {
+					log_trace!(logger, "Counterparty commitment signature not available for initial commitment_signed message; setting signer_pending_funding");
+					self.signer_pending_funding = true;
+					None
+				}
+			},
+		}
 	}
 
 	#[cfg(test)]
 	pub fn get_initial_counterparty_commitment_signature_for_test<L: Deref>(
 		&mut self, logger: &L, channel_transaction_parameters: ChannelTransactionParameters,
 		counterparty_cur_commitment_point_override: PublicKey,
-	) -> Result<Signature, ChannelError>
+	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
