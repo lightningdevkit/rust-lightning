@@ -629,7 +629,8 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Boo
 
 	/// Sets the amount in millisatoshis. The optimal SI prefix is chosen automatically.
 	pub fn amount_milli_satoshis(mut self, amount_msat: u64) -> Self {
-		let amount = match amount_msat.checked_mul(10) { // Invoices are denominated in "pico BTC"
+		// Invoices are denominated in "pico BTC"
+		let amount = match amount_msat.checked_mul(10) {
 			Some(amt) => amt,
 			None => {
 				self.error = Some(CreationError::InvalidAmount);
@@ -1504,7 +1505,7 @@ impl Bolt11Invoice {
 
 	/// Returns a list of all fallback addresses as [`Address`]es
 	pub fn fallback_addresses(&self) -> Vec<Address> {
-		self.fallbacks().iter().filter_map(|fallback| {
+		let filter_fn = |fallback: &&Fallback| {
 			let address = match fallback {
 				Fallback::SegWitProgram { version, program } => {
 					match WitnessProgram::new(*version, &program) {
@@ -1521,7 +1522,8 @@ impl Bolt11Invoice {
 			};
 
 			Some(address)
-		}).collect()
+		};
+		self.fallbacks().iter().filter_map(filter_fn).collect()
 	}
 
 	/// Returns a list of all routes included in the invoice
