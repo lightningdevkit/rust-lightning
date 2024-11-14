@@ -1332,6 +1332,11 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 		if require_disconnected && self.is_connected {
 			return false
 		}
+		for (_, updates) in self.in_flight_monitor_updates.iter() {
+			if !updates.is_empty() {
+				return false;
+			}
+		}
 		!self.channel_by_id.iter().any(|(_, phase)|
 			match phase {
 				ChannelPhase::Funded(_) | ChannelPhase::UnfundedOutboundV1(_) => true,
@@ -1341,7 +1346,6 @@ impl <SP: Deref> PeerState<SP> where SP::Target: SignerProvider {
 			}
 		)
 			&& self.monitor_update_blocked_actions.is_empty()
-			&& self.in_flight_monitor_updates.is_empty()
 			&& self.closed_channel_monitor_update_ids.is_empty()
 	}
 
