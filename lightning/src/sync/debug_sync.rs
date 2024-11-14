@@ -311,6 +311,10 @@ impl<T> Mutex<T> {
 		}
 		res
 	}
+
+	pub fn get_mut<'a>(&'a mut self) -> LockResult<&'a mut T> {
+		self.inner.get_mut().map_err(|_| ())
+	}
 }
 
 impl<'a, T: 'a> LockTestExt<'a> for Mutex<T> {
