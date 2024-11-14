@@ -199,7 +199,7 @@ fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessa
 	}
 }
 
-fn extract_invoice_request<'a, 'b, 'c>(
+pub(super) fn extract_invoice_request<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, message: &OnionMessage
 ) -> (InvoiceRequest, BlindedMessagePath) {
 	match node.onion_messenger.peel_onion_message(message) {

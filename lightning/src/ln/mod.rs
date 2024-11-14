@@ -55,6 +55,9 @@ pub use onion_utils::create_payment_onion;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod blinded_payment_tests;
+#[cfg(all(test, async_payments))]
+#[allow(unused_mut)]
+mod async_payments_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod functional_tests;
