@@ -446,12 +446,13 @@ impl FromBase32 for RawDataPart {
 	type Err = Bolt11ParseError;
 
 	fn from_base32(data: &[Fe32]) -> Result<Self, Self::Err> {
-		if data.len() < 7 { // timestamp length
+		const TIMESTAMP_LEN: usize = 7;
+		if data.len() < TIMESTAMP_LEN {
 			return Err(Bolt11ParseError::TooShortDataPart);
 		}
 
-		let timestamp = PositiveTimestamp::from_base32(&data[0..7])?;
-		let tagged = parse_tagged_parts(&data[7..])?;
+		let timestamp = PositiveTimestamp::from_base32(&data[0..TIMESTAMP_LEN])?;
+		let tagged = parse_tagged_parts(&data[TIMESTAMP_LEN..])?;
 
 		Ok(RawDataPart {
 			timestamp,
