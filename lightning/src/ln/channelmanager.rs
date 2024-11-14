@@ -9298,8 +9298,12 @@ where
 		let duration_since_epoch = {
 			use std::time::SystemTime;
 			SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)
-				.expect("for the foreseeable future this shouldn't happen")
+				.expect("SystemTime::now() should be after SystemTime::UNIX_EPOCH")
 		};
+
+		// This may be up to 2 hours in the future because of bitcoin's block time rule or about
+		// 10-30 minutes in the past if a block hasn't been found recently. This should be fine as
+		// the default invoice expiration is 2 hours, though shorter expirations may be problematic.
 		#[cfg(not(feature = "std"))]
 		let duration_since_epoch =
 			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
@@ -9388,7 +9392,8 @@ pub struct Bolt11InvoiceParameters {
 	/// [`DEFAULT_EXPIRY_TIME`] by default.
 	///
 	/// The creation time used is the duration since the Unix epoch for `std` builds. For non-`std`
-	/// builds, the highest block timestamp seen is used instead.
+	/// builds, the highest block timestamp seen is used instead. In the latter case, use a long
+	/// enough expiry to account for the average block time.
 	pub invoice_expiry_delta_secs: Option<u32>,
 
 	/// The minimum `cltv_expiry` for the last HTLC in the route. If not set, will use
