@@ -8304,22 +8304,25 @@ where
 				if let Some(msg_send_event) = msg_send_event_opt {
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
-				if let Some(mut signing_session) = signing_session_opt {
+				if let Some(signing_session) = signing_session_opt {
 					let (commitment_signed, funding_ready_for_sig_event_opt) = match chan_phase_entry.get_mut() {
 						ChannelPhase::UnfundedOutboundV2(chan) => {
-							chan.funding_tx_constructed(&mut signing_session, &self.logger)
+							*chan.interactive_tx_signing_session_mut() = Some(signing_session);
+							chan.funding_tx_constructed(&self.logger)
 						},
 						ChannelPhase::UnfundedInboundV2(chan) => {
-							chan.funding_tx_constructed(&mut signing_session, &self.logger)
+							*chan.interactive_tx_signing_session_mut() = Some(signing_session);
+							chan.funding_tx_constructed(&self.logger)
 						},
 						_ => Err(ChannelError::Warn(
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
 							.into())),
 					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
+
 					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
 					let channel = match channel_phase {
-						ChannelPhase::UnfundedOutboundV2(chan) => chan.into_channel(signing_session),
-						ChannelPhase::UnfundedInboundV2(chan) => chan.into_channel(signing_session),
+						ChannelPhase::UnfundedOutboundV2(chan) => chan.into_channel(),
+						ChannelPhase::UnfundedInboundV2(chan) => chan.into_channel(),
 						_ => {
 							debug_assert!(false); // It cannot be another variant as we are in the `Ok` branch of the above match.
 							Err(ChannelError::Warn(

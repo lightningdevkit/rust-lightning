@@ -1682,6 +1682,10 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor>;
 
+	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession>;
+
+	fn interactive_tx_signing_session_with_context_mut(&mut self) -> (&mut Option<InteractiveTxSigningSession>, &mut ChannelContext<SP>);
+
 	fn dual_funding_context(&self) -> &DualFundingChannelContext;
 
 	fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
@@ -1755,13 +1759,20 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 	}
 
 	fn funding_tx_constructed<L: Deref>(
-		&mut self, signing_session: &mut InteractiveTxSigningSession, logger: &L
+		&mut self, logger: &L
 	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
 	where
 		L::Target: Logger
 	{
 		let our_funding_satoshis = self.dual_funding_context().our_funding_satoshis;
-		let context = self.context_mut();
+		let (signing_session, context) = match self.interactive_tx_signing_session_with_context_mut() {
+			(Some(signing_session), context) => (signing_session, context),
+			(None, _) => return Err(ChannelError::Close(
+						(
+							"No signing session available for commitment signing".to_owned(),
+							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+						))),
+		};
 
 		let mut output_index = None;
 		let expected_spk = context.get_funding_redeemscript().to_p2wsh();
@@ -1849,6 +1860,12 @@ impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Targ
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
 	}
+	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession> {
+		&mut self.signing_session
+	}
+	fn interactive_tx_signing_session_with_context_mut(&mut self) -> (&mut Option<InteractiveTxSigningSession>, &mut ChannelContext<SP>) {
+		(&mut self.signing_session, &mut self.context)
+	}
 }
 
 impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -1863,6 +1880,12 @@ impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Targe
 	}
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
+	}
+	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession> {
+		&mut self.signing_session
+	}
+	fn interactive_tx_signing_session_with_context_mut(&mut self) -> (&mut Option<InteractiveTxSigningSession>, &mut ChannelContext<SP>) {
+		(&mut self.signing_session, &mut self.context)
 	}
 }
 
@@ -4038,9 +4061,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	fn get_initial_commitment_signed<L: Deref>(
-		&mut self, logger: &L
-	) -> Result<msgs::CommitmentSigned, ChannelError>
+	fn get_initial_commitment_signed<L: Deref>(&mut self, logger: &L) -> Result<msgs::CommitmentSigned, ChannelError>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
@@ -8723,6 +8744,7 @@ pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider 
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -8782,6 +8804,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				our_funding_inputs: funding_inputs,
 			},
 			interactive_tx_constructor: None,
+			signing_session: None,
 		};
 		Ok(chan)
 	}
@@ -8849,10 +8872,11 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
+	pub fn into_channel(self) -> Result<Channel<SP>, ChannelError>{
+		debug_assert!(self.signing_session.is_some());
 		let channel = Channel {
 			context: self.context,
-			interactive_tx_signing_session: Some(signing_session),
+			interactive_tx_signing_session: self.signing_session,
 		};
 
 		Ok(channel)
@@ -8866,6 +8890,7 @@ pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -8968,6 +8993,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			dual_funding_context,
 			interactive_tx_constructor,
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			signing_session: None,
 		})
 	}
 
@@ -9043,10 +9069,11 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		self.generate_accept_channel_v2_message()
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
+	pub fn into_channel(self) -> Result<Channel<SP>, ChannelError>{
+		debug_assert!(self.signing_session.is_some());
 		let channel = Channel {
 			context: self.context,
-			interactive_tx_signing_session: Some(signing_session),
+			interactive_tx_signing_session: self.signing_session,
 		};
 
 		Ok(channel)
