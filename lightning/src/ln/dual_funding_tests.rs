@@ -28,6 +28,8 @@ use crate::ln::types::ChannelId;
 use crate::prelude::*;
 use crate::sign::{ChannelSigner as _, P2WPKH_WITNESS_WEIGHT};
 use crate::util::ser::TransactionU16LenLimited;
+#[cfg(async_signing)]
+use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_utils;
 
 // Dual-funding: V2 Channel Establishment Tests
@@ -129,9 +131,29 @@ fn do_test_v2_channel_establishment(
 	let _tx_complete_msg =
 		get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, nodes[0].node.get_our_node_id());
 
-	let tx_complete_msg = TxComplete { channel_id };
+	#[cfg(async_signing)]
+	{
+		nodes[1].disable_channel_signer_op(
+			&nodes[0].node.get_our_node_id(),
+			&channel_id,
+			SignerOp::SignCounterpartyCommitment,
+		);
+	}
 
+	let tx_complete_msg = TxComplete { channel_id };
 	nodes[1].node.handle_tx_complete(nodes[0].node.get_our_node_id(), &tx_complete_msg);
+
+	#[cfg(async_signing)]
+	{
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		nodes[1].enable_channel_signer_op(
+			&nodes[0].node.get_our_node_id(),
+			&channel_id,
+			SignerOp::SignCounterpartyCommitment,
+		);
+		nodes[1].node.signer_unblocked(Some((nodes[0].node.get_our_node_id(), channel_id)));
+	}
+
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1);
 	let _msg_commitment_signed_from_1 = match msg_events[0] {
