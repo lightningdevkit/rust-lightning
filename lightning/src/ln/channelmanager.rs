@@ -1185,7 +1185,7 @@ impl From<&MPPClaimHTLCSource> for HTLCClaimSource {
 	}
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 /// The source of an HTLC which is being claimed as a part of an incoming payment. Each part is
 /// tracked in [`PendingMPPClaim`] as well as in [`ChannelMonitor`]s, so that it can be converted
 /// to an [`HTLCClaimSource`] for claim replays on startup.
@@ -14159,10 +14159,18 @@ where
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
 		};
 
+		let mut processed_claims: HashSet<Vec<MPPClaimHTLCSource>> = new_hash_set();
 		for (_, monitor) in args.channel_monitors.iter() {
 			for (payment_hash, (payment_preimage, payment_claims)) in monitor.get_stored_preimages() {
 				if !payment_claims.is_empty() {
 					for payment_claim in payment_claims {
+						if processed_claims.contains(&payment_claim.mpp_parts) {
+							// We might get the same payment a few times from different channels
+							// that the MPP payment was received using. There's no point in trying
+							// to claim the same payment again and again, so we check if the HTLCs
+							// are the same and skip the payment here.
+							continue;
+						}
 						if payment_claim.mpp_parts.is_empty() {
 							return Err(DecodeError::InvalidValue);
 						}
@@ -14217,6 +14225,7 @@ where
 									(Some(MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim }), pending_claim_ptr)
 							);
 						}
+						processed_claims.insert(payment_claim.mpp_parts);
 					}
 				} else {
 					let per_peer_state = channel_manager.per_peer_state.read().unwrap();
