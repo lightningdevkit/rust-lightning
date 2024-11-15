@@ -70,7 +70,7 @@ use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::Offer;
 use crate::offers::parse::Bolt12SemanticError;
-use crate::offers::refund::{Refund, RefundBuilder};
+use crate::offers::refund::Refund;
 use crate::offers::signer;
 #[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
@@ -102,8 +102,6 @@ use {
 	crate::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters},
 	crate::sign::KeysManager,
 };
-#[cfg(c_bindings)]
-use crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder;
 
 use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, CreationError, Currency, Description, InvoiceBuilder as Bolt11InvoiceBuilder, SignOrCreationError, DEFAULT_EXPIRY_TIME};
 
@@ -1989,6 +1987,7 @@ where
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::types::payment::PaymentHash;
 /// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, RecipientOnionFields, Retry};
+/// # use lightning::offers::flow::OffersMessageCommons;
 /// # use lightning::routing::router::RouteParameters;
 /// #
 /// # fn example<T: AChannelManager>(
@@ -2043,6 +2042,7 @@ where
 /// ```
 /// # use lightning::events::{Event, EventsProvider};
 /// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::offers::flow::OffersMessageCommons;
 /// # use lightning::offers::offer::Offer;
 /// #
 /// # fn example<T: AChannelManager>(
@@ -2089,67 +2089,8 @@ where
 /// ```
 ///
 /// ## BOLT 12 Refunds
-///
-/// A [`Refund`] is a request for an invoice to be paid. Like *paying* for an [`Offer`], *creating*
-/// a [`Refund`] involves maintaining state since it represents a future outbound payment.
-/// Therefore, use [`create_refund_builder`] when creating one, otherwise [`ChannelManager`] will
-/// refuse to pay any corresponding [`Bolt12Invoice`] that it receives.
-///
-/// ```
-/// # use core::time::Duration;
-/// # use lightning::events::{Event, EventsProvider};
-/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
-/// # use lightning::offers::parse::Bolt12SemanticError;
-/// #
-/// # fn example<T: AChannelManager>(
-/// #     channel_manager: T, amount_msats: u64, absolute_expiry: Duration, retry: Retry,
-/// #     max_total_routing_fee_msat: Option<u64>
-/// # ) -> Result<(), Bolt12SemanticError> {
-/// # let channel_manager = channel_manager.get_cm();
-/// let payment_id = PaymentId([42; 32]);
-/// let refund = channel_manager
-///     .create_refund_builder(
-///         amount_msats, absolute_expiry, payment_id, retry, max_total_routing_fee_msat
-///     )?
-/// # ;
-/// # // Needed for compiling for c_bindings
-/// # let builder: lightning::offers::refund::RefundBuilder<_> = refund.into();
-/// # let refund = builder
-///     .description("coffee".to_string())
-///     .payer_note("refund for order 1234".to_string())
-///     .build()?;
-/// let bech32_refund = refund.to_string();
-///
-/// // First the payment will be waiting on an invoice
-/// let expected_payment_id = payment_id;
-/// assert!(
-///     channel_manager.list_recent_payments().iter().find(|details| matches!(
-///         details,
-///         RecentPaymentDetails::AwaitingInvoice { payment_id: expected_payment_id }
-///     )).is_some()
-/// );
-///
-/// // Once the invoice is received, a payment will be sent
-/// assert!(
-///     channel_manager.list_recent_payments().iter().find(|details| matches!(
-///         details,
-///         RecentPaymentDetails::Pending { payment_id: expected_payment_id, ..  }
-///     )).is_some()
-/// );
-///
-/// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| {
-///     match event {
-///         Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
-///         Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
-///         // ...
-///     #     _ => {},
-///     }
-///     Ok(())
-/// });
-/// # Ok(())
-/// # }
-/// ```
+/// 
+/// For more information on creating refunds, see [`create_refund_builder`].
 ///
 /// Use [`request_refund_payment`] to send a [`Bolt12Invoice`] for receiving the refund. Similar to
 /// *creating* an [`Offer`], this is stateless as it represents an inbound payment.
@@ -2278,7 +2219,6 @@ where
 /// [`offers`]: crate::offers
 /// [`pay_for_offer`]: Self::pay_for_offer
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-/// [`create_refund_builder`]: Self::create_refund_builder
 /// [`request_refund_payment`]: Self::request_refund_payment
 /// [`peer_disconnected`]: msgs::ChannelMessageHandler::peer_disconnected
 /// [`funding_created`]: msgs::FundingCreated
@@ -2288,6 +2228,7 @@ where
 /// [`ChannelUpdate`]: msgs::ChannelUpdate
 /// [`read`]: ReadableArgs::read
 /// [`create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
+/// [`create_refund_builder`]: crate::offers::flow::OffersMessageFlow::create_refund_builder
 //
 // Lock order:
 // The tree structure below illustrates the lock order requirements for the different locks of the
@@ -2786,12 +2727,14 @@ const MAX_NO_CHANNEL_PEERS: usize = 250;
 /// The maximum expiration from the current time where an [`Offer`] or [`Refund`] is considered
 /// short-lived, while anything with a greater expiration is considered long-lived.
 ///
-/// Using [`OffersMessageFlow::create_offer_builder`] or [`ChannelManager::create_refund_builder`],
+/// Using [`OffersMessageFlow::create_offer_builder`] or [`OffersMessageFlow::create_refund_builder`],
 /// will included a [`BlindedMessagePath`] created using:
 /// - [`MessageRouter::create_compact_blinded_paths`] when short-lived, and
 /// - [`MessageRouter::create_blinded_paths`] when long-lived.
 ///
 /// [`OffersMessageFlow::create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
+/// [`OffersMessageFlow::create_refund_builder`]: crate::offers::flow::OffersMessageFlow::create_refund_builder
+///
 ///
 /// Using compact [`BlindedMessagePath`]s may provide better privacy as the [`MessageRouter`] could select
 /// more hops. However, since they use short channel ids instead of pubkeys, they are more likely to
@@ -9685,87 +9628,6 @@ impl Default for Bolt11InvoiceParameters {
 	}
 }
 
-macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
-	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
-	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund.
-	///
-	/// # Payment
-	///
-	/// The provided `payment_id` is used to ensure that only one invoice is paid for the refund.
-	/// See [Avoiding Duplicate Payments] for other requirements once the payment has been sent.
-	///
-	/// The builder will have the provided expiration set. Any changes to the expiration on the
-	/// returned builder will not be honored by [`ChannelManager`]. For non-`std`, the highest seen
-	/// block time minus two hours is used for the current time when determining if the refund has
-	/// expired.
-	///
-	/// To revoke the refund, use [`ChannelManager::abandon_payment`] prior to receiving the
-	/// invoice. If abandoned, or an invoice isn't received before expiration, the payment will fail
-	/// with an [`Event::PaymentFailed`].
-	///
-	/// If `max_total_routing_fee_msat` is not specified, The default from
-	/// [`RouteParameters::from_payment_params_and_value`] is applied.
-	///
-	/// # Privacy
-	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the refund based on the given
-	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications as well as those of the parameterized [`Router`], which implements
-	/// [`MessageRouter`].
-	///
-	/// Also, uses a derived payer id in the refund for payer privacy.
-	///
-	/// # Limitations
-	///
-	/// Requires a direct connection to an introduction node in the responding
-	/// [`Bolt12Invoice::payment_paths`].
-	///
-	/// # Errors
-	///
-	/// Errors if:
-	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
-	/// - `amount_msats` is invalid, or
-	/// - the parameterized [`Router`] is unable to create a blinded path for the refund.
-	///
-	/// [`Refund`]: crate::offers::refund::Refund
-	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
-	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
-	pub fn create_refund_builder(
-		&$self, amount_msats: u64, absolute_expiry: Duration, payment_id: PaymentId,
-		retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>
-	) -> Result<$builder, Bolt12SemanticError> {
-		let node_id = $self.get_our_node_id();
-		let expanded_key = &$self.inbound_payment_key;
-		let entropy = &*$self.entropy_source;
-		let secp_ctx = &$self.secp_ctx;
-
-		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: None };
-		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
-			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-
-		let builder = RefundBuilder::deriving_signing_pubkey(
-			node_id, expanded_key, nonce, secp_ctx, amount_msats, payment_id
-		)?
-			.chain_hash($self.chain_hash)
-			.absolute_expiry(absolute_expiry)
-			.path(path);
-
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop($self);
-
-		let expiration = StaleExpiration::AbsoluteTimeout(absolute_expiry);
-		$self.pending_outbound_payments
-			.add_new_awaiting_invoice(
-				payment_id, expiration, retry_strategy, max_total_routing_fee_msat, None,
-			)
-			.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)?;
-
-		Ok(builder.into())
-	}
-} }
-
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> OffersMessageCommons for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
@@ -9997,6 +9859,13 @@ where
 	fn get_chain_hash(&self) -> ChainHash {
 		self.chain_hash
 	}
+
+	fn add_new_awaiting_invoice(&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry, max_total_routing_fee_msat: Option<u64>, retryable_invoice_request: Option<RetryableInvoiceRequest>) -> Result<(), ()> {
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.pending_outbound_payments.add_new_awaiting_invoice (
+			payment_id, expiration, retry_strategy, max_total_routing_fee_msat, retryable_invoice_request,
+		)
+	}
 }
 
 /// Defines the maximum number of [`OffersMessage`] including different reply paths to be sent
@@ -10018,12 +9887,6 @@ where
 	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
-	#[cfg(not(c_bindings))]
-	create_refund_builder!(self, RefundBuilder<secp256k1::All>);
-
-	#[cfg(c_bindings)]
-	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
-
 	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
 	/// enqueuing it to be sent via an onion message. [`ChannelManager`] will pay the actual
 	/// [`Bolt12Invoice`] once it is received.
