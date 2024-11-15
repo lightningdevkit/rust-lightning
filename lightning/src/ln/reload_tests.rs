@@ -900,7 +900,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool) {
 	if persist_both_monitors {
 		if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[2] { } else { panic!(); }
 		if let Event::PaymentClaimed { amount_msat: 15_000_000, .. } = events[3] { } else { panic!(); }
-		check_added_monitors(&nodes[3], 6);
+		check_added_monitors(&nodes[3], 4);
 	} else {
 		if let Event::PaymentClaimed { amount_msat: 15_000_000, .. } = events[2] { } else { panic!(); }
 		check_added_monitors(&nodes[3], 3);
