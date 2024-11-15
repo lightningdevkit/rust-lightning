@@ -40,7 +40,7 @@ const METHOD_TYPE_OFFSET: usize = 5;
 /// A set of keys that were HKDF-expanded. Returned by [`NodeSigner::get_inbound_payment_key`].
 ///
 /// [`NodeSigner::get_inbound_payment_key`]: crate::sign::NodeSigner::get_inbound_payment_key
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 pub struct ExpandedKey {
 	/// The key used to encrypt the bytes containing the payment metadata (i.e. the amount and
 	/// expiry, included for payment verification on decryption).
