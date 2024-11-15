@@ -8330,8 +8330,8 @@ where
 
 					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
 					let channel = match channel_phase {
-						ChannelPhase::UnfundedOutboundV2(chan) => chan.into_channel(),
-						ChannelPhase::UnfundedInboundV2(chan) => chan.into_channel(),
+						ChannelPhase::UnfundedOutboundV2(chan) => Ok(chan.into_channel()),
+						ChannelPhase::UnfundedInboundV2(chan) => Ok(chan.into_channel()),
 						_ => {
 							debug_assert!(false); // It cannot be another variant as we are in the `Ok` branch of the above match.
 							Err(ChannelError::Warn(

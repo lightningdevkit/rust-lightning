@@ -8879,14 +8879,12 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn into_channel(self) -> Result<Channel<SP>, ChannelError>{
+	pub fn into_channel(self) -> Channel<SP> {
 		debug_assert!(self.signing_session.is_some());
-		let channel = Channel {
+		Channel {
 			context: self.context,
 			interactive_tx_signing_session: self.signing_session,
-		};
-
-		Ok(channel)
+		}
 	}
 }
 
@@ -9076,14 +9074,12 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		self.generate_accept_channel_v2_message()
 	}
 
-	pub fn into_channel(self) -> Result<Channel<SP>, ChannelError>{
+	pub fn into_channel(self) -> Channel<SP> {
 		debug_assert!(self.signing_session.is_some());
-		let channel = Channel {
+		Channel {
 			context: self.context,
 			interactive_tx_signing_session: self.signing_session,
-		};
-
-		Ok(channel)
+		}
 	}
 }
 
