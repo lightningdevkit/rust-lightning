@@ -8275,7 +8275,78 @@ where
 			}
 		})
 	}
+}
 
+macro_rules! finish_tx_complete {
+	($self: ident, $counterparty_node_id: ident, $peer_state: ident, $chan_phase_entry: ident) => {
+		loop {
+			let result = match $chan_phase_entry.get_mut() {
+				ChannelPhase::UnfundedOutboundV2(chan) => {
+					chan.funding_tx_constructed(&$self.logger)
+				},
+				ChannelPhase::UnfundedInboundV2(chan) => {
+					chan.funding_tx_constructed(&$self.logger)
+				},
+				_ => unreachable!(),
+			};
+			let (commitment_signed_opt, funding_ready_for_sig_event_opt) = match result {
+				Ok((commitment_signed_opt, funding_ready_for_sig_event_opt)) => {
+					(commitment_signed_opt, funding_ready_for_sig_event_opt)
+				},
+				Err(e) => break Err(e),
+			};
+
+			// Check if the signer returned a result.
+			//
+			// TODO: This can be removed once ChannelPhase is refactored into Channel as the phase
+			// transition will happen internally.
+			if commitment_signed_opt.is_none() {
+				break Ok(());
+			}
+
+			let (channel_id, channel_phase) = $chan_phase_entry.remove_entry();
+			let channel = match channel_phase {
+				ChannelPhase::UnfundedOutboundV2(chan) => chan.into_channel(),
+				ChannelPhase::UnfundedInboundV2(chan) => chan.into_channel(),
+				_ => unreachable!(),
+			};
+			$peer_state.channel_by_id.insert(channel_id, ChannelPhase::Funded(channel));
+
+			if let Some(funding_ready_for_sig_event) = funding_ready_for_sig_event_opt {
+				let mut pending_events = $self.pending_events.lock().unwrap();
+				pending_events.push_back((funding_ready_for_sig_event, None));
+			}
+
+			if let Some(commitment_signed) = commitment_signed_opt {
+				$peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
+					node_id: $counterparty_node_id,
+					updates: CommitmentUpdate {
+						commitment_signed,
+						update_add_htlcs: vec![],
+						update_fulfill_htlcs: vec![],
+						update_fail_htlcs: vec![],
+						update_fail_malformed_htlcs: vec![],
+						update_fee: None,
+					},
+				});
+			}
+			break Ok(());
+		}
+	}
+}
+
+impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+where
+	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
+	T::Target: BroadcasterInterface,
+	ES::Target: EntropySource,
+	NS::Target: NodeSigner,
+	SP::Target: SignerProvider,
+	F::Target: FeeEstimator,
+	R::Target: Router,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
 	fn internal_tx_complete(&self, counterparty_node_id: PublicKey, msg: &msgs::TxComplete) -> Result<(), MsgHandleErrInternal> {
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)
@@ -8305,56 +8376,22 @@ where
 					peer_state.pending_msg_events.push(msg_send_event);
 				};
 				if let Some(signing_session) = signing_session_opt {
-					let (commitment_signed_opt, funding_ready_for_sig_event_opt) = match chan_phase_entry.get_mut() {
+					match chan_phase_entry.get_mut() {
 						ChannelPhase::UnfundedOutboundV2(chan) => {
 							*chan.interactive_tx_signing_session_mut() = Some(signing_session);
-							chan.funding_tx_constructed(&self.logger)
 						},
 						ChannelPhase::UnfundedInboundV2(chan) => {
 							*chan.interactive_tx_signing_session_mut() = Some(signing_session);
-							chan.funding_tx_constructed(&self.logger)
 						},
-						_ => Err(ChannelError::Warn(
-							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
-							.into())),
-					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-
-					// Check if the signer returned a result.
-					//
-					// TODO: This can be removed once ChannelPhase is refactored into Channel as the phase
-					// transition will happen internally.
-					let commitment_signed = match commitment_signed_opt {
-						Some(commitment_signed) => commitment_signed,
-						None => return Ok(()),
-					};
-
-					let (channel_id, channel_phase) = chan_phase_entry.remove_entry();
-					let channel = match channel_phase {
-						ChannelPhase::UnfundedOutboundV2(chan) => Ok(chan.into_channel()),
-						ChannelPhase::UnfundedInboundV2(chan) => Ok(chan.into_channel()),
 						_ => {
-							debug_assert!(false); // It cannot be another variant as we are in the `Ok` branch of the above match.
-							Err(ChannelError::Warn(
-								"Got a tx_complete message with no interactive transaction construction expected or in-progress"
-									.into()))
+							let err = ChannelError::Warn(
+								"Got a tx_complete message with no interactive transaction construction expected or in-progress".into()
+							);
+							return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id));
 						},
-					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					peer_state.channel_by_id.insert(channel_id, ChannelPhase::Funded(channel));
-					if let Some(funding_ready_for_sig_event) = funding_ready_for_sig_event_opt {
-						let mut pending_events = self.pending_events.lock().unwrap();
-						pending_events.push_back((funding_ready_for_sig_event, None));
 					}
-					peer_state.pending_msg_events.push(events::MessageSendEvent::UpdateHTLCs {
-						node_id: counterparty_node_id,
-						updates: CommitmentUpdate {
-							commitment_signed,
-							update_add_htlcs: vec![],
-							update_fulfill_htlcs: vec![],
-							update_fail_htlcs: vec![],
-							update_fail_malformed_htlcs: vec![],
-							update_fee: None,
-						},
-					});
+					finish_tx_complete!(self, counterparty_node_id, peer_state, chan_phase_entry)
+						.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
 				}
 				Ok(())
 			},
@@ -9557,6 +9594,45 @@ where
 		drop(per_peer_state);
 		for shutdown_result in shutdown_results.drain(..) {
 			self.finish_close_channel(shutdown_result);
+		}
+
+		// Finish any tx_complete handling waiting on async signing.
+		//
+		// TODO: Move this into the earlier channel iteration to avoid duplication and the Vec
+		// allocation once ChannelPhase is refactored into Channel. This can't be avoided with the
+		// current data model because tx_complete handling requires removing the entry from the
+		// channel_by_id map and re-inserting it, which can't be done while iterating over the map.
+		let channels = match channel_opt {
+			Some((counterparty_node_id, channel_id)) => vec![(counterparty_node_id, channel_id)],
+			None => {
+				let per_peer_state = self.per_peer_state.read().unwrap();
+				let mut channels = Vec::with_capacity(per_peer_state.len());
+				for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
+					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+					let peer_state = &mut *peer_state_lock;
+					for (channel_id, channel) in peer_state.channel_by_id.iter() {
+						if let ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) = channel {
+							channels.push((*counterparty_node_id, *channel_id));
+						}
+					}
+				}
+				channels
+			}
+		};
+		for (counterparty_node_id, channel_id) in channels {
+			let per_peer_state = self.per_peer_state.read().unwrap();
+			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
+				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+				let peer_state = &mut *peer_state_lock;
+				if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(channel_id) {
+					match chan_phase_entry.get_mut() {
+						ChannelPhase::UnfundedInboundV2(_) | ChannelPhase::UnfundedOutboundV2(_) => {
+							let _ = finish_tx_complete!(self, counterparty_node_id, peer_state, chan_phase_entry);
+						},
+						_ => {},
+					}
+				}
+			}
 		}
 	}
 
