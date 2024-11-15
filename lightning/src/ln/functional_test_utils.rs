@@ -16,6 +16,7 @@ use crate::chain::transaction::OutPoint;
 use crate::events::{ClaimedHTLC, ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure, PaymentPurpose, PaymentFailureReason};
 use crate::events::bump_transaction::{BumpTransactionEvent, BumpTransactionEventHandler, Wallet, WalletSource};
 use crate::ln::types::ChannelId;
+use crate::offers::flow::OffersMessageFlow;
 use crate::types::payment::{PaymentPreimage, PaymentHash, PaymentSecret};
 use crate::ln::channelmanager::{AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, RAACommitmentOrder, RecipientOnionFields, PaymentId, MIN_CLTV_EXPIRY_DELTA};
 use crate::types::features::InitFeatures;
@@ -407,6 +408,13 @@ type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 	&'node_cfg test_utils::TestKeysInterface,
 	&'chan_mon_cfg test_utils::TestFeeEstimator,
 	&'node_cfg test_utils::TestRouter<'chan_mon_cfg>,
+	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
+	&'chan_mon_cfg test_utils::TestLogger,
+>;
+
+pub type TestOffersMessageFlow<'chan_man, 'node_cfg, 'chan_mon_cfg> = OffersMessageFlow<
+	&'node_cfg test_utils::TestKeysInterface,
+	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
 	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
 	&'chan_mon_cfg test_utils::TestLogger,
 >;
