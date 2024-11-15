@@ -15,7 +15,7 @@ use crate::chain::ChannelMonitorUpdateStatus;
 use crate::chain::transaction::OutPoint;
 use crate::events::{Event, MessageSendEvent, HTLCDestination, MessageSendEventsProvider, ClosureReason};
 use crate::ln::channel_state::{ChannelDetails, ChannelShutdownState};
-use crate::ln::channelmanager::{self, PaymentSendFailure, PaymentId, RecipientOnionFields, Retry};
+use crate::ln::channelmanager::{self, PaymentId, PaymentSendFailure, RecipientOnionFields, Retry};
 use crate::routing::router::{PaymentParameters, get_route, RouteParameters};
 use crate::ln::msgs;
 use crate::ln::types::ChannelId;

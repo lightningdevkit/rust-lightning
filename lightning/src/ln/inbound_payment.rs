@@ -125,7 +125,7 @@ fn min_final_cltv_expiry_delta_from_metadata(bytes: [u8; METADATA_LEN]) -> u16 {
 	u16::from_be_bytes([expiry_bytes[0], expiry_bytes[1]])
 }
 
-/// Equivalent to [`crate::ln::channelmanager::ChannelManager::create_inbound_payment`], but no
+/// Equivalent to [`crate::offers::flow::OffersMessageCommons::create_inbound_payment`], but no
 /// `ChannelManager` is required. Useful for generating invoices for [phantom node payments] without
 /// a `ChannelManager`.
 ///
@@ -302,7 +302,7 @@ fn construct_payment_secret(iv_bytes: &[u8; IV_LEN], metadata_bytes: &[u8; METAD
 /// See [`ExpandedKey`] docs for more info on the individual keys used.
 ///
 /// [`NodeSigner::get_inbound_payment_key`]: crate::sign::NodeSigner::get_inbound_payment_key
-/// [`create_inbound_payment`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment
+/// [`create_inbound_payment`]: crate::offers::flow::OffersMessageCommons::create_inbound_payment
 /// [`create_inbound_payment_for_hash`]: crate::ln::channelmanager::ChannelManager::create_inbound_payment_for_hash
 pub(super) fn verify<L: Deref>(payment_hash: PaymentHash, payment_data: &msgs::FinalOnionHopData,
 	highest_seen_timestamp: u64, keys: &ExpandedKey, logger: &L) -> Result<
