@@ -14,6 +14,7 @@ use crate::prelude::*;
 use core::ops::Deref;
 use core::time::Duration;
 
+use bitcoin::constants::ChainHash;
 use bitcoin::secp256k1::{self, schnorr, PublicKey, Secp256k1};
 use lightning_invoice::PaymentSecret;
 use types::payment::PaymentHash;
@@ -36,12 +37,19 @@ use crate::sync::MutexGuard;
 
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::nonce::Nonce;
+use crate::offers::offer::OfferBuilder;
 
 use crate::sign::EntropySource;
 use crate::util::logger::{Logger, WithContext};
 
 #[cfg(async_payments)]
 use crate::offers::static_invoice::StaticInvoice;
+
+#[cfg(not(c_bindings))]
+use crate::offers::offer::DerivedMetadata;
+
+#[cfg(c_bindings)]
+use crate::offers::offer::OfferWithDerivedMetadataBuilder;
 
 /// Functions commonly shared in usage between [`ChannelManager`] & `OffersMessageFlow`
 ///
@@ -150,6 +158,22 @@ pub trait OffersMessageCommons {
 	fn initiate_async_payment(
 		&self, invoice: &StaticInvoice, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError>;
+
+	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
+	/// the path's intended lifetime.
+	///
+	/// Whether or not the path is compact depends on whether the path is short-lived or long-lived,
+	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
+	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
+	///
+	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
+	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]: crate::ln::channelmanager::MAX_SHORT_LIVED_RELATIVE_EXPIRY
+	fn create_blinded_paths_using_absolute_expiry(
+		&self, context: OffersContext, absolute_expiry: Option<Duration>,
+	) -> Result<Vec<BlindedMessagePath>, ()>;
+
+	/// Get the [`ChainHash`] of the chain
+	fn get_chain_hash(&self) -> ChainHash;
 }
 
 /// A trivial trait which describes any [`OffersMessageFlow`].
@@ -221,7 +245,97 @@ where
 /// This struct is essential for enabling BOLT12 payment workflows in the Lightning network,
 /// providing the foundational mechanisms for Offers and related message exchanges.
 ///
+/// ## Relationship with `ChannelManager`
+///
+/// [`OffersMessageFlow`] and [`ChannelManager`] work in tandem to facilitate BOLT 12 functionality within
+/// a Lightning node:
+/// - The `OffersMessageFlow` is responsible for creating, managing, and verifying Offers messages,
+///   such as BOLT 12 invoices and refunds.
+/// - The `ChannelManager` manages the lifecycle of payments tied to these Offers messages, handling
+///   tasks like payment execution, tracking payment states, and processing related events.
+///
+/// The relationship is further reinforced through the [`OffersMessageCommons`] trait:
+/// - `ChannelManager` implements the [`OffersMessageCommons`] trait, providing shared functionality
+///   such as metadata verification and signature handling.
+/// - `OffersMessageFlow` relies on this trait to perform common operations, enabling it to delegate
+///   these tasks to `ChannelManager` by default.
+///
+/// Practical Use Case:
+/// - A BOLT 12 Offer is created using `OffersMessageFlow`, which provides the necessary interface
+///   for Offer creation and invoice generation.
+/// - Once a payment is initiated for the Offer, `ChannelManager` takes over, managing the payment's
+///   lifecycle, including retries, claims, and event handling.
+/// - Events such as `Event::PaymentClaimable` or `Event::PaymentFailed` are processed by
+///   `ChannelManager`, which may invoke functionality defined in `OffersMessageCommons` to support
+///   Offers-related operations.
+///
+/// This modular and decoupled design ensures that `OffersMessageFlow` and `ChannelManager` can
+/// operate independently while maintaining a seamless integration for handling Offers and payments
+/// in the Lightning network.
+///
+/// ## BOLT 12 Offers
+///
+/// The [`offers`] module is useful for creating BOLT 12 offers. An [`Offer`] is a precursor to a
+/// [`Bolt12Invoice`], which must first be requested by the payer. The interchange of these messages
+/// as defined in the specification is handled by [`OffersMessageFlow`] and its implementation of
+/// [`OffersMessageHandler`]. However, this only works with an [`Offer`] created using a builder
+/// returned by [`create_offer_builder`]. With this approach, BOLT 12 offers and invoices are
+/// stateless just as BOLT 11 invoices are.
+///
+/// ```
+/// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
+/// # use lightning::ln::channelmanager::AChannelManager;
+/// # use lightning::offers::flow::AnOffersMessageFlow;
+/// # use lightning::offers::parse::Bolt12SemanticError;
+///
+/// #
+/// # fn example<T: AnOffersMessageFlow, U: AChannelManager>(offers_flow: T, channel_manager: U) -> Result<(), Bolt12SemanticError> {
+/// # let offers_flow = offers_flow.get_omf();
+/// # let channel_manager = channel_manager.get_cm();
+/// # let absolute_expiry = None;
+/// # let offer = offers_flow
+///     .create_offer_builder(absolute_expiry)?
+/// # ;
+/// # // Needed for compiling for c_bindings
+/// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
+/// # let offer = builder
+///     .description("coffee".to_string())
+///     .amount_msats(10_000_000)
+///     .build()?;
+/// let bech32_offer = offer.to_string();
+///
+/// // On the event processing thread
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
+///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: Some(payment_preimage), .. } => {
+///                 println!("Claiming payment {}", payment_hash);
+///                 channel_manager.claim_funds(payment_preimage);
+///             },
+///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: None, .. } => {
+///                 println!("Unknown payment hash: {}", payment_hash);
+///             }
+/// #           _ => {},
+///         },
+///         Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
+///             println!("Claimed {} msats", amount_msat);
+///         },
+///         // ...
+///     #     _ => {},
+///     }
+///     Ok(())
+/// });
+/// # Ok(())
+/// # }
+/// ```
+///
 /// [`DNSResolverMessage`]: crate::onion_message::dns_resolution::DNSResolverMessage
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+/// [`Bolt12Invoice`]: crate::offers::invoice
+/// [`create_offer_builder`]: Self::create_offer_builder
+/// [`Offer`]: crate::offers::offer
+/// [`offers`]: crate::offers
+///
 pub struct OffersMessageFlow<ES: Deref, OMC: Deref, L: Deref>
 where
 	ES::Target: EntropySource,
@@ -235,7 +349,7 @@ where
 
 	entropy_source: ES,
 
-	/// Contains function shared between OffersMessageHandler, and ChannelManager.
+	/// Contains functions shared between OffersMessageHandler and ChannelManager.
 	commons: OMC,
 
 	/// The Logger for use in the OffersMessageFlow and which may be used to log
@@ -561,4 +675,71 @@ where
 	fn release_pending_messages(&self) -> Vec<(OffersMessage, MessageSendInstructions)> {
 		core::mem::take(&mut self.commons.get_pending_offers_messages())
 	}
+}
+
+macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
+	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
+	/// [`OffersMessageFlow`] when handling [`InvoiceRequest`] messages for the offer. The offer's
+	/// expiration will be `absolute_expiry` if `Some`, otherwise it will not expire.
+	///
+	/// # Privacy
+	///
+	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the offer based on the given
+	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
+	/// privacy implications as well as those of the parameterized [`Router`], which implements
+	/// [`MessageRouter`].
+	///
+	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
+	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to the introduction node in the responding [`InvoiceRequest`]'s
+	/// reply path.
+	///
+	/// # Errors
+	///
+	/// Errors if the parameterized [`Router`] is unable to create a blinded path for the offer.
+	///
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]: crate::ln::channelmanager::MAX_SHORT_LIVED_RELATIVE_EXPIRY
+	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
+	/// [`Offer`]: crate::offers::offer
+	/// [`Router`]: crate::routing::router::Router
+	pub fn create_offer_builder(
+		&$self, absolute_expiry: Option<Duration>
+	) -> Result<$builder, Bolt12SemanticError> {
+		let node_id = $self.get_our_node_id();
+		let expanded_key = &$self.inbound_payment_key;
+		let entropy = &*$self.entropy_source;
+		let secp_ctx = &$self.secp_ctx;
+
+		let nonce = Nonce::from_entropy_source(entropy);
+		let context = OffersContext::InvoiceRequest { nonce };
+		let path = $self.commons.create_blinded_paths_using_absolute_expiry(context, absolute_expiry)
+			.and_then(|paths| paths.into_iter().next().ok_or(()))
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+		let builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
+			.chain_hash($self.commons.get_chain_hash())
+			.path(path);
+
+		let builder = match absolute_expiry {
+			None => builder,
+			Some(absolute_expiry) => builder.absolute_expiry(absolute_expiry),
+		};
+
+		Ok(builder.into())
+	}
+} }
+
+impl<ES: Deref, OMC: Deref, L: Deref> OffersMessageFlow<ES, OMC, L>
+where
+	ES::Target: EntropySource,
+	OMC::Target: OffersMessageCommons,
+	L::Target: Logger,
+{
+	#[cfg(not(c_bindings))]
+	create_offer_builder!(self, OfferBuilder<DerivedMetadata, secp256k1::All>);
+	#[cfg(c_bindings)]
+	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);
 }

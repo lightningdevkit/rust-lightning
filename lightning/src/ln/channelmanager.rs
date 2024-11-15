@@ -68,7 +68,7 @@ use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, Retr
 use crate::offers::invoice::{Bolt12Invoice, DerivedSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice, DEFAULT_RELATIVE_EXPIRY};
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferBuilder};
+use crate::offers::offer::Offer;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::{Refund, RefundBuilder};
 use crate::offers::signer;
@@ -96,7 +96,6 @@ use crate::onion_message::dns_resolution::{DNSResolverMessage, DNSResolverMessag
 
 #[cfg(not(c_bindings))]
 use {
-	crate::offers::offer::DerivedMetadata,
 	crate::onion_message::messenger::DefaultMessageRouter,
 	crate::routing::router::DefaultRouter,
 	crate::routing::gossip::NetworkGraph,
@@ -104,10 +103,7 @@ use {
 	crate::sign::KeysManager,
 };
 #[cfg(c_bindings)]
-use {
-	crate::offers::offer::OfferWithDerivedMetadataBuilder,
-	crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder,
-};
+use crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder;
 
 use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescription, CreationError, Currency, Description, InvoiceBuilder as Bolt11InvoiceBuilder, SignOrCreationError, DEFAULT_EXPIRY_TIME};
 
@@ -1937,6 +1933,7 @@ where
 /// ```
 /// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
 /// # use lightning::ln::channelmanager::{AChannelManager, Bolt11InvoiceParameters};
+/// # use lightning::offers::flow::OffersMessageCommons;
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T) {
 /// # let channel_manager = channel_manager.get_cm();
@@ -2037,56 +2034,8 @@ where
 /// ```
 ///
 /// ## BOLT 12 Offers
-///
-/// The [`offers`] module is useful for creating BOLT 12 offers. An [`Offer`] is a precursor to a
-/// [`Bolt12Invoice`], which must first be requested by the payer. The interchange of these messages
-/// as defined in the specification is handled by [`ChannelManager`]. However, this only works with
-/// an [`Offer`] created using a builder returned by [`create_offer_builder`]. With this approach,
-/// BOLT 12 offers and invoices are stateless just as BOLT 11 invoices are.
-///
-/// ```
-/// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
-/// # use lightning::ln::channelmanager::AChannelManager;
-/// # use lightning::offers::parse::Bolt12SemanticError;
-/// #
-/// # fn example<T: AChannelManager>(channel_manager: T) -> Result<(), Bolt12SemanticError> {
-/// # let channel_manager = channel_manager.get_cm();
-/// # let absolute_expiry = None;
-/// let offer = channel_manager
-///     .create_offer_builder(absolute_expiry)?
-/// # ;
-/// # // Needed for compiling for c_bindings
-/// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
-/// # let offer = builder
-///     .description("coffee".to_string())
-///     .amount_msats(10_000_000)
-///     .build()?;
-/// let bech32_offer = offer.to_string();
-///
-/// // On the event processing thread
-/// channel_manager.process_pending_events(&|event| {
-///     match event {
-///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
-///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: Some(payment_preimage), .. } => {
-///                 println!("Claiming payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
-///             },
-///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: None, .. } => {
-///                 println!("Unknown payment hash: {}", payment_hash);
-///             }
-/// #           _ => {},
-///         },
-///         Event::PaymentClaimed { payment_hash, amount_msat, .. } => {
-///             println!("Claimed {} msats", amount_msat);
-///         },
-///         // ...
-///     #     _ => {},
-///     }
-///     Ok(())
-/// });
-/// # Ok(())
-/// # }
-/// ```
+/// 
+/// For more information on creating offers, see [`create_offer_builder`].
 ///
 /// Use [`pay_for_offer`] to initiated payment, which sends an [`InvoiceRequest`] for an [`Offer`]
 /// and pays the [`Bolt12Invoice`] response.
@@ -2208,6 +2157,7 @@ where
 /// ```
 /// # use lightning::events::{Event, EventsProvider, PaymentPurpose};
 /// # use lightning::ln::channelmanager::AChannelManager;
+/// # use lightning::offers::flow::OffersMessageCommons;
 /// # use lightning::offers::refund::Refund;
 /// #
 /// # fn example<T: AChannelManager>(channel_manager: T, refund: &Refund) {
@@ -2326,7 +2276,6 @@ where
 /// [`claim_funds`]: Self::claim_funds
 /// [`send_payment`]: Self::send_payment
 /// [`offers`]: crate::offers
-/// [`create_offer_builder`]: Self::create_offer_builder
 /// [`pay_for_offer`]: Self::pay_for_offer
 /// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 /// [`create_refund_builder`]: Self::create_refund_builder
@@ -2338,6 +2287,7 @@ where
 /// [`update_channel`]: chain::Watch::update_channel
 /// [`ChannelUpdate`]: msgs::ChannelUpdate
 /// [`read`]: ReadableArgs::read
+/// [`create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
 //
 // Lock order:
 // The tree structure below illustrates the lock order requirements for the different locks of the
@@ -2836,10 +2786,12 @@ const MAX_NO_CHANNEL_PEERS: usize = 250;
 /// The maximum expiration from the current time where an [`Offer`] or [`Refund`] is considered
 /// short-lived, while anything with a greater expiration is considered long-lived.
 ///
-/// Using [`ChannelManager::create_offer_builder`] or [`ChannelManager::create_refund_builder`],
+/// Using [`OffersMessageFlow::create_offer_builder`] or [`ChannelManager::create_refund_builder`],
 /// will included a [`BlindedMessagePath`] created using:
 /// - [`MessageRouter::create_compact_blinded_paths`] when short-lived, and
 /// - [`MessageRouter::create_blinded_paths`] when long-lived.
+///
+/// [`OffersMessageFlow::create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
 ///
 /// Using compact [`BlindedMessagePath`]s may provide better privacy as the [`MessageRouter`] could select
 /// more hops. However, since they use short channel ids instead of pubkeys, they are more likely to
@@ -6782,7 +6734,7 @@ where
 	/// [`Event::PaymentClaimable::claim_deadline`]: crate::events::Event::PaymentClaimable::claim_deadline
 	/// [`Event::PaymentClaimed`]: crate::events::Event::PaymentClaimed
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
-	/// [`create_inbound_payment`]: Self::create_inbound_payment
+	/// [`create_inbound_payment`]: ChannelManager::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: ChannelManager::create_inbound_payment_for_hash
 	/// [`claim_funds_with_known_custom_tlvs`]: ChannelManager::claim_funds_with_known_custom_tlvs
 	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
@@ -9733,57 +9685,6 @@ impl Default for Bolt11InvoiceParameters {
 	}
 }
 
-macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
-	/// Creates an [`OfferBuilder`] such that the [`Offer`] it builds is recognized by the
-	/// [`ChannelManager`] when handling [`InvoiceRequest`] messages for the offer. The offer's
-	/// expiration will be `absolute_expiry` if `Some`, otherwise it will not expire.
-	///
-	/// # Privacy
-	///
-	/// Uses [`MessageRouter`] to construct a [`BlindedMessagePath`] for the offer based on the given
-	/// `absolute_expiry` according to [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]. See those docs for
-	/// privacy implications as well as those of the parameterized [`Router`], which implements
-	/// [`MessageRouter`].
-	///
-	/// Also, uses a derived signing pubkey in the offer for recipient privacy.
-	///
-	/// # Limitations
-	///
-	/// Requires a direct connection to the introduction node in the responding [`InvoiceRequest`]'s
-	/// reply path.
-	///
-	/// # Errors
-	///
-	/// Errors if the parameterized [`Router`] is unable to create a blinded path for the offer.
-	///
-	/// [`Offer`]: crate::offers::offer::Offer
-	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	pub fn create_offer_builder(
-		&$self, absolute_expiry: Option<Duration>
-	) -> Result<$builder, Bolt12SemanticError> {
-		let node_id = $self.get_our_node_id();
-		let expanded_key = &$self.inbound_payment_key;
-		let entropy = &*$self.entropy_source;
-		let secp_ctx = &$self.secp_ctx;
-
-		let nonce = Nonce::from_entropy_source(entropy);
-		let context = OffersContext::InvoiceRequest { nonce };
-		let path = $self.create_blinded_paths_using_absolute_expiry(context, absolute_expiry)
-			.and_then(|paths| paths.into_iter().next().ok_or(()))
-			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
-		let builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
-			.chain_hash($self.chain_hash)
-			.path(path);
-
-		let builder = match absolute_expiry {
-			None => builder,
-			Some(absolute_expiry) => builder.absolute_expiry(absolute_expiry),
-		};
-
-		Ok(builder.into())
-	}
-} }
-
 macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// Creates a [`RefundBuilder`] such that the [`Refund`] it builds is recognized by the
 	/// [`ChannelManager`] when handling [`Bolt12Invoice`] messages for the refund.
@@ -10079,6 +9980,23 @@ where
 
 		res
 	}
+
+	fn create_blinded_paths_using_absolute_expiry(
+		&self, context: OffersContext, absolute_expiry: Option<Duration>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		let now = self.duration_since_epoch();
+		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
+
+		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
+			self.create_compact_blinded_paths(context)
+		} else {
+			self.create_blinded_paths(MessageContext::Offers(context))
+		}
+	}
+
+	fn get_chain_hash(&self) -> ChainHash {
+		self.chain_hash
+	}
 }
 
 /// Defines the maximum number of [`OffersMessage`] including different reply paths to be sent
@@ -10101,12 +10019,8 @@ where
 	L::Target: Logger,
 {
 	#[cfg(not(c_bindings))]
-	create_offer_builder!(self, OfferBuilder<DerivedMetadata, secp256k1::All>);
-	#[cfg(not(c_bindings))]
 	create_refund_builder!(self, RefundBuilder<secp256k1::All>);
 
-	#[cfg(c_bindings)]
-	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);
 	#[cfg(c_bindings)]
 	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
 
@@ -10456,25 +10370,6 @@ where
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	pub fn get_payment_preimage(&self, payment_hash: PaymentHash, payment_secret: PaymentSecret) -> Result<PaymentPreimage, APIError> {
 		inbound_payment::get_payment_preimage(payment_hash, payment_secret, &self.inbound_payment_key)
-	}
-
-	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
-	/// the path's intended lifetime.
-	///
-	/// Whether or not the path is compact depends on whether the path is short-lived or long-lived,
-	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
-	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
-	fn create_blinded_paths_using_absolute_expiry(
-		&self, context: OffersContext, absolute_expiry: Option<Duration>,
-	) -> Result<Vec<BlindedMessagePath>, ()> {
-		let now = self.duration_since_epoch();
-		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
-
-		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
-			self.create_compact_blinded_paths(context)
-		} else {
-			self.create_blinded_paths(MessageContext::Offers(context))
-		}
 	}
 
 	pub(super) fn duration_since_epoch(&self) -> Duration {
@@ -15452,6 +15347,7 @@ pub mod bench {
 	use crate::ln::channelmanager::{BestBlock, ChainParameters, ChannelManager, PaymentHash, PaymentPreimage, PaymentId, RecipientOnionFields, Retry};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{ChannelMessageHandler, Init};
+	use crate::offers::flow::OffersMessageCommons;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{PaymentParameters, RouteParameters};
 	use crate::util::test_utils;
