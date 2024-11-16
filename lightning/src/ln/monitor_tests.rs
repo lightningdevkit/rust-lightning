@@ -10,7 +10,7 @@
 //! Further functional tests which test blockchain reorganizations.
 
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SpendableOutputDescriptor};
-use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance, BalanceSource};
+use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS, Balance, BalanceSource, ChannelMonitorUpdateStep};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent, WalletSource};
@@ -3174,4 +3174,74 @@ fn test_event_replay_causing_monitor_replay() {
 
 	// Expect the `PaymentSent` to get replayed, this time without the duplicate monitor update
 	expect_payment_sent(&nodes[0], payment_preimage, None, false, false /* expected post-event monitor update*/);
+}
+
+#[test]
+fn test_update_replay_panics() {
+	// Tests that replaying a `ChannelMonitorUpdate` or applying them out-of-order causes a panic.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let monitor = get_monitor!(nodes[1], chan.2).clone();
+
+	// Create some updates to apply
+	let (payment_preimage_1, payment_hash_1, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	let (payment_preimage_2, payment_hash_2, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan.2, &nodes[0].node.get_our_node_id(), "".to_owned()).unwrap();
+	let reason = ClosureReason::HolderForceClosed  { broadcasted_latest_txn: Some(true) };
+	check_closed_event(&nodes[1], 1, reason, false, &[nodes[0].node.get_our_node_id()], 100_000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	nodes[1].node.claim_funds(payment_preimage_1);
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
+
+	nodes[1].node.claim_funds(payment_preimage_2);
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash_2, 1_000_000);
+
+	let mut updates = nodes[1].chain_monitor.monitor_updates.lock().unwrap().get_mut(&chan.2).unwrap().split_off(0);
+
+	// Update `monitor` until there's just one normal updates, an FC update, and a post-FC claim
+	// update pending
+	for update in updates.drain(..updates.len() - 4) {
+		monitor.update_monitor(&update, &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
+	}
+	assert_eq!(updates.len(), 4);
+	assert!(matches!(updates[1].updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. }));
+	assert!(matches!(updates[2].updates[0], ChannelMonitorUpdateStep::PaymentPreimage { .. }));
+	assert!(matches!(updates[3].updates[0], ChannelMonitorUpdateStep::PaymentPreimage { .. }));
+
+	// Ensure applying the force-close update skipping the last normal update fails
+	let poisoned_monitor = monitor.clone();
+	std::panic::catch_unwind(|| {
+		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
+		// We should panic, rather than returning an error here.
+	}).unwrap_err();
+
+	// Then apply the last normal and force-close update and make sure applying the preimage
+	// updates out-of-order fails.
+	monitor.update_monitor(&updates[0], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
+	monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
+
+	let poisoned_monitor = monitor.clone();
+	std::panic::catch_unwind(|| {
+		let _ = poisoned_monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
+		// We should panic, rather than returning an error here.
+	}).unwrap_err();
+
+	// Make sure re-applying the force-close update fails
+	let poisoned_monitor = monitor.clone();
+	std::panic::catch_unwind(|| {
+		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
+		// We should panic, rather than returning an error here.
+	}).unwrap_err();
+
+	// ...and finally ensure that applying all the updates succeeds.
+	monitor.update_monitor(&updates[2], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
+	monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
 }
