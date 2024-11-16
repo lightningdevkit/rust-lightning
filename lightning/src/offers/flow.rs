@@ -31,13 +31,14 @@ use crate::offers::invoice::{
 };
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::parse::Bolt12SemanticError;
+use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::onion_message::messenger::{MessageSendInstructions, Responder, ResponseInstruction};
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sync::MutexGuard;
 
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::OfferBuilder;
+use crate::offers::offer::{Offer, OfferBuilder};
 use crate::offers::refund::RefundBuilder;
 
 use crate::sign::EntropySource;
@@ -185,6 +186,15 @@ pub trait OffersMessageCommons {
 		max_total_routing_fee_msat: Option<u64>,
 		retryable_invoice_request: Option<RetryableInvoiceRequest>,
 	) -> Result<(), ()>;
+
+	/// Internal pay_for_offer
+	fn pay_for_offer_intern<
+		CPP: FnOnce(&InvoiceRequest, Nonce) -> Result<(), Bolt12SemanticError>,
+	>(
+		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
+		payer_note: Option<String>, payment_id: PaymentId,
+		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
+	) -> Result<(), Bolt12SemanticError>;
 }
 
 /// A trivial trait which describes any [`OffersMessageFlow`].
@@ -403,15 +413,69 @@ where
 /// # }
 /// ```
 ///
+/// Use [`pay_for_offer`] to initiated payment, which sends an [`InvoiceRequest`] for an [`Offer`]
+/// and pays the [`Bolt12Invoice`] response.
+///
+/// ```
+/// # use lightning::events::{Event, EventsProvider};
+/// # use lightning::ln::channelmanager::{AChannelManager, PaymentId, RecentPaymentDetails, Retry};
+/// # use lightning::offers::flow::{AnOffersMessageFlow, OffersMessageCommons};
+/// # use lightning::offers::offer::Offer;
+/// #
+/// # fn example<T: AnOffersMessageFlow, U: AChannelManager>(
+/// #     offers_flow: T, channel_manager: U, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
+/// #     payer_note: Option<String>, retry: Retry, max_total_routing_fee_msat: Option<u64>
+/// # ) {
+/// # let offers_flow = offers_flow.get_omf();
+/// # let channel_manager = channel_manager.get_cm();
+/// let payment_id = PaymentId([42; 32]);
+/// match offers_flow.pay_for_offer(
+///     offer, quantity, amount_msats, payer_note, payment_id, retry, max_total_routing_fee_msat
+/// ) {
+///     Ok(()) => println!("Requesting invoice for offer"),
+///     Err(e) => println!("Unable to request invoice for offer: {:?}", e),
+/// }
+///
+/// // First the payment will be waiting on an invoice
+/// let expected_payment_id = payment_id;
+/// assert!(
+///     channel_manager.list_recent_payments().iter().find(|details| matches!(
+///         details,
+///         RecentPaymentDetails::AwaitingInvoice { payment_id: expected_payment_id }
+///     )).is_some()
+/// );
+///
+/// // Once the invoice is received, a payment will be sent
+/// assert!(
+///     channel_manager.list_recent_payments().iter().find(|details| matches!(
+///         details,
+///         RecentPaymentDetails::Pending { payment_id: expected_payment_id, ..  }
+///     )).is_some()
+/// );
+///
+/// // On the event processing thread
+/// channel_manager.process_pending_events(&|event| {
+///     match event {
+///         Event::PaymentSent { payment_id: Some(payment_id), .. } => println!("Paid {}", payment_id),
+///         Event::PaymentFailed { payment_id, .. } => println!("Failed paying {}", payment_id),
+///         // ...
+///     #     _ => {},
+///     }
+///     Ok(())
+/// });
+/// # }
+/// ```
+///
 /// [`DNSResolverMessage`]: crate::onion_message::dns_resolution::DNSResolverMessage
 /// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 /// [`Bolt12Invoice`]: crate::offers::invoice
 /// [`create_offer_builder`]: Self::create_offer_builder
 /// [`create_refund_builder`]: Self::create_refund_builder
 /// [`Refund`]: crate::offers::refund::Refund
+/// [`InvoiceRequest`]: crate::offers::invoice_request
 /// [`Offer`]: crate::offers::offer
 /// [`offers`]: crate::offers
-///
+/// [`pay_for_offer`]: Self::pay_for_offer
 pub struct OffersMessageFlow<ES: Deref, OMC: Deref, L: Deref>
 where
 	ES::Target: EntropySource,
@@ -909,4 +973,93 @@ where
 
 	#[cfg(c_bindings)]
 	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
+
+	/// Pays for an [`Offer`] using the given parameters by creating an [`InvoiceRequest`] and
+	/// enqueuing it to be sent via an onion message. [`OffersMessageFlow`] will pay the actual
+	/// [`Bolt12Invoice`] once it is received.
+	///
+	/// Uses [`InvoiceRequestBuilder`] such that the [`InvoiceRequest`] it builds is recognized by
+	/// the [`OffersMessageFlow`] when handling a [`Bolt12Invoice`] message in response to the request.
+	/// The optional parameters are used in the builder, if `Some`:
+	/// - `quantity` for [`InvoiceRequest::quantity`] which must be set if
+	///   [`Offer::expects_quantity`] is `true`.
+	/// - `amount_msats` if overpaying what is required for the given `quantity` is desired, and
+	/// - `payer_note` for [`InvoiceRequest::payer_note`].
+	///
+	/// If `max_total_routing_fee_msat` is not specified, The default from
+	/// [`RouteParameters::from_payment_params_and_value`] is applied.
+	///
+	/// # Payment
+	///
+	/// The provided `payment_id` is used to ensure that only one invoice is paid for the request
+	/// when received. See [Avoiding Duplicate Payments] for other requirements once the payment has
+	/// been sent.
+	///
+	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
+	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
+	/// payment will fail with an [`Event::PaymentFailed`].
+	///
+	/// # Privacy
+	///
+	/// For payer privacy, uses a derived payer id and uses [`MessageRouter::create_blinded_paths`]
+	/// to construct a [`BlindedMessagePath`] for the reply path. For further privacy implications, see the
+	/// docs of the parameterized [`Router`], which implements [`MessageRouter`].
+	///
+	/// # Limitations
+	///
+	/// Requires a direct connection to an introduction node in [`Offer::paths`] or to
+	/// [`Offer::issuer_signing_pubkey`], if empty. A similar restriction applies to the responding
+	/// [`Bolt12Invoice::payment_paths`].
+	///
+	/// # Errors
+	///
+	/// Errors if:
+	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
+	/// - the provided parameters are invalid for the offer,
+	/// - the offer is for an unsupported chain, or
+	/// - the parameterized [`Router`] is unable to create a blinded reply path for the invoice
+	///   request.
+	///
+	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
+	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+	/// [`InvoiceRequest::quantity`]: crate::offers::invoice_request::InvoiceRequest::quantity
+	/// [`InvoiceRequest::payer_note`]: crate::offers::invoice_request::InvoiceRequest::payer_note
+	/// [`InvoiceRequestBuilder`]: crate::offers::invoice_request::InvoiceRequestBuilder
+	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
+	/// [`MessageRouter::create_blinded_paths`]: crate::onion_message::messenger::MessageRouter::create_blinded_paths
+	/// [`RouteParameters::from_payment_params_and_value`]: crate::routing::router::RouteParameters::from_payment_params_and_value
+	/// [`Router`]: crate::routing::router::Router
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
+	pub fn pay_for_offer(
+		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
+		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
+		max_total_routing_fee_msat: Option<u64>,
+	) -> Result<(), Bolt12SemanticError> {
+		self.commons.pay_for_offer_intern(
+			offer,
+			quantity,
+			amount_msats,
+			payer_note,
+			payment_id,
+			None,
+			|invoice_request, nonce| {
+				let expiration = StaleExpiration::TimerTicks(1);
+				let retryable_invoice_request =
+					RetryableInvoiceRequest { invoice_request: invoice_request.clone(), nonce };
+				self.commons
+					.add_new_awaiting_invoice(
+						payment_id,
+						expiration,
+						retry_strategy,
+						max_total_routing_fee_msat,
+						Some(retryable_invoice_request),
+					)
+					.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+			},
+		)
+	}
 }
