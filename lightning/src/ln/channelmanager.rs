@@ -3641,13 +3641,6 @@ where
 						our_funding_contribution_satoshis, funding_feerate_perkw, locktime, funding_inputs
 					));
 
-					// Check channel id
-					let post_splice_v2_channel_id = chan.context.generate_v2_channel_id_from_revocation_basepoints();
-					if post_splice_v2_channel_id != chan.context.channel_id() {
-						return Err(APIError::APIMisuseError { err: format!("Channel ID would change during splicing (e.g. splice on V1 channel), not yet supported, channel id {} {}",
-							chan.context.channel_id(), post_splice_v2_channel_id) });
-					}
-
 					let msg = chan.get_splice_init(our_funding_contribution_satoshis, &self.signer_provider, funding_feerate_perkw, locktime);
 
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceInit {
@@ -9836,13 +9829,6 @@ where
 					// Check if a splice has been initiated already. Note: this could be handled more nicely, and support multiple outstanding splice's, the incoming splice_ack matters anyways
 					if chan.context.pending_splice_pre.is_some() {
 						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Channel has already a splice pending, channel id {}", msg.channel_id), msg.channel_id));
-					}
-
-					// Check channel id
-					let post_splice_v2_channel_id = chan.context.generate_v2_channel_id_from_revocation_basepoints();
-					if post_splice_v2_channel_id != chan.context.channel_id() {
-						return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Channel ID would change during splicing (e.g. splice on V1 channel), not yet supported, channel id {} {}",
-							chan.context.channel_id(), post_splice_v2_channel_id), msg.channel_id));
 					}
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel in wrong state".to_owned(), msg.channel_id.clone()));
