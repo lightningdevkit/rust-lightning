@@ -3288,7 +3288,7 @@ fn do_test_durable_preimages_on_closed_channel(close_chans_before_reload: bool, 
 	// Finally, check that B created a payment preimage transaction and close out the payment.
 	let bs_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(bs_txn.len(), if close_chans_before_reload && !close_only_a { 2 } else { 1 });
-	let bs_preimage_tx = &bs_txn[0];
+	let bs_preimage_tx = bs_txn.iter().find(|tx| tx.input[0].previous_output.txid == as_closing_tx[0].compute_txid()).unwrap();
 	check_spends!(bs_preimage_tx, as_closing_tx[0]);
 
 	if !close_chans_before_reload {
