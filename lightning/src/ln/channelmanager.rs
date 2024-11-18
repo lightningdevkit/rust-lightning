@@ -3341,6 +3341,27 @@ macro_rules! handle_new_monitor_update {
 	} };
 	(
 		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
+		$per_peer_state_lock: expr, $logger: expr, $channel_id: expr, POST_CHANNEL_CLOSE
+	) => { {
+		let in_flight_updates;
+		let idx;
+		handle_new_monitor_update!($self, $funding_txo, $update, $peer_state, $logger,
+			$channel_id, in_flight_updates, idx, _internal_outer,
+			{
+				let _ = in_flight_updates.remove(idx);
+				if in_flight_updates.is_empty() {
+					let update_actions = $peer_state.monitor_update_blocked_actions
+						.remove(&$channel_id).unwrap_or(Vec::new());
+
+					mem::drop($peer_state_lock);
+					mem::drop($per_peer_state_lock);
+
+					$self.handle_monitor_update_completion_actions(update_actions);
+				}
+			})
+	} };
+	(
+		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
 		$per_peer_state_lock: expr, $chan: expr
 	) => { {
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
