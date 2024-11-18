@@ -9624,8 +9624,8 @@ where
 	}
 
 	/// Handle a list of channel failures during a block_connected or block_disconnected call,
-	/// pushing the channel monitor update (if any) to the background events queue and removing the
-	/// Channel object.
+	/// pushing the channel monitor update (if any) to the background events queue (if we're
+	/// currently in the startup phase) and calling [`Self::finish_close_channel`].
 	fn handle_init_event_channel_failures(&self, mut failed_channels: Vec<ShutdownResult>) {
 		for mut failure in failed_channels.drain(..) {
 			// Either a commitment transactions has been confirmed on-chain or
@@ -9640,10 +9640,16 @@ where
 				if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update.updates[0] {
 					assert!(should_broadcast);
 				} else { unreachable!(); }
-				self.pending_background_events.lock().unwrap().push(
-					BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-						counterparty_node_id, funding_txo, update, channel_id,
-					});
+				if self.background_events_processed_since_startup.load(Ordering::Acquire) {
+					let res = self.chain_monitor.update_channel(funding_txo, &update);
+					debug_assert_eq!(res, ChannelMonitorUpdateStatus::Completed,
+						"TODO: We don't currently handle failures here, this logic is removed in the next commit");
+				} else {
+					self.pending_background_events.lock().unwrap().push(
+						BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+							counterparty_node_id, funding_txo, update, channel_id,
+						});
+				}
 			}
 			self.finish_close_channel(failure);
 		}
