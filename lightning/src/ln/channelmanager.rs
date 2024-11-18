@@ -3245,18 +3245,17 @@ macro_rules! handle_monitor_update_completion {
 }
 
 macro_rules! handle_new_monitor_update {
-	($self: ident, $update_res: expr, $chan: expr, _internal, $completed: expr) => { {
+	($self: ident, $update_res: expr, $logger: expr, $channel_id: expr, _internal, $completed: expr) => { {
 		debug_assert!($self.background_events_processed_since_startup.load(Ordering::Acquire));
-		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
 		match $update_res {
 			ChannelMonitorUpdateStatus::UnrecoverableError => {
 				let err_str = "ChannelMonitor[Update] persistence failed unrecoverably. This indicates we cannot continue normal operation and must shut down.";
-				log_error!(logger, "{}", err_str);
+				log_error!($logger, "{}", err_str);
 				panic!("{}", err_str);
 			},
 			ChannelMonitorUpdateStatus::InProgress => {
-				log_debug!(logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
-					&$chan.context.channel_id());
+				log_debug!($logger, "ChannelMonitor update for {} in flight, holding messages until the update completes.",
+					$channel_id);
 				false
 			},
 			ChannelMonitorUpdateStatus::Completed => {
@@ -3266,22 +3265,52 @@ macro_rules! handle_new_monitor_update {
 		}
 	} };
 	($self: ident, $update_res: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr, INITIAL_MONITOR) => {
-		handle_new_monitor_update!($self, $update_res, $chan, _internal,
+		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
+		handle_new_monitor_update!($self, $update_res, logger, $chan.context.channel_id(), _internal,
 			handle_monitor_update_completion!($self, $peer_state_lock, $peer_state, $per_peer_state_lock, $chan))
 	};
-	($self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
-		let in_flight_updates = $peer_state.in_flight_monitor_updates.entry($funding_txo)
+	(
+		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $logger: expr,
+		$chan_id: expr, $in_flight_updates: ident, $update_idx: ident, _internal_outer,
+		$completed: expr
+	) => { {
+		$in_flight_updates = $peer_state.in_flight_monitor_updates.entry($funding_txo)
 			.or_insert_with(Vec::new);
 		// During startup, we push monitor updates as background events through to here in
 		// order to replay updates that were in-flight when we shut down. Thus, we have to
 		// filter for uniqueness here.
-		let idx = in_flight_updates.iter().position(|upd| upd == &$update)
+		$update_idx = $in_flight_updates.iter().position(|upd| upd == &$update)
 			.unwrap_or_else(|| {
-				in_flight_updates.push($update);
-				in_flight_updates.len() - 1
+				$in_flight_updates.push($update);
+				$in_flight_updates.len() - 1
 			});
-		let update_res = $self.chain_monitor.update_channel($funding_txo, &in_flight_updates[idx]);
-		handle_new_monitor_update!($self, update_res, $chan, _internal,
+		let update_res = $self.chain_monitor.update_channel($funding_txo, &$in_flight_updates[$update_idx]);
+		handle_new_monitor_update!($self, update_res, $logger, $chan_id, _internal, $completed)
+	} };
+	(
+		$self: ident, $funding_txo: expr, $update: expr, $peer_state: expr, $chan_context: expr,
+		REMAIN_LOCKED_UPDATE_ACTIONS_PROCESSED_LATER
+	) => { {
+		let logger = WithChannelContext::from(&$self.logger, &$chan_context, None);
+		let chan_id = $chan_context.channel_id();
+		let in_flight_updates;
+		let idx;
+		handle_new_monitor_update!($self, $funding_txo, $update, $peer_state, logger, chan_id,
+			in_flight_updates, idx, _internal_outer,
+			{
+				let _ = in_flight_updates.remove(idx);
+			})
+	} };
+	(
+		$self: ident, $funding_txo: expr, $update: expr, $peer_state_lock: expr, $peer_state: expr,
+		$per_peer_state_lock: expr, $chan: expr
+	) => { {
+		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
+		let chan_id = $chan.context.channel_id();
+		let in_flight_updates;
+		let idx;
+		handle_new_monitor_update!($self, $funding_txo, $update, $peer_state, logger, chan_id,
+			in_flight_updates, idx, _internal_outer,
 			{
 				let _ = in_flight_updates.remove(idx);
 				if in_flight_updates.is_empty() && $chan.blocked_monitor_updates_pending() == 0 {
