@@ -1338,11 +1338,12 @@ pub(super) struct PeerState<SP: Deref> where SP::Target: SignerProvider {
 	/// entry here to note that the channel with the key's ID is blocked on a set of actions.
 	actions_blocking_raa_monitor_updates: BTreeMap<ChannelId, Vec<RAAMonitorUpdateBlockingAction>>,
 	/// The latest [`ChannelMonitor::get_latest_update_id`] value for all closed channels as they
-	/// exist on-disk/in our [`chain::Watch`]. This *ignores* all pending updates not yet applied
-	/// in [`ChannelManager::pending_background_events`].
+	/// exist on-disk/in our [`chain::Watch`].
 	///
 	/// If there are any updates pending in [`Self::in_flight_monitor_updates`] this will contain
-	/// the highest `update_id` of all the pending in-flight updates.
+	/// the highest `update_id` of all the pending in-flight updates (note that any pending updates
+	/// not yet applied sitting in [`ChannelManager::pending_background_events`] will also be
+	/// considered as they are also in [`Self::in_flight_monitor_updates`]).
 	closed_channel_monitor_update_ids: BTreeMap<ChannelId, u64>,
 	/// The peer is currently connected (i.e. we've seen a
 	/// [`ChannelMessageHandler::peer_connected`] and no corresponding
@@ -3002,25 +3003,8 @@ macro_rules! locked_close_channel {
 		// channel, we need to store the last update_id of it. However, we don't want to insert
 		// into the map (which prevents the `PeerState` from being cleaned up) for channels that
 		// never even got confirmations (which would open us up to DoS attacks).
-		let mut update_id = $channel_context.get_latest_monitor_update_id();
+		let update_id = $channel_context.get_latest_monitor_update_id();
 		if $channel_context.get_funding_tx_confirmation_height().is_some() || $channel_context.minimum_depth() == Some(0) || update_id > 1 {
-			// There may be some pending background events which we have to ignore when setting the
-			// latest update ID.
-			for event in $self.pending_background_events.lock().unwrap().iter() {
-				match event {
-					BackgroundEvent::MonitorUpdateRegeneratedOnStartup { counterparty_node_id, channel_id, update, .. } => {
-						if *channel_id == $channel_context.channel_id() && *counterparty_node_id == $channel_context.get_counterparty_node_id() {
-							update_id = cmp::min(update_id, update.update_id - 1);
-						}
-					},
-					BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup(..) => {
-						// This is only generated for very old channels which were already closed
-						// on startup, so it should never be present for a channel that is closing
-						// here.
-					},
-					BackgroundEvent::MonitorUpdatesComplete { .. } => {},
-				}
-			}
 			let chan_id = $channel_context.channel_id();
 			$peer_state.closed_channel_monitor_update_ids.insert(chan_id, update_id);
 		}
@@ -3939,16 +3923,14 @@ where
 		self.close_channel_internal(channel_id, counterparty_node_id, target_feerate_sats_per_1000_weight, shutdown_script)
 	}
 
-	/// Ensures any saved latest ID in [`PeerState::closed_channel_monitor_update_ids`] is updated,
-	/// then applies the provided [`ChannelMonitorUpdate`].
+	/// Applies a [`ChannelMonitorUpdate`] which may or may not be for a channel which is closed.
 	#[must_use]
 	fn apply_post_close_monitor_update(
 		&self, counterparty_node_id: PublicKey, channel_id: ChannelId, funding_txo: OutPoint,
-		mut monitor_update: ChannelMonitorUpdate,
+		monitor_update: ChannelMonitorUpdate,
 	) -> ChannelMonitorUpdateStatus {
 		// Note that there may be some post-close updates which need to be well-ordered with
-		// respect to the `update_id`, so we hold the `closed_channel_monitor_update_ids` lock
-		// here (and also make sure the `monitor_update` we're applying has the right id.
+		// respect to the `update_id`, so we hold the `peer_state` lock here.
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		let mut peer_state_lock = per_peer_state.get(&counterparty_node_id)
 			.expect("We must always have a peer entry for a peer with which we have channels that have ChannelMonitors")
@@ -3965,34 +3947,6 @@ where
 				}
 			},
 			hash_map::Entry::Vacant(_) => {},
-		}
-		match peer_state.closed_channel_monitor_update_ids.entry(channel_id) {
-			btree_map::Entry::Vacant(entry) => {
-				let is_closing_unupdated_monitor = monitor_update.update_id == 1
-					&& monitor_update.updates.len() == 1
-					&& matches!(&monitor_update.updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. });
-				// If the ChannelMonitorUpdate is closing a channel that never got past initial
-				// funding (to have any commitment updates), we'll skip inserting in
-				// `locked_close_channel`, allowing us to avoid keeping around the PeerState for
-				// that peer. In that specific case we expect no entry in the map here. In any
-				// other cases, this is a bug, but in production we go ahead and recover by
-				// inserting the update_id and hoping its right.
-				debug_assert!(is_closing_unupdated_monitor, "Expected closing monitor against an unused channel, got {:?}", monitor_update);
-				if !is_closing_unupdated_monitor {
-					entry.insert(monitor_update.update_id);
-				}
-			},
-			btree_map::Entry::Occupied(entry) => {
-				// If we're running in a threaded environment its possible we generate updates for
-				// a channel that is closing, then apply some preimage update, then go back and
-				// apply the close monitor update here. In order to ensure the updates are still
-				// well-ordered, we have to use the `closed_channel_monitor_update_ids` map to
-				// override the `update_id`, taking care to handle old monitors where the
-				// `latest_update_id` is already `u64::MAX`.
-				let latest_update_id = entry.into_mut();
-				*latest_update_id = latest_update_id.saturating_add(1);
-				monitor_update.update_id = *latest_update_id;
-			}
 		}
 		self.chain_monitor.update_channel(funding_txo, &monitor_update)
 	}
@@ -7085,132 +7039,120 @@ where
 		debug_assert_ne!(self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
 		debug_assert_ne!(self.claimable_payments.held_by_thread(), LockHeldState::HeldByThread);
 
-		{
-			let per_peer_state = self.per_peer_state.read().unwrap();
-			let chan_id = prev_hop.channel_id;
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let chan_id = prev_hop.channel_id;
 
-			const MISSING_MON_ERROR: &'static str =
-				"If we're going to claim an HTLC against a channel, we should always have *some* state for the channel, even if just the latest ChannelMonitor update_id. This failure indicates we need to claim an HTLC from a channel for which we did not have a ChannelMonitor at startup and didn't create one while running.";
+		const MISSING_MON_ERROR: &'static str =
+			"If we're going to claim an HTLC against a channel, we should always have *some* state for the channel, even if just the latest ChannelMonitor update_id. This failure indicates we need to claim an HTLC from a channel for which we did not have a ChannelMonitor at startup and didn't create one while running.";
 
-			let peer_state_opt = prev_hop.counterparty_node_id.as_ref().map(
-				|counterparty_node_id| per_peer_state.get(counterparty_node_id)
-					.map(|peer_mutex| peer_mutex.lock().unwrap())
-					.expect(MISSING_MON_ERROR)
-			);
+		// Note here that `peer_state_opt` is always `Some` if `prev_hop.counterparty_node_id` is
+		// `Some`. This is relied on in the closed-channel case below.
+		let mut peer_state_opt = prev_hop.counterparty_node_id.as_ref().map(
+			|counterparty_node_id| per_peer_state.get(counterparty_node_id)
+				.map(|peer_mutex| peer_mutex.lock().unwrap())
+				.expect(MISSING_MON_ERROR)
+		);
 
-			if peer_state_opt.is_some() {
-				let mut peer_state_lock = peer_state_opt.unwrap();
-				let peer_state = &mut *peer_state_lock;
-				if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(chan_id) {
-					if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
-						let counterparty_node_id = chan.context.get_counterparty_node_id();
-						let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-						let fulfill_res =
-							chan.get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, payment_info, &&logger);
+		if let Some(peer_state_lock) = peer_state_opt.as_mut() {
+			let peer_state = &mut **peer_state_lock;
+			if let hash_map::Entry::Occupied(mut chan_phase_entry) = peer_state.channel_by_id.entry(chan_id) {
+				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
+					let counterparty_node_id = chan.context.get_counterparty_node_id();
+					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+					let fulfill_res = chan.get_update_fulfill_htlc_and_commit(prev_hop.htlc_id, payment_preimage, payment_info, &&logger);
 
-						match fulfill_res {
-							UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } => {
-								let (action_opt, raa_blocker_opt) = completion_action(Some(htlc_value_msat), false);
-								if let Some(action) = action_opt {
-									log_trace!(logger, "Tracking monitor update completion action for channel {}: {:?}",
-										chan_id, action);
-									peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
-								}
-								if let Some(raa_blocker) = raa_blocker_opt {
-									peer_state.actions_blocking_raa_monitor_updates.entry(chan_id).or_insert_with(Vec::new).push(raa_blocker);
-								}
-								if !during_init {
-									handle_new_monitor_update!(self, prev_hop.funding_txo, monitor_update, peer_state_lock,
-										peer_state, per_peer_state, chan);
-								} else {
-									// If we're running during init we cannot update a monitor directly -
-									// they probably haven't actually been loaded yet. Instead, push the
-									// monitor update as a background event.
-									self.pending_background_events.lock().unwrap().push(
-										BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
-											counterparty_node_id,
-											funding_txo: prev_hop.funding_txo,
-											channel_id: prev_hop.channel_id,
-											update: monitor_update.clone(),
-										});
-								}
-							}
-							UpdateFulfillCommitFetch::DuplicateClaim {} => {
-								let (action_opt, raa_blocker_opt) = completion_action(None, true);
-								if let Some(raa_blocker) = raa_blocker_opt {
-									// If we're making a claim during startup, its a replay of a
-									// payment claim from a `ChannelMonitor`. In some cases (MPP or
-									// if the HTLC was only recently removed) we make such claims
-									// after an HTLC has been removed from a channel entirely, and
-									// thus the RAA blocker has long since completed.
-									//
-									// In any other case, the RAA blocker must still be present and
-									// blocking RAAs.
-									debug_assert!(during_init ||
-										peer_state.actions_blocking_raa_monitor_updates.get(&chan_id).unwrap().contains(&raa_blocker));
-								}
-								let action = if let Some(action) = action_opt {
-									action
-								} else {
-									return;
-								};
-
-								mem::drop(peer_state_lock);
-
-								log_trace!(logger, "Completing monitor update completion action for channel {} as claim was redundant: {:?}",
+					match fulfill_res {
+						UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } => {
+							let (action_opt, raa_blocker_opt) = completion_action(Some(htlc_value_msat), false);
+							if let Some(action) = action_opt {
+								log_trace!(logger, "Tracking monitor update completion action for channel {}: {:?}",
 									chan_id, action);
-								if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
-									downstream_counterparty_node_id: node_id,
-									downstream_funding_outpoint: _,
-									blocking_action: blocker, downstream_channel_id: channel_id,
-								} = action {
-									if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
-										let mut peer_state = peer_state_mtx.lock().unwrap();
-										if let Some(blockers) = peer_state
-											.actions_blocking_raa_monitor_updates
-											.get_mut(&channel_id)
-										{
-											let mut found_blocker = false;
-											blockers.retain(|iter| {
-												// Note that we could actually be blocked, in
-												// which case we need to only remove the one
-												// blocker which was added duplicatively.
-												let first_blocker = !found_blocker;
-												if *iter == blocker { found_blocker = true; }
-												*iter != blocker || !first_blocker
-											});
-											debug_assert!(found_blocker);
-										}
-									} else {
-										debug_assert!(false);
-									}
-								} else if matches!(action, MonitorUpdateCompletionAction::PaymentClaimed { .. }) {
-									debug_assert!(during_init,
-										"Duplicate claims should always either be for forwarded payments(freeing another channel immediately) or during init (for claim replay)");
-									mem::drop(per_peer_state);
-									self.handle_monitor_update_completion_actions([action]);
-								} else {
-									debug_assert!(false,
-										"Duplicate claims should always either be for forwarded payments(freeing another channel immediately) or during init (for claim replay)");
-									return;
-								};
+								peer_state.monitor_update_blocked_actions.entry(chan_id).or_insert(Vec::new()).push(action);
+							}
+							if let Some(raa_blocker) = raa_blocker_opt {
+								peer_state.actions_blocking_raa_monitor_updates.entry(chan_id).or_insert_with(Vec::new).push(raa_blocker);
+							}
+							if !during_init {
+								handle_new_monitor_update!(self, prev_hop.funding_txo, monitor_update, peer_state_opt,
+									peer_state, per_peer_state, chan);
+							} else {
+								// If we're running during init we cannot update a monitor directly -
+								// they probably haven't actually been loaded yet. Instead, push the
+								// monitor update as a background event.
+								self.pending_background_events.lock().unwrap().push(
+									BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+										counterparty_node_id,
+										funding_txo: prev_hop.funding_txo,
+										channel_id: prev_hop.channel_id,
+										update: monitor_update.clone(),
+									});
 							}
 						}
+						UpdateFulfillCommitFetch::DuplicateClaim {} => {
+							let (action_opt, raa_blocker_opt) = completion_action(None, true);
+							if let Some(raa_blocker) = raa_blocker_opt {
+								// If we're making a claim during startup, its a replay of a
+								// payment claim from a `ChannelMonitor`. In some cases (MPP or
+								// if the HTLC was only recently removed) we make such claims
+								// after an HTLC has been removed from a channel entirely, and
+								// thus the RAA blocker has long since completed.
+								//
+								// In any other case, the RAA blocker must still be present and
+								// blocking RAAs.
+								debug_assert!(during_init ||
+									peer_state.actions_blocking_raa_monitor_updates.get(&chan_id).unwrap().contains(&raa_blocker));
+							}
+							let action = if let Some(action) = action_opt {
+								action
+							} else {
+								return;
+							};
+
+							mem::drop(peer_state_opt);
+
+							log_trace!(logger, "Completing monitor update completion action for channel {} as claim was redundant: {:?}",
+								chan_id, action);
+							if let MonitorUpdateCompletionAction::FreeOtherChannelImmediately {
+								downstream_counterparty_node_id: node_id,
+								downstream_funding_outpoint: _,
+								blocking_action: blocker, downstream_channel_id: channel_id,
+							} = action {
+								if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
+									let mut peer_state = peer_state_mtx.lock().unwrap();
+									if let Some(blockers) = peer_state
+										.actions_blocking_raa_monitor_updates
+										.get_mut(&channel_id)
+									{
+										let mut found_blocker = false;
+										blockers.retain(|iter| {
+											// Note that we could actually be blocked, in
+											// which case we need to only remove the one
+											// blocker which was added duplicatively.
+											let first_blocker = !found_blocker;
+											if *iter == blocker { found_blocker = true; }
+											*iter != blocker || !first_blocker
+										});
+										debug_assert!(found_blocker);
+									}
+								} else {
+									debug_assert!(false);
+								}
+							} else if matches!(action, MonitorUpdateCompletionAction::PaymentClaimed { .. }) {
+								debug_assert!(during_init,
+									"Duplicate claims should always either be for forwarded payments(freeing another channel immediately) or during init (for claim replay)");
+								mem::drop(per_peer_state);
+								self.handle_monitor_update_completion_actions([action]);
+							} else {
+								debug_assert!(false,
+									"Duplicate claims should always either be for forwarded payments(freeing another channel immediately) or during init (for claim replay)");
+								return;
+							};
+						}
 					}
-					return;
 				}
+				return;
 			}
 		}
-
-		let preimage_update = ChannelMonitorUpdate {
-			update_id: 0, // apply_post_close_monitor_update will set the right value
-			counterparty_node_id: prev_hop.counterparty_node_id,
-			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
-				payment_preimage,
-				payment_info,
-			}],
-			channel_id: Some(prev_hop.channel_id),
-		};
 
 		if prev_hop.counterparty_node_id.is_none() {
 			let payment_hash: PaymentHash = payment_preimage.into();
@@ -7221,6 +7163,37 @@ where
 			);
 		}
 		let counterparty_node_id = prev_hop.counterparty_node_id.expect("Checked immediately above");
+		let mut peer_state = peer_state_opt.expect("peer_state_opt is always Some when the counterparty_node_id is Some");
+
+		let update_id = if let Some(latest_update_id) = peer_state.closed_channel_monitor_update_ids.get_mut(&chan_id) {
+			*latest_update_id = latest_update_id.saturating_add(1);
+			*latest_update_id
+		} else {
+			let err = "We need the latest ChannelMonitorUpdate ID to build a new update.
+This should have been checked for availability on startup but somehow it is no longer available.
+This indicates a bug inside LDK. Please report this error at https://github.com/lightningdevkit/rust-lightning/issues/new";
+			log_error!(self.logger, "{}", err);
+			panic!("{}", err);
+		};
+
+		let preimage_update = ChannelMonitorUpdate {
+			update_id,
+			counterparty_node_id: prev_hop.counterparty_node_id,
+			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+				payment_preimage,
+				payment_info,
+			}],
+			channel_id: Some(prev_hop.channel_id),
+		};
+
+		// Note that the below is race-y - we set the `update_id` above and then drop the peer_state
+		// lock before applying the update in `apply_post_close_monitor_update` (or via the
+		// background events pipeline). During that time, some other update could be created and
+		// then applied, resultin in `ChannelMonitorUpdate`s being applied out of order and causing
+		// a panic.
+
+		mem::drop(peer_state);
+		mem::drop(per_peer_state);
 
 		if !during_init {
 			// We update the ChannelMonitor on the backward link, after
@@ -13241,8 +13214,8 @@ where
 						// Our channel information is out of sync with the `ChannelMonitor`, so
 						// force the update to use the `ChannelMonitor`'s update_id for the close
 						// update.
-						let latest_update_id = monitor.get_latest_update_id();
-						update.update_id = latest_update_id.saturating_add(1);
+						let latest_update_id = monitor.get_latest_update_id().saturating_add(1);
+						update.update_id = latest_update_id;
 						per_peer_state.entry(counterparty_node_id)
 							.or_insert_with(|| Mutex::new(empty_peer_state()))
 							.lock().unwrap()
@@ -13326,6 +13299,7 @@ where
 
 		for (funding_txo, monitor) in args.channel_monitors.iter() {
 			if !funding_txo_set.contains(funding_txo) {
+				let mut should_queue_fc_update = false;
 				if let Some(counterparty_node_id) = monitor.get_counterparty_node_id() {
 					// If the ChannelMonitor had any updates, we may need to update it further and
 					// thus track it in `closed_channel_monitor_update_ids`. If the channel never
@@ -13334,17 +13308,21 @@ where
 					// Note that a `ChannelMonitor` is created with `update_id` 0 and after we
 					// provide it with a closure update its `update_id` will be at 1.
 					if !monitor.offchain_closed() || monitor.get_latest_update_id() > 1 {
+						should_queue_fc_update = !monitor.offchain_closed();
+						let mut latest_update_id = monitor.get_latest_update_id();
+						if should_queue_fc_update {
+							latest_update_id += 1;
+						}
 						per_peer_state.entry(counterparty_node_id)
 							.or_insert_with(|| Mutex::new(empty_peer_state()))
 							.lock().unwrap()
 							.closed_channel_monitor_update_ids.entry(monitor.channel_id())
-								.and_modify(|v| *v = cmp::max(monitor.get_latest_update_id(), *v))
-								.or_insert(monitor.get_latest_update_id());
+								.and_modify(|v| *v = cmp::max(latest_update_id, *v))
+								.or_insert(latest_update_id);
 					}
 				}
 
-				if monitor.offchain_closed() {
-					// We already appled a ChannelForceClosed update.
+				if !should_queue_fc_update {
 					continue;
 				}
 
@@ -13564,6 +13542,10 @@ where
 							counterparty_node_id: $counterparty_node_id,
 							channel_id: $monitor.channel_id(),
 						});
+				} else {
+					$peer_state.closed_channel_monitor_update_ids.entry($monitor.channel_id())
+						.and_modify(|v| *v = cmp::max(max_in_flight_update_id, *v))
+						.or_insert(max_in_flight_update_id);
 				}
 				if $peer_state.in_flight_monitor_updates.insert($funding_txo, $chan_in_flight_upds).is_some() {
 					log_error!($logger, "Duplicate in-flight monitor update set for the same channel!");
@@ -13651,6 +13633,7 @@ where
 			} = &mut new_event {
 				debug_assert_eq!(update.updates.len(), 1);
 				debug_assert!(matches!(update.updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. }));
+				let mut updated_id = false;
 				for pending_event in pending_background_events.iter() {
 					if let BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
 						counterparty_node_id: pending_cp, funding_txo: pending_funding,
@@ -13660,15 +13643,32 @@ where
 							&& funding_txo == pending_funding
 							&& channel_id == pending_chan_id;
 						if for_same_channel {
+							debug_assert!(update.update_id >= pending_update.update_id);
 							if pending_update.updates.iter().any(|upd| matches!(upd, ChannelMonitorUpdateStep::ChannelForceClosed { .. })) {
 								// If the background event we're looking at is just
 								// force-closing the channel which already has a pending
 								// force-close update, no need to duplicate it.
 								continue 'each_bg_event;
 							}
+							update.update_id = pending_update.update_id.saturating_add(1);
+							updated_id = true;
 						}
 					}
 				}
+				let mut per_peer_state = per_peer_state.get(counterparty_node_id)
+					.expect("If we have pending updates for a channel it must have an entry")
+					.lock().unwrap();
+				if updated_id {
+					per_peer_state
+						.closed_channel_monitor_update_ids.entry(*channel_id)
+						.and_modify(|v| *v = cmp::max(update.update_id, *v))
+						.or_insert(update.update_id);
+				}
+				let in_flight_updates = per_peer_state.in_flight_monitor_updates
+					.entry(*funding_txo)
+					.or_insert_with(Vec::new);
+				debug_assert!(!in_flight_updates.iter().any(|upd| upd == update));
+				in_flight_updates.push(update.clone());
 			}
 			pending_background_events.push(new_event);
 		}
