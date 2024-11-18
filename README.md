@@ -29,6 +29,7 @@ Objective, Restrictions:
 - It is assumed that all extra inputs belong to the initiator (the full capacity increase is credited to the channel initiator)
 - RBF of pending splice is not supported, only a single pending splicing is supported at a time
 - The is_splice flag on the ChannelReady event is not reliable (depending on the order)
+- There is no test for splice initiated by the channel acceptor (on inbound channel)
 
 Up-to-date with main branch as of v0.0.123 (May 8, 475f736; originally branched off v0.0.115).
 

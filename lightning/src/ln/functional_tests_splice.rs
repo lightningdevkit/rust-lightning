@@ -509,11 +509,15 @@ fn test_splice_in_with_optional_payments(
 	// Extract the channel open message from node0 to node1
 	let open_channel2_message = get_event_msg!(initiator_node, MessageSendEvent::SendOpenChannelV2, acceptor_node.node.get_our_node_id());
 	assert_eq!(initiator_node.node.list_channels().len(), 1);
+	let expected_initiator_funding_key = "03c21e841cbc0b48197d060c71e116c185fa0ac281b7d0aa5924f535154437ca3b";
+	assert_eq!(open_channel2_message.common_fields.funding_pubkey.to_string(), expected_initiator_funding_key);
 
 	let _res = acceptor_node.node.handle_open_channel_v2(&initiator_node.node.get_our_node_id(), &open_channel2_message.clone());
 	// Extract the accept channel message from node1 to node0
 	let accept_channel2_message = get_event_msg!(acceptor_node, MessageSendEvent::SendAcceptChannelV2, initiator_node.node.get_our_node_id());
+	let expected_acceptor_funding_key = "0307a78def56cba9fc4db22a25928181de538ee59ba1a475ae113af7790acd0db3";
 	assert_eq!(accept_channel2_message.common_fields.temporary_channel_id.to_string(), expected_temporary_channel_id);
+	assert_eq!(accept_channel2_message.common_fields.funding_pubkey.to_string(), expected_acceptor_funding_key);
 
 	let _res = initiator_node.node.handle_accept_channel_v2(&acceptor_node.node.get_our_node_id(), &accept_channel2_message.clone());
 
@@ -697,11 +701,18 @@ fn test_splice_in_with_optional_payments(
 	let funding_inputs = vec![create_custom_dual_funding_input_with_pubkey(&initiator_node, extra_splice_funding_input_sats, &custom_input_pubkey)];
 	let _res = initiator_node.node.splice_channel(&channel_id1, &acceptor_node.node.get_our_node_id(), splice_in_sats as i64, funding_inputs, funding_feerate_perkw, locktime).unwrap();
 	// Extract the splice message from node0 to node1
-	let splice_msg = get_event_msg!(initiator_node, MessageSendEvent::SendSpliceInit, acceptor_node.node.get_our_node_id());
+	let splice_init_msg = get_event_msg!(initiator_node, MessageSendEvent::SendSpliceInit, acceptor_node.node.get_our_node_id());
+	assert_eq!(splice_init_msg.funding_contribution_satoshis, splice_in_sats as i64);
+	assert_eq!(splice_init_msg.funding_feerate_perkw, funding_feerate_perkw);
+	assert_eq!(splice_init_msg.funding_pubkey.to_string(), expected_initiator_funding_key);
+	assert!(splice_init_msg.require_confirmed_inputs.is_none());
 
-	let _res = acceptor_node.node.handle_splice_init(&initiator_node.node.get_our_node_id(), &splice_msg);
+	let _res = acceptor_node.node.handle_splice_init(&initiator_node.node.get_our_node_id(), &splice_init_msg);
 	// Extract the splice_ack message from node1 to node0
 	let splice_ack_msg = get_event_msg!(acceptor_node, MessageSendEvent::SendSpliceAck, initiator_node.node.get_our_node_id());
+	assert_eq!(splice_ack_msg.funding_contribution_satoshis, 0);
+	assert_eq!(splice_ack_msg.funding_pubkey.to_string(), expected_acceptor_funding_key);
+	assert!(splice_ack_msg.require_confirmed_inputs.is_none());
 
 	// still pre-splice channel: capacity not updated, channel usable, and funding tx set
 	assert_eq!(acceptor_node.node.list_channels().len(), 1);
