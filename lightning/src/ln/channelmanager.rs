@@ -13599,8 +13599,36 @@ where
 			}
 		}
 
-		// Note that we have to do the above replays before we push new monitor updates.
-		pending_background_events.append(&mut close_background_events);
+		// The newly generated `close_background_events` have to be added after any updates that
+		// were already in-flight on shutdown, so we append them here.
+		pending_background_events.reserve(close_background_events.len());
+		'each_bg_event: for mut new_event in close_background_events {
+			if let BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+				counterparty_node_id, funding_txo, channel_id, update,
+			} = &mut new_event {
+				debug_assert_eq!(update.updates.len(), 1);
+				debug_assert!(matches!(update.updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. }));
+				for pending_event in pending_background_events.iter() {
+					if let BackgroundEvent::MonitorUpdateRegeneratedOnStartup {
+						counterparty_node_id: pending_cp, funding_txo: pending_funding,
+						channel_id: pending_chan_id, update: pending_update,
+					} = pending_event {
+						let for_same_channel = counterparty_node_id == pending_cp
+							&& funding_txo == pending_funding
+							&& channel_id == pending_chan_id;
+						if for_same_channel {
+							if pending_update.updates.iter().any(|upd| matches!(upd, ChannelMonitorUpdateStep::ChannelForceClosed { .. })) {
+								// If the background event we're looking at is just
+								// force-closing the channel which already has a pending
+								// force-close update, no need to duplicate it.
+								continue 'each_bg_event;
+							}
+						}
+					}
+				}
+			}
+			pending_background_events.push(new_event);
+		}
 
 		// If there's any preimages for forwarded HTLCs hanging around in ChannelMonitors we
 		// should ensure we try them again on the inbound edge. We put them here and do so after we
