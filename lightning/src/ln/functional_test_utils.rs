@@ -796,7 +796,7 @@ macro_rules! get_event_msg {
 					assert_eq!(*node_id, $node_id);
 					(*msg).clone()
 				},
-				_ => panic!("Unexpected event"),
+				_ => panic!("Unexpected event {:?}", events[0]),
 			}
 		}
 	}
