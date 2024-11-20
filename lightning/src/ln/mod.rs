@@ -61,6 +61,9 @@ mod async_payments_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod functional_tests;
+#[cfg(all(test, splicing))]
+#[allow(unused_mut)]
+mod functional_tests_splice;
 #[cfg(test)]
 #[allow(unused_mut)]
 mod max_payment_path_len_tests;
