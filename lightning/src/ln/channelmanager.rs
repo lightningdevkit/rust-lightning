@@ -9530,7 +9530,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					let splice_ack_msg = try_channel_entry!(self, peer_state, chan.splice_init(msg), chan_entry);
+					let splice_ack_msg = try_channel_entry!(self, peer_state, chan.splice_init(msg, &self.logger), chan_entry);
 					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
 						node_id: *counterparty_node_id,
 						msg: splice_ack_msg,
@@ -9569,7 +9569,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					try_channel_entry!(self, peer_state, chan.splice_ack(msg), chan_entry);
+					try_channel_entry!(self, peer_state, chan.splice_ack(msg, &self.logger), chan_entry);
 				} else {
 					return Err(MsgHandleErrInternal::send_err_msg_no_close("Channel is not funded, cannot splice".to_owned(), msg.channel_id));
 				}
