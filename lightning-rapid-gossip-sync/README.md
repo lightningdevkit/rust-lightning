@@ -4,6 +4,16 @@ This crate exposes functionality for rapid gossip graph syncing, aimed primarily
 Its server counterpart is the
 [rapid-gossip-sync-server](https://github.com/lightningdevkit/rapid-gossip-sync-server) repository.
 
+## Usage
+
+To kick off Rapid Gossip Sync from the beginning, retrieve a snapshot from an RGS server instance with the initial
+timestamp being 0.
+
+Applying that snapshot using the `RapidGossipSync` instance will extract and retrieve the subsequent timestamp to
+request from the server instance. The methods `sync_network_graph_with_file_path`, `update_network_graph`, and
+`update_network_graph_no_std` all return a `Result<u32, GraphSyncError>`, and that `u32` success value
+is the timestamp meant to be used for the next server request.
+
 ## Mechanism
 
 The (presumed) server sends a compressed gossip response containing gossip data. The gossip data is
