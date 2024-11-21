@@ -3145,7 +3145,7 @@ macro_rules! emit_channel_ready_event {
 macro_rules! handle_monitor_update_completion {
 	($self: ident, $peer_state_lock: expr, $peer_state: expr, $per_peer_state_lock: expr, $chan: expr) => { {
 		let logger = WithChannelContext::from(&$self.logger, &$chan.context, None);
-		let mut updates = $chan.monitor_updating_restored(&&logger,
+		let updates = $chan.monitor_updating_restored(&&logger,
 			&$self.node_signer, $self.chain_hash, &$self.default_configuration,
 			$self.best_block.read().unwrap().height);
 		let counterparty_node_id = $chan.context.get_counterparty_node_id();
@@ -3233,7 +3233,7 @@ macro_rules! handle_monitor_update_completion {
 			$self.push_decode_update_add_htlcs(decode);
 		}
 		$self.finalize_claims(updates.finalized_claimed_htlcs);
-		for failure in updates.failed_htlcs.drain(..) {
+		for failure in updates.failed_htlcs {
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 			$self.fail_htlc_backwards_internal(&failure.0, &failure.1, &failure.2, receiver);
 		}
@@ -3775,7 +3775,7 @@ where
 			}
 		}
 
-		for htlc_source in failed_htlcs.drain(..) {
+		for htlc_source in failed_htlcs {
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(*counterparty_node_id), channel_id: *channel_id };
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
@@ -3911,7 +3911,7 @@ where
 	///     the channel-closing action,
 	/// (b) this needs to be called without holding any locks (except
 	///     [`ChannelManager::total_consistency_lock`].
-	fn finish_close_channel(&self, mut shutdown_res: ShutdownResult) {
+	fn finish_close_channel(&self, shutdown_res: ShutdownResult) {
 		debug_assert_ne!(self.per_peer_state.held_by_thread(), LockHeldState::HeldByThread);
 		#[cfg(debug_assertions)]
 		for (_, peer) in self.per_peer_state.read().unwrap().iter() {
@@ -3924,7 +3924,7 @@ where
 
 		log_debug!(logger, "Finishing closure of channel due to {} with {} HTLCs to fail",
 			shutdown_res.closure_reason, shutdown_res.dropped_outbound_htlcs.len());
-		for htlc_source in shutdown_res.dropped_outbound_htlcs.drain(..) {
+		for htlc_source in shutdown_res.dropped_outbound_htlcs {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
@@ -3985,7 +3985,7 @@ where
 				}, None));
 			}
 		}
-		for shutdown_result in shutdown_results.drain(..) {
+		for shutdown_result in shutdown_results {
 			self.finish_close_channel(shutdown_result);
 		}
 	}
@@ -5301,7 +5301,7 @@ where
 				}
 			}
 			mem::drop(funding_batch_states);
-			for shutdown_result in shutdown_results.drain(..) {
+			for shutdown_result in shutdown_results {
 				self.finish_close_channel(shutdown_result);
 			}
 		}
@@ -5657,10 +5657,10 @@ where
 			// proposed to as a batch.
 			let pending_forwards = (
 				incoming_scid, Some(incoming_counterparty_node_id), incoming_funding_txo,
-				incoming_channel_id, incoming_user_channel_id, htlc_forwards.drain(..).collect()
+				incoming_channel_id, incoming_user_channel_id, htlc_forwards,
 			);
 			self.forward_htlcs_without_forward_event(&mut [pending_forwards]);
-			for (htlc_fail, htlc_destination) in htlc_fails.drain(..) {
+			for (htlc_fail, htlc_destination) in htlc_fails {
 				let failure = match htlc_fail {
 					HTLCFailureMsg::Relay(fail_htlc) => HTLCForwardInfo::FailHTLC {
 						htlc_id: fail_htlc.htlc_id,
@@ -5697,7 +5697,7 @@ where
 			let mut forward_htlcs = new_hash_map();
 			mem::swap(&mut forward_htlcs, &mut self.forward_htlcs.lock().unwrap());
 
-			for (short_chan_id, mut pending_forwards) in forward_htlcs {
+			for (short_chan_id, pending_forwards) in forward_htlcs {
 				if short_chan_id != 0 {
 					let mut forwarding_counterparty = None;
 					macro_rules! forwarding_channel_not_found {
@@ -5814,7 +5814,7 @@ where
 					let (counterparty_node_id, forward_chan_id) = match chan_info_opt {
 						Some((cp_id, chan_id)) => (cp_id, chan_id),
 						None => {
-							forwarding_channel_not_found!(pending_forwards.drain(..));
+							forwarding_channel_not_found!(pending_forwards);
 							continue;
 						}
 					};
@@ -5822,13 +5822,13 @@ where
 					let per_peer_state = self.per_peer_state.read().unwrap();
 					let peer_state_mutex_opt = per_peer_state.get(&counterparty_node_id);
 					if peer_state_mutex_opt.is_none() {
-						forwarding_channel_not_found!(pending_forwards.drain(..));
+						forwarding_channel_not_found!(pending_forwards);
 						continue;
 					}
 					let mut peer_state_lock = peer_state_mutex_opt.unwrap().lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
-					let mut draining_pending_forwards = pending_forwards.drain(..);
-					while let Some(forward_info) = draining_pending_forwards.next() {
+					let mut pending_forwards_iter = pending_forwards.into_iter();
+					while let Some(forward_info) = pending_forwards_iter.next() {
 						let queue_fail_htlc_res = match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
@@ -5886,7 +5886,7 @@ where
 										if let Some(ChannelPhase::Funded(ref mut chan)) = peer_state.channel_by_id.get_mut(&forward_chan_id) {
 											chan
 										} else {
-											forwarding_channel_not_found!(core::iter::once(forward_info).chain(draining_pending_forwards));
+											forwarding_channel_not_found!(core::iter::once(forward_info).chain(pending_forwards_iter));
 											break;
 										}
 									}
@@ -5918,7 +5918,7 @@ where
 											HTLCDestination::NextHopChannel { node_id: Some(chan.context.get_counterparty_node_id()), channel_id: forward_chan_id }
 										));
 									} else {
-										forwarding_channel_not_found!(core::iter::once(forward_info).chain(draining_pending_forwards));
+										forwarding_channel_not_found!(core::iter::once(forward_info).chain(pending_forwards_iter));
 										break;
 									}
 								}
@@ -5933,7 +5933,7 @@ where
 									log_trace!(logger, "Failing HTLC back to channel with short id {} (backward HTLC ID {}) after delay", short_chan_id, htlc_id);
 									Some((chan.queue_fail_htlc(htlc_id, err_packet.clone(), &&logger), htlc_id))
 								} else {
-									forwarding_channel_not_found!(core::iter::once(forward_info).chain(draining_pending_forwards));
+									forwarding_channel_not_found!(core::iter::once(forward_info).chain(pending_forwards_iter));
 									break;
 								}
 							},
@@ -5946,7 +5946,7 @@ where
 									);
 									Some((res, htlc_id))
 								} else {
-									forwarding_channel_not_found!(core::iter::once(forward_info).chain(draining_pending_forwards));
+									forwarding_channel_not_found!(core::iter::once(forward_info).chain(pending_forwards_iter));
 									break;
 								}
 							},
@@ -5969,7 +5969,7 @@ where
 						}
 					}
 				} else {
-					'next_forwardable_htlc: for forward_info in pending_forwards.drain(..) {
+					'next_forwardable_htlc: for forward_info in pending_forwards {
 						match forward_info {
 							HTLCForwardInfo::AddHTLC(PendingAddHTLCInfo {
 								prev_short_channel_id, prev_htlc_id, prev_channel_id, prev_funding_outpoint,
@@ -6221,7 +6221,7 @@ where
 			|| self.compute_inflight_htlcs(), &self.entropy_source, &self.node_signer, best_block_height,
 			&self.pending_events, &self.logger, |args| self.send_payment_along_path(args));
 
-		for (htlc_source, payment_hash, failure_reason, destination) in failed_forwards.drain(..) {
+		for (htlc_source, payment_hash, failure_reason, destination) in failed_forwards {
 			self.fail_htlc_backwards_internal(&htlc_source, &payment_hash, &failure_reason, destination);
 		}
 		self.forward_htlcs(&mut phantom_receives);
@@ -6251,7 +6251,7 @@ where
 			return NotifyOption::SkipPersistNoEvents;
 		}
 
-		for event in background_events.drain(..) {
+		for event in background_events {
 			match event {
 				BackgroundEvent::ClosedMonitorUpdateRegeneratedOnStartup((funding_txo, _channel_id, update)) => {
 					// The channel has already been closed, so no use bothering to care about the
@@ -6579,14 +6579,14 @@ where
 				true
 			});
 
-			for htlc_source in timed_out_mpp_htlcs.drain(..) {
+			for htlc_source in timed_out_mpp_htlcs {
 				let source = HTLCSource::PreviousHopData(htlc_source.0.clone());
 				let reason = HTLCFailReason::from_failure_code(23);
 				let receiver = HTLCDestination::FailedPayment { payment_hash: htlc_source.1 };
 				self.fail_htlc_backwards_internal(&source, &htlc_source.1, &reason, receiver);
 			}
 
-			for (err, counterparty_node_id) in handle_errors.drain(..) {
+			for (err, counterparty_node_id) in handle_errors {
 				let _ = handle_error!(self, err, counterparty_node_id);
 			}
 
@@ -6724,7 +6724,7 @@ where
 	// failed backwards or, if they were one of our outgoing HTLCs, then their failure needs to
 	// be surfaced to the user.
 	fn fail_holding_cell_htlcs(
-		&self, mut htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: ChannelId,
+		&self, htlcs_to_fail: Vec<(HTLCSource, PaymentHash)>, channel_id: ChannelId,
 		counterparty_node_id: &PublicKey
 	) {
 		let (failure_code, onion_failure_data) = {
@@ -6747,7 +6747,7 @@ where
 			} else { (0x4000|10, Vec::new()) }
 		};
 
-		for (htlc_src, payment_hash) in htlcs_to_fail.drain(..) {
+		for (htlc_src, payment_hash) in htlcs_to_fail {
 			let reason = HTLCFailReason::reason(failure_code, onion_failure_data.clone());
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id };
 			self.fail_htlc_backwards_internal(&htlc_src, &payment_hash, &reason, receiver);
@@ -8615,7 +8615,7 @@ where
 				return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", counterparty_node_id), msg.channel_id))
 			}
 		}
-		for htlc_source in dropped_htlcs.drain(..) {
+		for htlc_source in dropped_htlcs {
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id.clone()), channel_id: msg.channel_id };
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
 			self.fail_htlc_backwards_internal(&htlc_source.0, &htlc_source.1, &reason, receiver);
@@ -9022,7 +9022,7 @@ where
 				}
 			}
 
-			for (htlc_source, payment_hash, failure_reason, destination) in failed_intercept_forwards.drain(..) {
+			for (htlc_source, payment_hash, failure_reason, destination) in failed_intercept_forwards {
 				push_forward_event |= self.fail_htlc_backwards_internal_without_forward_event(&htlc_source, &payment_hash, &failure_reason, destination);
 			}
 
@@ -9344,10 +9344,10 @@ where
 		debug_assert!(self.total_consistency_lock.try_write().is_err()); // Caller holds read lock
 
 		let mut failed_channels = Vec::new();
-		let mut pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
+		let pending_monitor_events = self.chain_monitor.release_pending_monitor_events();
 		let has_pending_monitor_events = !pending_monitor_events.is_empty();
-		for (funding_outpoint, channel_id, mut monitor_events, counterparty_node_id) in pending_monitor_events.drain(..) {
-			for monitor_event in monitor_events.drain(..) {
+		for (funding_outpoint, channel_id, monitor_events, counterparty_node_id) in pending_monitor_events {
+			for monitor_event in monitor_events {
 				match monitor_event {
 					MonitorEvent::HTLCEvent(htlc_update) => {
 						let logger = WithContext::from(&self.logger, counterparty_node_id, Some(channel_id), Some(htlc_update.payment_hash));
@@ -9411,7 +9411,7 @@ where
 			}
 		}
 
-		for failure in failed_channels.drain(..) {
+		for failure in failed_channels {
 			self.finish_close_channel(failure);
 		}
 
@@ -9469,7 +9469,7 @@ where
 		}
 
 		let has_update = has_monitor_update || !failed_htlcs.is_empty();
-		for (failures, channel_id, counterparty_node_id) in failed_htlcs.drain(..) {
+		for (failures, channel_id, counterparty_node_id) in failed_htlcs {
 			self.fail_holding_cell_htlcs(failures, channel_id, &counterparty_node_id);
 		}
 
@@ -9585,7 +9585,7 @@ where
 			});
 		}
 		drop(per_peer_state);
-		for shutdown_result in shutdown_results.drain(..) {
+		for shutdown_result in shutdown_results {
 			self.finish_close_channel(shutdown_result);
 		}
 
@@ -9689,11 +9689,11 @@ where
 			}
 		}
 
-		for (counterparty_node_id, err) in handle_errors.drain(..) {
+		for (counterparty_node_id, err) in handle_errors {
 			let _ = handle_error!(self, err, counterparty_node_id);
 		}
 
-		for shutdown_result in shutdown_results.drain(..) {
+		for shutdown_result in shutdown_results {
 			self.finish_close_channel(shutdown_result);
 		}
 
@@ -9703,8 +9703,8 @@ where
 	/// Handle a list of channel failures during a block_connected or block_disconnected call,
 	/// pushing the channel monitor update (if any) to the background events queue and removing the
 	/// Channel object.
-	fn handle_init_event_channel_failures(&self, mut failed_channels: Vec<ShutdownResult>) {
-		for mut failure in failed_channels.drain(..) {
+	fn handle_init_event_channel_failures(&self, failed_channels: Vec<ShutdownResult>) {
+		for mut failure in failed_channels {
 			// Either a commitment transactions has been confirmed on-chain or
 			// Channel::block_disconnected detected that the funding transaction has been
 			// reorganized out of the main chain.
@@ -11052,8 +11052,8 @@ where
 						ChannelPhase::UnfundedOutboundV2(_) | ChannelPhase::UnfundedInboundV2(_) => true,
 						ChannelPhase::Funded(channel) => {
 							let res = f(channel);
-							if let Ok((channel_ready_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
-								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
+							if let Ok((channel_ready_opt, timed_out_pending_htlcs, announcement_sigs)) = res {
+								for (source, payment_hash) in timed_out_pending_htlcs {
 									let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
 									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(failure_code, data),
 										HTLCDestination::NextHopChannel { node_id: Some(channel.context.get_counterparty_node_id()), channel_id: channel.context.channel_id() }));
@@ -11219,7 +11219,7 @@ where
 
 		self.handle_init_event_channel_failures(failed_channels);
 
-		for (source, payment_hash, reason, destination) in timed_out_htlcs.drain(..) {
+		for (source, payment_hash, reason, destination) in timed_out_htlcs {
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, destination);
 		}
 	}
@@ -11646,7 +11646,7 @@ where
 		}
 		mem::drop(per_peer_state);
 
-		for failure in failed_channels.drain(..) {
+		for failure in failed_channels {
 			self.finish_close_channel(failure);
 		}
 	}
@@ -13159,13 +13159,13 @@ where
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
 		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
 		default_config: UserConfig,
-		mut channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
+		channel_monitors: Vec<&'a ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>>,
 	) -> Self {
 		Self {
 			entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor,
 			tx_broadcaster, router, message_router, logger, default_config,
 			channel_monitors: hash_map_from_iter(
-				channel_monitors.drain(..).map(|monitor| { (monitor.get_funding_txo().0, monitor) })
+				channel_monitors.into_iter().map(|monitor| { (monitor.get_funding_txo().0, monitor) })
 			),
 		}
 	}
@@ -13552,7 +13552,7 @@ where
 			pending_outbound_payments = Some(pending_outbound_payments_compat);
 		} else if pending_outbound_payments.is_none() {
 			let mut outbounds = new_hash_map();
-			for (id, session_privs) in pending_outbound_payments_no_retry.unwrap().drain() {
+			for (id, session_privs) in pending_outbound_payments_no_retry.unwrap() {
 				outbounds.insert(id, PendingOutboundPayment::Legacy { session_privs });
 			}
 			pending_outbound_payments = Some(outbounds);
@@ -13948,7 +13948,7 @@ where
 		} else {
 			// LDK versions prior to 0.0.107 did not write a `pending_htlc_purposes`, but do
 			// include a `_legacy_hop_data` in the `OnionPayload`.
-			for (payment_hash, htlcs) in claimable_htlcs_list.drain(..) {
+			for (payment_hash, htlcs) in claimable_htlcs_list {
 				if htlcs.is_empty() {
 					return Err(DecodeError::InvalidValue);
 				}
@@ -14309,7 +14309,7 @@ where
 			}
 		}
 
-		for htlc_source in failed_htlcs.drain(..) {
+		for htlc_source in failed_htlcs {
 			let (source, payment_hash, counterparty_node_id, channel_id) = htlc_source;
 			let receiver = HTLCDestination::NextHopChannel { node_id: Some(counterparty_node_id), channel_id };
 			let reason = HTLCFailReason::from_failure_code(0x4000 | 8);
@@ -14458,17 +14458,17 @@ mod tests {
 		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[0], &our_payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[0]).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
-		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
+		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.into_iter().next().unwrap(), false, None);
 
 		// Next, send a keysend payment with the same payment_hash and make sure it fails.
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
-		let ev = events.drain(..).next().unwrap();
+		let ev = events.into_iter().next().unwrap();
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
@@ -14490,9 +14490,9 @@ mod tests {
 		nodes[0].node.test_send_payment_along_path(&mpp_route.paths[1], &our_payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), 200_000, cur_height, payment_id, &None, session_privs[1]).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
-		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), true, None);
+		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.into_iter().next().unwrap(), true, None);
 
 		// Claim the full MPP payment. Note that we can't use a test utility like
 		// claim_funds_along_route because the ordering of the messages causes the second half of the
@@ -14593,9 +14593,9 @@ mod tests {
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
 			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
-		let ev = events.drain(..).next().unwrap();
+		let ev = events.into_iter().next().unwrap();
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
@@ -14638,9 +14638,9 @@ mod tests {
 		nodes[0].node.send_payment_with_route(route.clone(), payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
-		let ev = events.drain(..).next().unwrap();
+		let ev = events.into_iter().next().unwrap();
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
@@ -14685,9 +14685,9 @@ mod tests {
 		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
 			RecipientOnionFields::spontaneous_empty(), payment_id_2).unwrap();
 		check_added_monitors!(nodes[0], 1);
-		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+		let events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
-		let ev = events.drain(..).next().unwrap();
+		let ev = events.into_iter().next().unwrap();
 		let payment_event = SendEvent::from_event(ev);
 		nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &payment_event.msgs[0]);
 		check_added_monitors!(nodes[1], 0);
