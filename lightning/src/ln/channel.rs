@@ -1139,6 +1139,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 	SP::Target: SignerProvider,
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
+	#[inline]
 	pub fn context(&'a self) -> &'a ChannelContext<SP> {
 		match self {
 			ChannelPhase::Funded(chan) => &chan.context,
@@ -1149,6 +1150,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 		}
 	}
 
+	#[inline]
 	pub fn context_mut(&'a mut self) -> &'a mut ChannelContext<SP> {
 		match self {
 			ChannelPhase::Funded(ref mut chan) => &mut chan.context,
@@ -1162,40 +1164,72 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 
 /// A top-level channel struct, containing a channel phase
 pub(super) struct ChannelWrapper<SP: Deref> where SP::Target: SignerProvider {
-	phase: ChannelPhase<SP>,
+	/// The inner channel phase
+	/// Option is used to facilitate in-place replacement (see e.g. move_v2_to_funded),
+	/// but it is never None, ensured in new() and set_phase()
+	phase: Option<ChannelPhase<SP>>,
 }
 
 impl<'a, SP: Deref> ChannelWrapper<SP> where SP::Target: SignerProvider {
 	pub fn new(phase: ChannelPhase<SP>) -> Self {
-		Self { phase }
+		Self {
+			phase: Some(phase),
+		}
 	}
 
+	#[inline]
 	pub fn phase(&self) -> &ChannelPhase<SP> {
-		&self.phase
+		self.phase.as_ref().unwrap()
 	}
 
+	#[inline]
 	pub fn phase_mut(&mut self) -> &mut ChannelPhase<SP> {
-		&mut self.phase
+		self.phase.as_mut().unwrap()
 	}
 
 	pub fn phase_take(self) -> ChannelPhase<SP> {
-		self.phase
+		match self.phase {
+			Some(phase) => phase,
+			None => panic!("None phase"),
+		}
 	}
 
 	pub fn get_funded_channel(&self) -> Option<&Channel<SP>> {
-		if let ChannelPhase::Funded(chan) = &self.phase {
+		if let ChannelPhase::Funded(chan) = &self.phase.as_ref().unwrap() {
 			Some(chan)
 		} else {
 			None
 		}
 	}
 
-	pub fn context(&'a self) -> &'a ChannelContext<SP> {
-		self.phase.context()
+	/// Change the internal phase
+	#[inline]
+	pub fn set_phase(&mut self, new_phase: ChannelPhase<SP>) {
+		self.phase = Some(new_phase);
 	}
 
+	pub fn move_v2_to_funded(&mut self, signing_session: InteractiveTxSigningSession) -> Result<(), ChannelError> {
+		// We need a borrow to the phase field, but self is only a mut ref
+		let phase_inline = self.phase.take().unwrap();
+		let new_phase = match phase_inline {
+			ChannelPhase::UnfundedOutboundV2(chan) =>
+				ChannelPhase::Funded(chan.into_funded_channel(signing_session)?),
+			ChannelPhase::UnfundedInboundV2(chan) =>
+				ChannelPhase::Funded(chan.into_funded_channel(signing_session)?),
+			_ => phase_inline,
+		};
+		self.set_phase(new_phase);
+		Ok(())
+	}
+
+	#[inline]
+	pub fn context(&'a self) -> &'a ChannelContext<SP> {
+		self.phase().context()
+	}
+
+	#[inline]
 	pub fn context_mut(&'a mut self) -> &'a mut ChannelContext<SP> {
-		self.phase.context_mut()
+		self.phase_mut().context_mut()
 	}
 }
 
@@ -8896,7 +8930,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
+	pub fn into_funded_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
 		let channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: Some(signing_session),
@@ -9090,7 +9124,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		self.generate_accept_channel_v2_message()
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
+	pub fn into_funded_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
 		let channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: Some(signing_session),

@@ -5012,6 +5012,7 @@ where
 						}
 					}
 				} else {
+					// put it back
 					peer_state.channel_by_id.insert(temporary_channel_id, ChannelWrapper::new(phase));
 					return Err(APIError::APIMisuseError {
 						err: format!(
@@ -8314,18 +8315,16 @@ where
 							"Got a tx_complete message with no interactive transaction construction expected or in-progress"
 							.into())),
 					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					let (channel_id, channel) = chan_entry.remove_entry();
-					let channel = match channel.phase_take() {
-						ChannelPhase::UnfundedOutboundV2(chan) => chan.into_channel(signing_session),
-						ChannelPhase::UnfundedInboundV2(chan) => chan.into_channel(signing_session),
-						_ => {
+
+					// change the channel phase inline
+					match chan_entry.get_mut().move_v2_to_funded(signing_session) {
+						Ok(_) => {},
+						Err(err) => {
 							debug_assert!(false); // It cannot be another variant as we are in the `Ok` branch of the above match.
-							Err(ChannelError::Warn(
-								"Got a tx_complete message with no interactive transaction construction expected or in-progress"
-									.into()))
-						},
-					}.map_err(|err| MsgHandleErrInternal::send_err_msg_no_close(format!("{}", err), msg.channel_id))?;
-					peer_state.channel_by_id.insert(channel_id, ChannelWrapper::new(ChannelPhase::Funded(channel)));
+							return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("Got a tx_complete message, could not transition to funding, {}", err), msg.channel_id))?;
+						}
+					}
+
 					if let Some(funding_ready_for_sig_event) = funding_ready_for_sig_event_opt {
 						let mut pending_events = self.pending_events.lock().unwrap();
 						pending_events.push_back((funding_ready_for_sig_event, None));
