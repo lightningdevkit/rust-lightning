@@ -6915,7 +6915,6 @@ where
 		let mut prev_total_msat = None;
 		let mut expected_amt_msat = None;
 		let mut valid_mpp = true;
-		let mut errs = Vec::new();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		for htlc in sources.iter() {
 			if prev_total_msat.is_some() && prev_total_msat != Some(htlc.total_msat) {
@@ -7001,12 +7000,6 @@ where
 				self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver);
 			}
 			self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
-		}
-
-		// Now we can handle any errors which were generated.
-		for (counterparty_node_id, err) in errs.drain(..) {
-			let res: Result<(), _> = Err(err);
-			let _ = handle_error!(self, res, counterparty_node_id);
 		}
 	}
 
