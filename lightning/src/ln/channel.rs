@@ -4253,8 +4253,13 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	{
 		if !matches!(
 			self.channel_state, ChannelState::NegotiatingFunding(flags)
-			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)) {
-			panic!("Tried to get an initial commitment_signed messsage at a time other than immediately after initial handshake completion (or tried to get funding_created twice)");
+			if flags == (NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT)
+		) {
+			debug_assert!(false);
+			return Err(ChannelError::Close(("Tried to get an initial commitment_signed messsage at a time other than \
+				immediately after initial handshake completion (or tried to get funding_created twice)".to_string(),
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
+			)));
 		}
 
 		let signature = match self.get_initial_counterparty_commitment_signature(logger) {
