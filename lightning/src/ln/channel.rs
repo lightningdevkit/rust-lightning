@@ -5711,6 +5711,14 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		if let Some(ref mut signing_session) = self.interactive_tx_signing_session {
+			if msg.tx_hash != signing_session.unsigned_tx.compute_txid() {
+				return Err(ChannelError::Close(
+					(
+						"The txid for the transaction does not match".to_string(),
+						ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+					)));
+			}
+
 			if msg.witnesses.len() != signing_session.remote_inputs_count() {
 				return Err(ChannelError::Warn(
 					"Witness count did not match contributed input count".to_string()
@@ -5730,14 +5738,6 @@ impl<SP: Deref> Channel<SP> where
 
 				// TODO(dual_funding): I don't see how we're going to be able to ensure witness-standardness
 				// for spending. Doesn't seem to be anything in rust-bitcoin.
-			}
-
-			if msg.tx_hash != signing_session.unsigned_tx.compute_txid() {
-				return Err(ChannelError::Close(
-					(
-						"The txid for the transaction does not match".to_string(),
-						ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-					)));
 			}
 
 			let (tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg.clone())
