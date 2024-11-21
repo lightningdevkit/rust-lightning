@@ -956,6 +956,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 	/// with `scid` towards the given `target` node, based on the historical estimated liquidity
 	/// bounds.
 	///
+	/// Returns `None` if there is no (or insufficient) historical data for the given channel (or
+	/// the provided `target` is not a party to the channel).
+	///
 	/// These are the same bounds as returned by
 	/// [`Self::historical_estimated_channel_liquidity_probabilities`] (but not those returned by
 	/// [`Self::estimated_channel_liquidity_range`]).
@@ -974,6 +977,37 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 						&params, amount_msat, capacity_msat
 					).map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
 				}
+			}
+		}
+		None
+	}
+
+	/// Query the probability of payment success sending the given `amount_msat` over the channel
+	/// with `scid` towards the given `target` node, based on the live estimated liquidity bounds.
+	///
+	/// This will return `Some` for any channel which is present in the [`NetworkGraph`], including
+	/// if we have no bound information beside the channel's capacity.
+	pub fn live_estimated_payment_success_probability(
+		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters,
+	) -> Option<f64> {
+		let graph = self.network_graph.read_only();
+
+		if let Some(chan) = graph.channels().get(&scid) {
+			if let Some((directed_info, source)) = chan.as_directed_to(target) {
+				let capacity_msat = directed_info.effective_capacity().as_msat();
+				let dummy_liq = ChannelLiquidity::new(Duration::ZERO);
+				let liq = self.channel_liquidities.get(&scid)
+					.unwrap_or(&dummy_liq)
+					.as_directed(&source, &target, capacity_msat);
+				let min_liq = liq.min_liquidity_msat();
+				let max_liq = liq.max_liquidity_msat();
+				if amount_msat <= liq.min_liquidity_msat() {
+					return Some(1.0);
+				} else if amount_msat > liq.max_liquidity_msat() {
+					return Some(0.0);
+				}
+				let (num, den) = success_probability(amount_msat, min_liq, max_liq, capacity_msat, &params, false);
+				return Some(num as f64 / den as f64);
 			}
 		}
 		None
