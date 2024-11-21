@@ -1240,10 +1240,6 @@ pub(super) struct ChannelContext<SP: Deref> where SP::Target: SignerProvider {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	channel_value_satoshis: u64,
 
-	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
-	#[cfg(splicing)]
-	pending_splice_pre: Option<PendingSpliceInfoPre>,
-	
 	latest_monitor_update_id: u64,
 
 	holder_signer: ChannelSignerType<SP>,
@@ -2234,9 +2230,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			is_manual_broadcast: false,
 
 			next_funding_txid: None,
-
-			#[cfg(splicing)]
-			pending_splice_pre: None,
 		};
 
 		Ok(channel_context)
@@ -2470,9 +2463,6 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			local_initiated_shutdown: None,
 			is_manual_broadcast: false,
 			next_funding_txid: None,
-
-			#[cfg(splicing)]
-			pending_splice_pre: None,
 		})
 	}
 
@@ -4306,6 +4296,9 @@ pub(super) struct DualFundingChannelContext {
 pub(super) struct Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub context: ChannelContext<SP>,
 	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
+	/// Info about an in-progress, pending splice (if any), on the pre-splice channel
+	#[cfg(splicing)]
+	pending_splice_pre: Option<PendingSpliceInfoPre>,
 }
 
 #[cfg(any(test, fuzzing))]
@@ -7914,7 +7907,7 @@ impl<SP: Deref> Channel<SP> where
 	) -> Result<msgs::SpliceInit, ChannelError> {
 		// Check if a splice has been initiated already.
 		// Note: this could be handled more nicely, and support multiple outstanding splice's, the incoming splice_ack matters anyways.
-		if let Some(splice_info) = &self.context.pending_splice_pre {
+		if let Some(splice_info) = &self.pending_splice_pre {
 			return Err(ChannelError::Warn(format!(
 				"Channel has already a splice pending, contribution {}", splice_info.our_funding_contribution
 			)));
@@ -7943,7 +7936,7 @@ impl<SP: Deref> Channel<SP> where
 		// Note: post-splice channel value is not yet known at this point, counterpary contribution is not known
 		// (Cannot test for miminum required post-splice channel value)
 
-		self.context.pending_splice_pre = Some(PendingSpliceInfoPre {
+		self.pending_splice_pre = Some(PendingSpliceInfoPre {
 			our_funding_contribution: our_funding_contribution_satoshis,
 		});
 
@@ -7960,7 +7953,7 @@ impl<SP: Deref> Channel<SP> where
 
 		// Check if a splice has been initiated already.
 		// Note: this could be handled more nicely, and support multiple outstanding splice's, the incoming splice_ack matters anyways.
-		if let Some(splice_info) = &self.context.pending_splice_pre {
+		if let Some(splice_info) = &self.pending_splice_pre {
 			return Err(ChannelError::Warn(format!(
 				"Channel has already a splice pending, contribution {}", splice_info.our_funding_contribution,
 			)));
@@ -8009,7 +8002,7 @@ impl<SP: Deref> Channel<SP> where
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 
 		// check if splice is pending
-		let pending_splice = if let Some(pending_splice) = &self.context.pending_splice_pre {
+		let pending_splice = if let Some(pending_splice) = &self.pending_splice_pre {
 			pending_splice
 		} else {
 			return Err(ChannelError::Warn(format!("Channel is not in pending splice")));
@@ -8701,6 +8694,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 		let mut channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: None,
+			#[cfg(splicing)]
+			pending_splice_pre: None,
 		};
 
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
@@ -8926,6 +8921,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 		let mut channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: None,
+			#[cfg(splicing)]
+			pending_splice_pre: None,
 		};
 		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
@@ -9071,6 +9068,8 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		let channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: Some(signing_session),
+			#[cfg(splicing)]
+			pending_splice_pre: None,
 		};
 
 		Ok(channel)
@@ -9265,6 +9264,8 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		let channel = Channel {
 			context: self.context,
 			interactive_tx_signing_session: Some(signing_session),
+			#[cfg(splicing)]
+			pending_splice_pre: None,
 		};
 
 		Ok(channel)
@@ -10341,11 +10342,10 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 				// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
 				// to the txid of that interactive transaction, else we MUST NOT set it.
 				next_funding_txid: None,
-
-				#[cfg(splicing)]
-				pending_splice_pre: None,
 			},
 			interactive_tx_signing_session: None,
+			#[cfg(splicing)]
+			pending_splice_pre: None,
 		})
 	}
 }
