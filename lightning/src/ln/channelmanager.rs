@@ -4256,7 +4256,7 @@ where
 		// Look for the channel
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
-				if let ChannelPhase::Funded(chan) = chan_phase_entry.get_mut() {
+				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
 					let msg = match chan.splice_channel(our_funding_contribution_satoshis, funding_feerate_perkw, locktime) {
 						Ok(msg) => msg,
 						Err(err) => return Err(APIError::APIMisuseError {
@@ -9378,7 +9378,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					counterparty_node_id, msg.channel_id,
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if let ChannelPhase::Funded(chan) = chan_entry.get_mut() {
+				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					match chan.splice_init(msg) {
 						Ok(splice_ack_msg) => {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
@@ -9423,7 +9423,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					counterparty_node_id
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan) => {
-				if let ChannelPhase::Funded(chan) = chan.get_mut() {
+				if let Some(chan) = chan.get_mut().as_funded_mut() {
 					match chan.splice_ack(msg) {
 						Ok(_) => {}
 						Err(err) => {
