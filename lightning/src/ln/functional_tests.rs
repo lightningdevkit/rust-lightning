@@ -735,7 +735,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+			|channel| channel.get_funded_channel()
 		).flatten().unwrap();
 		let chan_signer = local_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
@@ -746,7 +746,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
 		let remote_chan = chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+			|channel| channel.get_funded_channel()
 		).flatten().unwrap();
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
@@ -763,7 +763,7 @@ fn test_update_fee_that_funder_cannot_afford() {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+			|channel| channel.get_funded_channel()
 		).flatten().unwrap();
 		let local_chan_signer = local_chan.get_signer();
 		let mut htlcs: Vec<(HTLCOutputInCommitment, ())> = vec![];
@@ -1467,7 +1467,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+			|channel| channel.get_funded_channel()
 		).flatten().unwrap();
 		let chan_signer = local_chan.get_signer();
 		// Make the signer believe we validated another commitment, so we can release the secret
@@ -1483,7 +1483,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&nodes[0].node.get_our_node_id()).unwrap().lock().unwrap();
 		let remote_chan = chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+			|channel| channel.get_funded_channel()
 		).flatten().unwrap();
 		let chan_signer = remote_chan.get_signer();
 		let pubkeys = chan_signer.as_ref().pubkeys();
@@ -1514,7 +1514,7 @@ fn test_fee_spike_violation_fails_htlc() {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let local_chan_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let local_chan = local_chan_lock.channel_by_id.get(&chan.2).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+			|channel| channel.get_funded_channel()
 		).flatten().unwrap();
 		let local_chan_signer = local_chan.get_signer();
 		let commitment_tx = CommitmentTransaction::new_with_auxiliary_htlc_data(
@@ -7868,7 +7868,7 @@ fn test_counterparty_raa_skip_no_crash() {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let mut guard = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let keys = guard.channel_by_id.get_mut(&channel_id).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+			|channel| channel.get_funded_channel()
 		).flatten().unwrap().get_signer();
 
 		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
@@ -9310,8 +9310,8 @@ fn test_duplicate_chan_id() {
 		// another channel in the ChannelManager - an invalid state. Thus, we'd panic later when we
 		// try to create another channel. Instead, we drop the channel entirely here (leaving the
 		// channelmanager in a possibly nonsense state instead).
-		match a_peer_state.channel_by_id.remove(&open_chan_2_msg.common_fields.temporary_channel_id).unwrap() {
-			ChannelPhase::UnfundedOutboundV1(mut chan) => {
+		match a_peer_state.channel_by_id.remove(&open_chan_2_msg.common_fields.temporary_channel_id).unwrap().phase_mut() {
+			ChannelPhase::UnfundedOutboundV1(chan) => {
 				let logger = test_utils::TestLogger::new();
 				chan.get_funding_created(tx.clone(), funding_outpoint, false, &&logger).map_err(|_| ()).unwrap()
 			},

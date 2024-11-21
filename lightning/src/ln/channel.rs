@@ -1160,6 +1160,45 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 	}
 }
 
+/// A top-level channel struct, containing a channel phase
+pub(super) struct ChannelWrapper<SP: Deref> where SP::Target: SignerProvider {
+	phase: ChannelPhase<SP>,
+}
+
+impl<'a, SP: Deref> ChannelWrapper<SP> where SP::Target: SignerProvider {
+	pub fn new(phase: ChannelPhase<SP>) -> Self {
+		Self { phase }
+	}
+
+	pub fn phase(&self) -> &ChannelPhase<SP> {
+		&self.phase
+	}
+
+	pub fn phase_mut(&mut self) -> &mut ChannelPhase<SP> {
+		&mut self.phase
+	}
+
+	pub fn phase_take(self) -> ChannelPhase<SP> {
+		self.phase
+	}
+
+	pub fn get_funded_channel(&self) -> Option<&Channel<SP>> {
+		if let ChannelPhase::Funded(chan) = &self.phase {
+			Some(chan)
+		} else {
+			None
+		}
+	}
+
+	pub fn context(&'a self) -> &'a ChannelContext<SP> {
+		self.phase.context()
+	}
+
+	pub fn context_mut(&'a mut self) -> &'a mut ChannelContext<SP> {
+		self.phase.context_mut()
+	}
+}
+
 /// Contains all state common to unfunded inbound/outbound channels.
 pub(super) struct UnfundedChannelContext {
 	/// A counter tracking how many ticks have elapsed since this unfunded channel was

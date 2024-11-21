@@ -994,7 +994,7 @@ macro_rules! get_channel_ref {
 		{
 			$per_peer_state_lock = $node.node.per_peer_state.read().unwrap();
 			$peer_state_lock = $per_peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
-			$peer_state_lock.channel_by_id.get_mut(&$channel_id).unwrap()
+			$peer_state_lock.channel_by_id.get_mut(&$channel_id).unwrap().phase_mut()
 		}
 	}
 }
@@ -3618,7 +3618,7 @@ macro_rules! get_channel_value_stat {
 		let peer_state_lock = $node.node.per_peer_state.read().unwrap();
 		let chan_lock = peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
 		let chan = chan_lock.channel_by_id.get(&$channel_id).map(
-			|phase| if let ChannelPhase::Funded(chan) = phase { Some(chan) } else { None }
+			|channel| channel.get_funded_channel()
 		).flatten().unwrap();
 		chan.get_value_stat()
 	}}
