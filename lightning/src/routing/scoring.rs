@@ -779,6 +779,7 @@ struct DummyLiquidity {
 	c: HistoricalLiquidityTracker,
 	d: Duration,
 	e: Duration,
+	f: Duration,
 }
 
 /// The amount of padding required to make [`ChannelLiquidity`] (plus a u64) a full 4 cache lines.
@@ -806,6 +807,10 @@ struct ChannelLiquidity {
 	/// epoch.
 	offset_history_last_updated: Duration,
 
+	/// The last time when the liquidity bounds were updated with new payment information (i.e.
+	/// ignoring decays).
+	last_datapoint: Duration,
+
 	_padding: [u64; LIQ_PADDING_LEN],
 }
 
@@ -821,7 +826,7 @@ struct ChannelLiquidity {
 //
 // The next two cache lines will have the historical points, which we only access last during
 // scoring, followed by the last_updated `Duration`s (which we do not need during scoring). The
-// extra padding brings us up to a clean four cache lines.
+// `last_datapoint` `Duration` and extra padding bring us up to a clean 4 cache lines.
 const _LIQUIDITY_MAP_SIZING_CHECK: usize = 256 - ::core::mem::size_of::<(u64, ChannelLiquidity)>();
 const _LIQUIDITY_MAP_SIZING_CHECK_2: usize = ::core::mem::size_of::<(u64, ChannelLiquidity)>() - 256;
 
@@ -833,6 +838,7 @@ struct DirectedChannelLiquidity<L: Deref<Target = u64>, HT: Deref<Target = Histo
 	capacity_msat: u64,
 	last_updated: T,
 	offset_history_last_updated: T,
+	last_datapoint: T,
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> where L::Target: Logger {
@@ -1009,6 +1015,7 @@ impl ChannelLiquidity {
 			liquidity_history: HistoricalLiquidityTracker::new(),
 			last_updated,
 			offset_history_last_updated: last_updated,
+			last_datapoint: last_updated,
 			_padding: [0; LIQ_PADDING_LEN],
 		}
 	}
@@ -1033,6 +1040,7 @@ impl ChannelLiquidity {
 			capacity_msat,
 			last_updated: &self.last_updated,
 			offset_history_last_updated: &self.offset_history_last_updated,
+			last_datapoint: &self.last_datapoint,
 		}
 	}
 
@@ -1056,6 +1064,7 @@ impl ChannelLiquidity {
 			capacity_msat,
 			last_updated: &mut self.last_updated,
 			offset_history_last_updated: &mut self.offset_history_last_updated,
+			last_datapoint: &mut self.last_datapoint,
 		}
 	}
 
@@ -1335,6 +1344,7 @@ DirectedChannelLiquidity<L, HT, T> {
 			*self.max_liquidity_offset_msat = 0;
 		}
 		*self.last_updated = duration_since_epoch;
+		*self.last_datapoint = duration_since_epoch;
 	}
 
 	/// Adjusts the upper bound of the channel liquidity balance in this direction.
@@ -1344,6 +1354,7 @@ DirectedChannelLiquidity<L, HT, T> {
 			*self.min_liquidity_offset_msat = 0;
 		}
 		*self.last_updated = duration_since_epoch;
+		*self.last_datapoint = duration_since_epoch;
 	}
 }
 
@@ -1953,6 +1964,7 @@ impl Writeable for ChannelLiquidity {
 			(5, self.liquidity_history.writeable_min_offset_history(), required),
 			(7, self.liquidity_history.writeable_max_offset_history(), required),
 			(9, self.offset_history_last_updated, required),
+			(11, self.last_datapoint, required),
 		});
 		Ok(())
 	}
@@ -1969,6 +1981,7 @@ impl Readable for ChannelLiquidity {
 		let mut max_liquidity_offset_history: Option<HistoricalBucketRangeTracker> = None;
 		let mut last_updated = Duration::from_secs(0);
 		let mut offset_history_last_updated = None;
+		let mut last_datapoint = None;
 		read_tlv_fields!(r, {
 			(0, min_liquidity_offset_msat, required),
 			(1, legacy_min_liq_offset_history, option),
@@ -1978,6 +1991,7 @@ impl Readable for ChannelLiquidity {
 			(5, min_liquidity_offset_history, option),
 			(7, max_liquidity_offset_history, option),
 			(9, offset_history_last_updated, option),
+			(11, last_datapoint, option),
 		});
 
 		if min_liquidity_offset_history.is_none() {
@@ -2002,6 +2016,7 @@ impl Readable for ChannelLiquidity {
 			),
 			last_updated,
 			offset_history_last_updated: offset_history_last_updated.unwrap_or(last_updated),
+			last_datapoint: last_datapoint.unwrap_or(last_updated),
 			_padding: [0; LIQ_PADDING_LEN],
 		})
 	}
@@ -2175,20 +2190,21 @@ mod tests {
 		let logger = TestLogger::new();
 		let last_updated = Duration::ZERO;
 		let offset_history_last_updated = Duration::ZERO;
+		let last_datapoint = Duration::ZERO;
 		let network_graph = network_graph(&logger);
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger)
 			.with_channel(42,
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100,
-					last_updated, offset_history_last_updated,
+					last_updated, offset_history_last_updated, last_datapoint,
 					liquidity_history: HistoricalLiquidityTracker::new(),
 					_padding: [0; LIQ_PADDING_LEN],
 				})
 			.with_channel(43,
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100,
-					last_updated, offset_history_last_updated,
+					last_updated, offset_history_last_updated, last_datapoint,
 					liquidity_history: HistoricalLiquidityTracker::new(),
 					_padding: [0; LIQ_PADDING_LEN],
 				});
@@ -2256,13 +2272,14 @@ mod tests {
 		let logger = TestLogger::new();
 		let last_updated = Duration::ZERO;
 		let offset_history_last_updated = Duration::ZERO;
+		let last_datapoint = Duration::ZERO;
 		let network_graph = network_graph(&logger);
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger)
 			.with_channel(42,
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400,
-					last_updated, offset_history_last_updated,
+					last_updated, offset_history_last_updated, last_datapoint,
 					liquidity_history: HistoricalLiquidityTracker::new(),
 					_padding: [0; LIQ_PADDING_LEN],
 				});
@@ -2317,13 +2334,14 @@ mod tests {
 		let logger = TestLogger::new();
 		let last_updated = Duration::ZERO;
 		let offset_history_last_updated = Duration::ZERO;
+		let last_datapoint = Duration::ZERO;
 		let network_graph = network_graph(&logger);
 		let decay_params = ProbabilisticScoringDecayParameters::default();
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger)
 			.with_channel(42,
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400,
-					last_updated, offset_history_last_updated,
+					last_updated, offset_history_last_updated, last_datapoint,
 					liquidity_history: HistoricalLiquidityTracker::new(),
 					_padding: [0; LIQ_PADDING_LEN],
 				});
@@ -2430,6 +2448,7 @@ mod tests {
 		let logger = TestLogger::new();
 		let last_updated = Duration::ZERO;
 		let offset_history_last_updated = Duration::ZERO;
+		let last_datapoint = Duration::ZERO;
 		let network_graph = network_graph(&logger);
 		let params = ProbabilisticScoringFeeParameters {
 			liquidity_penalty_multiplier_msat: 1_000,
@@ -2443,7 +2462,7 @@ mod tests {
 			.with_channel(42,
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 40, max_liquidity_offset_msat: 40,
-					last_updated, offset_history_last_updated,
+					last_updated, offset_history_last_updated, last_datapoint,
 					liquidity_history: HistoricalLiquidityTracker::new(),
 					_padding: [0; LIQ_PADDING_LEN],
 				});
