@@ -14,6 +14,10 @@ request from the server instance. The methods `sync_network_graph_with_file_path
 `update_network_graph_no_std` all return a `Result<u32, GraphSyncError>`, and that `u32` success value
 is the timestamp meant to be used for the next server request.
 
+Note that running those methods also updates the timestamp stored in the `NetworkGraph` object, whence it can be easily
+retrieved by calling `get_last_rapid_gossip_sync_timestamp`, so using RGS does not impose any additional caching
+requirements beyond those already used for storing the network graph.
+
 ## Mechanism
 
 The (presumed) server sends a compressed gossip response containing gossip data. The gossip data is
