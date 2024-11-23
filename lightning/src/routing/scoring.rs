@@ -879,6 +879,19 @@ impl ProbabilisticScoringDecayParameters {
 	}
 }
 
+/// A dummy copy of [`ChannelLiquidity`] to calculate its unpadded size
+#[repr(C)]
+struct DummyLiquidity {
+	a: u64,
+	b: u64,
+	c: HistoricalLiquidityTracker,
+	d: Duration,
+	e: Duration,
+}
+
+/// The amount of padding required to make [`ChannelLiquidity`] (plus a u64) a full 4 cache lines.
+const LIQ_PADDING_LEN: usize = (256 - ::core::mem::size_of::<(u64, DummyLiquidity)>()) / 8;
+
 /// Accounting for channel liquidity balance uncertainty.
 ///
 /// Direction is defined in terms of [`NodeId`] partial ordering, where the source node is the
@@ -901,17 +914,25 @@ struct ChannelLiquidity {
 	/// Time when the historical liquidity bounds were last modified as an offset against the unix
 	/// epoch.
 	offset_history_last_updated: Duration,
+
+	_padding: [u64; LIQ_PADDING_LEN],
 }
 
-// Check that the liquidity HashMap's entries sit on round cache lines.
+// Check that the liquidity HashMap's entries sit on round cache line pairs.
 //
-// Specifically, the first cache line will have the key, the liquidity offsets, and the total
-// points tracked in the historical tracker.
+// Most modern CPUs have 64-byte cache lines, so we really want to be on round cache lines to avoid
+// hitting memory too much during scoring. Further, many x86 CPUs (and possibly others) load
+// adjacent cache lines opportunistically in case they will be useful.
+//
+// Thus, we really want our HashMap entries to be aligned to 128 bytes. This will leave the first
+// cache line will have the key, the liquidity offsets, and the total points tracked in the
+// historical tracker.
 //
 // The next two cache lines will have the historical points, which we only access last during
-// scoring, followed by the last_updated `Duration`s (which we do not need during scoring).
-const _LIQUIDITY_MAP_SIZING_CHECK: usize = 192 - ::core::mem::size_of::<(u64, ChannelLiquidity)>();
-const _LIQUIDITY_MAP_SIZING_CHECK_2: usize = ::core::mem::size_of::<(u64, ChannelLiquidity)>() - 192;
+// scoring, followed by the last_updated `Duration`s (which we do not need during scoring). The
+// extra padding brings us up to a clean four cache lines.
+const _LIQUIDITY_MAP_SIZING_CHECK: usize = 256 - ::core::mem::size_of::<(u64, ChannelLiquidity)>();
+const _LIQUIDITY_MAP_SIZING_CHECK_2: usize = ::core::mem::size_of::<(u64, ChannelLiquidity)>() - 256;
 
 /// A snapshot of [`ChannelLiquidity`] in one direction assuming a certain channel capacity.
 struct DirectedChannelLiquidity<L: Deref<Target = u64>, HT: Deref<Target = HistoricalLiquidityTracker>, T: Deref<Target = Duration>> {
@@ -1163,6 +1184,7 @@ impl ChannelLiquidity {
 			liquidity_history: HistoricalLiquidityTracker::new(),
 			last_updated,
 			offset_history_last_updated: last_updated,
+			_padding: [0; LIQ_PADDING_LEN],
 		}
 	}
 
@@ -2431,13 +2453,14 @@ impl Readable for ChannelLiquidity {
 			),
 			last_updated,
 			offset_history_last_updated: offset_history_last_updated.unwrap_or(last_updated),
+			_padding: [0; LIQ_PADDING_LEN],
 		})
 	}
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{ChannelLiquidity, HistoricalLiquidityTracker, ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters};
+	use super::*;
 	use crate::blinded_path::BlindedHop;
 	use crate::util::config::UserConfig;
 
@@ -2612,12 +2635,14 @@ mod tests {
 					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100,
 					last_updated, offset_history_last_updated,
 					liquidity_history: HistoricalLiquidityTracker::new(),
+					_padding: [0; LIQ_PADDING_LEN],
 				})
 			.with_channel(43,
 				ChannelLiquidity {
 					min_liquidity_offset_msat: 700, max_liquidity_offset_msat: 100,
 					last_updated, offset_history_last_updated,
 					liquidity_history: HistoricalLiquidityTracker::new(),
+					_padding: [0; LIQ_PADDING_LEN],
 				});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -2691,6 +2716,7 @@ mod tests {
 					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400,
 					last_updated, offset_history_last_updated,
 					liquidity_history: HistoricalLiquidityTracker::new(),
+					_padding: [0; LIQ_PADDING_LEN],
 				});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -2751,6 +2777,7 @@ mod tests {
 					min_liquidity_offset_msat: 200, max_liquidity_offset_msat: 400,
 					last_updated, offset_history_last_updated,
 					liquidity_history: HistoricalLiquidityTracker::new(),
+					_padding: [0; LIQ_PADDING_LEN],
 				});
 		let source = source_node_id();
 		let target = target_node_id();
@@ -2870,6 +2897,7 @@ mod tests {
 					min_liquidity_offset_msat: 40, max_liquidity_offset_msat: 40,
 					last_updated, offset_history_last_updated,
 					liquidity_history: HistoricalLiquidityTracker::new(),
+					_padding: [0; LIQ_PADDING_LEN],
 				});
 		let source = source_node_id();
 
