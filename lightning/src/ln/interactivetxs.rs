@@ -327,7 +327,7 @@ impl InteractiveTxSigningSession {
 		if self.remote_inputs_count() != tx_signatures.witnesses.len() {
 			return Err(());
 		}
-		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses.clone());
+		self.unsigned_tx.add_remote_witnesses(tx_signatures.witnesses);
 		self.counterparty_sent_tx_signatures = true;
 
 		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
@@ -360,7 +360,7 @@ impl InteractiveTxSigningSession {
 		self.holder_tx_signatures = Some(TxSignatures {
 			channel_id,
 			tx_hash: self.unsigned_tx.compute_txid(),
-			witnesses: witnesses.into_iter().collect(),
+			witnesses,
 			shared_input_signature: None,
 		});
 		if self.received_commitment_signed

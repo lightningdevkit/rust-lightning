@@ -1682,6 +1682,10 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor>;
 
+	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession>;
+
+	fn interactive_tx_signing_session_with_context_mut(&mut self) -> (&mut Option<InteractiveTxSigningSession>, &mut ChannelContext<SP>);
+
 	fn dual_funding_context(&self) -> &DualFundingChannelContext;
 
 	fn tx_add_input(&mut self, msg: &msgs::TxAddInput) -> InteractiveTxMessageSendResult {
@@ -1755,13 +1759,20 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 	}
 
 	fn funding_tx_constructed<L: Deref>(
-		&mut self, signing_session: &mut InteractiveTxSigningSession, logger: &L
-	) -> Result<(msgs::CommitmentSigned, Option<Event>), ChannelError>
+		&mut self, logger: &L
+	) -> Result<(Option<msgs::CommitmentSigned>, Option<Event>), ChannelError>
 	where
 		L::Target: Logger
 	{
 		let our_funding_satoshis = self.dual_funding_context().our_funding_satoshis;
-		let context = self.context_mut();
+		let (signing_session, context) = match self.interactive_tx_signing_session_with_context_mut() {
+			(Some(signing_session), context) => (signing_session, context),
+			(None, _) => return Err(ChannelError::Close(
+						(
+							"No signing session available for commitment signing".to_owned(),
+							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
+						))),
+		};
 
 		let mut output_index = None;
 		let expected_spk = context.get_funding_redeemscript().to_p2wsh();
@@ -1791,13 +1802,13 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 
 		let commitment_signed = context.get_initial_commitment_signed(logger);
 		let commitment_signed = match commitment_signed {
-			Ok(commitment_signed) => {
+			Some(commitment_signed) => {
 				context.funding_transaction = Some(signing_session.unsigned_tx.build_unsigned_tx());
 				commitment_signed
 			},
-			Err(err) => {
+			None => {
 				context.channel_transaction_parameters.funding_outpoint = None;
-				return Err(ChannelError::Close((err.to_string(), ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) })))
+				return Ok((None, None));
 			},
 		};
 
@@ -1832,7 +1843,7 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 		// Clear the interactive transaction constructor
 		self.interactive_tx_constructor_mut().take();
 
-		Ok((commitment_signed, funding_ready_for_sig_event))
+		Ok((Some(commitment_signed), funding_ready_for_sig_event))
 	}
 }
 
@@ -1849,6 +1860,12 @@ impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Targ
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
 	}
+	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession> {
+		&mut self.signing_session
+	}
+	fn interactive_tx_signing_session_with_context_mut(&mut self) -> (&mut Option<InteractiveTxSigningSession>, &mut ChannelContext<SP>) {
+		(&mut self.signing_session, &mut self.context)
+	}
 }
 
 impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -1863,6 +1880,12 @@ impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Targe
 	}
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
+	}
+	fn interactive_tx_signing_session_mut(&mut self) -> &mut Option<InteractiveTxSigningSession> {
+		&mut self.signing_session
+	}
+	fn interactive_tx_signing_session_with_context_mut(&mut self) -> (&mut Option<InteractiveTxSigningSession>, &mut ChannelContext<SP>) {
+		(&mut self.signing_session, &mut self.context)
 	}
 }
 
@@ -4013,7 +4036,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 
 	fn get_initial_counterparty_commitment_signature<L: Deref>(
 		&self, logger: &L
-	) -> Result<Signature, ChannelError>
+	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
@@ -4026,11 +4049,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 			ChannelSignerType::Ecdsa(ref ecdsa) => {
 				ecdsa.sign_counterparty_commitment(&counterparty_initial_commitment_tx, Vec::new(), Vec::new(), &self.secp_ctx)
 					.map(|(signature, _)| signature)
-					.map_err(|_| ChannelError::Close(
-						(
-							"Failed to get signatures for new commitment_signed".to_owned(),
-							ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) },
-						)))
+					.ok()
 			},
 			// TODO (taproot|arik)
 			#[cfg(taproot)]
@@ -4038,9 +4057,7 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	fn get_initial_commitment_signed<L: Deref>(
-		&mut self, logger: &L
-	) -> Result<msgs::CommitmentSigned, ChannelError>
+	fn get_initial_commitment_signed<L: Deref>(&mut self, logger: &L) -> Option<msgs::CommitmentSigned>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
@@ -4052,31 +4069,42 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		}
 		self.assert_no_commitment_advancement("initial commitment_signed");
 
-		let signature = match self.get_initial_counterparty_commitment_signature(logger) {
-			Ok(res) => res,
-			Err(e) => {
-				log_error!(logger, "Got bad signatures: {:?}!", e);
-				return Err(e);
-			}
-		};
+		match self.get_initial_counterparty_commitment_signature(logger) {
+			Some(signature) => {
+				if self.signer_pending_funding {
+					log_trace!(logger, "Counterparty commitment signature ready for initial commitment_signed message: clearing signer_pending_funding");
+					self.signer_pending_funding = false;
+				}
 
-		log_info!(logger, "Generated commitment_signed for peer for channel {}", &self.channel_id());
+				log_info!(logger, "Generated commitment_signed for peer for channel {}", &self.channel_id);
 
-		Ok(msgs::CommitmentSigned {
-			channel_id: self.channel_id,
-			htlc_signatures: vec![],
-			signature,
-			batch: None,
-			#[cfg(taproot)]
-			partial_signature_with_nonce: None,
-		})
+				Some(msgs::CommitmentSigned {
+					channel_id: self.channel_id,
+					htlc_signatures: vec![],
+					signature,
+					batch: None,
+					#[cfg(taproot)]
+					partial_signature_with_nonce: None,
+				})
+			},
+			None => {
+				#[cfg(not(async_signing))] {
+					panic!("Failed to get signature for initial commitment_signed");
+				}
+				#[cfg(async_signing)] {
+					log_trace!(logger, "Counterparty commitment signature not available for initial commitment_signed message; setting signer_pending_funding");
+					self.signer_pending_funding = true;
+					None
+				}
+			},
+		}
 	}
 
 	#[cfg(test)]
 	pub fn get_initial_counterparty_commitment_signature_for_test<L: Deref>(
 		&mut self, logger: &L, channel_transaction_parameters: ChannelTransactionParameters,
 		counterparty_cur_commitment_point_override: PublicKey,
-	) -> Result<Signature, ChannelError>
+	) -> Option<Signature>
 	where
 		SP::Target: SignerProvider,
 		L::Target: Logger
@@ -8723,6 +8751,7 @@ pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider 
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -8782,6 +8811,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				our_funding_inputs: funding_inputs,
 			},
 			interactive_tx_constructor: None,
+			signing_session: None,
 		};
 		Ok(chan)
 	}
@@ -8849,13 +8879,12 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
-		let channel = Channel {
+	pub fn into_channel(self) -> Channel<SP> {
+		debug_assert!(self.signing_session.is_some());
+		Channel {
 			context: self.context,
-			interactive_tx_signing_session: Some(signing_session),
-		};
-
-		Ok(channel)
+			interactive_tx_signing_session: self.signing_session,
+		}
 	}
 }
 
@@ -8866,6 +8895,7 @@ pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -8968,6 +8998,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			dual_funding_context,
 			interactive_tx_constructor,
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
+			signing_session: None,
 		})
 	}
 
@@ -9043,13 +9074,12 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		self.generate_accept_channel_v2_message()
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
-		let channel = Channel {
+	pub fn into_channel(self) -> Channel<SP> {
+		debug_assert!(self.signing_session.is_some());
+		Channel {
 			context: self.context,
-			interactive_tx_signing_session: Some(signing_session),
-		};
-
-		Ok(channel)
+			interactive_tx_signing_session: self.signing_session,
+		}
 	}
 }
 
