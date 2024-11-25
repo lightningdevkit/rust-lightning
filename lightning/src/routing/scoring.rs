@@ -52,7 +52,7 @@
 //! [`find_route`]: crate::routing::router::find_route
 
 use crate::ln::msgs::DecodeError;
-use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId};
+use crate::routing::gossip::{DirectedChannelInfo, EffectiveCapacity, NetworkGraph, NodeId};
 use crate::routing::router::{Path, CandidateRouteHop, PublicHopCandidate};
 use crate::routing::log_approx;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
@@ -956,30 +956,65 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 	/// with `scid` towards the given `target` node, based on the historical estimated liquidity
 	/// bounds.
 	///
-	/// Returns `None` if there is no (or insufficient) historical data for the given channel (or
-	/// the provided `target` is not a party to the channel).
+	/// Returns `None` if:
+	///  - the given channel is not in the network graph, the provided `target` is not a party to
+	///    the channel, or we don't have forwarding parameters for either direction in the channel.
+	///  - `allow_fallback_estimation` is *not* set and there is no (or insufficient) historical
+	///    data for the given channel.
 	///
 	/// These are the same bounds as returned by
 	/// [`Self::historical_estimated_channel_liquidity_probabilities`] (but not those returned by
 	/// [`Self::estimated_channel_liquidity_range`]).
 	pub fn historical_estimated_payment_success_probability(
-		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters)
-	-> Option<f64> {
+		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters,
+		allow_fallback_estimation: bool,
+	) -> Option<f64> {
 		let graph = self.network_graph.read_only();
 
 		if let Some(chan) = graph.channels().get(&scid) {
-			if let Some(liq) = self.channel_liquidities.get(&scid) {
-				if let Some((directed_info, source)) = chan.as_directed_to(target) {
+			if let Some((directed_info, source)) = chan.as_directed_to(target) {
+				if let Some(liq) = self.channel_liquidities.get(&scid) {
 					let capacity_msat = directed_info.effective_capacity().as_msat();
 					let dir_liq = liq.as_directed(source, target, capacity_msat);
 
-					return dir_liq.liquidity_history.calculate_success_probability_times_billion(
+					let res = dir_liq.liquidity_history.calculate_success_probability_times_billion(
 						&params, amount_msat, capacity_msat
 					).map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
+					if res.is_some() {
+						return res;
+					}
+				}
+				if allow_fallback_estimation {
+					let amt = amount_msat;
+					return Some(
+						self.calc_live_prob(scid, source, target, directed_info, amt, params, true)
+					);
 				}
 			}
 		}
 		None
+	}
+
+	fn calc_live_prob(
+		&self, scid: u64, source: &NodeId, target: &NodeId, directed_info: DirectedChannelInfo,
+		amt: u64, params: &ProbabilisticScoringFeeParameters,
+		min_zero_penalty: bool,
+	) -> f64 {
+		let capacity_msat = directed_info.effective_capacity().as_msat();
+		let dummy_liq = ChannelLiquidity::new(Duration::ZERO);
+		let liq = self.channel_liquidities.get(&scid)
+			.unwrap_or(&dummy_liq)
+			.as_directed(&source, &target, capacity_msat);
+		let min_liq = liq.min_liquidity_msat();
+		let max_liq = liq.max_liquidity_msat();
+		if amt <= liq.min_liquidity_msat() {
+			return 1.0;
+		} else if amt > liq.max_liquidity_msat() {
+			return 0.0;
+		}
+		let (num, den) =
+			success_probability(amt, min_liq, max_liq, capacity_msat, &params, min_zero_penalty);
+		num as f64 / den as f64
 	}
 
 	/// Query the probability of payment success sending the given `amount_msat` over the channel
@@ -994,20 +1029,7 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref> ProbabilisticScorer<G, L> whe
 
 		if let Some(chan) = graph.channels().get(&scid) {
 			if let Some((directed_info, source)) = chan.as_directed_to(target) {
-				let capacity_msat = directed_info.effective_capacity().as_msat();
-				let dummy_liq = ChannelLiquidity::new(Duration::ZERO);
-				let liq = self.channel_liquidities.get(&scid)
-					.unwrap_or(&dummy_liq)
-					.as_directed(&source, &target, capacity_msat);
-				let min_liq = liq.min_liquidity_msat();
-				let max_liq = liq.max_liquidity_msat();
-				if amount_msat <= liq.min_liquidity_msat() {
-					return Some(1.0);
-				} else if amount_msat > liq.max_liquidity_msat() {
-					return Some(0.0);
-				}
-				let (num, den) = success_probability(amount_msat, min_liq, max_liq, capacity_msat, &params, false);
-				return Some(num as f64 / den as f64);
+				return Some(self.calc_live_prob(scid, source, target, directed_info, amount_msat, params, false));
 			}
 		}
 		None
@@ -3234,7 +3256,7 @@ mod tests {
 		}
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 		None);
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params, false),
 		None);
 
 		scorer.payment_path_failed(&payment_path_for_amount(1), 42, Duration::ZERO);
@@ -3255,9 +3277,9 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
-		assert!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params)
+		assert!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params, false)
 			.unwrap() > 0.35);
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 500, &params),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 500, &params, false),
 			Some(0.0));
 
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
@@ -3282,11 +3304,11 @@ mod tests {
 		// The exact success probability is a bit complicated and involves integer rounding, so we
 		// simply check bounds here.
 		let five_hundred_prob =
-			scorer.historical_estimated_payment_success_probability(42, &target, 500, &params).unwrap();
+			scorer.historical_estimated_payment_success_probability(42, &target, 500, &params, false).unwrap();
 		assert!(five_hundred_prob > 0.59);
 		assert!(five_hundred_prob < 0.60);
 		let one_prob =
-			scorer.historical_estimated_payment_success_probability(42, &target, 1, &params).unwrap();
+			scorer.historical_estimated_payment_success_probability(42, &target, 1, &params, false).unwrap();
 		assert!(one_prob < 0.85);
 		assert!(one_prob > 0.84);
 
@@ -3308,7 +3330,7 @@ mod tests {
 		// data entirely instead.
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([0; 32], [0; 32])));
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params), None);
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params, false), None);
 
 		let usage = ChannelUsage {
 			amount_msat: 100,
@@ -3494,7 +3516,7 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1269);
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			None);
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 42, &params, false),
 			None);
 
 		// Fail to pay once, and then check the buckets and penalty.
@@ -3509,14 +3531,14 @@ mod tests {
 			Some(([32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		// The success probability estimate itself should be zero.
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false),
 			Some(0.0));
 
 		// Now test again with the amount in the bottom bucket.
 		amount_msat /= 2;
 		// The new amount is entirely within the only minimum bucket with score, so the probability
 		// we assign is 1/2.
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false),
 			Some(0.5));
 
 		// ...but once we see a failure, we consider the payment to be substantially less likely,
@@ -3526,7 +3548,7 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[32, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
-		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params),
+		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false),
 			Some(0.0));
 	}
 }
