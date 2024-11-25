@@ -229,6 +229,9 @@ fn test_v1_splice_in() {
 	let funding_feerate_perkw = 1024; // TODO
 	let locktime = 0; // TODO
 
+	// Create additional inputs
+	let extra_splice_funding_input_sats = 35_000;
+	let funding_inputs = create_dual_funding_utxos_with_prev_txs(&initiator_node, &[extra_splice_funding_input_sats]);
 	// Initiate splice-in (on initiator_node)
 	let _res = initiator_node
 		.node
@@ -236,7 +239,7 @@ fn test_v1_splice_in() {
 			&channel_id2,
 			&acceptor_node.node.get_our_node_id(),
 			splice_in_sats as i64,
-			Vec::new(),
+			funding_inputs,
 			funding_feerate_perkw,
 			locktime,
 		)
