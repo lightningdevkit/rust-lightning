@@ -3618,7 +3618,7 @@ macro_rules! get_channel_value_stat {
 		let peer_state_lock = $node.node.per_peer_state.read().unwrap();
 		let chan_lock = peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
 		let chan = chan_lock.channel_by_id.get(&$channel_id).map(
-			|channel| channel.get_funded_channel()
+			|channel| channel.funded_channel()
 		).flatten().unwrap();
 		chan.get_value_stat()
 	}}

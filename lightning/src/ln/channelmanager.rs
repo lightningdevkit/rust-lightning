@@ -9527,7 +9527,7 @@ where
 			peer_state.channel_by_id.retain(|_, chan| {
 				let shutdown_result = match channel_opt {
 					Some((_, channel_id)) if chan.context().channel_id() != channel_id => None,
-					_ => unblock_chan(chan, &mut peer_state.pending_msg_events),
+					_ => unblock_chan(chan.phase_mut(), &mut peer_state.pending_msg_events),
 				};
 				if let Some(shutdown_result) = shutdown_result {
 					let context = &chan.context();
@@ -10531,7 +10531,7 @@ where
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
 			for chan in peer_state.channel_by_id.values().filter_map(
-				|channel| channel.get_funded_channel()
+				|channel| channel.funded_channel()
 			) {
 				for (htlc_source, _) in chan.inflight_htlc_sources() {
 					if let HTLCSource::OutboundRoute { path, .. } = htlc_source {
@@ -10907,7 +10907,7 @@ where
 		for (_cp_id, peer_state_mutex) in self.per_peer_state.read().unwrap().iter() {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
-			for chan in peer_state.channel_by_id.values().filter_map(|channel| channel.get_funded_channel()) {
+			for chan in peer_state.channel_by_id.values().filter_map(|channel| channel.funded_channel()) {
 				let txid_opt = chan.context.get_funding_txo();
 				let height_opt = chan.context.get_funding_tx_confirmation_height();
 				let hash_opt = chan.context.get_funding_tx_confirmed_in();
@@ -12725,7 +12725,7 @@ where
 				}
 
 				number_of_funded_channels += peer_state.channel_by_id.iter().filter(
-					|(_, channel)| channel.get_funded_channel().map(|chan| chan.context.is_funding_broadcast()).unwrap_or(false)
+					|(_, channel)| channel.funded_channel().map(|chan| chan.context.is_funding_broadcast()).unwrap_or(false)
 				).count();
 			}
 

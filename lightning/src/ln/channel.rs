@@ -1140,7 +1140,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 	<SP::Target as SignerProvider>::EcdsaSigner: ChannelSigner,
 {
 	#[inline]
-	pub fn context(&'a self) -> &'a ChannelContext<SP> {
+	pub fn context(&self) -> &ChannelContext<SP> {
 		match self {
 			ChannelPhase::Funded(chan) => &chan.context,
 			ChannelPhase::UnfundedOutboundV1(chan) => &chan.context,
@@ -1151,7 +1151,7 @@ impl<'a, SP: Deref> ChannelPhase<SP> where
 	}
 
 	#[inline]
-	pub fn context_mut(&'a mut self) -> &'a mut ChannelContext<SP> {
+	pub fn context_mut(&mut self) -> &mut ChannelContext<SP> {
 		match self {
 			ChannelPhase::Funded(ref mut chan) => &mut chan.context,
 			ChannelPhase::UnfundedOutboundV1(ref mut chan) => &mut chan.context,
@@ -1194,7 +1194,7 @@ impl<'a, SP: Deref> ChannelWrapper<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn get_funded_channel(&self) -> Option<&Channel<SP>> {
+	pub fn funded_channel(&self) -> Option<&Channel<SP>> {
 		if let ChannelPhase::Funded(chan) = &self.phase.as_ref().unwrap() {
 			Some(chan)
 		} else {
@@ -1223,12 +1223,12 @@ impl<'a, SP: Deref> ChannelWrapper<SP> where SP::Target: SignerProvider {
 	}
 
 	#[inline]
-	pub fn context(&'a self) -> &'a ChannelContext<SP> {
+	pub fn context(&self) -> &ChannelContext<SP> {
 		self.phase().context()
 	}
 
 	#[inline]
-	pub fn context_mut(&'a mut self) -> &'a mut ChannelContext<SP> {
+	pub fn context_mut(&mut self) -> &mut ChannelContext<SP> {
 		self.phase_mut().context_mut()
 	}
 }
