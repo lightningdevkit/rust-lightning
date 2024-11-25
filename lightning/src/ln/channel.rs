@@ -7349,17 +7349,6 @@ impl<SP: Deref> Channel<SP> where
 			return None;
 		}
 
-		// If we're still pending the signature on a funding transaction, then we're not ready to send a
-		// channel_ready yet.
-		if self.context.signer_pending_funding {
-			log_debug!(logger, "Can't produce channel_ready: the signer is pending funding.");
-			// We make sure to set the channel ready flag here so that we try to
-			// generate a channel ready for 0conf channels once our signer unblocked
-			// for funding.
-			self.context.signer_pending_channel_ready = true;
-			return None;
-		}
-
 		self.get_channel_ready(logger)
 	}
 
@@ -8529,7 +8518,8 @@ impl<SP: Deref> OutboundV1Channel<SP> where SP::Target: SignerProvider {
 			holder_commitment_point,
 		};
 
-		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
+			|| channel.context.signer_pending_channel_ready;
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 		Ok((channel, channel_monitor))
 	}
@@ -8798,7 +8788,8 @@ impl<SP: Deref> InboundV1Channel<SP> where SP::Target: SignerProvider {
 			interactive_tx_signing_session: None,
 			holder_commitment_point,
 		};
-		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some();
+		let need_channel_ready = channel.check_get_channel_ready(0, logger).is_some()
+			|| channel.context.signer_pending_channel_ready;
 		channel.monitor_updating_paused(false, false, need_channel_ready, Vec::new(), Vec::new(), Vec::new());
 
 		Ok((channel, funding_signed, channel_monitor))
