@@ -4239,7 +4239,7 @@ where
 	/// TODO(splicing): Implementation is currently incomplete.
 	/// Note: Currently only splice-in is supported (increase in channel capacity), splice-out is not.
 	/// - our_funding_contribution_satoshis: the amount contributed by us to the channel. This will increase our channel balance.
-	/// - our_funding_inputs: the funding inputs provided by us. If our contribution is positive, our funding inputs must cover at most that amount.
+	/// - our_funding_inputs: the funding inputs provided by us. If our contribution is positive, our funding inputs must cover at least that amount.
 	#[cfg(splicing)]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey, our_funding_contribution_satoshis: i64,
@@ -4257,14 +4257,12 @@ where
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase_entry) => {
 				if let Some(chan) = chan_phase_entry.get_mut().as_funded_mut() {
-					let msg = match chan.splice_channel(our_funding_contribution_satoshis, funding_feerate_perkw, locktime) {
-						Ok(msg) => msg,
-						Err(err) => return Err(APIError::APIMisuseError {
+					let msg = chan.splice_channel(our_funding_contribution_satoshis, funding_feerate_perkw, locktime)
+						.map_err(|err| APIError::APIMisuseError {
 							err: format!(
 								"Cannot initiate Splicing, {}, channel ID {}", err, channel_id
 							)
-						}),
-					};
+						})?;
 
 					peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceInit {
 						node_id: *counterparty_node_id,
