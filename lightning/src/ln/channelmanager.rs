@@ -62,7 +62,6 @@ use crate::ln::msgs::{ChannelMessageHandler, CommitmentUpdate, DecodeError, Ligh
 #[cfg(test)]
 use crate::ln::outbound_payment;
 use crate::ln::outbound_payment::{OutboundPayments, PendingOutboundPayment, RetryableInvoiceRequest, SendAlongPathArgs, StaleExpiration};
-use crate::ln::wire::Encode;
 use crate::offers::invoice::{Bolt12Invoice, DEFAULT_RELATIVE_EXPIRY, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
@@ -697,7 +696,7 @@ pub enum FailureCode {
 }
 
 impl Into<u16> for FailureCode {
-    fn into(self) -> u16 {
+	fn into(self) -> u16 {
 		match self {
 			FailureCode::TemporaryNodeFailure => 0x2000 | 2,
 			FailureCode::RequiredNodeFeatureMissing => 0x4000 | 0x2000 | 3,
@@ -4120,18 +4119,18 @@ where
 
 	fn can_forward_htlc_to_outgoing_channel(
 		&self, chan: &mut Channel<SP>, msg: &msgs::UpdateAddHTLC, next_packet: &NextPacketDetails
-	) -> Result<(), (&'static str, u16, Option<msgs::ChannelUpdate>)> {
+	) -> Result<(), (&'static str, u16)> {
 		if !chan.context.should_announce() && !self.default_configuration.accept_forwards_to_priv_channels {
 			// Note that the behavior here should be identical to the above block - we
 			// should NOT reveal the existence or non-existence of a private channel if
 			// we don't allow forwards outbound over them.
-			return Err(("Refusing to forward to a private channel based on our config.", 0x4000 | 10, None));
+			return Err(("Refusing to forward to a private channel based on our config.", 0x4000 | 10));
 		}
 		if chan.context.get_channel_type().supports_scid_privacy() && next_packet.outgoing_scid != chan.context.outbound_scid_alias() {
 			// `option_scid_alias` (referred to in LDK as `scid_privacy`) means
 			// "refuse to forward unless the SCID alias was used", so we pretend
 			// we don't have the channel here.
-			return Err(("Refusing to forward over real channel SCID as our counterparty requested.", 0x4000 | 10, None));
+			return Err(("Refusing to forward over real channel SCID as our counterparty requested.", 0x4000 | 10));
 		}
 
 		// Note that we could technically not return an error yet here and just hope
@@ -4139,24 +4138,20 @@ where
 		// around to doing the actual forward, but better to fail early if we can and
 		// hopefully an attacker trying to path-trace payments cannot make this occur
 		// on a small/per-node/per-channel scale.
-		if !chan.context.is_live() { // channel_disabled
-			// If the channel_update we're going to return is disabled (i.e. the
-			// peer has been disabled for some time), return `channel_disabled`,
-			// otherwise return `temporary_channel_failure`.
-			let chan_update_opt = self.get_channel_update_for_onion(next_packet.outgoing_scid, chan).ok();
-			if chan_update_opt.as_ref().map(|u| u.contents.channel_flags & 2 == 2).unwrap_or(false) {
-				return Err(("Forwarding channel has been disconnected for some time.", 0x1000 | 20, chan_update_opt));
+		if !chan.context.is_live() {
+			if !chan.context.is_enabled() {
+				// channel_disabled
+				return Err(("Forwarding channel has been disconnected for some time.", 0x1000 | 20));
 			} else {
-				return Err(("Forwarding channel is not in a ready state.", 0x1000 | 7, chan_update_opt));
+				// temporary_channel_failure
+				return Err(("Forwarding channel is not in a ready state.", 0x1000 | 7));
 			}
 		}
 		if next_packet.outgoing_amt_msat < chan.context.get_counterparty_htlc_minimum_msat() { // amount_below_minimum
-			let chan_update_opt = self.get_channel_update_for_onion(next_packet.outgoing_scid, chan).ok();
-			return Err(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11, chan_update_opt));
+			return Err(("HTLC amount was below the htlc_minimum_msat", 0x1000 | 11));
 		}
 		if let Err((err, code)) = chan.htlc_satisfies_config(msg, next_packet.outgoing_amt_msat, next_packet.outgoing_cltv_value) {
-			let chan_update_opt = self.get_channel_update_for_onion(next_packet.outgoing_scid, chan).ok();
-			return Err((err, code, chan_update_opt));
+			return Err((err, code));
 		}
 
 		Ok(())
@@ -4188,7 +4183,7 @@ where
 
 	fn can_forward_htlc(
 		&self, msg: &msgs::UpdateAddHTLC, next_packet_details: &NextPacketDetails
-	) -> Result<(), (&'static str, u16, Option<msgs::ChannelUpdate>)> {
+	) -> Result<(), (&'static str, u16)> {
 		match self.do_funded_channel_callback(next_packet_details.outgoing_scid, |chan: &mut Channel<SP>| {
 			self.can_forward_htlc_to_outgoing_channel(chan, msg, next_packet_details)
 		}) {
@@ -4201,7 +4196,7 @@ where
 					fake_scid::is_valid_intercept(&self.fake_scid_rand_bytes, next_packet_details.outgoing_scid, &self.chain_hash)) ||
 					fake_scid::is_valid_phantom(&self.fake_scid_rand_bytes, next_packet_details.outgoing_scid, &self.chain_hash)
 				{} else {
-					return Err(("Don't have available channel for forwarding as requested.", 0x4000 | 10, None));
+					return Err(("Don't have available channel for forwarding as requested.", 0x4000 | 10));
 				}
 			}
 		}
@@ -4210,10 +4205,7 @@ where
 		if let Err((err_msg, err_code)) = check_incoming_htlc_cltv(
 			cur_height, next_packet_details.outgoing_cltv_value, msg.cltv_expiry
 		) {
-			let chan_update_opt = self.do_funded_channel_callback(next_packet_details.outgoing_scid, |chan: &mut Channel<SP>| {
-				self.get_channel_update_for_onion(next_packet_details.outgoing_scid, chan).ok()
-			}).flatten();
-			return Err((err_msg, err_code, chan_update_opt));
+			return Err((err_msg, err_code));
 		}
 
 		Ok(())
@@ -4221,12 +4213,12 @@ where
 
 	fn htlc_failure_from_update_add_err(
 		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey, err_msg: &'static str,
-		mut err_code: u16, chan_update: Option<msgs::ChannelUpdate>, is_intro_node_blinded_forward: bool,
+		err_code: u16, is_intro_node_blinded_forward: bool,
 		shared_secret: &[u8; 32]
 	) -> HTLCFailureMsg {
-		let mut res = VecWriter(Vec::with_capacity(chan_update.serialized_length() + 2 + 8 + 2));
-		if chan_update.is_some() && err_code & 0x1000 == 0x1000 {
-			let chan_update = chan_update.unwrap();
+		// at capacity, we write fields `htlc_msat` and `len`
+		let mut res = VecWriter(Vec::with_capacity(8 + 2));
+		if err_code & 0x1000 == 0x1000 {
 			if err_code == 0x1000 | 11 || err_code == 0x1000 | 12 {
 				msg.amount_msat.write(&mut res).expect("Writes cannot fail");
 			}
@@ -4237,15 +4229,8 @@ where
 				// TODO: underspecified, follow https://github.com/lightning/bolts/issues/791
 				0u16.write(&mut res).expect("Writes cannot fail");
 			}
-			(chan_update.serialized_length() as u16 + 2).write(&mut res).expect("Writes cannot fail");
-			msgs::ChannelUpdate::TYPE.write(&mut res).expect("Writes cannot fail");
-			chan_update.write(&mut res).expect("Writes cannot fail");
-		} else if err_code & 0x1000 == 0x1000 {
-			// If we're trying to return an error that requires a `channel_update` but
-			// we're forwarding to a phantom or intercept "channel" (i.e. cannot
-			// generate an update), just use the generic "temporary_node_failure"
-			// instead.
-			err_code = 0x2000 | 2;
+			// See https://github.com/lightning/bolts/blob/247e83d/04-onion-routing.md?plain=1#L1414-L1415
+			(0u16).write(&mut res).expect("Writes cannot fail");
 		}
 
 		log_info!(
@@ -4293,9 +4278,9 @@ where
 		// Perform outbound checks here instead of in [`Self::construct_pending_htlc_info`] because we
 		// can't hold the outbound peer state lock at the same time as the inbound peer state lock.
 		self.can_forward_htlc(&msg, &next_packet_details).map_err(|e| {
-			let (err_msg, err_code, chan_update_opt) = e;
+			let (err_msg, err_code) = e;
 			self.htlc_failure_from_update_add_err(
-				msg, counterparty_node_id, err_msg, err_code, chan_update_opt,
+				msg, counterparty_node_id, err_msg, err_code,
 				next_hop.is_intro_node_blinded_forward(), &shared_secret
 			)
 		})?;
@@ -4404,20 +4389,10 @@ where
 			Some(id) => id,
 		};
 
-		self.get_channel_update_for_onion(short_channel_id, chan)
-	}
-
-	fn get_channel_update_for_onion(&self, short_channel_id: u64, chan: &Channel<SP>) -> Result<msgs::ChannelUpdate, LightningError> {
 		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 		log_trace!(logger, "Generating channel update for channel {}", chan.context.channel_id());
 		let were_node_one = self.our_network_pubkey.serialize()[..] < chan.context.get_counterparty_node_id().serialize()[..];
-
-		let enabled = chan.context.is_usable() && match chan.channel_update_status() {
-			ChannelUpdateStatus::Enabled => true,
-			ChannelUpdateStatus::DisabledStaged(_) => true,
-			ChannelUpdateStatus::Disabled => false,
-			ChannelUpdateStatus::EnabledStaged(_) => false,
-		};
+		let enabled = chan.context.is_enabled();
 
 		let unsigned = msgs::UnsignedChannelUpdate {
 			chain_hash: self.chain_hash,
@@ -5605,16 +5580,9 @@ where
 				}) {
 					Some(Ok(_)) => {},
 					Some(Err((err, code))) => {
-						let outgoing_chan_update_opt = if let Some(outgoing_scid) = outgoing_scid_opt.as_ref() {
-							self.do_funded_channel_callback(*outgoing_scid, |chan: &mut Channel<SP>| {
-								self.get_channel_update_for_onion(*outgoing_scid, chan).ok()
-							}).flatten()
-						} else {
-							None
-						};
 						let htlc_fail = self.htlc_failure_from_update_add_err(
 							&update_add_htlc, &incoming_counterparty_node_id, err, code,
-							outgoing_chan_update_opt, is_intro_node_blinded_forward, &shared_secret,
+							is_intro_node_blinded_forward, &shared_secret,
 						);
 						let htlc_destination = get_failed_htlc_destination(outgoing_scid_opt, update_add_htlc.payment_hash);
 						htlc_fails.push((htlc_fail, htlc_destination));
@@ -5626,12 +5594,12 @@ where
 
 				// Now process the HTLC on the outgoing channel if it's a forward.
 				if let Some(next_packet_details) = next_packet_details_opt.as_ref() {
-					if let Err((err, code, chan_update_opt)) = self.can_forward_htlc(
+					if let Err((err, code)) = self.can_forward_htlc(
 						&update_add_htlc, next_packet_details
 					) {
 						let htlc_fail = self.htlc_failure_from_update_add_err(
 							&update_add_htlc, &incoming_counterparty_node_id, err, code,
-							chan_update_opt, is_intro_node_blinded_forward, &shared_secret,
+							is_intro_node_blinded_forward, &shared_secret,
 						);
 						let htlc_destination = get_failed_htlc_destination(outgoing_scid_opt, update_add_htlc.payment_hash);
 						htlc_fails.push((htlc_fail, htlc_destination));
@@ -5912,7 +5880,8 @@ where
 									}
 
 									if let Some(ChannelPhase::Funded(ref mut chan)) = peer_state.channel_by_id.get_mut(&forward_chan_id) {
-										let (failure_code, data) = self.get_htlc_temp_fail_err_and_data(0x1000|7, short_chan_id, chan);
+										let failure_code = 0x1000|7;
+										let data = self.get_htlc_inbound_temp_fail_data(failure_code);
 										failed_forwards.push((htlc_source, payment_hash,
 											HTLCFailReason::reason(failure_code, data),
 											HTLCDestination::NextHopChannel { node_id: Some(chan.context.get_counterparty_node_id()), channel_id: forward_chan_id }
@@ -6678,46 +6647,21 @@ where
 	///
 	/// This is for failures on the channel on which the HTLC was *received*, not failures
 	/// forwarding
-	fn get_htlc_inbound_temp_fail_err_and_data(&self, desired_err_code: u16, chan: &Channel<SP>) -> (u16, Vec<u8>) {
-		// We can't be sure what SCID was used when relaying inbound towards us, so we have to
-		// guess somewhat. If its a public channel, we figure best to just use the real SCID (as
-		// we're not leaking that we have a channel with the counterparty), otherwise we try to use
-		// an inbound SCID alias before the real SCID.
-		let scid_pref = if chan.context.should_announce() {
-			chan.context.get_short_channel_id().or(chan.context.latest_inbound_scid_alias())
-		} else {
-			chan.context.latest_inbound_scid_alias().or(chan.context.get_short_channel_id())
-		};
-		if let Some(scid) = scid_pref {
-			self.get_htlc_temp_fail_err_and_data(desired_err_code, scid, chan)
-		} else {
-			(0x4000|10, Vec::new())
+	fn get_htlc_inbound_temp_fail_data(&self, err_code: u16) -> Vec<u8> {
+		debug_assert_eq!(err_code & 0x1000, 0x1000);
+		debug_assert_ne!(err_code, 0x1000|11);
+		debug_assert_ne!(err_code, 0x1000|12);
+		debug_assert_ne!(err_code, 0x1000|13);
+		// at capacity, we write fields `disabled_flags` and `len`
+		let mut enc = VecWriter(Vec::with_capacity(4));
+		if err_code == 0x1000 | 20 {
+			// No flags for `disabled_flags` are currently defined so they're always two zero bytes.
+			// See https://github.com/lightning/bolts/blob/341ec84/04-onion-routing.md?plain=1#L1008
+			0u16.write(&mut enc).expect("Writes cannot fail");
 		}
-	}
-
-
-	/// Gets an HTLC onion failure code and error data for an `UPDATE` error, given the error code
-	/// that we want to return and a channel.
-	fn get_htlc_temp_fail_err_and_data(&self, desired_err_code: u16, scid: u64, chan: &Channel<SP>) -> (u16, Vec<u8>) {
-		debug_assert_eq!(desired_err_code & 0x1000, 0x1000);
-		if let Ok(upd) = self.get_channel_update_for_onion(scid, chan) {
-			let mut enc = VecWriter(Vec::with_capacity(upd.serialized_length() + 6));
-			if desired_err_code == 0x1000 | 20 {
-				// No flags for `disabled_flags` are currently defined so they're always two zero bytes.
-				// See https://github.com/lightning/bolts/blob/341ec84/04-onion-routing.md?plain=1#L1008
-				0u16.write(&mut enc).expect("Writes cannot fail");
-			}
-			(upd.serialized_length() as u16 + 2).write(&mut enc).expect("Writes cannot fail");
-			msgs::ChannelUpdate::TYPE.write(&mut enc).expect("Writes cannot fail");
-			upd.write(&mut enc).expect("Writes cannot fail");
-			(desired_err_code, enc.0)
-		} else {
-			// If we fail to get a unicast channel_update, it implies we don't yet have an SCID,
-			// which means we really shouldn't have gotten a payment to be forwarded over this
-			// channel yet, or if we did it's from a route hint. Either way, returning an error of
-			// PERM|no_such_channel should be fine.
-			(0x4000|10, Vec::new())
-		}
+		// See https://github.com/lightning/bolts/blob/247e83d/04-onion-routing.md?plain=1#L1414-L1415
+		(0u16).write(&mut enc).expect("Writes cannot fail");
+		enc.0
 	}
 
 	// Fail a list of HTLCs that were just freed from the holding cell. The HTLCs need to be
@@ -6734,8 +6678,10 @@ where
 				let peer_state = &mut *peer_state_lock;
 				match peer_state.channel_by_id.entry(channel_id) {
 					hash_map::Entry::Occupied(chan_phase_entry) => {
-						if let ChannelPhase::Funded(chan) = chan_phase_entry.get() {
-							self.get_htlc_inbound_temp_fail_err_and_data(0x1000|7, &chan)
+						if let ChannelPhase::Funded(_chan) = chan_phase_entry.get() {
+							let failure_code = 0x1000|7;
+							let data = self.get_htlc_inbound_temp_fail_data(failure_code);
+							(failure_code, data)
 						} else {
 							// We shouldn't be trying to fail holding cell HTLCs on an unfunded channel.
 							debug_assert!(false);
@@ -8698,8 +8644,8 @@ where
 									let reason = if routing.blinded_failure().is_some() {
 										HTLCFailReason::reason(INVALID_ONION_BLINDING, vec![0; 32])
 									} else if (error_code & 0x1000) != 0 {
-										let (real_code, error_data) = self.get_htlc_inbound_temp_fail_err_and_data(error_code, chan);
-										HTLCFailReason::reason(real_code, error_data)
+										let error_data = self.get_htlc_inbound_temp_fail_data(error_code);
+										HTLCFailReason::reason(error_code, error_data)
 									} else {
 										HTLCFailReason::from_failure_code(error_code)
 									}.get_encrypted_failure_packet(incoming_shared_secret, &None);
@@ -10973,7 +10919,8 @@ where
 							let res = f(channel);
 							if let Ok((channel_ready_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
 								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
-									let (failure_code, data) = self.get_htlc_inbound_temp_fail_err_and_data(0x1000|14 /* expiry_too_soon */, &channel);
+									let failure_code = 0x1000|14; /* expiry_too_soon */
+									let data = self.get_htlc_inbound_temp_fail_data(failure_code);
 									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(failure_code, data),
 										HTLCDestination::NextHopChannel { node_id: Some(channel.context.get_counterparty_node_id()), channel_id: channel.context.channel_id() }));
 								}

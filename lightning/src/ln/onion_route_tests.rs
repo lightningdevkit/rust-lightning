@@ -1397,9 +1397,12 @@ fn test_phantom_failure_modified_cltv() {
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
+	let mut err_data = Vec::new();
+	err_data.extend_from_slice(&update_add.cltv_expiry.to_be_bytes());
+	err_data.extend_from_slice(&0u16.to_be_bytes());
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
-		.expected_htlc_error_data(0x2000 | 2, &[]);
+		.expected_htlc_error_data(0x1000 | 13, &err_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
 }
 
@@ -1437,9 +1440,10 @@ fn test_phantom_failure_expires_too_soon() {
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
+	let err_data = 0u16.to_be_bytes();
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
-		.expected_htlc_error_data(0x2000 | 2, &[]);
+		.expected_htlc_error_data(0x1000 | 14, &err_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
 }
 
@@ -1535,11 +1539,7 @@ fn do_test_phantom_dust_exposure_failure(multiplier_dust_limit: bool) {
 	commitment_signed_dance!(nodes[0], nodes[1], update_1.commitment_signed, false);
 
 	// Ensure the payment fails with the expected error.
-	let mut err_data = Vec::new();
-	err_data.extend_from_slice(&(channel.1.serialized_length() as u16 + 2).to_be_bytes());
-	err_data.extend_from_slice(&ChannelUpdate::TYPE.to_be_bytes());
-	err_data.extend_from_slice(&channel.1.encode());
-
+	let err_data = 0u16.to_be_bytes();
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(route.paths[0].hops.last().as_ref().unwrap().short_channel_id)
 		.blamed_chan_closed(false)

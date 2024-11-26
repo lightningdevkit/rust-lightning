@@ -2521,6 +2521,14 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		self.is_usable() && !self.channel_state.is_peer_disconnected()
 	}
 
+	/// Returns false if our last broadcasted channel_update message has the "channel disabled" bit set
+	pub fn is_enabled(&self) -> bool {
+		self.is_usable() && match self.channel_update_status {
+			ChannelUpdateStatus::Enabled | ChannelUpdateStatus::DisabledStaged(_) => true,
+			ChannelUpdateStatus::Disabled | ChannelUpdateStatus::EnabledStaged(_) => false,
+		}
+	}
+
 	// Public utilities:
 
 	pub fn channel_id(&self) -> ChannelId {
