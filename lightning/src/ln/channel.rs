@@ -9515,7 +9515,6 @@ impl<SP: Deref> Writeable for Channel<SP> where SP::Target: SignerProvider {
 			(49, self.context.local_initiated_shutdown, option), // Added in 0.0.122
 			(51, is_manual_broadcast, option), // Added in 0.0.124
 			(53, funding_tx_broadcast_safe_event_emitted, option), // Added in 0.0.124
-			(55, self.context.next_funding_txid, option) // Added in 0.1.0
 		});
 
 		Ok(())
@@ -9805,7 +9804,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 		let mut channel_pending_event_emitted = None;
 		let mut channel_ready_event_emitted = None;
 		let mut funding_tx_broadcast_safe_event_emitted = None;
-		let mut next_funding_txid = funding_transaction.as_ref().map(|tx| tx.compute_txid());
 
 		let mut user_id_high_opt: Option<u64> = None;
 		let mut channel_keys_id: Option<[u8; 32]> = None;
@@ -9866,7 +9864,6 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 			(49, local_initiated_shutdown, option),
 			(51, is_manual_broadcast, option),
 			(53, funding_tx_broadcast_safe_event_emitted, option),
-			(55, next_funding_txid, option) // Added in 0.0.125
 		});
 
 		let (channel_keys_id, holder_signer) = if let Some(channel_keys_id) = channel_keys_id {
@@ -10127,10 +10124,13 @@ impl<'a, 'b, 'c, ES: Deref, SP: Deref> ReadableArgs<(&'a ES, &'b SP, u32, &'c Ch
 
 				blocked_monitor_updates: blocked_monitor_updates.unwrap(),
 				is_manual_broadcast: is_manual_broadcast.unwrap_or(false),
+				// TODO(dual_funding): Instead of getting this from persisted value, figure it out based on the
+				// funding transaction and other channel state.
+				//
 				// If we've sent `commtiment_signed` for an interactively constructed transaction
 				// during a signing session, but have not received `tx_signatures` we MUST set `next_funding_txid`
 				// to the txid of that interactive transaction, else we MUST NOT set it.
-				next_funding_txid,
+				next_funding_txid: None,
 			},
 			interactive_tx_signing_session: None,
 		})
