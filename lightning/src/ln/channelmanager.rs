@@ -3866,9 +3866,9 @@ where
 		match peer_state.channel_by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(mut chan_phase) => {
 				if let ChannelPhase::Funded(chan) = chan_phase.get_mut() {
-					let in_flight = handle_new_monitor_update!(self, funding_txo,
+					let completed = handle_new_monitor_update!(self, funding_txo,
 						monitor_update, peer_state_lock, peer_state, per_peer_state, chan);
-					return if in_flight { ChannelMonitorUpdateStatus::InProgress } else { ChannelMonitorUpdateStatus::Completed };
+					return if completed { ChannelMonitorUpdateStatus::Completed } else { ChannelMonitorUpdateStatus::InProgress };
 				} else {
 					debug_assert!(false, "We shouldn't have an update for a non-funded channel");
 				}
