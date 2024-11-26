@@ -1028,7 +1028,10 @@ impl OutboundPayments {
 	) -> Result<(), Bolt12PaymentError> where ES::Target: EntropySource {
 		macro_rules! abandon_with_entry {
 			($payment: expr, $reason: expr) => {
-				debug_assert!(matches!($payment.get(), PendingOutboundPayment::AwaitingInvoice { .. }));
+				assert!(
+					matches!($payment.get(), PendingOutboundPayment::AwaitingInvoice { .. }),
+					"Generating PaymentFailed for unexpected outbound payment type can result in funds loss"
+				);
 				pending_events.lock().unwrap().push_back((events::Event::PaymentFailed {
 					payment_id,
 					payment_hash: None,
