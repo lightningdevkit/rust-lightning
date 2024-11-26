@@ -9560,8 +9560,8 @@ where
 	/// Create an offer for receiving async payments as an often-offline recipient.
 	///
 	/// Because we may be offline when the payer attempts to request an invoice, you MUST:
-	/// 1. Provide at least 1 [`BlindedPath`] for onion messages terminating at an always-online node
-	///    that will serve the [`StaticInvoice`] created from this offer on our behalf.
+	/// 1. Provide at least 1 [`BlindedMessagePath`] terminating at an always-online node that will
+	///    serve the [`StaticInvoice`] created from this offer on our behalf.
 	/// 2. Use [`Self::create_static_invoice_builder_for_async_receive_offer`] to create a
 	///    [`StaticInvoice`] from this [`Offer`] plus the returned [`Nonce`], and provide the static
 	///    invoice to the aforementioned always-online node.
