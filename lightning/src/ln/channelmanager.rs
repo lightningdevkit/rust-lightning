@@ -9377,7 +9377,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
-					match chan.splice_init(msg) {
+					match chan.splice_init(msg, &self.signer_provider, &self.entropy_source, self.get_our_node_id(), &self.logger) {
 						Ok(splice_ack_msg) => {
 							peer_state.pending_msg_events.push(events::MessageSendEvent::SendSpliceAck {
 								node_id: *counterparty_node_id,
@@ -9422,8 +9422,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan) => {
 				if let Some(chan) = chan.get_mut().as_funded_mut() {
-					match chan.splice_ack(msg) {
-						Ok(_) => {}
+					match chan.splice_ack(msg, &self.signer_provider, &self.entropy_source, self.get_our_node_id(), &self.logger) {
+						Ok(tx_msg_opt) => {
+							if let Some(tx_msg_opt) = tx_msg_opt {
+								peer_state.pending_msg_events.push(tx_msg_opt.into_msg_send_event(counterparty_node_id.clone()));
+							}
+						}
 						Err(err) => {
 							return Err(MsgHandleErrInternal::from_chan_no_close(err, msg.channel_id));
 						}
