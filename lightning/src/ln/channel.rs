@@ -34,6 +34,8 @@ use crate::ln::interactivetxs::{
 	InteractiveTxConstructorArgs, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
 	TX_COMMON_FIELDS_WEIGHT,
 };
+#[cfg(splicing)]
+use crate::ln::interactivetxs::InteractiveTxMessageSend;
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
 use crate::ln::script::{self, ShutdownScript};
@@ -1186,6 +1188,10 @@ impl UnfundedChannelContext {
 #[derive(Clone)]
 struct PendingSpliceInfoPre {
 	pub our_funding_contribution: i64,
+	pub funding_feerate_perkw: u32,
+	pub locktime: u32,
+	/// The funding inputs that we plan to contributing to the splice.
+	pub our_funding_inputs: Vec<(TxIn, TransactionU16LenLimited)>,
 }
 
 #[cfg(splicing)]
@@ -4142,6 +4148,18 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 		self.counterparty_cur_commitment_point = Some(counterparty_cur_commitment_point_override);
 		self.channel_transaction_parameters = channel_transaction_parameters;
 		self.get_initial_counterparty_commitment_signature(logger)
+	}
+
+	/// Splice process starting; update state, log, etc.
+	#[cfg(splicing)]
+	pub(crate) fn splice_start<L: Deref>(&mut self, is_outgoing: bool, logger: &L) where L::Target: Logger {
+		// Set state, by this point splice_init/splice_ack handshake is complete
+		// TODO(splicing)
+		// self.channel_state = ChannelState::NegotiatingFunding(
+		// 	NegotiatingFundingFlags::OUR_INIT_SENT | NegotiatingFundingFlags::THEIR_INIT_SENT
+		// );
+		log_info!(logger, "Splicing process started, old channel value {}, outgoing {}, channel_id {}",
+			self.channel_value_satoshis, is_outgoing, self.channel_id);
 	}
 
 	/// Get the splice message that can be sent during splice initiation.
@@ -7936,10 +7954,15 @@ impl<SP: Deref> Channel<SP> where
 		// Note: post-splice channel value is not yet known at this point, counterpary contribution is not known
 		// (Cannot test for miminum required post-splice channel value)
 
+		// Sum and convert inputs
+		let mut sum_input = 0i64;
+		let mut funding_inputs = Vec::new();
+		for (tx_in, tx) in our_funding_inputs.into_iter() {
+			sum_input += tx.output.get(tx_in.previous_output.vout as usize).map(|tx| tx.value.to_sat() as i64).unwrap_or(0);
+			let tx16 = TransactionU16LenLimited::new(tx).map_err(|_e| ChannelError::Warn(format!("Too large transaction")))?;
+			funding_inputs.push((tx_in, tx16));
+		}
 		// Check that inputs are sufficient to cover our contribution
-		let sum_input: i64 = our_funding_inputs.into_iter().fold(0, |acc, i|
-			acc + i.1.output.get(i.0.previous_output.vout as usize).map(|tx| tx.value.to_sat() as i64).unwrap_or(0)
-		);
 		if sum_input < our_funding_contribution_satoshis {
 			return Err(ChannelError::Warn(format!(
 				"Provided inputs are insufficient for our contribution, {} {}",
@@ -7949,6 +7972,9 @@ impl<SP: Deref> Channel<SP> where
 
 		self.pending_splice_pre = Some(PendingSpliceInfoPre {
 			our_funding_contribution: our_funding_contribution_satoshis,
+			funding_feerate_perkw,
+			locktime,
+			our_funding_inputs: funding_inputs,
 		});
 
 		let msg = self.context.get_splice_init(our_funding_contribution_satoshis, funding_feerate_perkw, locktime);
@@ -7957,7 +7983,9 @@ impl<SP: Deref> Channel<SP> where
 
 	/// Handle splice_init
 	#[cfg(splicing)]
-	pub fn splice_init(&mut self, msg: &msgs::SpliceInit) -> Result<msgs::SpliceAck, ChannelError> {
+	pub fn splice_init<ES: Deref, L: Deref>(
+		&mut self, msg: &msgs::SpliceInit, _signer_provider: &SP, _entropy_source: &ES, _holder_node_id: PublicKey, logger: &L,
+	) -> Result<msgs::SpliceAck, ChannelError> where ES::Target: EntropySource, L::Target: Logger {
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 		// TODO(splicing): Currently not possible to contribute on the splicing-acceptor side
 		let our_funding_contribution_satoshis = 0i64;
@@ -8000,16 +8028,24 @@ impl<SP: Deref> Channel<SP> where
 		let _res = self.context.check_balance_meets_reserve_requirements(post_balance, post_channel_value)?;
 
 		// TODO(splicing): Store msg.funding_pubkey
-		// TODO(splicing): Apply start of splice (splice_start)
+
+		// Apply start of splice change in the state
+		self.context.splice_start(false, logger);
 
 		let splice_ack_msg = self.context.get_splice_ack(our_funding_contribution_satoshis);
+
 		// TODO(splicing): start interactive funding negotiation
+		// let _msg = self.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id)
+		// 	.map_err(|err| ChannelError::Warn(format!("Failed to start interactive transaction construction, {:?}", err)))?;
+
 		Ok(splice_ack_msg)
 	}
 
 	/// Handle splice_ack
 	#[cfg(splicing)]
-	pub fn splice_ack(&mut self, msg: &msgs::SpliceAck) -> Result<(), ChannelError> {
+	pub fn splice_ack<ES: Deref, L: Deref>(
+		&mut self, msg: &msgs::SpliceAck, _signer_provider: &SP, _entropy_source: &ES, _holder_node_id: PublicKey, logger: &L,
+	) -> Result<Option<InteractiveTxMessageSend>, ChannelError> where ES::Target: EntropySource, L::Target: Logger {
 		let their_funding_contribution_satoshis = msg.funding_contribution_satoshis;
 
 		// check if splice is pending
@@ -8027,7 +8063,15 @@ impl<SP: Deref> Channel<SP> where
 		// Early check for reserve requirement, assuming maximum balance of full channel value
 		// This will also be checked later at tx_complete
 		let _res = self.context.check_balance_meets_reserve_requirements(post_balance, post_channel_value)?;
-		Ok(())
+
+		// Apply start of splice change in the state
+		self.context.splice_start(true, logger);
+
+		// TODO(splicing): start interactive funding negotiation
+		// let tx_msg_opt = self.begin_interactive_funding_tx_construction(signer_provider, entropy_source, holder_node_id)
+		// 	.map_err(|err| ChannelError::Warn(format!("V2 channel rejected due to sender error, {:?}", err)))?;
+		// Ok(tx_msg_opt)
+		Ok(None)
 	}
 
 	// Send stuff to our remote peers:
