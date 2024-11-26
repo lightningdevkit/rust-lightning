@@ -104,9 +104,6 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 		// recipient's node_id.
 		const MIN_PEER_CHANNELS: usize = 3;
 
-		const DEFAULT_AMT_MSAT: u64 = 100_000_000;
-		let amount_msats = amount_msats.unwrap_or(DEFAULT_AMT_MSAT);
-
 		let has_one_peer = first_hops
 			.first()
 			.map(|details| details.counterparty.node_id)
@@ -123,9 +120,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Deref, ES: Deref, S: Deref, SP: Size
 
 		let paths = first_hops.into_iter()
 			.filter(|details| details.counterparty.features.supports_route_blinding())
-			.filter(|details| amount_msats <= details.inbound_capacity_msat)
-			.filter(|details| amount_msats >= details.inbound_htlc_minimum_msat.unwrap_or(0))
-			.filter(|details| amount_msats <= details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX))
+			.filter(|details| amount_msats.unwrap_or(0) <= details.inbound_capacity_msat)
+			.filter(|details| amount_msats.unwrap_or(u64::MAX) >= details.inbound_htlc_minimum_msat.unwrap_or(0))
+			.filter(|details| amount_msats.unwrap_or(0) <= details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX))
 			// Limit to peers with announced channels unless the recipient is unannounced.
 			.filter(|details| network_graph
 					.node(&NodeId::from_pubkey(&details.counterparty.node_id))
