@@ -2242,15 +2242,19 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			},
 		};
 
-		let funding_ready_for_sig_event = None;
-		if signing_session.local_inputs_count() == 0 {
+		let funding_ready_for_sig_event = if signing_session.local_inputs_count() == 0 {
 			debug_assert_eq!(our_funding_satoshis, 0);
 			if signing_session.provide_holder_witnesses(self.context.channel_id, Vec::new()).is_err() {
 				debug_assert!(
 					false,
 					"Zero inputs were provided & zero witnesses were provided, but a count mismatch was somehow found",
 				);
+				return Err((self, ChannelError::Close((
+					"V2 channel rejected due to sender error".into(),
+					ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
+				))));
 			}
+			None
 		} else {
 			// TODO(dual_funding): Send event for signing if we've contributed funds.
 			// Inform the user that SIGHASH_ALL must be used for all signatures when contributing
@@ -2266,7 +2270,15 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 			// will prevent the funding transaction from being relayed on the bitcoin network and hence being
 			// confirmed.
 			// </div>
-		}
+			debug_assert!(
+				false,
+				"We don't support users providing inputs but somehow we had more than zero inputs",
+			);
+			return Err((self, ChannelError::Close((
+				"V2 channel rejected due to sender error".into(),
+				ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(false) }
+			))));
+		};
 
 		self.context.channel_state = ChannelState::FundingNegotiated;
 
