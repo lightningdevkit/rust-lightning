@@ -34,8 +34,6 @@ use crate::ln::interactivetxs::{
 	InteractiveTxConstructorArgs, InteractiveTxMessageSend, InteractiveTxSigningSession, InteractiveTxMessageSendResult,
 	OutputOwned, SharedOwnedOutput, TX_COMMON_FIELDS_WEIGHT,
 };
-#[cfg(splicing)]
-use crate::ln::interactivetxs::InteractiveTxMessageSend;
 use crate::ln::msgs;
 use crate::ln::msgs::{ClosingSigned, ClosingSignedFeeRange, DecodeError};
 use crate::ln::script::{self, ShutdownScript};
@@ -1718,7 +1716,6 @@ pub(super) trait InteractivelyFunded<SP: Deref> where SP::Target: SignerProvider
 
 	fn is_initiator(&self) -> bool;
 
-	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled
 	fn begin_interactive_funding_tx_construction<ES: Deref>(
 		&mut self, signer_provider: &SP, entropy_source: &ES, holder_node_id: PublicKey,
 		prev_funding_input: Option<(TxIn, TransactionU16LenLimited)>,
@@ -1980,14 +1977,12 @@ impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Targ
 	fn dual_funding_context(&self) -> &DualFundingChannelContext {
 		&self.dual_funding_context
 	}
-	#[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
 	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
 		&mut self.dual_funding_context
 	}
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
 	}
-	#[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
 	fn is_initiator(&self) -> bool {
 		true
 	}
@@ -2003,14 +1998,12 @@ impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Targe
 	fn dual_funding_context(&self) -> &DualFundingChannelContext {
 		&self.dual_funding_context
 	}
-	#[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
 	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
 		&mut self.dual_funding_context
 	}
 	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
 		&mut self.interactive_tx_constructor
 	}
-	#[allow(dead_code)] // TODO(dual_funding): Remove once begin_interactive_funding_tx_construction() is used
 	fn is_initiator(&self) -> bool {
 		false
 	}
@@ -4417,7 +4410,6 @@ pub(super) struct DualFundingChannelContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
 	/// The amount in satoshis our counterparty will be contributing to the channel.
-	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub their_funding_satoshis: Option<u64>,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
