@@ -415,6 +415,7 @@ type TestChannelManager<'node_cfg, 'chan_mon_cfg> = ChannelManager<
 pub type TestOffersMessageFlow<'chan_man, 'node_cfg, 'chan_mon_cfg> = OffersMessageFlow<
 	&'node_cfg test_utils::TestKeysInterface,
 	&'chan_man TestChannelManager<'node_cfg, 'chan_mon_cfg>,
+	&'node_cfg test_utils::TestMessageRouter<'chan_mon_cfg>,
 	&'chan_mon_cfg test_utils::TestLogger,
 >;
 
@@ -1199,7 +1200,7 @@ macro_rules! reload_node {
 		$new_channelmanager = _reload_node(&$node, $new_config, &chanman_encoded, $monitors_encoded);
 
 		let offers_handler = $crate::sync::Arc::new($crate::offers::flow::OffersMessageFlow::new(
-			$new_channelmanager.inbound_payment_key, $new_channelmanager.get_our_node_id(), $node.keys_manager, &$new_channelmanager, $node.logger
+			$new_channelmanager.inbound_payment_key, $new_channelmanager.get_our_node_id(), $node.keys_manager, &$new_channelmanager, $node.message_router, $node.logger
 		));
 
 		$node.node = &$new_channelmanager;
@@ -3345,7 +3346,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(node_count: usize, cfgs: &'b Vec<NodeC
 	for i in 0..node_count {
 		let dedicated_entropy = DedicatedEntropy(RandomBytes::new([i as u8; 32]));
 		let offers_handler = Arc::new(OffersMessageFlow::new(
-			chan_mgrs[i].inbound_payment_key, chan_mgrs[i].get_our_node_id(), cfgs[i].keys_manager, &chan_mgrs[i], cfgs[i].logger
+			chan_mgrs[i].inbound_payment_key, chan_mgrs[i].get_our_node_id(), cfgs[i].keys_manager, &chan_mgrs[i], &cfgs[i].message_router, cfgs[i].logger
 		));
 		#[cfg(feature = "dnssec")]
 		let onion_messenger = OnionMessenger::new(

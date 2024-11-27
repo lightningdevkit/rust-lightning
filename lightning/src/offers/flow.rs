@@ -19,7 +19,9 @@ use bitcoin::secp256k1::{self, schnorr, PublicKey, Secp256k1};
 use lightning_invoice::PaymentSecret;
 use types::payment::PaymentHash;
 
-use crate::blinded_path::message::{BlindedMessagePath, MessageContext, OffersContext};
+use crate::blinded_path::message::{
+	BlindedMessagePath, MessageContext, MessageForwardNode, OffersContext,
+};
 use crate::blinded_path::payment::{
 	BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext, PaymentContext,
 };
@@ -33,11 +35,11 @@ use crate::offers::invoice::{
 	Bolt12Invoice, DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder,
 	UnsignedBolt12Invoice, DEFAULT_RELATIVE_EXPIRY,
 };
-use crate::offers::invoice_request::InvoiceRequest;
+use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestBuilder};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::dns_resolution::HumanReadableName;
 use crate::onion_message::messenger::{
-	Destination, MessageSendInstructions, Responder, ResponseInstruction,
+	Destination, MessageRouter, MessageSendInstructions, Responder, ResponseInstruction,
 };
 use crate::onion_message::offers::{OffersMessage, OffersMessageHandler};
 use crate::sync::MutexGuard;
@@ -149,6 +151,9 @@ pub trait OffersMessageCommons {
 		&self, amount_msats: u64, payment_secret: PaymentSecret, payment_context: PaymentContext,
 	) -> Result<Vec<BlindedPaymentPath>, ()>;
 
+	/// Get the vector of peers that can be used for a blinded path
+	fn get_peer_for_blinded_path(&self) -> Vec<MessageForwardNode>;
+
 	/// Verify bolt12 invoice
 	fn verify_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
@@ -189,19 +194,6 @@ pub trait OffersMessageCommons {
 		&self, invoice: &StaticInvoice, payment_id: PaymentId,
 	) -> Result<(), Bolt12PaymentError>;
 
-	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
-	/// the path's intended lifetime.
-	///
-	/// Whether or not the path is compact depends on whether the path is short-lived or long-lived,
-	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
-	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
-	///
-	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
-	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]: crate::ln::channelmanager::MAX_SHORT_LIVED_RELATIVE_EXPIRY
-	fn create_blinded_paths_using_absolute_expiry(
-		&self, context: OffersContext, absolute_expiry: Option<Duration>,
-	) -> Result<Vec<BlindedMessagePath>, ()>;
-
 	/// Get the [`ChainHash`] of the chain
 	fn get_chain_hash(&self) -> ChainHash;
 
@@ -219,15 +211,6 @@ pub trait OffersMessageCommons {
 		max_total_routing_fee_msat: Option<u64>, amount_msats: u64,
 	) -> Result<(), ()>;
 
-	/// Internal pay_for_offer
-	fn pay_for_offer_intern<
-		CPP: FnOnce(&InvoiceRequest, Nonce) -> Result<(), Bolt12SemanticError>,
-	>(
-		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
-		payer_note: Option<String>, payment_id: PaymentId,
-		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
-	) -> Result<(), Bolt12SemanticError>;
-
 	#[cfg(feature = "dnssec")]
 	/// Amount for payment awaiting offer
 	fn amt_msats_for_payment_awaiting_offer(&self, payment_id: PaymentId) -> Result<u64, ()>;
@@ -237,6 +220,10 @@ pub trait OffersMessageCommons {
 	fn received_offer(
 		&self, payment_id: PaymentId, retryable_invoice_request: Option<RetryableInvoiceRequest>,
 	) -> Result<(), ()>;
+
+	#[cfg(not(feature = "std"))]
+	/// Get the approximate current time using the highest seen timestamp
+	fn get_highest_seen_timestamp(&self) -> Duration;
 }
 
 /// A trivial trait which describes any [`OffersMessageFlow`].
@@ -254,19 +241,26 @@ pub trait AnOffersMessageFlow {
 	/// A type that may be dereferenced to [`Self::OffersMessageCommons`].
 	type OMC: Deref<Target = Self::OffersMessageCommons>;
 
+	/// A type implementing [`MessageRouter`].
+	type MessageRouter: MessageRouter + ?Sized;
+	/// A type that may be dereferenced to [`Self::MessageRouter`].
+	type MR: Deref<Target = Self::MessageRouter>;
+
 	/// A type implementing [`Logger`].
 	type Logger: Logger + ?Sized;
 	/// A type that may be dereferenced to [`Self::Logger`].
 	type L: Deref<Target = Self::Logger>;
 
 	/// Returns a reference to the actual [`OffersMessageFlow`] object.
-	fn get_omf(&self) -> &OffersMessageFlow<Self::ES, Self::OMC, Self::L>;
+	fn get_omf(&self) -> &OffersMessageFlow<Self::ES, Self::OMC, Self::MR, Self::L>;
 }
 
-impl<ES: Deref, OMC: Deref, L: Deref> AnOffersMessageFlow for OffersMessageFlow<ES, OMC, L>
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> AnOffersMessageFlow
+	for OffersMessageFlow<ES, OMC, MR, L>
 where
 	ES::Target: EntropySource,
 	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	type EntropySource = ES::Target;
@@ -275,10 +269,13 @@ where
 	type OffersMessageCommons = OMC::Target;
 	type OMC = OMC;
 
+	type MessageRouter = MR::Target;
+	type MR = MR;
+
 	type Logger = L::Target;
 	type L = L;
 
-	fn get_omf(&self) -> &OffersMessageFlow<ES, OMC, L> {
+	fn get_omf(&self) -> &OffersMessageFlow<ES, OMC, MR, L> {
 		self
 	}
 }
@@ -293,7 +290,7 @@ where
 /// - [`Logger`] for detailed operational logging of Offers-related activity.
 /// - [`OffersMessageCommons`] for core operations shared across Offers messages, such as metadata
 ///   verification and signature handling.
-/// - MessageRouter for routing Offers messages to their appropriate destinations within the
+/// - [`MessageRouter`] for routing Offers messages to their appropriate destinations within the
 ///   Lightning network.
 /// - Manages [`OffersMessage`] for creating and processing Offers-related messages.
 /// - Handles [`DNSResolverMessage`] for resolving human-readable names in Offers messages
@@ -569,10 +566,11 @@ where
 /// [`offers`]: crate::offers
 /// [`pay_for_offer`]: Self::pay_for_offer
 /// [`request_refund_payment`]: Self::request_refund_payment
-pub struct OffersMessageFlow<ES: Deref, OMC: Deref, L: Deref>
+pub struct OffersMessageFlow<ES: Deref, OMC: Deref, MR: Deref, L: Deref>
 where
 	ES::Target: EntropySource,
 	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	inbound_payment_key: inbound_payment::ExpandedKey,
@@ -584,6 +582,8 @@ where
 
 	/// Contains functions shared between OffersMessageHandler and ChannelManager.
 	commons: OMC,
+
+	message_router: MR,
 
 	#[cfg(feature = "_test_utils")]
 	/// In testing, it is useful be able to forge a name -> offer mapping so that we can pay an
@@ -598,16 +598,17 @@ where
 	pub logger: L,
 }
 
-impl<ES: Deref, OMC: Deref, L: Deref> OffersMessageFlow<ES, OMC, L>
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> OffersMessageFlow<ES, OMC, MR, L>
 where
 	ES::Target: EntropySource,
 	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	/// Creates a new [`OffersMessageFlow`]
 	pub fn new(
 		expanded_inbound_key: inbound_payment::ExpandedKey, our_network_pubkey: PublicKey,
-		entropy_source: ES, commons: OMC, logger: L,
+		entropy_source: ES, commons: OMC, message_router: MR, logger: L,
 	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -617,6 +618,7 @@ where
 			our_network_pubkey,
 			secp_ctx,
 			commons,
+			message_router,
 			entropy_source,
 			#[cfg(feature = "_test_utils")]
 			testing_dnssec_proof_offer_resolution_override: Mutex::new(new_hash_map()),
@@ -630,10 +632,150 @@ where
 	}
 }
 
-impl<ES: Deref, OMC: Deref, L: Deref> OffersMessageHandler for OffersMessageFlow<ES, OMC, L>
+/// The maximum expiration from the current time where an [`Offer`] or [`Refund`] is considered
+/// short-lived, while anything with a greater expiration is considered long-lived.
+///
+/// Using [`OffersMessageFlow::create_offer_builder`] or [`OffersMessageFlow::create_refund_builder`],
+/// will included a [`BlindedMessagePath`] created using:
+/// - [`MessageRouter::create_compact_blinded_paths`] when short-lived, and
+/// - [`MessageRouter::create_blinded_paths`] when long-lived.
+///
+/// [`OffersMessageFlow::create_offer_builder`]: crate::offers::flow::OffersMessageFlow::create_offer_builder
+/// [`OffersMessageFlow::create_refund_builder`]: crate::offers::flow::OffersMessageFlow::create_refund_builder
+///
+///
+/// Using compact [`BlindedMessagePath`]s may provide better privacy as the [`MessageRouter`] could select
+/// more hops. However, since they use short channel ids instead of pubkeys, they are more likely to
+/// become invalid over time as channels are closed. Thus, they are only suitable for short-term use.
+///
+/// [`Offer`]: crate::offers::offer
+/// [`Refund`]: crate::offers::refund
+pub const MAX_SHORT_LIVED_RELATIVE_EXPIRY: Duration = Duration::from_secs(60 * 60 * 24);
+
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> OffersMessageFlow<ES, OMC, MR, L>
 where
 	ES::Target: EntropySource,
 	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
+	/// Creates a collection of blinded paths by delegating to [`MessageRouter`] based on
+	/// the path's intended lifetime.
+	///
+	/// Whether or not the path is compact depends on whether the path is short-lived or long-lived,
+	/// respectively, based on the given `absolute_expiry` as seconds since the Unix epoch. See
+	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`].
+	pub fn create_blinded_paths_using_absolute_expiry(
+		&self, context: OffersContext, absolute_expiry: Option<Duration>,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		let now = self.duration_since_epoch();
+		let max_short_lived_absolute_expiry = now.saturating_add(MAX_SHORT_LIVED_RELATIVE_EXPIRY);
+
+		if absolute_expiry.unwrap_or(Duration::MAX) <= max_short_lived_absolute_expiry {
+			self.create_compact_blinded_paths(context)
+		} else {
+			self.commons.create_blinded_paths(MessageContext::Offers(context))
+		}
+	}
+
+	pub(crate) fn duration_since_epoch(&self) -> Duration {
+		#[cfg(not(feature = "std"))]
+		let now = self.commons.get_highest_seen_timestamp();
+		#[cfg(feature = "std")]
+		let now = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("SystemTime::now() should come after SystemTime::UNIX_EPOCH");
+
+		now
+	}
+
+	/// Creates a collection of blinded paths by delegating to
+	/// [`MessageRouter::create_compact_blinded_paths`].
+	///
+	/// Errors if the `MessageRouter` errors.
+	fn create_compact_blinded_paths(
+		&self, context: OffersContext,
+	) -> Result<Vec<BlindedMessagePath>, ()> {
+		let recipient = self.get_our_node_id();
+		let secp_ctx = &self.secp_ctx;
+
+		let peers = self.commons.get_peer_for_blinded_path();
+
+		self.message_router
+			.create_compact_blinded_paths(
+				recipient,
+				MessageContext::Offers(context),
+				peers,
+				secp_ctx,
+			)
+			.and_then(|paths| (!paths.is_empty()).then(|| paths).ok_or(()))
+	}
+}
+
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> OffersMessageFlow<ES, OMC, MR, L>
+where
+	ES::Target: EntropySource,
+	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
+	fn pay_for_offer_intern<
+		CPP: FnOnce(&InvoiceRequest, Nonce) -> Result<(), Bolt12SemanticError>,
+	>(
+		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
+		payer_note: Option<String>, payment_id: PaymentId,
+		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
+	) -> Result<(), Bolt12SemanticError> {
+		let expanded_key = &self.inbound_payment_key;
+		let entropy = &*self.entropy_source;
+		let secp_ctx = &self.secp_ctx;
+
+		let nonce = Nonce::from_entropy_source(entropy);
+		let builder: InvoiceRequestBuilder<secp256k1::All> =
+			offer.request_invoice(expanded_key, nonce, secp_ctx, payment_id)?.into();
+		let builder = builder.chain_hash(self.commons.get_chain_hash())?;
+
+		let builder = match quantity {
+			None => builder,
+			Some(quantity) => builder.quantity(quantity)?,
+		};
+		let builder = match amount_msats {
+			None => builder,
+			Some(amount_msats) => builder.amount_msats(amount_msats)?,
+		};
+		let builder = match payer_note {
+			None => builder,
+			Some(payer_note) => builder.payer_note(payer_note),
+		};
+		let builder = match human_readable_name {
+			None => builder,
+			Some(hrn) => builder.sourced_from_human_readable_name(hrn),
+		};
+		let invoice_request = builder.build_and_sign()?;
+
+		let hmac = payment_id.hmac_for_offer_payment(nonce, expanded_key);
+		let context = MessageContext::Offers(OffersContext::OutboundPayment {
+			payment_id,
+			nonce,
+			hmac: Some(hmac),
+		});
+		let reply_paths = self
+			.commons
+			.create_blinded_paths(context)
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
+
+		create_pending_payment(&invoice_request, nonce)?;
+
+		self.commons.enqueue_invoice_request(invoice_request, reply_paths)
+	}
+}
+
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> OffersMessageHandler
+	for OffersMessageFlow<ES, OMC, MR, L>
+where
+	ES::Target: EntropySource,
+	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	fn handle_message(
@@ -945,7 +1087,6 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]: crate::ln::channelmanager::MAX_SHORT_LIVED_RELATIVE_EXPIRY
 	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
 	/// [`Offer`]: crate::offers::offer
 	/// [`Router`]: crate::routing::router::Router
@@ -959,7 +1100,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let context = OffersContext::InvoiceRequest { nonce };
-		let path = $self.commons.create_blinded_paths_using_absolute_expiry(context, absolute_expiry)
+		let path = $self.create_blinded_paths_using_absolute_expiry(context, absolute_expiry)
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 		let builder = OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
@@ -1022,7 +1163,6 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 	/// [`Bolt12Invoice::payment_paths`]: crate::offers::invoice::Bolt12Invoice::payment_paths
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
-	/// [`MAX_SHORT_LIVED_RELATIVE_EXPIRY`]: crate::ln::channelmanager::MAX_SHORT_LIVED_RELATIVE_EXPIRY
 	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
 	/// [`RouteParameters::from_payment_params_and_value`]: crate::routing::router::RouteParameters::from_payment_params_and_value
 	/// [`Router`]: crate::routing::router::Router
@@ -1039,7 +1179,7 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let context = OffersContext::OutboundPayment { payment_id, nonce, hmac: None };
-		let path = $self.commons.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
+		let path = $self.create_blinded_paths_using_absolute_expiry(context, Some(absolute_expiry))
 			.and_then(|paths| paths.into_iter().next().ok_or(()))
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
@@ -1060,10 +1200,11 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	}
 } }
 
-impl<ES: Deref, OMC: Deref, L: Deref> OffersMessageFlow<ES, OMC, L>
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> OffersMessageFlow<ES, OMC, MR, L>
 where
 	ES::Target: EntropySource,
 	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	#[cfg(not(c_bindings))]
@@ -1142,7 +1283,7 @@ where
 		payer_note: Option<String>, payment_id: PaymentId, retry_strategy: Retry,
 		max_total_routing_fee_msat: Option<u64>,
 	) -> Result<(), Bolt12SemanticError> {
-		self.commons.pay_for_offer_intern(
+		self.pay_for_offer_intern(
 			offer,
 			quantity,
 			amount_msats,
@@ -1360,10 +1501,12 @@ where
 }
 
 #[cfg(feature = "dnssec")]
-impl<ES: Deref, OMC: Deref, L: Deref> DNSResolverMessageHandler for OffersMessageFlow<ES, OMC, L>
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> DNSResolverMessageHandler
+	for OffersMessageFlow<ES, OMC, MR, L>
 where
 	ES::Target: EntropySource,
 	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
 	L::Target: Logger,
 {
 	fn handle_dnssec_query(
@@ -1391,7 +1534,7 @@ where
 				}
 				if let Ok(amt_msats) = self.commons.amt_msats_for_payment_awaiting_offer(payment_id)
 				{
-					let offer_pay_res = self.commons.pay_for_offer_intern(
+					let offer_pay_res = self.pay_for_offer_intern(
 						&offer,
 						None,
 						Some(amt_msats),

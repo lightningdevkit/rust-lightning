@@ -48,10 +48,11 @@ use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{Bolt12OfferContext, Bolt12RefundContext, PaymentContext};
 use crate::blinded_path::message::{MessageContext, OffersContext};
 use crate::events::{ClosureReason, Event, MessageSendEventsProvider, PaymentFailureReason, PaymentPurpose};
-use crate::ln::channelmanager::{MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
+use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, Retry, self};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
+use crate::offers::flow::MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
@@ -387,7 +388,7 @@ fn creates_short_lived_offer() {
 	let alice_id = alice.node.get_our_node_id();
 	let bob = &nodes[1];
 
-	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
+	let absolute_expiry = alice.offers_handler.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	let offer = alice.offers_handler
 		.create_offer_builder(Some(absolute_expiry)).unwrap()
 		.build().unwrap();
@@ -413,7 +414,7 @@ fn creates_long_lived_offer() {
 	let alice = &nodes[0];
 	let alice_id = alice.node.get_our_node_id();
 
-	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY
+	let absolute_expiry = alice.offers_handler.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY
 		+ Duration::from_secs(1);
 	let offer = alice.offers_handler
 		.create_offer_builder(Some(absolute_expiry))
@@ -449,7 +450,7 @@ fn creates_short_lived_refund() {
 	let bob = &nodes[1];
 	let bob_id = bob.node.get_our_node_id();
 
-	let absolute_expiry = bob.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
+	let absolute_expiry = bob.offers_handler.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	let payment_id = PaymentId([1; 32]);
 	let refund = bob.offers_handler
 		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None)
@@ -477,7 +478,7 @@ fn creates_long_lived_refund() {
 	let bob = &nodes[1];
 	let bob_id = bob.node.get_our_node_id();
 
-	let absolute_expiry = bob.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY
+	let absolute_expiry = bob.offers_handler.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY
 		+ Duration::from_secs(1);
 	let payment_id = PaymentId([1; 32]);
 	let refund = bob.offers_handler
@@ -1606,7 +1607,7 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 	disconnect_peers(alice, &[bob, charlie, david, &nodes[4], &nodes[5]]);
 	disconnect_peers(david, &[bob, charlie, &nodes[4], &nodes[5]]);
 
-	let absolute_expiry = alice.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
+	let absolute_expiry = alice.offers_handler.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	match alice.offers_handler.create_offer_builder(Some(absolute_expiry)) {
 		Ok(_) => panic!("Expected error"),
 		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
@@ -1677,7 +1678,7 @@ fn fails_creating_refund_or_sending_invoice_without_connected_peers() {
 	disconnect_peers(alice, &[bob, charlie, david, &nodes[4], &nodes[5]]);
 	disconnect_peers(david, &[bob, charlie, &nodes[4], &nodes[5]]);
 
-	let absolute_expiry = david.node.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
+	let absolute_expiry = david.offers_handler.duration_since_epoch() + MAX_SHORT_LIVED_RELATIVE_EXPIRY;
 	let payment_id = PaymentId([1; 32]);
 	match david.offers_handler.create_refund_builder(
 		10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), None
@@ -2143,7 +2144,7 @@ fn fails_paying_invoice_with_unknown_required_features() {
 	let expanded_key = alice.keys_manager.get_inbound_payment_key();
 	let secp_ctx = Secp256k1::new();
 
-	let created_at = alice.node.duration_since_epoch();
+	let created_at = alice.offers_handler.duration_since_epoch();
 	let invoice = invoice_request
 		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap()
 		.respond_using_derived_keys_no_std(payment_paths, payment_hash, created_at).unwrap()

@@ -1865,7 +1865,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<L>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
-	Arc<OffersMessageFlow<Arc<KeysManager>, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<L>>>,
+	Arc<OffersMessageFlow<Arc<KeysManager>, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>, Arc<L>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler
@@ -1886,7 +1886,7 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 	Arc<L>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
-	Arc<OffersMessageFlow<Arc<KeysManager>, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<L>>>,
+	Arc<OffersMessageFlow<Arc<KeysManager>, Arc<SimpleArcChannelManager<M, T, F, L>>, Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>, Arc<L>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler,
 	IgnoringMessageHandler
