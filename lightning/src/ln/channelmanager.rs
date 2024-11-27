@@ -33,7 +33,7 @@ use bitcoin::secp256k1::Secp256k1;
 use bitcoin::{secp256k1, Sequence, Weight};
 
 use crate::events::FundingInfo;
-use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, MessageForwardNode, OffersContext};
+use crate::blinded_path::message::{AsyncPaymentsContext, MessageContext, MessageForwardNode};
 use crate::blinded_path::NodeIdLookUp;
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPaymentPath, PaymentConstraints, PaymentContext, UnauthenticatedReceiveTlvs};
@@ -443,11 +443,15 @@ impl Ord for ClaimableHTLC {
 pub trait Verification {
 	/// Constructs an HMAC to include in [`OffersContext`] for the data along with the given
 	/// [`Nonce`].
+	///
+	/// [`OffersContext`]: crate::blinded_path::message::OffersContext
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256>;
 
 	/// Authenticates the data using an HMAC and a [`Nonce`] taken from an [`OffersContext`].
+	///
+	/// [`OffersContext`]: crate::blinded_path::message::OffersContext
 	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()>;
@@ -456,6 +460,8 @@ pub trait Verification {
 impl Verification for PaymentHash {
 	/// Constructs an HMAC to include in [`OffersContext::InboundPayment`] for the payment hash
 	/// along with the given [`Nonce`].
+	///
+	/// [`OffersContext::InboundPayment`]: crate::blinded_path::message::OffersContext::InboundPayment
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
@@ -464,6 +470,8 @@ impl Verification for PaymentHash {
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::InboundPayment`].
+	///
+	/// [`OffersContext::InboundPayment`]: crate::blinded_path::message::OffersContext::InboundPayment
 	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
@@ -518,6 +526,8 @@ impl PaymentId {
 impl Verification for PaymentId {
 	/// Constructs an HMAC to include in [`OffersContext::OutboundPayment`] for the payment id
 	/// along with the given [`Nonce`].
+	///
+	/// [`OffersContext::OutboundPayment`]: crate::blinded_path::message::OffersContext::OutboundPayment
 	fn hmac_for_offer_payment(
 		&self, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Hmac<Sha256> {
@@ -526,6 +536,8 @@ impl Verification for PaymentId {
 
 	/// Authenticates the payment id using an HMAC and a [`Nonce`] taken from an
 	/// [`OffersContext::OutboundPayment`].
+	///
+	/// [`OffersContext::OutboundPayment`]: crate::blinded_path::message::OffersContext::OutboundPayment
 	fn verify_for_offer_payment(
 		&self, hmac: Hmac<Sha256>, nonce: Nonce, expanded_key: &inbound_payment::ExpandedKey,
 	) -> Result<(), ()> {
@@ -2030,17 +2042,17 @@ where
 /// ```
 ///
 /// ## BOLT 12 Offers
-/// 
+///
 /// For more information on creating offers, see [`create_offer_builder`].
 ///
 /// For details on initiating payments for offers, see [`pay_for_offer`].
 ///
 /// ## BOLT 12 Refunds
-/// 
+///
 /// For more information on creating refunds, see [`create_refund_builder`].
 ///
 /// For requesting refund payments, see [`request_refund_payment`].
-/// 
+///
 /// # Persistence
 ///
 /// Implements [`Writeable`] to write out all channel state to disk. Implies [`peer_disconnected`] for
@@ -9572,27 +9584,11 @@ where
 			.collect::<Vec<_>>()
 	}
 
-	fn verify_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
-	) -> Result<PaymentId, ()> {
-		let secp_ctx = &self.secp_ctx;
-		let expanded_key = &self.inbound_payment_key;
-
-		match context {
-			None if invoice.is_for_refund_without_paths() => {
-				invoice.verify_using_metadata(expanded_key, secp_ctx)
-			},
-			Some(&OffersContext::OutboundPayment { payment_id, nonce, .. }) => {
-				invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx)
-			},
-			_ => Err(()),
-		}
-	}
-
 	fn send_payment_for_verified_bolt12_invoice(&self, invoice: &Bolt12Invoice, payment_id: PaymentId) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let features = self.bolt12_invoice_features();
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+
 		self.pending_outbound_payments
 			.send_payment_for_bolt12_invoice(
 				invoice, payment_id, &self.router, self.list_usable_channels(), features,

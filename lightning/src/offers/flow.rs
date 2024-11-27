@@ -140,11 +140,6 @@ pub trait OffersMessageCommons {
 	/// Get the vector of peers that can be used for a blinded path
 	fn get_peer_for_blinded_path(&self) -> Vec<MessageForwardNode>;
 
-	/// Verify bolt12 invoice
-	fn verify_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
-	) -> Result<PaymentId, ()>;
-
 	/// Send payment for verified bolt12 invoice
 	fn send_payment_for_verified_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
@@ -820,6 +815,31 @@ where
 	}
 }
 
+impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> OffersMessageFlow<ES, OMC, MR, L>
+where
+	ES::Target: EntropySource,
+	OMC::Target: OffersMessageCommons,
+	MR::Target: MessageRouter,
+	L::Target: Logger,
+{
+	fn verify_bolt12_invoice(
+		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
+	) -> Result<PaymentId, ()> {
+		let secp_ctx = &self.secp_ctx;
+		let expanded_key = &self.inbound_payment_key;
+
+		match context {
+			None if invoice.is_for_refund_without_paths() => {
+				invoice.verify_using_metadata(expanded_key, secp_ctx)
+			},
+			Some(&OffersContext::OutboundPayment { payment_id, nonce, .. }) => {
+				invoice.verify_using_payer_data(payment_id, nonce, expanded_key, secp_ctx)
+			},
+			_ => Err(()),
+		}
+	}
+}
+
 impl<ES: Deref, OMC: Deref, MR: Deref, L: Deref> OffersMessageHandler
 	for OffersMessageFlow<ES, OMC, MR, L>
 where
@@ -1003,11 +1023,10 @@ where
 				}
 			},
 			OffersMessage::Invoice(invoice) => {
-				let payment_id =
-					match self.commons.verify_bolt12_invoice(&invoice, context.as_ref()) {
-						Ok(payment_id) => payment_id,
-						Err(()) => return None,
-					};
+				let payment_id = match self.verify_bolt12_invoice(&invoice, context.as_ref()) {
+					Ok(payment_id) => payment_id,
+					Err(()) => return None,
+				};
 
 				let logger =
 					WithContext::from(&self.logger, None, None, Some(invoice.payment_hash()));
