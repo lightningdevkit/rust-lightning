@@ -5910,7 +5910,7 @@ impl<SP: Deref> FundedChannel<SP> where
 		}
 	}
 
-	pub fn tx_signatures<L: Deref>(&mut self, msg: &msgs::TxSignatures, logger: &L) -> Result<(Option<msgs::TxSignatures>, Option<Transaction>), ChannelError>
+	pub fn tx_signatures<L: Deref>(&mut self, msg: &msgs::TxSignatures, logger: &L) -> Result<Option<msgs::TxSignatures>, ChannelError>
 		where L::Target: Logger
 	{
 		if !matches!(self.context.channel_state, ChannelState::FundingNegotiated) {
@@ -5947,25 +5947,23 @@ impl<SP: Deref> FundedChannel<SP> where
 				// for spending. Doesn't seem to be anything in rust-bitcoin.
 			}
 
-			let (tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg.clone())
+			let (holder_tx_signatures_opt, funding_tx_opt) = signing_session.received_tx_signatures(msg.clone())
 				.map_err(|_| ChannelError::Warn("Witness count did not match contributed input count".to_string()))?;
+			if holder_tx_signatures_opt.is_some() && self.is_awaiting_initial_mon_persist() {
+				log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
+				self.context.monitor_pending_tx_signatures = holder_tx_signatures_opt;
+				return Ok(None);
+			}
 			if funding_tx_opt.is_some() {
+				// We have a persisted channel monitor and and a finalized funding transaction, so we can move
+				// the channel state forward, set the funding transaction and reset the signing session fields.
+				self.context.funding_transaction = funding_tx_opt;
+				self.context.next_funding_txid = None;
+				self.interactive_tx_signing_session = None;
 				self.context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
-			self.context.funding_transaction = funding_tx_opt.clone();
 
-			self.context.next_funding_txid = None;
-
-			// Clear out the signing session
-			self.interactive_tx_signing_session = None;
-
-			if tx_signatures_opt.is_some() && self.context.channel_state.is_monitor_update_in_progress() {
-				log_debug!(logger, "Not sending tx_signatures: a monitor update is in progress. Setting monitor_pending_tx_signatures.");
-				self.context.monitor_pending_tx_signatures = tx_signatures_opt;
-				return Ok((None, None));
-			}
-
-			Ok((tx_signatures_opt, funding_tx_opt))
+			Ok(holder_tx_signatures_opt)
 		} else {
 			Err(ChannelError::Close((
 				"Unexpected tx_signatures. No funding transaction awaiting signatures".to_string(),
