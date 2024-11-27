@@ -4908,7 +4908,7 @@ where
 	/// Send a payment that is probing the given route for liquidity. We calculate the
 	/// [`PaymentHash`] of probes based on a static secret and a random [`PaymentId`], which allows
 	/// us to easily discern them from real payments.
-	pub fn send_probe(&self, path: Path) -> Result<(PaymentHash, PaymentId), PaymentSendFailure> {
+	pub fn send_probe(&self, path: Path) -> Result<(PaymentHash, PaymentId), ProbeSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.send_probe(path, self.probing_cookie_secret,
@@ -5026,7 +5026,7 @@ where
 
 			res.push(self.send_probe(path).map_err(|e| {
 				log_error!(self.logger, "Failed to send pre-flight probe: {:?}", e);
-				ProbeSendFailure::SendingFailed(e)
+				e
 			})?);
 		}
 
