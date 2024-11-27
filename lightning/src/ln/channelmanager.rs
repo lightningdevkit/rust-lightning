@@ -53,7 +53,9 @@ use crate::ln::channel_state::ChannelDetails;
 use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, ChannelTypeFeatures, InitFeatures, NodeFeatures};
 #[cfg(any(feature = "_test_utils", test))]
 use crate::types::features::Bolt11InvoiceFeatures;
-use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, Route, RouteParameters, Router};
+use crate::routing::router::{BlindedTail, InFlightHtlcs, Path, Payee, PaymentParameters, RouteParameters, Router};
+#[cfg(any(test, fuzzing))]
+use crate::routing::router::Route;
 use crate::ln::onion_payment::{check_incoming_htlc_cltv, create_recv_pending_htlc_info, create_fwd_pending_htlc_info, decode_incoming_update_add_htlc_onion, InboundHTLCErr, NextPacketDetails};
 use crate::ln::msgs;
 use crate::ln::onion_utils;
@@ -4880,47 +4882,21 @@ where
 	/// would be able to guess -- otherwise, an intermediate node may claim the payment and it will
 	/// never reach the recipient.
 	///
-	/// See [`send_payment`] documentation for more details on the idempotency guarantees provided by
-	/// the [`PaymentId`] key.
-	///
-	/// # Possible Error States on [`PaymentSendFailure`]
-	///
-	/// Each path may have a different return value, and [`PaymentSendFailure`] may return a `Vec` with
-	/// each entry matching the corresponding-index entry in the route paths, see
-	/// [`PaymentSendFailure`] for more info.
-	///
-	/// In general, a path may raise:
-	///  * [`APIError::InvalidRoute`] when an invalid route or forwarding parameter (cltv_delta, fee,
-	///    node public key) is specified.
-	///  * [`APIError::ChannelUnavailable`] if the next-hop channel is not available as it has been
-	///    closed, doesn't exist, or the peer is currently disconnected.
-	///  * [`APIError::MonitorUpdateInProgress`] if a new monitor update failure prevented sending the
-	///    relevant updates.
-	///
-	/// Note that depending on the type of the [`PaymentSendFailure`] the HTLC may have been
-	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
-	/// different route unless you intend to pay twice!
-	///
 	/// Similar to regular payments, you MUST NOT reuse a `payment_preimage` value. See
 	/// [`send_payment`] for more information about the risks of duplicate preimage usage.
 	///
-	/// [`send_payment`]: Self::send_payment
-	pub fn send_spontaneous_payment(&self, route: &Route, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<PaymentHash, PaymentSendFailure> {
-		let best_block_height = self.best_block.read().unwrap().height;
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.pending_outbound_payments.send_spontaneous_payment_with_route(
-			route, payment_preimage, recipient_onion, payment_id, &self.entropy_source,
-			&self.node_signer, best_block_height, |args| self.send_payment_along_path(args))
-	}
-
-	/// Similar to [`ChannelManager::send_spontaneous_payment`], but will automatically find a route
-	/// based on `route_params` and retry failed payment paths based on `retry_strategy`.
+	/// See [`send_payment`] documentation for more details on the idempotency guarantees provided by
+	/// the [`PaymentId`] key.
 	///
 	/// See [`PaymentParameters::for_keysend`] for help in constructing `route_params` for spontaneous
 	/// payments.
 	///
+	/// [`send_payment`]: Self::send_payment
 	/// [`PaymentParameters::for_keysend`]: crate::routing::router::PaymentParameters::for_keysend
-	pub fn send_spontaneous_payment_with_retry(&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<PaymentHash, RetryableSendFailure> {
+	pub fn send_spontaneous_payment(
+		&self, payment_preimage: Option<PaymentPreimage>, recipient_onion: RecipientOnionFields,
+		payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry
+	) -> Result<PaymentHash, RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments.send_spontaneous_payment(payment_preimage, recipient_onion,
@@ -14330,6 +14306,7 @@ mod tests {
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{self, ErrorAction};
 	use crate::ln::msgs::ChannelMessageHandler;
+	use crate::ln::outbound_payment::Retry;
 	use crate::prelude::*;
 	use crate::routing::router::{PaymentParameters, RouteParameters, find_route};
 	use crate::util::errors::APIError;
@@ -14447,8 +14424,10 @@ mod tests {
 		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
 
 		// Next, send a keysend payment with the same payment_hash and make sure it fails.
-		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
-			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
+		nodes[0].node.send_spontaneous_payment(
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
+			PaymentId(payment_preimage.0), route.route_params.clone().unwrap(), Retry::Attempts(0)
+		).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -14560,12 +14539,10 @@ mod tests {
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(),
 			TEST_FINAL_CLTV, false), 100_000);
-		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
-			None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
+		nodes[0].node.send_spontaneous_payment(
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
+			PaymentId(payment_preimage.0), route_params.clone(), Retry::Attempts(0)
 		).unwrap();
-		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
-			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -14598,8 +14575,10 @@ mod tests {
 			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
 			None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
 		).unwrap();
-		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
-			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_preimage.0)).unwrap();
+		let payment_hash = nodes[0].node.send_spontaneous_payment(
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(),
+			PaymentId(payment_preimage.0), route.route_params.clone().unwrap(), Retry::Attempts(0)
+		).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -14637,8 +14616,10 @@ mod tests {
 
 		// To start (3), send a keysend payment but don't claim it.
 		let payment_id_1 = PaymentId([44; 32]);
-		let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
-			RecipientOnionFields::spontaneous_empty(), payment_id_1).unwrap();
+		let payment_hash = nodes[0].node.send_spontaneous_payment(
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_1,
+			route.route_params.clone().unwrap(), Retry::Attempts(0)
+		).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
@@ -14651,13 +14632,11 @@ mod tests {
 			PaymentParameters::for_keysend(expected_route.last().unwrap().node.get_our_node_id(), TEST_FINAL_CLTV, false),
 			100_000
 		);
-		let route = find_route(
-			&nodes[0].node.get_our_node_id(), &route_params, &nodes[0].network_graph,
-			None, nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
-		).unwrap();
 		let payment_id_2 = PaymentId([45; 32]);
-		nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
-			RecipientOnionFields::spontaneous_empty(), payment_id_2).unwrap();
+		nodes[0].node.send_spontaneous_payment(
+			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_2, route_params,
+			Retry::Attempts(0)
+		).unwrap();
 		check_added_monitors!(nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);

@@ -24,9 +24,9 @@ use crate::types::payment::{PaymentHash, PaymentSecret, PaymentPreimage};
 use crate::ln::chan_utils;
 use crate::ln::msgs::ChannelMessageHandler;
 use crate::ln::onion_utils;
-use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, Retry};
+use crate::ln::outbound_payment::{IDEMPOTENCY_TIMEOUT_TICKS, Retry, RetryableSendFailure};
 use crate::routing::gossip::{EffectiveCapacity, RoutingFees};
-use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters, find_route};
+use crate::routing::router::{get_route, Path, PaymentParameters, Route, Router, RouteHint, RouteHintHop, RouteHop, RouteParameters};
 use crate::routing::scoring::ChannelUsage;
 use crate::util::config::UserConfig;
 use crate::util::test_utils;
@@ -369,13 +369,11 @@ fn mpp_receive_timeout() {
 
 #[test]
 fn test_keysend_payments() {
-	do_test_keysend_payments(false, false);
-	do_test_keysend_payments(false, true);
-	do_test_keysend_payments(true, false);
-	do_test_keysend_payments(true, true);
+	do_test_keysend_payments(false);
+	do_test_keysend_payments(true);
 }
 
-fn do_test_keysend_payments(public_node: bool, with_retry: bool) {
+fn do_test_keysend_payments(public_node: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -386,33 +384,16 @@ fn do_test_keysend_payments(public_node: bool, with_retry: bool) {
 	} else {
 		create_chan_between_nodes(&nodes[0], &nodes[1]);
 	}
-	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[1].node.get_our_node_id();
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::for_keysend(payee_pubkey, 40, false), 10000);
 
-	let network_graph = nodes[0].network_graph;
-	let channels = nodes[0].node.list_usable_channels();
-	let first_hops = channels.iter().collect::<Vec<_>>();
-	let first_hops = if public_node { None } else { Some(first_hops.as_slice()) };
-
-	let scorer = test_utils::TestScorer::new();
-	let random_seed_bytes = chanmon_cfgs[1].keys_manager.get_secure_random_bytes();
-	let route = find_route(
-		&payer_pubkey, &route_params, &network_graph, first_hops,
-		nodes[0].logger, &scorer, &Default::default(), &random_seed_bytes
-	).unwrap();
-
 	{
 		let test_preimage = PaymentPreimage([42; 32]);
-		if with_retry {
-			nodes[0].node.send_spontaneous_payment_with_retry(Some(test_preimage),
-				RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0),
-				route_params, Retry::Attempts(1)).unwrap()
-		} else {
-			nodes[0].node.send_spontaneous_payment(&route, Some(test_preimage),
-				RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0)).unwrap()
-		};
+		nodes[0].node.send_spontaneous_payment(
+			Some(test_preimage), RecipientOnionFields::spontaneous_empty(), PaymentId(test_preimage.0),
+			route_params, Retry::Attempts(1)
+		).unwrap();
 	}
 	check_added_monitors!(nodes[0], 1);
 	let send_event = SendEvent::from_node(&nodes[0]);
@@ -441,22 +422,18 @@ fn test_mpp_keysend() {
 	create_announced_chan_between_nodes(&nodes, 0, 2);
 	create_announced_chan_between_nodes(&nodes, 1, 3);
 	create_announced_chan_between_nodes(&nodes, 2, 3);
-	let network_graph = nodes[0].network_graph;
 
-	let payer_pubkey = nodes[0].node.get_our_node_id();
 	let payee_pubkey = nodes[3].node.get_our_node_id();
 	let recv_value = 15_000_000;
 	let route_params = RouteParameters::from_payment_params_and_value(
 		PaymentParameters::for_keysend(payee_pubkey, 40, true), recv_value);
-	let scorer = test_utils::TestScorer::new();
-	let random_seed_bytes = chanmon_cfgs[0].keys_manager.get_secure_random_bytes();
-	let route = find_route(&payer_pubkey, &route_params, &network_graph, None, nodes[0].logger,
-		&scorer, &Default::default(), &random_seed_bytes).unwrap();
 
 	let payment_preimage = PaymentPreimage([42; 32]);
 	let payment_secret = PaymentSecret(payment_preimage.0);
-	let payment_hash = nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage),
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_preimage.0)).unwrap();
+	let payment_hash = nodes[0].node.send_spontaneous_payment(
+		Some(payment_preimage), RecipientOnionFields::secret_only(payment_secret),
+		PaymentId(payment_preimage.0), route_params, Retry::Attempts(0)
+	).unwrap();
 	check_added_monitors!(nodes[0], 2);
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
@@ -499,7 +476,11 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	route.paths[0].hops[1].short_channel_id = chan_3_id;
 
 	let payment_id_0 = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
-	nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_0).unwrap();
+	nodes[0].router.expect_find_route(route.route_params.clone().unwrap(), Ok(route.clone()));
+	nodes[0].node.send_spontaneous_payment(
+		Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_0,
+		route.route_params.clone().unwrap(), Retry::Attempts(0)
+	).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let update_0 = get_htlc_update_msgs!(nodes[0], nodes[1].node.get_our_node_id());
@@ -541,7 +522,11 @@ fn test_reject_mpp_keysend_htlc_mismatching_secret() {
 	route.paths[0].hops[1].short_channel_id = chan_4_id;
 
 	let payment_id_1 = PaymentId(nodes[0].keys_manager.backing.get_secure_random_bytes());
-	nodes[0].node.send_spontaneous_payment(&route, Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_1).unwrap();
+	nodes[0].router.expect_find_route(route.route_params.clone().unwrap(), Ok(route.clone()));
+	nodes[0].node.send_spontaneous_payment(
+		Some(payment_preimage), RecipientOnionFields::spontaneous_empty(), payment_id_1,
+		route.route_params.clone().unwrap(), Retry::Attempts(0)
+	).unwrap();
 	check_added_monitors!(nodes[0], 1);
 
 	let update_2 = get_htlc_update_msgs!(nodes[0], nodes[2].node.get_our_node_id());
@@ -1569,9 +1554,11 @@ fn claimed_send_payment_idempotent() {
 			// Further, if we try to send a spontaneous payment with the same payment_id it should
 			// also be rejected.
 			let send_result = nodes[0].node.send_spontaneous_payment(
-				&route, None, RecipientOnionFields::spontaneous_empty(), payment_id);
+				None, RecipientOnionFields::spontaneous_empty(), payment_id,
+				route.route_params.clone().unwrap(), Retry::Attempts(0)
+			);
 			match send_result {
-				Err(PaymentSendFailure::DuplicatePayment) => {},
+				Err(RetryableSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 		}
@@ -1646,9 +1633,11 @@ fn abandoned_send_payment_idempotent() {
 			// Further, if we try to send a spontaneous payment with the same payment_id it should
 			// also be rejected.
 			let send_result = nodes[0].node.send_spontaneous_payment(
-				&route, None, RecipientOnionFields::spontaneous_empty(), payment_id);
+				None, RecipientOnionFields::spontaneous_empty(), payment_id,
+				route.route_params.clone().unwrap(), Retry::Attempts(0)
+			);
 			match send_result {
-				Err(PaymentSendFailure::DuplicatePayment) => {},
+				Err(RetryableSendFailure::DuplicatePayment) => {},
 				_ => panic!("Unexpected send result: {:?}", send_result),
 			}
 		}
@@ -2287,8 +2276,8 @@ fn do_automatic_retries(test: AutoRetry) {
 			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[2]]], payment_preimage)
 		);
 	} else if test == AutoRetry::Spontaneous {
-		nodes[0].node.send_spontaneous_payment_with_retry(Some(payment_preimage),
-			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params,
+		nodes[0].node.send_spontaneous_payment(Some(payment_preimage),
+			RecipientOnionFields::spontaneous_empty(), PaymentId(payment_hash.0), route_params.clone(),
 			Retry::Attempts(1)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
@@ -2308,7 +2297,7 @@ fn do_automatic_retries(test: AutoRetry) {
 	} else if test == AutoRetry::FailAttempts {
 		// Ensure ChannelManager will not retry a payment if it has run out of payment attempts.
 		nodes[0].node.send_payment(payment_hash, RecipientOnionFields::secret_only(payment_secret),
-			PaymentId(payment_hash.0), route_params, Retry::Attempts(1)).unwrap();
+			PaymentId(payment_hash.0), route_params.clone(), Retry::Attempts(1)).unwrap();
 		pass_failed_attempt_with_retry_along_path!(channel_id_2, true);
 
 		// Open a new channel with no liquidity on the second hop so we can find a (bad) route for
@@ -3704,7 +3693,10 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 		custom_tlvs: custom_tlvs.clone()
 	};
 	if spontaneous {
-		nodes[0].node.send_spontaneous_payment(&route, Some(our_payment_preimage), onion_fields, payment_id).unwrap();
+		nodes[0].node.send_spontaneous_payment(
+			Some(our_payment_preimage), onion_fields, payment_id, route.route_params.unwrap(),
+			Retry::Attempts(0)
+		).unwrap();
 	} else {
 		nodes[0].node.send_payment_with_route(route, our_payment_hash, onion_fields, payment_id).unwrap();
 	}
