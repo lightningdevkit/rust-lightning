@@ -815,33 +815,6 @@ impl OutboundPayments {
 			.map(|()| payment_hash)
 	}
 
-	pub(super) fn send_spontaneous_payment_with_route<ES: Deref, NS: Deref, F>(
-		&self, route: &Route, payment_preimage: Option<PaymentPreimage>,
-		recipient_onion: RecipientOnionFields, payment_id: PaymentId, entropy_source: &ES,
-		node_signer: &NS, best_block_height: u32, send_payment_along_path: F
-	) -> Result<PaymentHash, PaymentSendFailure>
-	where
-		ES::Target: EntropySource,
-		NS::Target: NodeSigner,
-		F: Fn(SendAlongPathArgs) -> Result<(), APIError>,
-	{
-		let preimage = payment_preimage
-			.unwrap_or_else(|| PaymentPreimage(entropy_source.get_secure_random_bytes()));
-		let payment_hash = PaymentHash(Sha256::hash(&preimage.0).to_byte_array());
-		let onion_session_privs = self.add_new_pending_payment(payment_hash, recipient_onion.clone(),
-			payment_id, Some(preimage), &route, None, None, entropy_source, best_block_height)?;
-
-		match self.pay_route_internal(route, payment_hash, &recipient_onion, Some(preimage), None,
-			payment_id, None, onion_session_privs, node_signer, best_block_height, &send_payment_along_path
-		) {
-			Ok(()) => Ok(payment_hash),
-			Err(e) => {
-				self.remove_outbound_if_all_failed(payment_id, &e);
-				Err(e)
-			}
-		}
-	}
-
 	pub(super) fn send_payment_for_bolt12_invoice<
 		R: Deref, ES: Deref, NS: Deref, NL: Deref, IH, SP, L: Deref
 	>(
