@@ -104,7 +104,7 @@ pub struct ChannelMonitorUpdate {
 
 /// LDK prior to 0.1 used this constant as the [`ChannelMonitorUpdate::update_id`] for any
 /// [`ChannelMonitorUpdate`]s which were generated after the channel was closed.
-const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = core::u64::MAX;
+const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = u64::MAX;
 
 impl Writeable for ChannelMonitorUpdate {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
@@ -285,7 +285,7 @@ impl_writeable_tlv_based!(HolderSignedTx, {
 	(0, txid, required),
 	// Note that this is filled in with data from OnchainTxHandler if it's missing.
 	// For HolderSignedTx objects serialized with 0.0.100+, this should be filled in.
-	(1, to_self_value_sat, (default_value, u64::max_value())),
+	(1, to_self_value_sat, (default_value, u64::MAX)),
 	(2, revocation_key, required),
 	(4, a_htlc_key, required),
 	(6, b_htlc_key, required),
@@ -298,7 +298,7 @@ impl_writeable_tlv_based!(HolderSignedTx, {
 impl HolderSignedTx {
 	fn non_dust_htlcs(&self) -> Vec<HTLCOutputInCommitment> {
 		self.htlc_outputs.iter().filter_map(|(htlc, _, _)| {
-			if let Some(_) = htlc.transaction_output_index {
+			if htlc.transaction_output_index.is_some() {
 				Some(htlc.clone())
 			} else {
 				None
@@ -319,7 +319,7 @@ struct CounterpartyCommitmentParameters {
 
 impl Writeable for CounterpartyCommitmentParameters {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		w.write_all(&(0 as u64).to_be_bytes())?;
+		w.write_all(&0u64.to_be_bytes())?;
 		write_tlv_fields!(w, {
 			(0, self.counterparty_delayed_payment_base_key, required),
 			(2, self.counterparty_htlc_base_key, required),
@@ -334,7 +334,7 @@ impl Readable for CounterpartyCommitmentParameters {
 			// Versions prior to 0.0.100 had some per-HTLC state stored here, which is no longer
 			// used. Read it for compatibility.
 			let per_htlc_len: u64 = Readable::read(r)?;
-			for _  in 0..per_htlc_len {
+			for _ in 0..per_htlc_len {
 				let _txid: Txid = Readable::read(r)?;
 				let htlcs_count: u64 = Readable::read(r)?;
 				for _ in 0..htlcs_count {
@@ -794,10 +794,10 @@ struct IrrevocablyResolvedHTLC {
 // In LDK versions prior to 0.0.111 commitment_tx_output_idx was not Option-al and
 // IrrevocablyResolvedHTLC objects only existed for non-dust HTLCs. This was a bug, but to maintain
 // backwards compatibility we must ensure we always write out a commitment_tx_output_idx field,
-// using `u32::max_value()` as a sentinal to indicate the HTLC was dust.
+// using `u32::MAX` as a sentinal to indicate the HTLC was dust.
 impl Writeable for IrrevocablyResolvedHTLC {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let mapped_commitment_tx_output_idx = self.commitment_tx_output_idx.unwrap_or(u32::max_value());
+		let mapped_commitment_tx_output_idx = self.commitment_tx_output_idx.unwrap_or(u32::MAX);
 		write_tlv_fields!(writer, {
 			(0, mapped_commitment_tx_output_idx, required),
 			(1, self.resolving_txid, option),
@@ -821,7 +821,7 @@ impl Readable for IrrevocablyResolvedHTLC {
 			(3, resolving_tx, option),
 		});
 		Ok(Self {
-			commitment_tx_output_idx: if mapped_commitment_tx_output_idx == u32::max_value() { None } else { Some(mapped_commitment_tx_output_idx) },
+			commitment_tx_output_idx: if mapped_commitment_tx_output_idx == u32::MAX { None } else { Some(mapped_commitment_tx_output_idx) },
 			resolving_txid,
 			payment_preimage,
 			resolving_tx,
@@ -1581,7 +1581,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		filter.register_tx(&lock.get_funding_txo().0.txid, &lock.get_funding_txo().1);
 		for (txid, outputs) in lock.get_outputs_to_watch().iter() {
 			for (index, script_pubkey) in outputs.iter() {
-				assert!(*index <= u16::max_value() as u32);
+				assert!(*index <= u16::MAX as u32);
 				let outpoint = OutPoint { txid: *txid, index: *index as u16 };
 				log_trace!(logger, "Registering outpoint {} with the filter for monitoring spends", outpoint);
 				filter.register_output(WatchedOutput {
@@ -2002,18 +2002,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let current_height = self.current_best_block().height;
 		let mut inner = self.inner.lock().unwrap();
 
-		if is_all_funds_claimed {
-			if !inner.funding_spend_seen {
-				debug_assert!(false, "We should see funding spend by the time a monitor clears out");
-				is_all_funds_claimed = false;
-			}
+		if is_all_funds_claimed && !inner.funding_spend_seen {
+			debug_assert!(false, "We should see funding spend by the time a monitor clears out");
+			is_all_funds_claimed = false;
 		}
 
 		const BLOCKS_THRESHOLD: u32 = 4032; // ~four weeks
 		match (inner.balances_empty_height, is_all_funds_claimed) {
 			(Some(balances_empty_height), true) => {
 				// Claimed all funds, check if reached the blocks threshold.
-				return current_height >= balances_empty_height + BLOCKS_THRESHOLD;
+				current_height >= balances_empty_height + BLOCKS_THRESHOLD
 			},
 			(Some(_), false) => {
 				// previously assumed we claimed all funds, but we have new funds to claim.
@@ -2065,8 +2063,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		holder_commitment: bool, counterparty_revoked_commitment: bool,
 		confirmed_txid: Option<Txid>
 	) -> Option<Balance> {
-		let htlc_commitment_tx_output_idx =
-			if let Some(v) = htlc.transaction_output_index { v } else { return None; };
+		let htlc_commitment_tx_output_idx = htlc.transaction_output_index?;
 
 		let mut htlc_spend_txid_opt = None;
 		let mut htlc_spend_tx_opt = None;
@@ -2116,14 +2113,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		let htlc_resolved = self.htlcs_resolved_on_chain.iter()
-			.find(|v| if v.commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) {
+			.any(|v| if v.commitment_tx_output_idx == Some(htlc_commitment_tx_output_idx) {
 				debug_assert!(htlc_spend_txid_opt.is_none());
 				htlc_spend_txid_opt = v.resolving_txid.as_ref();
 				debug_assert!(htlc_spend_tx_opt.is_none());
 				htlc_spend_tx_opt = v.resolving_tx.as_ref();
 				true
 			} else { false });
-		debug_assert!(holder_timeout_spend_pending.is_some() as u8 + htlc_spend_pending.is_some() as u8 + htlc_resolved.is_some() as u8 <= 1);
+		debug_assert!(holder_timeout_spend_pending.is_some() as u8 + htlc_spend_pending.is_some() as u8 + htlc_resolved as u8 <= 1);
 
 		let htlc_commitment_outpoint = BitcoinOutPoint::new(confirmed_txid.unwrap(), htlc_commitment_tx_output_idx);
 		let htlc_output_to_spend =
@@ -2154,7 +2151,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				confirmation_height: conf_thresh,
 				source: BalanceSource::Htlc,
 			});
-		} else if htlc_resolved.is_some() && !htlc_output_spend_pending {
+		} else if htlc_resolved && !htlc_output_spend_pending {
 			// Funding transaction spends should be fully confirmed by the time any
 			// HTLC transactions are resolved, unless we're talking about a holder
 			// commitment tx, whose resolution is delayed until the CSV timeout is
@@ -2162,23 +2159,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// ANTI_REORG_DELAY confirmations.
 			debug_assert!(holder_commitment || self.funding_spend_confirmed.is_some());
 		} else if counterparty_revoked_commitment {
-			let htlc_output_claim_pending = self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| {
+			let htlc_output_claim_pending = self.onchain_events_awaiting_threshold_conf.iter().any(|event| {
 				if let OnchainEvent::MaturingOutput {
 					descriptor: SpendableOutputDescriptor::StaticOutput { .. }
 				} = &event.event {
-					if event.transaction.as_ref().map(|tx| tx.input.iter().any(|inp| {
+					event.transaction.as_ref().map(|tx| tx.input.iter().any(|inp| {
 						if let Some(htlc_spend_txid) = htlc_spend_txid_opt {
 							tx.compute_txid() == *htlc_spend_txid || inp.previous_output.txid == *htlc_spend_txid
 						} else {
 							Some(inp.previous_output.txid) == confirmed_txid &&
 								inp.previous_output.vout == htlc_commitment_tx_output_idx
 						}
-					})).unwrap_or(false) {
-						Some(())
-					} else { None }
-				} else { None }
+					})).unwrap_or(false)
+				} else {
+					false
+				}
 			});
-			if htlc_output_claim_pending.is_some() {
+			if htlc_output_claim_pending {
 				// We already push `Balance`s onto the `res` list for every
 				// `StaticOutput` in a `MaturingOutput` in the revoked
 				// counterparty commitment transaction case generally, so don't
@@ -2239,7 +2236,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					payment_preimage: *payment_preimage,
 				});
 			}
-		} else if htlc_resolved.is_none() {
+		} else if !htlc_resolved {
 			return Some(Balance::MaybePreimageClaimableHTLC {
 				amount_satoshis: htlc.amount_msat / 1000,
 				expiry_height: htlc.cltv_expiry,
@@ -3191,10 +3188,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						// confirmed (even with 1 confirmation) as it'll be rejected as
 						// duplicate/conflicting.
 						let detected_funding_spend = self.funding_spend_confirmed.is_some() ||
-							self.onchain_events_awaiting_threshold_conf.iter().find(|event| match event.event {
-								OnchainEvent::FundingSpendConfirmation { .. } => true,
-								_ => false,
-							}).is_some();
+							self.onchain_events_awaiting_threshold_conf.iter().any(
+								|event| matches!(event.event, OnchainEvent::FundingSpendConfirmation { .. }));
 						if detected_funding_spend {
 							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
 							continue;
@@ -3268,7 +3263,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// If we've detected a counterparty commitment tx on chain, we must include it in the set
 		// of outputs to watch for spends of, otherwise we're likely to lose user funds. Because
 		// its trivial to do, double-check that here.
-		for (txid, _) in self.counterparty_commitment_txn_on_chain.iter() {
+		for txid in self.counterparty_commitment_txn_on_chain.keys() {
 			self.outputs_to_watch.get(txid).expect("Counterparty commitment txn which have been broadcast should have outputs registered");
 		}
 		&self.outputs_to_watch
@@ -4118,16 +4113,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 
 		// Find which on-chain events have reached their confirmation threshold.
-		let onchain_events_awaiting_threshold_conf =
-			self.onchain_events_awaiting_threshold_conf.drain(..).collect::<Vec<_>>();
-		let mut onchain_events_reaching_threshold_conf = Vec::new();
-		for entry in onchain_events_awaiting_threshold_conf {
-			if entry.has_reached_confirmation_threshold(&self.best_block) {
-				onchain_events_reaching_threshold_conf.push(entry);
-			} else {
-				self.onchain_events_awaiting_threshold_conf.push(entry);
-			}
-		}
+		let (onchain_events_reaching_threshold_conf, onchain_events_awaiting_threshold_conf): (Vec<_>, Vec<_>) =
+			self.onchain_events_awaiting_threshold_conf.drain(..).partition(
+				|entry| entry.has_reached_confirmation_threshold(&self.best_block));
+		self.onchain_events_awaiting_threshold_conf = onchain_events_awaiting_threshold_conf;
 
 		// Used to check for duplicate HTLC resolutions.
 		#[cfg(debug_assertions)]
@@ -4142,19 +4131,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut matured_htlcs = Vec::new();
 
 		// Produce actionable events from on-chain events having reached their threshold.
-		for entry in onchain_events_reaching_threshold_conf.drain(..) {
+		for entry in onchain_events_reaching_threshold_conf {
 			match entry.event {
-				OnchainEvent::HTLCUpdate { ref source, payment_hash, htlc_value_satoshis, commitment_tx_output_idx } => {
+				OnchainEvent::HTLCUpdate { source, payment_hash, htlc_value_satoshis, commitment_tx_output_idx } => {
 					// Check for duplicate HTLC resolutions.
 					#[cfg(debug_assertions)]
 					{
 						debug_assert!(
-							unmatured_htlcs.iter().find(|&htlc| htlc == &source).is_none(),
+							!unmatured_htlcs.contains(&&source),
 							"An unmature HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
 							 or block_disconnected for a block containing it.");
 						debug_assert!(
-							matured_htlcs.iter().find(|&htlc| htlc == source).is_none(),
+							!matured_htlcs.contains(&source),
 							"A matured HTLC transaction conflicts with a maturing one; failed to \
 							 call either transaction_unconfirmed for the conflicting transaction \
 							 or block_disconnected for a block containing it.");
@@ -4166,7 +4155,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 						payment_hash,
 						payment_preimage: None,
-						source: source.clone(),
+						source,
 						htlc_value_satoshis,
 					}));
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
@@ -4211,7 +4200,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		});
 		#[cfg(test)]
 		{
-		        // If we see a transaction for which we registered outputs previously,
+			// If we see a transaction for which we registered outputs previously,
 			// make sure the registered scriptpubkey at the expected index match
 			// the actual transaction output one. We failed this case before #653.
 			for tx in &txn_matched {
@@ -4596,7 +4585,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						height,
 						block_hash: Some(*block_hash),
 						event: OnchainEvent::HTLCUpdate {
-							source, payment_hash,
+							source,
+							payment_hash,
 							htlc_value_satoshis: Some(amount_msat / 1000),
 							commitment_tx_output_idx: Some(input.previous_output.vout),
 						},
@@ -4808,7 +4798,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			for _ in 0..htlcs_count {
 				htlcs.push((read_htlc_in_commitment!(), <Option<HTLCSource> as Readable>::read(reader)?.map(|o: HTLCSource| Box::new(o))));
 			}
-			if let Some(_) = counterparty_claimable_outpoints.insert(txid, htlcs) {
+			if counterparty_claimable_outpoints.insert(txid, htlcs).is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -4818,7 +4808,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		for _ in 0..counterparty_commitment_txn_on_chain_len {
 			let txid: Txid = Readable::read(reader)?;
 			let commitment_number = <U48 as Readable>::read(reader)?.0;
-			if let Some(_) = counterparty_commitment_txn_on_chain.insert(txid, commitment_number) {
+			if counterparty_commitment_txn_on_chain.insert(txid, commitment_number).is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -4828,7 +4818,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		for _ in 0..counterparty_hash_commitment_number_len {
 			let payment_hash: PaymentHash = Readable::read(reader)?;
 			let commitment_number = <U48 as Readable>::read(reader)?.0;
-			if let Some(_) = counterparty_hash_commitment_number.insert(payment_hash, commitment_number) {
+			if counterparty_hash_commitment_number.insert(payment_hash, commitment_number).is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -4836,9 +4826,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut prev_holder_signed_commitment_tx: Option<HolderSignedTx> =
 			match <u8 as Readable>::read(reader)? {
 				0 => None,
-				1 => {
-					Some(Readable::read(reader)?)
-				},
+				1 => Some(Readable::read(reader)?),
 				_ => return Err(DecodeError::InvalidValue),
 			};
 		let mut current_holder_commitment_tx: HolderSignedTx = Readable::read(reader)?;
@@ -4851,7 +4839,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		for _ in 0..payment_preimages_len {
 			let preimage: PaymentPreimage = Readable::read(reader)?;
 			let hash = PaymentHash(Sha256::hash(&preimage.0[..]).to_byte_array());
-			if let Some(_) = payment_preimages.insert(hash, (preimage, Vec::new())) {
+			if payment_preimages.insert(hash, (preimage, Vec::new())).is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -4895,7 +4883,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			for _ in 0..outputs_len {
 				outputs.push((Readable::read(reader)?, Readable::read(reader)?));
 			}
-			if let Some(_) = outputs_to_watch.insert(txid, outputs) {
+			if outputs_to_watch.insert(txid, outputs).is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
 		}
@@ -4909,7 +4897,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		if let Some(prev_commitment_tx) = prev_holder_signed_commitment_tx.as_mut() {
 			let prev_holder_value = onchain_tx_handler.get_prev_holder_commitment_to_self_value();
 			if prev_holder_value.is_none() { return Err(DecodeError::InvalidValue); }
-			if prev_commitment_tx.to_self_value_sat == u64::max_value() {
+			if prev_commitment_tx.to_self_value_sat == u64::MAX {
 				prev_commitment_tx.to_self_value_sat = prev_holder_value.unwrap();
 			} else if prev_commitment_tx.to_self_value_sat != prev_holder_value.unwrap() {
 				return Err(DecodeError::InvalidValue);
@@ -4917,7 +4905,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let cur_holder_value = onchain_tx_handler.get_cur_holder_commitment_to_self_value();
-		if current_holder_commitment_tx.to_self_value_sat == u64::max_value() {
+		if current_holder_commitment_tx.to_self_value_sat == u64::MAX {
 			current_holder_commitment_tx.to_self_value_sat = cur_holder_value;
 		} else if current_holder_commitment_tx.to_self_value_sat != cur_holder_value {
 			return Err(DecodeError::InvalidValue);
@@ -5259,7 +5247,7 @@ mod tests {
 			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap())),
 			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap()))
 		};
-		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::max_value() };
+		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
 			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
@@ -5511,7 +5499,7 @@ mod tests {
 			delayed_payment_basepoint: DelayedPaymentBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[47; 32]).unwrap())),
 			htlc_basepoint: HtlcBasepoint::from(PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[48; 32]).unwrap())),
 		};
-		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::max_value() };
+		let funding_outpoint = OutPoint { txid: Txid::all_zeros(), index: u16::MAX };
 		let channel_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
 		let channel_parameters = ChannelTransactionParameters {
 			holder_pubkeys: keys.holder_channel_pubkeys.clone(),
