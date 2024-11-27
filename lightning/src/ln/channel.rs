@@ -2332,6 +2332,56 @@ impl<SP: Deref> PendingV2Channel<SP> where SP::Target: SignerProvider {
 	}
 }
 
+/*
+impl<SP: Deref> InteractivelyFunded<SP> for OutboundV2Channel<SP> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+	fn dual_funding_context(&self) -> &DualFundingChannelContext {
+		&self.dual_funding_context
+	}
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
+		&mut self.dual_funding_context
+	}
+	fn unfunded_context(&self) -> &UnfundedChannelContext {
+		&self.unfunded_context
+	}
+	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
+		&mut self.interactive_tx_constructor
+	}
+	fn is_initiator(&self) -> bool {
+		true
+	}
+}
+
+impl<SP: Deref> InteractivelyFunded<SP> for InboundV2Channel<SP> where SP::Target: SignerProvider {
+	fn context(&self) -> &ChannelContext<SP> {
+		&self.context
+	}
+	fn context_mut(&mut self) -> &mut ChannelContext<SP> {
+		&mut self.context
+	}
+	fn dual_funding_context(&self) -> &DualFundingChannelContext {
+		&self.dual_funding_context
+	}
+	fn dual_funding_context_mut(&mut self) -> &mut DualFundingChannelContext {
+		&mut self.dual_funding_context
+	}
+	fn unfunded_context(&self) -> &UnfundedChannelContext {
+		&self.unfunded_context
+	}
+	fn interactive_tx_constructor_mut(&mut self) -> &mut Option<InteractiveTxConstructor> {
+		&mut self.interactive_tx_constructor
+	}
+	fn is_initiator(&self) -> bool {
+		false
+	}
+}
+*/
+
 impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	fn new_for_inbound_channel<'a, ES: Deref, F: Deref, L: Deref>(
 		fee_estimator: &'a LowerBoundedFeeEstimator<F>,
@@ -4716,7 +4766,6 @@ pub(super) struct DualFundingChannelContext {
 	/// The amount in satoshis we will be contributing to the channel.
 	pub our_funding_satoshis: u64,
 	/// The amount in satoshis our counterparty will be contributing to the channel.
-	#[allow(dead_code)] // TODO(dual_funding): Remove once contribution to V2 channels is enabled.
 	pub their_funding_satoshis: Option<u64>,
 	/// The funding transaction locktime suggested by the initiator. If set by us, it is always set
 	/// to the current block height to align incentives against fee-sniping.
