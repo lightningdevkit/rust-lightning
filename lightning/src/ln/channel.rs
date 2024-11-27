@@ -8746,6 +8746,8 @@ pub(super) struct OutboundV2Channel<SP: Deref> where SP::Target: SignerProvider 
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	/// The signing session created after `tx_complete` handling
+	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -8805,6 +8807,7 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 				our_funding_inputs: funding_inputs,
 			},
 			interactive_tx_constructor: None,
+			interactive_tx_signing_session: None,
 		};
 		Ok(chan)
 	}
@@ -8872,13 +8875,11 @@ impl<SP: Deref> OutboundV2Channel<SP> where SP::Target: SignerProvider {
 		}
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
-		let channel = Channel {
+	pub fn into_channel(self) -> Channel<SP> {
+		Channel {
 			context: self.context,
-			interactive_tx_signing_session: Some(signing_session),
-		};
-
-		Ok(channel)
+			interactive_tx_signing_session: self.interactive_tx_signing_session,
+		}
 	}
 }
 
@@ -8889,6 +8890,8 @@ pub(super) struct InboundV2Channel<SP: Deref> where SP::Target: SignerProvider {
 	pub dual_funding_context: DualFundingChannelContext,
 	/// The current interactive transaction construction session under negotiation.
 	interactive_tx_constructor: Option<InteractiveTxConstructor>,
+	/// The signing session created after `tx_complete` handling
+	pub interactive_tx_signing_session: Option<InteractiveTxSigningSession>,
 }
 
 impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
@@ -8990,6 +8993,7 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 			context,
 			dual_funding_context,
 			interactive_tx_constructor,
+			interactive_tx_signing_session: None,
 			unfunded_context: UnfundedChannelContext { unfunded_channel_age_ticks: 0 },
 		})
 	}
@@ -9066,13 +9070,11 @@ impl<SP: Deref> InboundV2Channel<SP> where SP::Target: SignerProvider {
 		self.generate_accept_channel_v2_message()
 	}
 
-	pub fn into_channel(self, signing_session: InteractiveTxSigningSession) -> Result<Channel<SP>, ChannelError>{
-		let channel = Channel {
+	pub fn into_channel(self) -> Channel<SP> {
+		Channel {
 			context: self.context,
-			interactive_tx_signing_session: Some(signing_session),
-		};
-
-		Ok(channel)
+			interactive_tx_signing_session: self.interactive_tx_signing_session,
+		}
 	}
 }
 
