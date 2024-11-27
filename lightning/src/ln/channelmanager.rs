@@ -4615,14 +4615,22 @@ where
 		}
 	}
 
-	/// Sends a payment along a given route.
-	///
-	/// This method is *DEPRECATED*, use [`Self::send_payment`] instead. If you wish to fix the
-	/// route for a payment, do so by matching the [`PaymentId`] passed to
-	/// [`Router::find_route_with_id`].
-	///
-	/// Value parameters are provided via the last hop in route, see documentation for [`RouteHop`]
-	/// fields for more info.
+	// Deprecated send method, for testing use [`Self::send_payment`] and
+	// [`TestRouter::expect_find_route`] instead.
+	//
+	// [`TestRouter::expect_find_route`]: crate::util::test_utils::TestRouter::expect_find_route
+	#[cfg(any(test, fuzzing))]
+	pub fn send_payment_with_route(&self, route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.pending_outbound_payments
+			.send_payment_with_route(&route, payment_hash, recipient_onion, payment_id,
+				&self.entropy_source, &self.node_signer, best_block_height,
+				|args| self.send_payment_along_path(args))
+	}
+
+	/// Sends a payment to the route found using the provided [`RouteParameters`], retrying failed
+	/// payment paths based on the provided `Retry`.
 	///
 	/// May generate [`UpdateHTLCs`] message(s) event on success, which should be relayed (e.g. via
 	/// [`PeerManager::process_events`]).
@@ -4630,9 +4638,9 @@ where
 	/// # Avoiding Duplicate Payments
 	///
 	/// If a pending payment is currently in-flight with the same [`PaymentId`] provided, this
-	/// method will error with an [`APIError::InvalidRoute`]. Note, however, that once a payment
-	/// is no longer pending (either via [`ChannelManager::abandon_payment`], or handling of an
-	/// [`Event::PaymentSent`] or [`Event::PaymentFailed`]) LDK will not stop you from sending a
+	/// method will error with [`RetryableSendFailure::DuplicatePayment`]. Note, however, that once a
+	/// payment is no longer pending (either via [`ChannelManager::abandon_payment`], or handling of
+	/// an [`Event::PaymentSent`] or [`Event::PaymentFailed`]) LDK will not stop you from sending a
 	/// second payment with the same [`PaymentId`].
 	///
 	/// Thus, in order to ensure duplicate payments are not sent, you should implement your own
@@ -4646,43 +4654,18 @@ where
 	/// using [`ChannelMonitorUpdateStatus::InProgress`]), the payment may be lost on restart. See
 	/// [`ChannelManager::list_recent_payments`] for more information.
 	///
-	/// # Possible Error States on [`PaymentSendFailure`]
+	/// Routes are automatically found using the [`Router] provided on startup. To fix a route for a
+	/// particular payment, match the [`PaymentId`] passed to [`Router::find_route_with_id`].
 	///
-	/// Each path may have a different return value, and [`PaymentSendFailure`] may return a `Vec` with
-	/// each entry matching the corresponding-index entry in the route paths, see
-	/// [`PaymentSendFailure`] for more info.
-	///
-	/// In general, a path may raise:
-	///  * [`APIError::InvalidRoute`] when an invalid route or forwarding parameter (cltv_delta, fee,
-	///    node public key) is specified.
-	///  * [`APIError::ChannelUnavailable`] if the next-hop channel is not available as it has been
-	///    closed, doesn't exist, or the peer is currently disconnected.
-	///  * [`APIError::MonitorUpdateInProgress`] if a new monitor update failure prevented sending the
-	///    relevant updates.
-	///
-	/// Note that depending on the type of the [`PaymentSendFailure`] the HTLC may have been
-	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
-	/// different route unless you intend to pay twice!
-	///
-	/// [`RouteHop`]: crate::routing::router::RouteHop
 	/// [`Event::PaymentSent`]: events::Event::PaymentSent
 	/// [`Event::PaymentFailed`]: events::Event::PaymentFailed
 	/// [`UpdateHTLCs`]: events::MessageSendEvent::UpdateHTLCs
 	/// [`PeerManager::process_events`]: crate::ln::peer_handler::PeerManager::process_events
 	/// [`ChannelMonitorUpdateStatus::InProgress`]: crate::chain::ChannelMonitorUpdateStatus::InProgress
-	#[cfg_attr(not(any(test, feature = "_test_utils")), deprecated(note = "Use `send_payment` instead"))]
-	pub fn send_payment_with_route(&self, route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId) -> Result<(), PaymentSendFailure> {
-		let best_block_height = self.best_block.read().unwrap().height;
-		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		self.pending_outbound_payments
-			.send_payment_with_route(&route, payment_hash, recipient_onion, payment_id,
-				&self.entropy_source, &self.node_signer, best_block_height,
-				|args| self.send_payment_along_path(args))
-	}
-
-	/// Similar to [`ChannelManager::send_payment_with_route`], but will automatically find a route based on
-	/// `route_params` and retry failed payment paths based on `retry_strategy`.
-	pub fn send_payment(&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId, route_params: RouteParameters, retry_strategy: Retry) -> Result<(), RetryableSendFailure> {
+	pub fn send_payment(
+		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
+		route_params: RouteParameters, retry_strategy: Retry
+	) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		self.pending_outbound_payments
@@ -4897,8 +4880,26 @@ where
 	/// would be able to guess -- otherwise, an intermediate node may claim the payment and it will
 	/// never reach the recipient.
 	///
-	/// See [`send_payment`] documentation for more details on the return value of this function
-	/// and idempotency guarantees provided by the [`PaymentId`] key.
+	/// See [`send_payment`] documentation for more details on the idempotency guarantees provided by
+	/// the [`PaymentId`] key.
+	///
+	/// # Possible Error States on [`PaymentSendFailure`]
+	///
+	/// Each path may have a different return value, and [`PaymentSendFailure`] may return a `Vec` with
+	/// each entry matching the corresponding-index entry in the route paths, see
+	/// [`PaymentSendFailure`] for more info.
+	///
+	/// In general, a path may raise:
+	///  * [`APIError::InvalidRoute`] when an invalid route or forwarding parameter (cltv_delta, fee,
+	///    node public key) is specified.
+	///  * [`APIError::ChannelUnavailable`] if the next-hop channel is not available as it has been
+	///    closed, doesn't exist, or the peer is currently disconnected.
+	///  * [`APIError::MonitorUpdateInProgress`] if a new monitor update failure prevented sending the
+	///    relevant updates.
+	///
+	/// Note that depending on the type of the [`PaymentSendFailure`] the HTLC may have been
+	/// irrevocably committed to on our end. In such a case, do NOT retry the payment with a
+	/// different route unless you intend to pay twice!
 	///
 	/// Similar to regular payments, you MUST NOT reuse a `payment_preimage` value. See
 	/// [`send_payment`] for more information about the risks of duplicate preimage usage.

@@ -478,11 +478,9 @@ pub enum RetryableSendFailure {
 	OnionPacketSizeExceeded,
 }
 
-/// If a payment fails to send with [`ChannelManager::send_payment_with_route`], it can be in one
-/// of several states. This enum is returned as the Err() type describing which state the payment
-/// is in, see the description of individual enum states for more.
-///
-/// [`ChannelManager::send_payment_with_route`]: crate::ln::channelmanager::ChannelManager::send_payment_with_route
+/// If a payment fails to send to a route, it can be in one of several states. This enum is returned
+/// as the Err() type describing which state the payment is in, see the description of individual
+/// enum states for more.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaymentSendFailure {
 	/// A parameter which was passed to send_payment was invalid, preventing us from attempting to
@@ -776,6 +774,7 @@ impl OutboundPayments {
 			best_block_height, logger, pending_events, &send_payment_along_path)
 	}
 
+	#[cfg(any(test, fuzzing))]
 	pub(super) fn send_payment_with_route<ES: Deref, NS: Deref, F>(
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId, entropy_source: &ES, node_signer: &NS, best_block_height: u32,
