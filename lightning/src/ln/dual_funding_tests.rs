@@ -20,12 +20,13 @@ use {
 	crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint, RevocationBasepoint},
 	crate::ln::functional_test_utils::*,
 	crate::ln::msgs::ChannelMessageHandler,
-	crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete},
+	crate::ln::msgs::{CommitmentSigned, TxAddInput, TxAddOutput, TxComplete, TxSignatures},
 	crate::ln::types::ChannelId,
 	crate::prelude::*,
 	crate::sign::ChannelSigner as _,
 	crate::util::ser::TransactionU16LenLimited,
 	crate::util::test_utils,
+	bitcoin::Witness,
 };
 
 // Dual-funding: V2 Channel Establishment Tests
@@ -36,9 +37,7 @@ struct V2ChannelEstablishmentTestSession {
 
 // TODO(dual_funding): Use real node and API for creating V2 channels as initiator when available,
 // instead of manually constructing messages.
-fn do_test_v2_channel_establishment(
-	session: V2ChannelEstablishmentTestSession, test_async_persist: bool,
-) {
+fn do_test_v2_channel_establishment(session: V2ChannelEstablishmentTestSession) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -196,11 +195,7 @@ fn do_test_v2_channel_establishment(
 		partial_signature_with_nonce: None,
 	};
 
-	if test_async_persist {
-		chanmon_cfgs[1]
-			.persister
-			.set_update_ret(crate::chain::ChannelMonitorUpdateStatus::InProgress);
-	}
+	chanmon_cfgs[1].persister.set_update_ret(crate::chain::ChannelMonitorUpdateStatus::InProgress);
 
 	// Handle the initial commitment_signed exchange. Order is not important here.
 	nodes[1]
@@ -208,25 +203,15 @@ fn do_test_v2_channel_establishment(
 		.handle_commitment_signed(nodes[0].node.get_our_node_id(), &msg_commitment_signed_from_0);
 	check_added_monitors(&nodes[1], 1);
 
-	if test_async_persist {
-		let events = nodes[1].node.get_and_clear_pending_events();
-		assert!(events.is_empty());
+	// The funding transaction should not have been broadcast before persisting initial monitor has
+	// been completed.
+	assert_eq!(nodes[1].tx_broadcaster.txn_broadcast().len(), 0);
+	assert_eq!(nodes[1].node.get_and_clear_pending_events().len(), 0);
 
-		chanmon_cfgs[1]
-			.persister
-			.set_update_ret(crate::chain::ChannelMonitorUpdateStatus::Completed);
-		let (latest_update, _) = *nodes[1]
-			.chain_monitor
-			.latest_monitor_update_id
-			.lock()
-			.unwrap()
-			.get(&channel_id)
-			.unwrap();
-		nodes[1]
-			.chain_monitor
-			.chain_monitor
-			.force_channel_monitor_updated(channel_id, latest_update);
-	}
+	// Complete the persistence of the monitor.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert!(events.is_empty());
+	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
@@ -242,24 +227,30 @@ fn do_test_v2_channel_establishment(
 	);
 
 	assert_eq!(tx_signatures_msg.channel_id, channel_id);
+
+	let mut witness = Witness::new();
+	witness.push([0x0]);
+	// Receive tx_signatures from channel initiator.
+	nodes[1].node.handle_tx_signatures(
+		nodes[0].node.get_our_node_id(),
+		&TxSignatures {
+			channel_id,
+			tx_hash: funding_outpoint.unwrap().txid,
+			witnesses: vec![witness],
+			shared_input_signature: None,
+		},
+	);
+
+	// For an inbound channel V2 channel the transaction should be broadcast once receiving a
+	// tx_signature and applying local tx_signatures:
+	let broadcasted_txs = nodes[1].tx_broadcaster.txn_broadcast();
+	assert_eq!(broadcasted_txs.len(), 1);
 }
 
 #[test]
 fn test_v2_channel_establishment() {
-	// Only initiator contributes, no persist pending
-	do_test_v2_channel_establishment(
-		V2ChannelEstablishmentTestSession {
-			funding_input_sats: 100_000,
-			initiator_input_value_satoshis: 150_000,
-		},
-		false,
-	);
-	// Only initiator contributes, persist pending
-	do_test_v2_channel_establishment(
-		V2ChannelEstablishmentTestSession {
-			funding_input_sats: 100_000,
-			initiator_input_value_satoshis: 150_000,
-		},
-		true,
-	);
+	do_test_v2_channel_establishment(V2ChannelEstablishmentTestSession {
+		funding_input_sats: 100_00,
+		initiator_input_value_satoshis: 150_000,
+	});
 }

@@ -316,14 +316,18 @@ impl InteractiveTxSigningSession {
 
 	/// Handles a `tx_signatures` message received from the counterparty.
 	///
+	/// If the holder is required to send their `tx_signatures` message and these signatures have
+	/// already been provided to the signing session, then this return value will be `Some`, otherwise
+	/// None.
+	///
+	/// If the holder has already provided their `tx_signatures` to the signing session, a funding
+	/// transaction will be finalized and returned as Some, otherwise None.
+	///
 	/// Returns an error if the witness count does not equal the counterparty's input count in the
 	/// unsigned transaction.
 	pub fn received_tx_signatures(
 		&mut self, tx_signatures: TxSignatures,
 	) -> Result<(Option<TxSignatures>, Option<Transaction>), ()> {
-		if self.counterparty_sent_tx_signatures {
-			return Ok((None, None));
-		};
 		if self.remote_inputs_count() != tx_signatures.witnesses.len() {
 			return Err(());
 		}
@@ -336,13 +340,16 @@ impl InteractiveTxSigningSession {
 			None
 		};
 
-		let funding_tx = if self.holder_tx_signatures.is_some() {
+		// Check if the holder has provided its signatures and if so,
+		// return the finalized funding transaction.
+		let funding_tx_opt = if self.holder_tx_signatures.is_some() {
 			Some(self.finalize_funding_tx())
 		} else {
+			// This means we're still waiting for the holder to provide their signatures.
 			None
 		};
 
-		Ok((holder_tx_signatures, funding_tx))
+		Ok((holder_tx_signatures, funding_tx_opt))
 	}
 
 	/// Provides the holder witnesses for the unsigned transaction.
