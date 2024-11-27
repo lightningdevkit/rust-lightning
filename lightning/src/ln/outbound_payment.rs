@@ -576,8 +576,24 @@ pub enum Bolt12PaymentError {
 pub enum ProbeSendFailure {
 	/// We were unable to find a route to the destination.
 	RouteNotFound,
-	/// We failed to send the payment probes.
-	SendingFailed(PaymentSendFailure),
+	/// A parameter which was passed to [`ChannelManager::send_probe`] was invalid, preventing us from
+	/// attempting to send the probe at all.
+	///
+	/// You can freely resend the probe (with the parameter error fixed).
+	///
+	/// Because the probe failed outright, no payment tracking is done and no
+	/// [`Event::ProbeFailed`] events will be generated.
+	///
+	/// [`ChannelManager::send_probe`]: crate::ln::channelmanager::ChannelManager::send_probe
+	/// [`Event::ProbeFailed`]: crate::events::Event::ProbeFailed
+	ParameterError(APIError),
+	/// Indicates that a payment for the provided [`PaymentId`] is already in-flight and has not
+	/// yet completed (i.e. generated an [`Event::ProbeSuccessful`] or [`Event::ProbeFailed`]).
+	///
+	/// [`PaymentId`]: crate::ln::channelmanager::PaymentId
+	/// [`Event::ProbeSuccessful`]: crate::events::Event::ProbeSuccessful
+	/// [`Event::ProbeFailed`]: crate::events::Event::ProbeFailed
+	DuplicateProbe,
 }
 
 /// Information which is provided, encrypted, to the payment recipient when sending HTLCs.
@@ -1497,7 +1513,7 @@ impl OutboundPayments {
 	pub(super) fn send_probe<ES: Deref, NS: Deref, F>(
 		&self, path: Path, probing_cookie_secret: [u8; 32], entropy_source: &ES, node_signer: &NS,
 		best_block_height: u32, send_payment_along_path: F
-	) -> Result<(PaymentHash, PaymentId), PaymentSendFailure>
+	) -> Result<(PaymentHash, PaymentId), ProbeSendFailure>
 	where
 		ES::Target: EntropySource,
 		NS::Target: NodeSigner,
@@ -1509,7 +1525,7 @@ impl OutboundPayments {
 		let payment_hash = probing_cookie_from_id(&payment_id, probing_cookie_secret);
 
 		if path.hops.len() < 2 && path.blinded_tail.is_none() {
-			return Err(PaymentSendFailure::ParameterError(APIError::APIMisuseError {
+			return Err(ProbeSendFailure::ParameterError(APIError::APIMisuseError {
 				err: "No need probing a path with less than two hops".to_string()
 			}))
 		}
@@ -1517,7 +1533,11 @@ impl OutboundPayments {
 		let route = Route { paths: vec![path], route_params: None };
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
 			RecipientOnionFields::secret_only(payment_secret), payment_id, None, &route, None, None,
-			entropy_source, best_block_height)?;
+			entropy_source, best_block_height
+		).map_err(|e| {
+			debug_assert!(matches!(e, PaymentSendFailure::DuplicatePayment));
+			ProbeSendFailure::DuplicateProbe
+		})?;
 
 		let recipient_onion_fields = RecipientOnionFields::spontaneous_empty();
 		match self.pay_route_internal(&route, payment_hash, &recipient_onion_fields,
@@ -1527,7 +1547,26 @@ impl OutboundPayments {
 			Ok(()) => Ok((payment_hash, payment_id)),
 			Err(e) => {
 				self.remove_outbound_if_all_failed(payment_id, &e);
-				Err(e)
+				match e {
+					PaymentSendFailure::DuplicatePayment => Err(ProbeSendFailure::DuplicateProbe),
+					PaymentSendFailure::ParameterError(err) => Err(ProbeSendFailure::ParameterError(err)),
+					PaymentSendFailure::PartialFailure { results, .. }
+					| PaymentSendFailure::PathParameterError(results) => {
+						debug_assert_eq!(results.len(), 1);
+						let err = results.into_iter()
+							.find(|res| res.is_err())
+							.map(|err| err.unwrap_err())
+							.unwrap_or(APIError::APIMisuseError { err: "Unexpected error".to_owned() });
+						Err(ProbeSendFailure::ParameterError(err))
+					},
+					PaymentSendFailure::AllFailedResendSafe(mut errors) => {
+						debug_assert_eq!(errors.len(), 1);
+						let err = errors
+							.pop()
+							.unwrap_or(APIError::APIMisuseError { err: "Unexpected error".to_owned() });
+						Err(ProbeSendFailure::ParameterError(err))
+					}
+				}
 			}
 		}
 	}
