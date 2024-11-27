@@ -83,7 +83,7 @@ use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::errors::APIError;
 
 #[cfg(feature = "dnssec")]
-use crate::onion_message::dns_resolution::{DNSResolverMessage, OMNameResolver};
+use crate::onion_message::dns_resolution::OMNameResolver;
 
 #[cfg(async_payments)]
 use {
@@ -110,7 +110,7 @@ use core::{cmp, mem};
 use core::borrow::Borrow;
 use core::cell::RefCell;
 use crate::io::Read;
-use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use crate::sync::{Arc, FairRwLock, LockHeldState, LockTestExt, Mutex, RwLock, RwLockReadGuard};
 use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
@@ -2414,8 +2414,6 @@ where
 
 	#[cfg(feature = "dnssec")]
 	hrn_resolver: OMNameResolver,
-	#[cfg(feature = "dnssec")]
-	pending_dns_onion_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
 
 	#[cfg(test)]
 	pub(super) entropy_source: ES,
@@ -3324,8 +3322,6 @@ where
 
 			#[cfg(feature = "dnssec")]
 			hrn_resolver: OMNameResolver::new(current_timestamp, params.best_block.height),
-			#[cfg(feature = "dnssec")]
-			pending_dns_onion_messages: Mutex::new(Vec::new()),
 		}
 	}
 
@@ -9512,11 +9508,6 @@ where
 	L::Target: Logger,
 {
 	#[cfg(feature = "dnssec")]
-	fn get_pending_dns_onion_messages(&self) -> MutexGuard<'_, Vec<(DNSResolverMessage, MessageSendInstructions)>> {
-		self.pending_dns_onion_messages.lock().expect("Mutex is locked by other thread.")
-	}
-
-	#[cfg(feature = "dnssec")]
 	fn get_hrn_resolver(&self) -> &OMNameResolver {
 		&self.hrn_resolver
 	}
@@ -13128,8 +13119,6 @@ where
 
 			#[cfg(feature = "dnssec")]
 			hrn_resolver: OMNameResolver::new(highest_seen_timestamp, best_block_height),
-			#[cfg(feature = "dnssec")]
-			pending_dns_onion_messages: Mutex::new(Vec::new()),
 		};
 
 		for (_, monitor) in args.channel_monitors.iter() {
